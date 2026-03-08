@@ -1,0 +1,979 @@
+id: sdxl_base_1.0
+family: sdxl
+name: Stable Diffusion XL Base
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-4
+components:
+  unet:
+    path: huggingface:stabilityai/stable-diffusion-xl-base-1.0
+    type: diffusers
+    params: {}
+  vae:
+    path: huggingface:madebyollin/sdxl-vae-fp16-fix
+    type: diffusers
+    params: {}
+detected_precision:
+  unet: torch.float32
+  text_encoder_1: torch.float32
+  text_encoder_2: torch.float32
+  vae: torch.float32
+architecture_params:
+  transformer.in_channels: 4
+  transformer.cross_attention_dim: 2048
+  transformer.sample_size: 128
+  in_channels: 4
+  context_dim: 2048
+  sample_size: 128
+  transformer._class_name: UNet2DConditionModel
+  transformer.act_fn: silu
+  transformer.addition_embed_type: text_time
+  transformer.addition_embed_type_num_heads: 64
+  transformer.addition_time_embed_dim: 256
+  transformer.attention_head_dim:
+  - 5
+  - 10
+  - 20
+  transformer.block_out_channels:
+  - 320
+  - 640
+  - 1280
+  transformer.center_input_sample: false
+  transformer.class_embed_type: null
+  transformer.class_embeddings_concat: false
+  transformer.conv_in_kernel: 3
+  transformer.conv_out_kernel: 3
+  transformer.cross_attention_norm: null
+  transformer.down_block_types:
+  - DownBlock2D
+  - CrossAttnDownBlock2D
+  - CrossAttnDownBlock2D
+  transformer.downsample_padding: 1
+  transformer.dual_cross_attention: false
+  transformer.encoder_hid_dim: null
+  transformer.encoder_hid_dim_type: null
+  transformer.flip_sin_to_cos: true
+  transformer.freq_shift: 0
+  transformer.layers_per_block: 2
+  transformer.mid_block_only_cross_attention: null
+  transformer.mid_block_scale_factor: 1
+  transformer.mid_block_type: UNetMidBlock2DCrossAttn
+  transformer.norm_eps: 1.0e-05
+  transformer.norm_num_groups: 32
+  transformer.num_attention_heads: null
+  transformer.num_class_embeds: null
+  transformer.only_cross_attention: false
+  transformer.out_channels: 4
+  transformer.projection_class_embeddings_input_dim: 2816
+  transformer.resnet_out_scale_factor: 1.0
+  transformer.resnet_skip_time_act: false
+  transformer.resnet_time_scale_shift: default
+  transformer.time_cond_proj_dim: null
+  transformer.time_embedding_act_fn: null
+  transformer.time_embedding_dim: null
+  transformer.time_embedding_type: positional
+  transformer.timestep_post_act: null
+  transformer.transformer_layers_per_block:
+  - 1
+  - 2
+  - 10
+  transformer.up_block_types:
+  - CrossAttnUpBlock2D
+  - CrossAttnUpBlock2D
+  - UpBlock2D
+  transformer.upcast_attention: null
+  transformer.use_linear_projection: true
+  te.architectures:
+  - CLIPTextModel
+  te.attention_dropout: 0.0
+  te.bos_token_id: 0
+  te.dropout: 0.0
+  te.eos_token_id: 2
+  te.hidden_act: quick_gelu
+  te.hidden_size: 768
+  te.initializer_factor: 1.0
+  te.initializer_range: 0.02
+  te.intermediate_size: 3072
+  te.layer_norm_eps: 1.0e-05
+  te.max_position_embeddings: 77
+  te.model_type: clip_text_model
+  te.num_attention_heads: 12
+  te.num_hidden_layers: 12
+  te.pad_token_id: 1
+  te.projection_dim: 768
+  te.torch_dtype: float16
+  te.vocab_size: 49408
+  te2.architectures:
+  - CLIPTextModelWithProjection
+  te2.attention_dropout: 0.0
+  te2.bos_token_id: 0
+  te2.dropout: 0.0
+  te2.eos_token_id: 2
+  te2.hidden_act: gelu
+  te2.hidden_size: 1280
+  te2.initializer_factor: 1.0
+  te2.initializer_range: 0.02
+  te2.intermediate_size: 5120
+  te2.layer_norm_eps: 1.0e-05
+  te2.max_position_embeddings: 77
+  te2.model_type: clip_text_model
+  te2.num_attention_heads: 20
+  te2.num_hidden_layers: 32
+  te2.pad_token_id: 1
+  te2.projection_dim: 1280
+  te2.torch_dtype: float16
+  te2.vocab_size: 49408
+  scheduler._class_name: EulerDiscreteScheduler
+  scheduler.beta_end: 0.012
+  scheduler.beta_schedule: scaled_linear
+  scheduler.beta_start: 0.00085
+  scheduler.clip_sample: false
+  scheduler.interpolation_type: linear
+  scheduler.num_train_timesteps: 1000
+  scheduler.prediction_type: epsilon
+  scheduler.sample_max_value: 1.0
+  scheduler.set_alpha_to_one: false
+  scheduler.skip_prk_steps: true
+  scheduler.steps_offset: 1
+  scheduler.timestep_spacing: leading
+  scheduler.trained_betas: null
+  scheduler.use_karras_sigmas: false
+  vae._class_name: AutoencoderKL
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 4
+  vae.layers_per_block: 2
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.13025
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+model_size_mb:
+  unet: 5135.0
+  text_encoder: 3200.0
+  vae: 167.0
+lora_targetable_modules:
+- conv_in
+- time_embedding.linear_1
+- time_embedding.linear_2
+- add_embedding.linear_1
+- add_embedding.linear_2
+- down_blocks.0.resnets.0.conv1
+- down_blocks.0.resnets.0.time_emb_proj
+- down_blocks.0.resnets.0.conv2
+- down_blocks.0.resnets.1.conv1
+- down_blocks.0.resnets.1.time_emb_proj
+- down_blocks.0.resnets.1.conv2
+- down_blocks.0.downsamplers.0.conv
+- down_blocks.1.attentions.0.proj_in
+- down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_q
+- down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_k
+- down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_v
+- down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_out.0
+- down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_q
+- down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k
+- down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_v
+- down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_out.0
+- down_blocks.1.attentions.0.transformer_blocks.0.ff.net.0.proj
+- down_blocks.1.attentions.0.transformer_blocks.0.ff.net.2
+- down_blocks.1.attentions.0.transformer_blocks.1.attn1.to_q
+- down_blocks.1.attentions.0.transformer_blocks.1.attn1.to_k
+- down_blocks.1.attentions.0.transformer_blocks.1.attn1.to_v
+- down_blocks.1.attentions.0.transformer_blocks.1.attn1.to_out.0
+- down_blocks.1.attentions.0.transformer_blocks.1.attn2.to_q
+- down_blocks.1.attentions.0.transformer_blocks.1.attn2.to_k
+- down_blocks.1.attentions.0.transformer_blocks.1.attn2.to_v
+- down_blocks.1.attentions.0.transformer_blocks.1.attn2.to_out.0
+- down_blocks.1.attentions.0.transformer_blocks.1.ff.net.0.proj
+- down_blocks.1.attentions.0.transformer_blocks.1.ff.net.2
+- down_blocks.1.attentions.0.proj_out
+- down_blocks.1.attentions.1.proj_in
+- down_blocks.1.attentions.1.transformer_blocks.0.attn1.to_q
+- down_blocks.1.attentions.1.transformer_blocks.0.attn1.to_k
+- down_blocks.1.attentions.1.transformer_blocks.0.attn1.to_v
+- down_blocks.1.attentions.1.transformer_blocks.0.attn1.to_out.0
+- down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_q
+- down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k
+- down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_v
+- down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_out.0
+- down_blocks.1.attentions.1.transformer_blocks.0.ff.net.0.proj
+- down_blocks.1.attentions.1.transformer_blocks.0.ff.net.2
+- down_blocks.1.attentions.1.transformer_blocks.1.attn1.to_q
+- down_blocks.1.attentions.1.transformer_blocks.1.attn1.to_k
+- down_blocks.1.attentions.1.transformer_blocks.1.attn1.to_v
+- down_blocks.1.attentions.1.transformer_blocks.1.attn1.to_out.0
+- down_blocks.1.attentions.1.transformer_blocks.1.attn2.to_q
+- down_blocks.1.attentions.1.transformer_blocks.1.attn2.to_k
+- down_blocks.1.attentions.1.transformer_blocks.1.attn2.to_v
+- down_blocks.1.attentions.1.transformer_blocks.1.attn2.to_out.0
+- down_blocks.1.attentions.1.transformer_blocks.1.ff.net.0.proj
+- down_blocks.1.attentions.1.transformer_blocks.1.ff.net.2
+- down_blocks.1.attentions.1.proj_out
+- down_blocks.1.resnets.0.conv1
+- down_blocks.1.resnets.0.time_emb_proj
+- down_blocks.1.resnets.0.conv2
+- down_blocks.1.resnets.0.conv_shortcut
+- down_blocks.1.resnets.1.conv1
+- down_blocks.1.resnets.1.time_emb_proj
+- down_blocks.1.resnets.1.conv2
+- down_blocks.1.downsamplers.0.conv
+- down_blocks.2.attentions.0.proj_in
+- down_blocks.2.attentions.0.transformer_blocks.0.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.0.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.0.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.0.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.0.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.0.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.1.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.1.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.1.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.1.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.1.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.1.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.1.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.1.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.1.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.1.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.2.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.2.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.2.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.2.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.2.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.2.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.2.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.2.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.2.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.2.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.3.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.3.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.3.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.3.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.3.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.3.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.3.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.3.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.3.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.3.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.4.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.4.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.4.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.4.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.4.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.4.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.4.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.4.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.4.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.4.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.5.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.5.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.5.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.5.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.5.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.5.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.5.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.5.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.5.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.5.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.6.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.6.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.6.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.6.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.6.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.6.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.6.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.6.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.6.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.6.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.7.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.7.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.7.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.7.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.7.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.7.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.7.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.7.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.7.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.7.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.8.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.8.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.8.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.8.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.8.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.8.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.8.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.8.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.8.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.8.ff.net.2
+- down_blocks.2.attentions.0.transformer_blocks.9.attn1.to_q
+- down_blocks.2.attentions.0.transformer_blocks.9.attn1.to_k
+- down_blocks.2.attentions.0.transformer_blocks.9.attn1.to_v
+- down_blocks.2.attentions.0.transformer_blocks.9.attn1.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.9.attn2.to_q
+- down_blocks.2.attentions.0.transformer_blocks.9.attn2.to_k
+- down_blocks.2.attentions.0.transformer_blocks.9.attn2.to_v
+- down_blocks.2.attentions.0.transformer_blocks.9.attn2.to_out.0
+- down_blocks.2.attentions.0.transformer_blocks.9.ff.net.0.proj
+- down_blocks.2.attentions.0.transformer_blocks.9.ff.net.2
+- down_blocks.2.attentions.0.proj_out
+- down_blocks.2.attentions.1.proj_in
+- down_blocks.2.attentions.1.transformer_blocks.0.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.0.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.0.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.0.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.0.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.0.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.1.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.1.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.1.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.1.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.1.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.1.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.1.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.1.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.1.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.1.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.2.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.2.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.2.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.2.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.2.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.2.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.2.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.2.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.2.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.2.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.3.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.3.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.3.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.3.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.3.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.3.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.3.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.3.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.3.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.3.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.4.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.4.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.4.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.4.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.4.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.4.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.4.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.4.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.4.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.4.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.5.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.5.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.5.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.5.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.5.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.5.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.5.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.5.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.5.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.5.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.6.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.6.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.6.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.6.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.6.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.6.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.6.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.6.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.6.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.6.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.7.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.7.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.7.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.7.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.7.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.7.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.7.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.7.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.7.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.7.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.8.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.8.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.8.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.8.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.8.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.8.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.8.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.8.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.8.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.8.ff.net.2
+- down_blocks.2.attentions.1.transformer_blocks.9.attn1.to_q
+- down_blocks.2.attentions.1.transformer_blocks.9.attn1.to_k
+- down_blocks.2.attentions.1.transformer_blocks.9.attn1.to_v
+- down_blocks.2.attentions.1.transformer_blocks.9.attn1.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.9.attn2.to_q
+- down_blocks.2.attentions.1.transformer_blocks.9.attn2.to_k
+- down_blocks.2.attentions.1.transformer_blocks.9.attn2.to_v
+- down_blocks.2.attentions.1.transformer_blocks.9.attn2.to_out.0
+- down_blocks.2.attentions.1.transformer_blocks.9.ff.net.0.proj
+- down_blocks.2.attentions.1.transformer_blocks.9.ff.net.2
+- down_blocks.2.attentions.1.proj_out
+- down_blocks.2.resnets.0.conv1
+- down_blocks.2.resnets.0.time_emb_proj
+- down_blocks.2.resnets.0.conv2
+- down_blocks.2.resnets.0.conv_shortcut
+- down_blocks.2.resnets.1.conv1
+- down_blocks.2.resnets.1.time_emb_proj
+- down_blocks.2.resnets.1.conv2
+- up_blocks.0.attentions.0.proj_in
+- up_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.0.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.0.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.0.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.0.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.0.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.0.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.0.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.0.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.0.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.1.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.1.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.1.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.1.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.1.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.1.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.1.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.1.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.1.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.1.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.2.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.2.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.2.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.2.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.2.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.2.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.2.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.2.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.2.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.2.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.3.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.3.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.3.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.3.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.3.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.3.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.3.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.3.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.3.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.3.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.4.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.4.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.4.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.4.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.4.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.4.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.4.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.4.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.4.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.4.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.5.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.5.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.5.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.5.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.5.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.5.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.5.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.5.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.5.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.5.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.6.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.6.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.6.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.6.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.6.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.6.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.6.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.6.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.6.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.6.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.7.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.7.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.7.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.7.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.7.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.7.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.7.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.7.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.7.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.7.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.8.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.8.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.8.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.8.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.8.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.8.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.8.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.8.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.8.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.8.ff.net.2
+- up_blocks.0.attentions.0.transformer_blocks.9.attn1.to_q
+- up_blocks.0.attentions.0.transformer_blocks.9.attn1.to_k
+- up_blocks.0.attentions.0.transformer_blocks.9.attn1.to_v
+- up_blocks.0.attentions.0.transformer_blocks.9.attn1.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.9.attn2.to_q
+- up_blocks.0.attentions.0.transformer_blocks.9.attn2.to_k
+- up_blocks.0.attentions.0.transformer_blocks.9.attn2.to_v
+- up_blocks.0.attentions.0.transformer_blocks.9.attn2.to_out.0
+- up_blocks.0.attentions.0.transformer_blocks.9.ff.net.0.proj
+- up_blocks.0.attentions.0.transformer_blocks.9.ff.net.2
+- up_blocks.0.attentions.0.proj_out
+- up_blocks.0.attentions.1.proj_in
+- up_blocks.0.attentions.1.transformer_blocks.0.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.0.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.0.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.0.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.0.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.0.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.0.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.0.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.0.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.0.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.1.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.1.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.1.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.1.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.1.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.1.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.1.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.1.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.1.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.1.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.2.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.2.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.2.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.2.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.2.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.2.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.2.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.2.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.2.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.2.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.3.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.3.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.3.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.3.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.3.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.3.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.3.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.3.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.3.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.3.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.4.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.4.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.4.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.4.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.4.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.4.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.4.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.4.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.4.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.4.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.5.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.5.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.5.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.5.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.5.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.5.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.5.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.5.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.5.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.5.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.6.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.6.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.6.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.6.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.6.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.6.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.6.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.6.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.6.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.6.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.7.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.7.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.7.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.7.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.7.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.7.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.7.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.7.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.7.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.7.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.8.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.8.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.8.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.8.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.8.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.8.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.8.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.8.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.8.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.8.ff.net.2
+- up_blocks.0.attentions.1.transformer_blocks.9.attn1.to_q
+- up_blocks.0.attentions.1.transformer_blocks.9.attn1.to_k
+- up_blocks.0.attentions.1.transformer_blocks.9.attn1.to_v
+- up_blocks.0.attentions.1.transformer_blocks.9.attn1.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.9.attn2.to_q
+- up_blocks.0.attentions.1.transformer_blocks.9.attn2.to_k
+- up_blocks.0.attentions.1.transformer_blocks.9.attn2.to_v
+- up_blocks.0.attentions.1.transformer_blocks.9.attn2.to_out.0
+- up_blocks.0.attentions.1.transformer_blocks.9.ff.net.0.proj
+- up_blocks.0.attentions.1.transformer_blocks.9.ff.net.2
+- up_blocks.0.attentions.1.proj_out
+- up_blocks.0.attentions.2.proj_in
+- up_blocks.0.attentions.2.transformer_blocks.0.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.0.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.0.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.0.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.0.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.0.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.0.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.0.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.0.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.0.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.1.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.1.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.1.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.1.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.1.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.1.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.1.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.1.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.1.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.1.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.2.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.2.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.2.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.2.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.2.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.2.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.2.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.2.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.2.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.2.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.3.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.3.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.3.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.3.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.3.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.3.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.3.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.3.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.3.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.3.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.4.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.4.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.4.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.4.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.4.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.4.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.4.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.4.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.4.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.4.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.5.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.5.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.5.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.5.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.5.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.5.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.5.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.5.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.5.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.5.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.6.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.6.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.6.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.6.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.6.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.6.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.6.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.6.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.6.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.6.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.7.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.7.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.7.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.7.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.7.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.7.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.7.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.7.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.7.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.7.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.8.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.8.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.8.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.8.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.8.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.8.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.8.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.8.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.8.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.8.ff.net.2
+- up_blocks.0.attentions.2.transformer_blocks.9.attn1.to_q
+- up_blocks.0.attentions.2.transformer_blocks.9.attn1.to_k
+- up_blocks.0.attentions.2.transformer_blocks.9.attn1.to_v
+- up_blocks.0.attentions.2.transformer_blocks.9.attn1.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.9.attn2.to_q
+- up_blocks.0.attentions.2.transformer_blocks.9.attn2.to_k
+- up_blocks.0.attentions.2.transformer_blocks.9.attn2.to_v
+- up_blocks.0.attentions.2.transformer_blocks.9.attn2.to_out.0
+- up_blocks.0.attentions.2.transformer_blocks.9.ff.net.0.proj
+- up_blocks.0.attentions.2.transformer_blocks.9.ff.net.2
+- up_blocks.0.attentions.2.proj_out
+- up_blocks.0.resnets.0.conv1
+- up_blocks.0.resnets.0.time_emb_proj
+- up_blocks.0.resnets.0.conv2
+- up_blocks.0.resnets.0.conv_shortcut
+- up_blocks.0.resnets.1.conv1
+- up_blocks.0.resnets.1.time_emb_proj
+- up_blocks.0.resnets.1.conv2
+- up_blocks.0.resnets.1.conv_shortcut
+- up_blocks.0.resnets.2.conv1
+- up_blocks.0.resnets.2.time_emb_proj
+- up_blocks.0.resnets.2.conv2
+- up_blocks.0.resnets.2.conv_shortcut
+- up_blocks.0.upsamplers.0.conv
+- up_blocks.1.attentions.0.proj_in
+- up_blocks.1.attentions.0.transformer_blocks.0.attn1.to_q
+- up_blocks.1.attentions.0.transformer_blocks.0.attn1.to_k
+- up_blocks.1.attentions.0.transformer_blocks.0.attn1.to_v
+- up_blocks.1.attentions.0.transformer_blocks.0.attn1.to_out.0
+- up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_q
+- up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k
+- up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_v
+- up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_out.0
+- up_blocks.1.attentions.0.transformer_blocks.0.ff.net.0.proj
+- up_blocks.1.attentions.0.transformer_blocks.0.ff.net.2
+- up_blocks.1.attentions.0.transformer_blocks.1.attn1.to_q
+- up_blocks.1.attentions.0.transformer_blocks.1.attn1.to_k
+- up_blocks.1.attentions.0.transformer_blocks.1.attn1.to_v
+- up_blocks.1.attentions.0.transformer_blocks.1.attn1.to_out.0
+- up_blocks.1.attentions.0.transformer_blocks.1.attn2.to_q
+- up_blocks.1.attentions.0.transformer_blocks.1.attn2.to_k
+- up_blocks.1.attentions.0.transformer_blocks.1.attn2.to_v
+- up_blocks.1.attentions.0.transformer_blocks.1.attn2.to_out.0
+- up_blocks.1.attentions.0.transformer_blocks.1.ff.net.0.proj
+- up_blocks.1.attentions.0.transformer_blocks.1.ff.net.2
+- up_blocks.1.attentions.0.proj_out
+- up_blocks.1.attentions.1.proj_in
+- up_blocks.1.attentions.1.transformer_blocks.0.attn1.to_q
+- up_blocks.1.attentions.1.transformer_blocks.0.attn1.to_k
+- up_blocks.1.attentions.1.transformer_blocks.0.attn1.to_v
+- up_blocks.1.attentions.1.transformer_blocks.0.attn1.to_out.0
+- up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_q
+- up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k
+- up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_v
+- up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_out.0
+- up_blocks.1.attentions.1.transformer_blocks.0.ff.net.0.proj
+- up_blocks.1.attentions.1.transformer_blocks.0.ff.net.2
+- up_blocks.1.attentions.1.transformer_blocks.1.attn1.to_q
+- up_blocks.1.attentions.1.transformer_blocks.1.attn1.to_k
+- up_blocks.1.attentions.1.transformer_blocks.1.attn1.to_v
+- up_blocks.1.attentions.1.transformer_blocks.1.attn1.to_out.0
+- up_blocks.1.attentions.1.transformer_blocks.1.attn2.to_q
+- up_blocks.1.attentions.1.transformer_blocks.1.attn2.to_k
+- up_blocks.1.attentions.1.transformer_blocks.1.attn2.to_v
+- up_blocks.1.attentions.1.transformer_blocks.1.attn2.to_out.0
+- up_blocks.1.attentions.1.transformer_blocks.1.ff.net.0.proj
+- up_blocks.1.attentions.1.transformer_blocks.1.ff.net.2
+- up_blocks.1.attentions.1.proj_out
+- up_blocks.1.attentions.2.proj_in
+- up_blocks.1.attentions.2.transformer_blocks.0.attn1.to_q
+- up_blocks.1.attentions.2.transformer_blocks.0.attn1.to_k
+- up_blocks.1.attentions.2.transformer_blocks.0.attn1.to_v
+- up_blocks.1.attentions.2.transformer_blocks.0.attn1.to_out.0
+- up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_q
+- up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_k
+- up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_v
+- up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_out.0
+- up_blocks.1.attentions.2.transformer_blocks.0.ff.net.0.proj
+- up_blocks.1.attentions.2.transformer_blocks.0.ff.net.2
+- up_blocks.1.attentions.2.transformer_blocks.1.attn1.to_q
+- up_blocks.1.attentions.2.transformer_blocks.1.attn1.to_k
+- up_blocks.1.attentions.2.transformer_blocks.1.attn1.to_v
+- up_blocks.1.attentions.2.transformer_blocks.1.attn1.to_out.0
+- up_blocks.1.attentions.2.transformer_blocks.1.attn2.to_q
+- up_blocks.1.attentions.2.transformer_blocks.1.attn2.to_k
+- up_blocks.1.attentions.2.transformer_blocks.1.attn2.to_v
+- up_blocks.1.attentions.2.transformer_blocks.1.attn2.to_out.0
+- up_blocks.1.attentions.2.transformer_blocks.1.ff.net.0.proj
+- up_blocks.1.attentions.2.transformer_blocks.1.ff.net.2
+- up_blocks.1.attentions.2.proj_out
+- up_blocks.1.resnets.0.conv1
+- up_blocks.1.resnets.0.time_emb_proj
+- up_blocks.1.resnets.0.conv2
+- up_blocks.1.resnets.0.conv_shortcut
+- up_blocks.1.resnets.1.conv1
+- up_blocks.1.resnets.1.time_emb_proj
+- up_blocks.1.resnets.1.conv2
+- up_blocks.1.resnets.1.conv_shortcut
+- up_blocks.1.resnets.2.conv1
+- up_blocks.1.resnets.2.time_emb_proj
+- up_blocks.1.resnets.2.conv2
+- up_blocks.1.resnets.2.conv_shortcut
+- up_blocks.1.upsamplers.0.conv
+- up_blocks.2.resnets.0.conv1
+- up_blocks.2.resnets.0.time_emb_proj
+- up_blocks.2.resnets.0.conv2
+- up_blocks.2.resnets.0.conv_shortcut
+- up_blocks.2.resnets.1.conv1
+- up_blocks.2.resnets.1.time_emb_proj
+- up_blocks.2.resnets.1.conv2
+- up_blocks.2.resnets.1.conv_shortcut
+- up_blocks.2.resnets.2.conv1
+- up_blocks.2.resnets.2.time_emb_proj
+- up_blocks.2.resnets.2.conv2
+- up_blocks.2.resnets.2.conv_shortcut
+- mid_block.attentions.0.proj_in
+- mid_block.attentions.0.transformer_blocks.0.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.0.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.0.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.0.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.0.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.0.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.0.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.0.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.0.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.0.ff.net.2
+- mid_block.attentions.0.transformer_blocks.1.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.1.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.1.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.1.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.1.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.1.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.1.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.1.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.1.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.1.ff.net.2
+- mid_block.attentions.0.transformer_blocks.2.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.2.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.2.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.2.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.2.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.2.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.2.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.2.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.2.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.2.ff.net.2
+- mid_block.attentions.0.transformer_blocks.3.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.3.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.3.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.3.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.3.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.3.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.3.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.3.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.3.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.3.ff.net.2
+- mid_block.attentions.0.transformer_blocks.4.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.4.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.4.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.4.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.4.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.4.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.4.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.4.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.4.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.4.ff.net.2
+- mid_block.attentions.0.transformer_blocks.5.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.5.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.5.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.5.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.5.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.5.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.5.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.5.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.5.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.5.ff.net.2
+- mid_block.attentions.0.transformer_blocks.6.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.6.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.6.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.6.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.6.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.6.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.6.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.6.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.6.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.6.ff.net.2
+- mid_block.attentions.0.transformer_blocks.7.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.7.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.7.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.7.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.7.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.7.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.7.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.7.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.7.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.7.ff.net.2
+- mid_block.attentions.0.transformer_blocks.8.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.8.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.8.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.8.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.8.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.8.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.8.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.8.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.8.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.8.ff.net.2
+- mid_block.attentions.0.transformer_blocks.9.attn1.to_q
+- mid_block.attentions.0.transformer_blocks.9.attn1.to_k
+- mid_block.attentions.0.transformer_blocks.9.attn1.to_v
+- mid_block.attentions.0.transformer_blocks.9.attn1.to_out.0
+- mid_block.attentions.0.transformer_blocks.9.attn2.to_q
+- mid_block.attentions.0.transformer_blocks.9.attn2.to_k
+- mid_block.attentions.0.transformer_blocks.9.attn2.to_v
+- mid_block.attentions.0.transformer_blocks.9.attn2.to_out.0
+- mid_block.attentions.0.transformer_blocks.9.ff.net.0.proj
+- mid_block.attentions.0.transformer_blocks.9.ff.net.2
+- mid_block.attentions.0.proj_out
+- mid_block.resnets.0.conv1
+- mid_block.resnets.0.time_emb_proj
+- mid_block.resnets.0.conv2
+- mid_block.resnets.1.conv1
+- mid_block.resnets.1.time_emb_proj
+- mid_block.resnets.1.conv2
+- conv_out
+block_topology:
+- name: down_blocks
+  attr_path: down_blocks
+  count: 4
+  approx_vram_mb: 200
+- name: mid_block
+  attr_path: mid_block
+  count: 1
+  approx_vram_mb: 100
+- name: up_blocks
+  attr_path: up_blocks
+  count: 4
+  approx_vram_mb: 200

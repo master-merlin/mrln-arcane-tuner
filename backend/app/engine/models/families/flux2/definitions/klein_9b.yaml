@@ -1,0 +1,189 @@
+id: flux2-klein-base-9b
+family: flux2
+name: Flux 2 (Klein Base 9B)
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-5
+components:
+  repo:
+    path: huggingface:black-forest-labs/FLUX.2-klein-base-9B
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer._class_name: Flux2Transformer2DModel
+  transformer.attention_head_dim: 128
+  transformer.axes_dims_rope:
+  - 32
+  - 32
+  - 32
+  - 32
+  transformer.eps: 1.0e-06
+  transformer.guidance_embeds: false
+  transformer.hidden_size: 4096
+  transformer.in_channels: 128
+  transformer.joint_attention_dim: 12288
+  transformer.mlp_ratio: 3.0
+  transformer.num_attention_heads: 32
+  transformer.num_layers: 8
+  transformer.num_single_layers: 24
+  transformer.out_channels: null
+  transformer.patch_size: 1
+  transformer.rope_theta: 2000
+  transformer.timestep_guidance_channels: 256
+  te._class_name: Qwen3ForCausalLM
+  te.architectures:
+  - Qwen3ForCausalLM
+  te.concat_layers: 3
+  te.output_layers:
+  - 9
+  - 18
+  - 27
+  te.dtype: bfloat16
+  te.head_dim: 128
+  te.hidden_act: silu
+  te.hidden_size: 4096
+  te.intermediate_size: 12288
+  te.max_length: 512
+  te.max_position_embeddings: 40960
+  te.model_type: qwen3
+  te.num_attention_heads: 32
+  te.num_hidden_layers: 36
+  te.num_key_value_heads: 8
+  te.rms_norm_eps: 1.0e-06
+  te.rope_theta: 1000000
+  te.vocab_size: 151936
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: true
+  vae._class_name: AutoencoderKLFlux2
+  vae.act_fn: silu
+  vae.batch_norm_eps: 0.0001
+  vae.batch_norm_momentum: 0.1
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 32
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.patch_size:
+  - 2
+  - 2
+  vae.sample_size: 1024
+  vae.use_post_quant_conv: true
+  vae.use_quant_conv: true
+  hidden_size: 4096
+  num_heads: 32
+  in_channels: 128
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.eos_token_id: 151645
+  te.initializer_range: 0.02
+  te.layer_types:
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  te.max_window_layers: 36
+  te.rope_scaling: null
+  te.sliding_window: null
+  te.tie_word_embeddings: false
+  te.use_cache: true
+  te.use_sliding_window: false
+  scheduler.invert_sigmas: false
+  scheduler.shift_terminal: null
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  depth: 8
+  depth_single_blocks: 24
+  context_dim: 12288
+model_size_mb:
+  transformer: 18200.0
+  text_encoder: 16400.0
+  vae: 335.0
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0
+- add_q_proj
+- add_k_proj
+- add_v_proj
+- to_add_out
+- ff.linear_in
+- ff.linear_out
+- ff_context.linear_in
+- ff_context.linear_out
+- attn.to_qkv_mlp_proj
+- attn.to_out
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 8
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 24
+  approx_vram_mb: 320

@@ -1,0 +1,340 @@
+# MRLN Arcane Tuner
+
+> **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
+
+`v0.1.0-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 21 · FastAPI
+
+---
+
+## Why This Exists
+
+Every LoRA trainer will tell you: **the dataset is 90 % of the result**. Yet most training tools treat dataset management as an afterthought — a folder of images you dump somewhere and hope for the best.
+
+MRLN Arcane Tuner started as a personal experiment to fix that. The goal was simple: build a workflow where dataset curation is the **heart and center** of the process, not a chore you skip through to get to training. From smart cropping and image adjustments to duplicate detection and stacked LUT color grading — the dataset pipeline is where most of the R&D effort lives.
+
+The training engine, job management, and LoRA tools grew organically around that core — because once your data is good, training should be straightforward.
+
+---
+
+## Acknowledgments
+
+This project wouldn't exist without the incredible open-source community that pioneered LoRA training for diffusion models. A sincere thank you to:
+
+- **[kohya-ss](https://github.com/kohya-ss/sd-scripts)** — Pioneered the entire LoRA training ecosystem. The Kohya metadata format (`ss_*` keys) is the de-facto standard for LoRA checkpoint interoperability, and MRLN Arcane Tuner writes these keys for full compatibility with ComfyUI, A1111, and other inference tools.
+- **[Ostris](https://github.com/ostris/ai-toolkit)** — Timestep sampling strategies for flow-matching models are derived from ai-toolkit (MIT License). Credited in [`flux2/trainer.py`](backend/app/engine/models/families/flux2/trainer.py).
+- **[Nerogar](https://github.com/Nerogar/OneTrainer)** — Inspiration for the unified multi-model trainer architecture that supports multiple model families through a single pipeline.
+- **[Hugging Face / diffusers](https://github.com/huggingface/diffusers)** — Key mapping logic for PEFT-to-BFL LoRA conversion is derived from `lora_conversion_utils.py`. Credited in [`flux2/saver.py`](backend/app/engine/models/families/flux2/saver.py).
+- **[rockerBOO / lora-inspector](https://github.com/rockerBOO/lora-inspector)** — Inspiration for the LoRA inspection tooling (format detection, weight statistics, layer analysis). Credited in [`lora_tools.py`](backend/app/engine/utils/lora_tools.py).
+
+> **Note:** MRLN Arcane Tuner is a personal experiment and is **not intended to compete** with any of these projects. They are community pillars. This tool simply explores a different angle — dataset quality first.
+
+---
+
+## Installation
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.12+ | With `venv` support |
+| NVIDIA GPU | Ampere+ (RTX 30xx) | CUDA 13.0 required |
+| Node.js | 20+ | For the Angular frontend |
+| npm | 10+ | Comes with Node.js |
+
+### Scripted Install (Recommended)
+
+The install scripts create a virtual environment, install PyTorch with CUDA support, and install all Python dependencies.
+
+**Windows:**
+```cmd
+cd backend
+install.bat
+```
+
+**Linux / macOS:**
+```bash
+cd backend
+chmod +x install.sh
+./install.sh
+```
+
+Then install the frontend:
+```bash
+cd frontend
+npm install
+```
+
+### Manual Install
+
+```bash
+# 1. Create and activate a virtual environment
+cd backend
+python -m venv venv
+# Windows: venv\Scripts\activate
+# Linux:   source venv/bin/activate
+
+# 2. Install PyTorch with CUDA 13.0
+pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# 3. Install remaining Python dependencies
+pip install -r requirements.txt
+
+# 4. Install frontend dependencies
+cd ../frontend
+npm install
+```
+
+### Starting the Application
+
+**Backend:**
+```cmd
+cd backend
+start_backend.bat          # Windows
+./start_backend.sh         # Linux / macOS
+```
+
+The backend creates required directories (`datasets/`, `models/`, `models/upscale/`, `outputs/`) and a default `settings.json` on first launch.
+
+**Frontend:**
+```bash
+cd frontend
+npm run start
+```
+
+Or enable **auto-start** in Server Settings — the backend will launch the frontend and open your browser automatically on first start.
+
+The frontend runs on `http://localhost:4200` by default. Both ports are configurable in Server Settings.
+
+---
+
+## Architecture
+
+MRLN Arcane Tuner is a full-stack application with a FastAPI backend and an Angular frontend connected via REST API and WebSocket.
+
+```
+┌─────────────────────────────────────────────────┐
+│                Angular 21 SPA                    │
+│  43 Standalone Components · Signals · Tailwind   │
+└────────────────┬────────────────┬────────────────┘
+                 │ REST           │ WebSocket
+┌────────────────┴────────────────┴────────────────┐
+│              FastAPI Backend                      │
+│  9 Route Domains · Structured Logging · Middleware│
+├──────────┬──────────┬──────────┬─────────────────┤
+│ Dataset  │ Training │ AI       │ System           │
+│ Manager  │ Engine   │ Services │ Settings         │
+├──────────┴──────────┴──────────┴─────────────────┤
+│         PyTorch · Diffusers · PEFT · SQLite       │
+└──────────────────────────────────────────────────┘
+```
+
+For the full component and API route inventory, see [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md).
+
+---
+
+## Features
+
+### 🎯 Dataset Management — The Heart of the Tool
+
+The dataset pipeline is designed to get your images from raw collection to training-ready with maximum control.
+
+#### Multi-Dataset Scanning
+Automatic directory scanning with image–caption pairing. Supports `.png`, `.jpg`, `.webp` images with paired `.txt` caption files. Incremental and full rescan modes.
+
+#### Image Manipulation
+A 9-stage non-destructive adjustment pipeline that processes images before training:
+
+| Stage | Controls |
+|---|---|
+| Brightness, Contrast, Saturation | Standard exposure adjustments |
+| Hue | Global color rotation |
+| Curves | Per-channel Bézier curves (RGB + individual R/G/B) with dropdown presets |
+| Stacked LUT | Apply `.cube` LUT files with adjustable strength blending |
+| HSL | Selective hue/saturation/lightness control per color range |
+| Sharpness | Detail enhancement |
+| Noise | Grain control |
+
+All adjustments include a real-time canvas preview with live histogram visualization.
+
+#### Smart Cropping
+Resolution-aware aspect-ratio bucketing with visual crop preview. Images are automatically grouped into optimal width×height buckets (divisible by 32) matching your target training resolutions.
+
+**Bucketing modes:**
+- **Kohya**: Each image appears in one bucket (closest aspect ratio match)
+- **Multi**: Each image appears in every qualifying bucket for maximum latent diversity
+
+#### Dataset Analysis
+- **Harmonization analysis** — evaluate color and exposure consistency across the dataset
+- **Duplicate detection** — perceptual hash similarity scoring to find near-duplicate images
+- **Per-image enable/disable** — toggle individual images in or out of training without deleting them
+
+#### Versioning & Caching
+Dataset version bumping invalidates latent and text embedding caches, ensuring training always uses current image state. Cache admin UI lets you inspect and purge cached data.
+
+#### Neural Upscaling
+Tiled neural upscaling using ESRGAN and SwinIR models for images that need higher resolution before training.
+
+---
+
+### 🤖 AI Services
+
+Integrated AI models for automated dataset annotation, running as GPU-backed batch services:
+
+#### Auto-Captioning
+| Model | Specialty |
+|---|---|
+| **Florence-2** | Fast, reliable descriptions. Multiple detail levels. |
+| **JoyCaption Beta** | 12 caption types (descriptive, prompt-style, tag lists). Extensive control options. |
+| **Qwen3-VL** | Large vision-language model for nuanced descriptions. Configurable variant (4B/8B). |
+| **Youtu-VL** | Tencent's vision-language model with fine-grained parameter control. |
+
+All models support batch processing with real-time progress, custom system prompts, and per-model template management.
+
+#### Auto-Masking
+| Model | Approach |
+|---|---|
+| **SAM 3** | Text-prompted segmentation (Meta's Segment Anything). Multi-mask output. |
+| **RemBG** | Background removal with 15+ model variants (BiRefNet, ISNet, U2Net, BRIA). Alpha matting support. |
+
+Supports batch mass-apply across entire datasets.
+
+---
+
+### ⚙️ Training Configuration
+
+Training is configured through a **dynamic JSON Schema-driven UI** — the form auto-generates from model-family definitions, so new fields appear automatically without frontend code changes.
+
+#### Supported Model Families
+
+| Family | Architecture | Text Encoder | Notes |
+|---|---|---|---|
+| **SDXL** | UNet + DDPMScheduler | Dual CLIP (TE1 + TE2) | Epsilon prediction, Min-SNR gamma |
+| **Flux.1** | Transformer + Flow Matching | Qwen3 | BFL-format export for ComfyUI |
+| **Flux.2 (Klein)** | Transformer + Flow Matching | Qwen3 | No guidance embed, packed latents |
+
+#### Optimizers
+
+MRLN Arcane Tuner supports a wide range of optimizers, from proven defaults to cutting-edge research:
+
+**Standard (Adam-family):**
+- **AdamW** / **AdamW8bit** — Reliable baselines. 8bit variant uses ~50% less optimizer VRAM.
+- **RAdam** — Automatic variance-based warmup, no manual warmup steps needed.
+- **StableAdamW** — RMS-based gradient scaling eliminates need for gradient clipping.
+
+**Adaptive Learning Rate:**
+- **Prodigy** — Automatically discovers optimal LR. Set learning rate to `1.0`.
+- **ProdigyPlusSF** — Prodigy + Schedule-Free + factored second moments. Features cautious updates, OrthoGrad, FOCUS, SPEED, and per-group step size adaptation. Lowest memory overhead of the adaptive optimizers.
+
+**Memory-Efficient:**
+- **Lion** — Sign-based, ~50% less state memory than AdamW.
+- **Adafactor** — Factored second moments for extremely low memory on large models. Supports relative step scaling.
+
+**Second-Order:**
+- **SophiaH / SophiaG** — Hutchinson trace / Gauss-Newton Hessian approximation. Faster convergence on some tasks. ⚠️ High VRAM — may OOM on 9B+ models.
+- **Shampoo** — Kronecker-factored preconditioned gradients. ⚠️ High VRAM.
+
+**Advanced:**
+- **AdEMAMix** — Dual EMA (fast β1 + slow β3) for long-horizon convergence.
+
+#### Timestep Sampling Strategies
+
+| Strategy | Best For |
+|---|---|
+| **logit_normal** | Default for flow matching (Flux). Mid-range focus. |
+| **uniform** | Equal probability baseline. |
+| **sigmoid** | Simplified logit-normal with fixed parameters. |
+| **cosmap** | Cosine-mapped smooth distribution. |
+| **mode** | Configurable mid-range emphasis. |
+| **flux_shift** | Resolution-dependent shifting. Original Flux recipe. |
+| **radc** | Resolution-Aware Dynamic Curriculum. Progressive coarse-to-fine learning. Best for multi-phase curriculum training. |
+
+**RADC** is a standout feature — it progressively shifts the noise focus from high-noise (learning structure and composition) to low-noise (refining details and textures) over the course of training, with optional resolution-aware weighting for multi-resolution datasets.
+
+#### LoRA Parameters
+- **Network rank** (dim): 4–128+. Controls adapter capacity. Rank 16 is a solid default.
+- **Network alpha**: Scaling factor for LoRA influence. Start with `alpha = rank / 2`.
+- **Targeted layers**: Select specific transformer blocks to receive LoRA adapters — train only the layers that matter for your concept.
+
+#### VRAM Management
+- **Model quantization**: FP8, NF4, INT8, INT4 for the frozen base model
+- **Text encoder quantization**: Independent quantization for TEs
+- **Gradient checkpointing**: ~30–50% VRAM reduction at ~20–30% speed cost
+- **Block swapping**: Granular per-block CPU offloading with adjustable percentage
+- **VAE / TE offloading**: Move inactive components to CPU after caching
+- **Latent caching**: Pre-encode images through VAE, cache to disk
+- **Text embedding caching**: Cache TE outputs for all captions, unload TE from VRAM
+
+#### Template System
+Save, load, and manage training configurations as templates per model family. Auto-save on job creation.
+
+#### Checkpointing & Resume
+Full checkpoint support including LoRA weights, optimizer state, scheduler, GradScaler, EMA shadow weights, and latent/embedding cache manifests. Resume training with selective cache re-use.
+
+---
+
+### 📊 Job Queue & Monitoring
+
+#### Multi-Job Queue
+- Create, start, stop, pause, resume, and soft-stop training jobs
+- Soft-stop: finish the current step, save checkpoint, then stop cleanly
+- Restart failed or stopped jobs from last checkpoint
+
+#### Real-Time Monitoring
+- **Live loss chart** — interactive uPlot chart with loss and learning rate curves
+- **Sample images** — periodic generation previews at configurable intervals
+- **Structured logs** — real-time WebSocket streaming of JSON-formatted training events
+- **Live terminal** — xterm.js terminal for raw log output
+
+#### Job History
+SQLite-backed persistent tracking of all training runs:
+- Full training configuration snapshot
+- Step-by-step metrics (loss, LR, ETA)
+- Checkpoint locations and metadata
+- Final LoRA output paths
+
+---
+
+### 🔍 LoRA Tools
+
+#### Inspect
+Analyze any `.safetensors` LoRA file without loading a model:
+
+- **Format detection** — Kohya, ai-toolkit (Ostris), PEFT
+- **Rank & alpha extraction** — from metadata or weight shapes
+- **Per-layer analysis** — Frobenius norms, effective delta W=B@A, magnitude, strength
+- **Layer relevance scoring** — identify which layers carry the most learned information
+- **Weight statistics** — per-component (UNet, TE) average magnitude and strength
+- **Training metadata** — parsed Kohya-style `ss_*` keys (optimizer, LR, schedule, resolution, etc.)
+- **Tag frequency** — from `ss_tag_frequency` metadata
+- **Block config** — variable per-block rank/alpha detection (DyLoRA-like)
+
+#### Resize
+SVD-based rank change (up or down) with proportional alpha scaling. Reconstructs the effective weight delta `W = B @ A`, decomposes via truncated SVD, and re-factors to the target rank.
+
+#### Targeted Layer Training Workflow
+Combine **Inspect** results with **Targeted Layer Training** — inspect a reference LoRA to identify which layers learned most, then configure your next training run to target only those layers for more efficient, focused learning.
+
+---
+
+### 🖥️ Server Settings
+
+- **Backend & frontend port configuration** — dynamic runtime config with automatic frontend discovery
+- **Log level control** — adjust structured logging verbosity at runtime
+- **Frontend auto-start** — optionally launch the Angular dev server and open a browser on backend startup
+- **System restart** — restart the backend from the UI
+- **GPU monitoring** — real-time GPU utilization and VRAM usage display
+
+---
+
+## Documentation
+
+Detailed architecture documentation, including full API route inventory and component listing:
+
+- [**ARCHITECTURE.md**](documentation/ARCHITECTURE.md) — System architecture, API routes, frontend components, conventions
+
+---
+
+## License
+
+*License information to be added.*

@@ -1,0 +1,130 @@
+"""Model path resolution utilities.
+
+Handles local paths, relative paths, and ``huggingface:`` URI scheme
+resolution.  Sets HF Hub symlink env-vars to work around WinError 1314
+on Windows.
+"""
+
+from __future__ import annotations
+
+import os
+
+import structlog
+from huggingface_hub import hf_hub_download, snapshot_download
+
+# Prevent WinError 1314: symlink permission errors on Windows.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+
+logger = structlog.get_logger(__name__)
+
+class ModelPathResolver:
+    """Resolve model component paths from local or ``huggingface:`` URIs."""
+
+    @staticmethod
+    def resolve(path_str: str, base_dir: str | None = None) -> str | None:
+        """Resolve a path string to an absolute local path.
+
+        Supports:
+        - ``huggingface:<repo_id>`` — downloads full snapshot
+        - ``huggingface:<repo_id>:<filename>`` — downloads single file
+        - Absolute local paths — returned as-is
+        - Relative local paths — joined with *base_dir* or cwd
+
+        Args:
+            path_str: Path or HuggingFace URI.
+            base_dir: Optional base directory for relative paths.
+
+        Returns:
+            Absolute local path, or ``None`` if *path_str* is empty.
+        """
+        if not path_str:
+            return None
+            
+        # 1. HuggingFace Handling
+        if path_str.startswith("huggingface:"):
+            return ModelPathResolver._resolve_hf(path_str)
+            
+        # 2. Local Path Handling
+        # If absolute, return as is
+        if os.path.isabs(path_str):
+            # We return it even if it doesn't exist, to let caller fail with clear message
+            return path_str
+            
+        # If relative, join with base_dir or cwd
+        if base_dir:
+            full_path = os.path.join(base_dir, path_str)
+        else:
+            full_path = os.path.abspath(path_str)
+            
+        return full_path
+
+    @staticmethod
+    def _resolve_hf(path_str: str) -> str:
+        """Download from HuggingFace Hub and return the local cache path.
+
+        Tries ``local_files_only=True`` first to avoid filesystem
+        operations (symlink creation) when the model is already cached.
+        Falls back to a normal download if local files are not found.
+        """
+        clean = path_str.replace("huggingface:", "")
+        parts = clean.split(":")
+
+        repo_id = parts[0]
+        filename = parts[1] if len(parts) > 1 else None
+
+        # Try local-only first — avoids symlink errors on Windows
+        try:
+            if filename:
+                return hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=True)
+            else:
+                return snapshot_download(repo_id=repo_id, local_files_only=True)
+        except Exception:
+            pass  # Not cached locally — fall through to download
+
+        try:
+            if filename:
+                logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
+                return hf_hub_download(repo_id=repo_id, filename=filename)
+            else:
+                logger.info("downloading_snapshot_from_hub", repo=repo_id)
+                return snapshot_download(repo_id=repo_id)
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.error("hf_download_failed", repo=repo_id, file=filename, error=str(e))
+            raise
+
+    @staticmethod
+    def find_component(
+        definition: any,
+        component_key: str,
+        root_path: str | None = None,
+        candidates: list[str] | None = None,
+    ) -> str | None:
+        """Smart discovery of a component path.
+
+        1. Checks explicit entry in ``definition.components[key]``.
+        2. Falls back to scanning *root_path* for *candidates* files/dirs.
+
+        Args:
+            definition: Model definition with a ``components`` dict.
+            component_key: Component to look up (e.g. ``"vae"``).
+            root_path: Optional model root directory for fallback scanning.
+            candidates: File/dir names to probe inside *root_path*.
+
+        Returns:
+            Resolved path, or ``None`` if not found.
+        """
+        # 1. Explicit Definition
+        comp = definition.components.get(component_key)
+        if comp:
+            return ModelPathResolver.resolve(comp.path)
+            
+        # 2. Discovery in Root
+        if root_path and candidates:
+            for candidate in candidates:
+                candidate_path = os.path.join(root_path, candidate)
+                if os.path.exists(candidate_path):
+                    logger.info("component_discovered_in_root", key=component_key, path=candidate_path)
+                    return candidate_path
+        
+        return None

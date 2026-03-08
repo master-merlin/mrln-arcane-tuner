@@ -1,0 +1,44 @@
+id: flux1-schnell
+family: flux1
+name: FLUX.1 Schnell
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-5
+components:
+  repo:
+    path: huggingface:black-forest-labs/FLUX.1-schnell
+    type: diffusers
+    params: {}
+detected_precision: {}
+architecture_params:
+  transformer.hidden_size: 3072
+  transformer.num_attention_heads: 24
+  transformer.in_channels: 64
+  transformer.num_layers: 19
+  transformer.num_single_layers: 38
+  transformer.mlp_ratio: 4.0
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.rope_theta: 10000
+  transformer.guidance_embeds: false
+  te.type: clip_t5
+  te.clip_max_length: 77
+  te.t5_max_length: 256
+model_size_mb:
+  transformer: 23800.0
+  text_encoder: 10000.0
+  vae: 167.0
+lora_targetable_modules: []
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 19
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 38
+  approx_vram_mb: 320

@@ -1,0 +1,213 @@
+"""Masking API — generate, preview, apply, and delete image masks."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import os
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from app.core.dataset_manager import dataset_manager
+from app.core.logger import get_logger
+from app.core.masking.masking_service import MaskingService
+
+router = APIRouter()
+logger = get_logger(__name__)
+masking_service = MaskingService.get_instance()
+
+
+class MaskGenerationRequest(BaseModel):
+    """Request body for mask generation."""
+
+    dataset_name: str
+    image_rel_path: str
+    model_id: str
+    params: dict[str, Any] = {}
+
+
+class MaskGenerationResponse(BaseModel):
+    """Response body for mask generation."""
+
+    mask_path: str
+    message: str
+
+
+@router.post("/datasets/{name}/masking/generate", response_model=MaskGenerationResponse)
+async def generate_mask(name: str, request: MaskGenerationRequest):
+    """Generate a segmentation mask for a single image."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    image_full_path = os.path.join(dataset.path, request.image_rel_path)
+    if not os.path.exists(image_full_path):
+        raise HTTPException(status_code=404, detail=f"Image file not found: {request.image_rel_path}")
+
+    masks_dir = os.path.join(dataset.path, "masks")
+    await asyncio.to_thread(os.makedirs, masks_dir, exist_ok=True)
+
+    logger.info("generating_mask", dataset=name, image=request.image_rel_path, model=request.model_id)
+
+    try:
+        mask_img = await asyncio.to_thread(
+            masking_service.generate_mask, image_full_path, request.model_id, request.params,
+        )
+    except (OSError, RuntimeError, ValueError) as e:
+        logger.error("mask_generation_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Mask generation failed: {e}")
+
+    if mask_img is None:
+        raise HTTPException(status_code=500, detail="Mask generation returned no result")
+
+    # Save mask
+    original_stem = os.path.splitext(os.path.basename(request.image_rel_path))[0]
+    mask_filename = f"{original_stem}.png"
+    mask_full_path = os.path.join(masks_dir, mask_filename)
+
+    await asyncio.to_thread(mask_img.save, mask_full_path)
+    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    return MaskGenerationResponse(
+        mask_path=f"masks/{mask_filename}",
+        message="Mask generated successfully",
+    )
+
+
+class ApplyMaskRequest(BaseModel):
+    """Request body for applying a mask to an image."""
+
+    image_rel_path: str
+    opacity: float = 0.0
+
+
+@router.post("/datasets/{name}/masking/apply")
+async def apply_mask(name: str, request: ApplyMaskRequest):
+    """Composite an image with its mask and save the result."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    image_rel_path = request.image_rel_path
+    opacity = request.opacity
+
+    image_full_path = os.path.join(dataset.path, image_rel_path)
+    original_stem = os.path.splitext(os.path.basename(image_rel_path))[0]
+    mask_filename = f"{original_stem}.png"
+    mask_full_path = os.path.join(dataset.path, "masks", mask_filename)
+
+    if not os.path.exists(mask_full_path):
+        raise HTTPException(status_code=404, detail="Mask for this image does not exist yet")
+
+    masked_dir = os.path.join(dataset.path, "masked")
+    await asyncio.to_thread(os.makedirs, masked_dir, exist_ok=True)
+
+    output_filename = f"{original_stem}.jpg"
+    output_full_path = os.path.join(masked_dir, output_filename)
+
+    logger.info("applying_mask", dataset=name, image=image_rel_path, opacity=opacity)
+    await asyncio.to_thread(
+        masking_service.combine_mask, image_full_path, mask_full_path, output_full_path, opacity,
+    )
+    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    return {
+        "status": "success",
+        "message": f"Masked image saved as {output_filename}",
+        "output_path": output_filename,
+    }
+
+
+@router.get("/datasets/{name}/masking/preview")
+async def preview_mask(name: str, image_rel_path: str, opacity: float = 0.5):
+    """Generate an in-memory mask preview and stream it as PNG."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    image_full_path = os.path.join(dataset.path, image_rel_path)
+    original_stem = os.path.splitext(os.path.basename(image_rel_path))[0]
+    mask_full_path = os.path.join(dataset.path, "masks", f"{original_stem}.png")
+
+    if not os.path.exists(mask_full_path):
+        raise HTTPException(status_code=404, detail="Mask not found")
+
+    logger.debug("generating_mask_preview", image=image_rel_path)
+    preview_img = await asyncio.to_thread(
+        masking_service.generate_preview, image_full_path, mask_full_path, opacity,
+    )
+
+    buf = io.BytesIO()
+    await asyncio.to_thread(preview_img.save, buf, format="PNG")
+    buf.seek(0)
+
+    return StreamingResponse(buf, media_type="image/png")
+
+
+@router.delete("/datasets/{name}/masking/delete")
+async def delete_mask(name: str, image_rel_path: str):
+    """Delete the mask file associated with an image."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    original_stem = os.path.splitext(os.path.basename(image_rel_path))[0]
+    mask_filename = f"{original_stem}.png"
+    mask_full_path = os.path.join(dataset.path, "masks", mask_filename)
+
+    if not os.path.exists(mask_full_path):
+        raise HTTPException(status_code=404, detail="Mask not found")
+
+    logger.info("deleting_mask", dataset=name, mask=mask_filename)
+    await asyncio.to_thread(os.remove, mask_full_path)
+    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    return {"status": "deleted", "message": "Mask deleted successfully"}
+
+
+class MassApplyRequest(BaseModel):
+    """Request body for mass applying masks."""
+
+    opacity: float = 0.0
+    overwrite: bool = False
+
+
+@router.post("/datasets/{name}/masking/mass-apply")
+async def mass_apply_masks(name: str, request: MassApplyRequest):
+    """Apply masks to all images that have a mask file."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    logger.info(
+        "mass_apply_masks",
+        dataset=name,
+        opacity=request.opacity,
+        overwrite=request.overwrite,
+    )
+
+    result = await asyncio.to_thread(
+        masking_service.mass_apply,
+        dataset.path,
+        request.opacity,
+        request.overwrite,
+    )
+
+    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    warnings = []
+    if result["missing_masks"]:
+        warnings.append(
+            f"{len(result['missing_masks'])} image(s) have no mask and were skipped"
+        )
+
+    return {
+        "status": "success",
+        "applied": result["applied"],
+        "skipped": result["skipped"],
+        "missing_masks": result["missing_masks"],
+        "warnings": warnings,
+    }

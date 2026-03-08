@@ -1,0 +1,64 @@
+# ========================
+# Dot-directories (IDE, cache, config)
+# ========================
+.*/
+*.md
+!README.md
+!documentation/**/*.md
+
+# ========================
+# Backend data directories
+# ========================
+backend/datasets/
+backend/outputs/
+backend/venv/
+backend/models/
+backend/.*
+backend/settings.json
+backend/server.log
+backend/tests/tests.log
+*.db
+*.db-shm
+*.db-wal
+
+# ========================
+# Workspace-level directories
+# ========================
+/docs/
+/adapters/
+/scripts/
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+*.pth
+
+# ========================
+# Node / Angular
+# ========================
+node_modules/
+frontend/dist/
+frontend/.angular/
+
+# ========================
+# OS files
+# ========================
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ========================
+# Environment & secrets
+# ========================
+*.env
+.env.*

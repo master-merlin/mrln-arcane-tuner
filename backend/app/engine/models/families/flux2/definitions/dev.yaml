@@ -1,0 +1,389 @@
+id: flux2-dev
+family: flux2
+name: Flux 2 (Dev)
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-5
+components:
+  repo:
+    path: huggingface:black-forest-labs/FLUX.2-dev
+    type: diffusers
+    params: {}
+detected_precision:
+  unet: torch.float16
+  vae: torch.float16
+  text_encoder: torch.float16
+architecture_params:
+  transformer.hidden_size: 6144
+  transformer.num_attention_heads: 48
+  transformer.joint_attention_dim: 15360
+  transformer.num_layers: 8
+  transformer.num_single_layers: 48
+  transformer.in_channels: 128
+  transformer.mlp_ratio: 3.0
+  transformer.axes_dims_rope:
+  - 32
+  - 32
+  - 32
+  - 32
+  transformer.rope_theta: 2000
+  transformer.guidance_embeds: true
+  te.hidden_size: 5120
+  te.num_hidden_layers: 40
+  te.model_type: mistral3
+  te.concat_layers: 3
+  te.output_layers:
+  - 10
+  - 20
+  - 30
+  te.max_length: 512
+  hidden_size: 6144
+  num_heads: 48
+  depth: 8
+  depth_single_blocks: 48
+  in_channels: 128
+  context_dim: 15360
+  transformer._class_name: Flux2Transformer2DModel
+  transformer.attention_head_dim: 128
+  transformer.eps: 1.0e-06
+  transformer.out_channels: null
+  transformer.patch_size: 1
+  transformer.timestep_guidance_channels: 256
+  te.architectures:
+  - Mistral3ForConditionalGeneration
+  te.dtype: bfloat16
+  te.image_token_index: 10
+  te.multimodal_projector_bias: false
+  te.projector_hidden_act: gelu
+  te.spatial_merge_size: 2
+  te.text_config:
+    attention_dropout: 0.0
+    dtype: bfloat16
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 5120
+    initializer_range: 0.02
+    intermediate_size: 32768
+    max_position_embeddings: 131072
+    model_type: mistral
+    num_attention_heads: 32
+    num_hidden_layers: 40
+    num_key_value_heads: 8
+    rms_norm_eps: 1.0e-05
+    rope_theta: 1000000000.0
+    sliding_window: null
+    use_cache: true
+    vocab_size: 131072
+  te.text_config.attention_dropout: 0.0
+  te.text_config.dtype: bfloat16
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 5120
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 32768
+  te.text_config.max_position_embeddings: 131072
+  te.text_config.model_type: mistral
+  te.text_config.num_attention_heads: 32
+  te.text_config.num_hidden_layers: 40
+  te.text_config.num_key_value_heads: 8
+  te.text_config.rms_norm_eps: 1.0e-05
+  te.text_config.rope_theta: 1000000000.0
+  te.text_config.sliding_window: null
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 131072
+  te.vision_config:
+    attention_dropout: 0.0
+    dtype: bfloat16
+    head_dim: 64
+    hidden_act: silu
+    hidden_size: 1024
+    image_size: 1540
+    initializer_range: 0.02
+    intermediate_size: 4096
+    model_type: pixtral
+    num_attention_heads: 16
+    num_channels: 3
+    num_hidden_layers: 24
+    patch_size: 14
+    rope_theta: 10000.0
+  te.vision_config.attention_dropout: 0.0
+  te.vision_config.dtype: bfloat16
+  te.vision_config.head_dim: 64
+  te.vision_config.hidden_act: silu
+  te.vision_config.hidden_size: 1024
+  te.vision_config.image_size: 1540
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4096
+  te.vision_config.model_type: pixtral
+  te.vision_config.num_attention_heads: 16
+  te.vision_config.num_channels: 3
+  te.vision_config.num_hidden_layers: 24
+  te.vision_config.patch_size: 14
+  te.vision_config.rope_theta: 10000.0
+  te.vision_feature_layer: -1
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.shift_terminal: null
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: true
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae._class_name: AutoencoderKLFlux2
+  vae.act_fn: silu
+  vae.batch_norm_eps: 0.0001
+  vae.batch_norm_momentum: 0.1
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 32
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.patch_size:
+  - 2
+  - 2
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: true
+  vae.use_quant_conv: true
+model_size_mb:
+  transformer: 64400.0
+  text_encoder: 48000.0
+  vae: 335.0
+lora_targetable_modules:
+- time_guidance_embed.timestep_embedder.linear_1
+- time_guidance_embed.timestep_embedder.linear_2
+- time_guidance_embed.guidance_embedder.linear_1
+- time_guidance_embed.guidance_embedder.linear_2
+- double_stream_modulation_img.linear
+- double_stream_modulation_txt.linear
+- single_stream_modulation.linear
+- x_embedder
+- context_embedder
+- transformer_blocks.0.attn.to_q
+- transformer_blocks.0.attn.to_k
+- transformer_blocks.0.attn.to_v
+- transformer_blocks.0.attn.to_out.0
+- transformer_blocks.0.attn.add_q_proj
+- transformer_blocks.0.attn.add_k_proj
+- transformer_blocks.0.attn.add_v_proj
+- transformer_blocks.0.attn.to_add_out
+- transformer_blocks.0.ff.linear_in
+- transformer_blocks.0.ff.linear_out
+- transformer_blocks.0.ff_context.linear_in
+- transformer_blocks.0.ff_context.linear_out
+- transformer_blocks.1.attn.to_q
+- transformer_blocks.1.attn.to_k
+- transformer_blocks.1.attn.to_v
+- transformer_blocks.1.attn.to_out.0
+- transformer_blocks.1.attn.add_q_proj
+- transformer_blocks.1.attn.add_k_proj
+- transformer_blocks.1.attn.add_v_proj
+- transformer_blocks.1.attn.to_add_out
+- transformer_blocks.1.ff.linear_in
+- transformer_blocks.1.ff.linear_out
+- transformer_blocks.1.ff_context.linear_in
+- transformer_blocks.1.ff_context.linear_out
+- transformer_blocks.2.attn.to_q
+- transformer_blocks.2.attn.to_k
+- transformer_blocks.2.attn.to_v
+- transformer_blocks.2.attn.to_out.0
+- transformer_blocks.2.attn.add_q_proj
+- transformer_blocks.2.attn.add_k_proj
+- transformer_blocks.2.attn.add_v_proj
+- transformer_blocks.2.attn.to_add_out
+- transformer_blocks.2.ff.linear_in
+- transformer_blocks.2.ff.linear_out
+- transformer_blocks.2.ff_context.linear_in
+- transformer_blocks.2.ff_context.linear_out
+- transformer_blocks.3.attn.to_q
+- transformer_blocks.3.attn.to_k
+- transformer_blocks.3.attn.to_v
+- transformer_blocks.3.attn.to_out.0
+- transformer_blocks.3.attn.add_q_proj
+- transformer_blocks.3.attn.add_k_proj
+- transformer_blocks.3.attn.add_v_proj
+- transformer_blocks.3.attn.to_add_out
+- transformer_blocks.3.ff.linear_in
+- transformer_blocks.3.ff.linear_out
+- transformer_blocks.3.ff_context.linear_in
+- transformer_blocks.3.ff_context.linear_out
+- transformer_blocks.4.attn.to_q
+- transformer_blocks.4.attn.to_k
+- transformer_blocks.4.attn.to_v
+- transformer_blocks.4.attn.to_out.0
+- transformer_blocks.4.attn.add_q_proj
+- transformer_blocks.4.attn.add_k_proj
+- transformer_blocks.4.attn.add_v_proj
+- transformer_blocks.4.attn.to_add_out
+- transformer_blocks.4.ff.linear_in
+- transformer_blocks.4.ff.linear_out
+- transformer_blocks.4.ff_context.linear_in
+- transformer_blocks.4.ff_context.linear_out
+- transformer_blocks.5.attn.to_q
+- transformer_blocks.5.attn.to_k
+- transformer_blocks.5.attn.to_v
+- transformer_blocks.5.attn.to_out.0
+- transformer_blocks.5.attn.add_q_proj
+- transformer_blocks.5.attn.add_k_proj
+- transformer_blocks.5.attn.add_v_proj
+- transformer_blocks.5.attn.to_add_out
+- transformer_blocks.5.ff.linear_in
+- transformer_blocks.5.ff.linear_out
+- transformer_blocks.5.ff_context.linear_in
+- transformer_blocks.5.ff_context.linear_out
+- transformer_blocks.6.attn.to_q
+- transformer_blocks.6.attn.to_k
+- transformer_blocks.6.attn.to_v
+- transformer_blocks.6.attn.to_out.0
+- transformer_blocks.6.attn.add_q_proj
+- transformer_blocks.6.attn.add_k_proj
+- transformer_blocks.6.attn.add_v_proj
+- transformer_blocks.6.attn.to_add_out
+- transformer_blocks.6.ff.linear_in
+- transformer_blocks.6.ff.linear_out
+- transformer_blocks.6.ff_context.linear_in
+- transformer_blocks.6.ff_context.linear_out
+- transformer_blocks.7.attn.to_q
+- transformer_blocks.7.attn.to_k
+- transformer_blocks.7.attn.to_v
+- transformer_blocks.7.attn.to_out.0
+- transformer_blocks.7.attn.add_q_proj
+- transformer_blocks.7.attn.add_k_proj
+- transformer_blocks.7.attn.add_v_proj
+- transformer_blocks.7.attn.to_add_out
+- transformer_blocks.7.ff.linear_in
+- transformer_blocks.7.ff.linear_out
+- transformer_blocks.7.ff_context.linear_in
+- transformer_blocks.7.ff_context.linear_out
+- single_transformer_blocks.0.attn.to_qkv_mlp_proj
+- single_transformer_blocks.0.attn.to_out
+- single_transformer_blocks.1.attn.to_qkv_mlp_proj
+- single_transformer_blocks.1.attn.to_out
+- single_transformer_blocks.2.attn.to_qkv_mlp_proj
+- single_transformer_blocks.2.attn.to_out
+- single_transformer_blocks.3.attn.to_qkv_mlp_proj
+- single_transformer_blocks.3.attn.to_out
+- single_transformer_blocks.4.attn.to_qkv_mlp_proj
+- single_transformer_blocks.4.attn.to_out
+- single_transformer_blocks.5.attn.to_qkv_mlp_proj
+- single_transformer_blocks.5.attn.to_out
+- single_transformer_blocks.6.attn.to_qkv_mlp_proj
+- single_transformer_blocks.6.attn.to_out
+- single_transformer_blocks.7.attn.to_qkv_mlp_proj
+- single_transformer_blocks.7.attn.to_out
+- single_transformer_blocks.8.attn.to_qkv_mlp_proj
+- single_transformer_blocks.8.attn.to_out
+- single_transformer_blocks.9.attn.to_qkv_mlp_proj
+- single_transformer_blocks.9.attn.to_out
+- single_transformer_blocks.10.attn.to_qkv_mlp_proj
+- single_transformer_blocks.10.attn.to_out
+- single_transformer_blocks.11.attn.to_qkv_mlp_proj
+- single_transformer_blocks.11.attn.to_out
+- single_transformer_blocks.12.attn.to_qkv_mlp_proj
+- single_transformer_blocks.12.attn.to_out
+- single_transformer_blocks.13.attn.to_qkv_mlp_proj
+- single_transformer_blocks.13.attn.to_out
+- single_transformer_blocks.14.attn.to_qkv_mlp_proj
+- single_transformer_blocks.14.attn.to_out
+- single_transformer_blocks.15.attn.to_qkv_mlp_proj
+- single_transformer_blocks.15.attn.to_out
+- single_transformer_blocks.16.attn.to_qkv_mlp_proj
+- single_transformer_blocks.16.attn.to_out
+- single_transformer_blocks.17.attn.to_qkv_mlp_proj
+- single_transformer_blocks.17.attn.to_out
+- single_transformer_blocks.18.attn.to_qkv_mlp_proj
+- single_transformer_blocks.18.attn.to_out
+- single_transformer_blocks.19.attn.to_qkv_mlp_proj
+- single_transformer_blocks.19.attn.to_out
+- single_transformer_blocks.20.attn.to_qkv_mlp_proj
+- single_transformer_blocks.20.attn.to_out
+- single_transformer_blocks.21.attn.to_qkv_mlp_proj
+- single_transformer_blocks.21.attn.to_out
+- single_transformer_blocks.22.attn.to_qkv_mlp_proj
+- single_transformer_blocks.22.attn.to_out
+- single_transformer_blocks.23.attn.to_qkv_mlp_proj
+- single_transformer_blocks.23.attn.to_out
+- single_transformer_blocks.24.attn.to_qkv_mlp_proj
+- single_transformer_blocks.24.attn.to_out
+- single_transformer_blocks.25.attn.to_qkv_mlp_proj
+- single_transformer_blocks.25.attn.to_out
+- single_transformer_blocks.26.attn.to_qkv_mlp_proj
+- single_transformer_blocks.26.attn.to_out
+- single_transformer_blocks.27.attn.to_qkv_mlp_proj
+- single_transformer_blocks.27.attn.to_out
+- single_transformer_blocks.28.attn.to_qkv_mlp_proj
+- single_transformer_blocks.28.attn.to_out
+- single_transformer_blocks.29.attn.to_qkv_mlp_proj
+- single_transformer_blocks.29.attn.to_out
+- single_transformer_blocks.30.attn.to_qkv_mlp_proj
+- single_transformer_blocks.30.attn.to_out
+- single_transformer_blocks.31.attn.to_qkv_mlp_proj
+- single_transformer_blocks.31.attn.to_out
+- single_transformer_blocks.32.attn.to_qkv_mlp_proj
+- single_transformer_blocks.32.attn.to_out
+- single_transformer_blocks.33.attn.to_qkv_mlp_proj
+- single_transformer_blocks.33.attn.to_out
+- single_transformer_blocks.34.attn.to_qkv_mlp_proj
+- single_transformer_blocks.34.attn.to_out
+- single_transformer_blocks.35.attn.to_qkv_mlp_proj
+- single_transformer_blocks.35.attn.to_out
+- single_transformer_blocks.36.attn.to_qkv_mlp_proj
+- single_transformer_blocks.36.attn.to_out
+- single_transformer_blocks.37.attn.to_qkv_mlp_proj
+- single_transformer_blocks.37.attn.to_out
+- single_transformer_blocks.38.attn.to_qkv_mlp_proj
+- single_transformer_blocks.38.attn.to_out
+- single_transformer_blocks.39.attn.to_qkv_mlp_proj
+- single_transformer_blocks.39.attn.to_out
+- single_transformer_blocks.40.attn.to_qkv_mlp_proj
+- single_transformer_blocks.40.attn.to_out
+- single_transformer_blocks.41.attn.to_qkv_mlp_proj
+- single_transformer_blocks.41.attn.to_out
+- single_transformer_blocks.42.attn.to_qkv_mlp_proj
+- single_transformer_blocks.42.attn.to_out
+- single_transformer_blocks.43.attn.to_qkv_mlp_proj
+- single_transformer_blocks.43.attn.to_out
+- single_transformer_blocks.44.attn.to_qkv_mlp_proj
+- single_transformer_blocks.44.attn.to_out
+- single_transformer_blocks.45.attn.to_qkv_mlp_proj
+- single_transformer_blocks.45.attn.to_out
+- single_transformer_blocks.46.attn.to_qkv_mlp_proj
+- single_transformer_blocks.46.attn.to_out
+- single_transformer_blocks.47.attn.to_qkv_mlp_proj
+- single_transformer_blocks.47.attn.to_out
+- norm_out.linear
+- proj_out
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 8
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 48
+  approx_vram_mb: 320

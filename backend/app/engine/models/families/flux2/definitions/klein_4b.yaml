@@ -1,0 +1,116 @@
+id: flux2-klein-base-4b
+family: flux2
+name: Flux 2 (Klein Base 4B)
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-5
+components:
+  repo:
+    path: huggingface:black-forest-labs/FLUX.2-klein-base-4B
+    type: diffusers
+    params: {}
+model_size_mb:
+  transformer: 7750
+  text_encoder: 8050
+  vae: 335
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # Partially populated — enrichment will fill from HF repo config.json
+  transformer.hidden_size: 3072
+  transformer.num_attention_heads: 24
+  transformer.in_channels: 128
+lora_targetable_modules:
+- img_in
+- time_in.in_layer
+- time_in.out_layer
+- txt_in
+- double_blocks.0.img_attn.qkv
+- double_blocks.0.img_attn.proj
+- double_blocks.0.img_mlp.0
+- double_blocks.0.img_mlp.2
+- double_blocks.0.txt_attn.qkv
+- double_blocks.0.txt_attn.proj
+- double_blocks.0.txt_mlp.0
+- double_blocks.0.txt_mlp.2
+- double_blocks.1.img_attn.qkv
+- double_blocks.1.img_attn.proj
+- double_blocks.1.img_mlp.0
+- double_blocks.1.img_mlp.2
+- double_blocks.1.txt_attn.qkv
+- double_blocks.1.txt_attn.proj
+- double_blocks.1.txt_mlp.0
+- double_blocks.1.txt_mlp.2
+- double_blocks.2.img_attn.qkv
+- double_blocks.2.img_attn.proj
+- double_blocks.2.img_mlp.0
+- double_blocks.2.img_mlp.2
+- double_blocks.2.txt_attn.qkv
+- double_blocks.2.txt_attn.proj
+- double_blocks.2.txt_mlp.0
+- double_blocks.2.txt_mlp.2
+- double_blocks.3.img_attn.qkv
+- double_blocks.3.img_attn.proj
+- double_blocks.3.img_mlp.0
+- double_blocks.3.img_mlp.2
+- double_blocks.3.txt_attn.qkv
+- double_blocks.3.txt_attn.proj
+- double_blocks.3.txt_mlp.0
+- double_blocks.3.txt_mlp.2
+- double_blocks.4.img_attn.qkv
+- double_blocks.4.img_attn.proj
+- double_blocks.4.img_mlp.0
+- double_blocks.4.img_mlp.2
+- double_blocks.4.txt_attn.qkv
+- double_blocks.4.txt_attn.proj
+- double_blocks.4.txt_mlp.0
+- double_blocks.4.txt_mlp.2
+- single_blocks.0.linear1
+- single_blocks.0.linear2
+- single_blocks.1.linear1
+- single_blocks.1.linear2
+- single_blocks.2.linear1
+- single_blocks.2.linear2
+- single_blocks.3.linear1
+- single_blocks.3.linear2
+- single_blocks.4.linear1
+- single_blocks.4.linear2
+- single_blocks.5.linear1
+- single_blocks.5.linear2
+- single_blocks.6.linear1
+- single_blocks.6.linear2
+- single_blocks.7.linear1
+- single_blocks.7.linear2
+- single_blocks.8.linear1
+- single_blocks.8.linear2
+- single_blocks.9.linear1
+- single_blocks.9.linear2
+- single_blocks.10.linear1
+- single_blocks.10.linear2
+- single_blocks.11.linear1
+- single_blocks.11.linear2
+- single_blocks.12.linear1
+- single_blocks.12.linear2
+- single_blocks.13.linear1
+- single_blocks.13.linear2
+- single_blocks.14.linear1
+- single_blocks.14.linear2
+- single_blocks.15.linear1
+- single_blocks.15.linear2
+- single_blocks.16.linear1
+- single_blocks.16.linear2
+- single_blocks.17.linear1
+- single_blocks.17.linear2
+- single_blocks.18.linear1
+- single_blocks.18.linear2
+- single_blocks.19.linear1
+- single_blocks.19.linear2
+- double_stream_modulation_img.lin
+- double_stream_modulation_txt.lin
+- single_stream_modulation.lin
+- final_layer.linear
+- final_layer.adaLN_modulation.1

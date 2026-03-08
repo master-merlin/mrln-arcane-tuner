@@ -1,0 +1,159 @@
+id: flux1-dev
+family: flux1
+name: FLUX.1 Dev
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-5
+components:
+  repo:
+    path: huggingface:black-forest-labs/FLUX.1-dev
+    type: diffusers
+    params: {}
+detected_precision:
+  clip_encoder: torch.bfloat16
+  t5_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer.hidden_size: 3072
+  transformer.num_attention_heads: 24
+  transformer.in_channels: 64
+  transformer.num_layers: 19
+  transformer.num_single_layers: 38
+  transformer.mlp_ratio: 4.0
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.rope_theta: 10000
+  transformer.guidance_embeds: true
+  te.type: clip_t5
+  te.clip_max_length: 77
+  te.t5_max_length: 512
+  hidden_size: 3072
+  num_heads: 24
+  in_channels: 64
+  transformer._class_name: FluxTransformer2DModel
+  transformer.attention_head_dim: 128
+  transformer.joint_attention_dim: 4096
+  transformer.patch_size: 1
+  transformer.pooled_projection_dim: 768
+  te.architectures:
+  - CLIPTextModel
+  te.attention_dropout: 0.0
+  te.bos_token_id: 0
+  te.dropout: 0.0
+  te.eos_token_id: 2
+  te.hidden_act: quick_gelu
+  te.hidden_size: 768
+  te.initializer_factor: 1.0
+  te.initializer_range: 0.02
+  te.intermediate_size: 3072
+  te.layer_norm_eps: 1.0e-05
+  te.max_position_embeddings: 77
+  te.model_type: clip_text_model
+  te.num_attention_heads: 12
+  te.num_hidden_layers: 12
+  te.pad_token_id: 1
+  te.projection_dim: 768
+  te.torch_dtype: bfloat16
+  te.vocab_size: 49408
+  te2.architectures:
+  - T5EncoderModel
+  te2.classifier_dropout: 0.0
+  te2.d_ff: 10240
+  te2.d_kv: 64
+  te2.d_model: 4096
+  te2.decoder_start_token_id: 0
+  te2.dense_act_fn: gelu_new
+  te2.dropout_rate: 0.1
+  te2.eos_token_id: 1
+  te2.feed_forward_proj: gated-gelu
+  te2.initializer_factor: 1.0
+  te2.is_encoder_decoder: true
+  te2.is_gated_act: true
+  te2.layer_norm_epsilon: 1.0e-06
+  te2.model_type: t5
+  te2.num_decoder_layers: 24
+  te2.num_heads: 64
+  te2.num_layers: 24
+  te2.output_past: true
+  te2.pad_token_id: 0
+  te2.relative_attention_max_distance: 128
+  te2.relative_attention_num_buckets: 32
+  te2.tie_word_embeddings: false
+  te2.torch_dtype: bfloat16
+  te2.use_cache: true
+  te2.vocab_size: 32128
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: true
+  vae._class_name: AutoencoderKL
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 16
+  vae.latents_mean: null
+  vae.latents_std: null
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+  depth: 19
+  depth_single_blocks: 38
+  context_dim: 4096
+model_size_mb:
+  transformer: 23800.0
+  text_encoder: 10000.0
+  vae: 167.0
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0
+- add_q_proj
+- add_k_proj
+- add_v_proj
+- to_add_out
+- ff.net.0.proj
+- ff.net.2
+- ff_context.net.0.proj
+- ff_context.net.2
+- proj_mlp
+- proj_out
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 19
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 38
+  approx_vram_mb: 320

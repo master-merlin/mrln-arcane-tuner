@@ -113,20 +113,20 @@ The frontend runs on `http://localhost:4200` by default. Both ports are configur
 MRLN Arcane Tuner is a full-stack application with a FastAPI backend and an Angular frontend connected via REST API and WebSocket.
 
 ```
-┌─────────────────────────────────────────────────┐
-│                Angular 21 SPA                    │
-│  43 Standalone Components · Signals · Tailwind   │
-└────────────────┬────────────────┬────────────────┘
-                 │ REST           │ WebSocket
-┌────────────────┴────────────────┴────────────────┐
-│              FastAPI Backend                      │
-│  9 Route Domains · Structured Logging · Middleware│
-├──────────┬──────────┬──────────┬─────────────────┤
-│ Dataset  │ Training │ AI       │ System           │
-│ Manager  │ Engine   │ Services │ Settings         │
-├──────────┴──────────┴──────────┴─────────────────┤
-│         PyTorch · Diffusers · PEFT · SQLite       │
-└──────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                  Angular 21 SPA                      │
+│    43 Standalone Components · Signals · Tailwind     │
+└──────────────────┬────────────────┬──────────────────┘
+                   │ REST           │ WebSocket
+┌──────────────────┴────────────────┴──────────────────┐
+│                FastAPI Backend                       │
+│    9 Route Domains · Structured Logging · Middleware │
+├─────────────┬────────────┬───────────┬───────────────┤
+│ Dataset     │ Training   │ AI        │ System        │
+│ Manager     │ Engine     │ Services  │ Settings      │
+├─────────────┴────────────┴───────────┴───────────────┤
+│          PyTorch · Diffusers · PEFT · SQLite         │
+└──────────────────────────────────────────────────────┘
 ```
 
 For the full component and API route inventory, see [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md).
@@ -182,11 +182,11 @@ Tiled neural upscaling using ESRGAN and SwinIR models for images that need highe
 Integrated AI models for automated dataset annotation, running as GPU-backed batch services:
 
 #### Auto-Captioning
-| Model               | Specialty                                                                          |
-| ------------------- | ---------------------------------------------------------------------------------- |
-| **Florence-2**      | Fast, reliable descriptions. Multiple detail levels.                               |
+| Model               | Specialty                                                                           |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| **Florence-2**      | Fast, reliable descriptions. Multiple detail levels.                                |
 | **JoyCaption Beta** | 12 caption types (descriptive, prompt-style, tag lists). Extensive control options. |
-| **Qwen3-VL**        | Large vision-language model for nuanced descriptions. Configurable variant (4B/8B).|
+| **Qwen3-VL**        | Large vision-language model for nuanced descriptions. Configurable variant (4B/8B). |
 | **Youtu-VL**        | Tencent's vision-language model with fine-grained parameter control.                |
 
 All models support batch processing with real-time progress, custom system prompts, and per-model template management.
@@ -247,7 +247,7 @@ MRLN Arcane Tuner supports a wide range of optimizers, from proven defaults to c
 | **cosmap**         | Cosine-mapped smooth distribution.                                                                                   |
 | **mode**           | Configurable mid-range emphasis.                                                                                     |
 | **flux_shift**     | Resolution-dependent shifting. Original Flux recipe.                                                                 |
-| **radc**           | Resolution-Aware Dynamic Curriculum. Progressive coarse-to-fine learning. Best for multi-phase curriculum training.   |
+| **radc**           | Resolution-Aware Dynamic Curriculum. Progressive coarse-to-fine learning. Best for multi-phase curriculum training.  |
 
 **RADC** is a standout feature — it progressively shifts the noise focus from high-noise (learning structure and composition) to low-noise (refining details and textures) over the course of training, with optional resolution-aware weighting for multi-resolution datasets.
 

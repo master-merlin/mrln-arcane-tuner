@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 from typing import Any
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 import shutil
 from PIL import Image
 from app.core.settings_manager import get_settings_manager
@@ -45,6 +45,25 @@ class Dataset(BaseModel):
     classifier: str = ""
     version: str = "1.0.0"
     has_cache: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def median_quality_score(self) -> float | None:
+        """Median of per-image quality scores, or *None* when no scores exist."""
+        scores = [
+            m["quality_score"]
+            for m in self.media_metadata.values()
+            if m.get("quality_score") is not None
+        ]
+        if not scores:
+            return None
+        scores.sort()
+        n = len(scores)
+        mid = n // 2
+        return round(
+            scores[mid] if n % 2 else (scores[mid - 1] + scores[mid]) / 2,
+            4,
+        )
 
 class DatasetManager:
     MULTIMEDIA_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.gif'}

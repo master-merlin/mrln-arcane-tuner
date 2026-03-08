@@ -24,6 +24,7 @@ export interface Dataset {
   classifier?: string;
   version: string;
   has_cache?: boolean;
+  median_quality_score?: number | null;
 }
 
 export interface CurvePoint {

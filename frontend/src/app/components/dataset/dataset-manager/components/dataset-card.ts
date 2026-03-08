@@ -77,6 +77,12 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
                   <span class="text-text-subtle font-medium">Captions</span>
                   <span class="text-text-primary font-mono">{{ dataset().caption_count || 0 }}</span>
               </div>
+              @if (dataset().median_quality_score != null) {
+                  <div class="flex items-center gap-2 text-[10px] text-text-subtle ml-auto italic">
+                      <span>Median</span>
+                      <span class="flex-shrink-0 px-1 py-px rounded-sm font-bold not-italic" [class]="getScoreColor(dataset().median_quality_score!)">{{ dataset().median_quality_score!.toFixed(4) }}</span>
+                  </div>
+              }
           </div>
           
           <!-- Indicators -->
@@ -205,5 +211,11 @@ export class DatasetCardComponent {
             // Reset input so the same files can be selected again if needed
             event.target.value = '';
         }
+    }
+
+    getScoreColor(score: number): string {
+        if (score >= 0.27) return 'bg-success/80 text-white';
+        if (score >= 0.24) return 'bg-warning/80 text-black';
+        return 'bg-danger/80 text-white';
     }
 }

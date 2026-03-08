@@ -34,12 +34,12 @@ This project wouldn't exist without the incredible open-source community that pi
 
 ### Prerequisites
 
-| Requirement | Version | Notes |
-|---|---|---|
-| Python | 3.12+ | With `venv` support |
-| NVIDIA GPU | Ampere+ (RTX 30xx) | CUDA 13.0 required |
-| Node.js | 20+ | For the Angular frontend |
-| npm | 10+ | Comes with Node.js |
+| Requirement   | Version              | Notes                     |
+| ------------- | -------------------- | ------------------------- |
+| Python        | 3.12+                | With `venv` support       |
+| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.0 required        |
+| Node.js       | 20+                  | For the Angular frontend  |
+| npm           | 10+                  | Comes with Node.js        |
 
 ### Scripted Install (Recommended)
 
@@ -145,15 +145,15 @@ Automatic directory scanning with image–caption pairing. Supports `.png`, `.jp
 #### Image Manipulation
 A 9-stage non-destructive adjustment pipeline that processes images before training:
 
-| Stage | Controls |
-|---|---|
-| Brightness, Contrast, Saturation | Standard exposure adjustments |
-| Hue | Global color rotation |
-| Curves | Per-channel Bézier curves (RGB + individual R/G/B) with dropdown presets |
-| Stacked LUT | Apply `.cube` LUT files with adjustable strength blending |
-| HSL | Selective hue/saturation/lightness control per color range |
-| Sharpness | Detail enhancement |
-| Noise | Grain control |
+| Stage                              | Controls                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| Brightness, Contrast, Saturation   | Standard exposure adjustments                                             |
+| Hue                                | Global color rotation                                                     |
+| Curves                             | Per-channel Bézier curves (RGB + individual R/G/B) with dropdown presets  |
+| Stacked LUT                        | Apply `.cube` LUT files with adjustable strength blending                 |
+| HSL                                | Selective hue/saturation/lightness control per color range                |
+| Sharpness                          | Detail enhancement                                                        |
+| Noise                              | Grain control                                                             |
 
 All adjustments include a real-time canvas preview with live histogram visualization.
 
@@ -182,20 +182,20 @@ Tiled neural upscaling using ESRGAN and SwinIR models for images that need highe
 Integrated AI models for automated dataset annotation, running as GPU-backed batch services:
 
 #### Auto-Captioning
-| Model | Specialty |
-|---|---|
-| **Florence-2** | Fast, reliable descriptions. Multiple detail levels. |
+| Model               | Specialty                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| **Florence-2**      | Fast, reliable descriptions. Multiple detail levels.                               |
 | **JoyCaption Beta** | 12 caption types (descriptive, prompt-style, tag lists). Extensive control options. |
-| **Qwen3-VL** | Large vision-language model for nuanced descriptions. Configurable variant (4B/8B). |
-| **Youtu-VL** | Tencent's vision-language model with fine-grained parameter control. |
+| **Qwen3-VL**        | Large vision-language model for nuanced descriptions. Configurable variant (4B/8B).|
+| **Youtu-VL**        | Tencent's vision-language model with fine-grained parameter control.                |
 
 All models support batch processing with real-time progress, custom system prompts, and per-model template management.
 
 #### Auto-Masking
-| Model | Approach |
-|---|---|
-| **SAM 3** | Text-prompted segmentation (Meta's Segment Anything). Multi-mask output. |
-| **RemBG** | Background removal with 15+ model variants (BiRefNet, ISNet, U2Net, BRIA). Alpha matting support. |
+| Model       | Approach                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| **SAM 3**   | Text-prompted segmentation (Meta's Segment Anything). Multi-mask output.                          |
+| **RemBG**   | Background removal with 15+ model variants (BiRefNet, ISNet, U2Net, BRIA). Alpha matting support. |
 
 Supports batch mass-apply across entire datasets.
 
@@ -207,11 +207,11 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-| Family | Architecture | Text Encoder | Notes |
-|---|---|---|---|
-| **SDXL** | UNet + DDPMScheduler | Dual CLIP (TE1 + TE2) | Epsilon prediction, Min-SNR gamma |
-| **Flux.1** | Transformer + Flow Matching | Qwen3 | BFL-format export for ComfyUI |
-| **Flux.2 (Klein)** | Transformer + Flow Matching | Qwen3 | No guidance embed, packed latents |
+| Family               | Architecture                  | Text Encoder            | Notes                               |
+| -------------------- | ----------------------------- | ----------------------- | ----------------------------------- |
+| **SDXL**             | UNet + DDPMScheduler          | Dual CLIP (TE1 + TE2)   | Epsilon prediction, Min-SNR gamma   |
+| **Flux.1**           | Transformer + Flow Matching   | Qwen3                   | BFL-format export for ComfyUI       |
+| **Flux.2 (Klein)**   | Transformer + Flow Matching   | Qwen3                   | No guidance embed, packed latents   |
 
 #### Optimizers
 
@@ -239,15 +239,15 @@ MRLN Arcane Tuner supports a wide range of optimizers, from proven defaults to c
 
 #### Timestep Sampling Strategies
 
-| Strategy | Best For |
-|---|---|
-| **logit_normal** | Default for flow matching (Flux). Mid-range focus. |
-| **uniform** | Equal probability baseline. |
-| **sigmoid** | Simplified logit-normal with fixed parameters. |
-| **cosmap** | Cosine-mapped smooth distribution. |
-| **mode** | Configurable mid-range emphasis. |
-| **flux_shift** | Resolution-dependent shifting. Original Flux recipe. |
-| **radc** | Resolution-Aware Dynamic Curriculum. Progressive coarse-to-fine learning. Best for multi-phase curriculum training. |
+| Strategy           | Best For                                                                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| **logit_normal**   | Default for flow matching (Flux). Mid-range focus.                                                                   |
+| **uniform**        | Equal probability baseline.                                                                                          |
+| **sigmoid**        | Simplified logit-normal with fixed parameters.                                                                       |
+| **cosmap**         | Cosine-mapped smooth distribution.                                                                                   |
+| **mode**           | Configurable mid-range emphasis.                                                                                     |
+| **flux_shift**     | Resolution-dependent shifting. Original Flux recipe.                                                                 |
+| **radc**           | Resolution-Aware Dynamic Curriculum. Progressive coarse-to-fine learning. Best for multi-phase curriculum training.   |
 
 **RADC** is a standout feature — it progressively shifts the noise focus from high-noise (learning structure and composition) to low-noise (refining details and textures) over the course of training, with optional resolution-aware weighting for multi-resolution datasets.
 

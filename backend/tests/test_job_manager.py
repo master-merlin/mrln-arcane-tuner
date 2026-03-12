@@ -457,3 +457,113 @@ class TestEventBroadcasting:
         with patch("app.core.job_manager.asyncio.run_coroutine_threadsafe") as mock_rct:
             mgr.soft_stop_job(job.id)
             mock_rct.assert_not_called()
+
+
+# ── Load From DB ─────────────────────────────────────────────────────────
+
+
+class TestLoadFromDB:
+    """Tests for load_from_db hydration on startup."""
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_load_populates_jobs(self, MockRepo):
+        """load_from_db should hydrate _jobs from DB rows."""
+        MockRepo.return_value.list_recent.return_value = [
+            {
+                "id": "db-job-1",
+                "definition_id": "flux/dev",
+                "config": {"lora_name": "test"},
+                "status": "completed",
+                "created_at": 1000.0,
+                "started_at": 1001.0,
+                "finished_at": 1500.0,
+                "error": None,
+            },
+        ]
+        mgr = JobManager()
+        mgr.load_from_db()
+
+        job = mgr.get_job("db-job-1")
+        assert job is not None
+        assert job.status == JobStatus.COMPLETED
+        assert job.plugin_id == "flux/dev"
+        assert job.config == {"lora_name": "test"}
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_running_demoted_to_stopped(self, MockRepo):
+        """Jobs that were running at shutdown should be marked stopped."""
+        MockRepo.return_value.list_recent.return_value = [
+            {
+                "id": "db-job-run",
+                "definition_id": "flux/dev",
+                "config": {},
+                "status": "running",
+                "created_at": 1000.0,
+                "started_at": 1001.0,
+                "finished_at": None,
+                "error": None,
+            },
+        ]
+        mgr = JobManager()
+        mgr.load_from_db()
+
+        job = mgr.get_job("db-job-run")
+        assert job is not None
+        assert job.status == JobStatus.STOPPED
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_paused_demoted_to_stopped(self, MockRepo):
+        """Jobs that were paused at shutdown should be marked stopped."""
+        MockRepo.return_value.list_recent.return_value = [
+            {
+                "id": "db-job-paused",
+                "definition_id": "sdxl/base",
+                "config": {},
+                "status": "paused",
+                "created_at": 1000.0,
+                "started_at": 1001.0,
+                "finished_at": None,
+                "error": None,
+            },
+        ]
+        mgr = JobManager()
+        mgr.load_from_db()
+
+        job = mgr.get_job("db-job-paused")
+        assert job is not None
+        assert job.status == JobStatus.STOPPED
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_existing_jobs_not_overwritten(self, MockRepo):
+        """Live in-memory jobs should not be replaced by DB rows."""
+        MockRepo.return_value.list_recent.return_value = [
+            {
+                "id": "live-job",
+                "definition_id": "flux/dev",
+                "config": {"from": "db"},
+                "status": "completed",
+                "created_at": 1000.0,
+                "started_at": None,
+                "finished_at": None,
+                "error": None,
+            },
+        ]
+        mgr = JobManager()
+        live_job = mgr.create_job("flux/dev", {"from": "memory"})
+        live_job.id = "live-job"  # Force same ID
+        mgr._jobs["live-job"] = live_job
+
+        mgr.load_from_db()
+
+        # Should still be the in-memory version
+        assert mgr.get_job("live-job").config == {"from": "memory"}
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_load_handles_exception_gracefully(self, MockRepo):
+        """load_from_db should not crash if the DB is unavailable."""
+        MockRepo.return_value.list_recent.side_effect = Exception("DB locked")
+        mgr = JobManager()
+        mgr.load_from_db()  # Should not raise
+
+        assert mgr.list_jobs() == []
+

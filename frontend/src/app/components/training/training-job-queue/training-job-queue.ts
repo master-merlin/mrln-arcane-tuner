@@ -34,7 +34,7 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
       </div>
 
       <div class="divide-y divide-surface-mid/50">
-        @for (job of jobs(); track job.id) {
+        @for (job of activeJobs(); track job.id) {
           <div [attr.data-testid]="'job-item-' + job.id"
                class="px-6 py-5 hover:bg-surface-mid/30 transition-all group border-l-2 border-transparent" [class.border-l-brand]="job.status === JobStatus.RUNNING">
             <div class="flex flex-col gap-3">
@@ -341,6 +341,140 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
           </div>
         }
       </div>
+
+      <!-- Archive Section -->
+      @if (archivedJobs().length > 0) {
+        <div class="mt-4 bg-surface-low/50 rounded-theme-xl border border-surface-mid overflow-hidden shadow-lg">
+          <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
+            class="w-full px-6 py-3 flex justify-between items-center bg-surface-low/80 hover:bg-surface-mid/30 transition-colors cursor-pointer border-b border-surface-mid/50">
+            <div class="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-text-muted">
+                <rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>
+              </svg>
+              <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Archive</span>
+              <span class="text-[10px] font-bold text-text-disabled bg-surface-high px-2 py-0.5 rounded-full">{{ archivedJobs().length }}</span>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+              class="text-text-muted transition-transform" [class.rotate-180]="archiveExpanded()">
+              <path d="m6 9 6 6 6-6"/>
+            </svg>
+          </button>
+          @if (archiveExpanded()) {
+            <div class="divide-y divide-surface-mid/50">
+              @for (job of archivedJobs(); track job.id) {
+                <div [attr.data-testid]="'job-item-' + job.id"
+                     class="px-6 py-5 hover:bg-surface-mid/30 transition-all group border-l-2 border-transparent opacity-80">
+                  <div class="flex flex-col gap-3">
+                    <div class="flex items-center justify-between">
+                      <div class="flex items-center gap-3">
+                        <div class="flex flex-col">
+                          <span class="text-white font-bold text-sm tracking-tight flex items-center gap-2">
+                             <span class="text-brand-light">{{ job.config['lora_name'] || 'UNNAMED' }}</span>
+                             <span class="text-text-subtle font-normal">on</span>
+                             {{ job.config['definition_id'] || job.plugin_id | uppercase }}
+                            <span class="text-text-disabled font-normal text-xs">#{{ job.id.slice(0, 8) }}</span>
+                          </span>
+                          <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono">
+                            <span>{{ job.created_at * 1000 | date:'MMM d, HH:mm' }}</span>
+                            @if (job.finished_at) {
+                              <span>&bull;</span>
+                              <span>{{ getDuration(job) }}</span>
+                            }
+                          </div>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-3">
+                        <span [class]="getStatusClass(job.status)"
+                          class="text-[10px] px-2.5 py-1 rounded-full uppercase font-black tracking-widest shadow-sm">
+                          {{ job.status }}
+                        </span>
+                        <div class="flex items-center gap-1">
+                          <!-- Samples Toggle -->
+                          <button (click)="toggleSamples(job.id)"
+                            class="p-1.5 rounded-theme-lg transition-colors"
+                            [class]="!jobsWithSamples().has(job.id) ? 'text-text-disabled cursor-not-allowed opacity-30' : samplesExpandedJobs().has(job.id) ? 'text-brand hover:text-brand/80' : 'text-text-subtle hover:text-brand'"
+                            [disabled]="!jobsWithSamples().has(job.id)"
+                            [title]="!jobsWithSamples().has(job.id) ? 'No samples available' : samplesExpandedJobs().has(job.id) ? 'Hide Samples' : 'Show Samples'">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                          </button>
+                          <button (click)="toggleConfig(job.id)"
+                            class="p-1.5 text-text-subtle hover:text-white rounded-theme-lg transition-colors" [title]="configExpandedJobs().has(job.id) ? 'Collapse Config' : 'View Config'">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" [class.rotate-180]="configExpandedJobs().has(job.id)" class="transition-transform"><path d="m6 9 6 6 6-6"/></svg>
+                          </button>
+                          @if (job.status === JobStatus.FAILED || job.status === JobStatus.STOPPED) {
+                            <button (click)="restartJob(job.id)"
+                              class="p-1.5 text-blue-400 hover:bg-blue-400/10 rounded-theme-lg transition-colors" title="Restart Job">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
+                            </button>
+                          }
+                          <button (click)="deleteJob(job.id)"
+                            class="p-1.5 text-text-subtle hover:text-danger hover:bg-danger/10 rounded-theme-lg transition-colors" title="Delete Job">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Samples Grid (Archive) -->
+                    @if (samplesExpandedJobs().has(job.id)) {
+                      <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
+                        <div class="flex justify-between items-center mb-3">
+                          <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Sample Previews</h4>
+                          <button (click)="loadSamples(job.id)" class="p-1 text-brand hover:text-brand/80 transition-colors group" title="Refresh samples">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-180 transition-transform duration-500"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+                          </button>
+                        </div>
+                        @if (jobSamples().get(job.id); as samples) {
+                          @if (samples.length > 0) {
+                            <div class="grid grid-cols-4 gap-2 max-h-[38rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
+                              @for (sample of samples; track sample.filename) {
+                                <button (click)="openSampleModal(job.id, sample)" class="relative group rounded-theme-lg overflow-hidden border border-surface-mid hover:border-brand/50 transition-all hover:shadow-lg hover:shadow-brand/10 aspect-square bg-surface-high">
+                                  <img [src]="getSampleImageUrl(job.id, sample.filename)" [alt]="'Step ' + sample.step" class="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy">
+                                  <div class="absolute bottom-0 left-0 right-0 bg-base/80 px-2 py-1">
+                                    <span class="text-[10px] text-white font-mono font-bold">{{ sample.step === 999999 ? 'Final' : 'Step ' + sample.step }}</span>
+                                  </div>
+                                </button>
+                              }
+                            </div>
+                          } @else {
+                            <div class="text-center text-xs text-text-subtle py-8 italic">No samples found on disk.</div>
+                          }
+                        } @else {
+                          <div class="text-center text-xs text-text-subtle py-8 italic">Loading samples...</div>
+                        }
+                      </div>
+                    }
+                    @if (configExpandedJobs().has(job.id)) {
+                      <div class="bg-base/70 p-4 rounded-theme-xl border border-surface-mid animate-in slide-in-from-top-2 duration-300">
+                        <div class="flex items-center justify-between mb-2">
+                          <span class="text-[10px] text-text-subtle uppercase font-black tracking-widest">Job Configuration</span>
+                          <div class="flex items-center gap-1">
+                            <button (click)="onSaveAsTemplate(job)" type="button"
+                              class="p-1.5 text-text-subtle hover:text-brand hover:bg-brand/10 rounded-theme-lg transition-colors" title="Save as Template">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
+                            </button>
+                            <button (click)="onReloadConfig(job)" type="button"
+                              class="p-1.5 text-text-subtle hover:text-green-400 hover:bg-green-400/10 rounded-theme-lg transition-colors" title="Reload into Settings">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                            </button>
+                          </div>
+                        </div>
+                        <pre class="text-[10px] text-brand/80 font-mono overflow-auto max-h-40 scrollbar-thin scrollbar-thumb-surface-high">{{ job.config | json }}</pre>
+                      </div>
+                    }
+                    @if (job.error) {
+                      <div class="text-xs text-danger mt-1 flex items-start gap-2 bg-danger/10 p-2 rounded-theme-lg border border-danger/30">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                        <span class="break-words">{{ job.error }}</span>
+                      </div>
+                    }
+                  </div>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      }
     </div>
 
     <!-- Sample Preview Modal -->
@@ -389,6 +523,12 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   private rtc = inject(RuntimeConfigService);
   jobs = signal<Job[]>([]);
   JobStatus = JobStatus;
+
+  // Derived views: active queue vs archive
+  private readonly ACTIVE_STATUSES = new Set([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.PAUSED]);
+  activeJobs = computed(() => this.jobs().filter(j => this.ACTIVE_STATUSES.has(j.status)));
+  archivedJobs = computed(() => this.jobs().filter(j => !this.ACTIVE_STATUSES.has(j.status)));
+  archiveExpanded = signal<boolean>(false);
 
   // Output events for config actions
   saveAsTemplate = output<any>();
@@ -894,6 +1034,26 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
 
   resumeJob(id: string) {
     this.jobService.resumeJob(id).subscribe(() => this.loadJobs());
+  }
+
+  toggleArchive() {
+    const willExpand = !this.archiveExpanded();
+    this.archiveExpanded.set(willExpand);
+
+    // Pre-check sample availability when expanding
+    if (willExpand) {
+      for (const job of this.archivedJobs()) {
+        if (!this.jobsWithSamples().has(job.id)) {
+          this.jobService.getJobSamples(job.id).subscribe({
+            next: (samples) => {
+              if (samples && samples.length > 0) {
+                this.jobsWithSamples.update(prev => { const n = new Set(prev); n.add(job.id); return n; });
+              }
+            }
+          });
+        }
+      }
+    }
   }
 
   openStopModal(id: string) {

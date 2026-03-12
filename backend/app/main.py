@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
 
     from app.core.job_manager import job_manager
     job_manager.set_loop(loop)
+    job_manager.load_from_db()
 
     from app.core.logger import set_logging_loop
     set_logging_loop(loop)

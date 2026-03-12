@@ -37,6 +37,47 @@ class JobManager:
         """Store the main event loop for cross-thread broadcasts."""
         self._loop = loop
 
+    def load_from_db(self) -> None:
+        """Hydrate the in-memory job registry from the SQLite job_history table.
+
+        Called once at startup so previously-created jobs survive backend
+        restarts.  Jobs that were ``running`` or ``paused`` at shutdown are
+        demoted to ``stopped`` because the training subprocess is no longer
+        alive.
+        """
+        try:
+            from app.core.db.repositories.job_repo import JobHistoryRepository
+
+            repo = JobHistoryRepository()
+            rows = repo.list_recent(limit=200)
+
+            loaded = 0
+            with self._lock:
+                for row in rows:
+                    if row["id"] in self._jobs:
+                        continue  # Don't overwrite live jobs
+
+                    status_str = row.get("status", "pending")
+                    # Interrupted jobs can't still be running
+                    if status_str in ("running", "paused"):
+                        status_str = "stopped"
+
+                    self._jobs[row["id"]] = Job(
+                        id=row["id"],
+                        plugin_id=row.get("definition_id", ""),
+                        config=row.get("config") or {},
+                        status=JobStatus(status_str),
+                        created_at=row.get("created_at", 0),
+                        started_at=row.get("started_at"),
+                        finished_at=row.get("finished_at"),
+                        error=row.get("error"),
+                    )
+                    loaded += 1
+
+            logger.info("jobs_loaded_from_db", count=loaded)
+        except Exception as e:
+            logger.warning("jobs_load_from_db_failed", error=str(e))
+
     def create_job(self, plugin_id: str, config: dict[str, Any]) -> Job:
         """Create a new pending job and register it."""
         job = Job.create(plugin_id, config)

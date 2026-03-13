@@ -566,18 +566,22 @@ export class DatasetViewerComponent implements OnInit {
 
     // --- Exclusion Handlers ---
     handleExclusionToggle(event: { media_file: string, enabled: boolean }) {
+        // Optimistic update — apply immediately for instant visual feedback
+        const previous = this.pairs();
+        const updated = previous.map(p => {
+            if (p.media_file === event.media_file) {
+                return { ...p, metadata: { ...p.metadata, enabled: event.enabled } };
+            }
+            return p;
+        });
+        this.pairs.set(updated);
+
+        // Persist to backend; revert on error
         this.datasetService.toggleImageEnabled(this.datasetName(), event.media_file, event.enabled).subscribe({
-            next: () => {
-                // Update local state
-                const updated = this.pairs().map(p => {
-                    if (p.media_file === event.media_file) {
-                        return { ...p, metadata: { ...p.metadata, enabled: event.enabled } };
-                    }
-                    return p;
-                });
-                this.pairs.set(updated);
-            },
-            error: err => console.error('Failed to toggle image:', err)
+            error: err => {
+                console.error('Failed to toggle image:', err);
+                this.pairs.set(previous);
+            }
         });
     }
 

@@ -1,4 +1,4 @@
-﻿accelerate==1.12.0
+accelerate==1.12.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.3
 aiosignal==1.4.0
@@ -67,7 +67,7 @@ primp==0.15.0
 prodigy-plus-schedule-free==2.0.1
 prodigyopt==1.1.2
 propcache==0.4.1
-protobuf==6.33.5
+protobuf==3.20.3
 psutil==7.2.2
 pyarrow==23.0.1
 pycocotools==2.0.11

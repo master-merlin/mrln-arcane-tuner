@@ -94,10 +94,17 @@ class MediaItemRepository:
             conn.execute(sql, [data[c] for c in cols])
 
     def update(self, dataset_id: str, rel_path: str, updates: dict[str, Any]) -> None:
-        """Update specific fields on a single media item.
+        """Update specific fields on a single media item (opens its own write context)."""
+        with get_db().write() as conn:
+            self.update_with_conn(conn, dataset_id, rel_path, updates)
+
+    def update_with_conn(
+        self, conn, dataset_id: str, rel_path: str, updates: dict[str, Any]
+    ) -> None:
+        """Update specific fields using an external connection (shared transaction).
 
         This is the fast path for crop/mask operations — one row
-        instead of rewriting the entire settings.json.
+        instead of rewriting the entire dataset.
         """
         updates = self._prepare(updates)
         settable = {k: v for k, v in updates.items()
@@ -108,20 +115,23 @@ class MediaItemRepository:
         set_clause = ", ".join(f"{k} = ?" for k in settable)
         values = list(settable.values()) + [dataset_id, rel_path]
 
-        with get_db().write() as conn:
-            conn.execute(
-                f"UPDATE media_items SET {set_clause} "
-                "WHERE dataset_id = ? AND rel_path = ?",
-                values,
-            )
+        conn.execute(
+            f"UPDATE media_items SET {set_clause} "
+            "WHERE dataset_id = ? AND rel_path = ?",
+            values,
+        )
 
     def delete(self, dataset_id: str, rel_path: str) -> None:
-        """Remove a single media item."""
+        """Remove a single media item (opens its own write context)."""
         with get_db().write() as conn:
-            conn.execute(
-                "DELETE FROM media_items WHERE dataset_id = ? AND rel_path = ?",
-                (dataset_id, rel_path),
-            )
+            self.delete_with_conn(conn, dataset_id, rel_path)
+
+    def delete_with_conn(self, conn, dataset_id: str, rel_path: str) -> None:
+        """Remove a single media item using an external connection."""
+        conn.execute(
+            "DELETE FROM media_items WHERE dataset_id = ? AND rel_path = ?",
+            (dataset_id, rel_path),
+        )
 
     def delete_by_dataset(self, dataset_id: str) -> int:
         """Remove all media items for a dataset. Returns count deleted."""
@@ -134,28 +144,34 @@ class MediaItemRepository:
     # ── Bulk operations ──────────────────────────────────────────────
 
     def bulk_upsert(self, dataset_id: str, items: list[dict[str, Any]]) -> int:
-        """Insert or update many media items in one transaction.
+        """Insert or update many media items in one transaction."""
+        with get_db().write() as conn:
+            return self.bulk_upsert_with_conn(conn, dataset_id, items)
+
+    def bulk_upsert_with_conn(
+        self, conn, dataset_id: str, items: list[dict[str, Any]]
+    ) -> int:
+        """Insert or update many media items using an external connection.
 
         Returns number of rows affected.
         """
         count = 0
-        with get_db().write() as conn:
-            for raw in items:
-                data = self._prepare(raw)
-                data["dataset_id"] = dataset_id
-                cols = [c for c in self._COLUMNS if c in data]
-                placeholders = ", ".join("?" for _ in cols)
-                updates = ", ".join(
-                    f"{c}=excluded.{c}" for c in cols
-                    if c not in ("dataset_id", "rel_path")
-                )
-                sql = f"""
-                    INSERT INTO media_items ({', '.join(cols)})
-                    VALUES ({placeholders})
-                    ON CONFLICT(dataset_id, rel_path) DO UPDATE SET {updates}
-                """
-                conn.execute(sql, [data[c] for c in cols])
-                count += 1
+        for raw in items:
+            data = self._prepare(raw)
+            data["dataset_id"] = dataset_id
+            cols = [c for c in self._COLUMNS if c in data]
+            placeholders = ", ".join("?" for _ in cols)
+            updates = ", ".join(
+                f"{c}=excluded.{c}" for c in cols
+                if c not in ("dataset_id", "rel_path")
+            )
+            sql = f"""
+                INSERT INTO media_items ({', '.join(cols)})
+                VALUES ({placeholders})
+                ON CONFLICT(dataset_id, rel_path) DO UPDATE SET {updates}
+            """
+            conn.execute(sql, [data[c] for c in cols])
+            count += 1
 
         return count
 

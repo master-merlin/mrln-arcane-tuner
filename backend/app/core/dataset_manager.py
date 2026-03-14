@@ -117,19 +117,30 @@ class DatasetManager:
             self._persist_dataset(ds)
 
     def _persist_dataset(self, ds: Dataset) -> None:
-        """Persist a single dataset + its media items to SQLite."""
+        """Persist a single dataset + its media items to SQLite (atomic)."""
         data = ds.model_dump()
         media_meta = data.pop("media_metadata", {})
 
-        # Upsert the dataset row
-        self._dataset_repo.upsert(data)
+        # Single transaction for dataset row + all media items
+        db = DatabaseEngine.get_instance()
+        with db.write() as conn:
+            self._dataset_repo.upsert_with_conn(conn, data)
+            if media_meta:
+                self._media_repo.bulk_upsert_with_conn(
+                    conn, ds.id,
+                    [{"rel_path": k, **v} for k, v in media_meta.items()],
+                )
 
-        # Upsert media items
-        if media_meta:
-            self._media_repo.bulk_upsert(
-                ds.id,
-                [{"rel_path": k, **v} for k, v in media_meta.items()],
-            )
+    def _persist_media_item(self, dataset: "Dataset", rel_path: str) -> None:
+        """Persist only a single media item to SQLite (fast path).
+
+        Used by single-file operations (crop, adjust, mask) to avoid
+        persisting the entire dataset + all media items on every edit.
+        """
+        lookup_key = rel_path.replace(os.sep, "/")
+        meta = dataset.media_metadata.get(lookup_key)
+        if meta:
+            self._media_repo.update(dataset.id, lookup_key, dict(meta))
 
     def list_datasets(self) -> list[Dataset]:
         return list(self.datasets.values())
@@ -172,7 +183,7 @@ class DatasetManager:
         """Public method to manually bump dataset version."""
         if name in self.datasets:
             self._bump_version(self.datasets[name], bump_type)
-            self.save()
+            self._persist_dataset(self.datasets[name])
             return self.datasets[name].version
         return None
 
@@ -180,7 +191,7 @@ class DatasetManager:
         if name in self.datasets:
             if self.datasets[name].missing and os.path.exists(self.datasets[name].path):
                  self.datasets[name].missing = False
-                 self.save()
+                 self._persist_dataset(self.datasets[name])
                  return self.datasets[name]
             raise ValueError(f"Dataset '{name}' already exists.")
         
@@ -204,7 +215,7 @@ class DatasetManager:
             version="1.0.0"
         )
         self.datasets[name] = dataset
-        self.save()
+        self._persist_dataset(dataset)
         return dataset
 
     def scan_dataset(self, name: str, force_full: bool = False) -> Dataset:
@@ -232,7 +243,7 @@ class DatasetManager:
 
         if not os.path.exists(dataset.path):
             dataset.missing = True
-            self.save()
+            self._persist_dataset(dataset)
             raise FileNotFoundError(f"Path {dataset.path} does not exist.")
 
         dataset.missing = False
@@ -527,7 +538,7 @@ class DatasetManager:
         ):
             self._bump_version(dataset, "minor")
 
-        self.save()
+        self._persist_dataset(dataset)
 
     def _score_new_images(self, dataset: "Dataset", ctx: dict) -> None:
         """Stage 4: Score unscored images for quality using HPSv2.
@@ -850,7 +861,8 @@ class DatasetManager:
                     ds.has_cache = True
                     changed.append(name)
         if changed:
-            self.save()
+            for ch_name in changed:
+                self._persist_dataset(self.datasets[ch_name])
             if self._loop and not self._loop.is_closed():
                 asyncio.run_coroutine_threadsafe(
                     event_manager.broadcast("dataset_cache_ready", {
@@ -869,7 +881,7 @@ class DatasetManager:
             shutil.rmtree(dataset.path)
             
         del self.datasets[name]
-        self.save()
+        self._dataset_repo.delete(dataset.id)
 
     def update_dataset(self, current_name: str, new_name: str, new_description: str, new_classifier: str = "") -> Dataset:
         if current_name not in self.datasets:
@@ -913,7 +925,7 @@ class DatasetManager:
             
         dataset.description = new_description
         dataset.classifier = new_classifier
-        self.save()
+        self._persist_dataset(dataset)
         return dataset
 
     def get_dataset_pairs(self, name: str) -> list[dict]:
@@ -1049,7 +1061,7 @@ class DatasetManager:
             raise ValueError(f"Image '{media_file}' not found in dataset metadata.")
 
         dataset.media_metadata[lookup_key]["enabled"] = enabled
-        self.save()
+        self._persist_media_item(dataset, media_file)
         logger.info("image_enabled_toggled", dataset=name, file=media_file, enabled=enabled)
         return {"media_file": media_file, "enabled": enabled}
 
@@ -1072,7 +1084,7 @@ class DatasetManager:
                 meta["enabled"] = True
                 count += 1
 
-        self.save()
+        self._persist_dataset(dataset)
         logger.info("all_images_enabled", dataset=name, reset_count=count)
         return {"reset_count": count}
 
@@ -1080,39 +1092,64 @@ class DatasetManager:
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
-        
+
         # Paths
         full_media_path = os.path.join(dataset.path, media_file)
-        
+
         # Check if exists
         if not os.path.exists(full_media_path):
              raise FileNotFoundError(f"Media file '{media_file}' not found in dataset '{name}'.")
-             
-        # Find caption file
+
         stem, _ = os.path.splitext(media_file)
-        # We need to find the caption file. It could be .txt or .caption.
-        # Let's search for it.
-        caption_exts = ['.txt', '.caption']
-        
-        # Delete media
+        lookup_key = media_file.replace(os.sep, "/")
+
+        # ── Step 1: DB-first atomic update ──────────────────────────
+        # Delete from DB before touching files — ghost DB entries are
+        # worse than orphan files (orphans get cleaned up on next scan).
+        had_caption = False
+        had_mask = False
+        meta = dataset.media_metadata.get(lookup_key)
+        if meta:
+            had_caption = bool(meta.get("has_caption"))
+            had_mask = bool(meta.get("mask_file"))
+
+        db = DatabaseEngine.get_instance()
+        with db.write() as conn:
+            # Delete media item row
+            self._media_repo.delete_with_conn(conn, dataset.id, lookup_key)
+            # Update dataset counters atomically
+            dataset.multimedia_count = max(0, dataset.multimedia_count - 1)
+            if had_caption:
+                dataset.caption_count = max(0, dataset.caption_count - 1)
+            if had_mask:
+                dataset.mask_count = max(0, dataset.mask_count - 1)
+            data = dataset.model_dump()
+            data.pop("media_metadata", None)
+            self._dataset_repo.upsert_with_conn(conn, data)
+
+        # Remove from in-memory dict
+        dataset.media_metadata.pop(lookup_key, None)
+
+        # Bump version (multimedia count changed)
+        self._bump_version(dataset, "minor")
+
+        # ── Step 2: Best-effort filesystem cleanup ──────────────────
+        # DB is already consistent — file deletion failures are harmless.
         try:
             os.remove(full_media_path)
         except OSError as e:
-            raise RuntimeError(f"Failed to delete media file: {e}")
-            
-        # Delete caption
-        # We try to construct potential caption paths
-        # Note: 'media_file' provided is relative path. 'stem' includes subdirs if any.
-        # But splitext on "folder/image.png" gives "folder/image".
+            logger.warning("media_file_delete_failed", file=media_file, error=str(e))
+
+        caption_exts = ['.txt', '.caption']
         for ext in caption_exts:
             cap_path = os.path.join(dataset.path, stem + ext)
             if os.path.exists(cap_path):
                 try:
                     os.remove(cap_path)
                 except OSError:
-                    pass  # Best-effort cleanup
-        
-        # Delete mask if exists
+                    pass
+
+        # Mask
         mask_path = os.path.join(dataset.path, "masks", stem + ".png")
         if os.path.exists(mask_path):
             try:
@@ -1120,7 +1157,7 @@ class DatasetManager:
             except OSError:
                 pass
 
-        # Delete masked image + caption if they exist
+        # Masked image + caption
         for masked_ext in (".jpg", ".txt"):
             masked_path = os.path.join(dataset.path, "masked", stem + masked_ext)
             if os.path.exists(masked_path):
@@ -1128,10 +1165,6 @@ class DatasetManager:
                     os.remove(masked_path)
                 except OSError:
                     pass
-                    
-        # Trigger rescan to update counts
-        # scan_dataset will handle the 'minor' bump since multimedia_count will decrease
-        self.scan_dataset(name)
 
     
     def crop_media(self, name: str, relative_path: str, target_w: int, target_h: int, origin: str = "center", crop_x: int | None = None, crop_y: int | None = None):
@@ -1204,7 +1237,7 @@ class DatasetManager:
             dataset.media_metadata, lookup_key, full_path,
             new_dims=(target_w, target_h),
         )
-        self.save()
+        self._persist_media_item(dataset, relative_path)
         return True
 
     def apply_adjustments(
@@ -1244,7 +1277,7 @@ class DatasetManager:
         lookup_key = relative_path.replace(os.sep, "/")
         update_metadata_after_edit(dataset.media_metadata, lookup_key, full_path)
 
-        self.save()
+        self._persist_media_item(dataset, relative_path)
         return True
 
     def harmonize_files(self, name: str) -> dict:

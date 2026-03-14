@@ -56,10 +56,16 @@ class DatasetRepository:
     # ── Writes ───────────────────────────────────────────────────────
 
     def upsert(self, data: dict[str, Any]) -> None:
-        """Insert or update a dataset row.
+        """Insert or update a dataset row (opens its own write context)."""
+        with get_db().write() as conn:
+            self.upsert_with_conn(conn, data)
 
-        ``data`` should be a dict with keys matching ``_COLUMNS``.
-        Boolean fields are coerced to int for SQLite.
+    def upsert_with_conn(self, conn, data: dict[str, Any]) -> None:
+        """Insert or update a dataset row using an external connection.
+
+        Uses a two-step approach to handle both UNIQUE(id) and UNIQUE(name):
+        1. Try UPDATE by id
+        2. If no row existed, INSERT OR REPLACE (handles stale name conflicts)
         """
         data = dict(data)  # defensive copy
         data.setdefault("updated_at", time.time())
@@ -70,16 +76,27 @@ class DatasetRepository:
                 data[key] = int(bool(data[key]))
 
         cols = [c for c in self._COLUMNS if c in data]
-        placeholders = ", ".join("?" for _ in cols)
-        updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "id")
 
+        # Step 1: Try UPDATE by primary key
+        if "id" in data:
+            update_cols = [c for c in cols if c != "id"]
+            if update_cols:
+                set_clause = ", ".join(f"{c} = ?" for c in update_cols)
+                values = [data[c] for c in update_cols] + [data["id"]]
+                cursor = conn.execute(
+                    f"UPDATE datasets SET {set_clause} WHERE id = ?",
+                    values,
+                )
+                if cursor.rowcount > 0:
+                    return  # Updated existing row — done
+
+        # Step 2: INSERT OR REPLACE (handles stale name conflicts)
+        placeholders = ", ".join("?" for _ in cols)
         sql = f"""
-            INSERT INTO datasets ({', '.join(cols)})
+            INSERT OR REPLACE INTO datasets ({', '.join(cols)})
             VALUES ({placeholders})
-            ON CONFLICT(id) DO UPDATE SET {updates}
         """
-        with get_db().write() as conn:
-            conn.execute(sql, [data[c] for c in cols])
+        conn.execute(sql, [data[c] for c in cols])
 
     def delete(self, dataset_id: str) -> None:
         """Delete a dataset and its media items (cascaded)."""

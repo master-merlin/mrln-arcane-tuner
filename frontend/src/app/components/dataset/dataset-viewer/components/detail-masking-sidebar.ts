@@ -11,8 +11,9 @@ import { ToastService } from '../../../../services/toast';
     imports: [DatasetMaskingSettingsComponent, DecimalPipe],
     template: `
         <div class="w-full h-full border-r border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
-             <!-- Layers / Content Area -->
-             <div class="flex-1 overflow-y-auto mb-2 relative p-4 scrollbar-thin scrollbar-thumb-gray-800">
+             <!-- Scrollable mask preview area -->
+             <div class="flex-1 min-h-[60px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
+                <div class="relative p-4">
                 @if (currentPair()?.metadata?.mask_file) {
                     <div class="space-y-3 animate-fadeIn">
                         <h5 class="text-[10px] text-text-subtle uppercase font-bold tracking-widest flex items-center gap-2">
@@ -49,53 +50,56 @@ import { ToastService } from '../../../../services/toast';
                         </div>
                     </div>
                 } @else {
-                    <div class="absolute inset-0 flex flex-col items-center justify-center text-center p-8 text-text-disabled pointer-events-none">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="opacity-10 mb-4"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle></svg>
+                    <div class="flex flex-col items-center justify-center text-center py-12 text-text-disabled pointer-events-none">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="opacity-10 mb-3"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle></svg>
                         <p class="text-[10px] uppercase font-bold tracking-widest opacity-30">No mask detected</p>
                     </div>
                 }
+                </div>
              </div>
              
-             <!-- Masking Settings Panel (Bottom) -->
-             <div class="border-t border-surface-mid bg-surface-low/50">
-                 <div class="px-4 py-3">
-                     <h4 class="text-xs font-bold text-text-subtle uppercase tracking-widest mb-2 flex items-center justify-between cursor-pointer hover:text-brand transition-colors" (click)="toggleMaskingPanel()">
+             <!-- Masking Settings Panel — bottom-locked, capped to preserve mask preview -->
+             <div class="shrink-0 max-h-[80%] flex flex-col border-t border-surface-mid bg-surface-low/50 overflow-hidden">
+                 <div class="shrink-0 px-4 py-3">
+                     <h4 class="text-xs font-bold text-text-subtle uppercase tracking-widest flex items-center justify-between cursor-pointer hover:text-brand transition-colors" (click)="toggleMaskingPanel()">
                          <span class="flex items-center gap-2">
                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg>
                              Masking
                          </span>
                          <svg class="w-3 h-3 transition-transform" [class.rotate-180]="internalShowMaskingPanel()" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                      </h4>
-                     
-                     @if (internalShowMaskingPanel()) {
-                         <div class="space-y-3 animate-fadeIn">
-                             <!-- Settings Component -->
-                             <app-dataset-masking-settings (settingsChanged)="onSettingsChange($event)"></app-dataset-masking-settings>
-
-                             <!-- Execute Button -->
-                             <button (click)="generateMask()" [disabled]="isGeneratingMask()" 
-                                 class="w-full py-2 rounded-theme-lg font-bold text-xs shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2"
-                                 [class.bg-brand]="!isGeneratingMask()"
-                                 [class.hover:bg-brand/90]="!isGeneratingMask()"
-                                 [class.text-white]="!isGeneratingMask()"
-                                 [class.bg-surface-mid]="isGeneratingMask()"
-                                 [class.text-text-subtle]="isGeneratingMask()">
-                                 
-                                 @if (isGeneratingMask()) {
-                                     <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                     <span>Processing...</span>
-                                 } @else {
-                                     @if (selectedMaskModel() === 'sam3') {
-                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-                                     } @else {
-                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-                                     }
-                                     <span>Generate Mask</span>
-                                 }
-                             </button>
-                         </div>
-                     }
                  </div>
+                     
+                 @if (internalShowMaskingPanel()) {
+                     <!-- Settings — scrolls only when panel hits max-h cap -->
+                     <div class="flex-1 min-h-0 overflow-y-auto px-4 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent">
+                         <app-dataset-masking-settings (settingsChanged)="onSettingsChange($event)"></app-dataset-masking-settings>
+                     </div>
+
+                     <!-- Generate button — always visible -->
+                     <div class="shrink-0 px-4 pb-3 pt-2">
+                         <button (click)="generateMask()" [disabled]="isGeneratingMask()" 
+                             class="w-full py-2 rounded-theme-lg font-bold text-xs shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2"
+                             [class.bg-brand]="!isGeneratingMask()"
+                             [class.hover:bg-brand/90]="!isGeneratingMask()"
+                             [class.text-white]="!isGeneratingMask()"
+                             [class.bg-surface-mid]="isGeneratingMask()"
+                             [class.text-text-subtle]="isGeneratingMask()">
+                             
+                             @if (isGeneratingMask()) {
+                                 <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                 <span>Processing...</span>
+                             } @else {
+                                 @if (selectedMaskModel() === 'sam3') {
+                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                                 } @else {
+                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                                 }
+                                 <span>Generate Mask</span>
+                             }
+                         </button>
+                     </div>
+                 }
              </div>
         </div>
     `,

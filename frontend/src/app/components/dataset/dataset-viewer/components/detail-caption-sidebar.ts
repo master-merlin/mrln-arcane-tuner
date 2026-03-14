@@ -11,48 +11,55 @@ import { ToastService } from '../../../../services/toast';
     imports: [FormsModule, DatasetCaptionSettingsComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
-            <div class="p-4 border-b border-surface-mid bg-surface-low/50 flex items-center justify-between">
-                <button (click)="saveRequested.emit()" [disabled]="!isDirty()" 
-                        [class.opacity-50]="!isDirty()"
-                        class="w-full bg-brand hover:bg-brand/90 text-white py-2 rounded-theme-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-brand/20 active:scale-95">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-                    Save Changes
-                </button>
-            </div>
-            
-            <div class="p-4 border-b border-surface-mid bg-surface-mid">
-                <h4 class="text-xs font-bold uppercase tracking-widest mb-1" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
-                <p class="text-xs text-text-muted truncate font-mono">{{ currentPair()?.caption_file || '(New File)' }}</p>
-            </div>
-            
-            <div class="flex-1 flex flex-col min-h-0 bg-surface-mid">
+            <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
+            <div class="flex-1 min-h-[60px] flex flex-col overflow-hidden">
+                <!-- Save Button -->
+                <div class="shrink-0 p-4 border-b border-surface-mid bg-surface-low/50 flex items-center justify-between">
+                    <button (click)="saveRequested.emit()" [disabled]="!isDirty()" 
+                            [class.opacity-50]="!isDirty()"
+                            class="w-full bg-brand hover:bg-brand/90 text-white py-2 rounded-theme-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-brand/20 active:scale-95">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                        Save Changes
+                    </button>
+                </div>
+                
+                <!-- Caption header -->
+                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid">
+                    <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
+                    <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair()?.caption_file || '(New File)' }}</p>
+                </div>
+                
+                <!-- Textarea -->
                 <textarea 
                     [(ngModel)]="captionText" 
                     (ngModelChange)="onCaptionChange()"
-                    class="flex-1 bg-surface-mid text-text-secondary p-4 resize-none focus:outline-none focus:bg-surface-high/50 transition-colors font-mono text-sm leading-relaxed scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
+                    class="flex-1 min-h-0 bg-surface-mid text-text-secondary p-3 resize-none focus:outline-none focus:bg-surface-high/50 transition-colors font-mono text-xs leading-relaxed scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
                     placeholder="Enter caption for this image..."
                 ></textarea>
-                <div class="px-4 py-2 text-[10px] text-text-subtle italic bg-surface-mid/30 flex justify-between items-center">
-                    <span>{{ (captionText() || '').length }} characters</span>
-                    <span>Press <span class="font-bold">Ctrl+Enter</span> to save</span>
+                <div class="shrink-0 px-3 py-1 text-[10px] text-text-subtle italic bg-surface-mid/30 flex justify-between items-center">
+                    <span>{{ (captionText() || '').length }} chars</span>
+                    <span><span class="font-bold">Ctrl+Enter</span> save</span>
                 </div>
             </div>
 
-            <!-- AI Captioning Panel -->
-            <div class="px-4 py-3 border-t border-surface-mid bg-surface-low/50">
-                <h4 class="text-xs font-bold text-text-subtle uppercase tracking-widest mb-2 flex items-center justify-between cursor-pointer hover:text-brand transition-colors" (click)="toggleCaptionPanel()">
-                    <span class="flex items-center gap-2">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                        AI Recaptioning
-                    </span>
-                    <svg class="w-3 h-3 transition-transform" [class.rotate-180]="internalShowCaptionPanel()" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                </h4>
+            <!-- AI Captioning Panel — identical pattern to masking sidebar -->
+            <div class="shrink-0 max-h-[80%] flex flex-col border-t border-surface-mid bg-surface-low/50 overflow-hidden">
+                <div class="shrink-0 px-3 py-2">
+                    <h4 class="text-xs font-bold text-text-subtle uppercase tracking-widest flex items-center justify-between cursor-pointer hover:text-brand transition-colors" (click)="toggleCaptionPanel()">
+                        <span class="flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                            AI Recaptioning
+                        </span>
+                        <svg class="w-3 h-3 transition-transform" [class.rotate-180]="internalShowCaptionPanel()" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </h4>
+                </div>
                 
                 @if (internalShowCaptionPanel()) {
-                    <div class="space-y-3 animate-fadeIn">
-                            <app-dataset-caption-settings [isVideo]="isCurrentMediaVideo()" (settingsChanged)="onSettingsChange($event)"></app-dataset-caption-settings>
+                    <div class="flex-1 min-h-0 overflow-y-auto px-3 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent">
+                        <app-dataset-caption-settings [isVideo]="isCurrentMediaVideo()" (settingsChanged)="onSettingsChange($event)"></app-dataset-caption-settings>
+                    </div>
 
-                        <!-- Generate Button -->
+                    <div class="shrink-0 px-3 pb-2 pt-2 space-y-2">
                         <button (click)="generateCaption()" [disabled]="isGeneratingCaption()" 
                             class="w-full py-2 rounded-theme-lg font-bold text-xs shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 group"
                             [class.bg-brand]="!isGeneratingCaption()"
@@ -70,9 +77,8 @@ import { ToastService } from '../../../../services/toast';
                             }
                         </button>
 
-                        <!-- Suggestion UI -->
                         @if (suggestedCaption(); as suggestion) {
-                            <div class="mt-3 p-2 bg-brand/10 rounded-theme-md border border-brand/30 animate-fadeIn">
+                            <div class="p-2 bg-brand/10 rounded-theme-md border border-brand/30 animate-fadeIn">
                                 <h5 class="text-[10px] text-brand font-bold mb-1 uppercase tracking-wide">Suggestion</h5>
                                 <p class="text-[10px] text-text-secondary font-mono mb-2 max-h-32 overflow-y-auto">{{ suggestion }}</p>
                                 <div class="flex gap-2">

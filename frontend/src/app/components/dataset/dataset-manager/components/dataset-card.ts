@@ -1,4 +1,4 @@
-import { Component, inject, input, output, computed } from '@angular/core';
+import { Component, inject, input, output, computed, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Dataset } from '../../../../services/dataset';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
@@ -9,9 +9,28 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
     imports: [DatePipe, DecimalPipe],
     template: `
     <div [attr.data-testid]="'dataset-card-' + dataset().name"
-         class="bg-surface-mid border border-surface-high/50 rounded-theme-xl p-5 hover:bg-surface-high/50 transition-all group relative overflow-hidden cursor-pointer h-full flex flex-col" 
-         (click)="view.emit(dataset())">
+         class="bg-surface-mid border rounded-theme-xl p-5 hover:bg-surface-high/50 transition-all group relative overflow-hidden cursor-pointer h-full flex flex-col" 
+         [class.border-surface-high/50]="!dragOver()"
+         [class.border-brand]="dragOver()"
+         [class.ring-2]="dragOver()"
+         [class.ring-brand/50]="dragOver()"
+         (click)="view.emit(dataset())"
+         (dragover)="onDragOver($event)"
+         (dragleave)="onDragLeave($event)"
+         (drop)="onDrop($event)">
        
+       <!-- Drop Zone Overlay -->
+       @if (dragOver()) {
+           <div class="absolute inset-0 bg-brand/10 backdrop-blur-sm z-30 flex flex-col items-center justify-center gap-2 pointer-events-none animate-fadeIn">
+               <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand">
+                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                   <polyline points="17 8 12 3 7 8"></polyline>
+                   <line x1="12" y1="3" x2="12" y2="15"></line>
+               </svg>
+               <span class="text-brand font-bold text-xs uppercase tracking-widest">Drop to Upload</span>
+           </div>
+       }
+
        <!-- Header Section -->
        <div class="flex gap-4 mb-4">
           <!-- Thumbnail (Left) -->
@@ -197,6 +216,8 @@ export class DatasetCardComponent {
     delete = output<Dataset>();
     upload = output<{ datasetName: string, files: FileList }>();
 
+    dragOver = signal(false);
+
     private rtc = inject(RuntimeConfigService);
 
     previewUrl = computed(() => {
@@ -208,8 +229,33 @@ export class DatasetCardComponent {
         const files = event.target.files;
         if (files.length > 0) {
             this.upload.emit({ datasetName: this.dataset().name, files });
-            // Reset input so the same files can be selected again if needed
             event.target.value = '';
+        }
+    }
+
+    onDragOver(event: DragEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer?.types.includes('Files')) {
+            event.dataTransfer.dropEffect = 'copy';
+            this.dragOver.set(true);
+        }
+    }
+
+    onDragLeave(event: DragEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.dragOver.set(false);
+    }
+
+    onDrop(event: DragEvent) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.dragOver.set(false);
+
+        const files = event.dataTransfer?.files;
+        if (files && files.length > 0) {
+            this.upload.emit({ datasetName: this.dataset().name, files });
         }
     }
 

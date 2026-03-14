@@ -37,7 +37,7 @@ import { FormsModule } from '@angular/forms';
                         <!-- Media Thumbnail -->
                          <div class="h-80 bg-base relative cursor-pointer overflow-hidden flex-shrink-0" (click)="detailRequested.emit(i)">
                              <!-- Filename Overlay -->
-                             <div class="absolute top-2 left-1/2 -translate-x-1/2 bg-surface-low/80 backdrop-blur-sm text-white text-[10px] px-2 py-0.5 rounded-theme-lg border border-white/10 font-mono max-w-[90%] truncate pointer-events-none z-20 flex items-center gap-1.5">
+                             <div class="absolute top-2 left-1/2 -translate-x-1/2 bg-surface-low/80 backdrop-blur-sm text-white text-[10px] px-2 py-0.5 rounded-theme-lg border border-white/10 font-mono max-w-[90%] truncate pointer-events-none z-[5] flex items-center gap-1.5">
                                  <span class="truncate">{{ pair.media_file }}</span>
                                  @if (pair.metadata?.quality_score != null) {
                                      <span class="flex-shrink-0 px-1 py-px rounded-sm font-bold" [class]="getScoreColor(pair.metadata.quality_score)">{{ pair.metadata.quality_score.toFixed(4) }}</span>

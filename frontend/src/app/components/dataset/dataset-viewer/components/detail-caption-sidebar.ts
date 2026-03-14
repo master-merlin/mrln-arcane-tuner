@@ -1,4 +1,4 @@
-import { Component, input, output, model, inject, signal } from '@angular/core';
+import { Component, input, output, model, inject, signal, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
 import { DatasetService } from '../../../../services/dataset';
@@ -106,6 +106,15 @@ export class DetailCaptionSidebarComponent {
     isGeneratingCaption = signal<boolean>(false);
     suggestedCaption = signal<string | null>(null);
     currentSettings: CaptionSettingsState | null = null;
+    private lastModelId: string | null = null;
+
+    constructor() {
+        // Clear stale suggestion when navigating to a different image
+        effect(() => {
+            this.currentPair(); // track
+            this.suggestedCaption.set(null);
+        });
+    }
 
     onCaptionChange() {
         this.captionChanged.emit();
@@ -116,6 +125,11 @@ export class DetailCaptionSidebarComponent {
     }
 
     onSettingsChange(state: CaptionSettingsState) {
+        // Clear suggestion when the user switches to a different model
+        if (this.lastModelId && this.lastModelId !== state.resolvedModelId) {
+            this.suggestedCaption.set(null);
+        }
+        this.lastModelId = state.resolvedModelId;
         this.currentSettings = state;
     }
 
@@ -134,6 +148,10 @@ export class DetailCaptionSidebarComponent {
             next: (res: any) => {
                 this.suggestedCaption.set(res.caption);
                 this.isGeneratingCaption.set(false);
+                // Auto-expand the AI panel so the suggestion is visible
+                if (!this.internalShowCaptionPanel()) {
+                    this.internalShowCaptionPanel.set(true);
+                }
             },
             error: (err: any) => {
                 console.error(err);

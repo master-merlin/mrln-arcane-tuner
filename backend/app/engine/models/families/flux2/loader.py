@@ -7,7 +7,6 @@ Components:
 - Tokenizer: ``AutoTokenizer`` (Klein) or ``AutoProcessor`` (Dev)
 """
 
-import torch
 
 from app.engine.core.pipeline.loader_base import ComponentSpec, GenericComponentLoader
 from app.engine.core.definitions import ModelDefinition
@@ -59,29 +58,5 @@ class Flux2Loader(GenericComponentLoader):
                 hf_class="diffusers.Flux2Transformer2DModel",
                 subfolder="transformer",
                 fallback_to_root=True,
-                post_load_hook="_zero_guidance_if_needed",
             ),
         ]
-
-    # ── Post-load hooks ──────────────────────────────────────────────────
-
-    def _zero_guidance_if_needed(self, model, definition):
-        """Zero guidance_embedder weights for models without pretrained guidance.
-
-        Models with ``guidance_embeds=False`` (e.g. Klein) have NO guidance_embedder
-        weights in their checkpoint — diffusers randomly initialises them.
-        Since ``forward()`` unconditionally adds guidance_embedder output to the
-        timestep embedding, these random weights inject noise.  Zeroing them out
-        replicates the intended behaviour.
-        """
-        has_guidance = getattr(getattr(model, "config", None), "guidance_embeds", True)
-        if not has_guidance and hasattr(model, "time_guidance_embed"):
-            ge = model.time_guidance_embed.guidance_embedder
-            with torch.no_grad():
-                for param in ge.parameters():
-                    param.zero_()
-            self.logger.info(
-                "guidance_embedder_zeroed",
-                message="guidance_embedder weights zeroed — checkpoint has no pretrained guidance weights",
-            )
-        return model

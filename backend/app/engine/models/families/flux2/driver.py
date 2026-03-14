@@ -67,16 +67,11 @@ class Flux2Driver(IModelDriver):
         self.te_model_type = arch.get("te.model_type", "qwen3")
         self.te_output_layers = arch.get("te.output_layers", None)
 
-        # Zero guidance embedder for guidance-distilled models (Klein)
+        # Klein (guidance-distilled): guidance=None skips the embedder entirely
         if not self.use_guidance_embed:
-            ge = self.transformer.time_guidance_embed.guidance_embedder
-            with torch.no_grad():
-                for p in ge.parameters():
-                    p.zero_()
-                    p.requires_grad_(False)
             self.logger.info(
-                "guidance_embedder_zeroed",
-                reason="guidance_embeds=False (guidance-distilled)",
+                "guidance_embed_disabled",
+                reason="guidance_embeds=False → guidance=None (embedder skipped)",
             )
 
         self.logger.info(
@@ -345,12 +340,14 @@ class Flux2Driver(IModelDriver):
         seq_l = torch.arange(txt_seq_len, device=self.device)
         txt_ids = torch.cartesian_prod(t, h, w, seq_l).to(dtype=text_embeddings.dtype)
 
-        # Guidance: Klein zeroes the embedder, pass 0.0; Dev uses 1.0
-        guidance_val = 1.0 if self.use_guidance_embed else 0.0
-        guidance = torch.full(
-            (noisy_input.shape[0],), guidance_val,
-            device=self.device, dtype=noisy_input.dtype,
-        )
+        # Guidance: Klein passes None (guidance embedder skipped); Dev uses 1.0
+        if self.use_guidance_embed:
+            guidance = torch.full(
+                (noisy_input.shape[0],), 1.0,
+                device=self.device, dtype=noisy_input.dtype,
+            )
+        else:
+            guidance = None
 
         output = self.transformer(
             hidden_states=noisy_input,

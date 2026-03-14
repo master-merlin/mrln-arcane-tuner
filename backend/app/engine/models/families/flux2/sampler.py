@@ -1,7 +1,7 @@
 """FLUX.2 Klein sampler — implements ``Flux2KleinPipeline`` behavior.
 
-The official Klein pipeline (``Flux2KleinPipeline``, not yet in diffusers
-0.36) differs from ``Flux2Pipeline`` in several critical ways:
+The official Klein pipeline (``Flux2KleinPipeline``, diffusers >=0.37)
+differs from ``Flux2Pipeline`` in several critical ways:
 
 *  **guidance=None** — Klein passes ``guidance=None`` to the transformer
    (no guidance embedder used).
@@ -229,14 +229,6 @@ class Flux2Sampler(GenericSamplingPipeline):
         )
         timesteps = scheduler.timesteps
 
-        # Guidance tensor - Klein uses guidance=None in newer diffusers,
-        # but our v0.36 transformer requires a tensor. Since we zeroed
-        # the guidance embedder weights, guidance_emb=0 regardless of
-        # input. Pass zeros for safety.
-        guidance_zeros = torch.zeros(
-            latents.shape[0], device=device, dtype=dtype
-        )
-
         # Denoising loop
         transformer.to(device)
         with torch.no_grad():
@@ -246,11 +238,11 @@ class Flux2Sampler(GenericSamplingPipeline):
                 ts = t.expand(latents.shape[0]).to(dtype)
                 latent_input = latents.to(dtype)
 
-                # Conditional forward pass
+                # Conditional forward pass (guidance=None for Klein)
                 noise_pred = transformer(
                     hidden_states=latent_input,
                     timestep=ts / 1000,
-                    guidance=guidance_zeros,
+                    guidance=None,
                     encoder_hidden_states=cond,
                     txt_ids=cond_ids,
                     img_ids=latent_ids,
@@ -262,7 +254,7 @@ class Flux2Sampler(GenericSamplingPipeline):
                     neg_pred = transformer(
                         hidden_states=latent_input,
                         timestep=ts / 1000,
-                        guidance=guidance_zeros,
+                        guidance=None,
                         encoder_hidden_states=uncond,
                         txt_ids=uncond_ids,
                         img_ids=latent_ids,

@@ -168,7 +168,8 @@ class JoyCaptionModel(CaptionModel):
 
         self.processor = AutoProcessor.from_pretrained(
             self.MODEL_PATH,
-            trust_remote_code=True
+            trust_remote_code=True,
+            use_fast=False,
         )
 
 

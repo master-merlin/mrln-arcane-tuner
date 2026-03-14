@@ -273,18 +273,29 @@ class DatasetManager:
         name = dataset.name
         old_metadata = ctx["old_metadata"]
 
-        total_files_estimate = len(
-            [True for x in os.scandir(dataset.path) if x.is_file()]
-        )
-        current_file_idx = 0
+        # For incremental scans, count only NEW multimedia files for progress
+        is_incremental = len(old_metadata) > 0
+        if is_incremental:
+            new_media_count = sum(
+                1 for entry in os.scandir(dataset.path)
+                if entry.is_file(follow_symlinks=False)
+                and os.path.splitext(entry.name.lower())[1] in self.MULTIMEDIA_EXTS
+                and entry.name not in old_metadata
+            )
+            # Fallback: at least 1 to avoid div-by-zero
+            total_for_progress = max(new_media_count, 1)
+        else:
+            total_for_progress = len(
+                [True for x in os.scandir(dataset.path) if x.is_file()]
+            )
+
+        current_progress_idx = 0
         scoring_service = None  # lazy-loaded on first unscored image
         scored_count = 0
 
         for entry in os.scandir(dataset.path):
             if not entry.is_file(follow_symlinks=False):
                 continue
-
-            current_file_idx += 1
 
             f = entry.name
             if f.startswith(".") or f.startswith("~"):
@@ -304,15 +315,20 @@ class DatasetManager:
             if ext in self.MULTIMEDIA_EXTS:
                 ctx["multimedia_stems"].add(stem)
                 existing_meta = old_metadata.get(rel_path, {})
+                is_new_file = not existing_meta
+
+                # For incremental scans, only count NEW files in progress
+                if is_new_file or not is_incremental:
+                    current_progress_idx += 1
 
                 # ── Sub-step 1: Analyze (dimensions + metadata) ──
-                if self._loop and not self._loop.is_closed():
+                if (is_new_file or not is_incremental) and self._loop and not self._loop.is_closed():
                     asyncio.run_coroutine_threadsafe(
                         event_manager.broadcast("scan_progress", {
                             "dataset": name,
                             "file": f,
-                            "current": min(current_file_idx, total_files_estimate),
-                            "total": total_files_estimate,
+                            "current": min(current_progress_idx, total_for_progress),
+                            "total": total_for_progress,
                             "status": "Analyzing...",
                         }),
                         self._loop,
@@ -341,7 +357,7 @@ class DatasetManager:
                         self._compute_hash_if_needed(
                             meta_entry, rel_path, file_path, ext,
                             existing_meta, name, f,
-                            current_file_idx, total_files_estimate,
+                            current_progress_idx, total_for_progress,
                         )
 
                         # ── Sub-step 3: Score (if unscored) ──
@@ -352,7 +368,7 @@ class DatasetManager:
                             scoring_service = self._score_single_image(
                                 scoring_service, meta_entry, rel_path,
                                 file_path, dataset, name,
-                                current_file_idx, total_files_estimate,
+                                current_progress_idx, total_for_progress,
                             )
                             scored_count += 1
 

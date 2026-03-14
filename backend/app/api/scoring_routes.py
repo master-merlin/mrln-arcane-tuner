@@ -96,7 +96,7 @@ async def score_batch_api(name: str, request: ScoreBatchRequest):
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     # Collect all image paths
-    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff"}
     all_files = await asyncio.to_thread(os.listdir, dataset.path)
     image_files = [
         f for f in all_files

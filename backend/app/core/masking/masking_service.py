@@ -145,7 +145,7 @@ class MaskingService:
         ]
 
         # Find which images are missing masks
-        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
+        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff"}
         all_images = [
             f for f in os.listdir(dataset_path)
             if os.path.splitext(f)[1].lower() in image_exts
@@ -166,7 +166,7 @@ class MaskingService:
 
             # Find matching source image
             source_path = None
-            for ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"]:
+            for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff"]:
                 candidate = os.path.join(dataset_path, f"{stem}{ext}")
                 if os.path.exists(candidate):
                     source_path = candidate

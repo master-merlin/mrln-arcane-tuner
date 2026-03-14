@@ -66,7 +66,7 @@ class Dataset(BaseModel):
         )
 
 class DatasetManager:
-    MULTIMEDIA_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.gif'}
+    MULTIMEDIA_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.avif', '.mp4', '.gif'}
     CAPTION_EXTS = {'.txt', '.caption'}
 
     def __init__(self, storage_file: str = "dataset_locations.json", default_root: str = "datasets"):
@@ -908,7 +908,7 @@ class DatasetManager:
         if not os.path.exists(dataset.path):
             return []
             
-        multimedia_exts = {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.gif'}
+        multimedia_exts = {'.png', '.jpg', '.jpeg', '.webp', '.avif', '.mp4', '.gif'}
         caption_exts = {'.txt', '.caption'}
         
         pairs = {}

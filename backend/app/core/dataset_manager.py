@@ -1111,7 +1111,7 @@ class DatasetManager:
         meta = dataset.media_metadata.get(lookup_key)
         if meta:
             had_caption = bool(meta.get("has_caption"))
-            had_mask = bool(meta.get("mask_file"))
+            had_mask = bool(meta.get("has_mask"))
 
         db = DatabaseEngine.get_instance()
         with db.write() as conn:

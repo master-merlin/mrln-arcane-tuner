@@ -11,7 +11,7 @@ import { Component, input, output } from '@angular/core';
                 @if (pair.media_type === 'video') {
                     <video [src]="getMediaUrl(pair.media_file)" controls class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl"></video>
                 } @else {
-                    <img [src]="getMediaUrl(showMasked() && pair.metadata?.masked_file ? pair.metadata.masked_file : pair.media_file)" class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl" alt="Dataset Image">
+                    <img [src]="getMediaUrl(showMasked() && pair.metadata?.has_masked ? 'masked/' + pair.media_file.substring(0, pair.media_file.lastIndexOf('.')) + '.jpg' : pair.media_file)" class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl" alt="Dataset Image">
                 }
             </div>
         }

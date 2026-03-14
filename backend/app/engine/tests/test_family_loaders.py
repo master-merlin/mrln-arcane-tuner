@@ -58,7 +58,7 @@ class TestFlux2Loader:
         assert "AutoProcessor" in tok_spec.hf_class
 
     def test_guidance_zeroing_hook(self):
-        """_zero_guidance_if_needed should be declared on unet spec."""
+        """post_load_hook removed — diffusers 0.37 handles guidance zeroing internally."""
         from app.engine.models.families.flux2.loader import Flux2Loader
 
         loader = Flux2Loader(torch.device("cpu"))
@@ -66,7 +66,7 @@ class TestFlux2Loader:
         manifest = loader.get_component_manifest(definition)
 
         unet_spec = next(s for s in manifest if s.key == "unet")
-        assert unet_spec.post_load_hook == "_zero_guidance_if_needed"
+        assert unet_spec.post_load_hook is None
 
 
 # ---------------------------------------------------------------------------

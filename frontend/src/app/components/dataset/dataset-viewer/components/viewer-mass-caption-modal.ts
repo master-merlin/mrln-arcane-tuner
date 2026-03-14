@@ -156,8 +156,8 @@ export class ViewerMassCaptionModalComponent {
         if (target === 'masked') {
             // For masked captioning, we need images that have a mask applied
             candidates = mode === 'keep'
-                ? this.pairs().filter(p => p.metadata?.mask_file && !p.metadata?.masked_caption_file)
-                : this.pairs().filter(p => p.metadata?.mask_file);
+                ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
+                : this.pairs().filter(p => p.metadata?.has_mask);
         } else {
             candidates = mode === 'keep'
                 ? this.pairs().filter(p => !p.caption_content?.trim())

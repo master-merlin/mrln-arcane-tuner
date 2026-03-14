@@ -90,9 +90,9 @@ def build_media_entry(
         "aspect_ratio": ratio,
         "orientation": orientation,
         "size_bytes": os.path.getsize(file_path),
-        "mask_file": mask_rel_path if has_mask else None,
-        "masked_file": masked_img_rel if has_masked_img else None,
-        "masked_caption_file": masked_cap_rel if has_masked_cap else None,
+        "has_mask": has_mask,
+        "has_masked": has_masked_img,
+        "has_masked_caption": has_masked_cap,
         "enabled": existing_meta.get("enabled", True),
     }
 

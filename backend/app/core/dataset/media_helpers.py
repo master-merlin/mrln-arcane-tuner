@@ -72,9 +72,9 @@ def update_metadata_after_edit(
     entry["size_bytes"] = os.path.getsize(full_path)
     entry.pop("solid_hash", None)
     entry.pop("quality_score", None)  # re-score on next scan
-    entry["mask_file"] = None
-    entry["masked_file"] = None
-    entry["masked_caption_file"] = None
+    entry["has_mask"] = False
+    entry["has_masked"] = False
+    entry["has_masked_caption"] = False
     entry.pop("mask_info", None)
 
     # Update dimensions if they changed (crop)

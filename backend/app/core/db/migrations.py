@@ -33,6 +33,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
 
     migrations = [
         _migrate_v1,
+        _migrate_v2,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -303,3 +304,36 @@ def _migrate_v1(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_job_datasets_dataset
         ON job_datasets(dataset_id)
     """)
+
+
+# ── V2: Boolean flags for mask/masked/masked_caption ───────────────
+
+def _migrate_v2(conn) -> None:
+    """Add boolean flag columns and backfill from path columns.
+
+    Path columns are kept for backward compat but no longer written.
+    """
+    # Add boolean columns (idempotent via IF NOT EXISTS isn't available
+    # for ALTER TABLE, so we try/except for already-added columns)
+    for col in ("has_mask", "has_masked", "has_masked_caption"):
+        try:
+            conn.execute(
+                f"ALTER TABLE media_items ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass  # Column already exists
+
+    # Backfill from existing path columns
+    conn.execute("""
+        UPDATE media_items SET has_mask = 1
+        WHERE mask_file IS NOT NULL AND mask_file != ''
+    """)
+    conn.execute("""
+        UPDATE media_items SET has_masked = 1
+        WHERE masked_file IS NOT NULL AND masked_file != ''
+    """)
+    conn.execute("""
+        UPDATE media_items SET has_masked_caption = 1
+        WHERE masked_caption_file IS NOT NULL AND masked_caption_file != ''
+    """)
+

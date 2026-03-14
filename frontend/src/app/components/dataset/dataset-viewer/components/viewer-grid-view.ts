@@ -52,7 +52,7 @@ import { FormsModule } from '@angular/forms';
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
                                 </div>
                              } @else {
-                                <img [src]="getMediaUrl(showMasked() && pair.metadata?.masked_file ? pair.metadata.masked_file : pair.media_file)" class="w-full h-full object-cover transition-opacity" [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'" loading="lazy">
+                                <img [src]="showMasked() && pair.metadata?.has_masked ? getMediaUrl('masked/' + getStem(pair.media_file) + '.jpg') : getMediaUrl(pair.media_file)" class="w-full h-full object-cover transition-opacity" [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'" loading="lazy">
                              }
                              
                              <!-- Edit Overlay -->
@@ -61,7 +61,7 @@ import { FormsModule } from '@angular/forms';
                              </div>
                              
                              <div class="absolute top-2 left-2 flex flex-col gap-1 z-20">
-                                 @if (pair.metadata?.mask_file) {
+                                 @if (pair.metadata?.has_mask) {
                                     <div class="bg-success text-white text-[10px] px-1.5 py-0.5 rounded-theme-sm font-bold shadow-sm flex items-center justify-center min-w-[18px]" 
                                          title="Mask available: A high-precision alpha mask has been detected for this entry.">
                                         M
@@ -166,5 +166,10 @@ export class ViewerGridViewComponent {
         if (score >= 0.27) return 'bg-success/80 text-white';
         if (score >= 0.24) return 'bg-warning/80 text-black';
         return 'bg-danger/80 text-white';
+    }
+
+    getStem(filename: string): string {
+        const dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
     }
 }

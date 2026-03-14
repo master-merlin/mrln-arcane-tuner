@@ -24,8 +24,8 @@ class MediaItemRepository:
     _COLUMNS = [
         "dataset_id", "rel_path", "width", "height", "aspect_ratio",
         "orientation", "size_bytes", "solid_hash", "is_majority_ar",
-        "target_width", "target_height", "mask_file", "masked_file",
-        "masked_caption_file", "mask_info", "caption_file", "has_caption",
+        "target_width", "target_height", "has_mask", "has_masked",
+        "has_masked_caption", "mask_info", "has_caption",
         "is_video", "frame_count", "tags", "notes", "quality_score",
         "added_at",
     ]
@@ -205,7 +205,8 @@ class MediaItemRepository:
             item.pop("id", None)
             item.pop("dataset_id", None)
             # Convert int booleans back
-            for key in ("is_majority_ar", "has_caption", "is_video"):
+            for key in ("is_majority_ar", "has_caption", "is_video",
+                        "has_mask", "has_masked", "has_masked_caption"):
                 if key in item:
                     item[key] = bool(item[key])
             # Parse JSON fields
@@ -225,7 +226,8 @@ class MediaItemRepository:
         """Coerce types for SQLite storage."""
         data = dict(data)  # defensive copy
         # Booleans → int
-        for key in ("is_majority_ar", "has_caption", "is_video"):
+        for key in ("is_majority_ar", "has_caption", "is_video",
+                    "has_mask", "has_masked", "has_masked_caption"):
             if key in data:
                 data[key] = int(bool(data[key]))
         # Dicts/lists → JSON strings

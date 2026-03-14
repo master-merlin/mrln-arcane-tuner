@@ -139,7 +139,7 @@ class TestBuildMediaEntry:
         assert entry["orientation"] == "landscape"
         assert entry["aspect_ratio"] == round(400 / 200, 5)
         assert entry["enabled"] is True
-        assert entry["mask_file"] is None
+        assert entry["has_mask"] is False
 
     def test_preserves_enabled_false(self, tmp_path):
         """Should preserve enabled=False from existing metadata."""
@@ -161,7 +161,7 @@ class TestBuildMediaEntry:
         mask_img.save(str(masks_dir / "masked.png"))
 
         entry = build_media_entry(img_path, "masked", ".png", str(tmp_path), {}, 100, 100)
-        assert entry["mask_file"] == "masks/masked.png"
+        assert entry["has_mask"] is True
         assert "mask_info" in entry
         assert entry["mask_info"]["width"] == 100
 
@@ -276,9 +276,9 @@ class TestUpdateMetadataAfterEdit:
             "img.png": {
                 "width": 100, "height": 100,
                 "solid_hash": "abc123",
-                "mask_file": "masks/img.png",
-                "masked_file": "masked/img.jpg",
-                "masked_caption_file": "masked/img.txt",
+                "has_mask": True,
+                "has_masked": True,
+                "has_masked_caption": True,
                 "mask_info": {"width": 100},
                 "size_bytes": 50,
             }
@@ -287,9 +287,9 @@ class TestUpdateMetadataAfterEdit:
 
         entry = metadata["img.png"]
         assert "solid_hash" not in entry
-        assert entry["mask_file"] is None
-        assert entry["masked_file"] is None
-        assert entry["masked_caption_file"] is None
+        assert entry["has_mask"] is False
+        assert entry["has_masked"] is False
+        assert entry["has_masked_caption"] is False
         assert "mask_info" not in entry
         assert entry["size_bytes"] > 0
 

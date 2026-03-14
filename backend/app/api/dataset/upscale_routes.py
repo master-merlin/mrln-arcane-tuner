@@ -176,9 +176,9 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
         if lookup_key in dataset.media_metadata:
             dataset.media_metadata[lookup_key]["width"] = result["new_size"][0]
             dataset.media_metadata[lookup_key]["height"] = result["new_size"][1]
-            dataset.media_metadata[lookup_key]["mask_file"] = None
-            dataset.media_metadata[lookup_key]["masked_file"] = None
-            dataset.media_metadata[lookup_key]["masked_caption_file"] = None
+            dataset.media_metadata[lookup_key]["has_mask"] = False
+            dataset.media_metadata[lookup_key]["has_masked"] = False
+            dataset.media_metadata[lookup_key]["has_masked_caption"] = False
             dataset.media_metadata[lookup_key].pop("mask_info", None)
             real_path = os.path.join(dataset.path, request.image_path)
             if os.path.exists(real_path):

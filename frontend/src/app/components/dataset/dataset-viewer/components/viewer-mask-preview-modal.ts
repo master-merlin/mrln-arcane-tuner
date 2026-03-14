@@ -119,9 +119,10 @@ export class ViewerMaskPreviewModalComponent {
         if (!pair) return '';
 
         if (this.mode() === 'mask') {
-            const maskFile = pair.metadata?.mask_file;
-            if (!maskFile) return '';
-            return `${this.mediaBaseUrl()}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(maskFile)}?t=${this.lastUpdateTime()}`;
+            if (!pair.metadata?.has_mask) return '';
+            const stem = pair.media_file.substring(0, pair.media_file.lastIndexOf('.'));
+            const maskPath = `masks/${stem}.png`;
+            return `${this.mediaBaseUrl()}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(maskPath)}?t=${this.lastUpdateTime()}`;
         }
 
         return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/masking/preview?image_rel_path=${encodeURIComponent(pair.media_file)}&opacity=${this.maskOpacity()}&t=${this.lastUpdateTime()}`;

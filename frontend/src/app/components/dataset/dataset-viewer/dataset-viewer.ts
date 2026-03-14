@@ -281,7 +281,7 @@ export class DatasetViewerComponent implements OnInit {
     showMasked = signal(false);
 
     hasMaskedImages = computed(() => {
-        return this.pairs().some(p => !!p.metadata?.masked_file);
+        return this.pairs().some(p => !!p.metadata?.has_masked);
     });
 
     enabledCount = computed(() => {

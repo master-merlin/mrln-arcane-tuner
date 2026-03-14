@@ -14,14 +14,14 @@ import { ToastService } from '../../../../services/toast';
              <!-- Scrollable mask preview area -->
              <div class="flex-1 min-h-[60px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
                 <div class="relative p-4">
-                @if (currentPair()?.metadata?.mask_file) {
+                @if (currentPair()?.metadata?.has_mask) {
                     <div class="space-y-3 animate-fadeIn">
                         <h5 class="text-[10px] text-text-subtle uppercase font-bold tracking-widest flex items-center gap-2">
                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-success"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                             Current Mask
                         </h5>
                         <div class="relative group/mask aspect-square rounded-theme-xl overflow-hidden bg-base/50 border border-surface-high cursor-pointer shadow-inner shadow-black/50" (click)="showMaskDetails.emit(true)">
-                            <img [src]="getMediaUrl(currentPair()!.metadata!.mask_file)" class="w-full h-full object-contain" alt="Current Mask">
+                            <img [src]="getMediaUrl('masks/' + getStem(currentPair()!.media_file) + '.png')" class="w-full h-full object-contain" alt="Current Mask">
                             
                             <!-- Overlay Actions (Top Right) -->
                             <div class="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover/mask:opacity-100 transition-all z-10">
@@ -163,7 +163,7 @@ export class DetailMaskingSidebarComponent {
     deleteMask(event: Event) {
         event.stopPropagation();
         const pair = this.currentPair();
-        if (!pair?.metadata?.mask_file) return;
+        if (!pair?.metadata?.has_mask) return;
 
         if (!confirm('Are you sure you want to delete this mask?')) return;
 
@@ -173,5 +173,10 @@ export class DetailMaskingSidebarComponent {
             },
             error: (err: any) => this.toast.error('Delete failed: ' + (err.error?.detail || err.message))
         });
+    }
+
+    getStem(filename: string): string {
+        const dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
     }
 }

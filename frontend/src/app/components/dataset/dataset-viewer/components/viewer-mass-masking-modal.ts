@@ -380,7 +380,7 @@ export class ViewerMassMaskingModalComponent {
     startMassMasking() {
         if (!this.currentSettings) return;
         const mode = this.existingMode();
-        const candidates = mode === 'keep' ? this.pairs().filter(p => !p.metadata?.mask_file) : [...this.pairs()];
+        const candidates = mode === 'keep' ? this.pairs().filter(p => !p.metadata?.has_mask) : [...this.pairs()];
 
         if (!candidates.length) { this.toast.info('No images need masking.'); return; }
         if (!confirm(`Start masking ${candidates.length} images?`)) return;
@@ -418,7 +418,7 @@ export class ViewerMassMaskingModalComponent {
     // ── Apply Tab ──────────────────────────────────────────────
 
     startMassApply() {
-        const maskCount = this.pairs().filter(p => p.metadata?.mask_file).length;
+        const maskCount = this.pairs().filter(p => p.metadata?.has_mask).length;
         if (maskCount === 0) {
             this.toast.warning('No masks found. Generate masks first.');
             return;
@@ -456,9 +456,9 @@ export class ViewerMassMaskingModalComponent {
         // Only caption images that have a mask file (meaning masked images exist)
         let candidates: any[];
         if (mode === 'keep') {
-            candidates = this.pairs().filter(p => p.metadata?.mask_file && !p.metadata?.masked_caption_file);
+            candidates = this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption);
         } else {
-            candidates = this.pairs().filter(p => p.metadata?.mask_file);
+            candidates = this.pairs().filter(p => p.metadata?.has_mask);
         }
 
         if (!candidates.length) {

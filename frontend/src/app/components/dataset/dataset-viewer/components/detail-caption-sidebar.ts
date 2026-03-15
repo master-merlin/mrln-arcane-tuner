@@ -172,6 +172,9 @@ export class DetailCaptionSidebarComponent {
             this.captionText.set(this.suggestedCaption()!);
             this.onCaptionChange();
             this.suggestedCaption.set(null);
+            // Auto-save to disk so the caption survives loadPairs() refreshes
+            // (e.g. after crop, adjustment, or mask operations)
+            this.saveRequested.emit();
         }
     }
 

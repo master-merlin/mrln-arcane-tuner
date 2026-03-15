@@ -36,12 +36,20 @@ def invalidate_mask_files(dataset_path: str, stem: str, reason: str = "edit") ->
 
     for p in files_to_remove:
         if os.path.exists(p):
-            logger.warning(
-                f"mask_invalidated_by_{reason}",
-                file=os.path.basename(p),
-                stem=stem,
-            )
-            os.remove(p)
+            try:
+                os.remove(p)
+                logger.warning(
+                    f"mask_invalidated_by_{reason}",
+                    file=os.path.basename(p),
+                    stem=stem,
+                )
+            except OSError as e:
+                logger.warning(
+                    "mask_invalidation_failed",
+                    file=os.path.basename(p),
+                    stem=stem,
+                    error=str(e),
+                )
 
 
 def update_metadata_after_edit(

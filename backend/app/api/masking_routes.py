@@ -69,7 +69,12 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
     mask_full_path = os.path.join(masks_dir, mask_filename)
 
     await asyncio.to_thread(mask_img.save, mask_full_path)
-    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    # Targeted metadata update (replaces full scan_dataset)
+    lookup_key = request.image_rel_path.replace(os.sep, "/")
+    if lookup_key in dataset.media_metadata:
+        dataset.media_metadata[lookup_key]["has_mask"] = True
+        dataset_manager._persist_media_item(dataset, request.image_rel_path)
 
     return MaskGenerationResponse(
         mask_path=f"masks/{mask_filename}",
@@ -112,7 +117,12 @@ async def apply_mask(name: str, request: ApplyMaskRequest):
     await asyncio.to_thread(
         masking_service.combine_mask, image_full_path, mask_full_path, output_full_path, opacity,
     )
-    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    # Targeted metadata update (replaces full scan_dataset)
+    lookup_key = image_rel_path.replace(os.sep, "/")
+    if lookup_key in dataset.media_metadata:
+        dataset.media_metadata[lookup_key]["has_masked"] = True
+        dataset_manager._persist_media_item(dataset, image_rel_path)
 
     return {
         "status": "success",
@@ -163,7 +173,24 @@ async def delete_mask(name: str, image_rel_path: str):
 
     logger.info("deleting_mask", dataset=name, mask=mask_filename)
     await asyncio.to_thread(os.remove, mask_full_path)
-    await asyncio.to_thread(dataset_manager.scan_dataset, name)
+
+    # Also clean up masked image + masked caption (derived from this mask)
+    for masked_ext in (".jpg", ".txt"):
+        masked_path = os.path.join(dataset.path, "masked", f"{original_stem}{masked_ext}")
+        if os.path.exists(masked_path):
+            try:
+                os.remove(masked_path)
+            except OSError:
+                pass
+
+    # Targeted metadata update (replaces full scan_dataset)
+    lookup_key = image_rel_path.replace(os.sep, "/")
+    if lookup_key in dataset.media_metadata:
+        dataset.media_metadata[lookup_key]["has_mask"] = False
+        dataset.media_metadata[lookup_key]["has_masked"] = False
+        dataset.media_metadata[lookup_key]["has_masked_caption"] = False
+        dataset.media_metadata[lookup_key].pop("mask_info", None)
+        dataset_manager._persist_media_item(dataset, image_rel_path)
 
     return {"status": "deleted", "message": "Mask deleted successfully"}
 

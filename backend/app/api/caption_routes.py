@@ -81,9 +81,18 @@ async def generate_caption_api(request: GenerateCaptionRequest):
             masked_dir = os.path.join(dataset.path, "masked")
             await asyncio.to_thread(os.makedirs, masked_dir, exist_ok=True)
             caption_path = os.path.join(masked_dir, f"{stem}.txt")
-            await asyncio.to_thread(
-                lambda: open(caption_path, "w", encoding="utf-8").write(caption)
-            )
+
+            def _write_caption():
+                with open(caption_path, "w", encoding="utf-8") as f:
+                    f.write(caption)
+
+            await asyncio.to_thread(_write_caption)
+
+            # Update has_masked_caption in DB
+            lookup_key = request.image_rel_path.replace(os.sep, "/")
+            if lookup_key in dataset.media_metadata:
+                dataset.media_metadata[lookup_key]["has_masked_caption"] = True
+                manager._persist_media_item(dataset, request.image_rel_path)
 
         return {"caption": caption}
     except (OSError, RuntimeError, ValueError) as e:

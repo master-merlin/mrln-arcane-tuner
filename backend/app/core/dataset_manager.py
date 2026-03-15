@@ -296,9 +296,11 @@ class DatasetManager:
             # Fallback: at least 1 to avoid div-by-zero
             total_for_progress = max(new_media_count, 1)
         else:
-            total_for_progress = len(
-                [True for x in os.scandir(dataset.path) if x.is_file()]
-            )
+            total_for_progress = max(1, sum(
+                1 for x in os.scandir(dataset.path)
+                if x.is_file(follow_symlinks=False)
+                and os.path.splitext(x.name.lower())[1] in self.MULTIMEDIA_EXTS
+            ))
 
         current_progress_idx = 0
         scoring_service = None  # lazy-loaded on first unscored image
@@ -346,10 +348,14 @@ class DatasetManager:
                     )
 
                 try:
-                    width = existing_meta.get("width", 0)
-                    height = existing_meta.get("height", 0)
-                    if width == 0 or height == 0:
+                    # Always re-read dimensions from the actual file so
+                    # post-crop/resize changes are reflected on rescan.
+                    try:
                         width, height = extract_media_dimensions(file_path, ext)
+                    except Exception:
+                        # Fallback to cached values if extraction fails
+                        width = existing_meta.get("width", 0)
+                        height = existing_meta.get("height", 0)
 
                     if width > 0 and height > 0:
                         ctx["aspect_ratios"].append(round(width / height, 5))
@@ -636,6 +642,11 @@ class DatasetManager:
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
+
+        from collections import Counter
+        from app.core.dataset.scan_helpers import (
+            _snap_ar, is_majority_match, compute_crop_target,
+        )
         
         # Group by orientation
         groups = {
@@ -647,7 +658,6 @@ class DatasetManager:
         for path, meta in dataset.media_metadata.items():
             orientation = meta.get("orientation")
             if orientation in groups:
-                # Create a lightweight record for analysis, don't mutate stored metadata
                 record = meta.copy()
                 record["path"] = path
                 groups[orientation]["items"].append(record)
@@ -660,53 +670,35 @@ class DatasetManager:
             if not data["ar_list"]:
                 continue
                 
-            # 1. Majority AR
-            from collections import Counter
-            counts = Counter(data["ar_list"])
-            majority_ar = counts.most_common(1)[0][0]
+            # 1. Majority AR — via shared snapping + counting
+            snapped = [_snap_ar(ar) for ar in data["ar_list"]]
+            majority_ar = Counter(snapped).most_common(1)[0][0]
             
-            # 2. Find Max Long Side among Majority AR matches
+            # 2. Find Max Long Side among majority-matching images
             max_long_side = 0
             count_total = len(data["items"])
             count_majority = 0
             
             for item in data["items"]:
-                # Check for majority match with tolerance
-                if abs(item.get("aspect_ratio", 0) - majority_ar) < 0.01:
+                if is_majority_match(item.get("aspect_ratio", 0), majority_ar):
                     count_majority += 1
-                    # Determine long side
-                    w, h = item["width"], item["height"]
-                    long_side = max(w, h)
+                    long_side = max(item["width"], item["height"])
                     if long_side > max_long_side:
                         max_long_side = long_side
             
             # 3. Calculate Target Resolution
-            # Rule: Long side divisible by 32 (closest)
-            # Short side derived from AR, then divisible by 32
-            
             if max_long_side == 0:
-                # Should not happen if list not empty
                 continue
-                
-            # We use the max_long_side as the "example" for the strategy
+
             target_res = self.calculate_target_dims(max_long_side, majority_ar, orientation)
                  
             # 4. Generate Image List with targets
             image_list = []
             for item in data["items"]:
                 w, h = item["width"], item["height"]
-                long_side = max(w, h)
-                
-                # Calculate specific target for this image
-                t_w, t_h = self.calculate_target_dims(long_side, majority_ar, orientation)
-                
-                # Ensure target does not exceed source
-                current_target_long = max(t_w, t_h)
-                while t_w > w or t_h > h:
-                    current_target_long -= 32
-                    if current_target_long <= 0:
-                        break
-                    t_w, t_h = self.calculate_target_dims(current_target_long, majority_ar, orientation)
+
+                # Crop target via shared best-fit algorithm
+                t_w, t_h = compute_crop_target(w, h, majority_ar, orientation)
                 
                 # Similarity Check within the dataset
                 similar_images = []
@@ -727,7 +719,6 @@ class DatasetManager:
                                         "height": other_meta.get("height", 0)
                                     })
                             except Exception:
-                                # Skip invalid pairs
                                 continue
                 
                 image_list.append({
@@ -741,10 +732,7 @@ class DatasetManager:
                     "similar_images": sorted(similar_images, key=lambda x: x["score"], reverse=True)
                 })
             
-            # Sort by path for consistency
             image_list.sort(key=lambda x: x["path"])
-
-            # Human-friendly majority AR display (e.g. "3:2", "16:9")
             ar_display = self._ar_to_display(majority_ar, orientation)
 
             analysis[orientation] = {
@@ -759,7 +747,7 @@ class DatasetManager:
             
         return analysis
 
-    def scan_all_datasets(self) -> list[Dataset]:
+    def scan_all_datasets(self, force_full: bool = False) -> list[Dataset]:
         """
         Scans all datasets. 
         1. Auto-discovers new folders in default_root.
@@ -823,7 +811,7 @@ class DatasetManager:
                     self._loop
                 )
             try:
-                ds = self.scan_dataset(name)
+                ds = self.scan_dataset(name, force_full=force_full)
                 results.append(ds)
             except FileNotFoundError:
                 logger.warning("dataset_missing_on_disk", name=name)
@@ -1038,7 +1026,16 @@ class DatasetManager:
              
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
-            
+
+        # Update has_caption flag for the parent media item
+        stem = os.path.splitext(filename)[0]
+        for key, meta in dataset.media_metadata.items():
+            media_stem = os.path.splitext(key)[0]
+            if media_stem == stem:
+                meta["has_caption"] = True
+                self._persist_media_item(dataset, key)
+                break
+
         return content
 
     def toggle_image_enabled(self, name: str, media_file: str, enabled: bool) -> dict:
@@ -1316,7 +1313,7 @@ class DatasetManager:
         # --- Pass 1: Convert non-JPG to JPG and rename to temp names ---
         # We use temp names to avoid collisions (e.g. renaming a.jpg to b.jpg
         # when b.jpg already exists as another pair).
-        temp_map: list[dict] = []  # [{old_stem, temp_stem, media_ext, has_caption, has_mask}]
+        temp_map: list[dict] = []  # [{old_media_file, old_stem, temp_stem, was_converted, ...}]
 
         for idx, pair in enumerate(pairs):
             media_file = pair["media_file"]
@@ -1325,6 +1322,8 @@ class DatasetManager:
 
             temp_stem = f"__harmonize_tmp_{idx:05d}"
             media_path = os.path.join(dataset.path, media_file)
+
+            was_converted = False
 
             # Convert non-JPG to JPG
             if old_ext_lower not in ('.jpg', '.jpeg'):
@@ -1336,6 +1335,7 @@ class DatasetManager:
                     # Remove original non-JPG file
                     os.remove(media_path)
                     converted += 1
+                    was_converted = True
                 except Exception as e:
                     logger.error("Failed to convert image", file=media_file, error=str(e))
                     continue
@@ -1375,11 +1375,13 @@ class DatasetManager:
                 has_masked_cap = True
 
             temp_map.append({
+                "old_media_file": media_file,
                 "temp_stem": temp_stem,
                 "has_caption": has_caption,
                 "has_mask": has_mask,
                 "has_masked_img": has_masked_img,
                 "has_masked_cap": has_masked_cap,
+                "was_converted": was_converted,
             })
 
         # --- Pass 2: Rename from temp to final names ---
@@ -1421,6 +1423,28 @@ class DatasetManager:
                 dst_mc = os.path.join(masked_dir, f"{final_stem}.txt")
                 if os.path.exists(src_mc):
                     os.rename(src_mc, dst_mc)
+
+            # Store final name for metadata remapping
+            entry["final_media_file"] = f"{final_stem}.jpg"
+
+        # --- Pass 3: Remap in-memory metadata old→new before scan ---
+        # This ensures scan_dataset sees correct metadata (hashes, scores, etc.)
+        # for renamed files, and recalculates for converted files.
+        old_meta = dataset.media_metadata.copy()
+        dataset.media_metadata = {}
+        for entry in temp_map:
+            old_key = entry["old_media_file"]
+            new_key = entry.get("final_media_file")
+            if not new_key:
+                continue
+            meta = old_meta.get(old_key, {})
+            if meta:
+                if entry["was_converted"]:
+                    # Content changed (format conversion) — invalidate content hashes
+                    meta.pop("solid_hash", None)
+                    meta.pop("quality_score", None)
+                    meta.pop("size_bytes", None)
+                dataset.media_metadata[new_key] = meta
 
         # Rescan dataset to update metadata
         self.scan_dataset(name)

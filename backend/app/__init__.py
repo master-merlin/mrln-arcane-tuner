@@ -7,4 +7,4 @@ from app.core.compat import apply_diffusers_patches, apply_hpsv2_patches  # noqa
 apply_diffusers_patches()
 apply_hpsv2_patches()
 
-__version__ = "0.1.0-alpha"
+__version__ = "0.1.1-alpha"

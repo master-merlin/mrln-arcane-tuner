@@ -31,19 +31,28 @@ import { FormsModule } from '@angular/forms';
           </div>
        </div>
 
-       <div class="flex gap-3 w-full md:w-auto">
+       <div class="flex gap-3 w-full md:w-auto items-stretch">
            <button (click)="createRequested.emit()" 
               data-testid="btn-new-dataset"
-              class="flex-1 md:flex-none bg-brand hover:bg-brand/90 text-white px-5 py-2.5 rounded-theme-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-brand/20 active:scale-95">
+              class="flex-1 md:flex-none min-w-[160px] h-10 bg-brand hover:bg-brand/90 text-white px-5 rounded-theme-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-brand/20 active:scale-95">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               New Dataset
            </button>
-           <button (click)="rescanLibraryRequested.emit()" 
-              data-testid="btn-rescan-library"
-              class="flex-1 md:flex-none bg-surface-mid hover:bg-surface-high text-text-primary px-5 py-2.5 rounded-theme-xl text-sm font-bold transition-all flex items-center justify-center gap-2 border border-surface-high/50 active:scale-95">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>
-              Rescan Library
-           </button>
+           <!-- Rescan Split Button -->
+           <div class="relative flex" data-testid="btn-rescan-library">
+              <div class="flex rounded-theme-xl border border-surface-high/50 overflow-hidden min-w-[160px] h-10">
+                <button (click)="rescanLibraryRequested.emit(false)" 
+                  class="flex-1 bg-surface-mid hover:bg-surface-high text-text-primary px-4 py-2.5 text-sm font-bold transition-all flex items-center justify-center gap-2 active:scale-95">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>
+                  Rescan
+                </button>
+                <button (click)="rescanLibraryRequested.emit(true)"
+                  class="bg-surface-high hover:bg-surface-high/80 text-text-secondary px-3 py-2.5 text-xs font-bold transition-all border-l border-surface-high/50 active:scale-95 whitespace-nowrap"
+                  title="Full Scan — re-reads all file dimensions, hashes, and metadata">
+                  Full
+                </button>
+              </div>
+           </div>
        </div>
     </div>
   `,
@@ -55,7 +64,7 @@ export class DatasetToolbarComponent {
 
     searchChanged = output<string>();
     createRequested = output<void>();
-    rescanLibraryRequested = output<void>();
+    rescanLibraryRequested = output<boolean>();
 
     _ = effect(() => {
         const v = this.initialSearch();
@@ -67,3 +76,4 @@ export class DatasetToolbarComponent {
         this.searchChanged.emit(value);
     }
 }
+

@@ -98,10 +98,10 @@ async def scan_dataset(name: str, force_full: bool = Query(False)):
 
 
 @router.post("/datasets/scan-all", response_model=list[Dataset])
-async def scan_all_datasets():
+async def scan_all_datasets(force_full: bool = Query(False)):
     """Re-scan all registered datasets."""
-    logger.info("scanning_all_datasets")
-    return await asyncio.to_thread(dataset_manager.scan_all_datasets)
+    logger.info("scanning_all_datasets", force_full=force_full)
+    return await asyncio.to_thread(dataset_manager.scan_all_datasets, force_full)
 
 
 # ── File Upload ──────────────────────────────────────────────────────────

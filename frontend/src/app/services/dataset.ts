@@ -120,8 +120,8 @@ export class DatasetService {
     return this.http.post<Dataset>(`${this.apiUrl}/${encodeURIComponent(name)}/scan?force_full=${forceFull}`, {});
   }
 
-  scanAllDatasets(): Observable<Dataset[]> {
-    return this.http.post<Dataset[]>(`${this.apiUrl}/scan-all`, {});
+  scanAllDatasets(forceFull: boolean = false): Observable<Dataset[]> {
+    return this.http.post<Dataset[]>(`${this.apiUrl}/scan-all?force_full=${forceFull}`, {});
   }
 
   uploadFile(name: string, file: File): Observable<any> {

@@ -66,7 +66,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                         [initialSearch]="searchTerm()"
                         (searchChanged)="searchTerm.set($event)"
                         (createRequested)="openCreateModal()"
-                        (rescanLibraryRequested)="scanAllDatasets()"
+                        (rescanLibraryRequested)="scanAllDatasets($event)"
                       ></app-dataset-toolbar>
                   </div>
 
@@ -107,6 +107,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
               <!-- Rescan Modal -->
               @if (showRescanModal()) {
                 <app-viewer-rescan-modal
+                   [forceFull]="rescanForceFull()"
                    (close)="showRescanModal.set(false)"
                    (completed)="onRescanComplete()"
                 ></app-viewer-rescan-modal>
@@ -157,6 +158,7 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
   // UI State
   showCreateModal = signal(false);
   showRescanModal = signal(false);
+  rescanForceFull = signal(false);
   showViewer = signal(false);
   currentViewerDataset = signal('');
   editingDataset = signal<Dataset | null>(null);
@@ -262,7 +264,8 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
     this.loadDatasets();
   }
 
-  scanAllDatasets() {
+  scanAllDatasets(forceFull: boolean = false) {
+    this.rescanForceFull.set(forceFull);
     this.showRescanModal.set(true);
   }
 

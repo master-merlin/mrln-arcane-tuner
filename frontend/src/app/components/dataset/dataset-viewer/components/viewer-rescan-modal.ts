@@ -1,4 +1,4 @@
-import { Component, output, inject, signal, OnInit, OnDestroy } from '@angular/core';
+import { Component, output, inject, signal, input, OnInit, OnDestroy } from '@angular/core';
 import { DatasetService } from '../../../../services/dataset';
 import { WebSocketService } from '../../../../services/websocket.service';
 import { Subscription } from 'rxjs';
@@ -13,7 +13,7 @@ import { Subscription } from 'rxjs';
                 <!-- Header -->
                 <div class="p-6 border-b border-surface-high flex items-center justify-between bg-surface-mid/50">
                     <div>
-                        <h2 class="text-xl font-bold text-white">Library Rescan</h2>
+                        <h2 class="text-xl font-bold text-white">Library {{ forceFull() ? 'Full ' : '' }}Rescan</h2>
                         <p class="text-xs text-text-subtle font-medium tracking-wide uppercase mt-1">Scanning all datasets for changes</p>
                     </div>
                     <!-- Close button disabled during scan unless needed -->
@@ -91,6 +91,7 @@ export class ViewerRescanModalComponent implements OnInit, OnDestroy {
 
     close = output<void>();
     completed = output<void>();
+    forceFull = input<boolean>(false);
 
     datasetService = inject(DatasetService);
     wsService = inject(WebSocketService);
@@ -108,7 +109,7 @@ export class ViewerRescanModalComponent implements OnInit, OnDestroy {
     }
 
     startRescan() {
-        this.datasetService.scanAllDatasets().subscribe({
+        this.datasetService.scanAllDatasets(this.forceFull()).subscribe({
             error: (err) => console.error(err)
         });
     }

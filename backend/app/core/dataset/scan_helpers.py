@@ -13,7 +13,7 @@ from typing import Any
 import cv2
 from PIL import Image
 
-from app.core.dataset.geometry import calculate_target_dims
+
 
 
 # ── Per-File Extraction ──────────────────────────────────────────────────
@@ -114,13 +114,113 @@ def build_media_entry(
 
 # ── Aggregation ──────────────────────────────────────────────────────────
 
+# Standard aspect ratios for bucketing — listed as W/H (landscape form).
+# Portrait equivalents are handled automatically (AR < 1 → 1/AR for lookup).
+_STANDARD_RATIOS = [
+    16 / 9,   # 1.7778
+    3 / 2,    # 1.5
+    4 / 3,    # 1.3333
+    21 / 9,   # 2.3333
+    5 / 4,    # 1.25
+    7 / 5,    # 1.4
+    5 / 3,    # 1.6667
+    2 / 1,    # 2.0
+    3 / 1,    # 3.0
+    32 / 9,   # 3.5556
+]
+
+
+def _snap_ar(ar: float, tolerance: float = 0.03) -> float:
+    """Snap a raw aspect ratio to the nearest standard ratio within tolerance.
+
+    This prevents AR fragmentation where, e.g., 1920×1074 (AR=1.787) and
+    1920×1080 (AR=1.778) are treated as different ratios even though both
+    are effectively 16:9 for training purposes.
+
+    Args:
+        ar: Raw width/height ratio.
+        tolerance: Maximum relative difference to snap (default 3%).
+
+    Returns:
+        Snapped standard ratio float, or ``round(ar, 2)`` for non-standard ARs.
+    """
+    for standard in _STANDARD_RATIOS:
+        if abs(ar - standard) / standard < tolerance:
+            return standard
+    # Non-standard: round to 2 decimals to still bucket close values
+    return round(ar, 2)
+
 
 def compute_majority_ar(aspect_ratios: list[float]) -> float | None:
-    """Return the most common aspect ratio, or None if list is empty."""
+    """Return the most common aspect ratio (snapped to standards), or None."""
     if not aspect_ratios:
         return None
-    counts = Counter(aspect_ratios)
+    snapped = [_snap_ar(ar) for ar in aspect_ratios]
+    counts = Counter(snapped)
     return counts.most_common(1)[0][0]
+
+
+def is_majority_match(ar: float, majority_ar: float, tolerance: float = 0.03) -> bool:
+    """Check whether an aspect ratio matches the majority AR within tolerance.
+
+    Uses relative tolerance (default 3%) to avoid fragmentation from
+    32px-aligned dimensions that produce slightly different exact floats.
+    """
+    if majority_ar <= 0:
+        return False
+    return abs(ar - majority_ar) / majority_ar < tolerance
+
+
+def _floor_32(v: float) -> int:
+    """Round down to the nearest multiple of 32 (minimum 32)."""
+    return max(32, int(v // 32) * 32)
+
+
+def compute_crop_target(
+    w: int, h: int, target_ar: float, orientation: str
+) -> tuple[int, int]:
+    """Find the largest 32-aligned rectangle within (w, h) matching target AR.
+
+    Tries both width-anchored and height-anchored candidates, picks the
+    one that fits within image bounds and best matches the target AR.
+
+    Args:
+        w: Image width.
+        h: Image height.
+        target_ar: Target aspect ratio (width / height).
+        orientation: 'landscape', 'portrait', or 'squared'.
+
+    Returns:
+        (target_width, target_height) tuple, both multiples of 32.
+    """
+    if orientation == "portrait":
+        # AR < 1 (W/H). Long side is height.
+        h1 = _floor_32(h)
+        w1 = _floor_32(h1 * target_ar)
+        w2 = _floor_32(w)
+        h2 = _floor_32(w2 / target_ar)
+    else:
+        # AR >= 1 (W/H). Long side is width.
+        w1 = _floor_32(w)
+        h1 = _floor_32(w1 / target_ar)
+        h2 = _floor_32(h)
+        w2 = _floor_32(h2 * target_ar)
+
+    # Pick the candidate that fits within image bounds
+    # and produces the AR closest to target
+    candidates = []
+    if w1 <= w and h1 <= h and h1 > 0:
+        ar1 = w1 / h1
+        candidates.append((w1, h1, abs(ar1 - target_ar), w1 * h1))
+    if w2 <= w and h2 <= h and h2 > 0:
+        ar2 = w2 / h2
+        candidates.append((w2, h2, abs(ar2 - target_ar), w2 * h2))
+
+    if candidates:
+        # Prefer closest AR match; break ties by largest area
+        candidates.sort(key=lambda c: (c[2], -c[3]))
+        return candidates[0][0], candidates[0][1]
+    return w, h
 
 
 def compute_harmonization_score(
@@ -129,21 +229,17 @@ def compute_harmonization_score(
 ) -> tuple[float, dict[str, dict[str, Any]]]:
     """Compute harmonization score and annotate metadata with crop targets.
 
-    Groups media by orientation, finds per-group majority AR, marks
-    ``is_majority_ar``, and calculates per-image ``target_width`` /
-    ``target_height``.
+    Groups media by orientation, finds per-group majority AR (snapped to
+    standard ratios), marks ``is_majority_ar``, and calculates per-image
+    ``target_width`` / ``target_height``.
 
     Args:
         media_metadata: Mutable dict — entries are annotated in-place.
-        calculate_target_fn: Callable ``(long_side, ar, orientation) -> (w, h)``.
-            Defaults to ``geometry.calculate_target_dims``.
+        calculate_target_fn: Unused, kept for API compatibility.
 
     Returns:
         (score, media_metadata) where score is in [0.0, 1.0].
     """
-    if calculate_target_fn is None:
-        calculate_target_fn = calculate_target_dims
-
     width_orientation_groups: dict[str, list[dict[str, Any]]] = {
         "landscape": [],
         "portrait": [],
@@ -162,35 +258,23 @@ def compute_harmonization_score(
         if not items:
             continue
 
-        # Local Majority AR
-        local_ratios = [m["aspect_ratio"] for m in items if "aspect_ratio" in m]
+        # Local Majority AR — snap to standard ratios before counting
+        local_ratios = [_snap_ar(m["aspect_ratio"]) for m in items if "aspect_ratio" in m]
         if not local_ratios:
             continue
 
-        local_counts = Counter(local_ratios)
-        local_majority_ar = local_counts.most_common(1)[0][0]
+        local_majority_ar = Counter(local_ratios).most_common(1)[0][0]
 
-        # Count matches, flag, and calculate per-image crop targets
         for meta in items:
-            is_match = False
-            if "aspect_ratio" in meta:
-                if abs(meta["aspect_ratio"] - local_majority_ar) < 0.01:
-                    is_match = True
-                    total_matches += 1
-            meta["is_majority_ar"] = is_match
+            if "aspect_ratio" in meta and is_majority_match(meta["aspect_ratio"], local_majority_ar):
+                meta["is_majority_ar"] = True
+                total_matches += 1
+            else:
+                meta["is_majority_ar"] = False
 
-            # Calculate target crop dimensions from local majority AR
             w, h = meta.get("width", 0), meta.get("height", 0)
             if w > 0 and h > 0:
-                long_side = max(w, h)
-                t_w, t_h = calculate_target_fn(long_side, local_majority_ar, ori)
-                # Shrink until targets fit within source
-                while t_w > w or t_h > h:
-                    long_side -= 32
-                    if long_side <= 0:
-                        t_w, t_h = w, h
-                        break
-                    t_w, t_h = calculate_target_fn(long_side, local_majority_ar, ori)
+                t_w, t_h = compute_crop_target(w, h, local_majority_ar, ori)
                 meta["target_width"] = t_w
                 meta["target_height"] = t_h
 

@@ -51,6 +51,28 @@ def ar_to_display(ar: float, orientation: str) -> str:
     if abs(ar - 1.0) < 0.01:
         return "1:1"
 
+    # Well-known standard ratios — match within 2% tolerance
+    _STANDARD_RATIOS = [
+        (16, 9),   # 1.7778
+        (3, 2),    # 1.5
+        (4, 3),    # 1.3333
+        (21, 9),   # 2.3333
+        (5, 4),    # 1.25
+        (7, 5),    # 1.4
+        (5, 3),    # 1.6667
+        (2, 1),    # 2.0
+        (3, 1),    # 3.0
+        (32, 9),   # 3.5556
+    ]
+
+    for w, h in _STANDARD_RATIOS:
+        standard_ar = w / h
+        if abs(ar - standard_ar) / standard_ar < 0.02:
+            if orientation == "portrait":
+                return f"{h}:{w}"
+            return f"{w}:{h}"
+
+    # Fallback: simplify with limit_denominator
     frac = Fraction(ar).limit_denominator(32)
     w_part, h_part = frac.numerator, frac.denominator
 

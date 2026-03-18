@@ -27,9 +27,11 @@ export interface ChartDataPoint {
     .uplot-container { width: 100%; }
 
     /* Dark theme overrides for uPlot */
-    :host .u-legend { font-size: 11px; color: #9ca3af; padding: 4px 0 0 0; }
-    :host .u-legend .u-series { padding: 2px 8px; }
-    :host .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+    :host .u-legend { font-size: 11px; color: #9ca3af; padding: 4px 0 0 0; display: flex; align-items: baseline; flex-wrap: wrap; }
+    :host .u-legend .u-series { padding: 2px 8px; display: inline-flex; align-items: baseline; line-height: 1; }
+    :host .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+    :host .u-legend .u-label { line-height: 1; }
+    :host .u-legend .u-marker { align-self: center; }
     :host .u-legend .u-series:first-child { display: none; }
   `]
 })

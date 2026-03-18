@@ -26,15 +26,9 @@ export interface ChartDataPoint {
     .training-chart-wrap { width: 100%; }
     .uplot-container { width: 100%; }
 
-    /* Dark theme overrides for uPlot (legend is a <table>) */
-    :host .u-legend { font-size: 11px; color: #9ca3af; padding: 4px 0 0 0; }
-    :host .u-legend .u-series { padding: 2px 8px; }
-    :host .u-legend .u-series th,
-    :host .u-legend .u-series td { vertical-align: middle; padding: 1px 2px; }
-    :host .u-legend .u-marker { display: inline-block; vertical-align: middle; }
-    :host .u-legend .u-label { display: inline; vertical-align: middle; }
-    :host .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; }
-    :host .u-legend .u-series:first-child { display: none; }
+    /* uPlot legend overrides — minimal CSS, alignment patched via DOM */
+    .u-legend { font-size: 12px; color: #9ca3af; padding: 4px 0 0 0; }
+    .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; }
   `]
 })
 export class TrainingChartComponent implements AfterViewInit, OnDestroy {
@@ -296,6 +290,33 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         const plotData = this.buildUPlotData();
         this._lastIsProdigy = prodigy;
         this.plot = new uPlot(opts, plotData, container);
+        this.patchLegendAlignment();
+    }
+
+    /** Patch uPlot legend DOM with inline styles for alignment.
+     *  uPlot's `.u-inline *` makes everything inline-block;
+     *  CSS overrides are fragile, so we set inline styles directly. */
+    private patchLegendAlignment() {
+        const legend = this.chartContainer.nativeElement.parentElement?.querySelector('.u-legend');
+        if (!legend) return;
+
+        // All th/td children of each .u-series row
+        legend.querySelectorAll<HTMLElement>('.u-series > *').forEach(cell => {
+            cell.style.verticalAlign = 'middle';
+            cell.style.padding = '2px 4px';
+        });
+        // Shrink markers slightly for cleaner alignment
+        legend.querySelectorAll<HTMLElement>('.u-marker').forEach(m => {
+            m.style.width = '0.7em';
+            m.style.height = '0.7em';
+            m.style.borderRadius = '2px';
+        });
+        // Step series (first row) has no visible marker — give it a
+        // transparent placeholder so the row height matches the others.
+        const stepMarker = legend.querySelector<HTMLElement>('.u-series:first-child .u-marker');
+        if (stepMarker) {
+            stepMarker.style.visibility = 'hidden';
+        }
     }
 
     private updateChart() {

@@ -185,7 +185,17 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
 
         // Base series: steps, loss (smoothed), loss (raw)
         const series: uPlot.Series[] = [
-            { label: 'Step' },
+            {
+                label: 'Step',
+                value: (u: uPlot, v: number | null) => {
+                    if (v == null) {
+                        const steps = u.data[0];
+                        if (steps && steps.length > 0) return String(steps[steps.length - 1]);
+                        return '—';
+                    }
+                    return String(v);
+                },
+            },
             {
                 label: 'Loss',
                 stroke: cLoss,

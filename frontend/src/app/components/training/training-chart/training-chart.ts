@@ -30,7 +30,9 @@ export interface ChartDataPoint {
     :host .u-legend { font-size: 11px; color: #9ca3af; padding: 4px 0 0 0; }
     :host .u-legend .u-series { padding: 2px 8px; }
     :host .u-legend .u-series th,
-    :host .u-legend .u-series td { vertical-align: bottom; line-height: 1.2; padding: 0 2px; }
+    :host .u-legend .u-series td { vertical-align: middle; padding: 1px 2px; }
+    :host .u-legend .u-marker { display: inline-block; vertical-align: middle; }
+    :host .u-legend .u-label { display: inline; vertical-align: middle; }
     :host .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; }
     :host .u-legend .u-series:first-child { display: none; }
   `]

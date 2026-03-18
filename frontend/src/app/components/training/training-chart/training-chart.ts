@@ -64,9 +64,25 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         return this.data().some(d => d.d_estimate != null);
     }
 
-    /** Format small numbers with scientific notation for legend readability. */
+    /** Format small numbers with scientific notation for legend readability.
+     *  When cursor is off chart (v == null), show the latest value instead of '—'.
+     */
     private static fmtSci(self: uPlot, v: number | null, si: number, di: number | null): string {
-        if (v == null || isNaN(v)) return '—';
+        // If no hovered value, fall back to the latest data point for this series
+        if (v == null || isNaN(v)) {
+            const seriesData = self.data[si];
+            if (seriesData && seriesData.length > 0) {
+                // Walk backwards to find the last non-null value
+                for (let k = seriesData.length - 1; k >= 0; k--) {
+                    const last = seriesData[k];
+                    if (last != null && !isNaN(last)) {
+                        v = last;
+                        break;
+                    }
+                }
+            }
+            if (v == null || isNaN(v)) return '—';
+        }
         if (Math.abs(v) < 0.001 && v !== 0) return v.toExponential(3);
         if (Math.abs(v) < 1) return v.toFixed(4);
         return v.toFixed(2);

@@ -159,7 +159,7 @@ class SDXLTrainer(GenericTrainingPipeline):
                 batch_caps = [cap for cap, _ in batch_items]
 
                 # Encode fresh
-                prompt_embeds, pooled_embeds = self._encode_fresh(batch_caps, self._resolve_loading_dtype())
+                prompt_embeds, pooled_embeds = self._encode_text_direct(batch_caps, self._resolve_loading_dtype())
 
                 # Cache and save each
                 for j, (cap, hint) in enumerate(batch_items):
@@ -191,7 +191,7 @@ class SDXLTrainer(GenericTrainingPipeline):
 
     # ── Text Encoding ────────────────────────────────────────────────────
 
-    def _encode_fresh(
+    def _encode_text_direct(
         self, captions: list[str], dtype: torch.dtype
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Dual CLIP encoding without caching.
@@ -232,7 +232,7 @@ class SDXLTrainer(GenericTrainingPipeline):
             return self._get_cached_text_embeddings(captions, dtype)
 
         with torch.no_grad():
-            prompt_embeds, pooled_embeds = self._encode_fresh(captions, dtype)
+            prompt_embeds, pooled_embeds = self._encode_text_direct(captions, dtype)
             self._pooled_embeds = pooled_embeds
         return prompt_embeds
 
@@ -263,7 +263,7 @@ class SDXLTrainer(GenericTrainingPipeline):
 
             for _, cap in uncached:
                 with torch.no_grad():
-                    p_emb, pool_emb = self._encode_fresh([cap], dtype)
+                    p_emb, pool_emb = self._encode_text_direct([cap], dtype)
                 self.text_cache[cap] = p_emb.squeeze(0).cpu()
                 self._pooled_cache[cap] = pool_emb.squeeze(0).cpu()
 

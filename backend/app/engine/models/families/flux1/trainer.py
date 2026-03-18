@@ -210,9 +210,9 @@ class Flux1Trainer(GenericTrainingPipeline):
         """
         if self.config.get("cache_text_embeddings", True):
             return self._get_cached_text_embeddings(captions, dtype)
-        return self._encode_fresh(captions, dtype)
+        return self._encode_text_direct(captions, dtype)
 
-    def _encode_fresh(
+    def _encode_text_direct(
         self, captions: list[str], dtype: torch.dtype
     ) -> torch.Tensor:
         """Encode captions without caching."""
@@ -278,7 +278,7 @@ class Flux1Trainer(GenericTrainingPipeline):
                 self.clip_encoder.to(self.device)
 
             batch_caps = [c for _, c in uncached]
-            t5_emb = self._encode_fresh(batch_caps, dtype)
+            t5_emb = self._encode_text_direct(batch_caps, dtype)
             clip_pooled = self._clip_pooled
 
             for j, (orig_idx, cap) in enumerate(uncached):

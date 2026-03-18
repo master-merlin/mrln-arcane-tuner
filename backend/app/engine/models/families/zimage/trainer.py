@@ -115,20 +115,28 @@ class ZImageTrainer(GenericTrainingPipeline):
             )
             return
 
-        # -- Phase 2: Encode missing --
+        # -- Phase 2: Encode missing (batched) --
         print("[STATUS:Caching Text Embeddings (0%)]", flush=True)
         encode_total = len(need_encode)
+        batch_size = 4
+        dtype = self._resolve_loading_dtype()
 
         with torch.no_grad():
-            for i, (cap, hint) in enumerate(need_encode):
-                result = self._encode_text_direct([cap], self._resolve_loading_dtype())
-                emb = result[0].cpu()
-                self.text_cache[cap] = emb
-                if te1_dir:
-                    TextEmbeddingCache.save(cap, emb, te1_dir, hint)
+            for i in range(0, encode_total, batch_size):
+                batch_items = need_encode[i : i + batch_size]
+                batch_caps = [cap for cap, _ in batch_items]
 
-                pct = int((i + 1) / encode_total * 100)
-                if pct % 10 == 0 or i == encode_total - 1:
+                # Single batched forward pass through the TE
+                emb_list = self._encode_text_direct(batch_caps, dtype)
+
+                for j, (cap, hint) in enumerate(batch_items):
+                    emb = emb_list[j].cpu()
+                    self.text_cache[cap] = emb
+                    if te1_dir:
+                        TextEmbeddingCache.save(cap, emb, te1_dir, hint)
+
+                pct = int(min(i + batch_size, encode_total) / encode_total * 100)
+                if pct % 10 == 0 or (i + batch_size) >= encode_total:
                     print(f"[STATUS:Caching Text Embeddings ({pct}%)]", flush=True)
 
         self.logger.info(

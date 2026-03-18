@@ -120,23 +120,28 @@ class Flux2Trainer(GenericTrainingPipeline):
             return
 
         # ── Phase 2: Encode missing captions on GPU ───────────────────────
+        # Batch-encode directly via driver (avoids per-caption forward pass
+        # that _get_cached_text_embeddings would do).
         print("[STATUS:Caching Text Embeddings (0%)]", flush=True)
         encode_total = len(need_encode)
         batch_size = 4
+        dtype = self._resolve_loading_dtype()
 
         with torch.no_grad():
             for i in range(0, encode_total, batch_size):
                 batch_items = need_encode[i : i + batch_size]
                 batch_caps = [cap for cap, _ in batch_items]
-                self._get_cached_text_embeddings(batch_caps, self._resolve_loading_dtype())
 
-                # Save newly encoded to disk
-                if te_cache_dir:
-                    for cap, hint in batch_items:
-                        if cap in self.text_cache:
-                            TextEmbeddingCache.save(
-                                cap, self.text_cache[cap], te_cache_dir, hint,
-                            )
+                # Single batched forward pass through the TE
+                output = self.driver.encode_text(batch_caps, dtype)
+                emb_batch = output.embeddings if hasattr(output, 'embeddings') else output
+
+                # Store each caption's embedding in the in-memory cache
+                for j, (cap, hint) in enumerate(batch_items):
+                    emb_cpu = emb_batch[j : j + 1].cpu()
+                    self.text_cache[cap] = emb_cpu
+                    if te_cache_dir:
+                        TextEmbeddingCache.save(cap, emb_cpu, te_cache_dir, hint)
 
                 pct = round(min(i + batch_size, encode_total) / encode_total * 100)
                 print(f"[STATUS:Caching Text Embeddings ({pct}%)]", flush=True)

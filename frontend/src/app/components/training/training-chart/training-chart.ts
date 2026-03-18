@@ -26,12 +26,12 @@ export interface ChartDataPoint {
     .training-chart-wrap { width: 100%; }
     .uplot-container { width: 100%; }
 
-    /* Dark theme overrides for uPlot */
-    :host .u-legend { font-size: 11px; color: #9ca3af; padding: 4px 0 0 0; display: flex; align-items: baseline; flex-wrap: wrap; }
-    :host .u-legend .u-series { padding: 2px 8px; display: inline-flex; align-items: baseline; line-height: 1; }
-    :host .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
-    :host .u-legend .u-label { line-height: 1; }
-    :host .u-legend .u-marker { align-self: center; }
+    /* Dark theme overrides for uPlot (legend is a <table>) */
+    :host .u-legend { font-size: 11px; color: #9ca3af; padding: 4px 0 0 0; }
+    :host .u-legend .u-series { padding: 2px 8px; }
+    :host .u-legend .u-series th,
+    :host .u-legend .u-series td { vertical-align: bottom; line-height: 1.2; padding: 0 2px; }
+    :host .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; }
     :host .u-legend .u-series:first-child { display: none; }
   `]
 })

@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 from PIL import Image
 from app.core.captioning.models.qwen3_vl import Qwen3VLModel
 from app.core.captioning.models.joycaption import JoyCaptionModel
@@ -11,16 +12,18 @@ from app.core.captioning.models.florence2 import Florence2Model
 
 @patch("app.api.caption_routes.CaptionService")
 @patch("app.core.dataset_manager.dataset_manager")
-@patch("app.api.caption_routes.os.path.exists")
+@patch("app.api.caption_routes.validate_path_within")
 @patch("app.api.caption_routes.asyncio.to_thread")
-def test_generate_caption_success(mock_to_thread, mock_exists, mock_manager, mock_service_cls, client):
+def test_generate_caption_success(mock_to_thread, mock_validate, mock_manager, mock_service_cls, client):
     # Mock to_thread to return an awaitable
     async def run_sync(func, *args, **kwargs):
         return func(*args, **kwargs)
     mock_to_thread.side_effect = run_sync
 
-    # Mock filesystem
-    mock_exists.return_value = True
+    # Mock path validation (return a fake Path that "exists")
+    fake_path = MagicMock(spec=Path)
+    fake_path.exists.return_value = True
+    mock_validate.return_value = fake_path
 
     # Mock CaptionService
     mock_service_instance = MagicMock()
@@ -57,8 +60,7 @@ def test_generate_caption_dataset_not_found(mock_to_thread, mock_manager, mock_s
     mock_to_thread.side_effect = run_sync
 
     # Mock Manager to return None
-    mock_manager.datasets.get.return_value = None
-    mock_manager.datasets.__contains__.return_value = False
+    mock_manager.get_dataset.return_value = None
 
     payload = {
         "dataset_name": "unknown_ds",
@@ -90,17 +92,19 @@ def test_unload_models(mock_to_thread, mock_service_cls, client):
 
 @patch("app.api.caption_routes.CaptionService")
 @patch("app.core.dataset_manager.dataset_manager")
-@patch("app.api.caption_routes.os.path.exists")
+@patch("app.api.caption_routes.validate_path_within")
 @patch("app.api.caption_routes.asyncio.to_thread")
 def test_system_prompt_propagation_through_route(
-    mock_to_thread, mock_exists, mock_manager, mock_service_cls, client
+    mock_to_thread, mock_validate, mock_manager, mock_service_cls, client
 ):
     """Verify that system_prompt from the request body is merged into params."""
     async def run_sync(func, *args, **kwargs):
         return func(*args, **kwargs)
     mock_to_thread.side_effect = run_sync
 
-    mock_exists.return_value = True
+    fake_path = MagicMock(spec=Path)
+    fake_path.exists.return_value = True
+    mock_validate.return_value = fake_path
 
     mock_service_instance = MagicMock()
     mock_service_instance.generate_caption.return_value = "test caption"

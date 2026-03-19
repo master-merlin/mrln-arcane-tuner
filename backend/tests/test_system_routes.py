@@ -3,6 +3,7 @@ E2E tests for api/system_routes.py — logs, system status, GPU status.
 """
 
 from unittest.mock import patch, MagicMock
+from pathlib import Path
 
 
 _SYS_MODULE = "app.api.system_routes"
@@ -10,7 +11,9 @@ _SYS_MODULE = "app.api.system_routes"
 
 def test_get_logs_empty(client):
     """Should return empty when log file doesn't exist."""
-    with patch(f"{_SYS_MODULE}.os.path.exists", return_value=False):
+    mock_path = MagicMock(spec=Path)
+    mock_path.exists.return_value = False
+    with patch(f"{_SYS_MODULE}._LOG_FILE", mock_path):
         response = client.get("/api/system/logs")
     assert response.status_code == 200
     assert response.json() == []

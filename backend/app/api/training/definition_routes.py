@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -43,18 +43,20 @@ async def create_definition(request: CreateDefinitionRequest):
     if registry.get_definition(request.id):
         raise HTTPException(status_code=409, detail=f"Definition '{request.id}' already exists.")
 
-    families_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "engine", "models", "families",
+    families_dir = (
+        Path(__file__).resolve().parents[2] / "engine" / "models" / "families"
     )
-    family_def_dir = os.path.join(families_dir, request.family, "definitions")
-    os.makedirs(family_def_dir, exist_ok=True)
+    family_def_dir = families_dir / request.family / "definitions"
 
-    safe_id = request.id.replace("/", "_").replace("\\", "_")
-    yaml_path = os.path.join(family_def_dir, f"{safe_id}.yaml")
+    def _write_yaml():
+        family_def_dir.mkdir(parents=True, exist_ok=True)
+        safe_id = request.id.replace("/", "_").replace("\\", "_")
+        yaml_path = family_def_dir / f"{safe_id}.yaml"
+        data = request.model_dump()
+        yaml_path.write_text(yaml.dump(data, sort_keys=False), encoding="utf-8")
+        return str(yaml_path)
 
-    data = request.model_dump()
-    with open(yaml_path, "w") as f:
-        yaml.dump(data, f, sort_keys=False)
+    yaml_path = await asyncio.to_thread(_write_yaml)
 
     defn = registry.load_definition(yaml_path)
     logger.info("definition_created", id=defn.id, family=defn.family, path=yaml_path)
@@ -90,8 +92,10 @@ async def delete_definition(definition_id: str):
         raise HTTPException(status_code=404, detail=f"Definition '{definition_id}' not found.")
 
     yaml_path = registry._paths.get(definition_id)
-    if yaml_path and os.path.exists(yaml_path):
-        os.remove(yaml_path)
+    if yaml_path:
+        p = Path(yaml_path)
+        if p.exists():
+            await asyncio.to_thread(p.unlink)
 
     del registry._definitions[definition_id]
     if definition_id in registry._paths:

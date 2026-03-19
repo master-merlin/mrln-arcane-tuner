@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import gc
-import os
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from app.api._path_guard import safe_remove
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.upscale_schemas import UpscaleListRequest, UpscaleApplyRequest
@@ -15,46 +15,48 @@ from app.api.schemas.upscale_schemas import UpscaleListRequest, UpscaleApplyRequ
 router = APIRouter()
 logger = get_logger(__name__)
 
-_DEFAULT_UPSCALE_FOLDER = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "engine", "models", "upscale"
+_DEFAULT_UPSCALE_FOLDER = (
+    Path(__file__).resolve().parents[2] / "engine" / "models" / "upscale"
 )
 # Also check the legacy path
-_LEGACY_UPSCALE_FOLDER = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "models", "upscale"
+_LEGACY_UPSCALE_FOLDER = (
+    Path(__file__).resolve().parents[3] / "models" / "upscale"
 )
 
 
 @router.post("/upscale/list-models")
 async def list_upscale_models(request: UpscaleListRequest):
     """Scan a folder for upscale model files (.pth, .safetensors)."""
-    folder = request.folder.strip() if request.folder else ""
-    if not folder:
-        folder = os.path.normpath(_DEFAULT_UPSCALE_FOLDER)
-        if not os.path.isdir(folder):
-            folder = os.path.normpath(_LEGACY_UPSCALE_FOLDER)
-    if not os.path.isdir(folder):
+    folder_str = request.folder.strip() if request.folder else ""
+    if not folder_str:
+        folder = _DEFAULT_UPSCALE_FOLDER
+        if not folder.is_dir():
+            folder = _LEGACY_UPSCALE_FOLDER
+    else:
+        folder = Path(folder_str)
+
+    if not folder.is_dir():
         raise HTTPException(status_code=404, detail=f"Folder not found: {folder}")
 
     model_exts = {".pth", ".safetensors", ".safetensor", ".pt", ".onnx", ".bin"}
     models = []
-    for f in os.listdir(folder):
-        ext = os.path.splitext(f)[1].lower()
-        if ext in model_exts:
-            full_path = os.path.join(folder, f)
-            size_mb = os.path.getsize(full_path) / (1024 * 1024)
+    for f in folder.iterdir():
+        if f.is_file() and f.suffix.lower() in model_exts:
+            size_mb = f.stat().st_size / (1024 * 1024)
             models.append({
-                "name": f,
-                "path": full_path,
+                "name": f.name,
+                "path": str(f),
                 "size_mb": round(size_mb, 1),
             })
     models.sort(key=lambda m: m["name"])
-    return {"models": models, "folder": folder}
+    return {"models": models, "folder": str(folder)}
 
 
 @router.post("/datasets/{name}/upscale")
 async def upscale_media(name: str, request: UpscaleApplyRequest):
     """Upscale an image using a selected model with tiled inference."""
     try:
+        import gc
         import torch
         from spandrel import ModelLoader
     except ImportError:
@@ -67,10 +69,13 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    img_path = os.path.join(dataset.path, request.image_path)
-    if not os.path.exists(img_path):
+    dataset_root = Path(dataset.path)
+    img_path = dataset_root / request.image_path
+    model_path = Path(request.model_path)
+
+    if not img_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
-    if not os.path.exists(request.model_path):
+    if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
 
     def _upscale():
@@ -80,7 +85,7 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Load model via spandrel (supports ESRGAN, RealESRGAN, SwinIR, etc.)
-        model = ModelLoader().load_from_file(request.model_path)
+        model = ModelLoader().load_from_file(str(model_path))
         model = model.to(device).eval()
 
         # Load image
@@ -149,7 +154,7 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             result_img = result_img.resize((final_w, final_h), resample)
             effective_scale = target
 
-        result_img.save(img_path, quality=95)
+        result_img.save(str(img_path), quality=95)
 
         # Cleanup VRAM
         del model, img_tensor, output
@@ -161,18 +166,18 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
 
     try:
         result = await asyncio.to_thread(_upscale)
-        # Invalidate masks & masked images — dimensions changed
-        stem = os.path.splitext(request.image_path)[0]
-        for suffix in [
-            os.path.join("masks", f"{stem}.png"),
-            os.path.join("masked", f"{stem}.jpg"),
-            os.path.join("masked", f"{stem}.txt"),
+
+        # Invalidate masks & masked images — dimensions changed (threaded)
+        stem = Path(request.image_path).stem
+        for suffix_path in [
+            dataset_root / "masks" / f"{stem}.png",
+            dataset_root / "masked" / f"{stem}.jpg",
+            dataset_root / "masked" / f"{stem}.txt",
         ]:
-            p = os.path.join(dataset.path, suffix)
-            if os.path.exists(p):
-                os.remove(p)
+            await asyncio.to_thread(safe_remove, suffix_path)
+
         # Update cached metadata so /pairs returns correct dimensions
-        lookup_key = request.image_path.replace(os.sep, '/')
+        lookup_key = request.image_path.replace("\\", "/")
         if lookup_key in dataset.media_metadata:
             dataset.media_metadata[lookup_key]["width"] = result["new_size"][0]
             dataset.media_metadata[lookup_key]["height"] = result["new_size"][1]
@@ -180,13 +185,13 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             dataset.media_metadata[lookup_key]["has_masked"] = False
             dataset.media_metadata[lookup_key]["has_masked_caption"] = False
             dataset.media_metadata[lookup_key].pop("mask_info", None)
-            real_path = os.path.join(dataset.path, request.image_path)
-            if os.path.exists(real_path):
-                dataset.media_metadata[lookup_key]["size_bytes"] = os.path.getsize(real_path)
+            if img_path.exists():
+                dataset.media_metadata[lookup_key]["size_bytes"] = img_path.stat().st_size
             # Persist to DB (previously in-memory only — lost on restart)
             dataset_manager._persist_media_item(dataset, request.image_path)
+
         # Bump patch version for destructive upscale
         await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")
         return {"status": "upscaled", "file": request.image_path, **result}
-    except Exception as e:
+    except (OSError, RuntimeError, MemoryError) as e:
         raise HTTPException(status_code=500, detail=str(e))

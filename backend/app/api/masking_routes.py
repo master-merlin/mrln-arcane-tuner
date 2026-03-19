@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.api._path_guard import safe_remove
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.core.masking.masking_service import MaskingService
@@ -43,18 +44,19 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
     if not dataset:
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
-    image_full_path = os.path.join(dataset.path, request.image_rel_path)
-    if not os.path.exists(image_full_path):
+    dataset_root = Path(dataset.path)
+    image_full_path = dataset_root / request.image_rel_path
+    if not image_full_path.exists():
         raise HTTPException(status_code=404, detail=f"Image file not found: {request.image_rel_path}")
 
-    masks_dir = os.path.join(dataset.path, "masks")
-    await asyncio.to_thread(os.makedirs, masks_dir, exist_ok=True)
+    masks_dir = dataset_root / "masks"
+    await asyncio.to_thread(masks_dir.mkdir, parents=True, exist_ok=True)
 
     logger.info("generating_mask", dataset=name, image=request.image_rel_path, model=request.model_id)
 
     try:
         mask_img = await asyncio.to_thread(
-            masking_service.generate_mask, image_full_path, request.model_id, request.params,
+            masking_service.generate_mask, str(image_full_path), request.model_id, request.params,
         )
     except (OSError, RuntimeError, ValueError) as e:
         logger.error("mask_generation_failed", error=str(e))
@@ -64,14 +66,14 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
         raise HTTPException(status_code=500, detail="Mask generation returned no result")
 
     # Save mask
-    original_stem = os.path.splitext(os.path.basename(request.image_rel_path))[0]
+    original_stem = Path(request.image_rel_path).stem
     mask_filename = f"{original_stem}.png"
-    mask_full_path = os.path.join(masks_dir, mask_filename)
+    mask_full_path = masks_dir / mask_filename
 
-    await asyncio.to_thread(mask_img.save, mask_full_path)
+    await asyncio.to_thread(mask_img.save, str(mask_full_path))
 
     # Targeted metadata update (replaces full scan_dataset)
-    lookup_key = request.image_rel_path.replace(os.sep, "/")
+    lookup_key = request.image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         dataset.media_metadata[lookup_key]["has_mask"] = True
         dataset_manager._persist_media_item(dataset, request.image_rel_path)
@@ -96,33 +98,30 @@ async def apply_mask(name: str, request: ApplyMaskRequest):
     if not dataset:
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
-    image_rel_path = request.image_rel_path
-    opacity = request.opacity
+    dataset_root = Path(dataset.path)
+    image_full_path = dataset_root / request.image_rel_path
+    original_stem = Path(request.image_rel_path).stem
+    mask_full_path = dataset_root / "masks" / f"{original_stem}.png"
 
-    image_full_path = os.path.join(dataset.path, image_rel_path)
-    original_stem = os.path.splitext(os.path.basename(image_rel_path))[0]
-    mask_filename = f"{original_stem}.png"
-    mask_full_path = os.path.join(dataset.path, "masks", mask_filename)
-
-    if not os.path.exists(mask_full_path):
+    if not mask_full_path.exists():
         raise HTTPException(status_code=404, detail="Mask for this image does not exist yet")
 
-    masked_dir = os.path.join(dataset.path, "masked")
-    await asyncio.to_thread(os.makedirs, masked_dir, exist_ok=True)
+    masked_dir = dataset_root / "masked"
+    await asyncio.to_thread(masked_dir.mkdir, parents=True, exist_ok=True)
 
     output_filename = f"{original_stem}.jpg"
-    output_full_path = os.path.join(masked_dir, output_filename)
+    output_full_path = masked_dir / output_filename
 
-    logger.info("applying_mask", dataset=name, image=image_rel_path, opacity=opacity)
+    logger.info("applying_mask", dataset=name, image=request.image_rel_path, opacity=request.opacity)
     await asyncio.to_thread(
-        masking_service.combine_mask, image_full_path, mask_full_path, output_full_path, opacity,
+        masking_service.combine_mask, str(image_full_path), str(mask_full_path), str(output_full_path), request.opacity,
     )
 
     # Targeted metadata update (replaces full scan_dataset)
-    lookup_key = image_rel_path.replace(os.sep, "/")
+    lookup_key = request.image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         dataset.media_metadata[lookup_key]["has_masked"] = True
-        dataset_manager._persist_media_item(dataset, image_rel_path)
+        dataset_manager._persist_media_item(dataset, request.image_rel_path)
 
     return {
         "status": "success",
@@ -138,16 +137,17 @@ async def preview_mask(name: str, image_rel_path: str, opacity: float = 0.5):
     if not dataset:
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
-    image_full_path = os.path.join(dataset.path, image_rel_path)
-    original_stem = os.path.splitext(os.path.basename(image_rel_path))[0]
-    mask_full_path = os.path.join(dataset.path, "masks", f"{original_stem}.png")
+    dataset_root = Path(dataset.path)
+    image_full_path = dataset_root / image_rel_path
+    original_stem = Path(image_rel_path).stem
+    mask_full_path = dataset_root / "masks" / f"{original_stem}.png"
 
-    if not os.path.exists(mask_full_path):
+    if not mask_full_path.exists():
         raise HTTPException(status_code=404, detail="Mask not found")
 
     logger.debug("generating_mask_preview", image=image_rel_path)
     preview_img = await asyncio.to_thread(
-        masking_service.generate_preview, image_full_path, mask_full_path, opacity,
+        masking_service.generate_preview, str(image_full_path), str(mask_full_path), opacity,
     )
 
     buf = io.BytesIO()
@@ -164,27 +164,23 @@ async def delete_mask(name: str, image_rel_path: str):
     if not dataset:
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
-    original_stem = os.path.splitext(os.path.basename(image_rel_path))[0]
-    mask_filename = f"{original_stem}.png"
-    mask_full_path = os.path.join(dataset.path, "masks", mask_filename)
+    original_stem = Path(image_rel_path).stem
+    dataset_root = Path(dataset.path)
+    mask_full_path = dataset_root / "masks" / f"{original_stem}.png"
 
-    if not os.path.exists(mask_full_path):
+    if not mask_full_path.exists():
         raise HTTPException(status_code=404, detail="Mask not found")
 
-    logger.info("deleting_mask", dataset=name, mask=mask_filename)
-    await asyncio.to_thread(os.remove, mask_full_path)
+    logger.info("deleting_mask", dataset=name, mask=f"{original_stem}.png")
+    await asyncio.to_thread(safe_remove, mask_full_path)
 
     # Also clean up masked image + masked caption (derived from this mask)
     for masked_ext in (".jpg", ".txt"):
-        masked_path = os.path.join(dataset.path, "masked", f"{original_stem}{masked_ext}")
-        if os.path.exists(masked_path):
-            try:
-                os.remove(masked_path)
-            except OSError:
-                pass
+        masked_path = dataset_root / "masked" / f"{original_stem}{masked_ext}"
+        await asyncio.to_thread(safe_remove, masked_path)
 
     # Targeted metadata update (replaces full scan_dataset)
-    lookup_key = image_rel_path.replace(os.sep, "/")
+    lookup_key = image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         dataset.media_metadata[lookup_key]["has_mask"] = False
         dataset.media_metadata[lookup_key]["has_masked"] = False

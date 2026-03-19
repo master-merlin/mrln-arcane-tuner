@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -50,7 +51,14 @@ def test_inspect_checkpoint_success(mock_to_thread, mock_inspect, client):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
     mock_inspect.return_value = {"status": "ok", "components": []}
-    response = client.get("/api/checkpoints/inspect?path=/some/checkpoint")
+    import app.api.training.checkpoint_routes as ckpt_mod
+    orig = ckpt_mod._ALLOWED_ROOTS
+    ckpt_mod._ALLOWED_ROOTS = [Path("/").resolve()]
+    try:
+        with patch.object(Path, 'exists', return_value=True):
+            response = client.get("/api/checkpoints/inspect?path=/some/checkpoint")
+    finally:
+        ckpt_mod._ALLOWED_ROOTS = orig
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
@@ -109,10 +117,12 @@ def test_delete_definition_success(mock_to_thread, client):
     mock_to_thread.side_effect = run_sync
 
     mock_def = MagicMock()
+    mock_path = MagicMock()
+    mock_path.exists.return_value = False
     with patch("app.engine.models.registry.ModelRegistry.get_definition", return_value=mock_def), \
          patch.dict("app.engine.models.registry.registry._paths", {"to_del": "/some/path.yaml"}, clear=False), \
          patch.dict("app.engine.models.registry.registry._definitions", {"to_del": mock_def}, clear=False), \
-         patch("app.api.training.definition_routes.os.path.exists", return_value=False):
+         patch("app.api.training.definition_routes.Path", return_value=mock_path):
         response = client.delete("/api/models/definitions/to_del")
     assert response.status_code == 200
     assert response.json()["status"] == "deleted"
@@ -327,9 +337,10 @@ def test_get_sample_image_not_found(mock_to_thread, mock_jm, client):
 # ── LoRA Tooling Routes ─────────────────────────────────────────────────
 
 
-@patch("app.api.training.lora_routes.inspect_lora")
+@patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
+@patch("app.engine.utils.lora_tools.inspect_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")
-def test_inspect_lora_success(mock_to_thread, mock_inspect, client):
+def test_inspect_lora_success(mock_to_thread, mock_inspect, mock_check, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
@@ -339,9 +350,10 @@ def test_inspect_lora_success(mock_to_thread, mock_inspect, client):
     assert response.json()["rank"] == 16
 
 
-@patch("app.api.training.lora_routes.inspect_lora")
+@patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
+@patch("app.engine.utils.lora_tools.inspect_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")
-def test_inspect_lora_not_found(mock_to_thread, mock_inspect, client):
+def test_inspect_lora_not_found(mock_to_thread, mock_inspect, mock_check, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
@@ -350,9 +362,10 @@ def test_inspect_lora_not_found(mock_to_thread, mock_inspect, client):
     assert response.status_code == 404
 
 
-@patch("app.api.training.lora_routes.resize_lora")
+@patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
+@patch("app.engine.utils.lora_tools.resize_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")
-def test_resize_lora_success(mock_to_thread, mock_resize, client):
+def test_resize_lora_success(mock_to_thread, mock_resize, mock_check, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
@@ -366,9 +379,10 @@ def test_resize_lora_success(mock_to_thread, mock_resize, client):
     assert response.json()["new_rank"] == 8
 
 
-@patch("app.api.training.lora_routes.resize_lora")
+@patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
+@patch("app.engine.utils.lora_tools.resize_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")
-def test_resize_lora_not_found(mock_to_thread, mock_resize, client):
+def test_resize_lora_not_found(mock_to_thread, mock_resize, mock_check, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
@@ -381,9 +395,10 @@ def test_resize_lora_not_found(mock_to_thread, mock_resize, client):
     assert response.status_code == 404
 
 
-@patch("app.api.training.lora_routes.resize_lora")
+@patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
+@patch("app.engine.utils.lora_tools.resize_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")
-def test_resize_lora_bad_value(mock_to_thread, mock_resize, client):
+def test_resize_lora_bad_value(mock_to_thread, mock_resize, mock_check, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
@@ -396,9 +411,10 @@ def test_resize_lora_bad_value(mock_to_thread, mock_resize, client):
     assert response.status_code == 400
 
 
-@patch("app.api.training.lora_routes.resize_lora")
+@patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
+@patch("app.engine.utils.lora_tools.resize_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")
-def test_resize_lora_server_error(mock_to_thread, mock_resize, client):
+def test_resize_lora_server_error(mock_to_thread, mock_resize, mock_check, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
@@ -418,13 +434,25 @@ def test_browse_filesystem_success(client, tmp_path):
     sub = tmp_path / "subdir"
     sub.mkdir()
     (sub / "child").mkdir()
-    response = client.get(f"/api/filesystem/browse?path={tmp_path}")
+    import app.api.filesystem_routes as fs_mod
+    orig = fs_mod._ALLOWED_ROOTS
+    fs_mod._ALLOWED_ROOTS = [tmp_path]
+    try:
+        response = client.get(f"/api/filesystem/browse?path={tmp_path}")
+    finally:
+        fs_mod._ALLOWED_ROOTS = orig
     assert response.status_code == 200
     assert len(response.json()["entries"]) >= 1
 
 
 def test_browse_filesystem_not_found(client):
-    response = client.get("/api/filesystem/browse?path=/some/nonexistent/dir")
+    import app.api.filesystem_routes as fs_mod
+    orig = fs_mod._ALLOWED_ROOTS
+    fs_mod._ALLOWED_ROOTS = [Path("/").resolve()]
+    try:
+        response = client.get("/api/filesystem/browse?path=/some/nonexistent/dir")
+    finally:
+        fs_mod._ALLOWED_ROOTS = orig
     assert response.status_code == 404
 
 
@@ -432,7 +460,13 @@ def test_browse_filesystem_checkpoint_detection(client, tmp_path):
     ckpt = tmp_path / "ckpt_dir"
     ckpt.mkdir()
     (ckpt / "training_state.json").write_text("{}")
-    response = client.get(f"/api/filesystem/browse?path={tmp_path}")
+    import app.api.filesystem_routes as fs_mod
+    orig = fs_mod._ALLOWED_ROOTS
+    fs_mod._ALLOWED_ROOTS = [tmp_path]
+    try:
+        response = client.get(f"/api/filesystem/browse?path={tmp_path}")
+    finally:
+        fs_mod._ALLOWED_ROOTS = orig
     entries = response.json()["entries"]
     ckpt_entry = next(e for e in entries if e["name"] == "ckpt_dir")
     assert ckpt_entry["type"] == "checkpoint"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -43,12 +43,13 @@ class ScoreBatchRequest(BaseModel):
 @router.post("/datasets/{name}/score")
 async def score_image_api(name: str, request: ScoreImageRequest):
     """Score a single image for quality."""
-    dataset = await asyncio.to_thread(manager.datasets.get, name)
+    dataset = await asyncio.to_thread(manager.get_dataset, name)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    full_path = os.path.join(dataset.path, request.image_rel_path.replace("/", os.sep))
-    if not os.path.exists(full_path):
+    dataset_root = Path(dataset.path)
+    full_path = dataset_root / request.image_rel_path
+    if not full_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
 
     service = ScoringService.get_instance()
@@ -58,23 +59,24 @@ async def score_image_api(name: str, request: ScoreImageRequest):
     if request.prompt is not None:
         params["prompt"] = request.prompt
     else:
-        caption_path = os.path.splitext(full_path)[0] + ".txt"
-        if os.path.exists(caption_path):
-            with open(caption_path, "r", encoding="utf-8") as f:
-                params["prompt"] = f.read().strip()
+        caption_path = full_path.with_suffix(".txt")
+        if caption_path.exists():
+            caption_text = await asyncio.to_thread(
+                caption_path.read_text, encoding="utf-8",
+            )
+            params["prompt"] = caption_text.strip()
         else:
             params["prompt"] = ""
 
     try:
         score = await asyncio.to_thread(
-            service.score_image, full_path, request.model_id, params
+            service.score_image, str(full_path), request.model_id, params
         )
 
         # Persist score to DB
-        dataset_id = dataset.name
         await asyncio.to_thread(
             media_repo.update,
-            dataset_id,
+            dataset.name,
             request.image_rel_path,
             {"quality_score": score},
         )
@@ -91,38 +93,43 @@ async def score_batch_api(name: str, request: ScoreBatchRequest):
 
     Progress is streamed via WebSocket. Returns summary statistics.
     """
-    dataset = await asyncio.to_thread(manager.datasets.get, name)
+    dataset = await asyncio.to_thread(manager.get_dataset, name)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     # Collect all image paths
     image_exts = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff"}
-    all_files = await asyncio.to_thread(os.listdir, dataset.path)
-    image_files = [
-        f for f in all_files
-        if os.path.splitext(f)[1].lower() in image_exts
-    ]
+    dataset_root = Path(dataset.path)
+
+    def _list_images() -> list[str]:
+        return [
+            f.name for f in dataset_root.iterdir()
+            if f.is_file() and f.suffix.lower() in image_exts
+        ]
+
+    image_files = await asyncio.to_thread(_list_images)
 
     if not image_files:
         return {"scored": 0, "message": "No images found in dataset"}
 
-    image_paths = [os.path.join(dataset.path, f) for f in image_files]
+    image_paths = [str(dataset_root / f) for f in image_files]
 
     # Load captions if requested
     params: dict[str, Any] = {"hps_version": request.hps_version}
     if request.use_captions:
-        captions: dict[str, str] = {}
-        for f in image_files:
-            caption_path = os.path.join(
-                dataset.path, os.path.splitext(f)[0] + ".txt"
-            )
-            if os.path.exists(caption_path):
-                try:
-                    with open(caption_path, "r", encoding="utf-8") as fh:
-                        captions[f] = fh.read().strip()
-                except OSError:
-                    pass
-        params["captions"] = captions
+        def _load_captions() -> dict[str, str]:
+            captions: dict[str, str] = {}
+            for f in image_files:
+                caption_path = dataset_root / (Path(f).stem + ".txt")
+                if caption_path.exists():
+                    try:
+                        captions[f] = caption_path.read_text(encoding="utf-8").strip()
+                    except OSError:
+                        pass
+            return captions
+
+        params["captions"] = await asyncio.to_thread(_load_captions)
+
     params["prompt"] = request.fallback_prompt
 
     service = ScoringService.get_instance()
@@ -137,12 +144,11 @@ async def score_batch_api(name: str, request: ScoreBatchRequest):
         )
 
         # Persist all scores to DB and broadcast progress
-        dataset_id = dataset.name
         total = len(results)
         for i, (filename, score) in enumerate(results.items(), 1):
             await asyncio.to_thread(
                 media_repo.update,
-                dataset_id,
+                dataset.name,
                 filename,
                 {"quality_score": score},
             )
@@ -180,7 +186,7 @@ async def score_batch_api(name: str, request: ScoreBatchRequest):
 @router.get("/datasets/{name}/scores")
 async def get_scores_api(name: str):
     """Get all stored quality scores for a dataset."""
-    dataset = await asyncio.to_thread(manager.datasets.get, name)
+    dataset = await asyncio.to_thread(manager.get_dataset, name)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -196,7 +202,7 @@ async def get_scores_api(name: str):
 @router.delete("/datasets/{name}/scores")
 async def clear_scores_api(name: str):
     """Clear all quality scores for a dataset."""
-    dataset = await asyncio.to_thread(manager.datasets.get, name)
+    dataset = await asyncio.to_thread(manager.get_dataset, name)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 

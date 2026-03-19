@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -80,7 +80,7 @@ async def adjust_media(name: str, request: AdjustmentRequest):
             dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
             if dataset:
                 adjustments["color_match"] = {
-                    "reference_path": os.path.join(dataset.path, request.color_match.reference_path),
+                    "reference_path": str(Path(dataset.path) / request.color_match.reference_path),
                     "method": request.color_match.method,
                     "strength": request.color_match.strength,
                 }
@@ -117,7 +117,7 @@ async def adjust_media_batch(name: str, request: BatchAdjustmentRequest):
                     adjustments,
                 )
                 event = {"index": idx, "total": total, "file": path, "status": "ok"}
-            except Exception as e:
+            except (ValueError, FileNotFoundError, OSError) as e:
                 event = {"index": idx, "total": total, "file": path, "status": "error", "error": str(e)}
             yield f"data: {json.dumps(event)}\n\n"
         yield f"data: {json.dumps({'done': True, 'total': total})}\n\n"
@@ -138,12 +138,13 @@ async def color_match_preview(name: str, request: ColorMatchRequest):
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
-        src_path = os.path.join(dataset.path, request.source_path)
-        ref_path = os.path.join(dataset.path, request.reference_path)
+        dataset_root = Path(dataset.path)
+        src_path = dataset_root / request.source_path
+        ref_path = dataset_root / request.reference_path
 
-        if not os.path.exists(src_path):
+        if not src_path.exists():
             raise HTTPException(status_code=404, detail=f"Source not found: {request.source_path}")
-        if not os.path.exists(ref_path):
+        if not ref_path.exists():
             raise HTTPException(status_code=404, detail=f"Reference not found: {request.reference_path}")
 
         def _preview() -> bytes:
@@ -179,8 +180,8 @@ async def get_histogram(name: str, image_path: str = Query(...)):
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    full_path = os.path.join(dataset.path, image_path)
-    if not os.path.exists(full_path):
+    full_path = Path(dataset.path) / image_path
+    if not full_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
     def _compute():

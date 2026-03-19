@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.api._path_guard import validate_path_within
 from app.core.captioning.caption_service import CaptionService
 from app.core.logger import get_logger
 
@@ -41,26 +42,27 @@ async def generate_caption_api(request: GenerateCaptionRequest):
 
     from app.core.dataset_manager import dataset_manager as manager
 
-    dataset = await asyncio.to_thread(manager.datasets.get, request.dataset_name)
+    dataset = await asyncio.to_thread(manager.get_dataset, request.dataset_name)
     if not dataset:
-        if request.dataset_name not in manager.datasets:
-            raise HTTPException(status_code=404, detail="Dataset not found")
-        dataset = manager.datasets[request.dataset_name]
+        raise HTTPException(status_code=404, detail="Dataset not found")
 
-    full_path = os.path.join(dataset.path, request.image_rel_path.replace("/", os.sep))
+    dataset_root = Path(dataset.path)
+    full_path = validate_path_within(
+        dataset_root / request.image_rel_path, dataset_root,
+    )
 
     # When target is "masked", remap to masked/{stem}.jpg
     if request.target == "masked":
-        stem = os.path.splitext(os.path.basename(request.image_rel_path))[0]
-        masked_path = os.path.join(dataset.path, "masked", f"{stem}.jpg")
-        if not os.path.exists(masked_path):
+        stem = Path(request.image_rel_path).stem
+        masked_path = dataset_root / "masked" / f"{stem}.jpg"
+        if not masked_path.exists():
             raise HTTPException(
                 status_code=404,
                 detail=f"Masked image not found: masked/{stem}.jpg",
             )
         full_path = masked_path
 
-    if not os.path.exists(full_path):
+    if not full_path.exists():
         raise HTTPException(status_code=404, detail=f"Image not found at {full_path}")
 
     try:
@@ -70,26 +72,25 @@ async def generate_caption_api(request: GenerateCaptionRequest):
 
         caption = await asyncio.to_thread(
             service.generate_caption,
-            image_path=full_path,
+            image_path=str(full_path),
             model_id=request.model_id,
             params=params,
         )
 
         # When target is "masked", auto-save caption alongside masked image
         if request.target == "masked":
-            stem = os.path.splitext(os.path.basename(request.image_rel_path))[0]
-            masked_dir = os.path.join(dataset.path, "masked")
-            await asyncio.to_thread(os.makedirs, masked_dir, exist_ok=True)
-            caption_path = os.path.join(masked_dir, f"{stem}.txt")
+            stem = Path(request.image_rel_path).stem
+            masked_dir = dataset_root / "masked"
+            await asyncio.to_thread(masked_dir.mkdir, parents=True, exist_ok=True)
+            caption_path = masked_dir / f"{stem}.txt"
 
             def _write_caption():
-                with open(caption_path, "w", encoding="utf-8") as f:
-                    f.write(caption)
+                caption_path.write_text(caption, encoding="utf-8")
 
             await asyncio.to_thread(_write_caption)
 
             # Update has_masked_caption in DB
-            lookup_key = request.image_rel_path.replace(os.sep, "/")
+            lookup_key = request.image_rel_path.replace("\\", "/")
             if lookup_key in dataset.media_metadata:
                 dataset.media_metadata[lookup_key]["has_masked_caption"] = True
                 manager._persist_media_item(dataset, request.image_rel_path)

@@ -4,7 +4,8 @@ Covers: /api/system/restart, /api/system/logs, /api/system/logs/clear.
 """
 
 
-from unittest.mock import patch, mock_open
+from unittest.mock import patch, mock_open, MagicMock
+from pathlib import Path
 
 
 # ── Restart Endpoint ────────────────────────────────────────────────────
@@ -31,7 +32,9 @@ class TestLogEndpoints:
     def test_get_logs_returns_list(self, client):
         """GET /api/system/logs should return a list."""
         fake_lines = "line1\nline2\nline3\n"
-        with patch("app.api.system_routes.os.path.exists", return_value=True):
+        mock_path = MagicMock(spec=Path)
+        mock_path.exists.return_value = True
+        with patch("app.api.system_routes._LOG_FILE", mock_path):
             with patch("builtins.open", mock_open(read_data=fake_lines)):
                 resp = client.get("/api/system/logs?lines=10")
 
@@ -40,7 +43,9 @@ class TestLogEndpoints:
 
     def test_get_logs_missing_file(self, client):
         """GET /api/system/logs should return empty list when server.log is absent."""
-        with patch("app.api.system_routes.os.path.exists", return_value=False):
+        mock_path = MagicMock(spec=Path)
+        mock_path.exists.return_value = False
+        with patch("app.api.system_routes._LOG_FILE", mock_path):
             resp = client.get("/api/system/logs")
 
         assert resp.status_code == 200

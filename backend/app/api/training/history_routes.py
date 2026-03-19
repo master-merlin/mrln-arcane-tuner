@@ -91,7 +91,7 @@ async def get_dataset_jobs(name: str):
     from app.core.db.repositories.job_repo import JobHistoryRepository
     from app.core.dataset_manager import dataset_manager
 
-    ds = dataset_manager.get_dataset(name)
+    ds = await asyncio.to_thread(dataset_manager.get_dataset, name)
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
 

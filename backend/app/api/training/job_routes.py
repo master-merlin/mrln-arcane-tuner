@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from app.api._path_guard import validate_path_within
 from app.core.job import Job
 from app.core.job_manager import job_manager
 from app.core.logger import get_logger
@@ -186,6 +187,16 @@ async def get_sampling_cadence(job_id: str):
 # ── Sample Images ───────────────────────────────────────────────────────
 
 
+def _resolve_sample_dir(job: Job) -> Path:
+    """Resolve the sample images directory for a job."""
+    cfg = job.config
+    output_dir = Path(cfg.get("output_dir", "outputs"))
+    lora_name = cfg.get("lora_name", "lora")
+    definition_id = cfg.get("definition_id", "")
+    model_part = definition_id.split("/")[-1].replace(":", "_")
+    return output_dir / f"{lora_name}_{model_part}" / "samples"
+
+
 @router.get("/jobs/{job_id}/samples")
 async def list_job_samples(job_id: str):
     """List all sample images for a job, sorted by step.
@@ -197,23 +208,16 @@ async def list_job_samples(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    cfg = job.config
-    output_dir = cfg.get("output_dir", "outputs")
-    lora_name = cfg.get("lora_name", "lora")
-    definition_id = cfg.get("definition_id", "")
-    model_part = definition_id.split("/")[-1].replace(":", "_")
-    run_name = f"{lora_name}_{model_part}"
-    sample_dir = os.path.join(output_dir, run_name, "samples")
-
-    if not os.path.isdir(sample_dir):
+    sample_dir = _resolve_sample_dir(job)
+    if not sample_dir.is_dir():
         return []
 
     samples = []
-    for fname in os.listdir(sample_dir):
-        if not fname.lower().endswith(".png"):
+    for fpath in sample_dir.iterdir():
+        if not fpath.suffix.lower() == ".png":
             continue
 
-        parts = fname.rsplit(".", 1)[0].split("_")
+        parts = fpath.stem.split("_")
         step = 0
         index = 0
         is_final = "final" in parts
@@ -231,13 +235,12 @@ async def list_job_samples(job_id: str):
         if is_final:
             step = 999999
 
-        fpath = os.path.join(sample_dir, fname)
         samples.append({
-            "filename": fname,
+            "filename": fpath.name,
             "step": step,
             "index": index,
-            "path": fpath,
-            "created_at": os.path.getmtime(fpath),
+            "path": str(fpath),
+            "created_at": fpath.stat().st_mtime,
         })
 
     samples.sort(key=lambda s: (s["step"], s["index"]), reverse=True)
@@ -251,15 +254,11 @@ async def get_sample_image(job_id: str, filename: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    cfg = job.config
-    output_dir = cfg.get("output_dir", "outputs")
-    lora_name = cfg.get("lora_name", "lora")
-    definition_id = cfg.get("definition_id", "")
-    model_part = definition_id.split("/")[-1].replace(":", "_")
-    run_name = f"{lora_name}_{model_part}"
-    fpath = os.path.join(output_dir, run_name, "samples", filename)
+    sample_dir = _resolve_sample_dir(job)
+    # Validate the filename stays within the sample directory
+    fpath = validate_path_within(sample_dir / filename, sample_dir)
 
-    if not os.path.isfile(fpath):
+    if not fpath.is_file():
         raise HTTPException(status_code=404, detail="Sample not found")
 
-    return FileResponse(fpath, media_type="image/png")
+    return FileResponse(str(fpath), media_type="image/png")

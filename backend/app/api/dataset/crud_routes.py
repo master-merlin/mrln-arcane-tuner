@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
+from pathlib import Path
 import shutil
 import zipfile
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.api._path_guard import sanitize_filename, validate_path_within
 from app.core.dataset_manager import dataset_manager, Dataset
 from app.core.logger import get_logger
 from app.api.schemas.dataset_schemas import (
@@ -114,18 +115,22 @@ async def upload_file(name: str, file: UploadFile = File(...)):
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    save_path = os.path.join(dataset.path, file.filename)
-    logger.info("uploading_file", dataset_name=name, filename=file.filename)
+    # Sanitize filename to prevent directory traversal via crafted names
+    safe_name = sanitize_filename(file.filename or "upload")
+    dataset_root = Path(dataset.path)
+    save_path = dataset_root / safe_name
+
+    logger.info("uploading_file", dataset_name=name, filename=safe_name)
 
     try:
-        def save_file():
+        def save_upload():
             with open(save_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-        await asyncio.to_thread(save_file)
-        return {"filename": file.filename, "status": "uploaded"}
+        await asyncio.to_thread(save_upload)
+        return {"filename": safe_name, "status": "uploaded"}
     except OSError as e:
-        logger.error("upload_failed", dataset_name=name, filename=file.filename, error=str(e))
+        logger.error("upload_failed", dataset_name=name, filename=safe_name, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -148,11 +153,14 @@ async def get_dataset_media(name: str, image_rel_path: str = Query(...)):
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    file_path = os.path.join(dataset.path, image_rel_path)
-    if not os.path.exists(file_path):
+    dataset_root = Path(dataset.path)
+    # Validate the resolved path stays inside the dataset directory
+    file_path = validate_path_within(dataset_root / image_rel_path, dataset_root)
+
+    if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileResponse(file_path)
+    return FileResponse(str(file_path))
 
 
 @router.delete("/datasets/{name}/pairs/{filename:path}")
@@ -222,7 +230,9 @@ async def download_dataset(name: str):
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    if not os.path.isdir(dataset.path):
+
+    dataset_root = Path(dataset.path)
+    if not dataset_root.is_dir():
         raise HTTPException(status_code=404, detail="Dataset directory not found on disk")
 
     zip_filename = f"{dataset.name}_{dataset.version}.zip"
@@ -231,13 +241,13 @@ async def download_dataset(name: str):
     def _build_zip() -> io.BytesIO:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(dataset.path):
+            for file_path in dataset_root.rglob("*"):
                 # Skip .cache subdirectory
-                dirs[:] = [d for d in dirs if d != ".cache"]
-                for file in files:
-                    abs_path = os.path.join(root, file)
-                    arc_name = os.path.relpath(abs_path, dataset.path)
-                    zf.write(abs_path, arc_name)
+                if ".cache" in file_path.parts:
+                    continue
+                if file_path.is_file():
+                    arc_name = file_path.relative_to(dataset_root)
+                    zf.write(file_path, arc_name)
         buf.seek(0)
         return buf
 

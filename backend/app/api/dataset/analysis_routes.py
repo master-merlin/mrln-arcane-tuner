@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from fractions import Fraction
 
 from fastapi import APIRouter, HTTPException
 
@@ -43,7 +44,6 @@ async def analyze_dataset(
                         preview_buckets(orientation_data["images"], res_list, bucketing_mode)
 
         # Ensure majority_ar_display is populated (fallback for hot-reload)
-        from fractions import Fraction
         for ori_key, orientation_data in result.items():
             ar = orientation_data.get("majority_ar")
             if ar and not orientation_data.get("majority_ar_display"):

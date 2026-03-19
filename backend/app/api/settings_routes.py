@@ -72,4 +72,3 @@ async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, An
         )
 
     return settings
-

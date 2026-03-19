@@ -6,13 +6,16 @@ import asyncio
 import os
 import subprocess
 import sys
+from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.core.logger import get_logger
 
 router = APIRouter(prefix="/system", tags=["System"])
 logger = get_logger(__name__)
+
+_LOG_FILE = Path("server.log")
 
 
 async def _restart_server_logic() -> None:
@@ -50,30 +53,35 @@ async def restart_server(background_tasks: BackgroundTasks):
 @router.post("/logs/clear")
 async def clear_logs():
     """Truncate the server log file."""
-    try:
-        with open("server.log", "w") as f:
+    def _truncate():
+        with open(_LOG_FILE, "w") as f:
             f.truncate(0)
+
+    try:
+        await asyncio.to_thread(_truncate)
         logger.info("logs_cleared")
         return {"message": "Server logs cleared."}
     except OSError as e:
         logger.error("log_clear_failed", error=str(e))
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=f"Failed to clear logs: {e}")
 
 
 @router.get("/logs")
 async def get_logs(lines: int = 100):
     """Return the last *lines* lines of the server log."""
-    log_file = "server.log"
-    if not os.path.exists(log_file):
+    if not _LOG_FILE.exists():
         return []
 
-    try:
-        with open(log_file, "r", encoding="utf-8") as f:
-            content = f.readlines()
-            return content[-lines:]
-    except OSError as e:
-        logger.error("read_logs_failed", error=str(e))
-        return []
+    def _read_tail() -> list[str]:
+        try:
+            with open(_LOG_FILE, "r", encoding="utf-8") as f:
+                content = f.readlines()
+                return content[-lines:]
+        except OSError as e:
+            logger.error("read_logs_failed", error=str(e))
+            return []
+
+    return await asyncio.to_thread(_read_tail)
 
 
 # ── System & GPU Status ─────────────────────────────────────────────────
@@ -92,4 +100,3 @@ async def get_gpu_status():
     from app.core.system_monitor import system_monitor
     snap = system_monitor.snapshot()
     return {"gpus": [g.to_dict() for g in snap.gpus]}
-

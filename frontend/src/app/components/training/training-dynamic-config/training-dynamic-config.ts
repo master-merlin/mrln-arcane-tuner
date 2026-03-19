@@ -644,6 +644,12 @@ export class TrainingDynamicConfigComponent {
   }
 
   loadExternalConfig(config: any) {
+    // Suppress auto-save so patching the form doesn't create a new template
+    this._isTemplateApplying = true;
+    if (this.templateSelector) {
+      this.templateSelector.suppressAutoSave.set(true);
+    }
+
     // Preserve session-specific fields that should not be overwritten by templates
     const resumePath = this.form.get('resume_from_checkpoint')?.value;
 
@@ -666,6 +672,14 @@ export class TrainingDynamicConfigComponent {
     this._syncBlockSwapFromForm();
     // Rebuild target layers tree from the newly-patched control
     this.targetLayersCard?.refreshFromControl();
+
+    // Release auto-save suppression after debounced valueChanges settle
+    setTimeout(() => {
+      this._isTemplateApplying = false;
+      if (this.templateSelector) {
+        this.templateSelector.suppressAutoSave.set(false);
+      }
+    }, 1500);
   }
   buildForm() {
     const schema = this.schema();

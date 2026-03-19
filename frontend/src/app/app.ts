@@ -1,4 +1,4 @@
-import { Component, inject, signal, viewChild, OnInit } from '@angular/core';
+import { Component, effect, inject, signal, viewChild, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { TrainingDynamicConfigComponent } from './components/training/training-dynamic-config/training-dynamic-config';
 import { TrainingJobQueueComponent } from './components/training/training-job-queue/training-job-queue';
@@ -188,6 +188,28 @@ export class AppComponent implements OnInit {
   jobQueue = viewChild(TrainingJobQueueComponent);
   configEditor = viewChild(TrainingDynamicConfigComponent);
 
+  // Pending config to apply once the Training tab's config editor is rendered
+  private pendingConfig = signal<{ config: any; mode: 'reload' | 'template'; templateName?: string; definitionId?: string } | null>(null);
+
+  private pendingConfigEffect = effect(() => {
+    const pending = this.pendingConfig();
+    const editor = this.configEditor();
+    if (!pending || !editor) return;
+
+    // Wait for the editor's constructor effect (buildForm) to complete
+    // before patching the form with the loaded config
+    setTimeout(() => {
+      if (pending.mode === 'reload') {
+        editor.loadExternalConfig(pending.config);
+        this.toast.success('Configuration loaded into Training settings.');
+      } else {
+        editor.importTemplate(pending.templateName!, pending.config, pending.definitionId!);
+        this.toast.success(`Template "${pending.templateName}" saved.`);
+      }
+      this.pendingConfig.set(null);
+    }, 300);
+  });
+
   ngOnInit() {
     this.fetchModels();
     this.fetchVersion();
@@ -279,10 +301,12 @@ export class AppComponent implements OnInit {
   }
 
   handleSaveAsTemplate(event: { name: string, config: any, definition_id: string }) {
-    this.configEditor()?.importTemplate(event.name, event.config, event.definition_id);
+    this.pendingConfig.set({ config: event.config, mode: 'template', templateName: event.name, definitionId: event.definition_id });
+    this.setView('train');
   }
 
   handleReloadConfig(config: any) {
-    this.configEditor()?.loadExternalConfig(config);
+    this.pendingConfig.set({ config, mode: 'reload' });
+    this.setView('train');
   }
 }

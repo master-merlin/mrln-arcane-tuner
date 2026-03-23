@@ -322,4 +322,58 @@ export class DatasetService {
     );
   }
 
+  // ── Non-Destructive Overlay Pipeline ───────────────────────────────
+
+  renderPipeline(name: string, imagePath: string, blocks: PipelineBlock[], tileSize: number = 512, tilePad: number = 32, replaceRecipe: boolean = false): Observable<any> {
+    return this.http.post(
+      `${this.apiUrl}/${encodeURIComponent(name)}/render-pipeline`,
+      { image_path: imagePath, blocks, tile_size: tileSize, tile_pad: tilePad, replace_recipe: replaceRecipe },
+    );
+  }
+
+  getOverlayUrl(name: string, imagePath: string): string {
+    return `${this.apiUrl}/${encodeURIComponent(name)}/overlay/${encodeURIComponent(imagePath)}`;
+  }
+
+  getOverlayRecipe(name: string, imagePath: string): Observable<any> {
+    return this.http.get(
+      `${this.apiUrl}/${encodeURIComponent(name)}/overlay-recipe/${encodeURIComponent(imagePath)}`,
+    );
+  }
+
+  deleteOverlay(name: string, imagePath: string): Observable<any> {
+    return this.http.delete(
+      `${this.apiUrl}/${encodeURIComponent(name)}/overlay/${encodeURIComponent(imagePath)}`,
+    );
+  }
+
+  commitOverlay(name: string, imagePath: string): Observable<any> {
+    return this.http.post(
+      `${this.apiUrl}/${encodeURIComponent(name)}/overlay/commit`,
+      { image_path: imagePath },
+    );
+  }
+
+  listRestoreModels(folder: string): Observable<any> {
+    return this.http.post(`${this.rtc.apiUrl}/restore/list-models`, { folder });
+  }
+
+  // ── Model Registry & Download ──────────────────────────────────────
+
+  getModelRegistry(category: string): Observable<any> {
+    return this.http.get(`${this.rtc.apiUrl}/models/registry/${encodeURIComponent(category)}`);
+  }
+
+  downloadModel(category: string, filename: string, targetFolder: string = ''): Observable<any> {
+    return this.http.post(`${this.rtc.apiUrl}/models/download`, {
+      category, filename, target_folder: targetFolder,
+    });
+  }
+
+}
+
+export interface PipelineBlock {
+  type: string;
+  enabled: boolean;
+  params: Record<string, any>;
 }

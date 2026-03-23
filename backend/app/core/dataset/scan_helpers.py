@@ -84,6 +84,10 @@ def build_media_entry(
     has_masked_img = os.path.exists(os.path.join(dataset_path, masked_img_rel))
     has_masked_cap = os.path.exists(os.path.join(dataset_path, masked_cap_rel))
 
+    # Check for overlay (disk is source of truth)
+    overlay_rel_path = f"overlays/{stem}.png"
+    has_overlay = os.path.exists(os.path.join(dataset_path, overlay_rel_path))
+
     entry: dict[str, Any] = {
         "width": width,
         "height": height,
@@ -93,6 +97,7 @@ def build_media_entry(
         "has_mask": has_mask,
         "has_masked": has_masked_img,
         "has_masked_caption": has_masked_cap,
+        "has_overlay": has_overlay,
         "enabled": existing_meta.get("enabled", True),
     }
 

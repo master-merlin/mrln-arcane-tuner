@@ -1,7 +1,9 @@
-import { Component, input, output, signal, computed, inject, ViewChild, ElementRef, HostListener, OnInit, OnDestroy } from '@angular/core';
+import { Component, ViewChild, HostListener, ElementRef, OnInit, OnDestroy, computed, signal, inject, input, output } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { DatasetService, CurvePoint, CurvesConfig, ImageAdjustments, HistogramData, HSLSelectiveConfig } from '../../../../services/dataset';
+import { CommonModule } from '@angular/common';
+import { DatasetService, CurvePoint, CurvesConfig, ImageAdjustments, HistogramData, PipelineBlock } from '../../../../services/dataset';
 import { ToastService } from '../../../../services/toast';
+import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { CurvesEditorComponent } from './curves-editor';
 import { HistogramDisplayComponent } from './histogram-display';
 import { HSLPanelComponent, HSLConfig } from './hsl-panel';
@@ -41,14 +43,22 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                     data-testid="editor-reset">
                     ⟲ Reset
                 </button>
-                <button (click)="applyChanges()" [disabled]="!isDirty() || isApplying()"
+                @if (hasOverlay()) {
+                    <button (click)="revertOverlay()" class="px-3 py-1.5 text-xs rounded-theme-lg bg-red-600/60 hover:bg-red-600 text-white transition-all" data-testid="editor-revert-overlay">
+                        ↩ Revert Overlay
+                    </button>
+                    <button (click)="showCommitConfirm.set(true)" class="px-3 py-1.5 text-xs rounded-theme-lg bg-amber-600/60 hover:bg-amber-600 text-white transition-all" data-testid="editor-commit-overlay">
+                        ⚠ Commit to Original
+                    </button>
+                }
+                <button (click)="renderOverlay()" [disabled]="!isDirty() || isRendering()"
                     class="px-4 py-1.5 text-xs font-semibold rounded-theme-lg bg-brand hover:bg-brand-hover text-white transition-all disabled:opacity-30 flex items-center gap-2"
-                    data-testid="editor-apply">
-                    @if (isApplying()) {
+                    data-testid="editor-render-overlay">
+                    @if (isRendering()) {
                         <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                        Applying...
+                        Rendering...
                     } @else {
-                        Apply & Save
+                        Save as Overlay
                     }
                 </button>
             </div>
@@ -61,7 +71,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
                 <!-- Curves Section (collapsible) -->
                 <button (click)="curvesOpen.set(!curvesOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all" data-testid="editor-section-curves">
-                    <span>Curves</span>
+                    <span class="flex items-center gap-2">Curves
+                        @if (curvesDirty()) { <span (click)="resetCurves(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Curves">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (curvesOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (curvesOpen()) {
@@ -78,9 +90,45 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                     </div>
                 }
 
+                <!-- Pipeline Overview (drag-reorder) -->
+                <button (click)="pipelineOverviewOpen.set(!pipelineOverviewOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-brand uppercase tracking-widest hover:text-brand-hover transition-all border-t border-surface-high/20" data-testid="editor-section-pipeline">
+                    <span>⚡ Pipeline Order</span>
+                    <svg [class]="'w-3.5 h-3.5 transition-transform ' + (pipelineOverviewOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                @if (pipelineOverviewOpen()) {
+                    <div class="pb-3 flex flex-col gap-0.5" data-testid="pipeline-block-list">
+                        @for (blockType of pipelineOrder(); track blockType; let i = $index) {
+                            <div class="flex items-center gap-1.5 px-2 py-1 rounded-theme-sm text-[10px] transition-all cursor-grab active:cursor-grabbing"
+                                [class]="blockEnabled()[blockType] !== false ? 'bg-surface-low/60 hover:bg-surface-low text-text' : 'bg-surface-low/20 text-text-muted/50'"
+                                draggable="true"
+                                (dragstart)="onBlockDragStart($event, i)"
+                                (dragover)="onBlockDragOver($event, i)"
+                                (drop)="onBlockDrop($event, i)"
+                                [attr.data-testid]="'pipeline-block-' + blockType">
+                                <span class="text-text-muted/40 select-none">☰</span>
+                                <button (click)="toggleBlockEnabled(blockType); $event.stopPropagation()"
+                                    class="w-3.5 h-3.5 flex items-center justify-center rounded-sm border transition-all"
+                                    [class]="blockEnabled()[blockType] !== false ? 'border-brand/60 bg-brand/20 text-brand' : 'border-surface-high/30 text-transparent'"
+                                    [attr.data-testid]="'pipeline-toggle-' + blockType">
+                                    <svg class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                                </button>
+                                <span class="flex-1 font-medium truncate" [class.line-through]="blockEnabled()[blockType] === false">
+                                    {{ BLOCK_LABELS[blockType] || blockType }}
+                                </span>
+                                <span class="font-mono text-[9px]"
+                                    [class]="getBlockSummary(blockType) !== 'off' ? 'text-brand/80' : 'text-text-muted/30'">
+                                    {{ getBlockSummary(blockType) }}
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+
                 <!-- CUBE LUT Section (collapsible) -->
                 <button (click)="lutOpen.set(!lutOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-lut">
-                    <span>CUBE LUT</span>
+                    <span class="flex items-center gap-2">CUBE LUT
+                        @if (lutDirty()) { <span (click)="resetLut(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset LUT">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (lutOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (lutOpen()) {
@@ -114,7 +162,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
                 <!-- Color & Tone (collapsible) -->
                 <button (click)="colorOpen.set(!colorOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-color">
-                    <span>Color & Tone</span>
+                    <span class="flex items-center gap-2">Color & Tone
+                        @if (colorDirty()) { <span (click)="resetColor(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Color">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (colorOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (colorOpen()) {
@@ -147,7 +197,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
                 <!-- Sharpening (collapsible) -->
                 <button (click)="sharpenOpen.set(!sharpenOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-sharpen">
-                    <span>Sharpening</span>
+                    <span class="flex items-center gap-2">Sharpening
+                        @if (sharpenDirty()) { <span (click)="resetSharpen(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Sharpening">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (sharpenOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (sharpenOpen()) {
@@ -199,7 +251,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                 }
                 <!-- White Balance (collapsible) -->
                 <button (click)="wbOpen.set(!wbOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-wb">
-                    <span>White Balance</span>
+                    <span class="flex items-center gap-2">White Balance
+                        @if (wbDirty()) { <span (click)="resetWb(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset WB">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (wbOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (wbOpen()) {
@@ -223,7 +277,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
                 <!-- HSL / Selective Color (collapsible) -->
                 <button (click)="hslOpen.set(!hslOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-hsl">
-                    <span>HSL / Selective Color</span>
+                    <span class="flex items-center gap-2">HSL / Selective Color
+                        @if (hslDirty()) { <span (click)="resetHsl(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset HSL">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (hslOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (hslOpen()) {
@@ -238,7 +294,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
                 <!-- Vignette (collapsible) -->
                 <button (click)="vignetteOpen.set(!vignetteOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-vignette">
-                    <span>Vignette</span>
+                    <span class="flex items-center gap-2">Vignette
+                        @if (vignetteDirty()) { <span (click)="resetVignette(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Vignette">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (vignetteOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (vignetteOpen()) {
@@ -269,7 +327,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
                 <!-- Lens Correction (collapsible) -->
                 <button (click)="lensOpen.set(!lensOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-lens">
-                    <span>Lens Correction</span>
+                    <span class="flex items-center gap-2">Lens Correction
+                        @if (lensDirty()) { <span (click)="resetLens(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Lens">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (lensOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (lensOpen()) {
@@ -305,9 +365,9 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                     <canvas #previewCanvas class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl" style="display: block;" data-testid="editor-preview"></canvas>
 
                     <!-- Comparison overlay -->
-                    @if (comparisonMode() && originalImageUrl()) {
+                    @if (comparisonMode() && trueOriginalUrl()) {
                         <!-- Original image clipped to left of divider -->
-                        <img [src]="originalImageUrl()"
+                        <img [src]="trueOriginalUrl()"
                             class="absolute inset-0 w-full h-full object-contain rounded-theme-lg pointer-events-none"
                             [style.clip-path]="'inset(0 ' + ((1 - comparePosition()) * 100) + '% 0 0)'"
                             alt="Original">
@@ -449,9 +509,91 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                     </div>
                 }
 
+                <!-- Restore / Denoise (collapsible) -->
+                <button (click)="restoreOpen.set(!restoreOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-restore">
+                    <span class="flex items-center gap-2">Restoration
+                        @if (selectedRestoreModel()) { <span (click)="resetRestore(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Restoration">↻</span> }
+                    </span>
+                    <svg [class]="'w-3.5 h-3.5 transition-transform ' + (restoreOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                @if (restoreOpen()) {
+                    <div class="pb-3 flex flex-col gap-3">
+                        <div class="flex flex-col gap-1">
+                            <span class="text-[10px] text-text-muted uppercase tracking-wider">Models Folder</span>
+                            <div class="flex gap-1">
+                                <input type="text" [ngModel]="restoreFolder()" (ngModelChange)="restoreFolder.set($event)"
+                                    placeholder="models\\restore" class="flex-1 bg-surface-low border border-surface-high/30 rounded-theme-sm px-2 py-1 text-[10px] text-text" data-testid="restore-folder">
+                                <button (click)="scanRestoreModels()" class="px-2 py-1 text-[10px] bg-brand/60 hover:bg-brand/80 text-white rounded-theme-sm transition-all" data-testid="restore-scan">
+                                    Scan
+                                </button>
+                            </div>
+                        </div>
+                        @if (restoreModels().length > 0) {
+                            <div class="flex flex-col gap-1">
+                                <span class="text-[10px] text-text-muted uppercase tracking-wider">Model</span>
+                                <select [ngModel]="selectedRestoreModel()" (ngModelChange)="selectedRestoreModel.set($event)"
+                                    class="w-full bg-surface-low border border-surface-high/30 rounded-theme-lg px-2 py-1.5 text-xs text-text" data-testid="restore-model">
+                                    @for (m of restoreModels(); track m.path) {
+                                        <option [value]="m.path">{{ m.name }} ({{ m.size_mb }} MB)</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="flex flex-col gap-1">
+                                <div class="flex justify-between text-[11px] text-text-muted">
+                                    <span>Strength</span><span class="font-mono">{{ (restoreStrength() * 100).toFixed(0) }}%</span>
+                                </div>
+                                <input type="range" min="0" max="1" step="0.05" [ngModel]="restoreStrength()" (ngModelChange)="restoreStrength.set(+$event)"
+                                    class="w-full accent-brand" data-testid="restore-strength">
+                            </div>
+                            <div class="flex flex-col gap-1">
+                                <div class="flex justify-between text-[11px] text-text-muted">
+                                    <span>Tile Size</span><span class="font-mono">{{ restoreTileSize() }}px</span>
+                                </div>
+                                <input type="range" min="128" max="1024" step="64" [ngModel]="restoreTileSize()" (ngModelChange)="restoreTileSize.set(+$event)"
+                                    class="w-full accent-brand" data-testid="restore-tile-size">
+                            </div>
+                            <button (click)="applyRestore()" [disabled]="!selectedRestoreModel() || isRestoring()"
+                                class="w-full px-3 py-1.5 text-[11px] font-medium rounded-theme-lg transition-all bg-brand/80 hover:bg-brand text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                                data-testid="restore-apply">
+                                {{ isRestoring() ? 'Restoring...' : 'Apply Restoration' }}
+                            </button>
+                        } @else {
+                            <p class="text-[10px] text-text-muted italic">Enter a folder path and click Scan to find restore models (e.g. SCUNet, NAFNet, RestoreFormer).</p>
+                        }
+                        <!-- Download from registry -->
+                        <button (click)="toggleRegistry('restore')" class="flex items-center justify-between w-full px-2 py-1.5 text-[10px] bg-surface-low/60 hover:bg-surface-low border border-surface-high/20 rounded-theme-sm text-text-muted hover:text-text transition-all" data-testid="restore-download-btn">
+                            <span class="flex items-center gap-1.5"><span>📦</span><span>Download Models</span></span>
+                            <svg [class]="'w-3 h-3 transition-transform ' + (restoreRegistryOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+                        @if (restoreRegistryOpen()) {
+                            <div class="flex flex-col gap-1 p-2 rounded-theme-sm bg-surface-low/40 border border-surface-high/15">
+                                <span class="text-[9px] text-text-muted uppercase tracking-wider mb-0.5">Curated Restore Models</span>
+                                @for (m of restoreRegistry(); track m.filename) {
+                                    <div class="flex items-center gap-1.5 text-[10px]">
+                                        @if (m.downloaded) {
+                                            <span class="text-emerald-400 flex-shrink-0">✓</span>
+                                        } @else {
+                                            <button (click)="downloadRegistryModel('restore', m.filename)"
+                                                [disabled]="restoreDownloading() !== null"
+                                                class="flex-shrink-0 px-1.5 py-0.5 text-[9px] bg-brand/50 hover:bg-brand/70 disabled:opacity-40 text-white rounded-sm transition-all"
+                                                [attr.data-testid]="'restore-dl-' + m.filename">
+                                                @if (restoreDownloading() === m.filename) { ⏳ } @else { ⬇ }
+                                            </button>
+                                        }
+                                        <span class="flex-1 truncate" [title]="m.description">{{ m.filename }}</span>
+                                        <span class="text-[9px] text-text-muted/50 font-mono">{{ m.size_mb }}MB</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+
                 <!-- Upscale (collapsible) -->
                 <button (click)="upscaleOpen.set(!upscaleOpen())" class="flex items-center justify-between w-full py-2 text-xs font-bold text-text-subtle uppercase tracking-widest hover:text-text transition-all border-t border-surface-high/20" data-testid="editor-section-upscale">
-                    <span>Upscale</span>
+                    <span class="flex items-center gap-2">Upscale
+                        @if (selectedUpscaleModel()) { <span (click)="resetUpscale(); $event.stopPropagation()" class="text-[10px] text-text-muted/60 hover:text-warning cursor-pointer" title="Reset Upscale">↻</span> }
+                    </span>
                     <svg [class]="'w-3.5 h-3.5 transition-transform ' + (upscaleOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 @if (upscaleOpen()) {
@@ -504,13 +646,39 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                                     <option value="nearest">Nearest (pixelated)</option>
                                 </select>
                             </div>
-                            <button (click)="showUpscaleConfirm.set(true)" [disabled]="!selectedUpscaleModel() || isUpscaling()"
-                                class="w-full px-3 py-1.5 text-[11px] font-medium rounded-theme-lg transition-all bg-amber-600/80 hover:bg-amber-600 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                            <button (click)="applyUpscale()" [disabled]="!selectedUpscaleModel() || isUpscaling()"
+                                class="w-full px-3 py-1.5 text-[11px] font-medium rounded-theme-lg transition-all bg-brand/80 hover:bg-brand text-white disabled:opacity-40 disabled:cursor-not-allowed"
                                 data-testid="upscale-apply">
-                                {{ isUpscaling() ? 'Upscaling...' : '⚠ Apply Upscale' }}
+                                {{ isUpscaling() ? 'Upscaling...' : 'Apply Upscale' }}
                             </button>
                         } @else {
                             <p class="text-[10px] text-text-muted italic">Enter a folder path and click Scan to find models.</p>
+                        }
+                        <!-- Download from registry -->
+                        <button (click)="toggleRegistry('upscale')" class="flex items-center justify-between w-full px-2 py-1.5 text-[10px] bg-surface-low/60 hover:bg-surface-low border border-surface-high/20 rounded-theme-sm text-text-muted hover:text-text transition-all" data-testid="upscale-download-btn">
+                            <span class="flex items-center gap-1.5"><span>📦</span><span>Download Models</span></span>
+                            <svg [class]="'w-3 h-3 transition-transform ' + (upscaleRegistryOpen() ? 'rotate-180' : '')" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+                        @if (upscaleRegistryOpen()) {
+                            <div class="flex flex-col gap-1 p-2 rounded-theme-sm bg-surface-low/40 border border-surface-high/15">
+                                <span class="text-[9px] text-text-muted uppercase tracking-wider mb-0.5">Curated Upscale Models</span>
+                                @for (m of upscaleRegistry(); track m.filename) {
+                                    <div class="flex items-center gap-1.5 text-[10px]">
+                                        @if (m.downloaded) {
+                                            <span class="text-emerald-400 flex-shrink-0">✓</span>
+                                        } @else {
+                                            <button (click)="downloadRegistryModel('upscale', m.filename)"
+                                                [disabled]="upscaleDownloading() !== null"
+                                                class="flex-shrink-0 px-1.5 py-0.5 text-[9px] bg-brand/50 hover:bg-brand/70 disabled:opacity-40 text-white rounded-sm transition-all"
+                                                [attr.data-testid]="'upscale-dl-' + m.filename">
+                                                @if (upscaleDownloading() === m.filename) { ⏳ } @else { ⬇ }
+                                            </button>
+                                        }
+                                        <span class="flex-1 truncate" [title]="m.description">{{ m.filename }}</span>
+                                        <span class="text-[9px] text-text-muted/50 font-mono">{{ m.size_mb }}MB</span>
+                                    </div>
+                                }
+                            </div>
                         }
                     </div>
                 }
@@ -583,9 +751,10 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
             </div>
         }
 
-        <!-- Upscale Confirmation Modal -->
-        @if (showUpscaleConfirm()) {
-            <div class="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center" data-testid="upscale-confirm-modal">
+
+        <!-- Overlay Commit Confirmation Modal -->
+        @if (showCommitConfirm()) {
+            <div class="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center" data-testid="commit-confirm-modal">
                 <div class="bg-surface rounded-theme-xl shadow-2xl max-w-md w-full overflow-hidden">
                     <div class="p-6 flex flex-col gap-4">
                         <div class="flex items-center gap-3">
@@ -593,16 +762,16 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                             </div>
                             <div>
-                                <h3 class="text-sm font-semibold text-text">Destructive Operation</h3>
-                                <p class="text-[11px] text-text-muted mt-1">Upscaling will <strong class="text-amber-400">permanently overwrite</strong> the original image file. This cannot be undone.</p>
+                                <h3 class="text-sm font-semibold text-text">Commit Overlay</h3>
+                                <p class="text-[11px] text-text-muted mt-1">This will <strong class="text-amber-400">permanently overwrite</strong> the original image with the current overlay. The overlay recipe will be deleted. This cannot be undone.</p>
                             </div>
                         </div>
                         <div class="flex justify-end gap-2">
-                            <button (click)="showUpscaleConfirm.set(false)" class="px-4 py-2 text-xs font-medium rounded-theme-lg bg-surface-mid/60 hover:bg-surface-mid text-text transition-all" data-testid="upscale-cancel">
+                            <button (click)="showCommitConfirm.set(false)" class="px-4 py-2 text-xs font-medium rounded-theme-lg bg-surface-mid/60 hover:bg-surface-mid text-text transition-all" data-testid="commit-cancel">
                                 Cancel
                             </button>
-                            <button (click)="showUpscaleConfirm.set(false); applyUpscale()" class="px-4 py-2 text-xs font-medium rounded-theme-lg bg-amber-600 hover:bg-amber-500 text-white transition-all" data-testid="upscale-confirm">
-                                Upscale Anyway
+                            <button (click)="commitOverlay()" class="px-4 py-2 text-xs font-medium rounded-theme-lg bg-amber-600 hover:bg-amber-500 text-white transition-all" data-testid="commit-confirm">
+                                Commit Anyway
                             </button>
                         </div>
                     </div>
@@ -645,6 +814,7 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
 
     private datasetService = inject(DatasetService);
     private toast = inject(ToastService);
+    private rtc = inject(RuntimeConfigService);
 
     currentPair = input.required<any>();
     datasetName = input.required<string>();
@@ -714,9 +884,26 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
     comparisonMode = signal(false);
     comparePosition = signal(0.5);
     originalImageUrl = signal<string | null>(null);
+    trueOriginalUrl = signal<string | null>(null);
     private compareDragging = false;
     private boundCompareMove = (e: MouseEvent) => this.onCompareSliderMove(e);
     private boundCompareUp = () => this.onCompareSliderUp();
+
+    // Per-section dirty computed signals
+    curvesDirty = computed(() => {
+        return [this.masterCurve(), this.rCurve(), this.gCurve(), this.bCurve()].some(c =>
+            c.length !== 2 || c[0].x !== 0 || c[0].y !== 0 || c[1].x !== 255 || c[1].y !== 255
+        );
+    });
+    lutDirty = computed(() => this.lutStack().length > 0);
+    colorDirty = computed(() => this.hueShift() !== 0 || this.saturation() !== 1.0 || this.contrast() !== 1.0);
+    sharpenDirty = computed(() => this.sharpenMethod() !== 'none');
+    wbDirty = computed(() => this.wbTemperature() !== 6500 || this.wbTint() !== 0);
+    hslDirty = computed(() => Object.values(this.hslConfig()).some((r: any) =>
+        Math.abs(r.hue_shift) > 0.001 || Math.abs(r.saturation) > 0.001 || Math.abs(r.luminance) > 0.001
+    ));
+    vignetteDirty = computed(() => this.vignetteAmount() !== 0);
+    lensDirty = computed(() => this.lensBarrel() !== 0 || this.lensVKeystone() !== 0 || this.lensHKeystone() !== 0);
 
     // Color Match
     colorMatchOpen = signal(false);
@@ -743,6 +930,48 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
     showUpscaleConfirm = signal(false);
     upscaleTargetScale = signal(0);
     upscaleResizeMethod = signal('lanczos');
+
+    // Restore (Denoise / Face Restore / Deartifact / Dehaze)
+    restoreOpen = signal(false);
+    restoreFolder = signal('models\\restore');
+    restoreModels = signal<{ name: string; path: string; size_mb: number }[]>([]);
+    selectedRestoreModel = signal<string | null>(null);
+    restoreStrength = signal(1.0);
+    restoreTileSize = signal(512);
+    isRestoring = signal(false);
+
+    // Model registry & download
+    restoreRegistry = signal<any[]>([]);
+    restoreRegistryOpen = signal(false);
+    restoreDownloading = signal<string | null>(null);
+    upscaleRegistry = signal<any[]>([]);
+    upscaleRegistryOpen = signal(false);
+    upscaleDownloading = signal<string | null>(null);
+
+    // Overlay state
+    hasOverlay = signal(false);
+    isRendering = signal(false);
+    showCommitConfirm = signal(false);
+
+    // Pipeline block ordering
+    static readonly DEFAULT_BLOCK_ORDER: string[] = [
+        'denoise', 'face_restore', 'white_balance', 'curves', 'cube_lut',
+        'hsl_selective', 'hue_saturation', 'contrast', 'vignette',
+        'lens_correction', 'sharpening', 'upscale',
+    ];
+    static readonly BLOCK_LABELS: Record<string, string> = {
+        denoise: 'Denoise', face_restore: 'Face Restore', white_balance: 'White Balance',
+        curves: 'Curves', cube_lut: 'CUBE LUT', hsl_selective: 'HSL Selective',
+        hue_saturation: 'Hue / Saturation', contrast: 'Contrast', vignette: 'Vignette',
+        lens_correction: 'Lens Correction', sharpening: 'Sharpening', upscale: 'Upscale',
+    };
+    pipelineOrder = signal<string[]>([...ImageEditorModalComponent.DEFAULT_BLOCK_ORDER]);
+    blockEnabled = signal<Record<string, boolean>>(
+        Object.fromEntries(ImageEditorModalComponent.DEFAULT_BLOCK_ORDER.map(t => [t, true]))
+    );
+    dragSourceIndex = signal<number | null>(null);
+    pipelineOverviewOpen = signal(false);
+    readonly BLOCK_LABELS = ImageEditorModalComponent.BLOCK_LABELS;
 
     isDirty = computed(() => {
         const mc = this.masterCurve(), rc = this.rCurve(), gc = this.gCurve(), bc = this.bCurve();
@@ -818,7 +1047,8 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
         const pair = this.currentPair();
         if (!pair) return;
 
-        const url = this.getMediaUrl(pair.media_file);
+        const originalUrl = this.getMediaUrl(pair.media_file);
+        const displayUrl = this.hasOverlay() ? this.getOverlayUrl(pair.media_file) : originalUrl;
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
@@ -841,8 +1071,12 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
             ctx.drawImage(img, 0, 0, pw, ph);
             this.originalImageData = ctx.getImageData(0, 0, pw, ph);
 
-            // Store original URL for comparison overlay
-            this.originalImageUrl.set(url);
+            // Store current URL for canvas reference
+            this.originalImageUrl.set(displayUrl);
+            // Preserve the true original URL for A/B comparison (set only once per editor session)
+            if (!this.trueOriginalUrl()) {
+                this.trueOriginalUrl.set(originalUrl);
+            }
 
             // Compute initial histogram
             this.computeHistogramFromCanvas(ctx, pw, ph);
@@ -852,10 +1086,188 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
                 next: (hist) => this.liveHistogram.set(hist),
             });
         };
-        img.src = url;
+        img.src = displayUrl;
+
+        // Load overlay recipe if exists
+        this.loadOverlayRecipe();
 
         // Watch for changes and schedule preview updates
         this.watchChanges();
+    }
+
+    /** Reload canvas from overlay URL — called after overlay is created or discovered, without re-triggering recipe load */
+    private reloadCanvasForOverlay(): void {
+        const pair = this.currentPair();
+        if (!pair) return;
+        const overlayUrl = this.getOverlayUrl(pair.media_file);
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            const canvas = this.previewCanvasRef?.nativeElement;
+            if (!canvas) return;
+            const maxDim = ImageEditorModalComponent.MAX_PREVIEW_SIZE;
+            let pw = img.naturalWidth, ph = img.naturalHeight;
+            if (pw > maxDim || ph > maxDim) {
+                const scale = maxDim / Math.max(pw, ph);
+                pw = Math.round(pw * scale);
+                ph = Math.round(ph * scale);
+            }
+            canvas.width = pw;
+            canvas.height = ph;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+            ctx.drawImage(img, 0, 0, pw, ph);
+            this.originalImageData = ctx.getImageData(0, 0, pw, ph);
+            this.originalImageUrl.set(overlayUrl);
+            this.computeHistogramFromCanvas(ctx, pw, ph);
+        };
+        img.src = overlayUrl;
+    }
+
+    // ── Overlay Recipe Loading ────────────────────────────────────────
+
+
+    private loadOverlayRecipe(): void {
+        const pair = this.currentPair();
+        if (!pair) return;
+        this.datasetService.getOverlayRecipe(this.datasetName(), pair.media_file).subscribe({
+            next: (res: any) => {
+                this.hasOverlay.set(true);
+                if (res?.recipe?.operations) {
+                    this.applyRecipeToSignals(res.recipe.operations);
+                }
+                // Reload canvas to show the overlay image instead of the original
+                this.reloadCanvasForOverlay();
+            },
+            error: () => this.hasOverlay.set(false),
+        });
+    }
+
+    private applyRecipeToSignals(blocks: any[]): void {
+        // Rebuild pipeline order from recipe block order
+        const types = blocks.map((b: any) => b.type as string);
+        // Merge with defaults: recipe blocks first, then any missing defaults
+        const merged = [...types];
+        for (const t of ImageEditorModalComponent.DEFAULT_BLOCK_ORDER) {
+            if (!merged.includes(t)) merged.push(t);
+        }
+        this.pipelineOrder.set(merged);
+
+        // Apply each block's params to the corresponding signal
+        for (const block of blocks) {
+            const p = block.params || {};
+            switch (block.type) {
+                case 'denoise':
+                case 'face_restore':
+                case 'deartifact':
+                case 'dehaze':
+                    if (p.model_path) this.selectedRestoreModel.set(p.model_path);
+                    if (p.strength != null) this.restoreStrength.set(p.strength);
+                    if (p.tile_size) this.restoreTileSize.set(p.tile_size);
+                    break;
+                case 'white_balance':
+                    if (p.temperature != null) this.wbTemperature.set(p.temperature);
+                    if (p.tint != null) this.wbTint.set(p.tint);
+                    break;
+                case 'curves':
+                    if (p.master) this.masterCurve.set(p.master);
+                    if (p.red) this.rCurve.set(p.red);
+                    if (p.green) this.gCurve.set(p.green);
+                    if (p.blue) this.bCurve.set(p.blue);
+                    break;
+                case 'hsl_selective':
+                    if (p.config) this.hslConfig.set(p.config);
+                    break;
+                case 'hue_saturation':
+                    if (p.hue_shift != null) this.hueShift.set(p.hue_shift);
+                    if (p.saturation != null) this.saturation.set(p.saturation);
+                    break;
+                case 'contrast':
+                    if (p.factor != null) this.contrast.set(p.factor);
+                    break;
+                case 'vignette':
+                    if (p.amount != null) this.vignetteAmount.set(p.amount);
+                    if (p.midpoint != null) this.vignetteMidpoint.set(p.midpoint);
+                    if (p.feather != null) this.vignetteFeather.set(p.feather);
+                    break;
+                case 'lens_correction':
+                    if (p.barrel != null) this.lensBarrel.set(p.barrel);
+                    if (p.v_keystone != null) this.lensVKeystone.set(p.v_keystone);
+                    if (p.h_keystone != null) this.lensHKeystone.set(p.h_keystone);
+                    break;
+                case 'sharpening':
+                    if (p.method) this.sharpenMethod.set(p.method);
+                    if (p.amount != null) this.sharpenPercent.set(p.amount);
+                    if (p.radius != null) this.sharpenRadius.set(p.radius);
+                    if (p.threshold != null) this.sharpenThreshold.set(p.threshold);
+                    break;
+                case 'upscale':
+                    if (p.model_path) this.selectedUpscaleModel.set(p.model_path);
+                    if (p.tile_size) this.upscaleTileSize.set(p.tile_size);
+                    if (p.target_scale != null) this.upscaleTargetScale.set(p.target_scale);
+                    break;
+            }
+        }
+    }
+
+    // ── Drag-Reorder Handlers ─────────────────────────────────────────
+
+    onBlockDragStart(event: DragEvent, index: number): void {
+        this.dragSourceIndex.set(index);
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', String(index));
+        }
+    }
+
+    onBlockDragOver(event: DragEvent, index: number): void {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    }
+
+    onBlockDrop(event: DragEvent, targetIndex: number): void {
+        event.preventDefault();
+        const sourceIndex = this.dragSourceIndex();
+        if (sourceIndex === null || sourceIndex === targetIndex) return;
+
+        const order = [...this.pipelineOrder()];
+        const [moved] = order.splice(sourceIndex, 1);
+        order.splice(targetIndex, 0, moved);
+        this.pipelineOrder.set(order);
+        this.dragSourceIndex.set(null);
+    }
+
+    toggleBlockEnabled(blockType: string): void {
+        const current = { ...this.blockEnabled() };
+        current[blockType] = !current[blockType];
+        this.blockEnabled.set(current);
+    }
+
+    getBlockSummary(blockType: string): string {
+        switch (blockType) {
+            case 'denoise': return this.selectedRestoreModel() ? `${(this.restoreStrength() * 100).toFixed(0)}%` : 'off';
+            case 'white_balance': return this.wbTemperature() !== 6500 || this.wbTint() !== 0 ? `${this.wbTemperature()}K` : 'off';
+            case 'curves': {
+                const changed = [this.masterCurve(), this.rCurve(), this.gCurve(), this.bCurve()].some(c =>
+                    c.length !== 2 || c[0].x !== 0 || c[0].y !== 0 || c[1].x !== 255 || c[1].y !== 255
+                );
+                return changed ? 'active' : 'off';
+            }
+            case 'cube_lut': return this.hasLuts() ? `${this.lutStack().length} LUT(s)` : 'off';
+            case 'hsl_selective': {
+                const changed = Object.values(this.hslConfig()).some((r: any) =>
+                    Math.abs(r.hue_shift) > 0.001 || Math.abs(r.saturation) > 0.001 || Math.abs(r.luminance) > 0.001
+                );
+                return changed ? 'active' : 'off';
+            }
+            case 'hue_saturation': return this.hueShift() !== 0 || this.saturation() !== 1.0 ? 'active' : 'off';
+            case 'contrast': return this.contrast() !== 1.0 ? `${this.contrast().toFixed(2)}` : 'off';
+            case 'vignette': return this.vignetteAmount() !== 0 ? `${this.vignetteAmount().toFixed(2)}` : 'off';
+            case 'lens_correction': return (this.lensBarrel() !== 0 || this.lensVKeystone() !== 0 || this.lensHKeystone() !== 0) ? 'active' : 'off';
+            case 'sharpening': return this.sharpenMethod() !== 'none' ? this.sharpenMethod() : 'off';
+            case 'upscale': return this.selectedUpscaleModel() ? 'ready' : 'off';
+            default: return 'off';
+        }
     }
 
     private watchChanges(): void {
@@ -1492,34 +1904,82 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
     }
 
     resetAll(): void {
-        this.masterCurve.set([...IDENTITY_CURVE]);
-        this.rCurve.set([...IDENTITY_CURVE]);
-        this.gCurve.set([...IDENTITY_CURVE]);
-        this.bCurve.set([...IDENTITY_CURVE]);
-        this.hueShift.set(0);
-        this.saturation.set(1.0);
-        this.contrast.set(1.0);
-        this.sharpenMethod.set('none');
-        this.sharpenRadius.set(2.0);
-        this.sharpenPercent.set(150);
-        this.sharpenThreshold.set(3);
-        this.sharpenStrength.set(1.0);
-        this.lutStack.set([]);
-        // Phase 2 signals
-        this.wbTemperature.set(6500);
-        this.wbTint.set(0);
-        this.hslConfig.set({});
-        this.vignetteAmount.set(0.0);
-        this.vignetteMidpoint.set(0.5);
-        this.vignetteFeather.set(0.5);
-        this.lensBarrel.set(0.0);
-        this.lensVKeystone.set(0.0);
-        this.lensHKeystone.set(0.0);
+        this.resetCurves();
+        this.resetLut();
+        this.resetColor();
+        this.resetSharpen();
+        this.resetWb();
+        this.resetHsl();
+        this.resetVignette();
+        this.resetLens();
+        this.resetRestore();
+        this.resetUpscale();
         // Color match
         this.colorMatchApplied.set(false);
         this.colorMatchRef.set(null);
         // Reload original image data from disk (safe — clears intervals first)
         this.loadImage();
+    }
+
+    // ── Per-Section Reset Methods ─────────────────────────────────────────
+
+    resetCurves(): void {
+        this.masterCurve.set([...IDENTITY_CURVE]);
+        this.rCurve.set([...IDENTITY_CURVE]);
+        this.gCurve.set([...IDENTITY_CURVE]);
+        this.bCurve.set([...IDENTITY_CURVE]);
+    }
+
+    resetLut(): void {
+        this.lutStack.set([]);
+    }
+
+    resetColor(): void {
+        this.hueShift.set(0);
+        this.saturation.set(1.0);
+        this.contrast.set(1.0);
+    }
+
+    resetSharpen(): void {
+        this.sharpenMethod.set('none');
+        this.sharpenRadius.set(2.0);
+        this.sharpenPercent.set(150);
+        this.sharpenThreshold.set(3);
+        this.sharpenStrength.set(1.0);
+    }
+
+    resetWb(): void {
+        this.wbTemperature.set(6500);
+        this.wbTint.set(0);
+    }
+
+    resetHsl(): void {
+        this.hslConfig.set({});
+    }
+
+    resetVignette(): void {
+        this.vignetteAmount.set(0.0);
+        this.vignetteMidpoint.set(0.5);
+        this.vignetteFeather.set(0.5);
+    }
+
+    resetLens(): void {
+        this.lensBarrel.set(0.0);
+        this.lensVKeystone.set(0.0);
+        this.lensHKeystone.set(0.0);
+    }
+
+    resetRestore(): void {
+        this.selectedRestoreModel.set(null);
+        this.restoreStrength.set(1.0);
+        this.restoreTileSize.set(512);
+    }
+
+    resetUpscale(): void {
+        this.selectedUpscaleModel.set(null);
+        this.upscaleTileSize.set(512);
+        this.upscaleTargetScale.set(0);
+        this.upscaleResizeMethod.set('lanczos');
     }
 
     // ── Color Match ──────────────────────────────────────────────────────
@@ -1753,25 +2213,354 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
         if (!pair || !model) return;
 
         this.isUpscaling.set(true);
-        this.datasetService.applyUpscale(
-            this.datasetName(), model, pair.media_file, this.upscaleTileSize(),
-            this.upscaleTargetScale(), this.upscaleResizeMethod(),
+        const blocks: PipelineBlock[] = [{
+            type: 'upscale',
+            enabled: true,
+            params: {
+                model_path: model,
+                tile_size: this.upscaleTileSize(),
+                tile_pad: 32,
+                target_scale: this.upscaleTargetScale(),
+                resize_method: this.upscaleResizeMethod(),
+            },
+        }];
+        this.datasetService.renderPipeline(
+            this.datasetName(), pair.media_file, blocks,
         ).subscribe({
             next: (res: any) => {
                 this.isUpscaling.set(false);
-                this.toast.success(`Upscaled ${res.scale}x → ${res.new_size?.[0]}×${res.new_size?.[1]}`);
-                // Update metadata so right-panel info reflects new dimensions
-                const pair = this.currentPair();
-                if (pair?.metadata && res.new_size) {
-                    pair.metadata.width = res.new_size[0];
-                    pair.metadata.height = res.new_size[1];
-                }
+                this.hasOverlay.set(true);
+                this.toast.success(`Upscale applied as overlay (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
                 this.applied.emit();
                 this.loadImage();
             },
             error: (err) => {
                 this.isUpscaling.set(false);
                 this.toast.error(`Upscale failed: ${err?.error?.detail || err.message}`);
+            },
+        });
+    }
+
+    // ── Restoration ──────────────────────────────────────────────────────
+
+    scanRestoreModels(): void {
+        const folder = this.restoreFolder();
+        if (!folder) {
+            this.toast.error('Enter a models folder path');
+            return;
+        }
+        this.datasetService.listRestoreModels(folder).subscribe({
+            next: (res: any) => {
+                this.restoreModels.set(res.models || []);
+                if (res.models?.length) {
+                    this.selectedRestoreModel.set(res.models[0].path);
+                    this.toast.success(`Found ${res.models.length} restore model(s)`);
+                } else {
+                    this.toast.error('No restore models found in folder');
+                }
+            },
+            error: (err) => this.toast.error(`Scan failed: ${err?.error?.detail || err.message}`),
+        });
+    }
+
+    loadRegistry(category: 'restore' | 'upscale'): void {
+        this.datasetService.getModelRegistry(category).subscribe({
+            next: (res: any) => {
+                if (category === 'restore') {
+                    this.restoreRegistry.set(res.models || []);
+                    this.restoreRegistryOpen.set(true);
+                } else {
+                    this.upscaleRegistry.set(res.models || []);
+                    this.upscaleRegistryOpen.set(true);
+                }
+            },
+            error: (err) => this.toast.error(`Registry load failed: ${err?.error?.detail || err.message}`),
+        });
+    }
+
+    toggleRegistry(category: 'restore' | 'upscale'): void {
+        const openSignal = category === 'restore' ? this.restoreRegistryOpen : this.upscaleRegistryOpen;
+        const dataSignal = category === 'restore' ? this.restoreRegistry : this.upscaleRegistry;
+        if (openSignal()) {
+            openSignal.set(false);
+        } else if (dataSignal().length > 0) {
+            // Already loaded, just toggle open
+            openSignal.set(true);
+        } else {
+            // First open — fetch from API
+            this.loadRegistry(category);
+        }
+    }
+
+    applyRestore(): void {
+        const pair = this.currentPair();
+        const model = this.selectedRestoreModel();
+        if (!pair || !model) return;
+
+        this.isRestoring.set(true);
+        const blocks: PipelineBlock[] = [{
+            type: 'denoise',
+            enabled: true,
+            params: {
+                model_path: model,
+                strength: this.restoreStrength(),
+                tile_size: this.restoreTileSize(),
+                tile_pad: 32,
+            },
+        }];
+        this.datasetService.renderPipeline(
+            this.datasetName(), pair.media_file, blocks,
+        ).subscribe({
+            next: (res: any) => {
+                this.isRestoring.set(false);
+                this.hasOverlay.set(true);
+                this.toast.success(`Restoration applied (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                this.applied.emit();
+                this.loadImage();
+            },
+            error: (err) => {
+                this.isRestoring.set(false);
+                this.toast.error(`Restoration failed: ${err?.error?.detail || err.message}`);
+            },
+        });
+    }
+
+    downloadRegistryModel(category: 'restore' | 'upscale', filename: string): void {
+        const trackingSignal = category === 'restore' ? this.restoreDownloading : this.upscaleDownloading;
+        trackingSignal.set(filename);
+        this.toast.info(`Downloading ${filename}…`);
+        this.datasetService.downloadModel(category, filename).subscribe({
+            next: (res: any) => {
+                trackingSignal.set(null);
+                this.toast.success(`Downloaded ${res.filename} (${res.size_mb} MB)`);
+                // Refresh registry status
+                this.loadRegistry(category);
+                // Re-scan the folder so the model appears in the dropdown
+                if (category === 'restore') {
+                    this.scanRestoreModels();
+                } else {
+                    this.scanModels();
+                }
+            },
+            error: (err) => {
+                trackingSignal.set(null);
+                this.toast.error(`Download failed: ${err?.error?.detail || err.message}`);
+            },
+        });
+    }
+
+    // ── Non-Destructive Overlay Pipeline ──────────────────────────────────
+
+    buildPipelineBlocks(): PipelineBlock[] {
+        const blocks: PipelineBlock[] = [];
+
+        // Restoration (denoise) — always first in pipeline
+        const restoreModel = this.selectedRestoreModel();
+        if (restoreModel) {
+            blocks.push({
+                type: 'denoise',
+                enabled: true,
+                params: {
+                    model_path: restoreModel,
+                    strength: this.restoreStrength(),
+                    tile_size: this.restoreTileSize(),
+                    tile_pad: 32,
+                },
+            });
+        }
+
+        // White Balance
+        if (this.wbTemperature() !== 6500 || this.wbTint() !== 0) {
+            blocks.push({
+                type: 'white_balance',
+                enabled: true,
+                params: { temperature: this.wbTemperature(), tint: this.wbTint() },
+            });
+        }
+
+        // Curves
+        const mc = this.masterCurve(), rc = this.rCurve(), gc = this.gCurve(), bc = this.bCurve();
+        const hasCurves = [mc, rc, gc, bc].some(c => c.length !== 2 || c[0].y !== 0 || c[1].y !== 255);
+        if (hasCurves) {
+            blocks.push({
+                type: 'curves',
+                enabled: true,
+                params: { master: mc, r: rc, g: gc, b: bc },
+            });
+        }
+
+        // CUBE LUT
+        const luts = this.lutStack().filter(l => l.strength > 0);
+        if (luts.length > 0) {
+            blocks.push({
+                type: 'cube_lut',
+                enabled: true,
+                params: { cube_lut: luts[0].content, cube_lut_strength: luts[0].strength },
+            });
+        }
+
+        // HSL Selective
+        const hsl = this.hslConfig();
+        const hslActive = Object.values(hsl).some(r =>
+            Math.abs(r.hue_shift) > 0.001 || Math.abs(r.saturation) > 0.001 || Math.abs(r.luminance) > 0.001
+        );
+        if (hslActive) {
+            blocks.push({
+                type: 'hsl_selective',
+                enabled: true,
+                params: { hsl_config: hsl },
+            });
+        }
+
+        // Hue / Saturation
+        if (this.hueShift() !== 0 || this.saturation() !== 1.0) {
+            blocks.push({
+                type: 'hue_saturation',
+                enabled: true,
+                params: { hue_shift: this.hueShift(), saturation: this.saturation() },
+            });
+        }
+
+        // Contrast
+        if (this.contrast() !== 1.0) {
+            blocks.push({
+                type: 'contrast',
+                enabled: true,
+                params: { contrast: this.contrast() },
+            });
+        }
+
+        // Vignette
+        if (this.vignetteAmount() !== 0) {
+            blocks.push({
+                type: 'vignette',
+                enabled: true,
+                params: {
+                    amount: this.vignetteAmount(),
+                    midpoint: this.vignetteMidpoint(),
+                    feather: this.vignetteFeather(),
+                },
+            });
+        }
+
+        // Lens Correction
+        if (this.lensBarrel() !== 0 || this.lensVKeystone() !== 0 || this.lensHKeystone() !== 0) {
+            blocks.push({
+                type: 'lens_correction',
+                enabled: true,
+                params: {
+                    barrel: this.lensBarrel(),
+                    vertical_keystone: this.lensVKeystone(),
+                    horizontal_keystone: this.lensHKeystone(),
+                },
+            });
+        }
+
+        // Sharpening
+        if (this.sharpenMethod() !== 'none') {
+            const method = this.sharpenMethod();
+            const params: Record<string, any> = { method };
+            if (method === 'unsharp_mask') {
+                params['params'] = { radius: this.sharpenRadius(), percent: this.sharpenPercent(), threshold: this.sharpenThreshold() };
+            } else if (method === 'kernel') {
+                params['params'] = { strength: this.sharpenStrength() };
+            } else if (method === 'high_pass') {
+                params['params'] = { radius: this.sharpenRadius(), strength: this.sharpenStrength() };
+            }
+            blocks.push({ type: 'sharpening', enabled: true, params });
+        }
+
+        // Upscale
+        const upscaleModel = this.selectedUpscaleModel();
+        if (upscaleModel && this.showUpscaleConfirm()) {
+            blocks.push({
+                type: 'upscale',
+                enabled: true,
+                params: {
+                    model_path: upscaleModel,
+                    tile_size: this.upscaleTileSize(),
+                    tile_pad: 32,
+                    target_scale: this.upscaleTargetScale(),
+                    resize_method: this.upscaleResizeMethod(),
+                },
+            });
+        }
+
+        // Sort blocks according to user's pipeline order and apply enabled toggles
+        const order = this.pipelineOrder();
+        const enabled = this.blockEnabled();
+        blocks.sort((a, b) => {
+            const ai = order.indexOf(a.type);
+            const bi = order.indexOf(b.type);
+            return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+        });
+        // Apply enable/disable toggles from the pipeline overview
+        for (const block of blocks) {
+            if (enabled[block.type] === false) {
+                block.enabled = false;
+            }
+        }
+        return blocks;
+    }
+
+    renderOverlay(): void {
+        const pair = this.currentPair();
+        if (!pair) return;
+
+        const blocks = this.buildPipelineBlocks();
+        if (blocks.length === 0) {
+            this.toast.error('No adjustments to render');
+            return;
+        }
+
+        this.isRendering.set(true);
+        this.datasetService.renderPipeline(
+            this.datasetName(), pair.media_file, blocks, 512, 32, true,
+        ).subscribe({
+            next: (res: any) => {
+                this.isRendering.set(false);
+                this.hasOverlay.set(true);
+                this.toast.success(`Overlay saved (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                this.applied.emit();
+            },
+            error: (err) => {
+                this.isRendering.set(false);
+                this.toast.error(`Render failed: ${err?.error?.detail || err.message}`);
+            },
+        });
+    }
+
+    revertOverlay(): void {
+        const pair = this.currentPair();
+        if (!pair) return;
+
+        this.datasetService.deleteOverlay(this.datasetName(), pair.media_file).subscribe({
+            next: () => {
+                this.hasOverlay.set(false);
+                this.toast.success('Overlay reverted — original restored');
+                this.applied.emit();
+            },
+            error: (err) => this.toast.error(`Revert failed: ${err?.error?.detail || err.message}`),
+        });
+    }
+
+    commitOverlay(): void {
+        const pair = this.currentPair();
+        if (!pair) return;
+
+        this.showCommitConfirm.set(false);
+        this.isApplying.set(true);
+        this.datasetService.commitOverlay(this.datasetName(), pair.media_file).subscribe({
+            next: () => {
+                this.isApplying.set(false);
+                this.hasOverlay.set(false);
+                this.toast.success('Overlay committed — now the original');
+                this.applied.emit();
+                this.loadImage();
+            },
+            error: (err) => {
+                this.isApplying.set(false);
+                this.toast.error(`Commit failed: ${err?.error?.detail || err.message}`);
             },
         });
     }
@@ -1937,6 +2726,10 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
 
     getMediaUrl(relativePath: string): string {
         return `${this.mediaBaseUrl()}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(relativePath)}?t=${Date.now()}`;
+    }
+
+    getOverlayUrl(imagePath: string): string {
+        return `${this.rtc.apiUrl}/datasets/${encodeURIComponent(this.datasetName())}/overlay/${encodeURIComponent(imagePath)}?t=${Date.now()}`;
     }
 
     /** Stable URL without cache-buster — safe for use in grids/pickers where change detection runs continuously */

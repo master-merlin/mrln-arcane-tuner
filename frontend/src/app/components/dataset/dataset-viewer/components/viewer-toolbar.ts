@@ -63,6 +63,20 @@ import { Dataset } from '../../../../services/dataset';
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                     Masked
                 </button>
+                <button (click)="overlayModeChange.emit(!showOverlay())" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider rounded-theme-sm transition-all border flex items-center gap-1.5"
+                    [disabled]="!hasOverlayImages()"
+                    [class.opacity-40]="!hasOverlayImages()"
+                    [class.cursor-not-allowed]="!hasOverlayImages()"
+                    [class.bg-purple-500/15]="showOverlay() && hasOverlayImages()"
+                    [class.border-purple-400/40]="showOverlay() && hasOverlayImages()"
+                    [class.text-purple-400]="showOverlay() && hasOverlayImages()"
+                    [class.bg-surface-mid/50]="!showOverlay() || !hasOverlayImages()"
+                    [class.border-surface-high/30]="!showOverlay() || !hasOverlayImages()"
+                    [class.text-text-muted]="!showOverlay() || !hasOverlayImages()"
+                    title="Toggle overlay view — show edited overlays instead of originals">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="15" height="15" rx="2" ry="2"></rect><path d="M17 2h3a2 2 0 0 1 2 2v3"></path><path d="M22 17v3a2 2 0 0 1-2 2h-3"></path><path d="M7 22H4a2 2 0 0 1-2-2v-3"></path></svg>
+                    Overlay
+                </button>
             </div>
             
             <div class="flex items-center gap-4">
@@ -123,10 +137,13 @@ export class ViewerToolbarComponent {
     viewModeChange = output<'grid' | 'detail'>();
     filterModeChange = output<'all' | 'enabled' | 'disabled'>();
     maskedModeChange = output<boolean>();
+    overlayModeChange = output<boolean>();
     enabledCount = input<number>(0);
     filterMode = input<'all' | 'enabled' | 'disabled'>('all');
     showMasked = input<boolean>(false);
     hasMaskedImages = input<boolean>(false);
+    showOverlay = input<boolean>(true);
+    hasOverlayImages = input<boolean>(false);
 
     cycleFilter() {
         const modes: ('all' | 'enabled' | 'disabled')[] = ['all', 'enabled', 'disabled'];

@@ -27,7 +27,7 @@ class MediaItemRepository:
         "target_width", "target_height", "has_mask", "has_masked",
         "has_masked_caption", "mask_info", "has_caption",
         "is_video", "frame_count", "tags", "notes", "quality_score",
-        "added_at",
+        "added_at", "has_overlay",
     ]
 
     # ── Reads ────────────────────────────────────────────────────────
@@ -206,7 +206,8 @@ class MediaItemRepository:
             item.pop("dataset_id", None)
             # Convert int booleans back
             for key in ("is_majority_ar", "has_caption", "is_video",
-                        "has_mask", "has_masked", "has_masked_caption"):
+                        "has_mask", "has_masked", "has_masked_caption",
+                        "has_overlay"):
                 if key in item:
                     item[key] = bool(item[key])
             # Parse JSON fields
@@ -227,7 +228,8 @@ class MediaItemRepository:
         data = dict(data)  # defensive copy
         # Booleans → int
         for key in ("is_majority_ar", "has_caption", "is_video",
-                    "has_mask", "has_masked", "has_masked_caption"):
+                    "has_mask", "has_masked", "has_masked_caption",
+                    "has_overlay"):
             if key in data:
                 data[key] = int(bool(data[key]))
         # Dicts/lists → JSON strings

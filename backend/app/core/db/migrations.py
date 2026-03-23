@@ -34,6 +34,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
     migrations = [
         _migrate_v1,
         _migrate_v2,
+        _migrate_v3,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -337,3 +338,14 @@ def _migrate_v2(conn) -> None:
         WHERE masked_caption_file IS NOT NULL AND masked_caption_file != ''
     """)
 
+
+# ── V3: Overlay tracking column ────────────────────────────────────
+
+def _migrate_v3(conn) -> None:
+    """Add has_overlay boolean column to media_items."""
+    try:
+        conn.execute(
+            "ALTER TABLE media_items ADD COLUMN has_overlay INTEGER NOT NULL DEFAULT 0"
+        )
+    except Exception:
+        pass  # Column already exists

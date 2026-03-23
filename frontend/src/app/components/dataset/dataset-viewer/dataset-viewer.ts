@@ -19,6 +19,7 @@ import { ViewerCacheAdminModalComponent } from './components/viewer-cache-admin-
 import { DatasetRescanOptionsModalComponent } from '../dataset-manager/components/dataset-rescan-options-modal';
 import { DatasetSingleRescanModalComponent } from '../dataset-manager/components/dataset-single-rescan-modal';
 import { ImageEditorModalComponent } from './components/image-editor-modal';
+import { ViewerMassEditModalComponent } from './components/viewer-mass-edit-modal';
 
 @Component({
     selector: 'app-dataset-viewer',
@@ -37,7 +38,8 @@ import { ImageEditorModalComponent } from './components/image-editor-modal';
         ViewerCacheAdminModalComponent,
         DatasetRescanOptionsModalComponent,
         DatasetSingleRescanModalComponent,
-        ImageEditorModalComponent
+        ImageEditorModalComponent,
+        ViewerMassEditModalComponent
     ],
     template: `
     <div class="fixed inset-0 bg-surface-low/95 z-[200] flex flex-col h-screen overflow-hidden" (click)="$event.stopPropagation()">
@@ -54,6 +56,8 @@ import { ImageEditorModalComponent } from './components/image-editor-modal';
             [filterMode]="filterMode()"
             [showMasked]="showMasked()"
             [hasMaskedImages]="hasMaskedImages()"
+            [showOverlay]="showOverlay()"
+            [hasOverlayImages]="hasOverlayImages()"
             (closeRequested)="close.emit()"
             (manualBumpRequested)="manualBump()"
             (analysisRequested)="showAnalysisModal.set(true)"
@@ -61,6 +65,7 @@ import { ImageEditorModalComponent } from './components/image-editor-modal';
             (viewModeChange)="viewMode.set($event)"
             (filterModeChange)="filterMode.set($event)"
             (maskedModeChange)="showMasked.set($event)"
+            (overlayModeChange)="showOverlay.set($event)"
             (cacheRequested)="showCacheAdminModal.set(true)">
         </app-viewer-toolbar>
 
@@ -70,8 +75,10 @@ import { ImageEditorModalComponent } from './components/image-editor-modal';
                     [pairs]="filteredPairs()"
                     [datasetName]="datasetName()"
                     [mediaBaseUrl]="mediaBaseUrl()"
+                    [apiUrl]="rtc.apiUrl"
                     [lastUpdateTime]="lastUpdateTime()"
                     [showMasked]="showMasked()"
+                    [showOverlay]="showOverlay()"
                     (detailRequested)="switchToDetail($event)"
                     (massCaptionRequested)="showMassCaptionModal.set(true)"
                     (massMaskingRequested)="showMassMaskingModal.set(true)"
@@ -80,15 +87,18 @@ import { ImageEditorModalComponent } from './components/image-editor-modal';
                     (cropRequested)="previewItem.set($event)"
                     (exclusionToggled)="handleExclusionToggle($event)"
                     (editRequested)="switchToDetailAndEdit($event)"
-                    (enableAllRequested)="handleEnableAll()">
+                    (enableAllRequested)="handleEnableAll()"
+                    (massEditRequested)="showMassEditModal.set(true)">
                 </app-viewer-grid-view>
             } @else {
                 <app-viewer-detail-view
                     [currentPair]="currentPair()"
                     [datasetName]="datasetName()"
                     [mediaBaseUrl]="mediaBaseUrl()"
+                    [apiUrl]="rtc.apiUrl"
                     [lastUpdateTime]="lastUpdateTime()"
                     [showMasked]="showMasked()"
+                    [showOverlay]="showOverlay()"
                     [(captionText)]="captionText"
                     [isDirty]="isDirty()"
                     [isCurrentMediaVideo]="isCurrentMediaVideo()"
@@ -140,6 +150,16 @@ import { ImageEditorModalComponent } from './components/image-editor-modal';
                 (close)="showMassMaskingModal.set(false)"
                 (finished)="finalizeMassProcess('masking')">
             </app-viewer-mass-masking-modal>
+        }
+
+        @if (showMassEditModal()) {
+            <app-viewer-mass-edit-modal
+                [datasetName]="datasetName()"
+                [pairs]="pairs()"
+                [mediaBaseUrl]="mediaBaseUrl()"
+                (close)="showMassEditModal.set(false)"
+                (finished)="finalizeMassProcess('pipeline')">
+            </app-viewer-mass-edit-modal>
         }
 
         @if (previewItem(); as item) {
@@ -254,6 +274,7 @@ export class DatasetViewerComponent implements OnInit {
     showAnalysisModal = signal(false);
     showMassCaptionModal = signal(false);
     showMassMaskingModal = signal(false);
+    showMassEditModal = signal(false);
     existingCaptionMode = signal<'keep' | 'overwrite'>('keep');
     existingMaskMode = signal<'keep' | 'overwrite'>('keep');
     showSimilarModal = signal<any[] | null>(null);
@@ -279,9 +300,14 @@ export class DatasetViewerComponent implements OnInit {
     // Exclusion Filter
     filterMode = signal<'all' | 'enabled' | 'disabled'>('all');
     showMasked = signal(false);
+    showOverlay = signal(true);
 
     hasMaskedImages = computed(() => {
         return this.pairs().some(p => !!p.metadata?.has_masked);
+    });
+
+    hasOverlayImages = computed(() => {
+        return this.pairs().some(p => !!p.metadata?.has_overlay);
     });
 
     enabledCount = computed(() => {

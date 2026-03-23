@@ -30,12 +30,13 @@ from app.core.image_processing.color_match import (
     apply_color_match,
     compute_histogram,
 )
-from app.core.image_processing.pipeline import apply_all
+from app.core.image_processing.pipeline import apply_all, execute_pipeline, PipelineBlock
 
 __all__ = [
     # Data structures
     "CurvePoint",
     "CubeLUTData",
+    "PipelineBlock",
     # Curves & LUT
     "apply_curves",
     "parse_cube_file",
@@ -57,4 +58,6 @@ __all__ = [
     "compute_histogram",
     # Pipeline
     "apply_all",
+    "execute_pipeline",
 ]
+

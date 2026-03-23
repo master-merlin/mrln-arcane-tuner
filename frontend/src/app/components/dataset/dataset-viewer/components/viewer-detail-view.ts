@@ -35,8 +35,10 @@ import { MaskingSettingsState } from '../../dataset-masking-settings/dataset-mas
                     [currentPair]="currentPair()"
                     [datasetName]="datasetName()"
                     [mediaBaseUrl]="mediaBaseUrl()"
+                    [apiUrl]="apiUrl()"
                     [lastUpdateTime]="lastUpdateTime()"
                     [showMasked]="showMasked()"
+                    [showOverlay]="showOverlay()"
                     (prevRequested)="prevRequested.emit()"
                     (nextRequested)="nextRequested.emit()"
                     (deleteRequested)="deleteRequested.emit()">
@@ -126,6 +128,8 @@ export class ViewerDetailViewComponent {
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
     showMasked = input<boolean>(false);
+    showOverlay = input<boolean>(true);
+    apiUrl = input<string>('');
 
     // Caption State
     captionText = model<string>('');

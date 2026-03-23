@@ -19,6 +19,10 @@ import { FormsModule } from '@angular/forms';
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                         <span class="uppercase tracking-wider">Masking</span>
                     </button>
+                    <button (click)="massEditRequested.emit()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-theme-lg text-xs font-bold transition-all shadow-lg shadow-purple-600/20 flex items-center gap-2 active:scale-95">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="15" height="15" rx="2" ry="2"></rect><path d="M17 2h3a2 2 0 0 1 2 2v3"></path><path d="M22 17v3a2 2 0 0 1-2 2h-3"></path><path d="M7 22H4a2 2 0 0 1-2-2v-3"></path></svg>
+                        <span class="uppercase tracking-wider">Pipeline</span>
+                    </button>
                 </div>
                 <div class="flex items-center gap-3">
                     <button (click)="enableAllRequested.emit()" class="px-3 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white rounded-theme-lg text-xs font-medium transition-all flex items-center gap-2 active:scale-95 border border-surface-high/30">
@@ -52,7 +56,7 @@ import { FormsModule } from '@angular/forms';
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
                                 </div>
                              } @else {
-                                <img [src]="showMasked() && pair.metadata?.has_masked ? getMediaUrl('masked/' + getStem(pair.media_file) + '.jpg') : getMediaUrl(pair.media_file)" class="w-full h-full object-cover transition-opacity" [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'" loading="lazy">
+                                <img [src]="getDisplayUrl(pair)" class="w-full h-full object-cover transition-opacity" [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'" loading="lazy">
                              }
                              
                              <!-- Edit Overlay -->
@@ -68,6 +72,12 @@ import { FormsModule } from '@angular/forms';
                                     </div>
                                  }
                              </div>
+                             @if (pair.metadata?.has_overlay) {
+                                 <div class="absolute bottom-2 left-2 bg-purple-500/80 text-white text-[9px] px-1.5 py-0.5 rounded-theme-sm font-bold shadow-sm flex items-center gap-1 z-10" title="Overlay available">
+                                     <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="15" height="15" rx="2" ry="2"></rect><path d="M17 2h3a2 2 0 0 1 2 2v3"></path><path d="M22 17v3a2 2 0 0 1-2 2h-3"></path><path d="M7 22H4a2 2 0 0 1-2-2v-3"></path></svg>
+                                     OVR
+                                 </div>
+                             }
                              
                              <!-- Action Buttons (top-right): adjust + crop + eye toggle + delete — matches detail view order -->
                               <div [class]="'absolute top-2 right-2 flex gap-1 bg-transparent z-10 transition-all ' + (pair.metadata?.enabled === false ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')">
@@ -119,10 +129,13 @@ export class ViewerGridViewComponent {
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
     showMasked = input<boolean>(false);
+    showOverlay = input<boolean>(true);
+    apiUrl = input<string>('');
 
     detailRequested = output<number>();
     massCaptionRequested = output<void>();
     massMaskingRequested = output<void>();
+    massEditRequested = output<void>();
     pairDeleted = output<any>();
     captionSaved = output<any>();
     cropRequested = output<any>();
@@ -132,6 +145,20 @@ export class ViewerGridViewComponent {
 
     getMediaUrl(relativePath: string): string {
         return `${this.mediaBaseUrl()}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(relativePath)}?t=${this.lastUpdateTime()}`;
+    }
+
+    getOverlayUrl(imagePath: string): string {
+        return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/overlay/${encodeURIComponent(imagePath)}?t=${this.lastUpdateTime()}`;
+    }
+
+    getDisplayUrl(pair: any): string {
+        if (this.showMasked() && pair.metadata?.has_masked) {
+            return this.getMediaUrl('masked/' + this.getStem(pair.media_file) + '.jpg');
+        }
+        if (this.showOverlay() && pair.metadata?.has_overlay) {
+            return this.getOverlayUrl(pair.media_file);
+        }
+        return this.getMediaUrl(pair.media_file);
     }
 
     deletePair(pair: any, event: Event) {

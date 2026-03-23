@@ -56,9 +56,8 @@ async def list_upscale_models(request: UpscaleListRequest):
 async def upscale_media(name: str, request: UpscaleApplyRequest):
     """Upscale an image using a selected model with tiled inference."""
     try:
-        import gc
-        import torch
-        from spandrel import ModelLoader
+        import torch  # noqa: F401 — verify availability
+        import spandrel  # noqa: F401
     except ImportError:
         raise HTTPException(
             status_code=500,
@@ -79,71 +78,42 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
         raise HTTPException(status_code=404, detail="Model not found")
 
     def _upscale():
-        import numpy as np
         from PIL import Image as PILImage
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        from app.core.image_processing.tiled_inference import (
+            cleanup_vram,
+            image_to_tensor,
+            load_spandrel_model,
+            run_tiled_inference,
+            tensor_to_image,
+        )
 
-        # Load model via spandrel (supports ESRGAN, RealESRGAN, SwinIR, etc.)
-        model = ModelLoader().load_from_file(str(model_path))
-        model = model.to(device).eval()
+        model, scale, device = load_spandrel_model(model_path)
 
-        # Load image
         with PILImage.open(img_path) as img:
             img_rgb = img.convert("RGB")
-            img_np = np.array(img_rgb).astype(np.float32) / 255.0
-            img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(device)
+            w_orig, h_orig = img_rgb.size
+            img_tensor = image_to_tensor(img_rgb, device)
 
-        h, w = img_tensor.shape[2], img_tensor.shape[3]
-        # Detect model scale — spandrel stores it on the descriptor
-        scale = getattr(model, "scale", None)
-        if scale is None:
-            with torch.inference_mode():
-                test_out = model(torch.zeros(1, 3, 8, 8, device=device))
-                scale = test_out.shape[2] // 8
-            if scale < 1:
-                scale = 4
-        out_h, out_w = h * scale, w * scale
-        output = torch.zeros(1, 3, out_h, out_w, device=device)
+        output_tensor = run_tiled_inference(
+            model,
+            img_tensor,
+            tile_size=request.tile_size,
+            tile_pad=request.tile_pad,
+            scale=scale,
+        )
+        result_img = tensor_to_image(output_tensor)
+        cleanup_vram(model, img_tensor, output_tensor)
 
-        tile = request.tile_size
-        pad = request.tile_pad
-
-        # Tiled inference
-        with torch.inference_mode():
-            for y in range(0, h, tile):
-                for x in range(0, w, tile):
-                    y1 = max(0, y - pad)
-                    x1 = max(0, x - pad)
-                    y2 = min(h, y + tile + pad)
-                    x2 = min(w, x + tile + pad)
-
-                    tile_in = img_tensor[:, :, y1:y2, x1:x2]
-                    tile_out = model(tile_in)
-
-                    # Calculate output region (remove padding)
-                    oy1 = (y - y1) * scale
-                    ox1 = (x - x1) * scale
-                    oy2 = oy1 + min(tile, h - y) * scale
-                    ox2 = ox1 + min(tile, w - x) * scale
-
-                    out_y1 = y * scale
-                    out_x1 = x * scale
-                    out_y2 = out_y1 + min(tile, h - y) * scale
-                    out_x2 = out_x1 + min(tile, w - x) * scale
-
-                    output[:, :, out_y1:out_y2, out_x1:out_x2] = tile_out[:, :, oy1:oy2, ox1:ox2]
-
-        result_np = output.squeeze(0).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
-        result_img = PILImage.fromarray((result_np * 255).astype(np.uint8))
+        out_w, out_h = result_img.size
 
         # Post-process rescale if target differs from model native
         effective_scale = scale
         final_w, final_h = out_w, out_h
         target = request.target_scale
         if target > 0 and abs(target - scale) > 0.01:
-            final_w = round(w * target)
-            final_h = round(h * target)
+            final_w = round(w_orig * target)
+            final_h = round(h_orig * target)
             resample_map = {
                 "lanczos": PILImage.LANCZOS,
                 "bicubic": PILImage.BICUBIC,
@@ -155,12 +125,6 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             effective_scale = target
 
         result_img.save(str(img_path), quality=95)
-
-        # Cleanup VRAM
-        del model, img_tensor, output
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
 
         return {"scale": effective_scale, "new_size": [final_w, final_h]}
 

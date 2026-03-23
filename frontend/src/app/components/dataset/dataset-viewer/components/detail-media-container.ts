@@ -11,7 +11,7 @@ import { Component, input, output } from '@angular/core';
                 @if (pair.media_type === 'video') {
                     <video [src]="getMediaUrl(pair.media_file)" controls class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl"></video>
                 } @else {
-                    <img [src]="getMediaUrl(showMasked() && pair.metadata?.has_masked ? 'masked/' + pair.media_file.substring(0, pair.media_file.lastIndexOf('.')) + '.jpg' : pair.media_file)" class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl" alt="Dataset Image">
+                    <img [src]="getDisplayUrl(pair)" class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl" alt="Dataset Image">
                 }
             </div>
         }
@@ -32,6 +32,8 @@ export class DetailMediaContainerComponent {
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
     showMasked = input<boolean>(false);
+    showOverlay = input<boolean>(true);
+    apiUrl = input<string>('');
 
     prevRequested = output<void>();
     nextRequested = output<void>();
@@ -39,5 +41,20 @@ export class DetailMediaContainerComponent {
 
     getMediaUrl(relativePath: string): string {
         return `${this.mediaBaseUrl()}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(relativePath)}?t=${this.lastUpdateTime()}`;
+    }
+
+    getOverlayUrl(imagePath: string): string {
+        return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/overlay/${encodeURIComponent(imagePath)}?t=${this.lastUpdateTime()}`;
+    }
+
+    getDisplayUrl(pair: any): string {
+        if (this.showMasked() && pair.metadata?.has_masked) {
+            const stem = pair.media_file.substring(0, pair.media_file.lastIndexOf('.'));
+            return this.getMediaUrl('masked/' + stem + '.jpg');
+        }
+        if (this.showOverlay() && pair.metadata?.has_overlay) {
+            return this.getOverlayUrl(pair.media_file);
+        }
+        return this.getMediaUrl(pair.media_file);
     }
 }

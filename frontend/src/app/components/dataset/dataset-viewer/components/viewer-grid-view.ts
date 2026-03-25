@@ -19,7 +19,7 @@ import { FormsModule } from '@angular/forms';
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                         <span class="uppercase tracking-wider">Masking</span>
                     </button>
-                    <button (click)="massEditRequested.emit()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-theme-lg text-xs font-bold transition-all shadow-lg shadow-purple-600/20 flex items-center gap-2 active:scale-95">
+                    <button (click)="massEditRequested.emit()" [disabled]="!hasAnyOverlay()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-theme-lg text-xs font-bold transition-all shadow-lg shadow-purple-600/20 flex items-center gap-2 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-purple-600">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="15" height="15" rx="2" ry="2"></rect><path d="M17 2h3a2 2 0 0 1 2 2v3"></path><path d="M22 17v3a2 2 0 0 1-2 2h-3"></path><path d="M7 22H4a2 2 0 0 1-2-2v-3"></path></svg>
                         <span class="uppercase tracking-wider">Pipeline</span>
                     </button>
@@ -142,6 +142,10 @@ export class ViewerGridViewComponent {
     exclusionToggled = output<{ media_file: string, enabled: boolean }>();
     editRequested = output<number>();
     enableAllRequested = output<void>();
+
+    hasAnyOverlay(): boolean {
+        return this.pairs().some((p: any) => p.metadata?.has_overlay);
+    }
 
     getMediaUrl(relativePath: string): string {
         return `${this.mediaBaseUrl()}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(relativePath)}?t=${this.lastUpdateTime()}`;

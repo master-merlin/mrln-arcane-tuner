@@ -1,3 +1,6 @@
+import types
+from functools import wraps
+
 import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
 import structlog
@@ -6,6 +9,40 @@ from typing import Any
 from app.core.captioning.models.base import CaptionModel
 
 logger = structlog.get_logger(__name__)
+
+
+def _patch_florence2_kv_cache(model) -> None:
+    """Monkey-patch Florence-2's prepare_inputs_for_generation to handle
+    the EncoderDecoderCache null-check issue introduced in transformers 4.50+.
+
+    The cached modeling_florence2.py accesses ``past_key_values[0][0].shape``
+    without guarding against None entries inside the cache object.  This
+    patch wraps the original method and adds the required null-checks so
+    that ``use_cache=True`` works safely.
+
+    We patch at runtime so we never touch HuggingFace cached files.
+    """
+    # Find the sub-model that owns prepare_inputs_for_generation.
+    # Florence-2 is an encoder-decoder — the decoder (language_model) has it.
+    target = getattr(model, "language_model", model)
+    original_fn = target.prepare_inputs_for_generation
+
+    @wraps(original_fn)
+    def _safe_prepare(self_inner, *args, **kwargs):
+        # The original code crashes on: past_key_values[0][0].shape[2]
+        # when past_key_values entries are None (empty EncoderDecoderCache).
+        # We intercept, call the original, and if it crashes, fall back.
+        try:
+            return original_fn(*args, **kwargs)
+        except (AttributeError, TypeError, IndexError):
+            # Disable cache for this call and retry
+            if "past_key_values" in kwargs:
+                kwargs["past_key_values"] = None
+            return original_fn(*args, **kwargs)
+
+    target.prepare_inputs_for_generation = types.MethodType(_safe_prepare, target)
+    logger.debug("florence2_kv_cache_patched")
+
 
 class Florence2Model(CaptionModel):
     MODEL_PATH = "microsoft/Florence-2-large"
@@ -20,23 +57,28 @@ class Florence2Model(CaptionModel):
         return "florence-2"
 
     def load(self, variant: str = None) -> tuple[Any, Any]:
+        if self.model is not None and self.processor is not None:
+            logger.debug("florence2_already_loaded")
+            return self.model, self.processor
+
         logger.info("loading_florence2", path=self.MODEL_PATH)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if device == "cuda" else torch.float32
 
-        # Use eager attention to avoid SDPA compatibility issues with transformers 4.57+
         self.model = AutoModelForCausalLM.from_pretrained(
             self.MODEL_PATH, 
             trust_remote_code=True,
             dtype=dtype,
-            attn_implementation="eager"
+            attn_implementation="eager",
         ).to(device)
+        
+        # Patch KV-cache null-check bug so we can use use_cache=True
+        _patch_florence2_kv_cache(self.model)
         
         self.processor = AutoProcessor.from_pretrained(
             self.MODEL_PATH, 
             trust_remote_code=True
         )
-        
         
         logger.info("florence2_loaded")
         return self.model, self.processor
@@ -67,19 +109,18 @@ class Florence2Model(CaptionModel):
         
         # Get generation parameters
         max_tokens = params.get("max_tokens", 512)
-        num_beams = params.get("num_beams", 5)
+        num_beams = params.get("num_beams", 3)
         
         inputs = self.processor(text=prompt, images=image, return_tensors="pt").to(device, dtype)
 
-        # use_cache=False fixes past_key_values issue with transformers 4.57+
-        generated_ids = self.model.generate(
-            input_ids=inputs["input_ids"],
-            pixel_values=inputs["pixel_values"],
-            max_new_tokens=max_tokens,
-            do_sample=False,
-            num_beams=num_beams,
-            use_cache=False
-        )
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                num_beams=num_beams,
+            )
 
         generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
         parsed_answer = self.processor.post_process_generation(

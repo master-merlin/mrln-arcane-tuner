@@ -40,6 +40,11 @@ class Qwen3VLModel(CaptionModel):
 
     def load(self, variant: str = "4B-Instruct") -> tuple[Any, Any]:
         """Load model and processor for the given variant."""
+        # Skip reload if same variant already loaded
+        if self.model is not None and self.processor is not None and self.loaded_variant == variant:
+            logger.debug("qwen3_vl_already_loaded", variant=variant)
+            return self.model, self.processor
+
         model_id = self.VARIANTS.get(variant)
         if not model_id:
             raise ValueError(

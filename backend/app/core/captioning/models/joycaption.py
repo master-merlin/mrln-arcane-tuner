@@ -157,6 +157,10 @@ class JoyCaptionModel(CaptionModel):
         return "joycaption"
 
     def load(self, variant: str = None) -> tuple[Any, Any]:
+        if self.model is not None and self.processor is not None:
+            logger.debug("joycaption_already_loaded")
+            return self.model, self.processor
+
         logger.info("loading_joycaption", path=self.MODEL_PATH)
 
         self.model = LlavaForConditionalGeneration.from_pretrained(

@@ -37,6 +37,10 @@ class YoutuVLModel(CaptionModel):
         return "youtu-vl"
 
     def load(self, variant: str = None) -> tuple[Any, Any]:
+        if self.model is not None and self.processor is not None:
+            logger.debug("youtu_vl_already_loaded")
+            return self.model, self.processor
+
         model_id = "tencent/Youtu-VL-4B-Instruct"
         logger.info("loading_youtu_vl", path=model_id)
         

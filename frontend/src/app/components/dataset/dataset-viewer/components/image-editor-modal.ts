@@ -358,11 +358,11 @@ const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
                     </div>
                 }
             </div>
-            <div class="flex-1 flex items-center justify-center bg-base min-w-0 relative">
-                <!-- Preview container -->
-                <div class="relative max-w-full max-h-full" style="display: inline-block;">
+            <div class="flex-1 flex items-center justify-center bg-base min-w-0 relative overflow-hidden p-4">
+                <!-- Preview container — sized by canvas via fit-content -->
+                <div class="relative flex items-center justify-center" style="max-width: 100%; max-height: 100%;">
                     <!-- Edited (bottom layer) -->
-                    <canvas #previewCanvas class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl" style="display: block;" data-testid="editor-preview"></canvas>
+                    <canvas #previewCanvas class="block max-w-full max-h-[calc(100vh-8rem)] object-contain rounded-theme-lg shadow-2xl" data-testid="editor-preview"></canvas>
 
                     <!-- Comparison overlay -->
                     @if (comparisonMode() && trueOriginalUrl()) {

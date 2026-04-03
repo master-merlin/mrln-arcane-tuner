@@ -2,17 +2,12 @@
 import { Component, OnInit, inject, signal, computed, input, output } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
-import { Subject } from 'rxjs';
-import { debounceTime } from 'rxjs/operators';
+import { ProjectService, ProjectPreferences } from '../../../services/project.service';
+import { TemplateService, Template } from '../../../services/template.service';
+import { Subject, forkJoin } from 'rxjs';
+import { debounceTime, tap, switchMap } from 'rxjs/operators';
 
-export interface CaptionTemplate {
-    id: string;
-    name: string;
-    is_default?: boolean;
-    readonly?: boolean;
-    params: Record<string, any>;
-    system_prompt: string;
-}
+export interface CaptionTemplate extends Template {}
 
 export interface CaptionSettingsState {
     modelId: string;
@@ -82,12 +77,12 @@ export interface CaptionSettingsState {
                     </button>
                     <button (click)="renameTemplate()" 
                             data-testid="rename-caption-template-btn"
-                            [disabled]="activeTemplateId() === 'default'" [class.opacity-50]="activeTemplateId() === 'default'" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
+                            [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                     </button>
                     <button (click)="deleteTemplate()" 
                             data-testid="delete-caption-template-btn"
-                            [disabled]="activeTemplateId() === 'default'" [class.opacity-50]="activeTemplateId() === 'default'" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
+                            [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                     </button>
                     </div>
@@ -208,7 +203,10 @@ export interface CaptionSettingsState {
 })
 export class DatasetCaptionSettingsComponent implements OnInit {
     private datasetService = inject(DatasetService);
+    private projectService = inject(ProjectService);
+    private templateService = inject(TemplateService);
 
+    projectId = input<string | null>(null);
     isVideo = input(false);
     settingsChanged = output<CaptionSettingsState>();
 
@@ -297,18 +295,26 @@ export class DatasetCaptionSettingsComponent implements OnInit {
 
     selectedCaptionModel = signal<string>('florence-2');
     selectedQwen3Variant = signal<string>('4B-Instruct');
-    currentTemplates = signal<CaptionTemplate[]>([]);
-    activeTemplateId = signal<string>('default');
+    currentTemplates = signal<Template[]>([]);
+    activeTemplateId = signal<string | null>(null);
     captionSystemPrompt = signal<string>('Describe this image in detail.');
     captionModelParams = signal<Record<string, any>>({});
     showExtraOptions = false;
 
-    globalSettings: any = { models: {} };
+    private preferences: ProjectPreferences | null = null;
     private settingsUpdate$ = new Subject<void>();
+    private pendingSaves = new Map<string, any>();
 
     activeModelConfig = computed(() => {
         return this.captionModels.find(m => m.id === this.selectedCaptionModel());
     });
+
+    isDefaultTemplate() {
+        const id = this.activeTemplateId();
+        const templates = this.currentTemplates();
+        const tpl = templates.find(t => t.id === id);
+        return tpl ? tpl.is_default || tpl.readonly : false;
+    }
 
     getCoreParams(config: any): any[] {
         return config.params.filter((p: any) => !p.group);
@@ -319,122 +325,77 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     }
 
     ngOnInit() {
-        this.loadCaptionSettings();
+        this.loadPreferencesAndTemplates();
 
         this.settingsUpdate$.pipe(
-            debounceTime(1000)
-        ).subscribe(() => {
-            this.pushSettings();
-        });
+            debounceTime(1000),
+            switchMap(() => {
+                if (!this.preferences) return [];
+                return this.projectService.updatePreferences(this.projectId(), {
+                    selected_caption_model: this.selectedCaptionModel(),
+                    qwen3_variant: this.selectedQwen3Variant(),
+                    active_caption_template: this.activeTemplateId()
+                });
+            })
+        ).subscribe();
     }
 
-    private loadCaptionSettings() {
-        this.datasetService.getSettings('captioning').subscribe({
-            next: (settings) => {
-                this.globalSettings = settings || { models: {} };
-
-                if (this.globalSettings.selected_model && this.captionModels.some(m => m.id === this.globalSettings.selected_model)) {
-                    this.selectedCaptionModel.set(this.globalSettings.selected_model);
+    private loadPreferencesAndTemplates() {
+        const pId = this.projectId();
+        this.projectService.getPreferences(pId).pipe(
+            switchMap(prefs => {
+                this.preferences = prefs;
+                if (prefs.selected_caption_model && this.captionModels.some(m => m.id === prefs.selected_caption_model)) {
+                    this.selectedCaptionModel.set(prefs.selected_caption_model);
                 }
-
-                if (this.globalSettings.qwen3_variant && this.qwen3Variants.includes(this.globalSettings.qwen3_variant)) {
-                    this.selectedQwen3Variant.set(this.globalSettings.qwen3_variant);
+                if (prefs.qwen3_variant && this.qwen3Variants.includes(prefs.qwen3_variant)) {
+                    this.selectedQwen3Variant.set(prefs.qwen3_variant);
                 }
-
-                this.loadModelTemplates(this.selectedCaptionModel());
-                this.emitChanges();
-            },
-            error: (err) => {
-                this.globalSettings = { models: {} };
-                this.loadModelTemplates(this.selectedCaptionModel());
-                this.emitChanges();
+                return this.templateService.listCaptioningTemplates(this.selectedCaptionModel(), pId);
+            })
+        ).subscribe(templates => {
+            this.currentTemplates.set(templates);
+            if (this.preferences?.active_caption_template && templates.some(t => t.id === this.preferences!.active_caption_template)) {
+                this.activeTemplateId.set(this.preferences.active_caption_template);
+            } else {
+                const defaultTpl = templates.find(t => t.is_default);
+                this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
             }
+            this.applyActiveTemplate();
         });
     }
 
     private loadModelTemplates(modelId: string) {
-        const modelData = this.globalSettings.models?.[modelId];
-        const modelConfig = this.captionModels.find(m => m.id === modelId);
-
-        const defaultParams: Record<string, any> = {};
-        modelConfig?.params.forEach((p: any) => {
-            defaultParams[p.key] = p.default;
-        });
-        const defaultTemplate: CaptionTemplate = {
-            id: 'default',
-            name: 'Default',
-            is_default: true,
-            readonly: true,
-            system_prompt: 'Describe this image in detail.',
-            params: defaultParams
-        };
-
-        if (modelData && modelData.templates && Array.isArray(modelData.templates)) {
-            this.currentTemplates.set(modelData.templates);
-            this.activeTemplateId.set(modelData.active_template_id || 'default');
-        } else if (modelData && modelData.params) {
-            const legacyTemplate: CaptionTemplate = {
-                id: `tpl_${Date.now()}`,
-                name: 'Default by User',
-                is_default: false,
-                readonly: false,
-                system_prompt: modelData.systemPrompt || defaultTemplate.system_prompt,
-                params: { ...defaultParams, ...modelData.params }
-            };
-
-            const templates = [defaultTemplate, legacyTemplate];
+        this.templateService.listCaptioningTemplates(modelId, this.projectId()).subscribe(templates => {
             this.currentTemplates.set(templates);
-            this.activeTemplateId.set(legacyTemplate.id);
-            this.saveModelSettings(modelId);
-        } else {
-            this.currentTemplates.set([defaultTemplate]);
-            this.activeTemplateId.set('default');
-        }
-
-        this.applyActiveTemplate();
+            const defaultTpl = templates.find(t => t.is_default);
+            this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
+            this.applyActiveTemplate();
+            this.settingsUpdate$.next();
+        });
     }
 
     private applyActiveTemplate() {
         const activeId = this.activeTemplateId();
-        const tpl = this.currentTemplates().find(t => t.id === activeId) || this.currentTemplates().find(t => t.id === 'default');
+        const tpl = this.currentTemplates().find(t => t.id === activeId);
 
         if (tpl) {
-            this.captionSystemPrompt.set(tpl.system_prompt);
-
-            // Merge code defaults with stored params so new params get default values
+            this.captionSystemPrompt.set(tpl.system_prompt || '');
+            
             const modelConfig = this.captionModels.find(m => m.id === this.selectedCaptionModel());
             const codeDefaults: Record<string, any> = {};
             modelConfig?.params.forEach((p: any) => { codeDefaults[p.key] = p.default; });
 
-            this.captionModelParams.set({ ...codeDefaults, ...tpl.params });
+            this.captionModelParams.set({ ...codeDefaults, ...(tpl.config || {}) });
             this.emitChanges();
         }
-    }
-
-    private saveModelSettings(modelId: string) {
-        if (!this.globalSettings.models) {
-            this.globalSettings.models = {};
-        }
-
-        this.globalSettings.models[modelId] = {
-            active_template_id: this.activeTemplateId(),
-            templates: this.currentTemplates()
-        };
-        this.settingsUpdate$.next();
-    }
-
-    private pushSettings() {
-        this.datasetService.saveSettings('captioning', this.globalSettings).subscribe();
     }
 
     onModelChange(modelId: string) {
         if (modelId === this.selectedCaptionModel()) return;
         this.datasetService.unloadModels().subscribe();
-        this.saveModelSettings(this.selectedCaptionModel());
         this.selectedCaptionModel.set(modelId);
         this.loadModelTemplates(modelId);
-        this.globalSettings.selected_model = modelId;
-        this.settingsUpdate$.next();
         this.emitChanges();
     }
 
@@ -442,7 +403,6 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         if (variant === this.selectedQwen3Variant()) return;
         this.datasetService.unloadModels().subscribe();
         this.selectedQwen3Variant.set(variant);
-        this.globalSettings.qwen3_variant = variant;
         this.settingsUpdate$.next();
         this.emitChanges();
     }
@@ -450,92 +410,111 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     onTemplateChange(tplId: string) {
         this.activeTemplateId.set(tplId);
         this.applyActiveTemplate();
-        this.saveModelSettings(this.selectedCaptionModel());
+        this.settingsUpdate$.next();
     }
 
     updateParam(key: string, value: any) {
-        const currentParams = this.captionModelParams();
-        const newParams = { ...currentParams, [key]: value };
-        this.updateActiveTemplate({ params: newParams });
+        const newParams = { ...this.captionModelParams(), [key]: value };
+        this.updateActiveTemplate({ config: newParams });
     }
 
     onSystemPromptChange(prompt: string) {
         this.updateActiveTemplate({ system_prompt: prompt });
     }
 
-    private updateActiveTemplate(changes: { params?: Record<string, any>; system_prompt?: string }) {
+    private updateActiveTemplate(changes: { config?: Record<string, any>; system_prompt?: string }) {
         const activeId = this.activeTemplateId();
+        if (!activeId) return;
+
         const templates = this.currentTemplates();
         let activeTpl = templates.find(t => t.id === activeId);
 
         if (!activeTpl) return;
 
         if (activeTpl.readonly) {
-            const newTpl: CaptionTemplate = {
-                id: `tpl_${Date.now()}`,
-                name: 'Default by User',
-                system_prompt: changes.system_prompt ?? activeTpl.system_prompt,
-                params: { ...activeTpl.params, ...(changes.params || {}) }
-            };
-            this.currentTemplates.update(ts => [...ts, newTpl]);
-            this.activeTemplateId.set(newTpl.id);
+            const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
+            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+            
+            this.templateService.createCaptioningTemplate({
+                model_id: this.selectedCaptionModel(),
+                name: 'Custom Settings',
+                project_id: this.projectId(),
+                system_prompt: systemPrompt,
+                config: config
+            }).subscribe(newTpl => {
+                this.currentTemplates.update(ts => [...ts, newTpl]);
+                this.activeTemplateId.set(newTpl.id);
+                this.applyActiveTemplate();
+                this.settingsUpdate$.next();
+            });
         } else {
+            const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
+            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+            
             this.currentTemplates.update(ts => ts.map(t => {
                 if (t.id === activeId) {
-                    return {
-                        ...t,
-                        system_prompt: changes.system_prompt ?? t.system_prompt,
-                        params: { ...t.params, ...(changes.params || {}) }
-                    };
+                    return { ...t, system_prompt: systemPrompt, config: config };
                 }
                 return t;
             }));
-        }
+            this.applyActiveTemplate();
 
-        this.applyActiveTemplate();
-        this.saveModelSettings(this.selectedCaptionModel());
+            this.pendingSaves.set(activeId, { system_prompt: systemPrompt, config });
+            
+            setTimeout(() => {
+                const pending = this.pendingSaves.get(activeId);
+                if (pending) {
+                    this.pendingSaves.delete(activeId);
+                    this.templateService.updateTemplate('captioning', activeId, pending).subscribe();
+                }
+            }, 500);
+        }
     }
 
     addTemplate() {
         const name = prompt('Template name:');
         if (!name) return;
 
-        const newTpl: CaptionTemplate = {
-            id: `tpl_${Date.now()}`,
+        this.templateService.createCaptioningTemplate({
+            model_id: this.selectedCaptionModel(),
             name,
+            project_id: this.projectId(),
             system_prompt: this.captionSystemPrompt(),
-            params: { ...this.captionModelParams() }
-        };
-
-        this.currentTemplates.update(ts => [...ts, newTpl]);
-        this.onTemplateChange(newTpl.id);
+            config: this.captionModelParams()
+        }).subscribe(newTpl => {
+            this.currentTemplates.update(ts => [...ts, newTpl]);
+            this.onTemplateChange(newTpl.id);
+        });
     }
 
     renameTemplate() {
         const activeId = this.activeTemplateId();
-        if (activeId === 'default') return;
+        if (!activeId || this.isDefaultTemplate()) return;
+        
         const tpl = this.currentTemplates().find(t => t.id === activeId);
         if (!tpl) return;
 
         const name = prompt('Rename template:', tpl.name);
         if (!name || name === tpl.name) return;
 
-        this.currentTemplates.update(ts => ts.map(t => {
-            if (t.id === activeId) return { ...t, name };
-            return t;
-        }));
-
-        this.saveModelSettings(this.selectedCaptionModel());
+        this.templateService.updateTemplate('captioning', activeId, { name }).subscribe(updatedTpl => {
+            this.currentTemplates.update(ts => ts.map(t => t.id === activeId ? updatedTpl : t));
+        });
     }
 
     deleteTemplate() {
         const activeId = this.activeTemplateId();
-        if (activeId === 'default') return;
+        if (!activeId || this.isDefaultTemplate()) return;
 
         if (!confirm('Delete this template?')) return;
 
-        this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
-        this.onTemplateChange('default');
+        this.templateService.deleteTemplate('captioning', activeId).subscribe(() => {
+            this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
+            const remaining = this.currentTemplates();
+            if (remaining.length > 0) {
+                this.onTemplateChange(remaining[0].id);
+            }
+        });
     }
 
     private emitChanges() {

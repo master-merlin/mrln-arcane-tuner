@@ -1,17 +1,11 @@
 
-import { Component, OnInit, inject, signal, computed, output } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, output, input } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
+import { ProjectService, ProjectPreferences } from '../../../services/project.service';
+import { TemplateService, Template } from '../../../services/template.service';
 import { Subject } from 'rxjs';
-import { debounceTime } from 'rxjs/operators';
-
-export interface MaskingTemplate {
-    id: string;
-    name: string;
-    is_default?: boolean;
-    readonly?: boolean;
-    params: Record<string, any>;
-}
+import { debounceTime, switchMap } from 'rxjs/operators';
 
 export interface MaskingSettingsState {
     modelId: string;
@@ -63,12 +57,12 @@ export interface MaskingSettingsState {
                     </button>
                     <button (click)="renameTemplate()" 
                         data-testid="rename-masking-template-btn"
-                        [disabled]="activeTemplateId() === 'default'" [class.opacity-50]="activeTemplateId() === 'default'" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
+                        [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                     </button>
                     <button (click)="deleteTemplate()" 
                         data-testid="delete-masking-template-btn"
-                        [disabled]="activeTemplateId() === 'default'" [class.opacity-50]="activeTemplateId() === 'default'" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
+                        [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                     </button>
                 </div>
@@ -157,7 +151,10 @@ export interface MaskingSettingsState {
 })
 export class DatasetMaskingSettingsComponent implements OnInit {
     private datasetService = inject(DatasetService);
+    private projectService = inject(ProjectService);
+    private templateService = inject(TemplateService);
 
+    projectId = input<string | null>(null);
     settingsChanged = output<MaskingSettingsState>();
 
     maskingModels: any[] = [
@@ -196,213 +193,220 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     ];
 
     selectedMaskModel = signal<string>('sam3');
-    currentTemplates = signal<MaskingTemplate[]>([]);
-    activeTemplateId = signal<string>('default');
+    currentTemplates = signal<Template[]>([]);
+    activeTemplateId = signal<string | null>(null);
     maskingParams = signal<Record<string, any>>({});
 
-    globalSettings: any = { models: {} };
+    private preferences: ProjectPreferences | null = null;
+    private savedConcepts: string[] = [];
     private settingsUpdate$ = new Subject<void>();
+    private pendingSaves = new Map<string, any>();
 
     activeModelConfig = computed(() => {
         return this.maskingModels.find(m => m.id === this.selectedMaskModel());
     });
 
-    ngOnInit() {
-        this.loadSettings();
-
-        this.settingsUpdate$.pipe(
-            debounceTime(1000)
-        ).subscribe(() => {
-            this.pushSettings();
-        });
+    isDefaultTemplate() {
+        const id = this.activeTemplateId();
+        const templates = this.currentTemplates();
+        const tpl = templates.find(t => t.id === id);
+        return tpl ? tpl.is_default || tpl.readonly : false;
     }
 
-    private loadSettings() {
-        this.datasetService.getSettings('masking').subscribe({
-            next: (settings) => {
-                this.globalSettings = settings || { models: {} };
+    ngOnInit() {
+        this.loadPreferencesAndTemplates();
 
-                if (this.globalSettings.selected_model && this.maskingModels.some(m => m.id === this.globalSettings.selected_model)) {
-                    this.selectedMaskModel.set(this.globalSettings.selected_model);
+        this.settingsUpdate$.pipe(
+            debounceTime(1000),
+            switchMap(() => {
+                if (!this.preferences) return [];
+
+                // Inject saved masking concepts into generic training_selections JSON payload
+                const sels = this.preferences.training_selections || {};
+                sels.saved_masking_concepts = this.savedConcepts;
+
+                return this.projectService.updatePreferences(this.projectId(), {
+                    selected_mask_model: this.selectedMaskModel(),
+                    active_mask_template: this.activeTemplateId(),
+                    training_selections: sels
+                });
+            })
+        ).subscribe();
+    }
+
+    private loadPreferencesAndTemplates() {
+        const pId = this.projectId();
+        this.projectService.getPreferences(pId).pipe(
+            switchMap(prefs => {
+                this.preferences = prefs;
+                
+                // Retrieve custom saved concepts from generic selections json
+                if (prefs.training_selections?.saved_masking_concepts) {
+                    this.savedConcepts = prefs.training_selections.saved_masking_concepts;
                 }
 
-                this.loadModelTemplates(this.selectedMaskModel());
-                this.emitChanges();
-            },
-            error: (err) => {
-                this.globalSettings = { models: {} };
-                this.loadModelTemplates(this.selectedMaskModel());
-                this.emitChanges();
+                if (prefs.selected_mask_model && this.maskingModels.some(m => m.id === prefs.selected_mask_model)) {
+                    this.selectedMaskModel.set(prefs.selected_mask_model);
+                }
+                return this.templateService.listMaskingTemplates(this.selectedMaskModel(), pId);
+            })
+        ).subscribe(templates => {
+            this.currentTemplates.set(templates);
+            if (this.preferences?.active_mask_template && templates.some(t => t.id === this.preferences!.active_mask_template)) {
+                this.activeTemplateId.set(this.preferences.active_mask_template);
+            } else {
+                const defaultTpl = templates.find(t => t.is_default);
+                this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
             }
+            this.applyActiveTemplate();
         });
     }
 
     private loadModelTemplates(modelId: string) {
-        const modelData = this.globalSettings.models?.[modelId];
-        const modelConfig = this.maskingModels.find(m => m.id === modelId);
-
-        const defaultParams: Record<string, any> = {};
-        modelConfig?.params.forEach((p: any) => {
-            defaultParams[p.key] = p.default;
+        this.templateService.listMaskingTemplates(modelId, this.projectId()).subscribe(templates => {
+            this.currentTemplates.set(templates);
+            const defaultTpl = templates.find(t => t.is_default);
+            this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
+            this.applyActiveTemplate();
+            this.settingsUpdate$.next();
         });
-
-        const defaultTemplate: MaskingTemplate = {
-            id: 'default',
-            name: 'Default',
-            is_default: true,
-            readonly: true,
-            params: defaultParams
-        };
-
-        if (modelData && modelData.templates && Array.isArray(modelData.templates)) {
-            this.currentTemplates.set(modelData.templates);
-            this.activeTemplateId.set(modelData.active_template_id || 'default');
-        } else {
-            this.currentTemplates.set([defaultTemplate]);
-            this.activeTemplateId.set('default');
-        }
-
-        this.applyActiveTemplate();
     }
 
     private applyActiveTemplate() {
         const activeId = this.activeTemplateId();
-        const tpl = this.currentTemplates().find(t => t.id === activeId) || this.currentTemplates().find(t => t.id === 'default');
+        const tpl = this.currentTemplates().find(t => t.id === activeId);
 
         if (tpl) {
-            this.maskingParams.set({ ...tpl.params });
+            const modelConfig = this.maskingModels.find(m => m.id === this.selectedMaskModel());
+            const codeDefaults: Record<string, any> = {};
+            modelConfig?.params.forEach((p: any) => { codeDefaults[p.key] = p.default; });
+
+            this.maskingParams.set({ ...codeDefaults, ...(tpl.config || {}) });
             this.emitChanges();
         }
     }
 
-    private saveModelSettings(modelId: string) {
-        if (!this.globalSettings.models) {
-            this.globalSettings.models = {};
-        }
-
-        this.globalSettings.models[modelId] = {
-            active_template_id: this.activeTemplateId(),
-            templates: this.currentTemplates()
-        };
-        this.settingsUpdate$.next();
-    }
-
-    private pushSettings() {
-        this.datasetService.saveSettings('masking', this.globalSettings).subscribe();
-    }
-
     onModelChange(modelId: string) {
         if (modelId === this.selectedMaskModel()) return;
-        this.saveModelSettings(this.selectedMaskModel());
         this.selectedMaskModel.set(modelId);
         this.loadModelTemplates(modelId);
-        this.globalSettings.selected_model = modelId;
-        this.settingsUpdate$.next();
         this.emitChanges();
     }
 
     onTemplateChange(tplId: string) {
         this.activeTemplateId.set(tplId);
         this.applyActiveTemplate();
-        this.saveModelSettings(this.selectedMaskModel());
+        this.settingsUpdate$.next();
     }
 
     updateParam(key: string, value: any) {
-        const currentParams = this.maskingParams();
-        const newParams = { ...currentParams, [key]: value };
-        this.updateActiveTemplate({ params: newParams });
+        const newParams = { ...this.maskingParams(), [key]: value };
+        this.updateActiveTemplate({ config: newParams });
     }
 
-    private updateActiveTemplate(changes: { params?: Record<string, any> }) {
+    private updateActiveTemplate(changes: { config?: Record<string, any> }) {
         const activeId = this.activeTemplateId();
+        if (!activeId) return;
+
         const templates = this.currentTemplates();
         let activeTpl = templates.find(t => t.id === activeId);
 
         if (!activeTpl) return;
 
         if (activeTpl.readonly) {
-            const newTpl: MaskingTemplate = {
-                id: `tpl_${Date.now()}`,
-                name: 'Default by User',
-                params: { ...activeTpl.params, ...(changes.params || {}) }
-            };
-            this.currentTemplates.update(ts => [...ts, newTpl]);
-            this.activeTemplateId.set(newTpl.id);
+            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+            
+            this.templateService.createMaskingTemplate({
+                model_id: this.selectedMaskModel(),
+                name: 'Custom Settings',
+                project_id: this.projectId(),
+                config: config
+            }).subscribe(newTpl => {
+                this.currentTemplates.update(ts => [...ts, newTpl]);
+                this.activeTemplateId.set(newTpl.id);
+                this.applyActiveTemplate();
+                this.settingsUpdate$.next();
+            });
         } else {
+            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+            
             this.currentTemplates.update(ts => ts.map(t => {
                 if (t.id === activeId) {
-                    return {
-                        ...t,
-                        params: { ...t.params, ...(changes.params || {}) }
-                    };
+                    return { ...t, config: config };
                 }
                 return t;
             }));
-        }
+            this.applyActiveTemplate();
 
-        this.applyActiveTemplate();
-        this.saveModelSettings(this.selectedMaskModel());
+            this.pendingSaves.set(activeId, { config });
+            
+            setTimeout(() => {
+                const pending = this.pendingSaves.get(activeId);
+                if (pending) {
+                    this.pendingSaves.delete(activeId);
+                    this.templateService.updateTemplate('masking', activeId, pending).subscribe();
+                }
+            }, 500);
+        }
     }
 
     addTemplate() {
         const name = prompt('Template name:');
         if (!name) return;
 
-        const newTpl: MaskingTemplate = {
-            id: `tpl_${Date.now()}`,
+        this.templateService.createMaskingTemplate({
+            model_id: this.selectedMaskModel(),
             name,
-            params: { ...this.maskingParams() }
-        };
-
-        this.currentTemplates.update(ts => [...ts, newTpl]);
-        this.onTemplateChange(newTpl.id);
+            project_id: this.projectId(),
+            config: this.maskingParams()
+        }).subscribe(newTpl => {
+            this.currentTemplates.update(ts => [...ts, newTpl]);
+            this.onTemplateChange(newTpl.id);
+        });
     }
 
     renameTemplate() {
         const activeId = this.activeTemplateId();
-        if (activeId === 'default') return;
+        if (!activeId || this.isDefaultTemplate()) return;
+        
         const tpl = this.currentTemplates().find(t => t.id === activeId);
         if (!tpl) return;
 
         const name = prompt('Rename template:', tpl.name);
         if (!name || name === tpl.name) return;
 
-        this.currentTemplates.update(ts => ts.map(t => {
-            if (t.id === activeId) return { ...t, name };
-            return t;
-        }));
-
-        this.saveModelSettings(this.selectedMaskModel());
+        this.templateService.updateTemplate('masking', activeId, { name }).subscribe(updatedTpl => {
+            this.currentTemplates.update(ts => ts.map(t => t.id === activeId ? updatedTpl : t));
+        });
     }
 
     deleteTemplate() {
         const activeId = this.activeTemplateId();
-        if (activeId === 'default') return;
+        if (!activeId || this.isDefaultTemplate()) return;
 
         if (!confirm('Delete this template?')) return;
 
-        this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
-        this.onTemplateChange('default');
+        this.templateService.deleteTemplate('masking', activeId).subscribe(() => {
+            this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
+            const remaining = this.currentTemplates();
+            if (remaining.length > 0) {
+                this.onTemplateChange(remaining[0].id);
+            }
+        });
     }
 
     saveCustomConcept(concept: string, baseOptions: string[]) {
         if (!concept || baseOptions.includes(concept) || concept === '__custom__') return;
 
-        if (!this.globalSettings.saved_concepts) {
-            this.globalSettings.saved_concepts = [];
-        }
-
-        if (!this.globalSettings.saved_concepts.includes(concept)) {
-            this.globalSettings.saved_concepts.push(concept);
-            this.globalSettings.saved_concepts.sort();
-            this.pushSettings();
+        if (!this.savedConcepts.includes(concept)) {
+            this.savedConcepts.push(concept);
+            this.savedConcepts.sort();
+            this.settingsUpdate$.next();
         }
     }
 
     getCombinedOptions(param: any): string[] {
-        const saved = this.globalSettings.saved_concepts || [];
-        // Unique merge
-        return [...new Set([...param.options, ...saved])];
+        return [...new Set([...param.options, ...this.savedConcepts])];
     }
 
     isCustomValue(param: any, value: any): boolean {

@@ -1,15 +1,7 @@
-import { Component, input, output, inject, signal, computed, OnInit } from '@angular/core';
+import { Component, input, output, inject, signal, computed, OnInit, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { DatasetService } from '../../../services/dataset';
 import { ToastService } from '../../../services/toast';
-
-export interface TrainingTemplate {
-  id: string;
-  name: string;
-  definition_id: string;
-  is_default?: boolean;
-  config: any;
-}
+import { TemplateService, Template } from '../../../services/template.service';
 
 @Component({
   selector: 'app-training-template-selector',
@@ -46,12 +38,12 @@ export interface TrainingTemplate {
             </button>
             <button type="button" (click)="renameTemplate()" 
                     data-testid="rename-training-template-btn"
-                    [disabled]="activeTemplateId() === 'default'" [class.opacity-50]="activeTemplateId() === 'default'" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
+                    [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
             </button>
             <button type="button" (click)="deleteTemplate()" 
                     data-testid="delete-training-template-btn"
-                    [disabled]="activeTemplateId() === 'default'" [class.opacity-50]="activeTemplateId() === 'default'" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
+                    [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
             </button>
         </div>
@@ -64,14 +56,15 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   availableModels = input<any[]>([]);
   selectedDefinitionId = input<string | null>(null);
   currentFormConfig = input<any>({});
+  projectId = input<string | null>(null);
 
   // Outputs to Main Orchestrator
   templateApplied = output<{ config: any, isDefault: boolean, definitionId?: string }>();
 
-  private datasetService = inject(DatasetService);
+  private templateService = inject(TemplateService);
   private toast = inject(ToastService);
 
-  allTemplates = signal<TrainingTemplate[]>([]);
+  allTemplates = signal<Template[]>([]);
   activeTemplateId = signal<string>('default');
 
   // Internal flag to prevent recursive auto-saving when applying a template
@@ -80,35 +73,53 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   filteredTemplates = computed(() => {
     const all = this.allTemplates();
     const defId = this.selectedDefinitionId();
-    const defaultEntry: TrainingTemplate = {
-      id: 'default', name: 'Default', definition_id: defId ?? '', is_default: true, config: {}
-    };
-    const sorted = [...all].sort((a, b) => a.name.localeCompare(b.name));
-    return [defaultEntry, ...sorted];
+
+    // Ensure there is always a default entry if none exists from the backed
+    const hasDefault = all.some(t => t.is_default);
+    
+    let sorted = [...all].sort((a, b) => a.name.localeCompare(b.name));
+    
+    if (!hasDefault) {
+       const defaultEntry: Template = {
+          id: 'default', name: 'Default', definition_id: defId ?? '', is_default: true, config: {},
+          project_id: null, created_at: Date.now(), updated_at: Date.now(), used_count: 0, readonly: true
+       };
+       sorted = [defaultEntry, ...sorted];
+    }
+    
+    return sorted;
   });
+
+  isDefaultTemplate() {
+      const id = this.activeTemplateId();
+      if (id === 'default') return true;
+      const tpl = this.allTemplates().find(t => t.id === id);
+      return tpl ? tpl.is_default || tpl.readonly : false;
+  }
+
+  constructor() {
+    effect(() => {
+       const defId = this.selectedDefinitionId();
+       if (defId) {
+           this.loadTrainingSettings();
+       }
+    });
+  }
 
   ngOnInit() {
     this.loadTrainingSettings();
   }
 
   loadTrainingSettings() {
-    this.datasetService.getSettings('training').subscribe({
-      next: (settings: any) => {
-        if (settings && settings.templates && Array.isArray(settings.templates)) {
-          this.allTemplates.set(settings.templates);
-        }
+    this.templateService.listTrainingTemplates(this.selectedDefinitionId() || undefined, this.projectId()).subscribe({
+      next: (templates) => {
+        this.allTemplates.set(templates);
       },
-      error: (err: any) => console.error('[Templates] Failed to load training settings', err)
+      error: (err: any) => console.error('[Templates] Failed to load training templates', err)
     });
   }
 
-  saveTrainingSettings() {
-    this.datasetService.saveSettings('training', { templates: this.allTemplates() }).subscribe({
-      error: (err: any) => console.error('[Templates] Failed to save training settings:', err)
-    });
-  }
-
-  getDefinitionLabel(definitionId: string): string {
+  getDefinitionLabel(definitionId?: string): string {
     if (!definitionId) return '';
     const model = this.availableModels().find(m => m.id === definitionId);
     return model ? ` · ${model.name}` : '';
@@ -138,43 +149,47 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     const name = prompt("Template Name:");
     if (!name) return;
 
-    const newTpl: TrainingTemplate = {
-      id: `tpl_${Date.now()}`,
-      name: name,
-      definition_id: defId,
-      is_default: false,
-      config: this.currentFormConfig()
-    };
-
-    this.allTemplates.update(current => [...current, newTpl]);
-    this.activeTemplateId.set(newTpl.id);
-    this.saveTrainingSettings();
-    this.toast.success('Template cloned!');
+    this.templateService.createTrainingTemplate({
+        definition_id: defId,
+        name: name,
+        project_id: this.projectId(),
+        config: this.currentFormConfig()
+    }).subscribe(newTpl => {
+        this.allTemplates.update(current => [...current, newTpl]);
+        this.activeTemplateId.set(newTpl.id);
+        this.toast.success('Template cloned!');
+    });
   }
 
   renameTemplate() {
     const id = this.activeTemplateId();
-    if (id === 'default') return;
+    if (this.isDefaultTemplate()) return;
+    
     const tpl = this.allTemplates().find(t => t.id === id);
     if (!tpl) return;
 
     const newName = prompt('Rename Template:', tpl.name);
     if (!newName || newName === tpl.name) return;
 
-    this.allTemplates.update(current => current.map(t => t.id === id ? { ...t, name: newName } : t));
-    this.saveTrainingSettings();
-    this.toast.success('Template renamed!');
+    this.templateService.updateTemplate('training', id, { name: newName }).subscribe(updatedTpl => {
+        this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
+        this.toast.success('Template renamed!');
+    });
   }
 
   deleteTemplate() {
     const id = this.activeTemplateId();
-    if (id === 'default') return;
+    if (this.isDefaultTemplate()) return;
     if (!confirm("Delete current template?")) return;
 
-    this.allTemplates.update(current => current.filter(t => t.id !== id));
-    this.activeTemplateId.set('default');
-    this.saveTrainingSettings();
-    this.toast.success('Template deleted!');
+    this.templateService.deleteTemplate('training', id).subscribe(() => {
+        this.allTemplates.update(current => current.filter(t => t.id !== id));
+        const remaining = this.filteredTemplates();
+        if (remaining.length > 0) {
+            this.activeTemplateId.set(remaining[0].id);
+        }
+        this.toast.success('Template deleted!');
+    });
   }
 
   public triggerAutoSave(newFormValue: any, currentDefId: string) {
@@ -182,40 +197,37 @@ export class TrainingTemplateSelectorComponent implements OnInit {
 
     const id = this.activeTemplateId();
 
-    if (id === 'default') {
-      const newTpl: TrainingTemplate = {
-        id: `tpl_${Date.now()}`,
-        name: 'Default by User',
-        definition_id: currentDefId,
-        is_default: false,
-        config: newFormValue
-      };
-      this.allTemplates.update(current => [...current, newTpl]);
-      this.activeTemplateId.set(newTpl.id);
-      this.saveTrainingSettings();
+    const tpl = this.allTemplates().find(t => t.id === id);
+    
+    if (id === 'default' || (tpl && tpl.readonly)) {
+      this.templateService.createTrainingTemplate({
+          definition_id: currentDefId,
+          name: 'Default by User',
+          project_id: this.projectId(),
+          config: newFormValue
+      }).subscribe(newTpl => {
+          this.allTemplates.update(current => [...current, newTpl]);
+          this.activeTemplateId.set(newTpl.id);
+      });
       return;
     }
 
-    this.allTemplates.update(current => current.map(t => {
-      if (t.id === id) {
-        return { ...t, definition_id: currentDefId, config: newFormValue };
-      }
-      return t;
-    }));
-    this.saveTrainingSettings();
+    // Pending auto-save logic
+    this.templateService.updateTemplate('training', id, { definition_id: currentDefId, config: newFormValue }).subscribe(updatedTpl => {
+        this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
+    });
   }
 
   public importExternalTemplate(name: string, config: any, definitionId: string) {
-    const newTpl: TrainingTemplate = {
-      id: `tpl_${Date.now()}`,
-      name,
-      definition_id: definitionId,
-      is_default: false,
-      config
-    };
-    this.allTemplates.update(current => [...current, newTpl]);
-    this.activeTemplateId.set(newTpl.id);
-    this.saveTrainingSettings();
+    this.templateService.createTrainingTemplate({
+        definition_id: definitionId,
+        name: name,
+        project_id: this.projectId(),
+        config: config
+    }).subscribe(newTpl => {
+        this.allTemplates.update(current => [...current, newTpl]);
+        this.activeTemplateId.set(newTpl.id);
+    });
   }
 }
 

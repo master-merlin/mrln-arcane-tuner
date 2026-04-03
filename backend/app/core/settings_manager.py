@@ -1,20 +1,18 @@
 
 import os
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import structlog
-
-if TYPE_CHECKING:
-    from app.core.schemas.captioning_settings import CaptioningSettings
-    from app.core.schemas.masking_settings import MaskingSettings
-    from app.core.schemas.training_settings import TrainingSettings
 
 logger = structlog.get_logger(__name__)
 
 class SettingsManager:
     """
     Singleton service for managing global application settings.
-    Settings are stored in a JSON file in the application root.
+
+    As of V4, this only handles application-level config (ports, log level).
+    Training, captioning, and masking templates are in SQLite via the
+    project/template system.
     """
     _instance = None
     
@@ -112,42 +110,6 @@ class SettingsManager:
              self.settings[module] = settings
         
         self.save()
-
-    # ── Typed accessors ──────────────────────────────────────────────────
-
-    def get_captioning_settings(self) -> "CaptioningSettings":
-        """Get validated captioning settings."""
-        from app.core.schemas.captioning_settings import CaptioningSettings
-        raw = self.get_module_settings("captioning")
-        settings = CaptioningSettings.model_validate(raw) if raw else CaptioningSettings()
-        settings.migrate_defaults()
-        return settings
-
-    def update_captioning_settings(self, settings: "CaptioningSettings"):
-        """Save validated captioning settings."""
-        self.update_module_settings("captioning", settings.model_dump(mode="json"))
-
-    def get_masking_settings(self) -> "MaskingSettings":
-        """Get validated masking settings."""
-        from app.core.schemas.masking_settings import MaskingSettings
-        raw = self.get_module_settings("masking")
-        settings = MaskingSettings.model_validate(raw) if raw else MaskingSettings()
-        settings.migrate_defaults()
-        return settings
-
-    def update_masking_settings(self, settings: "MaskingSettings"):
-        """Save validated masking settings."""
-        self.update_module_settings("masking", settings.model_dump(mode="json"))
-
-    def get_training_settings(self) -> "TrainingSettings":
-        """Get validated training settings."""
-        from app.core.schemas.training_settings import TrainingSettings
-        raw = self.get_module_settings("training")
-        return TrainingSettings.model_validate(raw) if raw else TrainingSettings()
-
-    def update_training_settings(self, settings: "TrainingSettings"):
-        """Save validated training settings."""
-        self.update_module_settings("training", settings.model_dump(mode="json"))
 
 
 def get_settings_manager() -> SettingsManager:

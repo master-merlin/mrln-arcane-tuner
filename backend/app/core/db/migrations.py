@@ -35,6 +35,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v1,
         _migrate_v2,
         _migrate_v3,
+        _migrate_v4,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -349,3 +350,340 @@ def _migrate_v3(conn) -> None:
         )
     except Exception:
         pass  # Column already exists
+
+
+# ── V4: Project-driven settings architecture ─────────────────────────
+
+def _migrate_v4(conn) -> None:
+    """Create project-driven architecture tables.
+
+    Introduces:
+    - ``projects`` — top-level project entity
+    - ``captioning_templates`` — domain-specific captioning templates
+    - ``masking_templates`` — domain-specific masking templates
+    - ``training_templates`` — domain-specific training templates
+    - ``project_preferences`` — active selections per project
+    - ``project_datasets`` — M:N project ↔ dataset association
+    - ``saved_concepts`` — masking concepts with flexible global/project scope
+
+    Also:
+    - Adds ``project_id`` FK to ``job_history``
+    - Drops legacy ``templates`` table
+    - Strips training/captioning/masking keys from ``settings.json``
+    """
+    import json as _json
+    import os as _os
+    import time as _time
+    import uuid as _uuid
+
+    # ── projects ─────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            color       TEXT NOT NULL DEFAULT '#6366f1',
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        )
+    """)
+
+    # ── captioning_templates ─────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS captioning_templates (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            model_id      TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            is_default    INTEGER NOT NULL DEFAULT 0,
+            readonly      INTEGER NOT NULL DEFAULT 0,
+            system_prompt TEXT NOT NULL DEFAULT 'Describe this image in detail.',
+            config        TEXT NOT NULL DEFAULT '{}',
+            created_at    REAL NOT NULL,
+            updated_at    REAL,
+            used_count    INTEGER NOT NULL DEFAULT 0,
+            last_used_at  REAL,
+            branched_from TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_cap_tpl_project
+        ON captioning_templates(project_id, model_id)
+    """)
+
+    # ── masking_templates ────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS masking_templates (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            model_id      TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            is_default    INTEGER NOT NULL DEFAULT 0,
+            readonly      INTEGER NOT NULL DEFAULT 0,
+            config        TEXT NOT NULL DEFAULT '{}',
+            created_at    REAL NOT NULL,
+            updated_at    REAL,
+            used_count    INTEGER NOT NULL DEFAULT 0,
+            last_used_at  REAL,
+            branched_from TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mask_tpl_project
+        ON masking_templates(project_id, model_id)
+    """)
+
+    # ── training_templates ───────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS training_templates (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            definition_id TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            is_default    INTEGER NOT NULL DEFAULT 0,
+            readonly      INTEGER NOT NULL DEFAULT 0,
+            config        TEXT NOT NULL DEFAULT '{}',
+            created_at    REAL NOT NULL,
+            updated_at    REAL,
+            used_count    INTEGER NOT NULL DEFAULT 0,
+            last_used_at  REAL,
+            branched_from TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_train_tpl_project
+        ON training_templates(project_id, definition_id)
+    """)
+
+    # ── project_preferences ──────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS project_preferences (
+            id                        TEXT PRIMARY KEY,
+            project_id                TEXT UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+            selected_caption_model    TEXT DEFAULT 'florence-2',
+            active_caption_template   TEXT,
+            qwen3_variant             TEXT DEFAULT '4B-Instruct',
+            selected_mask_model       TEXT DEFAULT 'sam3',
+            active_mask_template      TEXT,
+            training_selections       TEXT NOT NULL DEFAULT '{}'
+        )
+    """)
+
+    # ── project_datasets (M:N) ───────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS project_datasets (
+            project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            dataset_id  TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+            added_at    REAL,
+            PRIMARY KEY (project_id, dataset_id)
+        )
+    """)
+
+    # ── saved_concepts ───────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS saved_concepts (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            name        TEXT NOT NULL,
+            points      TEXT NOT NULL DEFAULT '[]',
+            model_id    TEXT NOT NULL DEFAULT 'sam3',
+            created_at  REAL NOT NULL,
+            updated_at  REAL
+        )
+    """)
+
+    # ── Amend job_history with project_id ────────────────────────────
+    try:
+        conn.execute(
+            "ALTER TABLE job_history ADD COLUMN project_id TEXT "
+            "REFERENCES projects(id) ON DELETE SET NULL"
+        )
+    except Exception:
+        pass  # Column already exists
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_job_project
+        ON job_history(project_id)
+    """)
+
+    # ── Drop legacy templates table ──────────────────────────────────
+    conn.execute("DROP TABLE IF EXISTS templates")
+    conn.execute("DROP INDEX IF EXISTS idx_templates_category_name")
+    conn.execute("DROP INDEX IF EXISTS idx_templates_category_def")
+    conn.execute("DROP INDEX IF EXISTS idx_templates_category_model")
+
+    # ── Seed Global default templates ────────────────────────────────
+    now = _time.time()
+
+    # --- Captioning defaults (per model, project_id = NULL = General) ---
+    cap_defaults = [
+        {
+            "id": "cap_default_florence2",
+            "model_id": "florence-2",
+            "name": "Default",
+            "system_prompt": "Describe this image in detail.",
+            "config": _json.dumps({
+                "task_type": "Detailed Caption",
+                "max_tokens": 512,
+                "num_beams": 3,
+            }),
+        },
+        {
+            "id": "cap_default_qwen3vl",
+            "model_id": "qwen3-vl",
+            "name": "Default",
+            "system_prompt": "Describe this image in detail.",
+            "config": _json.dumps({
+                "max_long_side": 1280,
+                "temperature": 0.7,
+                "top_p": 0.8,
+                "num_beams": 1,
+                "repetition_penalty": 1.2,
+                "max_tokens": 512,
+                "frames": 16,
+            }),
+        },
+        {
+            "id": "cap_default_joycaption",
+            "model_id": "joycaption",
+            "name": "Default",
+            "system_prompt": "Describe this image in detail.",
+            "config": _json.dumps({
+                "caption_type": "Descriptive",
+                "caption_length": "long",
+                "temperature": 0.6,
+                "top_p": 0.9,
+                "max_tokens": 512,
+                "name_input": "",
+                "refer_character_name": False,
+                "exclude_people_info": False,
+                "include_lighting": False,
+                "include_camera_angle": False,
+                "include_watermark": False,
+                "include_jpeg_artifacts": False,
+                "include_exif": False,
+                "exclude_sexual": False,
+                "exclude_resolution": False,
+                "include_aesthetic_quality": False,
+                "include_composition": False,
+                "exclude_text": False,
+                "specify_depth_field": False,
+                "specify_lighting_sources": False,
+                "no_ambiguous_language": False,
+                "include_nsfw_rating": False,
+                "only_important_elements": False,
+                "exclude_artist_name": False,
+                "identify_orientation": False,
+                "use_profanity": False,
+                "no_euphemisms": False,
+                "include_character_age": False,
+                "include_shot_type": False,
+                "exclude_mood": False,
+                "include_vantage_height": False,
+                "mention_watermark": False,
+                "avoid_meta_phrases": False,
+            }),
+        },
+        {
+            "id": "cap_default_youtuvl",
+            "model_id": "youtu-vl",
+            "name": "Default",
+            "system_prompt": "Describe this image in detail.",
+            "config": _json.dumps({
+                "max_long_side": 768,
+                "max_num_patches": 256,
+                "temperature": 0.1,
+                "top_p": 0.001,
+                "repetition_penalty": 1.05,
+                "max_tokens": 512,
+            }),
+        },
+    ]
+    for cd in cap_defaults:
+        conn.execute(
+            "INSERT OR IGNORE INTO captioning_templates "
+            "(id, project_id, model_id, name, is_default, readonly, "
+            " system_prompt, config, created_at, updated_at) "
+            "VALUES (?, NULL, ?, ?, 1, 1, ?, ?, ?, ?)",
+            (cd["id"], cd["model_id"], cd["name"],
+             cd["system_prompt"], cd["config"], now, now),
+        )
+
+    # --- Masking defaults ---
+    mask_defaults = [
+        {
+            "id": "mask_default_sam3",
+            "model_id": "sam3",
+            "name": "Default",
+            "config": _json.dumps({
+                "text_prompt": "subject",
+                "multimask_output": True,
+                "max_hole_area": 0,
+                "max_sprinkle_area": 0,
+            }),
+        },
+    ]
+    for md in mask_defaults:
+        conn.execute(
+            "INSERT OR IGNORE INTO masking_templates "
+            "(id, project_id, model_id, name, is_default, readonly, "
+            " config, created_at, updated_at) "
+            "VALUES (?, NULL, ?, ?, 1, 1, ?, ?, ?)",
+            (md["id"], md["model_id"], md["name"], md["config"], now, now),
+        )
+
+    # ── Seed General preferences (project_id = NULL) ─────────────────
+    conn.execute(
+        "INSERT OR IGNORE INTO project_preferences "
+        "(id, project_id, selected_caption_model, qwen3_variant, "
+        " selected_mask_model, training_selections) "
+        "VALUES (?, NULL, 'florence-2', '4B-Instruct', 'sam3', '{}')",
+        (str(_uuid.uuid4()),),
+    )
+
+    # ── Strip training/captioning/masking from settings.json ─────────
+    _strip_settings_json()
+
+    logger.info(
+        "v4_migration_complete",
+        msg="Project-driven architecture tables created, legacy templates dropped",
+    )
+
+
+def _strip_settings_json() -> None:
+    """Remove training, captioning, masking keys from settings.json.
+
+    Called as part of V4 migration. Leaves only ``application`` (and any
+    other unknown keys for forward-compat).
+    """
+    import json as _json
+    import os as _os
+
+    # migrations.py is at backend/app/core/db/migrations.py
+    # → 4 dirname calls to reach backend/
+    root = _os.path.dirname(
+        _os.path.dirname(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        )
+    )
+    settings_path = _os.path.join(root, "settings.json")
+
+    if not _os.path.exists(settings_path):
+        return
+
+    try:
+        with open(settings_path, "r") as f:
+            data = _json.load(f)
+    except Exception:
+        return
+
+    changed = False
+    for key in ("training", "captioning", "masking"):
+        if key in data:
+            del data[key]
+            changed = True
+
+    if changed:
+        with open(settings_path, "w") as f:
+            _json.dump(data, f, indent=2)
+        logger.info("settings_json_stripped", removed=["training", "captioning", "masking"])
+

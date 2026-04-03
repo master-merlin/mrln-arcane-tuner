@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
@@ -45,6 +45,16 @@ export interface Dataset {
 export class ProjectService {
   private http = inject(HttpClient);
   private rtc = inject(RuntimeConfigService);
+
+  // Global App State for Projects
+  allProjects = signal<Project[]>([]);
+  activeDatasetProject = signal<string | null>(null);
+  activeTrainingProject = signal<string | null>(null);
+  activeJobsProject = signal<string | null>(null);
+
+  loadProjects() {
+    this.listProjects().subscribe(projects => this.allProjects.set(projects));
+  }
 
   private get apiUrl() {
     return `${this.rtc.apiUrl}/projects`;

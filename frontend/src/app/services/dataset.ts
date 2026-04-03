@@ -219,13 +219,6 @@ export class DatasetService {
     });
   }
 
-  getSettings(module: string): Observable<any> {
-    return this.http.get<any>(`${this.rtc.apiUrl}/settings/${module}`);
-  }
-
-  saveSettings(module: string, settings: any): Observable<any> {
-    return this.http.put<any>(`${this.rtc.apiUrl}/settings/${module}`, settings);
-  }
 
   unloadModels(): Observable<any> {
     return this.http.delete(`${this.rtc.apiUrl}/captions/unload`);

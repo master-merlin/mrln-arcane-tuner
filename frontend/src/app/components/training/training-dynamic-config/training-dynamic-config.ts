@@ -39,6 +39,7 @@ export interface TrainingTemplate {
           [availableModels]="availableModels()"
           [selectedDefinitionId]="selectedDefinition()?.id || null"
           [currentFormConfig]="form.value"
+          [projectId]="projectId()"
           (templateApplied)="onTemplateApplied($event)">
         </app-training-template-selector>
 
@@ -300,6 +301,7 @@ export interface TrainingTemplate {
 export class TrainingDynamicConfigComponent {
   schema = input<any>(); // JSON Schema
   availableModels = input<any[]>([]); // New input for model list
+  projectId = input<string | null>(null); // Passed down to components
   configSubmitted = output<any>();
 
   private fb = inject(FormBuilder);

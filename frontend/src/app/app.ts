@@ -10,13 +10,15 @@ import { ToastContainerComponent } from './components/shared/toast-container/toa
 import { RuntimeConfigService } from './services/runtime-config.service';
 import { ServerControlComponent } from './components/system/server-control/server-control';
 import { SystemMonitorComponent } from './components/system/system-monitor/system-monitor';
+import { ProjectService } from './services/project.service';
+import { FormsModule } from '@angular/forms';
 
-type ViewMode = 'datasets' | 'train' | 'jobs' | 'tools' | 'server';
+type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [TrainingDynamicConfigComponent, TrainingJobQueueComponent, DatasetManagerComponent, ServerControlComponent, LoraToolsComponent, ToastContainerComponent, SystemMonitorComponent],
+  imports: [TrainingDynamicConfigComponent, TrainingJobQueueComponent, DatasetManagerComponent, ServerControlComponent, LoraToolsComponent, ToastContainerComponent, SystemMonitorComponent, FormsModule],
   template: `
     <div class="min-h-screen bg-base text-text-primary font-sans selection:bg-brand/30 selection:text-white">
       
@@ -37,6 +39,13 @@ type ViewMode = 'datasets' | 'train' | 'jobs' | 'tools' | 'server';
                     [class.text-white]="currentView() === 'datasets'" 
                     class="px-4 py-1.5 rounded-theme-md text-sm font-medium text-text-muted hover:text-white transition-all">
                     Datasets
+                </button>
+                <button (click)="setView('projects')" 
+                    data-testid="nav-projects"
+                    [class.bg-nav-active]="currentView() === 'projects'" 
+                    [class.text-white]="currentView() === 'projects'" 
+                    class="px-4 py-1.5 rounded-theme-md text-sm font-medium text-text-muted hover:text-white transition-all">
+                    Projects
                 </button>
                 <button (click)="setView('train')" 
                     data-testid="nav-train"
@@ -88,16 +97,38 @@ type ViewMode = 'datasets' | 'train' | 'jobs' | 'tools' | 'server';
             <div class="space-y-8 animate-in fade-in duration-300">
                 <app-dataset-manager></app-dataset-manager>
             </div>
+        } @else if (currentView() === 'projects') {
+            <div class="space-y-8 animate-in fade-in duration-300">
+                <div class="p-12 text-center text-text-subtle bg-surface-low/30 rounded-theme-xl border border-border-default border-dashed">
+                    <h3 class="text-lg font-bold text-white mb-2">Projects Overview</h3>
+                    <p>Projects management UI is coming soon.</p>
+                </div>
+            </div>
         } @else if (currentView() === 'train') {
             <div class="space-y-8 animate-in fade-in duration-300">
                 
                 <!-- Header -->
                 <div class="bg-surface-low/50 border border-border-default rounded-theme-xl p-8 shadow-xl">
-                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                        Training
-                    </h2>
-                    <p class="text-text-muted">Configure and launch model fine-tuning jobs.</p>
+                    <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                                Training
+                            </h2>
+                            <p class="text-text-muted">Configure and launch model fine-tuning jobs.</p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs uppercase tracking-widest text-text-subtle font-bold">Project Context:</span>
+                            <select [ngModel]="projectService.activeTrainingProject()" (ngModelChange)="projectService.activeTrainingProject.set($event)"
+                                data-testid="training-project-selector"
+                                class="bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-1.5 outline-none focus:border-brand">
+                                <option [value]="null">Global</option>
+                                @for (p of projectService.allProjects(); track p.id) {
+                                    <option [value]="p.id">{{ p.name }}</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Configuration Panel -->
@@ -106,6 +137,7 @@ type ViewMode = 'datasets' | 'train' | 'jobs' | 'tools' | 'server';
                         <app-training-dynamic-config 
                           [schema]="currentSchema()" 
                           [availableModels]="availableModels()"
+                          [projectId]="projectService.activeTrainingProject()"
                           (configSubmitted)="queueJob($event)">
                         </app-training-dynamic-config>
                     </section>
@@ -175,6 +207,7 @@ export class AppComponent implements OnInit {
   private jobService = inject(JobService);
   private toast = inject(ToastService);
   private rtc = inject(RuntimeConfigService);
+  protected projectService = inject(ProjectService);
 
   availableModels = signal<any[]>([]);
   private readonly pluginId = 'standard';
@@ -211,6 +244,7 @@ export class AppComponent implements OnInit {
   });
 
   ngOnInit() {
+    this.projectService.loadProjects();
     this.fetchModels();
     this.fetchVersion();
   }

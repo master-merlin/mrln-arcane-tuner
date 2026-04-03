@@ -1,5 +1,5 @@
 
-import { Component, OnInit, inject, signal, computed, output, input } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, output, input, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
@@ -155,6 +155,9 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     private templateService = inject(TemplateService);
 
     projectId = input<string | null>(null);
+
+    // Compute effective project ID falling back to global active dataset project
+    effectiveProjectId = computed(() => this.projectId() ?? this.projectService.activeDatasetProject());
     settingsChanged = output<MaskingSettingsState>();
 
     maskingModels: any[] = [
@@ -213,9 +216,14 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         return tpl ? tpl.is_default || tpl.readonly : false;
     }
 
-    ngOnInit() {
-        this.loadPreferencesAndTemplates();
+    constructor() {
+        effect(() => {
+            const pid = this.effectiveProjectId();
+            this.loadPreferencesAndTemplates();
+        });
+    }
 
+    ngOnInit() {
         this.settingsUpdate$.pipe(
             debounceTime(1000),
             switchMap(() => {
@@ -225,7 +233,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
                 const sels = this.preferences.training_selections || {};
                 sels.saved_masking_concepts = this.savedConcepts;
 
-                return this.projectService.updatePreferences(this.projectId(), {
+                return this.projectService.updatePreferences(this.effectiveProjectId(), {
                     selected_mask_model: this.selectedMaskModel(),
                     active_mask_template: this.activeTemplateId(),
                     training_selections: sels
@@ -235,7 +243,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     }
 
     private loadPreferencesAndTemplates() {
-        const pId = this.projectId();
+        const pId = this.effectiveProjectId();
         this.projectService.getPreferences(pId).pipe(
             switchMap(prefs => {
                 this.preferences = prefs;
@@ -319,7 +327,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
             this.templateService.createMaskingTemplate({
                 model_id: this.selectedMaskModel(),
                 name: 'Custom Settings',
-                project_id: this.projectId(),
+                project_id: this.effectiveProjectId(),
                 config: config
             }).subscribe(newTpl => {
                 this.currentTemplates.update(ts => [...ts, newTpl]);
@@ -357,7 +365,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         this.templateService.createMaskingTemplate({
             model_id: this.selectedMaskModel(),
             name,
-            project_id: this.projectId(),
+            project_id: this.effectiveProjectId(),
             config: this.maskingParams()
         }).subscribe(newTpl => {
             this.currentTemplates.update(ts => [...ts, newTpl]);

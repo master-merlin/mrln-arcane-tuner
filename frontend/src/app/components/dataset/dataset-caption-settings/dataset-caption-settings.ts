@@ -1,5 +1,5 @@
 
-import { Component, OnInit, inject, signal, computed, input, output } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, input, output, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
@@ -207,6 +207,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     private templateService = inject(TemplateService);
 
     projectId = input<string | null>(null);
+    effectiveProjectId = computed(() => this.projectId() ?? this.projectService.activeDatasetProject());
     isVideo = input(false);
     settingsChanged = output<CaptionSettingsState>();
 
@@ -324,14 +325,19 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         return config.params.filter((p: any) => p.group === 'extra');
     }
 
-    ngOnInit() {
-        this.loadPreferencesAndTemplates();
+    constructor() {
+        effect(() => {
+            const pid = this.effectiveProjectId();
+            this.loadPreferencesAndTemplates();
+        });
+    }
 
+    ngOnInit() {
         this.settingsUpdate$.pipe(
             debounceTime(1000),
             switchMap(() => {
                 if (!this.preferences) return [];
-                return this.projectService.updatePreferences(this.projectId(), {
+                return this.projectService.updatePreferences(this.effectiveProjectId(), {
                     selected_caption_model: this.selectedCaptionModel(),
                     qwen3_variant: this.selectedQwen3Variant(),
                     active_caption_template: this.activeTemplateId()
@@ -341,7 +347,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     }
 
     private loadPreferencesAndTemplates() {
-        const pId = this.projectId();
+        const pId = this.effectiveProjectId();
         this.projectService.getPreferences(pId).pipe(
             switchMap(prefs => {
                 this.preferences = prefs;
@@ -366,7 +372,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     }
 
     private loadModelTemplates(modelId: string) {
-        this.templateService.listCaptioningTemplates(modelId, this.projectId()).subscribe(templates => {
+        this.templateService.listCaptioningTemplates(modelId, this.effectiveProjectId()).subscribe(templates => {
             this.currentTemplates.set(templates);
             const defaultTpl = templates.find(t => t.is_default);
             this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
@@ -438,7 +444,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             this.templateService.createCaptioningTemplate({
                 model_id: this.selectedCaptionModel(),
                 name: 'Custom Settings',
-                project_id: this.projectId(),
+                project_id: this.effectiveProjectId(),
                 system_prompt: systemPrompt,
                 config: config
             }).subscribe(newTpl => {
@@ -478,7 +484,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         this.templateService.createCaptioningTemplate({
             model_id: this.selectedCaptionModel(),
             name,
-            project_id: this.projectId(),
+            project_id: this.effectiveProjectId(),
             system_prompt: this.captionSystemPrompt(),
             config: this.captionModelParams()
         }).subscribe(newTpl => {

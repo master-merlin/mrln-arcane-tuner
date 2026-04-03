@@ -4,6 +4,8 @@ import { ToastService } from '../../../services/toast';
 import { WebSocketService } from '../../../services/websocket.service';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
+import { FormsModule } from '@angular/forms';
+import { ProjectService } from '../../../services/project.service';
 import { DatasetViewerComponent } from '../dataset-viewer/dataset-viewer';
 
 // Sub-components
@@ -28,7 +30,8 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
     ViewerRescanModalComponent,
     ViewerCacheAdminModalComponent,
     DatasetRescanOptionsModalComponent,
-    DatasetSingleRescanModalComponent
+    DatasetSingleRescanModalComponent,
+    FormsModule
   ],
   template: `
     <div class="h-full flex flex-col">
@@ -49,6 +52,17 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                               Dataset Library
                           </h2>
                           <p class="text-text-muted">Manage, inspect, and prepare your training datasets.</p>
+                      </div>
+                      <div class="flex items-center gap-3">
+                          <span class="text-xs uppercase tracking-widest text-text-subtle font-bold">Project Context:</span>
+                          <select [ngModel]="projectService.activeDatasetProject()" (ngModelChange)="projectService.activeDatasetProject.set($event)"
+                              data-testid="dataset-project-selector"
+                              class="bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-1.5 outline-none focus:border-brand">
+                              <option [value]="null">Global</option>
+                              @for (p of projectService.allProjects(); track p.id) {
+                                  <option [value]="p.id">{{ p.name }}</option>
+                              }
+                          </select>
                       </div>
                   </div>
               </div>
@@ -150,6 +164,7 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
   private datasetService = inject(DatasetService);
   private toast = inject(ToastService);
   private ws = inject(WebSocketService);
+  protected projectService = inject(ProjectService);
   private destroy$ = new Subject<void>();
 
   datasets = signal<Dataset[]>([]);

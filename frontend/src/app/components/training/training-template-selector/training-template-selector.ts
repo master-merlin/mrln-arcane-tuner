@@ -100,6 +100,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   constructor() {
     effect(() => {
        const defId = this.selectedDefinitionId();
+       const pId = this.projectId(); // Read signal to trigger re-execution
        if (defId) {
            this.loadTrainingSettings();
        }

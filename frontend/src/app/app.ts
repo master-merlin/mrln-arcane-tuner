@@ -11,6 +11,7 @@ import { RuntimeConfigService } from './services/runtime-config.service';
 import { ServerControlComponent } from './components/system/server-control/server-control';
 import { SystemMonitorComponent } from './components/system/system-monitor/system-monitor';
 import { ProjectService } from './services/project.service';
+import { ProjectsViewComponent } from './components/projects/projects-view/projects-view';
 import { FormsModule } from '@angular/forms';
 
 type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
@@ -18,7 +19,7 @@ type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [TrainingDynamicConfigComponent, TrainingJobQueueComponent, DatasetManagerComponent, ServerControlComponent, LoraToolsComponent, ToastContainerComponent, SystemMonitorComponent, FormsModule],
+  imports: [TrainingDynamicConfigComponent, TrainingJobQueueComponent, DatasetManagerComponent, ServerControlComponent, LoraToolsComponent, ToastContainerComponent, SystemMonitorComponent, ProjectsViewComponent, FormsModule],
   template: `
     <div class="min-h-screen bg-base text-text-primary font-sans selection:bg-brand/30 selection:text-white">
       
@@ -99,10 +100,7 @@ type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
             </div>
         } @else if (currentView() === 'projects') {
             <div class="space-y-8 animate-in fade-in duration-300">
-                <div class="p-12 text-center text-text-subtle bg-surface-low/30 rounded-theme-xl border border-border-default border-dashed">
-                    <h3 class="text-lg font-bold text-white mb-2">Projects Overview</h3>
-                    <p>Projects management UI is coming soon.</p>
-                </div>
+                <app-projects-view></app-projects-view>
             </div>
         } @else if (currentView() === 'train') {
             <div class="space-y-8 animate-in fade-in duration-300">

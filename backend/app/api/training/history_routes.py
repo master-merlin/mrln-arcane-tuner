@@ -16,12 +16,13 @@ async def list_job_history(
     definition_id: str | None = None,
     status: str | None = None,
     lora_name: str | None = None,
+    project_id: str | None = None,
 ):
     """Paginated job history with optional filters."""
     from app.core.db.repositories.job_repo import JobHistoryRepository
     repo = JobHistoryRepository()
     return await asyncio.to_thread(
-        repo.list_recent, limit, offset, definition_id, status, lora_name
+        repo.list_recent, limit, offset, definition_id, status, lora_name, project_id
     )
 
 

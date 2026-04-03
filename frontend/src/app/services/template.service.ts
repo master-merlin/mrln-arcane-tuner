@@ -35,8 +35,9 @@ export class TemplateService {
   }
 
   // Captioning Templates
-  listCaptioningTemplates(modelId: string, projectId?: string | null): Observable<Template[]> {
-    let params = new HttpParams().set('model_id', modelId);
+  listCaptioningTemplates(modelId?: string | null, projectId?: string | null): Observable<Template[]> {
+    let params = new HttpParams();
+    if (modelId) params = params.set('model_id', modelId);
     if (projectId) {
       params = params.set('project_id', projectId);
     }
@@ -48,8 +49,9 @@ export class TemplateService {
   }
 
   // Masking Templates
-  listMaskingTemplates(modelId: string, projectId?: string | null): Observable<Template[]> {
-    let params = new HttpParams().set('model_id', modelId);
+  listMaskingTemplates(modelId?: string | null, projectId?: string | null): Observable<Template[]> {
+    let params = new HttpParams();
+    if (modelId) params = params.set('model_id', modelId);
     if (projectId) {
       params = params.set('project_id', projectId);
     }

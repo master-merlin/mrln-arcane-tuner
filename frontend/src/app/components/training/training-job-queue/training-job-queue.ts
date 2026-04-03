@@ -5,6 +5,7 @@ import { WebSocketService } from '../../../services/websocket.service';
 import { FormsModule } from '@angular/forms';
 import { TrainingChartComponent, ChartDataPoint } from '../training-chart/training-chart';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
+import { ProjectService } from '../../../services/project.service';
 
 @Component({
   selector: 'app-training-job-queue',
@@ -18,7 +19,7 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
           <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wider">Active Workspace Queue</h3>
         </div>
         <div class="flex items-center gap-2">
-          <button (click)="loadJobs()" 
+          <button (click)="refreshAll()" 
             data-testid="refresh-jobs-btn"
             class="text-xs font-medium text-brand hover:text-brand/80 transition-colors flex items-center gap-1 group">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-180 transition-transform duration-500"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
@@ -343,22 +344,28 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
       </div>
 
       <!-- Archive Section -->
-      @if (archivedJobs().length > 0) {
+      @if (historicalJobs().length > 0 || archiveExpanded() || activeJobs().length === 0) {
         <div class="mt-4 bg-surface-low/50 rounded-theme-xl border border-surface-mid overflow-hidden shadow-lg">
-          <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
-            class="w-full px-6 py-3 flex justify-between items-center bg-surface-low/80 hover:bg-surface-mid/30 transition-colors cursor-pointer border-b border-surface-mid/50">
-            <div class="flex items-center gap-2">
+          <div class="px-6 py-3 flex justify-between items-center bg-surface-low/80 hover:bg-surface-mid/30 transition-colors border-b border-surface-mid/50">
+            <button (click)="toggleArchive()" data-testid="toggle-archive-btn" class="flex-1 flex items-center gap-2 cursor-pointer text-left">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-text-muted">
                 <rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>
               </svg>
               <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Archive</span>
               <span class="text-[10px] font-bold text-text-disabled bg-surface-high px-2 py-0.5 rounded-full">{{ archivedJobs().length }}</span>
+            </button>
+            <div class="flex items-center gap-4 pl-4 border-l border-surface-mid/50">
+               <label class="relative inline-flex items-center cursor-pointer group" title="Toggle between Global History and Project-Specific History">
+                 <input type="checkbox" [checked]="archiveProjectScope()" (change)="toggleArchiveScope()" class="sr-only peer">
+                 <div class="w-9 h-5 bg-surface-high border border-surface-mid/50 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/50 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand peer-checked:after:bg-white transition-colors"></div>
+                 <span class="ml-2 text-xs font-medium text-text-muted group-hover:text-text-secondary transition-colors">Project Scope</span>
+               </label>
+               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                class="text-text-muted transition-transform" [class.rotate-180]="archiveExpanded()" (click)="toggleArchive()">
+                <path d="m6 9 6 6 6-6"/>
+               </svg>
             </div>
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-              class="text-text-muted transition-transform" [class.rotate-180]="archiveExpanded()">
-              <path d="m6 9 6 6 6-6"/>
-            </svg>
-          </button>
+          </div>
           @if (archiveExpanded()) {
             <div class="divide-y divide-surface-mid/50">
               @for (job of archivedJobs(); track job.id) {
@@ -520,15 +527,19 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
 })
 export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   jobService = inject(JobService);
+  projectService = inject(ProjectService);
   private rtc = inject(RuntimeConfigService);
   jobs = signal<Job[]>([]);
+  historicalJobs = signal<Job[]>([]);
   JobStatus = JobStatus;
 
   // Derived views: active queue vs archive
   private readonly ACTIVE_STATUSES = new Set([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.PAUSED]);
   activeJobs = computed(() => this.jobs().filter(j => this.ACTIVE_STATUSES.has(j.status)));
-  archivedJobs = computed(() => this.jobs().filter(j => !this.ACTIVE_STATUSES.has(j.status)));
+  
+  archivedJobs = computed(() => this.historicalJobs());
   archiveExpanded = signal<boolean>(false);
+  archiveProjectScope = signal<boolean>(true);
 
   // Output events for config actions
   saveAsTemplate = output<any>();
@@ -565,11 +576,15 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     // Restore preference
     const saved = localStorage.getItem('autoQueueEnabled');
     if (saved) this.autoQueue.set(saved === 'true');
+    
+    // Restore archive scope preference
+    const savedScope = localStorage.getItem('archiveProjectScope');
+    if (savedScope !== null) this.archiveProjectScope.set(savedScope === 'true');
 
-    this.loadJobs();
+    this.refreshAll();
 
     // Polling fallback (reduced frequency - 30s) just to sync deleted jobs or misses
-    this.refreshTimer = setInterval(() => this.loadJobs(), 30000);
+    this.refreshTimer = setInterval(() => this.refreshAll(), 30000);
     this.timer = setInterval(() => this.currentNow.set(Date.now()), 1000);
 
     // Subscribe to Real-time Events
@@ -834,6 +849,19 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     this.wsSub?.unsubscribe();
     this.restartSub?.unsubscribe();
   }
+  refreshAll() {
+    this.loadJobs();
+    if (this.archiveExpanded()) {
+      this.loadHistory();
+    }
+  }
+
+  loadHistory() {
+    const projectId = this.archiveProjectScope() ? this.projectService.activeJobsProject() || null : null;
+    this.jobService.listJobHistory(projectId).subscribe(jobs => {
+      this.historicalJobs.set(jobs);
+    });
+  }
 
   loadJobs() {
     this.jobService.listJobs().subscribe({
@@ -1036,23 +1064,35 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     this.jobService.resumeJob(id).subscribe(() => this.loadJobs());
   }
 
+  toggleArchiveScope() {
+    const newScope = !this.archiveProjectScope();
+    this.archiveProjectScope.set(newScope);
+    localStorage.setItem('archiveProjectScope', String(newScope));
+    this.loadHistory();
+  }
+
   toggleArchive() {
     const willExpand = !this.archiveExpanded();
     this.archiveExpanded.set(willExpand);
 
     // Pre-check sample availability when expanding
     if (willExpand) {
-      for (const job of this.archivedJobs()) {
-        if (!this.jobsWithSamples().has(job.id)) {
-          this.jobService.getJobSamples(job.id).subscribe({
-            next: (samples) => {
-              if (samples && samples.length > 0) {
-                this.jobsWithSamples.update(prev => { const n = new Set(prev); n.add(job.id); return n; });
+      this.loadHistory(); // Load from API on expand
+      
+      // We need to wait for historicalJobs to populate, so subscribe or handle after
+      setTimeout(() => {
+        for (const job of this.archivedJobs()) {
+          if (!this.jobsWithSamples().has(job.id)) {
+            this.jobService.getJobSamples(job.id).subscribe({
+              next: (samples) => {
+                if (samples && samples.length > 0) {
+                  this.jobsWithSamples.update(prev => { const n = new Set(prev); n.add(job.id); return n; });
+                }
               }
-            }
-          });
+            });
+          }
         }
-      }
+      }, 300);
     }
   }
 

@@ -39,6 +39,14 @@ export class JobService {
     return this.http.post<Job>(this.apiUrl, { plugin_id, config });
   }
 
+  listJobHistory(projectId: string | null = null, limit: number = 50, offset: number = 0): Observable<Job[]> {
+    let url = `${this.apiUrl}/history?limit=${limit}&offset=${offset}`;
+    if (projectId) {
+      url += `&project_id=${projectId}`;
+    }
+    return this.http.get<Job[]>(url);
+  }
+
   listJobs(): Observable<Job[]> {
     return this.http.get<Job[]>(this.apiUrl);
   }

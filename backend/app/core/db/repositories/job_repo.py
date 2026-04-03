@@ -34,6 +34,7 @@ class JobHistoryRepository:
         definition_id: str | None = None,
         status: str | None = None,
         lora_name: str | None = None,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Paginated job history with optional filters."""
         clauses: list[str] = []
@@ -48,6 +49,9 @@ class JobHistoryRepository:
         if lora_name:
             clauses.append("lora_name LIKE ?")
             params.append(f"%{lora_name}%")
+        if project_id:
+            clauses.append("project_id = ?")
+            params.append(project_id)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""

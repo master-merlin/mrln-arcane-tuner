@@ -44,15 +44,24 @@ import { ToastService } from '../../../services/toast';
                 {{ tpl.model_id || tpl.definition_id || 'All Models' }}
               </div>
             </div>
-            <button (click)="branchTemplate(tpl)" 
-                    class="text-sm bg-surface-high hover:bg-brand hover:text-white border border-border-default px-3 py-1.5 rounded-theme-md transition-colors"
-                    title="Branch this template into your project">
-              Branch
-            </button>
+            <div class="flex items-center gap-2">
+              @if (!tpl.is_default && !tpl.readonly) {
+                <button (click)="deleteTemplate(tpl)"
+                        class="text-sm bg-surface-high hover:bg-danger/20 text-danger border border-border-default px-2 py-1.5 rounded-theme-md transition-colors"
+                        title="Delete this template permanently">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+              }
+              <button (click)="branchTemplate(tpl)" 
+                      class="text-sm bg-surface-high hover:bg-brand hover:text-white border border-border-default px-3 py-1.5 rounded-theme-md transition-colors"
+                      title="Branch this template into your project">
+                Branch
+              </button>
+            </div>
           </div>
         } @empty {
           <div class="text-center text-text-subtle p-4 bg-surface-high rounded-theme-md">
-            No global templates found.
+            No global templates found for this domain.
           </div>
         }
       </div>
@@ -75,15 +84,16 @@ export class GeneralTemplatesComponent implements OnInit {
   loadTemplates(type: 'training' | 'captioning' | 'masking') {
     this.activeTab.set(type);
     
-    // We pass undefined for projectId to get only General (global) templates
+    // Pass undefined for model_id/definition_id to get ALL templates for this domain.
+    // Pass undefined for project_id to get only General (global) templates.
     const req = type === 'training' 
-      ? this.templateService.listTrainingTemplates(undefined, undefined) // get all
+      ? this.templateService.listTrainingTemplates(undefined, undefined)
       : type === 'captioning'
         ? this.templateService.listCaptioningTemplates(undefined, undefined)
         : this.templateService.listMaskingTemplates(undefined, undefined);
 
     req.subscribe((res: any) => {
-      // Filter out project-specific templates just in case, though passing null should handle it
+      // Filter to only General (global) templates — no project_id
       this.templates.set(res.filter((t: any) => !t.project_id));
     });
   }
@@ -96,6 +106,20 @@ export class GeneralTemplatesComponent implements OnInit {
       },
       error: (err: any) => {
         this.toast.error(`Failed to branch template: ${err.message}`);
+      }
+    });
+  }
+
+  deleteTemplate(template: any) {
+    if (!confirm(`Delete global template '${template.name}'? This cannot be undone.`)) return;
+    const domain = this.activeTab();
+    this.templateService.deleteTemplate(domain, template.id).subscribe({
+      next: () => {
+        this.templates.update(current => current.filter(t => t.id !== template.id));
+        this.toast.success(`Deleted template '${template.name}'.`);
+      },
+      error: (err: any) => {
+        this.toast.error(`Failed to delete template: ${err.message}`);
       }
     });
   }

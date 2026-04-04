@@ -99,11 +99,8 @@ export class TrainingTemplateSelectorComponent implements OnInit {
 
   constructor() {
     effect(() => {
-       const defId = this.selectedDefinitionId();
-       const pId = this.projectId(); // Read signal to trigger re-execution
-       if (defId) {
-           this.loadTrainingSettings();
-       }
+       const pId = this.projectId(); // Read signal to trigger re-execution on project change
+       this.loadTrainingSettings();
     });
   }
 
@@ -112,7 +109,9 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   }
 
   loadTrainingSettings() {
-    this.templateService.listTrainingTemplates(this.selectedDefinitionId() || undefined, this.projectId()).subscribe({
+    // Load ALL templates for this project context (no definition_id filter).
+    // When a template is applied, the parent component handles model switching.
+    this.templateService.listTrainingTemplates(undefined, this.projectId()).subscribe({
       next: (templates) => {
         this.allTemplates.set(templates);
       },

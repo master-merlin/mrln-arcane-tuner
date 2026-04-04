@@ -63,7 +63,7 @@ class CreateFromJobRequest(BaseModel):
 
 @router.get("/templates/captioning")
 async def list_captioning_templates(
-    model_id: str,
+    model_id: str | None = None,
     project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """List captioning templates (General + project scope)."""
@@ -86,7 +86,7 @@ async def create_captioning_template(
 
 @router.get("/templates/masking")
 async def list_masking_templates(
-    model_id: str,
+    model_id: str | None = None,
     project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     from app.core.db.repositories.masking_template_repo import MaskingTemplateRepository
@@ -132,9 +132,9 @@ async def create_training_template_from_job(
     """Create a training template from an archived job's config."""
     import json
     from app.core.db.repositories.training_template_repo import TrainingTemplateRepository
-    from app.core.db.repositories.job_repo import JobRepository
+    from app.core.db.repositories.job_repo import JobHistoryRepository
 
-    job_repo = JobRepository()
+    job_repo = JobHistoryRepository()
     job = await asyncio.to_thread(job_repo.get_by_id, req.job_id)
     if not job:
         raise HTTPException(404, "Job not found")

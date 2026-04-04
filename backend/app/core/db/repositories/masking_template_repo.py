@@ -26,26 +26,33 @@ class MaskingTemplateRepository:
 
     def list_for_project(
         self,
-        model_id: str,
+        model_id: str | None = None,
         project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List templates merging General + project scope."""
+        """List templates merging General + project scope.
+
+        When model_id is None, returns templates for ALL models.
+        """
         conn = get_db().connection()
+        clauses: list[str] = []
+        params: list[Any] = []
 
         if project_id:
-            rows = conn.execute(
-                f"SELECT * FROM {self.TABLE} "
-                "WHERE model_id = ? AND (project_id IS NULL OR project_id = ?) "
-                "ORDER BY project_id NULLS FIRST, name",
-                (model_id, project_id),
-            ).fetchall()
+            clauses.append("(project_id IS NULL OR project_id = ?)")
+            params.append(project_id)
         else:
-            rows = conn.execute(
-                f"SELECT * FROM {self.TABLE} "
-                "WHERE model_id = ? AND project_id IS NULL "
-                "ORDER BY name",
-                (model_id,),
-            ).fetchall()
+            clauses.append("project_id IS NULL")
+
+        if model_id:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+
+        where = " AND ".join(clauses)
+        rows = conn.execute(
+            f"SELECT * FROM {self.TABLE} WHERE {where} "
+            "ORDER BY project_id NULLS FIRST, name",
+            params,
+        ).fetchall()
 
         return [self._from_row(r) for r in rows]
 

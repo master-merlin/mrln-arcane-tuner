@@ -1,10 +1,12 @@
-import { Component, input, output } from '@angular/core';
+import { Component, inject, input, output } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { Dataset } from '../../../../services/dataset';
+import { ProjectService } from '../../../../services/project.service';
 
 @Component({
     selector: 'app-viewer-toolbar',
     standalone: true,
-    imports: [],
+    imports: [FormsModule],
     template: `
         <div class="h-14 border-b border-surface-mid flex items-center justify-between px-4 bg-surface-low/50 backdrop-blur">
             <div class="flex items-center gap-4">
@@ -41,11 +43,11 @@ import { Dataset } from '../../../../services/dataset';
                     [class.bg-danger/10]="filterMode() === 'disabled'"
                     [class.border-danger/30]="filterMode() === 'disabled'"
                     [class.text-danger]="filterMode() === 'disabled'"
-                    title="Cycle filter: All → Enabled Only → Excluded Only">
+                    title="Cycle filter: All \u2192 Enabled Only \u2192 Excluded Only">
                     @switch (filterMode()) {
-                        @case ('all') { ⊘ All }
-                        @case ('enabled') { ✓ Enabled }
-                        @case ('disabled') { ✕ Excluded }
+                        @case ('all') { \u2298 All }
+                        @case ('enabled') { \u2713 Enabled }
+                        @case ('disabled') { \u2715 Excluded }
                     }
                 </button>
                 <div class="h-6 w-px bg-surface-high mx-1"></div>
@@ -59,7 +61,7 @@ import { Dataset } from '../../../../services/dataset';
                     [class.bg-surface-mid/50]="!showMasked() || !hasMaskedImages()"
                     [class.border-surface-high/30]="!showMasked() || !hasMaskedImages()"
                     [class.text-text-muted]="!showMasked() || !hasMaskedImages()"
-                    title="Toggle masked view — show masked images and captions">
+                    title="Toggle masked view \u2014 show masked images and captions">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                     Masked
                 </button>
@@ -73,13 +75,27 @@ import { Dataset } from '../../../../services/dataset';
                     [class.bg-surface-mid/50]="!showOverlay() || !hasOverlayImages()"
                     [class.border-surface-high/30]="!showOverlay() || !hasOverlayImages()"
                     [class.text-text-muted]="!showOverlay() || !hasOverlayImages()"
-                    title="Toggle overlay view — show edited overlays instead of originals">
+                    title="Toggle overlay view \u2014 show edited overlays instead of originals">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="15" height="15" rx="2" ry="2"></rect><path d="M17 2h3a2 2 0 0 1 2 2v3"></path><path d="M22 17v3a2 2 0 0 1-2 2h-3"></path><path d="M7 22H4a2 2 0 0 1-2-2v-3"></path></svg>
                     Overlay
                 </button>
             </div>
             
             <div class="flex items-center gap-4">
+                <!-- Project Context Selector -->
+                <div class="flex items-center gap-2 px-3 py-1 bg-surface-mid/40 border border-surface-high/30 rounded-theme-md">
+                    <span class="text-[10px] uppercase tracking-wider text-text-subtle font-bold whitespace-nowrap">Context:</span>
+                    <select [ngModel]="projectService.activeDatasetProject()" (ngModelChange)="projectService.activeDatasetProject.set($event)"
+                        data-testid="viewer-project-selector"
+                        class="bg-transparent border-none text-white text-xs outline-none cursor-pointer py-0.5">
+                        <option [value]="null" class="bg-surface-low">Global</option>
+                        @for (p of projectService.allProjects(); track p.id) {
+                            <option [value]="p.id" class="bg-surface-low">{{ p.name }}</option>
+                        }
+                    </select>
+                </div>
+                <div class="h-6 w-px bg-surface-high"></div>
+
                 <div class="flex items-center space-x-4">
                     <button (click)="analysisRequested.emit()" 
                             [disabled]="!isAnalysisReady()"
@@ -121,6 +137,8 @@ import { Dataset } from '../../../../services/dataset';
     styles: []
 })
 export class ViewerToolbarComponent {
+    protected projectService = inject(ProjectService);
+
     datasetName = input.required<string>();
     datasetDetails = input<Dataset | null>(null);
     currentIndex = input<number>(0);

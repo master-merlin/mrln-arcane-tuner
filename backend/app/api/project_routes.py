@@ -51,8 +51,11 @@ class DatasetAssociationRequest(BaseModel):
 
 @router.get("")
 async def list_projects() -> list[dict[str, Any]]:
-    """List all projects."""
-    return _projects.list_all()
+    """List all projects with stats."""
+    projects = _projects.list_all()
+    for p in projects:
+        p["stats"] = _projects.get_stats(p["id"])
+    return projects
 
 
 @router.post("", status_code=201)

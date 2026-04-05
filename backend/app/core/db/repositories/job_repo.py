@@ -173,6 +173,12 @@ class JobHistoryRepository:
             config = json.loads(config)
         return config
 
+    def delete(self, job_id: str) -> None:
+        """Delete a job and its related records from the database."""
+        with get_db().write() as conn:
+            conn.execute("DELETE FROM job_datasets WHERE job_id = ?", (job_id,))
+            conn.execute("DELETE FROM job_history WHERE id = ?", (job_id,))
+
     # ── Internal ─────────────────────────────────────────────────────
 
     def _update(self, job_id: str, updates: dict[str, Any]) -> None:

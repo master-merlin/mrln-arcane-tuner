@@ -36,6 +36,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v2,
         _migrate_v3,
         _migrate_v4,
+        _migrate_v5,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -372,7 +373,6 @@ def _migrate_v4(conn) -> None:
     - Strips training/captioning/masking keys from ``settings.json``
     """
     import json as _json
-    import os as _os
     import time as _time
     import uuid as _uuid
 
@@ -686,4 +686,15 @@ def _strip_settings_json() -> None:
         with open(settings_path, "w") as f:
             _json.dump(data, f, indent=2)
         logger.info("settings_json_stripped", removed=["training", "captioning", "masking"])
+
+# ── V5: PID tracking for job recovery ──────────────────────────────
+
+def _migrate_v5(conn) -> None:
+    """Add ``pid`` column to ``job_history`` for process-liveness checks."""
+    try:
+        conn.execute(
+            "ALTER TABLE job_history ADD COLUMN pid INTEGER"
+        )
+    except Exception:
+        pass  # Column already exists
 

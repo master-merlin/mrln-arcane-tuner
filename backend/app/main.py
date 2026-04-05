@@ -73,6 +73,9 @@ async def lifespan(app: FastAPI):
     registry.initialize()
     plugin_manager.discover_plugins()
 
+    # Recover jobs whose subprocess died during backend downtime
+    job_manager.recover_jobs()
+
     # ── Auto-start frontend (first cold start only) ──────────────────
     _maybe_start_frontend()
 

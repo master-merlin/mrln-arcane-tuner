@@ -35,17 +35,27 @@ class JobHistoryRepository:
         status: str | None = None,
         lora_name: str | None = None,
         project_id: str | None = None,
+        include_active: bool = False,
     ) -> list[dict[str, Any]]:
-        """Paginated job history with optional filters."""
+        """Paginated job history with optional filters.
+
+        By default, excludes active statuses (pending/running/paused) so
+        the archive only shows terminal jobs.  Pass ``include_active=True``
+        or an explicit ``status`` to override.
+        """
         clauses: list[str] = []
         params: list[Any] = []
+
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        elif not include_active:
+            # Only show terminal states in history by default
+            clauses.append("status NOT IN ('pending', 'running', 'paused')")
 
         if definition_id:
             clauses.append("definition_id = ?")
             params.append(definition_id)
-        if status:
-            clauses.append("status = ?")
-            params.append(status)
         if lora_name:
             clauses.append("lora_name LIKE ?")
             params.append(f"%{lora_name}%")

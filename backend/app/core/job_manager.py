@@ -49,7 +49,7 @@ class JobManager:
             from app.core.db.repositories.job_repo import JobHistoryRepository
 
             repo = JobHistoryRepository()
-            rows = repo.list_recent(limit=200)
+            rows = repo.list_recent(limit=200, include_active=True)
 
             loaded = 0
             with self._lock:
@@ -61,6 +61,10 @@ class JobManager:
                     # Interrupted jobs can't still be running
                     if status_str in ("running", "paused"):
                         status_str = "stopped"
+                        try:
+                            repo.update_status(row["id"], status="stopped", error="Interrupted by system restart")
+                        except Exception as e:
+                            logger.warning("failed_to_update_interrupted_job_status", error=str(e))
 
                     self._jobs[row["id"]] = Job(
                         id=row["id"],
@@ -81,8 +85,40 @@ class JobManager:
     def create_job(self, plugin_id: str, config: dict[str, Any]) -> Job:
         """Create a new pending job and register it."""
         job = Job.create(plugin_id, config)
+        job.config["job_id"] = job.id
         with self._lock:
             self._jobs[job.id] = job
+
+        try:
+            from app.core.db.repositories.job_repo import JobHistoryRepository
+            repo = JobHistoryRepository()
+            
+            payload = {
+                "id": job.id,
+                "project_id": config.get("project_id"),
+                "lora_name": config.get("lora_name", ""),
+                "definition_id": plugin_id,
+                "status": "pending",
+                "config": job.config,
+                "created_at": job.created_at,
+            }
+            
+            datasets = config.get("datasets", [])
+            if datasets:
+                payload["datasets_config"] = [
+                    {
+                        "dataset_name": ds.get("dataset_name", ""),
+                        "dataset_id": ds.get("dataset_id"),
+                        "num_repeats": ds.get("num_repeats", 1),
+                        "masking_enabled": ds.get("masking_enabled", False),
+                        "caption_dropout": float(ds.get("caption_dropout_rate", 0)),
+                    }
+                    for ds in datasets
+                ]
+            repo.create(payload)
+        except Exception as e:
+            logger.warning("jobs_create_db_failed", error=str(e))
+
         return job
 
     def list_jobs(self) -> list[Job]:

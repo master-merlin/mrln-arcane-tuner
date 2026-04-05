@@ -1,6 +1,6 @@
-import { Component, input, computed } from '@angular/core';
+import { Component, input, computed, inject, signal, OnInit } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { Dataset } from '../../../../services/dataset';
+import { Dataset, DatasetService } from '../../../../services/dataset';
 
 interface CategorySlice {
     label: string;
@@ -71,6 +71,20 @@ interface CategorySlice {
                         <span class="text-xs text-text-muted">Data Size</span>
                         <span class="text-sm text-white font-bold font-mono">{{ formattedSize() }}</span>
                     </div>
+                    @if (cacheStats().total_bytes > 0) {
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-text-muted">Latent Cache</span>
+                            <span class="text-sm text-text-subtle font-bold font-mono">{{ formatBytes(cacheStats().latent_bytes) }}</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-text-muted">Embed Cache</span>
+                            <span class="text-sm text-text-subtle font-bold font-mono">{{ formatBytes(cacheStats().embedding_bytes) }}</span>
+                        </div>
+                        <div class="flex items-center justify-between border-t border-surface-high/30 pt-2">
+                            <span class="text-xs text-text-muted font-medium">Total on Disk</span>
+                            <span class="text-sm text-white font-bold font-mono">{{ formatBytes(totalSize() + cacheStats().total_bytes) }}</span>
+                        </div>
+                    }
                 </div>
             </div>
 
@@ -162,8 +176,20 @@ interface CategorySlice {
     `,
     styles: []
 })
-export class DatasetStatsComponent {
+export class DatasetStatsComponent implements OnInit {
     datasets = input.required<Dataset[]>();
+    private datasetService = inject(DatasetService);
+
+    cacheStats = signal<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number }>({
+        total_bytes: 0, latent_bytes: 0, embedding_bytes: 0, cached_datasets: 0
+    });
+
+    ngOnInit() {
+        this.datasetService.getCacheStats().subscribe({
+            next: (stats) => this.cacheStats.set(stats),
+            error: () => {} // silently ignore if endpoint unavailable
+        });
+    }
 
     private readonly PALETTE = [
         '#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6',
@@ -177,11 +203,14 @@ export class DatasetStatsComponent {
     totalMasks = computed(() => this.datasets().reduce((s, d) => s + (d.mask_count || 0), 0));
     totalSize = computed(() => this.datasets().reduce((s, d) => s + (d.total_size_bytes || 0), 0));
 
-    formattedSize = computed(() => {
-        const bytes = this.totalSize();
+    formattedSize = computed(() => this.formatBytes(this.totalSize()));
+
+    formatBytes(bytes: number): string {
         if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
-        return (bytes / 1048576).toFixed(1) + ' MB';
-    });
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+        if (bytes > 0) return (bytes / 1024).toFixed(0) + ' KB';
+        return '0 B';
+    }
 
     // Quality
     scoredDatasets = computed(() =>

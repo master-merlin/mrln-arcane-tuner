@@ -124,6 +124,10 @@ export class DatasetService {
     return this.http.post<Dataset[]>(`${this.apiUrl}/scan-all?force_full=${forceFull}`, {});
   }
 
+  getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number }> {
+    return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number }>(`${this.apiUrl}/cache/stats`);
+  }
+
   uploadFile(name: string, file: File): Observable<any> {
     const formData = new FormData();
     formData.append('file', file);

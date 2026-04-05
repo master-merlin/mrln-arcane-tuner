@@ -223,6 +223,51 @@ def _purge_cache(
 
 # ── Routes ───────────────────────────────────────────────────────────────
 
+
+def _aggregate_cache_stats() -> dict[str, Any]:
+    """Scan all datasets and aggregate cache sizes by type."""
+    all_datasets = dataset_manager.list_datasets()
+    total_bytes = 0
+    latent_bytes = 0
+    embedding_bytes = 0
+    cached_datasets = 0
+
+    for ds in all_datasets:
+        cache_root = Path(ds.path) / ".cache"
+        if not cache_root.is_dir():
+            continue
+        cached_datasets += 1
+        for model_dir in cache_root.iterdir():
+            if not model_dir.is_dir():
+                continue
+            for version_dir in model_dir.iterdir():
+                if not version_dir.is_dir():
+                    continue
+                for type_dir in version_dir.iterdir():
+                    if not type_dir.is_dir():
+                        continue
+                    size = _dir_size(type_dir)
+                    total_bytes += size
+                    if type_dir.name == "latents":
+                        latent_bytes += size
+                    else:
+                        embedding_bytes += size
+
+    return {
+        "total_bytes": total_bytes,
+        "latent_bytes": latent_bytes,
+        "embedding_bytes": embedding_bytes,
+        "cached_datasets": cached_datasets,
+    }
+
+
+
+@router.get("/datasets/cache/stats")
+async def cache_stats():
+    """Aggregate cache size statistics across all datasets."""
+    return await asyncio.to_thread(_aggregate_cache_stats)
+
+
 @router.get("/datasets/{name}/cache/list")
 async def list_cache(name: str):
     """List the cache tree for a dataset."""

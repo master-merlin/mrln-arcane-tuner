@@ -406,16 +406,12 @@ class PipelineTrainMixin:
             db = DatabaseEngine.get_instance()
             db.initialize()
 
-            job_id = str(uuid.uuid4())
             config = dict(self.config) if self.config else {}
+            job_id = config.get("job_id")
             repo = JobHistoryRepository()
-            repo.create({
-                "id": job_id,
-                "lora_name": config.get("lora_name", ""),
-                "definition_id": config.get("definition_id", ""),
+            
+            payload = {
                 "status": "running",
-                "config": config,
-                "created_at": time.time(),
                 "started_at": time.time(),
                 "total_steps": max_steps,
                 "output_dir": self.checkpoint_manager.output_dir,
@@ -431,7 +427,18 @@ class PipelineTrainMixin:
                 "mixed_precision": config.get("mixed_precision"),
                 "ema_enabled": bool(config.get("use_ema", False)),
                 "targeted_layers": config.get("targeted_layers"),
-                "datasets_config": [
+            }
+
+            if job_id:
+                repo.update_status(job_id, **payload)
+            else:
+                job_id = str(uuid.uuid4())
+                payload["id"] = job_id
+                payload["lora_name"] = config.get("lora_name", "")
+                payload["definition_id"] = config.get("definition_id", "")
+                payload["config"] = config
+                payload["created_at"] = time.time()
+                payload["datasets_config"] = [
                     {
                         "dataset_name": ds.get("dataset_name", ""),
                         "num_repeats": ds.get("num_repeats", 1),
@@ -439,9 +446,10 @@ class PipelineTrainMixin:
                         "caption_dropout": float(ds.get("caption_dropout_rate", 0)),
                     }
                     for ds in config.get("datasets", [])
-                ],
-            })
-            logger.info("job_history_created", job_id=job_id)
+                ]
+                repo.create(payload)
+
+            logger.info("job_history_running", job_id=job_id)
             return job_id
         except Exception as e:
             logger.warning("job_history_init_failed", error=str(e))

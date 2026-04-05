@@ -70,7 +70,13 @@ import { DatasetStatsComponent } from './components/dataset-stats';
               </div>
 
               <!-- Statistics Panel -->
-              <app-dataset-stats [datasets]="datasets()"></app-dataset-stats>
+              <div class="bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl p-6 space-y-4">
+                  <div class="flex items-center gap-4 border-b border-surface-mid/30 pb-2">
+                      <div class="w-1 h-6 bg-brand rounded-full"></div>
+                      <h3 class="text-sm font-black text-text-subtle uppercase tracking-[0.2em]">Statistics</h3>
+                  </div>
+                  <app-dataset-stats [datasets]="datasets()"></app-dataset-stats>
+              </div>
 
               <!-- Content Card -->
               <div class="bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl p-6 space-y-8">

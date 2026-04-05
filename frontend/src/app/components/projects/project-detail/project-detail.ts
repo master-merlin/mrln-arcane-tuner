@@ -112,6 +112,7 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                             [schema]="datasetsSchema()"
                             [rootSchema]="trainingSchema()"
                             [parentForm]="launchForm"
+                            [datasetNames]="projectDatasetNames()"
                             (arrayItemAdded)="onArrayItemAdded($event.key, $event.schemaParam)"
                             (arrayItemRemoved)="onArrayItemRemoved($event.key, $event.index)"
                             (helpRequested)="$event">
@@ -332,6 +333,9 @@ export class ProjectDetailComponent implements OnInit {
     const associated = new Set(this.projectDatasets().map(d => d.id));
     return this.allDatasets().filter(d => !associated.has(d.id));
   });
+
+  // Project-scoped dataset names for the DynamicFormGroupComponent autocomplete
+  projectDatasetNames = computed(() => this.projectDatasets().map(d => d.name));
 
   canStartTraining = computed(() => {
     const fa = this.launchForm.get('datasets') as FormArray;

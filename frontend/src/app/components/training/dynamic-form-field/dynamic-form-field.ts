@@ -16,15 +16,17 @@ import { ToastService } from '../../../services/toast';
          [class.pointer-events-none]="isDisabled()"
          class="flex flex-col gap-2 transition-opacity duration-200">
       
-      <label [for]="fieldKey()" class="text-sm font-medium text-text-secondary flex items-center gap-1.5">
-        {{ schema().title || (fieldKey() | titlecase) }}
-        @if (isDisabled()) {
-          <span class="text-[10px] text-text-disabled">(disabled)</span>
-        }
-        @if (hasHelp()) {
-          <span class="config-help-icon" [title]="helpTip()" (click)="helpRequested.emit(fieldKey()); $event.preventDefault()">?</span>
-        }
-      </label>
+      @if (!hideLabel()) {
+        <label [for]="fieldKey()" class="text-sm font-medium text-text-secondary flex items-center gap-1.5">
+          {{ schema().title || (fieldKey() | titlecase) }}
+          @if (isDisabled()) {
+            <span class="text-[10px] text-text-disabled">(disabled)</span>
+          }
+          @if (hasHelp()) {
+            <span class="config-help-icon" [title]="helpTip()" (click)="helpRequested.emit(fieldKey()); $event.preventDefault()">?</span>
+          }
+        </label>
+      }
       
       <!-- Integer/Number -->
       @if (isNumber()) {
@@ -125,9 +127,24 @@ import { ToastService } from '../../../services/toast';
                  }
                </div>
           } @else {
-               <input [type]="'text'" [formControl]="control()" 
-                      [attr.data-testid]="'config-input-' + fieldKey()"
-                      class="bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white w-full focus:ring-2 focus:ring-brand outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+               <div class="flex items-center gap-2">
+                 <input [type]="'text'" [formControl]="control()" 
+                        [attr.data-testid]="'config-input-' + fieldKey()"
+                        class="bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white w-full focus:ring-2 focus:ring-brand outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                 @if (fieldKey() === 'caption_prefix') {
+                   <button type="button" (click)="autofillRequested.emit()" 
+                           title="Auto-fill prefix from dataset name"
+                           class="p-2 text-text-subtle hover:text-brand hover:bg-brand/10 rounded-theme-md transition-colors shrink-0">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                       <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/>
+                       <path d="m14 7 3 3"/>
+                       <path d="M5 6v4"/><path d="M19 14v4"/>
+                       <path d="M10 2v2"/><path d="M7 8H3"/>
+                       <path d="M21 16h-4"/><path d="M11 3H9"/>
+                     </svg>
+                   </button>
+                 }
+               </div>
           }
       }
 
@@ -152,6 +169,7 @@ export class DynamicFormFieldComponent {
   outputDir = input<string>('outputs'); // for fallback browsing
   hasHelp = input<boolean>(false);
   helpTip = input<string>('');
+  hideLabel = input<boolean>(false);
   datasetAutocomplete = input<string[]>();
 
   helpRequested = output<string>();

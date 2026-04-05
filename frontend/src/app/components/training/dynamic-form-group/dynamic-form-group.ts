@@ -180,6 +180,7 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
                                         [currentBackend]="currentBackend()"
                                         [outputDir]="outputDir()"
                                         [hasHelp]="false"
+                                        [hideLabel]="true"
                                         [datasetAutocomplete]="availableDatasets"
                                         (autofillRequested)="autofillCaptionPrefix(dsIdx)"
                                         (checkpointConfigLoaded)="checkpointConfigLoaded.emit($event)">
@@ -216,6 +217,8 @@ export class DynamicFormGroupComponent {
   currentBackend = input<string>('local');
   outputDir = input<string>('outputs');
   configHelp = input<Record<string, { tip: string; detail: string }>>({});
+  /** Optional: override the auto-fetched dataset names (e.g. for project-scoped filtering) */
+  datasetNames = input<string[] | null>(null);
 
   // External actions
   arrayItemAdded = output<{ key: string, schemaParam: any }>();
@@ -229,7 +232,9 @@ export class DynamicFormGroupComponent {
 
   constructor() {
     this.datasetService.listDatasets().subscribe((ds: Dataset[]) => {
-      this.availableDatasets = ds.map((d: Dataset) => d.name);
+      // If external datasetNames is provided, use that; otherwise use all datasets
+      const override = this.datasetNames();
+      this.availableDatasets = override ?? ds.map((d: Dataset) => d.name);
     });
   }
 

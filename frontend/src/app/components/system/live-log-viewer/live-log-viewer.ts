@@ -1,7 +1,8 @@
-import { Component, OnInit, OnDestroy, ElementRef, viewChild, signal, inject, effect, input, computed } from '@angular/core';
+import { Component, OnInit, ElementRef, viewChild, signal, inject, effect, input, computed, DestroyRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
-import { Subscription, of, catchError } from 'rxjs';
+import { of, catchError } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { WebSocketService } from '../../../services/websocket.service';
 
 type LogLevel = 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL' | 'UNKNOWN';
@@ -98,7 +99,7 @@ type LogLevel = 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL' | 'UNKNOWN';
   `,
     styles: []
 })
-export class LiveLogViewerComponent implements OnInit, OnDestroy {
+export class LiveLogViewerComponent implements OnInit {
     readonly mode = input<'server' | 'training'>('server');
 
     logs = signal<string[]>([]);
@@ -136,7 +137,7 @@ export class LiveLogViewerComponent implements OnInit, OnDestroy {
     private http = inject(HttpClient);
     private wsService = inject(WebSocketService);
     private rtc = inject(RuntimeConfigService);
-    private wsSub?: Subscription;
+    private destroyRef = inject(DestroyRef);
 
     terminalContainer = viewChild<ElementRef>('terminalContainer');
 
@@ -154,7 +155,9 @@ export class LiveLogViewerComponent implements OnInit, OnDestroy {
         this.fetchLogs().subscribe(logs => this.logs.set(logs));
 
         // Subscribe to real-time logs
-        this.wsSub = this.wsService.on<any>('server_log').subscribe(payload => {
+        this.wsService.on<any>('server_log').pipe(
+            takeUntilDestroyed(this.destroyRef)
+        ).subscribe(payload => {
             // payload.message is the raw JSON string from structlog
             this.handleLogEvent(payload.message);
         });
@@ -250,7 +253,4 @@ export class LiveLogViewerComponent implements OnInit, OnDestroy {
         }, 100);
     }
 
-    ngOnDestroy() {
-        this.wsSub?.unsubscribe();
-    }
 }

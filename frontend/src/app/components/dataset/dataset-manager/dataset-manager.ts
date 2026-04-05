@@ -1,9 +1,8 @@
-import { Component, OnInit, OnDestroy, inject, signal, computed, effect } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, effect, DestroyRef } from '@angular/core';
 import { DatasetService, Dataset } from '../../../services/dataset';
 import { ToastService } from '../../../services/toast';
 import { WebSocketService } from '../../../services/websocket.service';
-import { Subject } from 'rxjs';
-import { takeUntil } from 'rxjs/operators';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ProjectService } from '../../../services/project.service';
 import { DatasetViewerComponent } from '../dataset-viewer/dataset-viewer';
@@ -175,12 +174,12 @@ import { DatasetStatsComponent } from './components/dataset-stats';
   `,
   styles: []
 })
-export class DatasetManagerComponent implements OnInit, OnDestroy {
+export class DatasetManagerComponent implements OnInit {
   private datasetService = inject(DatasetService);
   private toast = inject(ToastService);
   private ws = inject(WebSocketService);
   protected projectService = inject(ProjectService);
-  private destroy$ = new Subject<void>();
+  private destroyRef = inject(DestroyRef);
 
   datasets = signal<Dataset[]>([]);
   searchTerm = signal('');
@@ -223,7 +222,7 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
 
     // When training creates a cache, update affected dataset cards in-place
     this.ws.on<{ datasets: string[] }>('dataset_cache_ready')
-      .pipe(takeUntil(this.destroy$))
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(({ datasets: names }) => {
         this.datasets.update(list =>
           list.map(ds => names.includes(ds.name) ? { ...ds, has_cache: true } : ds)
@@ -231,10 +230,7 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
       });
   }
 
-  ngOnDestroy() {
-    this.destroy$.next();
-    this.destroy$.complete();
-  }
+
 
   loadDatasets() {
     this.datasetService.listDatasets().subscribe(data => this.datasets.set(data));

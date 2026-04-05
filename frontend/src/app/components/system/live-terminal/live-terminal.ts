@@ -1,6 +1,7 @@
-import { Component, OnInit, OnDestroy, ElementRef, viewChild, signal, inject, effect } from '@angular/core';
+import { Component, OnInit, DestroyRef, ElementRef, viewChild, signal, inject, effect } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { JobService, JobStatus } from '../../../services/job';
-import { Subscription, interval, switchMap, startWith, of, catchError } from 'rxjs';
+import { interval, switchMap, startWith, of, catchError } from 'rxjs';
 
 @Component({
   selector: 'app-live-terminal',
@@ -33,10 +34,10 @@ import { Subscription, interval, switchMap, startWith, of, catchError } from 'rx
   `,
   styles: []
 })
-export class LiveTerminalComponent implements OnInit, OnDestroy {
+export class LiveTerminalComponent implements OnInit {
   logs = signal<string[]>([]);
   private jobService = inject(JobService);
-  private sub?: Subscription;
+  private destroyRef = inject(DestroyRef);
 
   terminalContainer = viewChild<ElementRef>('terminalContainer');
 
@@ -54,7 +55,7 @@ export class LiveTerminalComponent implements OnInit, OnDestroy {
   }
 
   startPolling() {
-    this.sub = interval(3000).pipe(
+    interval(3000).pipe(
       startWith(0),
       switchMap(() => this.jobService.listJobs().pipe(
         catchError(err => {
@@ -73,7 +74,8 @@ export class LiveTerminalComponent implements OnInit, OnDestroy {
           );
         }
         return of(this.logs()); // Keep current logs if nothing running
-      })
+      }),
+      takeUntilDestroyed(this.destroyRef),
     ).subscribe({
       next: (logs) => {
         this.logs.set(logs);
@@ -110,7 +112,4 @@ export class LiveTerminalComponent implements OnInit, OnDestroy {
     }, 100);
   }
 
-  ngOnDestroy() {
-    this.sub?.unsubscribe();
-  }
 }

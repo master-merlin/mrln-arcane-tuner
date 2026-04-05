@@ -1,7 +1,9 @@
-import { Component, OnInit, OnDestroy, inject, signal, computed, output, HostListener } from '@angular/core';
+import { Component, OnInit, OnDestroy, DestroyRef, inject, signal, computed, output, HostListener } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, JsonPipe, DecimalPipe, UpperCasePipe } from '@angular/common';
 import { JobService, Job, JobStatus } from '../../../services/job';
 import { WebSocketService } from '../../../services/websocket.service';
+import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { TrainingChartComponent, ChartDataPoint } from '../training-chart/training-chart';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
@@ -615,13 +617,8 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   // Track if we just triggered a start to prevent double-firing before refresh updates status
   private startingJobId: string | null = null;
 
-  // WebSocket Subscription
-  private wsSub: any;
-  private restartSub: any;
   wsService = inject(WebSocketService);
-
-  private timer: any;
-  private refreshTimer: any;
+  private destroyRef = inject(DestroyRef);
 
   ngOnInit() {
     // Restore preference
@@ -635,16 +632,16 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     this.refreshAll();
 
     // Polling fallback (reduced frequency - 30s) just to sync deleted jobs or misses
-    this.refreshTimer = setInterval(() => this.refreshAll(), 30000);
-    this.timer = setInterval(() => this.currentNow.set(Date.now()), 1000);
+    interval(30000).pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.refreshAll());
+    interval(1000).pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.currentNow.set(Date.now()));
 
     // Subscribe to Real-time Events
-    this.wsSub = this.wsService.messages$.subscribe(event => {
+    this.wsService.messages$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(event => {
       this.handleWsEvent(event);
     });
 
     // Refresh jobs immediately when server restarts (clears stale data)
-    this.restartSub = this.wsService.serverRestarted$.subscribe(() => {
+    this.wsService.serverRestarted$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
       console.log('[JobQueue] Server restarted — refreshing jobs');
       this.loadJobs();
     });
@@ -895,10 +892,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
-    if (this.timer) clearInterval(this.timer);
-    if (this.refreshTimer) clearInterval(this.refreshTimer);
-    this.wsSub?.unsubscribe();
-    this.restartSub?.unsubscribe();
+    // takeUntilDestroyed handles WS and interval cleanup automatically
   }
   refreshAll() {
     this.loadJobs();

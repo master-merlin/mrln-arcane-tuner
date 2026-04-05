@@ -387,7 +387,27 @@ export class ProjectDetailComponent implements OnInit {
             // Extract the datasets array schema from the full schema
             const props = schema?.properties || {};
             if (props.datasets) {
-              this.datasetsSchema.set(props.datasets);
+              // Deep clone to avoid mutating the shared schema object
+              const dsSchema = JSON.parse(JSON.stringify(props.datasets));
+
+              // Override dataset_name enum with project-scoped datasets only
+              const projectNames = this.projectDatasetNames();
+              const items = dsSchema.items;
+              if (items?.properties?.dataset_name) {
+                items.properties.dataset_name.enum = projectNames;
+              }
+              // Also patch $defs if the schema uses $ref
+              const defs = schema.$defs || schema.definitions || {};
+              for (const defVal of Object.values(defs) as any[]) {
+                if (defVal?.properties?.dataset_name) {
+                  defVal.properties.dataset_name = {
+                    ...defVal.properties.dataset_name,
+                    enum: projectNames
+                  };
+                }
+              }
+
+              this.datasetsSchema.set(dsSchema);
             }
 
             // Build the launch form with the datasets FormArray

@@ -44,8 +44,10 @@ class BitsAndBytesBackend(QuantizationBase):
         return major >= 7
 
     @classmethod
-    def quantize(cls, module: nn.Module, scheme: str, device: str = "cuda") -> nn.Module:
+    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None) -> nn.Module:
         """Applies bitsandbytes NF4 quantization in-place via PyTorch swapping."""
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
         if not cls.is_available(scheme):
              logger.warning("bitsandbytes_unavailable", scheme=scheme)
              return module

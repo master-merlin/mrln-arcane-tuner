@@ -67,8 +67,10 @@ class TorchAOBackend(QuantizationBase):
         return major >= 8
 
     @classmethod
-    def quantize(cls, module: nn.Module, scheme: str, device: str = "cuda") -> nn.Module:
+    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None) -> nn.Module:
         """Applies torchao quantization in-place."""
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
         if not cls.is_available(scheme):
             logger.warning("torchao_unavailable", scheme=scheme)
             return module

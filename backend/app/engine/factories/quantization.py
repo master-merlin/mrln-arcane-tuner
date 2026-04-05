@@ -115,11 +115,13 @@ class QuantizationFactory:
         module: nn.Module,
         scheme: str,
         backend_name: str = "auto",
-        device: str = "cuda",
+        device: str | None = None,
     ) -> nn.Module:
         """
         Apply weight-only quantization to a frozen module using the strategy pattern.
         """
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
         if scheme in ("none", "bf16"):
             logger.info("quantization_skipped", scheme=scheme)
             return module

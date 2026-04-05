@@ -14,9 +14,9 @@ class LatentManager:
     Manages VAE encoding and disk caching of latents.
     Handles both Diffusers (AutoencoderKLOutput) and Flux (raw Tensor) VAE outputs.
     """
-    def __init__(self, vae, device="cuda", cache_dir=None, arch_params: dict | None = None):
+    def __init__(self, vae, device: str | torch.device | None = None, cache_dir=None, arch_params: dict | None = None):
         self.vae = vae
-        self.device = device
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cache_dir = cache_dir
         arch = arch_params or {}
 

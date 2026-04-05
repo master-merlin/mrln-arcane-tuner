@@ -28,10 +28,10 @@ class EmbeddingManager:
         device: Target device for encoded/loaded embeddings.
     """
 
-    def __init__(self, model_family: str, cache_dir: str | None = None, device: str = "cuda"):
+    def __init__(self, model_family: str, cache_dir: str | None = None, device: str | None = None):
         self.model_family = model_family
         self.cache_dir = cache_dir
-        self.device = device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._cache_hits = 0
         self._cache_misses = 0
         logger.debug("embedding_manager_init", model_family=model_family, cache_dir=cache_dir)

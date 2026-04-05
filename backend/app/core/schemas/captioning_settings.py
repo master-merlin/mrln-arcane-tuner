@@ -7,7 +7,7 @@ covering the template system used by all caption model backends.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,7 +26,7 @@ class Florence2Params(BaseModel):
 
 class YoutuVLParams(BaseModel):
     """Parameters for Tencent Youtu-VL captioning model."""
-    max_long_side: Union[int, str] = Field(768)
+    max_long_side: int | str = Field(768)
     max_num_patches: int = Field(256, ge=64, le=1024)
     temperature: float = Field(0.1, ge=0, le=2)
     top_p: float = Field(0.001, ge=0, le=1)
@@ -36,7 +36,7 @@ class YoutuVLParams(BaseModel):
 
 class Qwen3VLParams(BaseModel):
     """Parameters for Alibaba Qwen3 VL captioning model."""
-    max_long_side: Union[int, str] = Field(1280)
+    max_long_side: int | str = Field(1280)
     temperature: float = Field(0.7, ge=0, le=2)
     top_p: float = Field(0.8, ge=0, le=1)
     num_beams: int = Field(1, ge=1, le=10)

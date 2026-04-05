@@ -18,7 +18,7 @@ class QuantizationBase(ABC):
 
     @classmethod
     @abstractmethod
-    def quantize(cls, module: nn.Module, scheme: str, **kwargs) -> nn.Module:
+    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None, **kwargs) -> nn.Module:
         """Apply quantization to the given module in-place if possible."""
         pass
     

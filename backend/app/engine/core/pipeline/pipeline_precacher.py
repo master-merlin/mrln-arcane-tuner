@@ -2,7 +2,7 @@ import os
 import structlog
 import torch
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 
 from app.engine.core.interfaces import IModelDriver, IDataPipeline
@@ -20,7 +20,7 @@ class DatasetPreCacher:
     loads of only the VAE and/or Text Encoders to generate the missing `.safetensors` files,
     then forcefully offloads them before the UNet training begins.
     """
-    def __init__(self, driver: IModelDriver, pipeline: IDataPipeline, config: Dict[str, Any]):
+    def __init__(self, driver: IModelDriver, pipeline: IDataPipeline, config: dict[str, Any]):
         self.driver = driver
         self.pipeline = pipeline
         self.config = config

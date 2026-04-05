@@ -50,8 +50,10 @@ class QuantoBackend(QuantizationBase):
         return True
 
     @classmethod
-    def quantize(cls, module: nn.Module, scheme: str, device: str = "cuda") -> nn.Module:
+    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None) -> nn.Module:
         """Applies Hugging Face's optimum-quanto quantization in-place."""
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
         if not cls.is_available(scheme):
              logger.warning("optimum_quanto_unavailable", scheme=scheme)
              return module

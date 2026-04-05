@@ -9,11 +9,12 @@ import { ToastService } from '../../../services/toast';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { GeneralTemplatesComponent } from '../general-templates/general-templates';
 import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dynamic-form-group';
+import { ProjectDialogComponent } from '../project-dialog/project-dialog';
 
 @Component({
   selector: 'app-project-detail',
   standalone: true,
-  imports: [FormsModule, ReactiveFormsModule, GeneralTemplatesComponent, DynamicFormGroupComponent],
+  imports: [FormsModule, ReactiveFormsModule, GeneralTemplatesComponent, DynamicFormGroupComponent, ProjectDialogComponent],
   template: `
     <div class="space-y-8 animate-in fade-in duration-300">
       
@@ -28,6 +29,11 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                       <div class="flex items-center gap-3 mb-2">
                         <div class="w-4 h-4 rounded-full" [style.backgroundColor]="project()?.color || '#3b82f6'"></div>
                         <h2 class="text-2xl font-bold text-white leading-none">{{ project()?.name || 'Project Details' }}</h2>
+                        <button (click)="showEditDialog.set(true)" 
+                                class="p-1.5 text-text-disabled hover:text-brand hover:bg-brand/10 rounded-theme-md transition-all" 
+                                title="Edit project details">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                        </button>
                       </div>
                       <p class="text-text-muted">{{ project()?.description || 'No description' }}</p>
                   </div>
@@ -35,13 +41,11 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
           </div>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="space-y-6">
           
-          <!-- Left Column: Main Content -->
-          <div class="lg:col-span-2 space-y-6">
               
               <!-- Stats Row -->
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
                   <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4">
                       <div class="text-sm text-text-muted mb-1">Datasets</div>
                       <div class="text-2xl font-bold text-white">{{ project()?.stats?.datasets || 0 }}</div>
@@ -51,12 +55,16 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                       <div class="text-2xl font-bold text-white">{{ project()?.stats?.jobs || 0 }}</div>
                   </div>
                   <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4">
-                      <div class="text-sm text-text-muted mb-1">Training Templates</div>
+                      <div class="text-sm text-text-muted mb-1">Training</div>
                       <div class="text-2xl font-bold text-brand-light">{{ project()?.stats?.training_templates || 0 }}</div>
                   </div>
                   <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4">
-                      <div class="text-sm text-text-muted mb-1">Caption Templates</div>
+                      <div class="text-sm text-text-muted mb-1">Captioning</div>
                       <div class="text-2xl font-bold text-brand-light">{{ project()?.stats?.captioning_templates || 0 }}</div>
+                  </div>
+                  <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4">
+                      <div class="text-sm text-text-muted mb-1">Masking</div>
+                      <div class="text-2xl font-bold text-brand-light">{{ project()?.stats?.masking_templates || 0 }}</div>
                   </div>
               </div>
 
@@ -214,35 +222,49 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                   <div class="flex items-center justify-between mb-4">
                     <div>
                       <h3 class="text-lg font-bold text-white">Project Templates</h3>
-                      <p class="text-text-muted text-sm mt-1">Templates branched into this project. Used for Quick Launch above.</p>
+                      <p class="text-text-muted text-sm mt-1">Templates branched into this project.</p>
                     </div>
-                    <button (click)="loadProjectTemplates()" class="text-text-muted hover:text-white transition-colors p-1.5" title="Refresh">
+                    <button (click)="loadProjectTemplatesForTab(projectTemplateTab())" class="text-text-muted hover:text-white transition-colors p-1.5" title="Refresh">
                       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                     </button>
                   </div>
 
+                  <!-- Tabs -->
+                  <div class="flex gap-4 mb-4">
+                    @for (tab of templateTabs; track tab.key) {
+                      <button [class.text-white]="projectTemplateTab() === tab.key"
+                              [class.border-brand]="projectTemplateTab() === tab.key"
+                              [class.text-text-muted]="projectTemplateTab() !== tab.key"
+                              [class.border-transparent]="projectTemplateTab() !== tab.key"
+                              class="pb-2 border-b-2 font-medium transition-colors text-sm"
+                              (click)="loadProjectTemplatesForTab(tab.key)">{{ tab.label }}</button>
+                    }
+                  </div>
+
                   <div class="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
-                    @for (tpl of projectTrainingTemplates(); track tpl.id) {
+                    @for (tpl of projectTemplatesFiltered(); track tpl.id) {
                       <div class="flex items-center justify-between p-3 bg-surface-mid border border-surface-high rounded-theme-md hover:border-brand/30 transition-colors"
-                           [class.border-brand]="tpl.id === selectedTemplateId()">
+                           [class.border-brand]="projectTemplateTab() === 'training' && tpl.id === selectedTemplateId()">
                         <div class="min-w-0 flex-1">
                           <div class="flex items-center gap-2">
                             <span class="font-medium text-white truncate">{{ tpl.name }}</span>
                             <span class="text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-full shrink-0">📁 Project</span>
                           </div>
                           <div class="text-xs text-text-subtle mt-1 flex items-center gap-2">
-                            <span class="truncate max-w-[180px]">{{ tpl.definition_id }}</span>
+                            <span class="truncate max-w-[180px]">{{ tpl.definition_id || tpl.model_id || '' }}</span>
                             @if (tpl.branched_from) {
                               <span class="text-amber-400/80 shrink-0">↳ branched</span>
                             }
                           </div>
                         </div>
                         <div class="flex items-center gap-1.5 shrink-0 ml-2">
-                          <button (click)="onSelectTemplate(tpl.id)" 
-                                  class="text-xs bg-brand/20 hover:bg-brand/30 text-brand-light px-2.5 py-1.5 rounded-theme-md transition-colors border border-brand/30"
-                                  title="Use this template for Quick Launch">
-                            Select
-                          </button>
+                          @if (projectTemplateTab() === 'training') {
+                            <button (click)="onSelectTemplate(tpl.id)" 
+                                    class="text-xs bg-brand/20 hover:bg-brand/30 text-brand-light px-2.5 py-1.5 rounded-theme-md transition-colors border border-brand/30"
+                                    title="Use this template for Quick Launch">
+                              Select
+                            </button>
+                          }
                           <button (click)="deleteProjectTemplate(tpl)"
                                   class="text-xs bg-surface-high hover:bg-danger/20 text-danger p-1.5 rounded-theme-md transition-colors border border-border-default"
                                   title="Delete this project template">
@@ -252,7 +274,7 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                       </div>
                     } @empty {
                       <div class="text-center text-text-subtle p-4 bg-surface-high rounded-theme-md text-sm">
-                        No project templates yet. Branch a global template below to get started.
+                        No project {{ projectTemplateTab() }} templates yet. Branch a global template below.
                       </div>
                     }
                   </div>
@@ -268,35 +290,15 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                   <app-general-templates [projectId]="projectId()"></app-general-templates>
               </div>
 
-          </div>
-
-          <!-- Right Column: Settings -->
-          <div class="space-y-6">
-              <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-6 shadow-lg">
-                  <h3 class="text-lg font-bold text-white mb-4">Project Settings</h3>
-                  
-                  <div class="space-y-4">
-                      <div>
-                          <label class="block text-sm font-medium text-text-muted mb-1">Name</label>
-                          <input type="text" [ngModel]="project()?.name" disabled
-                                 class="w-full bg-surface-mid border border-border-default rounded-theme-md px-3 py-2 text-white focus:outline-none focus:border-brand/50 disabled:opacity-50">
-                      </div>
-                      <div>
-                          <label class="block text-sm font-medium text-text-muted mb-1">Description</label>
-                          <textarea [ngModel]="project()?.description" disabled rows="3"
-                                    class="w-full bg-surface-mid border border-border-default rounded-theme-md px-3 py-2 text-white focus:outline-none focus:border-brand/50 disabled:opacity-50"></textarea>
-                      </div>
-                      <div>
-                          <label class="block text-sm font-medium text-text-muted mb-1">Color</label>
-                          <div class="flex items-center gap-3">
-                              <input type="color" [ngModel]="project()?.color" disabled
-                                     class="w-10 h-10 rounded border-0 bg-transparent disabled:opacity-50">
-                          </div>
-                      </div>
-                  </div>
-              </div>
-          </div>
       </div>
+
+      <!-- Edit Project Dialog -->
+      @if (showEditDialog()) {
+        <app-project-dialog
+          [projectId]="projectId()"
+          (close)="showEditDialog.set(false)"
+          (saved)="onEditSaved()" />
+      }
     </div>
   `
 })
@@ -317,9 +319,19 @@ export class ProjectDetailComponent implements OnInit {
   allDatasets = signal<Dataset[]>([]);
   projectDatasets = signal<any[]>([]);
   showDatasetPicker = signal(false);
+  showEditDialog = signal(false);
   selectedDatasetToAdd = '';
 
-  // Project-scoped training templates
+  // Project-scoped templates (all types, filtered by active tab)
+  projectTemplatesFiltered = signal<any[]>([]);
+  projectTemplateTab = signal<'training' | 'captioning' | 'masking'>('training');
+  templateTabs = [
+    { key: 'training' as const, label: 'Training' },
+    { key: 'captioning' as const, label: 'Captioning' },
+    { key: 'masking' as const, label: 'Masking' }
+  ];
+
+  // Keep a separate signal for training templates (used by Quick Launch)
   projectTrainingTemplates = signal<any[]>([]);
 
   // Quick Launch state
@@ -357,6 +369,11 @@ export class ProjectDetailComponent implements OnInit {
     this.loadProjectTemplates();
   }
 
+  onEditSaved() {
+    this.showEditDialog.set(false);
+    this.projectService.loadProjects();
+  }
+
   private loadDatasets() {
     this.datasetService.listDatasets().subscribe(ds => this.allDatasets.set(ds));
   }
@@ -369,9 +386,37 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   loadProjectTemplates() {
+    // Load training templates (always needed for Quick Launch)
     this.templateService.listTrainingTemplates(undefined, this.projectId()).subscribe((res: any) => {
-      // Only show templates that belong to this project (not global ones)
-      this.projectTrainingTemplates.set(res.filter((t: any) => t.project_id === this.projectId()));
+      const filtered = res.filter((t: any) => t.project_id === this.projectId());
+      this.projectTrainingTemplates.set(filtered);
+      // If currently viewing training tab, also update the filtered list
+      if (this.projectTemplateTab() === 'training') {
+        this.projectTemplatesFiltered.set(filtered);
+      }
+    });
+    // Also load the current tab if not training
+    if (this.projectTemplateTab() !== 'training') {
+      this.loadProjectTemplatesForTab(this.projectTemplateTab());
+    }
+  }
+
+  loadProjectTemplatesForTab(tab: 'training' | 'captioning' | 'masking') {
+    this.projectTemplateTab.set(tab);
+    const pid = this.projectId();
+    const req = tab === 'training'
+      ? this.templateService.listTrainingTemplates(undefined, pid)
+      : tab === 'captioning'
+        ? this.templateService.listCaptioningTemplates(undefined, pid)
+        : this.templateService.listMaskingTemplates(undefined, pid);
+
+    req.subscribe((res: any) => {
+      const filtered = res.filter((t: any) => t.project_id === pid);
+      this.projectTemplatesFiltered.set(filtered);
+      // Keep training templates in sync for Quick Launch
+      if (tab === 'training') {
+        this.projectTrainingTemplates.set(filtered);
+      }
     });
   }
 
@@ -547,11 +592,16 @@ export class ProjectDetailComponent implements OnInit {
 
   deleteProjectTemplate(template: any) {
     if (!confirm(`Delete project template '${template.name}'? This cannot be undone.`)) return;
-    this.templateService.deleteTemplate('training', template.id).subscribe({
+    const domain = this.projectTemplateTab();
+    this.templateService.deleteTemplate(domain, template.id).subscribe({
       next: () => {
-        this.projectTrainingTemplates.update(current => current.filter(t => t.id !== template.id));
-        if (this.selectedTemplateId() === template.id) {
-          this.selectedTemplateId.set('');
+        this.projectTemplatesFiltered.update(current => current.filter(t => t.id !== template.id));
+        // Also update training templates if we're on the training tab
+        if (domain === 'training') {
+          this.projectTrainingTemplates.update(current => current.filter(t => t.id !== template.id));
+          if (this.selectedTemplateId() === template.id) {
+            this.selectedTemplateId.set('');
+          }
         }
         this.toast.success(`Deleted template '${template.name}'.`);
         this.projectService.loadProjects(); // refresh stats
@@ -577,11 +627,15 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   removeDataset(datasetId: string) {
+    // Resolve the dataset name before removing, so we can purge from launch form
+    const dsName = this.projectDatasets().find(d => d.id === datasetId)?.name;
     this.projectService.removeProjectDataset(this.projectId(), datasetId).subscribe({
       next: () => {
         this.toast.success('Dataset removed from project.');
         this.loadProjectDatasets();
         this.projectService.loadProjects();
+        // Purge from Quick Launch config if present
+        if (dsName) this.purgeFromLaunchForm(dsName);
       },
       error: (err: any) => this.toast.error('Failed to remove dataset: ' + (err.error?.detail || err.message))
     });
@@ -601,6 +655,8 @@ export class ProjectDetailComponent implements OnInit {
             this.toast.success(`Removed ${completed} dataset(s) from project.`);
             this.loadProjectDatasets();
             this.projectService.loadProjects();
+            // Clear all entries from Quick Launch config
+            this.clearLaunchFormDatasets();
           }
         },
         error: () => {
@@ -613,5 +669,47 @@ export class ProjectDetailComponent implements OnInit {
         }
       });
     }
+  }
+
+  /** Remove any Quick Launch form entries whose dataset_name matches */
+  private purgeFromLaunchForm(datasetName: string) {
+    const fa = this.launchForm.get('datasets') as FormArray;
+    if (!fa) return;
+    for (let i = fa.length - 1; i >= 0; i--) {
+      if (fa.at(i).get('dataset_name')?.value === datasetName) {
+        fa.removeAt(i);
+      }
+    }
+    this.refreshDatasetSchemaEnum();
+  }
+
+  /** Clear all entries from the Quick Launch datasets form */
+  private clearLaunchFormDatasets() {
+    const fa = this.launchForm.get('datasets') as FormArray;
+    if (!fa) return;
+    while (fa.length > 0) fa.removeAt(0);
+    this.refreshDatasetSchemaEnum();
+  }
+
+  /** Re-patch the datasetsSchema enum with current project dataset names */
+  private refreshDatasetSchemaEnum() {
+    const current = this.datasetsSchema();
+    if (!current) return;
+    const updated = JSON.parse(JSON.stringify(current));
+    const names = this.projectDatasetNames();
+    if (updated.items?.properties?.dataset_name) {
+      updated.items.properties.dataset_name.enum = names;
+    }
+    // Also patch $defs if present in the root training schema
+    const root = this.trainingSchema();
+    if (root) {
+      const defs = root.$defs || root.definitions || {};
+      for (const defVal of Object.values(defs) as any[]) {
+        if (defVal?.properties?.dataset_name) {
+          defVal.properties.dataset_name.enum = names;
+        }
+      }
+    }
+    this.datasetsSchema.set(updated);
   }
 }

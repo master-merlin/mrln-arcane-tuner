@@ -53,6 +53,10 @@ import { ProjectService } from '../../../services/project.service';
                       <span>PID: {{ job.pid || 'N/A' }}</span>
                       <span>&bull;</span>
                       <span>{{ job.created_at * 1000 | date:'MMM d, HH:mm' }}</span>
+                      @if (job.config['project_id']) {
+                        <span>&bull;</span>
+                        <span class="px-1.5 py-px rounded bg-brand/15 text-brand-light font-medium not-italic">{{ getProjectName(job.config['project_id']) }}</span>
+                      }
                     </div>
                   </div>
                 </div>
@@ -354,13 +358,16 @@ import { ProjectService } from '../../../services/project.service';
               <span class="text-[10px] font-bold text-text-disabled bg-surface-high px-2 py-0.5 rounded-full">{{ archivedJobs().length }}</span>
             </button>
             <div class="flex items-center gap-4 pl-4 border-l border-surface-mid/50">
-               <label class="relative inline-flex items-center cursor-pointer group" title="Toggle between Global History and Project-Specific History">
-                 <input type="checkbox" [checked]="archiveProjectScope()" (change)="toggleArchiveScope()" class="sr-only peer">
-                 <div class="w-9 h-5 bg-surface-high border border-surface-mid/50 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/50 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand peer-checked:after:bg-white transition-colors"></div>
-                 <span class="ml-2 text-xs font-medium text-text-muted group-hover:text-text-secondary transition-colors">Project Scope</span>
-               </label>
+               <select [ngModel]="archiveProjectFilter()" (ngModelChange)="onArchiveScopeChange($event)"
+                   data-testid="archive-project-selector"
+                   class="bg-surface-high border border-surface-mid text-white text-[10px] rounded-theme-md px-2 py-1 outline-none focus:border-brand uppercase tracking-wider font-semibold">
+                   <option [value]="'all'">All Projects</option>
+                   @for (p of projectService.allProjects(); track p.id) {
+                       <option [value]="p.id">{{ p.name }}</option>
+                   }
+               </select>
                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                class="text-text-muted transition-transform" [class.rotate-180]="archiveExpanded()" (click)="toggleArchive()">
+                class="text-text-muted transition-transform cursor-pointer" [class.rotate-180]="archiveExpanded()" (click)="toggleArchive()">
                 <path d="m6 9 6 6 6-6"/>
                </svg>
             </div>
@@ -385,6 +392,10 @@ import { ProjectService } from '../../../services/project.service';
                             @if (job.finished_at) {
                               <span>&bull;</span>
                               <span>{{ getDuration(job) }}</span>
+                            }
+                            @if (job.config['project_id']) {
+                              <span>&bull;</span>
+                              <span class="px-1.5 py-px rounded bg-brand/15 text-brand-light font-medium not-italic">{{ getProjectName(job.config['project_id']) }}</span>
                             }
                           </div>
                         </div>
@@ -480,7 +491,6 @@ import { ProjectService } from '../../../services/project.service';
             </div>
           }
         </div>
-      
     </div>
 
     <!-- Sample Preview Modal -->
@@ -539,6 +549,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   archivedJobs = computed(() => this.historicalJobs());
   archiveExpanded = signal<boolean>(false);
   archiveProjectScope = signal<boolean>(true);
+  archiveProjectFilter = signal<string>('all');
 
   // Output events for config actions
   saveAsTemplate = output<any>();
@@ -854,7 +865,8 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   }
 
   loadHistory() {
-    const projectId = this.archiveProjectScope() ? this.projectService.activeJobsProject() || null : null;
+    const filter = this.archiveProjectFilter();
+    const projectId = (filter && filter !== 'all') ? filter : null;
     this.jobService.listJobHistory(projectId).subscribe(jobs => {
       this.historicalJobs.set(jobs);
     });
@@ -1066,6 +1078,20 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     this.archiveProjectScope.set(newScope);
     localStorage.setItem('archiveProjectScope', String(newScope));
     this.loadHistory();
+  }
+
+  onArchiveScopeChange(value: string) {
+    const pid = (value && value !== 'all') ? value : null;
+    this.archiveProjectFilter.set(value);
+    this.projectService.activeJobsProject.set(pid);
+    this.archiveProjectScope.set(!!pid);
+    localStorage.setItem('archiveProjectScope', String(!!pid));
+    this.loadHistory();
+  }
+
+  getProjectName(projectId: string): string {
+    const project = this.projectService.allProjects().find(p => p.id === projectId);
+    return project?.name || projectId.slice(0, 8);
   }
 
   toggleArchive() {

@@ -94,6 +94,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                     @for (ds of filteredDatasets(); track ds.name) {
                       <app-dataset-card
                         [dataset]="ds"
+                        [activeProjectId]="projectService.activeDatasetProject()"
                         (view)="openViewer($event)"
                         (edit)="openEditModal($event)"
                         (rescan)="rescanPromptTarget.set($event.name)"
@@ -101,6 +102,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                         (upload)="handleUpload($event)"
                         (cache)="cacheTargetDataset.set($event.name)"
                         (download)="downloadDataset($event)"
+                        (addToProject)="addDatasetToProject($event)"
                       ></app-dataset-card>
                     } @empty {
                       <app-dataset-empty-state [searchTerm]="searchTerm()"></app-dataset-empty-state>
@@ -340,5 +342,17 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
   downloadDataset(ds: Dataset) {
     const url = this.datasetService.getDownloadUrl(ds.name);
     window.open(url, '_blank');
+  }
+
+  addDatasetToProject(ds: Dataset) {
+    const pid = this.projectService.activeDatasetProject();
+    if (!pid) return;
+    this.projectService.addProjectDataset(pid, ds.id).subscribe({
+      next: () => {
+        this.toast.success(`Dataset '${ds.name}' added to project.`);
+        this.projectService.loadProjects();
+      },
+      error: (err: any) => this.toast.error('Failed to add dataset: ' + (err.error?.detail || err.message))
+    });
   }
 }

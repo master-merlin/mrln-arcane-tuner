@@ -12,6 +12,11 @@ interface ApplicationSettings {
     start_frontend: boolean;
 }
 
+interface ModelGlobalSettings {
+    global_offline_mode: boolean;
+    default_model_path: string;
+}
+
 @Component({
     selector: 'app-server-control',
     standalone: true,
@@ -122,6 +127,69 @@ interface ApplicationSettings {
             <!-- Divider -->
             <div class="border-t border-surface-mid/50"></div>
 
+            <!-- Model Settings -->
+            <div class="space-y-4">
+                <h3 class="text-lg font-medium text-white flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-emerald-400">
+                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                        <line x1="12" y1="22.08" x2="12" y2="12"/>
+                    </svg>
+                    Model Settings
+                </h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Global Offline Mode -->
+                    <div class="p-4 rounded-theme-lg bg-base/50 border border-surface-high space-y-2">
+                        <label class="text-[10px] uppercase text-text-subtle font-bold tracking-wider block">Global Offline Mode</label>
+                        <label class="relative inline-flex items-center cursor-pointer mt-1"
+                               data-testid="setting-global-offline">
+                            <input type="checkbox" [ngModel]="modelSettings()?.global_offline_mode" (ngModelChange)="onModelSettingToggle('global_offline_mode', $event)"
+                                class="sr-only peer">
+                            <div class="w-11 h-6 bg-surface-high rounded-full peer peer-checked:bg-amber-500/60 transition-colors
+                                        after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
+                                        peer-checked:after:translate-x-full"></div>
+                            <span class="ml-3 text-sm text-text-secondary">{{ modelSettings()?.global_offline_mode ? 'Enabled' : 'Disabled' }}</span>
+                        </label>
+                        <p class="text-[10px] text-text-disabled">Block ALL HuggingFace network requests — use only locally cached models</p>
+                    </div>
+
+                    <!-- Default Model Path -->
+                    <div class="p-4 rounded-theme-lg bg-base/50 border border-surface-high space-y-2">
+                        <label class="text-[10px] uppercase text-text-subtle font-bold tracking-wider block">Default Model Path</label>
+                        <div class="flex gap-2">
+                            <input type="text" [ngModel]="modelSettings()?.default_model_path" (ngModelChange)="pendingModelPath.set($event); modelPathDirty.set(true)"
+                                placeholder="D:\\Models"
+                                class="flex-1 bg-surface-mid text-sm text-white border border-surface-high rounded-theme-lg px-3 py-2 focus:outline-none focus:border-brand font-mono"
+                                data-testid="setting-default-model-path">
+                            <button type="button" (click)="browseModelPath()"
+                                [disabled]="browsingModelPath()"
+                                title="Browse for folder"
+                                class="px-2.5 py-2 bg-surface-high hover:bg-surface-mid text-text-secondary hover:text-white text-sm rounded-theme-lg border border-surface-high transition-colors disabled:opacity-40 font-bold">
+                                @if (browsingModelPath()) {
+                                    <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                                } @else {
+                                    ···
+                                }
+                            </button>
+                        </div>
+                        @if (modelPathDirty()) {
+                            <div class="flex items-center justify-end gap-2 pt-1 animate-in fade-in duration-200">
+                                <button (click)="saveModelPath()"
+                                    class="px-3 py-1.5 bg-brand/20 text-brand hover:bg-brand/30 rounded-theme-lg transition-colors text-[10px] font-bold border border-brand/30 flex items-center gap-1 uppercase tracking-wider">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                    Save Path
+                                </button>
+                            </div>
+                        }
+                        <p class="text-[10px] text-text-disabled">Base directory for model storage — used as initial browse location</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Divider -->
+            <div class="border-t border-surface-mid/50"></div>
+
             <!-- Log Management -->
             <div class="space-y-4">
                 <h3 class="text-lg font-medium text-white flex items-center gap-2">
@@ -166,8 +234,15 @@ export class ServerControlComponent implements OnInit {
     // Pending (unsaved) values
     private pendingChanges: Record<string, unknown> = {};
 
+    // Model settings
+    modelSettings = signal<ModelGlobalSettings | null>(null);
+    pendingModelPath = signal('');
+    modelPathDirty = signal(false);
+    browsingModelPath = signal(false);
+
     ngOnInit() {
         this.loadSettings();
+        this.loadModelSettings();
     }
 
     loadSettings() {
@@ -236,6 +311,62 @@ export class ServerControlComponent implements OnInit {
                 this.isSavingSettings.set(false);
                 this.toast.error('Failed to save settings: ' + (err.error?.detail || err.message));
             }
+        });
+    }
+
+    // ── Model Settings ──────────────────────────────────────────────────
+
+    loadModelSettings() {
+        this.http.get<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`).subscribe({
+            next: (s) => {
+                this.modelSettings.set(s);
+                this.pendingModelPath.set(s.default_model_path);
+                this.modelPathDirty.set(false);
+            },
+            error: () => console.error('Failed to load model settings'),
+        });
+    }
+
+    onModelSettingToggle(key: string, value: boolean) {
+        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, { [key]: value }).subscribe({
+            next: (s) => {
+                this.modelSettings.set(s);
+                this.toast.success(`${key === 'global_offline_mode' ? 'Offline mode' : key} ${value ? 'enabled' : 'disabled'}`);
+            },
+            error: (err) => this.toast.error(err.error?.detail || 'Failed to update model settings'),
+        });
+    }
+
+    browseModelPath() {
+        this.browsingModelPath.set(true);
+        this.http.post<{ path: string }>(`${this.rtc.apiUrl}/filesystem/pick-folder`, {
+            initial_dir: this.pendingModelPath() || '',
+            title: 'Select Default Model Directory',
+        }).subscribe({
+            next: (res) => {
+                this.browsingModelPath.set(false);
+                if (res.path) {
+                    this.pendingModelPath.set(res.path);
+                    this.modelPathDirty.set(true);
+                }
+            },
+            error: () => {
+                this.browsingModelPath.set(false);
+                this.toast.error('Folder picker failed');
+            },
+        });
+    }
+
+    saveModelPath() {
+        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, {
+            default_model_path: this.pendingModelPath(),
+        }).subscribe({
+            next: (s) => {
+                this.modelSettings.set(s);
+                this.modelPathDirty.set(false);
+                this.toast.success('Default model path saved');
+            },
+            error: (err) => this.toast.error(err.error?.detail || 'Failed to save model path'),
         });
     }
 

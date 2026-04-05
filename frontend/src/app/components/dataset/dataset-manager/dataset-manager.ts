@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, inject, signal, computed } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject, signal, computed, effect } from '@angular/core';
 import { DatasetService, Dataset } from '../../../services/dataset';
 import { ToastService } from '../../../services/toast';
 import { WebSocketService } from '../../../services/websocket.service';
@@ -55,7 +55,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                       </div>
                       <div class="flex items-center gap-3">
                           <span class="text-xs uppercase tracking-widest text-text-subtle font-bold">Project Context:</span>
-                          <select [ngModel]="projectService.activeDatasetProject()" (ngModelChange)="projectService.activeDatasetProject.set($event)"
+                          <select [ngModel]="projectService.activeDatasetProject()" (ngModelChange)="onProjectChange($event)"
                               data-testid="dataset-project-selector"
                               class="bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-1.5 outline-none focus:border-brand">
                               <option [value]="null">Global</option>
@@ -95,6 +95,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                       <app-dataset-card
                         [dataset]="ds"
                         [activeProjectId]="projectService.activeDatasetProject()"
+                        [isInProject]="isDatasetInProject(ds.id)"
                         (view)="openViewer($event)"
                         (edit)="openEditModal($event)"
                         (rescan)="rescanPromptTarget.set($event.name)"
@@ -103,6 +104,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                         (cache)="cacheTargetDataset.set($event.name)"
                         (download)="downloadDataset($event)"
                         (addToProject)="addDatasetToProject($event)"
+                        (removeFromProject)="removeDatasetFromProject($event)"
                       ></app-dataset-card>
                     } @empty {
                       <app-dataset-empty-state [searchTerm]="searchTerm()"></app-dataset-empty-state>
@@ -183,6 +185,9 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
   rescanPromptTarget = signal<string | null>(null);
   activeSingleScan = signal<{ name: string, forceFull: boolean } | null>(null);
 
+  /** Dataset IDs currently associated with the active project */
+  projectDatasetIds = signal<Set<string>>(new Set());
+
   filteredDatasets = computed(() => {
     const term = this.searchTerm().toLowerCase();
     return this.datasets().filter(ds =>
@@ -202,6 +207,8 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.loadDatasets();
+    // Load project datasets on init if a project is already selected
+    this.refreshProjectDatasets(this.projectService.activeDatasetProject());
 
     // When training creates a cache, update affected dataset cards in-place
     this.ws.on<{ datasets: string[] }>('dataset_cache_ready')
@@ -350,9 +357,43 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
     this.projectService.addProjectDataset(pid, ds.id).subscribe({
       next: () => {
         this.toast.success(`Dataset '${ds.name}' added to project.`);
+        this.projectDatasetIds.update(s => new Set([...s, ds.id]));
         this.projectService.loadProjects();
       },
       error: (err: any) => this.toast.error('Failed to add dataset: ' + (err.error?.detail || err.message))
+    });
+  }
+
+  removeDatasetFromProject(ds: Dataset) {
+    const pid = this.projectService.activeDatasetProject();
+    if (!pid) return;
+    this.projectService.removeProjectDataset(pid, ds.id).subscribe({
+      next: () => {
+        this.toast.success(`Dataset '${ds.name}' removed from project.`);
+        this.projectDatasetIds.update(s => { const n = new Set(s); n.delete(ds.id); return n; });
+        this.projectService.loadProjects();
+      },
+      error: (err: any) => this.toast.error('Failed to remove dataset: ' + (err.error?.detail || err.message))
+    });
+  }
+
+  onProjectChange(projectId: string | null) {
+    this.projectService.activeDatasetProject.set(projectId);
+    this.refreshProjectDatasets(projectId);
+  }
+
+  isDatasetInProject(datasetId: string): boolean {
+    return this.projectDatasetIds().has(datasetId);
+  }
+
+  private refreshProjectDatasets(projectId: string | null) {
+    if (!projectId) {
+      this.projectDatasetIds.set(new Set());
+      return;
+    }
+    this.projectService.getProjectDatasets(projectId).subscribe({
+      next: (datasets) => this.projectDatasetIds.set(new Set(datasets.map(d => d.id))),
+      error: () => this.projectDatasetIds.set(new Set())
     });
   }
 }

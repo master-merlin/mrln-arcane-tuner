@@ -104,9 +104,13 @@ import { ToastService } from '../../../../services/toast';
                         </button>
                     }
                     @if (isInProject()) {
-                        <span class="text-[10px] text-success/70 flex items-center gap-0.5" title="Dataset is in this project">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                        </span>
+                        <button (click)="removeFromProject()"
+                                data-testid="viewer-remove-from-project"
+                                title="Remove this dataset from the selected project"
+                                class="flex items-center gap-1 text-[10px] font-bold text-success/70 hover:text-danger bg-success/10 hover:bg-danger/15 border border-success/30 hover:border-danger/30 px-2 py-0.5 rounded-theme-sm transition-all whitespace-nowrap">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Remove
+                        </button>
                     }
                 </div>
                 <div class="h-6 w-px bg-surface-high"></div>
@@ -226,9 +230,24 @@ export class ViewerToolbarComponent {
             next: () => {
                 this.toast.success(`Added "${ds.name}" to project.`);
                 this.projectDatasetIds.update(s => new Set([...s, ds.id]));
-                this.projectService.loadProjects(); // refresh stats
+                this.projectService.loadProjects();
             },
             error: (err: any) => this.toast.error('Failed to add: ' + (err.error?.detail || err.message))
+        });
+    }
+
+    removeFromProject() {
+        const pid = this.projectService.activeDatasetProject();
+        const ds = this.datasetDetails();
+        if (!pid || !ds?.id) return;
+
+        this.projectService.removeProjectDataset(pid, ds.id).subscribe({
+            next: () => {
+                this.toast.success(`Removed "${ds.name}" from project.`);
+                this.projectDatasetIds.update(s => { const n = new Set(s); n.delete(ds.id); return n; });
+                this.projectService.loadProjects();
+            },
+            error: (err: any) => this.toast.error('Failed to remove: ' + (err.error?.detail || err.message))
         });
     }
 

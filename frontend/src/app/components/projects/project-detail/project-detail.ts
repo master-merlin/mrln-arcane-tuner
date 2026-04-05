@@ -137,11 +137,20 @@ import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dyn
                       <p class="text-text-muted text-sm mt-1">Associate datasets with this project for quick access.</p>
                     </div>
                     @if (!showDatasetPicker()) {
-                      <button (click)="showDatasetPicker.set(true)"
-                              class="flex items-center gap-1.5 bg-brand/20 hover:bg-brand/30 border border-brand/40 text-brand-light px-3 py-1.5 rounded-theme-md transition-all text-sm">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                        Add Dataset
-                      </button>
+                      <div class="flex items-center gap-2">
+                        @if (projectDatasets().length > 0) {
+                          <button (click)="removeAllDatasets()"
+                                  class="flex items-center gap-1.5 text-text-muted hover:text-danger border border-surface-high hover:border-danger/40 px-3 py-1.5 rounded-theme-md transition-all text-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                            Remove All
+                          </button>
+                        }
+                        <button (click)="showDatasetPicker.set(true)"
+                                class="flex items-center gap-1.5 bg-brand/20 hover:bg-brand/30 border border-brand/40 text-brand-light px-3 py-1.5 rounded-theme-md transition-all text-sm">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                          Add Dataset
+                        </button>
+                      </div>
                     }
                   </div>
 
@@ -576,5 +585,33 @@ export class ProjectDetailComponent implements OnInit {
       },
       error: (err: any) => this.toast.error('Failed to remove dataset: ' + (err.error?.detail || err.message))
     });
+  }
+
+  removeAllDatasets() {
+    const datasets = this.projectDatasets();
+    if (datasets.length === 0) return;
+    
+    let completed = 0;
+    let failed = 0;
+    for (const ds of datasets) {
+      this.projectService.removeProjectDataset(this.projectId(), ds.id).subscribe({
+        next: () => {
+          completed++;
+          if (completed + failed === datasets.length) {
+            this.toast.success(`Removed ${completed} dataset(s) from project.`);
+            this.loadProjectDatasets();
+            this.projectService.loadProjects();
+          }
+        },
+        error: () => {
+          failed++;
+          if (completed + failed === datasets.length) {
+            this.toast.error(`Removed ${completed}, failed ${failed}.`);
+            this.loadProjectDatasets();
+            this.projectService.loadProjects();
+          }
+        }
+      });
+    }
   }
 }

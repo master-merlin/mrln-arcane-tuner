@@ -1298,6 +1298,11 @@ export class TrainingDynamicConfigComponent {
           delete raw['targeted_layers'];
         }
       }
+      // Attach active project scope so the job is linked to the project
+      const pid = this.projectId();
+      if (pid) {
+        raw.project_id = pid;
+      }
       this.configSubmitted.emit(raw);
     }
   }

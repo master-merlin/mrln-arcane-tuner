@@ -1,7 +1,8 @@
-import { Component, inject, input, output } from '@angular/core';
+import { Component, inject, input, output, computed, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Dataset } from '../../../../services/dataset';
 import { ProjectService } from '../../../../services/project.service';
+import { ToastService } from '../../../../services/toast';
 
 @Component({
     selector: 'app-viewer-toolbar',
@@ -43,11 +44,11 @@ import { ProjectService } from '../../../../services/project.service';
                     [class.bg-danger/10]="filterMode() === 'disabled'"
                     [class.border-danger/30]="filterMode() === 'disabled'"
                     [class.text-danger]="filterMode() === 'disabled'"
-                    title="Cycle filter: All \u2192 Enabled Only \u2192 Excluded Only">
+                    title="Cycle filter: All → Enabled Only → Excluded Only">
                     @switch (filterMode()) {
-                        @case ('all') { \u2298 All }
-                        @case ('enabled') { \u2713 Enabled }
-                        @case ('disabled') { \u2715 Excluded }
+                        @case ('all') { ⊘ All }
+                        @case ('enabled') { ✓ Enabled }
+                        @case ('disabled') { ✕ Excluded }
                     }
                 </button>
                 <div class="h-6 w-px bg-surface-high mx-1"></div>
@@ -61,7 +62,7 @@ import { ProjectService } from '../../../../services/project.service';
                     [class.bg-surface-mid/50]="!showMasked() || !hasMaskedImages()"
                     [class.border-surface-high/30]="!showMasked() || !hasMaskedImages()"
                     [class.text-text-muted]="!showMasked() || !hasMaskedImages()"
-                    title="Toggle masked view \u2014 show masked images and captions">
+                    title="Toggle masked view — show masked images and captions">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                     Masked
                 </button>
@@ -75,7 +76,7 @@ import { ProjectService } from '../../../../services/project.service';
                     [class.bg-surface-mid/50]="!showOverlay() || !hasOverlayImages()"
                     [class.border-surface-high/30]="!showOverlay() || !hasOverlayImages()"
                     [class.text-text-muted]="!showOverlay() || !hasOverlayImages()"
-                    title="Toggle overlay view \u2014 show edited overlays instead of originals">
+                    title="Toggle overlay view — show edited overlays instead of originals">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="15" height="15" rx="2" ry="2"></rect><path d="M17 2h3a2 2 0 0 1 2 2v3"></path><path d="M22 17v3a2 2 0 0 1-2 2h-3"></path><path d="M7 22H4a2 2 0 0 1-2-2v-3"></path></svg>
                     Overlay
                 </button>
@@ -85,7 +86,7 @@ import { ProjectService } from '../../../../services/project.service';
                 <!-- Project Context Selector -->
                 <div class="flex items-center gap-2 px-3 py-1 bg-surface-mid/40 border border-surface-high/30 rounded-theme-md">
                     <span class="text-[10px] uppercase tracking-wider text-text-subtle font-bold whitespace-nowrap">Context:</span>
-                    <select [ngModel]="projectService.activeDatasetProject()" (ngModelChange)="projectService.activeDatasetProject.set($event)"
+                    <select [ngModel]="projectService.activeDatasetProject()" (ngModelChange)="onProjectChange($event)"
                         data-testid="viewer-project-selector"
                         class="bg-transparent border-none text-white text-xs outline-none cursor-pointer py-0.5">
                         <option [value]="null" class="bg-surface-low">Global</option>
@@ -93,6 +94,20 @@ import { ProjectService } from '../../../../services/project.service';
                             <option [value]="p.id" class="bg-surface-low">{{ p.name }}</option>
                         }
                     </select>
+                    @if (canAddToProject()) {
+                        <button (click)="addToProject()"
+                                data-testid="viewer-add-to-project"
+                                title="Add this dataset to the selected project"
+                                class="flex items-center gap-1 text-[10px] font-bold text-brand-light hover:text-white bg-brand/15 hover:bg-brand/25 border border-brand/30 px-2 py-0.5 rounded-theme-sm transition-all whitespace-nowrap">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            Add
+                        </button>
+                    }
+                    @if (isInProject()) {
+                        <span class="text-[10px] text-success/70 flex items-center gap-0.5" title="Dataset is in this project">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </span>
+                    }
                 </div>
                 <div class="h-6 w-px bg-surface-high"></div>
 
@@ -138,6 +153,7 @@ import { ProjectService } from '../../../../services/project.service';
 })
 export class ViewerToolbarComponent {
     protected projectService = inject(ProjectService);
+    private toast = inject(ToastService);
 
     datasetName = input.required<string>();
     datasetDetails = input<Dataset | null>(null);
@@ -163,9 +179,68 @@ export class ViewerToolbarComponent {
     showOverlay = input<boolean>(true);
     hasOverlayImages = input<boolean>(false);
 
+    /** Dataset IDs already in the selected project — refreshed on project change */
+    private projectDatasetIds = signal<Set<string>>(new Set());
+
+    /** True when a project is selected AND this dataset is NOT already in it */
+    canAddToProject = computed(() => {
+        const pid = this.projectService.activeDatasetProject();
+        if (!pid) return false;
+        const ds = this.datasetDetails();
+        if (!ds?.id) return false;
+        return !this.projectDatasetIds().has(ds.id);
+    });
+
+    /** True when a project is selected AND this dataset IS in it */
+    isInProject = computed(() => {
+        const pid = this.projectService.activeDatasetProject();
+        if (!pid) return false;
+        const ds = this.datasetDetails();
+        if (!ds?.id) return false;
+        return this.projectDatasetIds().has(ds.id);
+    });
+
+    onProjectChange(projectId: string | null) {
+        this.projectService.activeDatasetProject.set(projectId);
+        this.refreshProjectDatasets(projectId);
+    }
+
+    /** Fetch project's dataset list to check membership */
+    private refreshProjectDatasets(projectId: string | null) {
+        if (!projectId) {
+            this.projectDatasetIds.set(new Set());
+            return;
+        }
+        this.projectService.getProjectDatasets(projectId).subscribe({
+            next: (datasets) => this.projectDatasetIds.set(new Set(datasets.map(d => d.id))),
+            error: () => this.projectDatasetIds.set(new Set())
+        });
+    }
+
+    addToProject() {
+        const pid = this.projectService.activeDatasetProject();
+        const ds = this.datasetDetails();
+        if (!pid || !ds?.id) return;
+
+        this.projectService.addProjectDataset(pid, ds.id).subscribe({
+            next: () => {
+                this.toast.success(`Added "${ds.name}" to project.`);
+                this.projectDatasetIds.update(s => new Set([...s, ds.id]));
+                this.projectService.loadProjects(); // refresh stats
+            },
+            error: (err: any) => this.toast.error('Failed to add: ' + (err.error?.detail || err.message))
+        });
+    }
+
     cycleFilter() {
         const modes: ('all' | 'enabled' | 'disabled')[] = ['all', 'enabled', 'disabled'];
         const idx = modes.indexOf(this.filterMode());
         this.filterModeChange.emit(modes[(idx + 1) % modes.length]);
+    }
+
+    constructor() {
+        // Load project datasets on init if a project is already selected
+        const pid = this.projectService.activeDatasetProject();
+        if (pid) this.refreshProjectDatasets(pid);
     }
 }

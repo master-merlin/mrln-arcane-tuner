@@ -6,6 +6,7 @@ import { FormsModule } from '@angular/forms';
 import { TrainingChartComponent, ChartDataPoint } from '../training-chart/training-chart';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
+import { ModelService, ModelSourceOverride } from '../../../services/model.service';
 
 @Component({
   selector: 'app-training-job-queue',
@@ -47,15 +48,33 @@ import { ProjectService } from '../../../services/project.service';
                        <span class="text-brand-light">{{ job.config['lora_name'] || 'UNNAMED' }}</span>
                        <span class="text-text-subtle font-normal">on</span>
                        {{ job.config['definition_id'] || job.plugin_id | uppercase }}
-                      <span class="text-text-disabled font-normal text-xs">#{{ job.id.slice(0, 8) }}</span>
                     </span>
-                    <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono">
+                    <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono flex-wrap">
+                      <span class="text-text-disabled">#{{ job.id.slice(0, 8) }}</span>
+                      <span>&bull;</span>
                       <span>PID: {{ job.pid || 'N/A' }}</span>
                       <span>&bull;</span>
                       <span>{{ job.created_at * 1000 | date:'MMM d, HH:mm' }}</span>
                       @if (job.config['project_id']) {
                         <span>&bull;</span>
-                        <span class="px-1.5 py-px rounded bg-brand/15 text-brand-light font-medium not-italic">{{ getProjectName(job.config['project_id']) }}</span>
+                        <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-brand/15 text-brand-light border border-brand/30 cursor-default">{{ getProjectName(job.config['project_id']) }}</span>
+                      }
+                      @if (getModelSource(job); as src) {
+                        @if (src.source_type !== 'hf_hub') {
+                          <span>&bull;</span>
+                          <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full cursor-default"
+                                [title]="src.local_path || ''"
+                                [class]="src.source_type === 'local_diffusers'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'">
+                            {{ src.source_type === 'local_diffusers' ? 'LOCAL' : 'SAFETENSORS' }}
+                          </span>
+                        } @else if (src.skip_update) {
+                          <span>&bull;</span>
+                          <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/30 cursor-default">
+                            OFFLINE
+                          </span>
+                        }
                       }
                     </div>
                   </div>
@@ -385,9 +404,10 @@ import { ProjectService } from '../../../services/project.service';
                              <span class="text-brand-light">{{ job.config['lora_name'] || 'UNNAMED' }}</span>
                              <span class="text-text-subtle font-normal">on</span>
                              {{ job.config['definition_id'] || job.plugin_id | uppercase }}
-                            <span class="text-text-disabled font-normal text-xs">#{{ job.id.slice(0, 8) }}</span>
                           </span>
-                          <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono">
+                          <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono flex-wrap">
+                            <span class="text-text-disabled">#{{ job.id.slice(0, 8) }}</span>
+                            <span>&bull;</span>
                             <span>{{ job.created_at * 1000 | date:'MMM d, HH:mm' }}</span>
                             @if (job.finished_at) {
                               <span>&bull;</span>
@@ -395,7 +415,24 @@ import { ProjectService } from '../../../services/project.service';
                             }
                             @if (job.config['project_id']) {
                               <span>&bull;</span>
-                              <span class="px-1.5 py-px rounded bg-brand/15 text-brand-light font-medium not-italic">{{ getProjectName(job.config['project_id']) }}</span>
+                              <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-brand/15 text-brand-light border border-brand/30 cursor-default">{{ getProjectName(job.config['project_id']) }}</span>
+                            }
+                            @if (getModelSource(job); as src) {
+                              @if (src.source_type !== 'hf_hub') {
+                                <span>&bull;</span>
+                                <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full cursor-default"
+                                      [title]="src.local_path || ''"
+                                      [class]="src.source_type === 'local_diffusers'
+                                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'">
+                                  {{ src.source_type === 'local_diffusers' ? 'LOCAL' : 'SAFETENSORS' }}
+                                </span>
+                              } @else if (src.skip_update) {
+                                <span>&bull;</span>
+                                <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/30 cursor-default">
+                                  OFFLINE
+                                </span>
+                              }
                             }
                           </div>
                         </div>
@@ -537,6 +574,7 @@ import { ProjectService } from '../../../services/project.service';
 export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   jobService = inject(JobService);
   projectService = inject(ProjectService);
+  private modelService = inject(ModelService);
   private rtc = inject(RuntimeConfigService);
   jobs = signal<Job[]>([]);
   historicalJobs = signal<Job[]>([]);
@@ -570,6 +608,9 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   smoothingFactor = signal<number>(0.9);
   autoQueue = signal<boolean>(false);
   stopModalJobId = signal<string | null>(null);
+
+  // Model source overrides cache (definition_id → source info)
+  jobModelSources = signal<Map<string, ModelSourceOverride>>(new Map());
 
   // Track if we just triggered a start to prevent double-firing before refresh updates status
   private startingJobId: string | null = null;
@@ -877,6 +918,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
       next: (jobs) => {
         this.jobs.set(jobs);
         this.processAutoQueue(jobs);
+        this.loadModelSources(jobs);
         // Pre-check sample availability for jobs with sampling configured
         for (const job of jobs) {
           if (job.config?.['sample_every_n_steps'] > 0 && !this.jobsWithSamples().has(job.id)) {
@@ -1092,6 +1134,31 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   getProjectName(projectId: string): string {
     const project = this.projectService.allProjects().find(p => p.id === projectId);
     return project?.name || projectId.slice(0, 8);
+  }
+
+  getModelSource(job: Job): ModelSourceOverride | null {
+    const defId = job.config['definition_id'] || job.plugin_id;
+    return this.jobModelSources().get(defId) || null;
+  }
+
+  /** Fetch model source overrides for all unique definition IDs in current jobs */
+  private loadModelSources(jobs: Job[]) {
+    const defIds = new Set(jobs.map(j => j.config['definition_id'] || j.plugin_id).filter(Boolean));
+    const cached = this.jobModelSources();
+    for (const defId of defIds) {
+      if (!cached.has(defId)) {
+        this.modelService.getModelSource(defId).subscribe({
+          next: (src) => {
+            this.jobModelSources.update(prev => {
+              const next = new Map(prev);
+              next.set(defId, src);
+              return next;
+            });
+          },
+          error: () => { /* No override = HF Hub default, skip */ }
+        });
+      }
+    }
   }
 
   toggleArchive() {

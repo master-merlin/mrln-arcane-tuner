@@ -5,7 +5,7 @@ import { JobService, Job, JobStatus } from '../../../services/job';
 import { WebSocketService } from '../../../services/websocket.service';
 import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
-import { TrainingChartComponent, ChartDataPoint } from '../training-chart/training-chart';
+import { TrainingChartComponent, ChartDataPoint, SmoothingMode } from '../training-chart/training-chart';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
 import { ModelService, ModelSourceOverride } from '../../../services/model.service';
@@ -258,7 +258,15 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                 <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
                     <div class="flex justify-between items-center mb-4">
                         <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Training Curves</h4>
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-3">
+                             <button (click)="smoothingMode.set(smoothingMode() === 'ema' ? 'sma' : 'ema')"
+                                     data-testid="smoothing-mode-toggle"
+                                     class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border transition-colors"
+                                     [class]="smoothingMode() === 'ema'
+                                       ? 'border-brand/40 bg-brand/10 text-brand-light'
+                                       : 'border-sky-500/40 bg-sky-500/10 text-sky-400'">
+                               {{ smoothingMode() === 'ema' ? 'EMA' : 'SMA' }}
+                             </button>
                              <span class="text-[10px] text-text-subtle uppercase font-bold">Smoothing: {{ smoothingFactor() }}</span>
                             <input type="range" min="0" max="0.99" step="0.01" 
                                    [ngModel]="smoothingFactor()" (ngModelChange)="smoothingFactor.set($event)"
@@ -268,7 +276,7 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                     
                     @if(getChartData(job); as chart) {
                         @if (chart.length > 1) {
-                            <app-training-chart [data]="chart" [smoothing]="smoothingFactor()" [height]="180"
+                            <app-training-chart [data]="chart" [smoothing]="smoothingFactor()" [smoothingMode]="smoothingMode()" [height]="180"
                                 [totalSteps]="getLatestMetrics(job)?.total_steps || 0"
                                 (plateauDetected)="onPlateauDetected(job, $event)"></app-training-chart>
                         } @else {
@@ -295,15 +303,20 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
 
               <!-- Metrics Row (if running or has logs) -->
               @if (getLatestMetrics(job); as metrics) {
-                <div [attr.data-testid]="'job-metrics-' + job.id" 
-                     class="grid grid-cols-6 gap-4 bg-base/50 p-3 rounded-theme-xl border border-surface-mid/50">
+                <div [attr.data-testid]="'job-metrics-' + job.id"
+                     class="space-y-2">
+                  <!-- Primary Metrics -->
+                  <div class="grid grid-cols-6 gap-4 bg-base/50 p-3 rounded-theme-xl border border-surface-mid/50">
                    <div class="flex flex-col">
                     <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Step</span>
                     <span class="text-sm text-brand font-mono font-bold">{{ metrics.step }}/{{ metrics.total_steps || '?' }}</span>
                   </div>
                   <div class="flex flex-col">
                     <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Loss</span>
-                    <span class="text-sm text-brand-light font-mono font-bold">{{ metrics.loss | number:'1.4-6' }}</span>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-sm text-brand-light font-mono font-bold">{{ metrics.loss | number:'1.4-6' }}</span>
+                      <span class="text-[10px]" [title]="getLossVelocityTooltip(job)">{{ getLossVelocityIcon(job) }}</span>
+                    </div>
                   </div>
                   <div class="flex flex-col">
                     <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Progress</span>
@@ -320,6 +333,42 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                    <div class="flex flex-col">
                     <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">ETC</span>
                     <span class="text-sm text-blue-300 font-mono font-bold">{{ formatEta(metrics.eta) }}</span>
+                  </div>
+                  </div>
+
+                  <!-- Secondary Metrics (epoch, throughput, resolution, NaN warning) -->
+                  <div class="flex items-center gap-3 px-3 flex-wrap">
+                    @if (metrics.epoch) {
+                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-purple-500/30 bg-purple-500/10 text-purple-400">
+                        Epoch {{ metrics.epoch }}
+                      </span>
+                    }
+                    @if (metrics.samples_per_sec) {
+                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-sky-500/30 bg-sky-500/10 text-sky-400">
+                        {{ metrics.samples_per_sec }} samples/s
+                      </span>
+                    }
+                    @if (metrics.resolution) {
+                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-teal-500/30 bg-teal-500/10 text-teal-400">
+                        {{ metrics.resolution }}
+                      </span>
+                    }
+                    @if (metrics.grad_norm != null) {
+                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-surface-high/50 bg-surface-high/20 text-text-muted">
+                        ∇ {{ formatGradNorm(metrics.grad_norm) }}
+                      </span>
+                    }
+                    @if (metrics.vram_allocated_mb) {
+                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                        VRAM {{ (metrics.vram_allocated_mb / 1024) | number:'1.1-1' }} GB
+                      </span>
+                    }
+                    @if (metrics.nan_count) {
+                      <span class="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border border-red-500/50 bg-red-500/20 text-red-400 animate-pulse"
+                            title="NaN losses detected — consider reducing learning rate">
+                        ⚠ {{ metrics.nan_count }} NaN
+                      </span>
+                    }
                   </div>
                 </div>
 
@@ -471,6 +520,45 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                       </div>
                     </div>
 
+                    <!-- Training Summary Card (completed/stopped jobs with metrics) -->
+                    @if ((job.status === JobStatus.COMPLETED || job.status === JobStatus.STOPPED) && job['avg_loss']) {
+                      <div data-testid="training-summary-card"
+                           class="grid grid-cols-3 md:grid-cols-6 gap-3 bg-base/40 p-3 rounded-theme-xl border border-surface-mid/30 mt-2">
+                        <div class="flex flex-col">
+                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Final Loss</span>
+                          <span class="text-sm text-white font-mono font-bold">{{ job['avg_loss'] | number:'1.4-6' }}</span>
+                        </div>
+                        <div class="flex flex-col">
+                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Best Loss</span>
+                          <span class="text-sm text-green-400 font-mono font-bold">{{ job['min_loss'] | number:'1.4-6' }}</span>
+                          @if (job['min_loss_step']) {
+                            <span class="text-[9px] text-text-muted font-mono">@ step {{ job['min_loss_step'] }}</span>
+                          }
+                        </div>
+                        @if (job['avg_loss'] && job['min_loss'] && job['avg_loss'] > 0) {
+                          <div class="flex flex-col">
+                            <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Improvement</span>
+                            <span class="text-sm font-mono font-bold"
+                                  [class]="job['min_loss'] < job['avg_loss'] * 0.9 ? 'text-green-400' : 'text-amber-400'">
+                              {{ ((1 - job['min_loss'] / job['avg_loss']) * 100) | number:'1.1-1' }}%
+                            </span>
+                          </div>
+                        }
+                        <div class="flex flex-col">
+                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Steps</span>
+                          <span class="text-sm text-white font-mono font-bold">{{ job['completed_steps'] || '—' }}</span>
+                        </div>
+                        <div class="flex flex-col">
+                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Train Time</span>
+                          <span class="text-sm text-white font-mono font-bold">{{ formatTrainingTime(job['training_seconds']) }}</span>
+                        </div>
+                        <div class="flex flex-col">
+                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Avg Step</span>
+                          <span class="text-sm text-white font-mono font-bold">{{ (job['avg_step_time'] || 0) | number:'1.2-2' }}s</span>
+                        </div>
+                      </div>
+                    }
+
                     <!-- Samples Grid (Archive) -->
                     @if (samplesExpandedJobs().has(job.id)) {
                       <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
@@ -608,6 +696,7 @@ export class TrainingJobQueueComponent implements OnInit {
 
   currentNow = signal<number>(Date.now());
   smoothingFactor = signal<number>(0.9);
+  smoothingMode = signal<SmoothingMode>('ema');
   autoQueue = signal<boolean>(false);
   stopModalJobId = signal<string | null>(null);
 
@@ -1065,6 +1154,49 @@ export class TrainingJobQueueComponent implements OnInit {
     const s = Math.floor(seconds % 60);
     if (h > 0) return `${h}h ${m}m`;
     return `${m}m ${s}s`;
+  }
+
+  /** Loss velocity indicator: compares recent vs earlier loss average. */
+  getLossVelocityIcon(job: Job): string {
+    if (!job.logs || job.logs.length < 20) return '';
+    const window = 20;
+    const losses: number[] = [];
+    for (let i = job.logs.length - 1; i >= 0 && losses.length < window * 2; i--) {
+      const m = this.parseLogLine(job.logs[i]);
+      if (m?.loss != null) losses.unshift(m.loss);
+    }
+    if (losses.length < window) return '';
+    const recent = losses.slice(-window).reduce((a, b) => a + b, 0) / window;
+    const earlier = losses.slice(0, window).reduce((a, b) => a + b, 0) / window;
+    const delta = (recent - earlier) / Math.max(earlier, 1e-8);
+    if (delta < -0.01) return '🟢';    // converging
+    if (delta > 0.02)  return '🔴';    // diverging
+    return '🟡';                        // plateau
+  }
+
+  getLossVelocityTooltip(job: Job): string {
+    const icon = this.getLossVelocityIcon(job);
+    if (icon === '🟢') return 'Loss is converging';
+    if (icon === '🔴') return 'Loss is diverging — consider lowering LR';
+    if (icon === '🟡') return 'Loss has plateaued';
+    return 'Waiting for data...';
+  }
+
+  /** Format grad norm: use scientific notation for very large values. */
+  formatGradNorm(gn: number): string {
+    if (gn == null) return '';
+    if (gn >= 1000) return gn.toExponential(1);
+    if (gn >= 1) return gn.toFixed(2);
+    return gn.toFixed(4);
+  }
+
+  /** Format training duration in seconds to human-readable. */
+  formatTrainingTime(seconds: number | null | undefined): string {
+    if (!seconds || seconds <= 0) return '—';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
   }
 
   startJob(id: string) {

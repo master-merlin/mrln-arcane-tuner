@@ -58,6 +58,7 @@ class PipelineTrainMixin:
 
         # Virtual epoch tracking
         steps_per_epoch = max(1, len(self.inventory) // batch_size)
+        self._steps_per_epoch = steps_per_epoch
 
         # Signal Manager
         from app.engine.components.signal_manager import TrainingSignalManager
@@ -79,6 +80,18 @@ class PipelineTrainMixin:
         # ── Create job history record in SQLite ──
         self._job_history_id = self._init_job_history(max_steps, grad_accum)
         self.logger_component._job_id = self._job_history_id
+
+        # ── Log trainable vs total parameter counts ──
+        primary = self._get_primary_model()
+        trainable_params = sum(p.numel() for p in primary.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in primary.parameters())
+        self._trainable_params = trainable_params
+        self._total_params = total_params
+        print(
+            f"[INFO:Trainable {trainable_params:,} of {total_params:,} params "
+            f"({trainable_params / max(total_params, 1) * 100:.2f}%)]",
+            flush=True,
+        )
 
         is_adaptive = OptimizerFactory.is_adaptive(
             self.config.get("optimizer_type", "AdamW8bit"),
@@ -249,7 +262,13 @@ class PipelineTrainMixin:
             if self.scaler.is_enabled():
                 self.scaler.unscale_(self.optimizer)
 
-            if not is_adaptive:
+            # Compute grad norm for ALL optimizers (monitoring).
+            # Only clip for non-adaptive; adaptive optimizers manage their own.
+            if is_adaptive:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self._get_primary_model().parameters(), max_norm=float('inf'),
+                )
+            else:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     self._get_primary_model().parameters(), max_norm=1.0
                 )
@@ -267,8 +286,13 @@ class PipelineTrainMixin:
             if self.ema_handler:
                 self.ema_handler.step()
 
-            # 7. Logging
+            # 7. Logging  — emit rich per-step diagnostics
             extra: dict[str, Any] = {}
+
+            # Grad norm (always available now)
+            extra["grad_norm"] = round(float(grad_norm), 6)
+
+            # Learning rate (d_estimate for Prodigy, raw LR otherwise)
             if (
                 hasattr(self.optimizer, "param_groups")
                 and "d" in self.optimizer.param_groups[0]
@@ -281,14 +305,46 @@ class PipelineTrainMixin:
                 if raw_lr is not None:
                     current_lr = float(raw_lr)
                 elif is_adaptive:
-                    # Adafactor relative_step + warmup_init: matches pytorch_optimizer.get_lr()
-                    # effective_lr = min(1e-6 * step, 1/sqrt(step))  (warmup_init=True)
                     import math
                     t = max(step + 1, 1)
                     current_lr = min(1e-6 * t, 1.0 / math.sqrt(t))
                 else:
                     current_lr = 0.0
-                extra["grad_norm"] = round(float(grad_norm), 6)
+
+            # Timestep distribution (populates the previously-dead DB column)
+            extra["timestep_mean"] = round(float(timesteps.float().mean()), 3)
+
+            # Epoch progress
+            extra["epoch"] = round((step + 1) / self._steps_per_epoch, 2)
+
+            # Batch resolution (from last accumulation batch)
+            if batch.get("target_w") and batch.get("target_h"):
+                extra["resolution"] = f"{batch['target_w']}x{batch['target_h']}"
+
+            # NaN event counter (early warning before abort)
+            nan_count = getattr(self, "nan_count", 0)
+            if nan_count > 0:
+                extra["nan_count"] = nan_count
+
+            # GradScaler scale factor (detects skipped steps / instability)
+            if self.scaler.is_enabled():
+                extra["amp_scale"] = float(self.scaler.get_scale())
+
+            # Throughput: samples per second
+            step_time = time.time() - self.logger_component.last_step_time
+            if step_time > 0:
+                extra["samples_per_sec"] = round(
+                    batch_size * grad_accum / max(step_time, 0.001), 2
+                )
+
+            # Live VRAM usage (every 10 steps to minimize overhead)
+            if step % 10 == 0 and torch.cuda.is_available():
+                extra["vram_allocated_mb"] = round(
+                    torch.cuda.memory_allocated() / 1024**2
+                )
+                extra["vram_reserved_mb"] = round(
+                    torch.cuda.memory_reserved() / 1024**2
+                )
 
             self.logger_component.log_step(
                 step,

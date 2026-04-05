@@ -4,6 +4,8 @@ import {
 } from '@angular/core';
 import uPlot from 'uplot';
 
+export type SmoothingMode = 'ema' | 'sma';
+
 export interface ChartDataPoint {
     step: number;
     loss: number;
@@ -36,6 +38,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
 
     readonly data = input<ChartDataPoint[]>([]);
     readonly smoothing = input<number>(0.6);
+    readonly smoothingMode = input<SmoothingMode>('ema');
     readonly height = input<number>(180);
     readonly totalSteps = input<number>(0);
 
@@ -45,12 +48,15 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     private resizeObserver: ResizeObserver | null = null;
     private _lastIsProdigy?: boolean;
     private _plateauFired = false;
+    private _bestLossStep: number | null = null;
+    private _bestLossVal: number | null = null;
 
     constructor() {
         effect(() => {
             // Track signal reads — triggers when data or smoothing change
             this.data();
             this.smoothing();
+            this.smoothingMode();
             if (this.plot) {
                 this.updateChart();
             }
@@ -131,6 +137,28 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         return result;
     }
 
+    private applySmaSmoothing(values: (number | null)[]): (number | null)[] {
+        const windowSize = Math.max(5, Math.round((1 / (1 - this.smoothing())) * 10));
+        const result: (number | null)[] = [];
+        const buffer: number[] = [];
+        for (const v of values) {
+            if (v === null) {
+                result.push(null);
+                continue;
+            }
+            buffer.push(v);
+            if (buffer.length > windowSize) buffer.shift();
+            result.push(buffer.reduce((a, b) => a + b, 0) / buffer.length);
+        }
+        return result;
+    }
+
+    private applySmoothing(values: (number | null)[]): (number | null)[] {
+        return this.smoothingMode() === 'sma'
+            ? this.applySmaSmoothing(values)
+            : this.applyEmaSmoothing(values);
+    }
+
     /**
      * Build uPlot data arrays.
      *
@@ -147,7 +175,19 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         const prodigy = this.isProdigy();
         const steps = new Float64Array(currentData.map(d => d.step));
         const rawLoss = currentData.map(d => d.loss);
-        const smoothedLoss = this.applyEmaSmoothing(rawLoss);
+        const smoothedLoss = this.applySmoothing(rawLoss);
+
+        // Track best loss for the marker plugin
+        let minLoss = Infinity;
+        let minStep = 0;
+        for (const d of currentData) {
+            if (d.loss < minLoss) {
+                minLoss = d.loss;
+                minStep = d.step;
+            }
+        }
+        this._bestLossVal = minLoss === Infinity ? null : minLoss;
+        this._bestLossStep = minLoss === Infinity ? null : minStep;
 
         if (prodigy) {
             // Prodigy: 4 data slots — no grad norm at all
@@ -285,6 +325,72 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
             scales,
             axes,
             series,
+            hooks: {
+                draw: [
+                    // ── Best loss horizontal marker ──
+                    (u: uPlot) => {
+                        if (this._bestLossVal == null) return;
+                        const ctx = u.ctx;
+                        const y = u.valToPos(this._bestLossVal, 'y', true);
+                        if (y == null || isNaN(y)) return;
+                        const left = u.bbox.left;
+                        const right = left + u.bbox.width;
+                        ctx.save();
+                        ctx.strokeStyle = 'rgba(34,197,94,0.4)';
+                        ctx.lineWidth = 1;
+                        ctx.setLineDash([4, 4]);
+                        ctx.beginPath();
+                        ctx.moveTo(left, y);
+                        ctx.lineTo(right, y);
+                        ctx.stroke();
+                        // Label
+                        ctx.fillStyle = 'rgba(34,197,94,0.7)';
+                        ctx.font = '9px Inter, sans-serif';
+                        ctx.textAlign = 'right';
+                        ctx.fillText(
+                            `best ${this._bestLossVal.toFixed(4)} @ ${this._bestLossStep}`,
+                            right - 4,
+                            y - 4,
+                        );
+                        ctx.restore();
+                    },
+                    // ── Loss divergence band (fill between smoothed & raw) ──
+                    (u: uPlot) => {
+                        const smoothed = u.data[1];
+                        const raw = u.data[2];
+                        if (!smoothed || !raw || smoothed.length < 2) return;
+                        const ctx = u.ctx;
+                        ctx.save();
+                        ctx.fillStyle = 'rgba(234,179,8,0.06)';
+                        ctx.beginPath();
+                        let started = false;
+                        // Draw top edge (smoothed or raw, whichever is higher)
+                        for (let i = 0; i < smoothed.length; i++) {
+                            const sv = smoothed[i];
+                            const rv = raw[i];
+                            if (sv == null || rv == null) continue;
+                            const x = u.valToPos(u.data[0][i], 'x', true);
+                            const yTop = u.valToPos(Math.max(sv, rv), 'y', true);
+                            if (isNaN(x) || isNaN(yTop)) continue;
+                            if (!started) { ctx.moveTo(x, yTop); started = true; }
+                            else ctx.lineTo(x, yTop);
+                        }
+                        // Draw bottom edge (reverse direction)
+                        for (let i = smoothed.length - 1; i >= 0; i--) {
+                            const sv = smoothed[i];
+                            const rv = raw[i];
+                            if (sv == null || rv == null) continue;
+                            const x = u.valToPos(u.data[0][i], 'x', true);
+                            const yBot = u.valToPos(Math.min(sv, rv), 'y', true);
+                            if (isNaN(x) || isNaN(yBot)) continue;
+                            ctx.lineTo(x, yBot);
+                        }
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.restore();
+                    },
+                ],
+            },
         };
 
         const plotData = this.buildUPlotData();

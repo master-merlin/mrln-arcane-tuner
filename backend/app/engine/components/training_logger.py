@@ -173,7 +173,7 @@ class TrainingLogger:
                 "lr": safe_lr,
                 "grad_norm": extra.get("grad_norm") if extra else None,
                 "timestep_mean": extra.get("timestep_mean") if extra else None,
-                "epoch": (step + 1) / steps_per_epoch if 'steps_per_epoch' in dir() else None,
+                "epoch": extra.get("epoch") if extra else None,
             }
             self._metrics_buffer.append(metric)
             if len(self._metrics_buffer) >= _METRICS_FLUSH_INTERVAL:

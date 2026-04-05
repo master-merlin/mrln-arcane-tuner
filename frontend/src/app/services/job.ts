@@ -26,6 +26,18 @@ export interface Job {
   error?: string;
   logs?: string[];
   warnings?: string[];
+  // Summary fields from job_history DB (populated for archived jobs)
+  avg_loss?: number;
+  min_loss?: number;
+  min_loss_step?: number;
+  completed_steps?: number;
+  training_seconds?: number;
+  duration_seconds?: number;
+  avg_step_time?: number;
+  avg_save_time?: number;
+  output_dir?: string;
+  definition_id?: string;
+  lora_name?: string;
 }
 
 export interface TrainingStats {

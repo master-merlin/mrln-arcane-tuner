@@ -343,8 +343,7 @@ import { ProjectService } from '../../../services/project.service';
         }
       </div>
 
-      <!-- Archive Section -->
-      @if (historicalJobs().length > 0 || archiveExpanded() || activeJobs().length === 0) {
+      <!-- Archive Section (always visible) -->
         <div class="mt-4 bg-surface-low/50 rounded-theme-xl border border-surface-mid overflow-hidden shadow-lg">
           <div class="px-6 py-3 flex justify-between items-center bg-surface-low/80 hover:bg-surface-mid/30 transition-colors border-b border-surface-mid/50">
             <button (click)="toggleArchive()" data-testid="toggle-archive-btn" class="flex-1 flex items-center gap-2 cursor-pointer text-left">
@@ -481,7 +480,7 @@ import { ProjectService } from '../../../services/project.service';
             </div>
           }
         </div>
-      }
+      
     </div>
 
     <!-- Sample Preview Modal -->
@@ -536,7 +535,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   // Derived views: active queue vs archive
   private readonly ACTIVE_STATUSES = new Set([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.PAUSED]);
   activeJobs = computed(() => this.jobs().filter(j => this.ACTIVE_STATUSES.has(j.status)));
-  
+
   archivedJobs = computed(() => this.historicalJobs());
   archiveExpanded = signal<boolean>(false);
   archiveProjectScope = signal<boolean>(true);
@@ -576,7 +575,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     // Restore preference
     const saved = localStorage.getItem('autoQueueEnabled');
     if (saved) this.autoQueue.set(saved === 'true');
-    
+
     // Restore archive scope preference
     const savedScope = localStorage.getItem('archiveProjectScope');
     if (savedScope !== null) this.archiveProjectScope.set(savedScope === 'true');
@@ -851,9 +850,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
   }
   refreshAll() {
     this.loadJobs();
-    if (this.archiveExpanded()) {
-      this.loadHistory();
-    }
+    this.loadHistory();
   }
 
   loadHistory() {
@@ -1078,7 +1075,7 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     // Pre-check sample availability when expanding
     if (willExpand) {
       this.loadHistory(); // Load from API on expand
-      
+
       // We need to wait for historicalJobs to populate, so subscribe or handle after
       setTimeout(() => {
         for (const job of this.archivedJobs()) {

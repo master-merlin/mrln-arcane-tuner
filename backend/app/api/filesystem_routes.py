@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from app.api._path_guard import validate_path_within
 
 router = APIRouter()
 
@@ -15,6 +15,39 @@ _ALLOWED_ROOTS: list[Path] = [
     Path(__file__).resolve().parents[2],  # backend/
     Path("outputs").resolve(),
 ]
+
+
+@router.post("/filesystem/pick-folder")
+async def pick_folder(body: dict | None = None):
+    """Open a native OS folder-picker dialog and return the chosen path.
+
+    Uses ``tkinter.filedialog.askdirectory`` which works on Windows,
+    macOS, and Linux without additional dependencies.
+
+    Optional body fields:
+        initial_dir: Starting directory for the dialog (default: user home).
+        title: Dialog window title (default: "Select Folder").
+    """
+    initial_dir = (body or {}).get("initial_dir", "")
+    title = (body or {}).get("title", "Select Folder")
+
+    def _ask() -> str:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        # Bring the dialog to the front on Windows
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(
+            initialdir=initial_dir or None,
+            title=title,
+        )
+        root.destroy()
+        return selected or ""
+
+    path = await asyncio.to_thread(_ask)
+    return {"path": path}
 
 
 @router.get("/filesystem/browse")
@@ -31,7 +64,7 @@ async def browse_filesystem(path: str = "outputs") -> dict:
     ):
         raise HTTPException(
             status_code=403,
-            detail=f"Access denied: path is outside allowed directories.",
+            detail="Access denied: path is outside allowed directories.",
         )
 
     if not resolved.is_dir():
@@ -57,3 +90,4 @@ async def browse_filesystem(path: str = "outputs") -> dict:
         "parent": parent.as_posix(),
         "entries": entries,
     }
+

@@ -5,6 +5,7 @@ import { HttpClient } from '@angular/common/http';
 import { DatasetService } from '../../../services/dataset';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
+import { ModelService } from '../../../services/model.service';
 
 import { Subject } from 'rxjs';
 import { debounceTime } from 'rxjs/operators';
@@ -16,6 +17,8 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
 import { DynamicFormGroupComponent } from '../dynamic-form-group/dynamic-form-group';
 import { AdvancedVramCardComponent } from '../advanced-vram-card/advanced-vram-card';
 import { TargetLayersCardComponent } from '../target-layers-card/target-layers-card';
+import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
+import { ModelSourceOverride } from '../../../services/model.service';
 
 export interface TrainingTemplate {
   id: string;
@@ -28,7 +31,7 @@ export interface TrainingTemplate {
 @Component({
   selector: 'app-training-dynamic-config',
   standalone: true,
-  imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent],
+  imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent, ModelSourceConfigComponent],
   template: `
     @if (schema()) {
       <form [formGroup]="form" (ngSubmit)="onSubmit()" class="flex flex-col gap-6 p-6 bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl isolate">
@@ -54,8 +57,34 @@ export interface TrainingTemplate {
               </div>
               
               @if (selectedDefinition(); as model) {
-                <div class="text-[10px] font-mono text-text-disabled bg-surface-mid/20 px-3 py-1 rounded-theme-md">
-                   ID: <span class="text-brand-light">{{ model.id }}</span>
+                <div class="flex items-center gap-2">
+                  @if (modelSourceOverride(); as src) {
+                    @if (src.source_type !== 'hf_hub') {
+                      <span class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full cursor-default"
+                            [title]="src.local_path || ''"
+                            [class]="src.source_type === 'local_diffusers'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'">
+                        {{ src.source_type === 'local_diffusers' ? 'LOCAL' : 'SAFETENSORS' }}
+                      </span>
+                    } @else if (src.skip_update) {
+                      <span class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/30 cursor-default">
+                        OFFLINE
+                      </span>
+                    }
+                  }
+                  <div class="text-[10px] font-mono text-text-disabled bg-surface-mid/20 px-3 py-1 rounded-theme-md">
+                     ID: <span class="text-brand-light">{{ model.id }}</span>
+                  </div>
+                  <button type="button" (click)="showSourceConfigModal.set(true); $event.preventDefault()"
+                          data-testid="model-source-config-btn"
+                          title="Configure model source"
+                          class="p-1.5 bg-surface-mid/40 hover:bg-surface-high text-text-subtle hover:text-brand rounded-theme-md border border-surface-mid/50 transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
                 </div>
               }
           </div>
@@ -294,6 +323,16 @@ export interface TrainingTemplate {
           </div>
         </div>
       }
+
+      @if (showSourceConfigModal() && currentDefinitionId()) {
+        <app-model-source-config
+          [definitionId]="currentDefinitionId()"
+          [definitionName]="selectedDefinition()?.name || ''"
+          [initialBrowsePath]="defaultModelPath()"
+          (close)="showSourceConfigModal.set(false)"
+          (saved)="onSourceOverrideSaved($event)">
+        </app-model-source-config>
+      }
     }
   `,
   styleUrl: 'training-dynamic-config.css'
@@ -308,11 +347,17 @@ export class TrainingDynamicConfigComponent {
   private http = inject(HttpClient);
   private toast = inject(ToastService);
   private systemService = inject(SystemService);
+  private modelService = inject(ModelService);
 
   // VRAM estimation
   vramReport = signal<VRAMReport | null>(null);
   private vramEstimate$ = new Subject<void>();
   Math = Math; // expose to template
+
+  // Model source override
+  showSourceConfigModal = signal(false);
+  modelSourceOverride = signal<ModelSourceOverride | null>(null);
+  defaultModelPath = signal('');
 
   form: FormGroup = new FormGroup({});
   properties = signal<{ key: string, schema: any }[]>([]);
@@ -360,9 +405,25 @@ export class TrainingDynamicConfigComponent {
   private datasetService = inject(DatasetService);
   private destroyRef = inject(DestroyRef);
 
+  // Load source override whenever definition changes
+  private _sourceOverrideEffect = effect(() => {
+    const defId = this.currentDefinitionId();
+    if (defId) {
+      this.loadSourceOverride(defId);
+    } else {
+      this.modelSourceOverride.set(null);
+    }
+  });
+
   constructor() {
     this.http.get<Record<string, { tip: string; detail: string }>>('/config_help.json')
       .subscribe(data => this.configHelp.set(data));
+
+    // Load global default model path for browse dialog
+    this.modelService.getGlobalSettings().subscribe({
+      next: (s) => this.defaultModelPath.set(s.default_model_path || ''),
+      error: () => {},
+    });
 
     // Debounced VRAM estimation trigger
     this.vramEstimate$.pipe(
@@ -810,6 +871,14 @@ export class TrainingDynamicConfigComponent {
             // Get the first valid, non-disabled option, or default to empty string
             const firstValid = validOptions.find(opt => !opt.disabled);
             childControl.setValue(firstValid ? firstValid.value : '', { emitEvent: false });
+
+            // When depends_on silently updates definition_id, sync the signal
+            // so the header badge + source config modal reflect the new model
+            if (prop.key === 'definition_id') {
+              const newVal = firstValid ? firstValid.value : '';
+              this.currentDefinitionId.set(newVal);
+              this._lastKnownDefinitionId = newVal;
+            }
           }
         });
       }
@@ -1320,6 +1389,26 @@ export class TrainingDynamicConfigComponent {
     const val = this.form.get('block_swap_config')?.value;
     if (val && typeof val === 'object' && Object.keys(val).length > 0 && this.advancedVramCard) {
       this.advancedVramCard.setSwapValues(val);
+    }
+  }
+
+  // ── Model Source Override ────────────────────────────────────────────
+
+  /** Fetch the source override for a definition and populate the badge signal. */
+  private loadSourceOverride(defId: string): void {
+    this.modelService.getModelSource(defId).subscribe({
+      next: (override) => this.modelSourceOverride.set(override),
+      error: () => this.modelSourceOverride.set(null),
+    });
+  }
+
+  /** Called by the modal after saving or resetting a source override. */
+  onSourceOverrideSaved(override: ModelSourceOverride | null): void {
+    this.modelSourceOverride.set(override);
+    // Re-fetch from backend to ensure consistency
+    const defId = this.currentDefinitionId();
+    if (defId) {
+      this.loadSourceOverride(defId);
     }
   }
 }

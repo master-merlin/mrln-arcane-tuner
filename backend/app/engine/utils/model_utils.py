@@ -22,7 +22,12 @@ class ModelPathResolver:
     """Resolve model component paths from local or ``huggingface:`` URIs."""
 
     @staticmethod
-    def resolve(path_str: str, base_dir: str | None = None) -> str | None:
+    def resolve(
+        path_str: str,
+        base_dir: str | None = None,
+        *,
+        local_files_only: bool = False,
+    ) -> str | None:
         """Resolve a path string to an absolute local path.
 
         Supports:
@@ -34,6 +39,9 @@ class ModelPathResolver:
         Args:
             path_str: Path or HuggingFace URI.
             base_dir: Optional base directory for relative paths.
+            local_files_only: When ``True``, skip HF download and only
+                use files already in the local cache.  Raises
+                ``FileNotFoundError`` if not cached.
 
         Returns:
             Absolute local path, or ``None`` if *path_str* is empty.
@@ -43,7 +51,9 @@ class ModelPathResolver:
             
         # 1. HuggingFace Handling
         if path_str.startswith("huggingface:"):
-            return ModelPathResolver._resolve_hf(path_str)
+            return ModelPathResolver._resolve_hf(
+                path_str, local_files_only=local_files_only,
+            )
             
         # 2. Local Path Handling
         # If absolute, return as is
@@ -60,12 +70,18 @@ class ModelPathResolver:
         return full_path
 
     @staticmethod
-    def _resolve_hf(path_str: str) -> str:
+    def _resolve_hf(
+        path_str: str,
+        *,
+        local_files_only: bool = False,
+    ) -> str:
         """Download from HuggingFace Hub and return the local cache path.
 
         Tries ``local_files_only=True`` first to avoid filesystem
         operations (symlink creation) when the model is already cached.
-        Falls back to a normal download if local files are not found.
+        Falls back to a normal download if local files are not found
+        — unless *local_files_only* is ``True``, in which case a
+        ``FileNotFoundError`` is raised.
         """
         clean = path_str.replace("huggingface:", "")
         parts = clean.split(":")
@@ -80,7 +96,12 @@ class ModelPathResolver:
             else:
                 return snapshot_download(repo_id=repo_id, local_files_only=True)
         except Exception:
-            pass  # Not cached locally — fall through to download
+            if local_files_only:
+                raise FileNotFoundError(
+                    f"Model '{repo_id}' not found in local HF cache. "
+                    "Disable offline / skip-update mode or download "
+                    "the model first.",
+                )
 
         try:
             if filename:

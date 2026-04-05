@@ -6,10 +6,22 @@ path resolution, ``from_pretrained``, device placement, error handling.
 
 Family-specific loaders become thin subclasses that override only
 ``get_component_manifest()`` and (optionally) a few hooks.
+
+Source override support
+~~~~~~~~~~~~~~~~~~~~~~
+When a user has configured a per-model source override (see
+:mod:`app.engine.utils.model_override_manager`), the loader will:
+- **Local Diffusers copy**: use the local directory with the standard
+  ``from_pretrained`` path (no download).
+- **Local Safetensors**: load raw ``.safetensors`` files using
+  safetensors I/O + ``from_pretrained`` subfolder fallbacks.
+- **HF Hub + skip-update**: resolve from cache only via
+  ``local_files_only=True``.
 """
 
 from __future__ import annotations
 
+import glob
 import importlib
 import os
 from dataclasses import dataclass, field
@@ -128,6 +140,8 @@ class GenericComponentLoader(IModelLoader):
             Dict of loaded components keyed by ``ComponentSpec.key``.
         """
         target_device = initial_device or self.device
+        self._raw_safetensors_mode = False
+        self._local_files_only = False
         root_path = self._resolve_root(definition)
         dtype = torch_dtype or self._resolve_dtype(definition)
         manifest = self.get_component_manifest(definition)
@@ -138,6 +152,7 @@ class GenericComponentLoader(IModelLoader):
             root=root_path,
             dtype=str(dtype),
             initial_device=str(target_device),
+            source_type=getattr(self, "_source_type", "hf_hub"),
             components=[s.key for s in manifest],
         )
 
@@ -159,7 +174,10 @@ class GenericComponentLoader(IModelLoader):
 
             # 5. Load via from_pretrained
             try:
-                model = self._load_component(cls, path, comp_dtype, spec)
+                model = self._load_component(
+                    cls, path, comp_dtype, spec,
+                    raw_safetensors=self._raw_safetensors_mode,
+                )
             except (OSError, ValueError, RuntimeError) as e:
                 self.logger.error(
                     "component_load_failed",
@@ -276,9 +294,53 @@ class GenericComponentLoader(IModelLoader):
     def _resolve_root(self, definition: ModelDefinition) -> str:
         """Resolve the root repo path from the definition.
 
-        Default: looks for ``components["repo"]`` or ``components["path"]``
-        or falls back to ``components["unet"]`` (SDXL convention).
+        Checks for user source overrides first (local Diffusers copy or
+        local safetensors directory).  Falls back to standard HF/YAML
+        resolution for ``components["repo"]``, ``components["path"]``,
+        or ``components["unet"]``.
         """
+        # ── User source override ──────────────────────────────────────────────
+        from app.engine.utils.model_override_manager import ModelOverrideManager
+        from app.core.schemas.model_overrides import ModelSourceType
+
+        source_type, local_path, local_files_only = (
+            ModelOverrideManager.resolve_effective_source(definition.id)
+        )
+
+        if source_type == ModelSourceType.LOCAL_DIFFUSERS:
+            if not os.path.isdir(local_path):
+                raise FileNotFoundError(
+                    f"Local Diffusers path does not exist: {local_path}",
+                )
+            self._root_path = local_path
+            self._source_type = source_type.value
+            self.logger.info(
+                "resolve_root_local_diffusers",
+                id=definition.id,
+                path=local_path,
+            )
+            return local_path
+
+        if source_type == ModelSourceType.LOCAL_SAFETENSORS:
+            if not os.path.isdir(local_path):
+                raise FileNotFoundError(
+                    f"Local Safetensors path does not exist: {local_path}",
+                )
+            self._root_path = local_path
+            self._source_type = source_type.value
+            self._raw_safetensors_mode = True
+            self.logger.info(
+                "resolve_root_local_safetensors",
+                id=definition.id,
+                path=local_path,
+            )
+            return local_path
+
+        # Store for HF Hub resolution
+        self._local_files_only = local_files_only
+        self._source_type = ModelSourceType.HF_HUB.value
+
+        # ── Standard resolution (existing logic) ───────────────────────────
         for key in ("repo", "path", "unet"):
             # Check if any spec declares a root_key
             manifest = self.get_component_manifest(definition)
@@ -286,14 +348,20 @@ class GenericComponentLoader(IModelLoader):
                 if spec.root_key:
                     comp = definition.components.get(spec.root_key)
                     if comp:
-                        resolved = ModelPathResolver.resolve(comp.path)
+                        resolved = ModelPathResolver.resolve(
+                            comp.path,
+                            local_files_only=self._local_files_only,
+                        )
                         self._root_path = resolved
                         return resolved
                 break  # only check first spec
 
             comp = definition.components.get(key)
             if comp:
-                resolved = ModelPathResolver.resolve(comp.path)
+                resolved = ModelPathResolver.resolve(
+                    comp.path,
+                    local_files_only=self._local_files_only,
+                )
                 self._root_path = resolved
                 return resolved
         raise ValueError(
@@ -317,16 +385,25 @@ class GenericComponentLoader(IModelLoader):
         """Resolve a single component's filesystem path.
 
         Resolution order:
-        1. Explicit path from ``definition.components[spec.definition_key]``
-        2. ``ModelPathResolver.find_component()`` with ``spec.candidates``
-        3. ``os.path.join(root_path, spec.subfolder)``
-        4. ``root_path`` (flat-layout fallback if ``fallback_to_root=True``)
+        1. Raw safetensors mode: find ``.safetensors`` files by component key
+        2. Explicit path from ``definition.components[spec.definition_key]``
+        3. ``ModelPathResolver.find_component()`` with ``spec.candidates``
+        4. ``os.path.join(root_path, spec.subfolder)``
+        5. ``root_path`` (flat-layout fallback if ``fallback_to_root=True``)
         """
+        local_files_only = getattr(self, "_local_files_only", False)
+
+        # 0. Raw safetensors mode
+        if getattr(self, "_raw_safetensors_mode", False):
+            return self._resolve_safetensors_component(spec, root_path)
+
         # 1. Separate repository (e.g. SDXL VAE in its own repo)
         if spec.separate_repo and spec.definition_key:
             comp = definition.components.get(spec.definition_key)
             if comp:
-                resolved = ModelPathResolver.resolve(comp.path)
+                resolved = ModelPathResolver.resolve(
+                    comp.path, local_files_only=local_files_only,
+                )
                 if resolved != root_path:
                     # Truly separate repo — load from its root
                     return resolved
@@ -335,13 +412,15 @@ class GenericComponentLoader(IModelLoader):
         if spec.definition_key:
             comp = definition.components.get(spec.definition_key)
             if comp:
-                return ModelPathResolver.resolve(comp.path)
+                return ModelPathResolver.resolve(
+                    comp.path, local_files_only=local_files_only,
+                )
 
         # If using subfolder kwarg, the root is the path
         if spec.use_subfolder_kwarg:
             return root_path
 
-        # 2. Smart discovery via find_component
+        # 3. Smart discovery via find_component
         if spec.candidates:
             discovered = ModelPathResolver.find_component(
                 definition, spec.key, root_path, candidates=spec.candidates,
@@ -349,7 +428,7 @@ class GenericComponentLoader(IModelLoader):
             if discovered:
                 return discovered
 
-        # 3. Subfolder join
+        # 4. Subfolder join
         if spec.subfolder:
             joined = os.path.join(root_path, spec.subfolder)
             if os.path.isdir(joined):
@@ -358,8 +437,57 @@ class GenericComponentLoader(IModelLoader):
             if spec.fallback_to_root:
                 return root_path
 
-        # 4. Root path as final fallback
+        # 5. Root path as final fallback
         return root_path
+
+    def _resolve_safetensors_component(
+        self,
+        spec: ComponentSpec,
+        root_path: str,
+    ) -> str:
+        """Find a component in a flat safetensors directory.
+
+        Search strategy:
+        1. Direct file: ``<root>/<key>.safetensors``
+        2. Existing subfolder (partial Diffusers structure)
+        3. Non-torch components (tokenizers) must have a subfolder
+        4. Glob for ``*<key>*.safetensors``
+        """
+        key = spec.subfolder or spec.key
+
+        # 1. Direct file match
+        direct = os.path.join(root_path, f"{key}.safetensors")
+        if os.path.isfile(direct):
+            return direct
+
+        # 2. Subfolder exists (partial Diffusers structure retained)
+        subfolder = os.path.join(root_path, key)
+        if os.path.isdir(subfolder):
+            return subfolder
+
+        # 3. Tokenizers / non-torch must have config directories
+        if not spec.is_torch_model:
+            raise FileNotFoundError(
+                f"Component '{spec.key}' requires a Diffusers-format "
+                f"directory with config files. Ensure '{key}/' exists "
+                f"in {root_path}.",
+            )
+
+        # 4. Glob for matching file
+        pattern = os.path.join(root_path, f"*{key}*.safetensors")
+        matches = glob.glob(pattern)
+        if matches:
+            self.logger.info(
+                "safetensors_component_found_via_glob",
+                key=spec.key,
+                path=matches[0],
+            )
+            return matches[0]
+
+        raise FileNotFoundError(
+            f"Component '{key}' not found in {root_path}. "
+            f"Expected '{key}.safetensors' or '{key}/' directory.",
+        )
 
     # ── Internal helpers ─────────────────────────────────────────────────
 
@@ -379,9 +507,40 @@ class GenericComponentLoader(IModelLoader):
         path: str,
         dtype: torch.dtype,
         spec: ComponentSpec,
+        *,
+        raw_safetensors: bool = False,
     ) -> Any:
-        """Call ``from_pretrained`` with the appropriate kwargs."""
-        kwargs: dict[str, Any] = {}
+        """Call ``from_pretrained`` or load raw safetensors.
+
+        When *raw_safetensors* is ``True`` and the path points to a
+        ``.safetensors`` file, we attempt to load via
+        ``safetensors.torch.load_file`` → ``from_pretrained`` on the
+        parent directory.  If no ``config.json`` is present alongside
+        the file, a ``RuntimeError`` is raised with guidance.
+        """
+        # ── Raw safetensors path ───────────────────────────────────────────
+        if raw_safetensors and spec.is_torch_model and path.endswith(".safetensors"):
+            _log = structlog.get_logger("loader_base")
+            _log.info("loading_raw_safetensors", key=spec.key, path=path)
+
+            parent_dir = os.path.dirname(path)
+
+            # Try from_pretrained on the parent dir — works when
+            # config.json lives alongside the .safetensors file.
+            try:
+                kwargs: dict[str, Any] = {"torch_dtype": dtype, "use_safetensors": True}
+                kwargs.update(spec.load_kwargs)
+                return cls.from_pretrained(parent_dir, **kwargs)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Cannot load '{spec.key}' from raw safetensors at "
+                    f"{path}. Place a config.json alongside the "
+                    f".safetensors file or use a Diffusers-format "
+                    f"directory. Original error: {exc}",
+                ) from exc
+
+        # ── Standard from_pretrained path ────────────────────────────────
+        kwargs = {}
 
         # dtype for torch models
         if spec.is_torch_model:

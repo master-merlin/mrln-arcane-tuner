@@ -9,6 +9,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from app.core.logger import get_logger
+from app.core.schemas.model_overrides import ModelOverride
+from app.engine.utils.model_override_manager import ModelOverrideManager
 from app.api.schemas.definition_schemas import (
     CreateDefinitionRequest,
     UpdateDefinitionRequest,
@@ -30,6 +32,9 @@ async def list_model_definitions():
         data["component_paths"] = {
             k: v.get("path", "") for k, v in data.get("components", {}).items()
         }
+        # Include source override info
+        override = ModelOverrideManager.get_override(def_id)
+        data["source_override"] = override.model_dump() if override else None
         results.append(data)
     return results
 
@@ -100,6 +105,9 @@ async def delete_definition(definition_id: str):
     del registry._definitions[definition_id]
     if definition_id in registry._paths:
         del registry._paths[definition_id]
+
+    # Cascade: remove any source override for this definition
+    ModelOverrideManager.delete_override(definition_id)
 
     logger.info("definition_deleted", id=definition_id)
     return {"status": "deleted", "id": definition_id}
@@ -183,3 +191,169 @@ async def enrich_definition(definition_id: str):
         "block_topology": updated.block_topology if updated else [],
         "lora_targetable_modules": updated.lora_targetable_modules if updated else [],
     }
+
+
+# ── Global Model Settings ───────────────────────────────────────────────
+
+
+@router.get("/models/settings")
+async def get_model_settings():
+    """Get global model settings (offline mode, default path)."""
+    settings = ModelOverrideManager.get_all()
+    return {
+        "global_offline_mode": settings.global_offline_mode,
+        "default_model_path": settings.default_model_path,
+    }
+
+
+@router.put("/models/settings")
+async def update_model_settings(body: dict[str, Any]):
+    """Update global model settings."""
+    settings = ModelOverrideManager.get_all()
+
+    if "global_offline_mode" in body:
+        settings.global_offline_mode = bool(body["global_offline_mode"])
+
+    if "default_model_path" in body:
+        path_str = body["default_model_path"].strip()
+        if path_str and not Path(path_str).is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path does not exist: {path_str}",
+            )
+        settings.default_model_path = path_str
+
+    ModelOverrideManager._save(settings)
+    logger.info(
+        "model_settings_updated",
+        offline=settings.global_offline_mode,
+        path=settings.default_model_path,
+    )
+    return {
+        "global_offline_mode": settings.global_offline_mode,
+        "default_model_path": settings.default_model_path,
+    }
+
+
+# ── Model Source Overrides ──────────────────────────────────────────────
+
+
+@router.get("/models/definitions/{definition_id}/source")
+async def get_model_source(definition_id: str):
+    """Get the source override for a model definition."""
+    override = ModelOverrideManager.get_override(definition_id)
+    if override:
+        return override.model_dump()
+    return {"source_type": "hf_hub", "local_path": None, "skip_update": False}
+
+
+@router.put("/models/definitions/{definition_id}/source")
+async def set_model_source(definition_id: str, override: ModelOverride):
+    """Set a source override for a model definition."""
+    from app.engine.models.registry import registry
+
+    defn = registry.get_definition(definition_id)
+    if not defn:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Definition '{definition_id}' not found.",
+        )
+
+    # Validate local paths exist
+    if override.local_path:
+        p = Path(override.local_path)
+        if not p.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path does not exist: {override.local_path}",
+            )
+
+    # Safetensors mode requires enriched YAML
+    if override.source_type == "local_safetensors":
+        if not defn.architecture_params:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Local Safetensors mode requires a fully enriched "
+                    "model definition (architecture_params must be populated). "
+                    "Enrich via HF first."
+                ),
+            )
+
+    ModelOverrideManager.set_override(definition_id, override)
+    logger.info(
+        "model_source_updated",
+        id=definition_id,
+        source=override.source_type,
+    )
+    return override.model_dump()
+
+
+@router.delete("/models/definitions/{definition_id}/source")
+async def delete_model_source(definition_id: str):
+    """Remove source override — revert to YAML default."""
+    ModelOverrideManager.delete_override(definition_id)
+    logger.info("model_source_override_removed", id=definition_id)
+    return {"status": "removed", "id": definition_id}
+
+
+@router.post("/models/definitions/{definition_id}/validate-path")
+async def validate_model_path(
+    definition_id: str,
+    body: dict[str, Any],
+):
+    """Probe a local path to determine its type and available components."""
+    local_path = body.get("path", "")
+    if not local_path:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    p = Path(local_path)
+
+    def _probe() -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "valid": False,
+            "type": "unknown",
+            "components_found": [],
+            "warnings": [],
+        }
+
+        if not p.exists():
+            return result
+
+        result["valid"] = True
+
+        if p.is_file() and p.suffix == ".safetensors":
+            result["type"] = "safetensors"
+            result["components_found"] = [p.stem]
+            return result
+
+        if p.is_dir():
+            has_model_index = (p / "model_index.json").is_file()
+            known_subdirs = [
+                "transformer", "unet", "vae", "text_encoder",
+                "text_encoder_2", "tokenizer", "tokenizer_2",
+                "scheduler", "ae",
+            ]
+            found = [d for d in known_subdirs if (p / d).is_dir()]
+
+            safetensors_files = list(p.glob("*.safetensors"))
+
+            if has_model_index or len(found) >= 2:
+                result["type"] = "diffusers"
+                result["components_found"] = found
+            elif safetensors_files:
+                result["type"] = "safetensors"
+                result["components_found"] = [f.stem for f in safetensors_files]
+                result["warnings"].append(
+                    "Raw safetensors detected. Ensure all required "
+                    "components are present and the model definition "
+                    "has been enriched with architecture_params."
+                )
+            else:
+                result["warnings"].append(
+                    "Directory exists but no model files detected."
+                )
+
+        return result
+
+    return await asyncio.to_thread(_probe)

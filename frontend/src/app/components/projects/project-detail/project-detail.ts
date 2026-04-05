@@ -1,16 +1,19 @@
 import { Component, OnInit, inject, input, output, computed, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
+import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, FormArray, FormControl } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
 import { ProjectService, Project } from '../../../services/project.service';
 import { DatasetService, Dataset } from '../../../services/dataset';
 import { TemplateService } from '../../../services/template.service';
 import { JobService } from '../../../services/job';
 import { ToastService } from '../../../services/toast';
+import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { GeneralTemplatesComponent } from '../general-templates/general-templates';
+import { DynamicFormGroupComponent } from '../../training/dynamic-form-group/dynamic-form-group';
 
 @Component({
   selector: 'app-project-detail',
   standalone: true,
-  imports: [FormsModule, GeneralTemplatesComponent],
+  imports: [FormsModule, ReactiveFormsModule, GeneralTemplatesComponent, DynamicFormGroupComponent],
   template: `
     <div class="space-y-8 animate-in fade-in duration-300">
       
@@ -102,58 +105,18 @@ import { GeneralTemplatesComponent } from '../general-templates/general-template
                         </div>
                       </div>
 
-                      <!-- Dataset Configuration -->
-                      <div>
-                        <div class="flex items-center justify-between mb-2">
-                          <label class="text-xs font-bold uppercase tracking-wider text-text-subtle">Datasets</label>
-                          <button (click)="addLaunchDataset()"
-                                  class="flex items-center gap-1 text-xs bg-brand/20 hover:bg-brand/30 border border-brand/40 text-brand-light px-2 py-1 rounded-theme-md transition-all">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                            Add
-                          </button>
-                        </div>
-
-                        <div class="space-y-3">
-                          @for (ds of launchDatasets; track $index; let i = $index) {
-                            <div class="bg-surface-mid/50 border border-surface-high rounded-theme-md p-3 space-y-2">
-                              <div class="flex items-center justify-between">
-                                <select [(ngModel)]="ds.dataset_id"
-                                        class="flex-1 bg-surface-low border border-surface-high text-white text-sm rounded-theme-md px-2 py-1.5 outline-none focus:border-brand">
-                                  <option value="">Select dataset...</option>
-                                  @for (d of projectDatasets(); track d.id) {
-                                    <option [value]="d.id">{{ d.name }}</option>
-                                  }
-                                </select>
-                                <button (click)="removeLaunchDataset(i)" class="ml-2 text-text-muted hover:text-danger p-1 transition-colors">
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                                </button>
-                              </div>
-                              <div class="grid grid-cols-3 gap-2">
-                                <div>
-                                  <label class="text-[10px] text-text-subtle">Repeats</label>
-                                  <input type="number" [(ngModel)]="ds.num_repeats" min="1" max="100"
-                                         class="w-full bg-surface-low border border-surface-high text-white text-xs rounded-theme-md px-2 py-1 outline-none focus:border-brand">
-                                </div>
-                                <div>
-                                  <label class="text-[10px] text-text-subtle">Caption Dropout</label>
-                                  <input type="number" [(ngModel)]="ds.caption_dropout" min="0" max="1" step="0.05"
-                                         class="w-full bg-surface-low border border-surface-high text-white text-xs rounded-theme-md px-2 py-1 outline-none focus:border-brand">
-                                </div>
-                                <div class="flex items-end pb-0.5">
-                                  <label class="flex items-center gap-1.5 text-[10px] text-text-subtle cursor-pointer">
-                                    <input type="checkbox" [(ngModel)]="ds.masking_enabled" class="accent-brand">
-                                    Masking
-                                  </label>
-                                </div>
-                              </div>
-                            </div>
-                          } @empty {
-                            <div class="text-center text-text-subtle p-3 bg-surface-high/50 rounded-theme-md text-xs">
-                              No datasets configured. Add a dataset to continue.
-                            </div>
-                          }
-                        </div>
-                      </div>
+                      <!-- Dataset Configuration (reused from Training Tab) -->
+                      @if (datasetsSchema()) {
+                        <app-dynamic-form-group
+                            [fieldKey]="'datasets'"
+                            [schema]="datasetsSchema()"
+                            [rootSchema]="trainingSchema()"
+                            [parentForm]="launchForm"
+                            (arrayItemAdded)="onArrayItemAdded($event.key, $event.schemaParam)"
+                            (arrayItemRemoved)="onArrayItemRemoved($event.key, $event.index)"
+                            (helpRequested)="$event">
+                        </app-dynamic-form-group>
+                      }
 
                       <!-- Start Training Button -->
                       <button (click)="startTraining()" [disabled]="!canStartTraining()"
@@ -333,6 +296,9 @@ export class ProjectDetailComponent implements OnInit {
   private templateService = inject(TemplateService);
   private jobService = inject(JobService);
   private toast = inject(ToastService);
+  private http = inject(HttpClient);
+  private fb = inject(FormBuilder);
+  private rtc = inject(RuntimeConfigService);
   
   projectId = input.required<string>();
   back = output<void>();
@@ -350,7 +316,11 @@ export class ProjectDetailComponent implements OnInit {
   selectedTemplateId = signal<string>('');
   launchLoraName = '';
   launchTriggerWord = '';
-  launchDatasets: { dataset_id: string; num_repeats: number; caption_dropout: number; masking_enabled: boolean }[] = [];
+
+  // Schema-driven dataset form (reused from Training Tab)
+  trainingSchema = signal<any>(null);
+  datasetsSchema = signal<any>(null);
+  launchForm: FormGroup = new FormGroup({ datasets: new FormArray<any>([]) });
 
   // A local signal to hold the fetched project details
   project = computed(() => {
@@ -364,7 +334,8 @@ export class ProjectDetailComponent implements OnInit {
   });
 
   canStartTraining = computed(() => {
-    return this.selectedTemplateId() && this.launchLoraName && this.launchDatasets.length > 0 && this.launchDatasets.some(d => d.dataset_id);
+    const fa = this.launchForm.get('datasets') as FormArray;
+    return this.selectedTemplateId() && this.launchLoraName && fa && fa.length > 0;
   });
 
   ngOnInit() {
@@ -404,49 +375,102 @@ export class ProjectDetailComponent implements OnInit {
         this.launchLoraName = cfg.lora_name || '';
         this.launchTriggerWord = cfg.global_triggerword || '';
 
-        // Populate datasets from template config
-        const templateDatasets = cfg.datasets || [];
-        this.launchDatasets = templateDatasets.map((ds: any) => ({
-          dataset_id: ds.dataset_id || '',
-          num_repeats: ds.num_repeats || 1,
-          caption_dropout: ds.caption_dropout || 0,
-          masking_enabled: ds.masking_enabled || false,
-        }));
+        // Fetch the training schema so we can render the exact same dataset form
+        this.http.get(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`).subscribe({
+          next: (schema: any) => {
+            this.trainingSchema.set(schema);
 
-        // If no datasets in config, add one empty slot
-        if (this.launchDatasets.length === 0) {
-          this.addLaunchDataset();
-        }
+            // Extract the datasets array schema from the full schema
+            const props = schema?.properties || {};
+            if (props.datasets) {
+              this.datasetsSchema.set(props.datasets);
+            }
+
+            // Build the launch form with the datasets FormArray
+            this.buildLaunchForm(schema, cfg);
+          },
+          error: () => this.toast.error('Failed to load training schema.')
+        });
       },
       error: () => this.toast.error('Failed to load template details.')
     });
   }
 
-  addLaunchDataset() {
-    this.launchDatasets = [...this.launchDatasets, {
-      dataset_id: '',
-      num_repeats: 1,
-      caption_dropout: 0,
-      masking_enabled: false,
-    }];
+  private resolveSchema(schemaOrRef: any): any {
+    if (!schemaOrRef) return {};
+    const root = this.trainingSchema() || {};
+    const definitions = root.$defs || root.definitions || {};
+    if (schemaOrRef.$ref) {
+      const refKey = schemaOrRef.$ref.split('/').pop();
+      if (definitions[refKey]) return { ...definitions[refKey], ...schemaOrRef };
+    }
+    return schemaOrRef;
   }
 
-  removeLaunchDataset(index: number) {
-    this.launchDatasets = this.launchDatasets.filter((_, i) => i !== index);
+  private buildLaunchForm(schema: any, cfg: any) {
+    const datasetsArray = this.fb.array([]);
+    this.launchForm = this.fb.group({ datasets: datasetsArray });
+
+    const templateDatasets: any[] = cfg.datasets || [];
+    const dsSchemaRef = schema?.properties?.datasets?.items;
+
+    if (templateDatasets.length > 0) {
+      // Populate from template config
+      for (const ds of templateDatasets) {
+        this.addDatasetArrayItem(dsSchemaRef, ds);
+      }
+    } else {
+      // Add one empty entry
+      this.addDatasetArrayItem(dsSchemaRef);
+    }
+  }
+
+  private addDatasetArrayItem(itemSchemaRef: any, values?: any) {
+    const itemSchema = this.resolveSchema(itemSchemaRef);
+    const fa = this.launchForm.get('datasets') as FormArray;
+    if (!itemSchema?.properties) return;
+
+    const group: Record<string, FormControl> = {};
+    for (const pKey in itemSchema.properties) {
+      const pSchema = this.resolveSchema(itemSchema.properties[pKey]);
+      let val = values?.[pKey];
+      if (val === undefined) {
+        val = pSchema.default !== undefined ? pSchema.default : '';
+        if (pSchema.enum?.length && !val) val = pSchema.enum[0];
+      }
+      group[pKey] = new FormControl(val);
+    }
+    fa.push(this.fb.group(group));
+  }
+
+  // Called by DynamicFormGroupComponent when user clicks "Add Dataset"
+  onArrayItemAdded(key: string, itemSchemaRef: any) {
+    if (key === 'datasets') {
+      this.addDatasetArrayItem(itemSchemaRef);
+    }
+  }
+
+  // Called by DynamicFormGroupComponent when user clicks the remove button
+  onArrayItemRemoved(key: string, index: number) {
+    if (key === 'datasets') {
+      const fa = this.launchForm.get('datasets') as FormArray;
+      fa.removeAt(index);
+    }
   }
 
   addDatasetToLaunch(ds: any) {
-    // Skip if already in the launch list
-    if (this.launchDatasets.some(d => d.dataset_id === ds.id)) {
+    const fa = this.launchForm.get('datasets') as FormArray;
+    // Check if already present
+    const existing = fa.controls.some((c: any) => c.get('dataset_name')?.value === ds.name);
+    if (existing) {
       this.toast.warning(`'${ds.name}' is already in the Quick Launch list.`);
       return;
     }
-    this.launchDatasets = [...this.launchDatasets, {
-      dataset_id: ds.id,
-      num_repeats: 1,
-      caption_dropout: 0,
-      masking_enabled: false,
-    }];
+
+    // Add with dataset_name pre-filled and prefix derived
+    const dsSchemaRef = this.trainingSchema()?.properties?.datasets?.items;
+    const prefix = ds.name.toLowerCase().replace(/[_-]/g, ' ').trim();
+    this.addDatasetArrayItem(dsSchemaRef, { dataset_name: ds.name, caption_prefix: prefix });
     this.toast.success(`Added '${ds.name}' to Quick Launch.`);
   }
 
@@ -465,20 +489,9 @@ export class ProjectDetailComponent implements OnInit {
         config.global_triggerword = this.launchTriggerWord;
         config.project_id = this.projectId();
 
-        // Apply dataset overrides — map to the format the training engine expects
-        config.datasets = this.launchDatasets
-          .filter(ds => ds.dataset_id)
-          .map(ds => {
-            // Find the dataset name from the project datasets list
-            const datasetInfo = this.projectDatasets().find(d => d.id === ds.dataset_id);
-            return {
-              dataset_id: ds.dataset_id,
-              dataset_name: datasetInfo?.name || '',
-              num_repeats: ds.num_repeats,
-              caption_dropout: ds.caption_dropout,
-              masking_enabled: ds.masking_enabled,
-            };
-          });
+        // Extract dataset values from the reactive FormArray
+        const fa = this.launchForm.get('datasets') as FormArray;
+        config.datasets = fa.value.filter((ds: any) => ds.dataset_name);
 
         // Use the template's definition_id as the plugin_id
         const pluginId = tpl.definition_id || config.definition_id || '';
@@ -486,7 +499,6 @@ export class ProjectDetailComponent implements OnInit {
         this.jobService.createJob(pluginId, config).subscribe({
           next: () => {
             this.toast.success('Training job queued successfully! Check the Jobs tab.');
-            // Refresh project stats
             this.projectService.loadProjects();
           },
           error: (err: any) => {

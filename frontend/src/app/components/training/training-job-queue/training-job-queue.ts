@@ -1068,14 +1068,40 @@ export class TrainingJobQueueComponent implements OnInit {
     }
   }
 
+  /** Throttled fields emitted every N steps — carry forward last known value. */
+  private static readonly CARRY_FORWARD_KEYS = [
+    'vram_allocated_mb', 'vram_reserved_mb', 'amp_scale', 'resolution',
+  ];
+
   getLatestMetrics(job: Job): any {
     if (!job.logs || job.logs.length === 0) return null;
     for (let i = job.logs.length - 1; i >= 0; i--) {
       const metrics = this.parseLogLine(job.logs[i]);
       if (metrics && metrics.status === 'training') {
         const totalSteps = job.config['max_train_steps'] || Math.round(metrics.step / (metrics.progress / 100)) || '?';
+
+        // Back-fill throttled fields from recent log history
+        const carryForward: Record<string, any> = {};
+        const keysNeeded = new Set(
+          TrainingJobQueueComponent.CARRY_FORWARD_KEYS.filter(k => metrics[k] == null)
+        );
+        if (keysNeeded.size > 0) {
+          const lookback = Math.min(15, i);
+          for (let j = i - 1; j >= i - lookback && keysNeeded.size > 0; j--) {
+            const prev = this.parseLogLine(job.logs[j]);
+            if (!prev) continue;
+            for (const key of [...keysNeeded]) {
+              if (prev[key] != null) {
+                carryForward[key] = prev[key];
+                keysNeeded.delete(key);
+              }
+            }
+          }
+        }
+
         return {
           ...metrics,
+          ...carryForward,
           total_steps: totalSteps
         };
       }

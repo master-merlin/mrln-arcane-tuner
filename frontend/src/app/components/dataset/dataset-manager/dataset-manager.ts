@@ -378,8 +378,10 @@ export class DatasetManagerComponent implements OnInit, OnDestroy {
   }
 
   onProjectChange(projectId: string | null) {
-    this.projectService.activeDatasetProject.set(projectId);
-    this.refreshProjectDatasets(projectId);
+    // HTML select [value]="null" emits the string "null" — normalize it
+    const pid = (projectId && projectId !== 'null') ? projectId : null;
+    this.projectService.activeDatasetProject.set(pid);
+    this.refreshProjectDatasets(pid);
   }
 
   isDatasetInProject(datasetId: string): boolean {

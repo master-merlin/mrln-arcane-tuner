@@ -145,16 +145,16 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
                   }
               </div>
           </div>
+          <!-- Size -->
+          <div class="flex justify-end pt-1">
+              <span class="text-[10px] text-text-subtle font-mono" title="Total Size">{{ (dataset().total_size_bytes || 0) / 1048576 | number:'1.1-1' }} MB</span>
+          </div>
        </div>
 
        <!-- Action Bar -->
-       <div class="mt-auto pt-4 border-t border-surface-high/50 flex items-center justify-between">
-          <div class="text-[10px] text-text-subtle font-mono text-left" title="Total Size">
-              {{ (dataset().total_size_bytes || 0) / 1048576 | number:'1.1-1' }} MB
-          </div>
-          
+       <div class="mt-auto pt-4 border-t border-surface-high/50 flex items-center justify-center">
           <div class="flex justify-center gap-0.5">
-             @if (activeProjectId()) {
+             @if (hasActiveProject()) {
              @if (isInProject()) {
               <button (click)="removeFromProject.emit(dataset()); $event.stopPropagation()" 
                    data-testid="btn-remove-from-project"
@@ -225,6 +225,12 @@ export class DatasetCardComponent {
     dataset = input.required<Dataset>();
     activeProjectId = input<string | null>(null);
     isInProject = input<boolean>(false);
+
+    /** Robust project check: handles string 'null' from select binding */
+    hasActiveProject = computed(() => {
+        const pid = this.activeProjectId();
+        return !!pid && pid !== 'null';
+    });
 
     view = output<Dataset>();
     edit = output<Dataset>();

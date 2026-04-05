@@ -28,6 +28,28 @@ export interface Job {
   warnings?: string[];
 }
 
+export interface TrainingStats {
+  total_jobs: number;
+  completed: number;
+  failed: number;
+  stopped: number;
+  running: number;
+  paused: number;
+  success_rate: number;
+  total_steps: number;
+  total_runtime_sec: number;
+  total_training_sec: number;
+  avg_steps: number;
+  avg_loss: number;
+  avg_min_loss: number;
+  avg_step_time_sec: number;
+  avg_runtime_sec: number;
+  model_families: { id: string; count: number }[];
+  optimizers: { name: string; count: number }[];
+  unique_datasets: number;
+  last_job: { lora_name: string; definition_id: string; status: string; created_at: number } | null;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -45,6 +67,10 @@ export class JobService {
       url += `&project_id=${projectId}`;
     }
     return this.http.get<Job[]>(url);
+  }
+
+  getStats(): Observable<TrainingStats> {
+    return this.http.get<TrainingStats>(`${this.apiUrl}/history/stats`);
   }
 
   listJobs(): Observable<Job[]> {

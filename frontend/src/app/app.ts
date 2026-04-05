@@ -12,6 +12,7 @@ import { ServerControlComponent } from './components/system/server-control/serve
 import { SystemMonitorComponent } from './components/system/system-monitor/system-monitor';
 import { ProjectService } from './services/project.service';
 import { ProjectsViewComponent } from './components/projects/projects-view/projects-view';
+import { TrainingStatsComponent } from './components/training/training-stats/training-stats';
 import { FormsModule } from '@angular/forms';
 
 type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
@@ -19,7 +20,7 @@ type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [TrainingDynamicConfigComponent, TrainingJobQueueComponent, DatasetManagerComponent, ServerControlComponent, LoraToolsComponent, ToastContainerComponent, SystemMonitorComponent, ProjectsViewComponent, FormsModule],
+  imports: [TrainingDynamicConfigComponent, TrainingJobQueueComponent, DatasetManagerComponent, ServerControlComponent, LoraToolsComponent, ToastContainerComponent, SystemMonitorComponent, ProjectsViewComponent, TrainingStatsComponent, FormsModule],
   template: `
     <div class="min-h-screen bg-base text-text-primary font-sans selection:bg-brand/30 selection:text-white">
       
@@ -157,6 +158,22 @@ type ViewMode = 'datasets' | 'projects' | 'train' | 'jobs' | 'tools' | 'server';
                     <p class="text-text-muted">Monitor system resources and manage training job queue.</p>
                 </div>
 
+                <!-- Training Statistics -->
+                <div class="bg-surface-low/50 border border-border-default rounded-theme-xl p-6 shadow-xl">
+                    <button (click)="statsExpanded.set(!statsExpanded())" class="w-full flex items-center justify-between group cursor-pointer">
+                        <h3 class="text-sm font-bold uppercase tracking-widest text-text-subtle group-hover:text-text-muted transition-colors">Training Statistics</h3>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" 
+                            class="text-text-subtle transition-transform duration-200" [class.rotate-180]="statsExpanded()">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    @if (statsExpanded()) {
+                        <div class="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                            <app-training-stats></app-training-stats>
+                        </div>
+                    }
+                </div>
+
                 <!-- Content Card -->
                 <div class="bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl p-6 space-y-8">
                     <!-- System Monitor -->
@@ -215,6 +232,7 @@ export class AppComponent implements OnInit {
   currentView = signal<ViewMode>('datasets');
   isRestarting = signal<boolean>(false);
   appVersion = signal<string>('…');
+  statsExpanded = signal<boolean>(false);
 
   jobQueue = viewChild(TrainingJobQueueComponent);
   configEditor = viewChild(TrainingDynamicConfigComponent);

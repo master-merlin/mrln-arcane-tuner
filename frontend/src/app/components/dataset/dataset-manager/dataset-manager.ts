@@ -230,8 +230,6 @@ export class DatasetManagerComponent implements OnInit {
       });
   }
 
-
-
   loadDatasets() {
     this.datasetService.listDatasets().subscribe(data => this.datasets.set(data));
   }

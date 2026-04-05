@@ -4,8 +4,8 @@ import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
-import { Subject, forkJoin } from 'rxjs';
-import { debounceTime, tap, switchMap } from 'rxjs/operators';
+import { Subject } from 'rxjs';
+import { debounceTime, switchMap } from 'rxjs/operators';
 
 export interface CaptionTemplate extends Template {}
 

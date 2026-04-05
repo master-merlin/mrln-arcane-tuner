@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, DestroyRef, inject, signal, computed, output, HostListener } from '@angular/core';
+import { Component, OnInit, DestroyRef, inject, signal, computed, output, HostListener } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, JsonPipe, DecimalPipe, UpperCasePipe } from '@angular/common';
 import { JobService, Job, JobStatus } from '../../../services/job';
@@ -573,7 +573,7 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
 
   styles: []
 })
-export class TrainingJobQueueComponent implements OnInit, OnDestroy {
+export class TrainingJobQueueComponent implements OnInit {
   jobService = inject(JobService);
   projectService = inject(ProjectService);
   private modelService = inject(ModelService);
@@ -891,9 +891,6 @@ export class TrainingJobQueueComponent implements OnInit, OnDestroy {
     }
   }
 
-  ngOnDestroy() {
-    // takeUntilDestroyed handles WS and interval cleanup automatically
-  }
   refreshAll() {
     this.loadJobs();
     this.loadHistory();

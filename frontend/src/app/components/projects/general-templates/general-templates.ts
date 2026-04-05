@@ -33,18 +33,33 @@ import { ToastService } from '../../../services/toast';
       <div class="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
         @for (tpl of templates(); track tpl.id) {
           <div class="flex items-center justify-between p-3 bg-surface-mid border border-surface-high rounded-theme-md hover:border-brand/30 transition-colors">
-            <div>
-              <div class="flex items-center gap-2">
-                <span class="font-medium text-white">{{ tpl.name }}</span>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-medium text-white truncate">{{ tpl.name }}</span>
                 @if (tpl.is_default) {
-                  <span class="text-xs bg-brand/20 text-brand-light px-2 py-0.5 rounded-full">System</span>
+                  <span class="text-xs bg-brand/20 text-brand-light px-2 py-0.5 rounded-full shrink-0">System</span>
+                }
+                <!-- Scope badge -->
+                @if (tpl.project_id) {
+                  <span class="text-xs bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-full shrink-0">📁 Project</span>
+                } @else {
+                  <span class="text-xs bg-sky-500/15 text-sky-400 px-2 py-0.5 rounded-full shrink-0">🌐 Global</span>
                 }
               </div>
-              <div class="text-xs text-text-subtle mt-1 text-ellipsis overflow-hidden whitespace-nowrap max-w-[250px]">
-                {{ tpl.model_id || tpl.definition_id || 'All Models' }}
+              <!-- Model / Definition info -->
+              <div class="text-xs text-text-subtle mt-1 flex items-center gap-2">
+                <span class="text-ellipsis overflow-hidden whitespace-nowrap max-w-[180px]">
+                  {{ tpl.definition_id || tpl.model_id || 'All Models' }}
+                </span>
+                <!-- Lineage badge -->
+                @if (tpl.branched_from) {
+                  <span class="text-amber-400/80 shrink-0" title="Branched from template {{ tpl.branched_from }}">
+                    ↳ branched
+                  </span>
+                }
               </div>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 shrink-0 ml-2">
               @if (!tpl.is_default && !tpl.readonly) {
                 <button (click)="deleteTemplate(tpl)"
                         class="text-sm bg-surface-high hover:bg-danger/20 text-danger border border-border-default px-2 py-1.5 rounded-theme-md transition-colors"

@@ -217,22 +217,32 @@ class TestModuleSettings:
         assert on_disk["application"]["backend_port"] == 8000
 
 
-# ── Captioning Settings (Typed Accessors) ────────────────────────────────
+# ── Captioning Settings (via Module Settings API) ────────────────────────
 
 
 class TestCaptioningSettings:
-    """Tests for typed captioning settings accessor methods."""
+    """Tests for captioning schema validation via the generic module API.
+
+    As of V4, SettingsManager no longer has typed captioning accessors.
+    These tests validate schema parsing/roundtrips through
+    ``get_module_settings`` / ``update_module_settings``.
+    """
 
     def test_get_captioning_settings_empty(self, settings_file):
-        """When no captioning module exists, return defaults."""
+        """When no captioning module exists, schema defaults apply."""
+        from app.core.schemas.captioning_settings import CaptioningSettings
+
         mgr = _make_manager(settings_file)
-        caps = mgr.get_captioning_settings()
+        raw = mgr.get_module_settings("captioning")
+        caps = CaptioningSettings.model_validate(raw) if raw else CaptioningSettings()
         assert caps.selected_model == "florence-2"
         assert caps.qwen3_variant == "4B-Instruct"
         assert caps.models == {}
 
     def test_get_captioning_settings_valid(self, settings_file):
         """Existing captioning data should be parsed into typed models."""
+        from app.core.schemas.captioning_settings import CaptioningSettings
+
         data = {
             "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
             "captioning": {
@@ -259,7 +269,8 @@ class TestCaptioningSettings:
             json.dump(data, f)
 
         mgr = _make_manager(settings_file)
-        caps = mgr.get_captioning_settings()
+        raw = mgr.get_module_settings("captioning")
+        caps = CaptioningSettings.model_validate(raw)
 
         assert caps.selected_model == "florence-2"
         assert caps.qwen3_variant == "8B-Instruct"
@@ -301,11 +312,12 @@ class TestCaptioningSettings:
                 )
             }
         )
-        mgr.update_captioning_settings(settings)
+        mgr.update_module_settings("captioning", settings.model_dump())
 
         # Re-read from disk
         mgr2 = _make_manager(settings_file)
-        caps = mgr2.get_captioning_settings()
+        raw = mgr2.get_module_settings("captioning")
+        caps = CaptioningSettings.model_validate(raw)
         assert caps.selected_model == "qwen3-vl"
         assert caps.qwen3_variant == "32B-Thinking"
         assert len(caps.models["qwen3-vl"].templates) == 2
@@ -323,6 +335,8 @@ class TestCaptioningSettings:
 
     def test_captioning_partial_data_uses_defaults(self, settings_file):
         """Partial captioning data should fill in defaults for missing fields."""
+        from app.core.schemas.captioning_settings import CaptioningSettings
+
         data = {
             "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
             "captioning": {
@@ -334,7 +348,8 @@ class TestCaptioningSettings:
             json.dump(data, f)
 
         mgr = _make_manager(settings_file)
-        caps = mgr.get_captioning_settings()
+        raw = mgr.get_module_settings("captioning")
+        caps = CaptioningSettings.model_validate(raw)
         assert caps.selected_model == "youtu-vl"
         assert caps.qwen3_variant == "4B-Instruct"  # default
         assert caps.models == {}  # default
@@ -401,22 +416,27 @@ class TestCaptionParamModels:
         # unknown-model is skipped silently
 
 
-# ── Masking Settings (Typed Accessors) ───────────────────────────────────
+# ── Masking Settings (via Module Settings API) ───────────────────────────
 
 
 class TestMaskingSettings:
-    """Tests for typed masking settings accessor methods."""
+    """Tests for masking schema validation via the generic module API."""
 
     def test_get_masking_settings_empty(self, settings_file):
-        """When no masking module exists, return defaults."""
+        """When no masking module exists, schema defaults apply."""
+        from app.core.schemas.masking_settings import MaskingSettings
+
         mgr = _make_manager(settings_file)
-        ms = mgr.get_masking_settings()
+        raw = mgr.get_module_settings("masking")
+        ms = MaskingSettings.model_validate(raw) if raw else MaskingSettings()
         assert ms.selected_model == "sam3"
         assert ms.models == {}
         assert ms.saved_concepts == []
 
     def test_get_masking_settings_valid(self, settings_file):
         """Existing masking data should be parsed into typed models."""
+        from app.core.schemas.masking_settings import MaskingSettings
+
         data = {
             "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
             "masking": {
@@ -442,7 +462,8 @@ class TestMaskingSettings:
             json.dump(data, f)
 
         mgr = _make_manager(settings_file)
-        ms = mgr.get_masking_settings()
+        raw = mgr.get_module_settings("masking")
+        ms = MaskingSettings.model_validate(raw)
         assert ms.selected_model == "sam3"
         assert ms.saved_concepts == ["hat", "shoes"]
         assert "sam3" in ms.models
@@ -476,10 +497,11 @@ class TestMaskingSettings:
                 )
             }
         )
-        mgr.update_masking_settings(settings)
+        mgr.update_module_settings("masking", settings.model_dump())
 
         mgr2 = _make_manager(settings_file)
-        ms = mgr2.get_masking_settings()
+        raw = mgr2.get_module_settings("masking")
+        ms = MaskingSettings.model_validate(raw)
         assert ms.selected_model == "rembg"
         assert ms.saved_concepts == ["helmet"]
         assert len(ms.models["rembg"].templates) == 2
@@ -532,20 +554,25 @@ class TestMaskingParamModels:
         assert "[rembg]" in warnings[0]
 
 
-# ── Training Settings (Typed Accessors) ──────────────────────────────────
+# ── Training Settings (via Module Settings API) ──────────────────────────
 
 
 class TestTrainingSettings:
-    """Tests for typed training settings accessor methods."""
+    """Tests for training schema validation via the generic module API."""
 
     def test_get_training_settings_empty(self, settings_file):
-        """When no training module exists, return defaults."""
+        """When no training module exists, schema defaults apply."""
+        from app.core.schemas.training_settings import TrainingSettings
+
         mgr = _make_manager(settings_file)
-        ts = mgr.get_training_settings()
+        raw = mgr.get_module_settings("training")
+        ts = TrainingSettings.model_validate(raw) if raw else TrainingSettings()
         assert ts.templates == []
 
     def test_get_training_settings_valid(self, settings_file):
         """Existing training data should be parsed into typed models."""
+        from app.core.schemas.training_settings import TrainingSettings
+
         data = {
             "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
             "training": {
@@ -584,7 +611,8 @@ class TestTrainingSettings:
             json.dump(data, f)
 
         mgr = _make_manager(settings_file)
-        ts = mgr.get_training_settings()
+        raw = mgr.get_module_settings("training")
+        ts = TrainingSettings.model_validate(raw)
         assert len(ts.templates) == 1
         tpl = ts.templates[0]
         assert tpl.name == "My Training"
@@ -598,6 +626,7 @@ class TestTrainingSettings:
     def test_update_training_settings_roundtrip(self, settings_file):
         """Write training settings then read them back."""
         from app.core.schemas.training_settings import TrainingSettings, TrainingTemplate
+
         mgr = _make_manager(settings_file)
         settings = TrainingSettings(
             templates=[
@@ -608,10 +637,11 @@ class TestTrainingSettings:
                 )
             ]
         )
-        mgr.update_training_settings(settings)
+        mgr.update_module_settings("training", settings.model_dump())
 
         mgr2 = _make_manager(settings_file)
-        ts = mgr2.get_training_settings()
+        raw = mgr2.get_module_settings("training")
+        ts = TrainingSettings.model_validate(raw)
         assert len(ts.templates) == 1
         assert ts.templates[0].config["optimizer_type"] == "Prodigy"
         assert ts.templates[0].config["d_coef"] == 0.8

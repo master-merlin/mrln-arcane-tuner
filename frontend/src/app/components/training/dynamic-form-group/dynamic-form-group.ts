@@ -1,4 +1,4 @@
-import { Component, input, output, inject } from '@angular/core';
+import { Component, input, output, inject, effect } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
 import { ReactiveFormsModule, FormArray, FormGroup, FormControl } from '@angular/forms';
 import { DatasetService, Dataset } from '../../../services/dataset';
@@ -229,12 +229,27 @@ export class DynamicFormGroupComponent {
   // Use dataset service locally for dataset_name autocomplete
   private datasetService = inject(DatasetService);
   availableDatasets: string[] = [];
+  private _allDatasetNames: string[] = [];
 
   constructor() {
+    // Fetch all datasets as the default pool
     this.datasetService.listDatasets().subscribe((ds: Dataset[]) => {
-      // If external datasetNames is provided, use that; otherwise use all datasets
+      this._allDatasetNames = ds.map((d: Dataset) => d.name);
+      // Only use if no external override is active
+      if (!this.datasetNames()) {
+        this.availableDatasets = this._allDatasetNames;
+      }
+    });
+
+    // Reactively watch the datasetNames input — when the parent sets it,
+    // override the autocomplete list (project-scoped filtering)
+    effect(() => {
       const override = this.datasetNames();
-      this.availableDatasets = override ?? ds.map((d: Dataset) => d.name);
+      if (override) {
+        this.availableDatasets = override;
+      } else if (this._allDatasetNames.length > 0) {
+        this.availableDatasets = this._allDatasetNames;
+      }
     });
   }
 

@@ -75,15 +75,11 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
             <div class="text-text-muted truncate font-mono" [title]="dataset().path">{{ dataset().path }}</div>
           </div>
 
-          <!-- Total Files & Date -->
-          <div class="flex items-center gap-4">
-              <div class="flex items-center gap-2">
-                <span class="text-text-subtle w-16 font-medium">Files</span>
-                <span class="text-text-primary font-mono">{{ dataset().file_count }}</span>
-              </div>
-              <div class="flex items-center gap-2 text-[10px] text-text-subtle ml-auto italic">
-                <span>{{ dataset().last_scanned_at ? ('Scanned ' + ((dataset().last_scanned_at || 0) * 1000 | date:'short')) : 'Never Scanned' }}</span>
-              </div>
+          <!-- Total Files & Size -->
+          <div class="flex items-center gap-2">
+              <span class="text-text-subtle w-16 font-medium">Files</span>
+              <span class="text-text-primary font-mono">{{ dataset().file_count }}</span>
+              <span class="text-text-subtle font-mono ml-auto" title="Total Size">{{ (dataset().total_size_bytes || 0) / 1048576 | number:'1.1-1' }} MB</span>
           </div>
 
           <!-- Media & Captions -->
@@ -97,15 +93,15 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
                   <span class="text-text-primary font-mono">{{ dataset().caption_count || 0 }}</span>
               </div>
               @if (dataset().median_quality_score != null) {
-                  <div class="flex items-center gap-2 text-[10px] text-text-subtle ml-auto italic">
-                      <span>Median</span>
-                      <span class="flex-shrink-0 px-1 py-px rounded-sm font-bold not-italic" [class]="getScoreColor(dataset().median_quality_score!)">{{ dataset().median_quality_score!.toFixed(4) }}</span>
+                  <div class="flex items-center gap-2 ml-auto">
+                      <span class="text-text-subtle font-medium">Median</span>
+                      <span class="flex-shrink-0 px-1 py-px rounded-sm font-bold font-mono" [class]="getScoreColor(dataset().median_quality_score!)">{{ dataset().median_quality_score!.toFixed(4) }}</span>
                   </div>
               }
           </div>
           
           <!-- Indicators -->
-          <div class="flex items-center gap-6 pt-2 mt-auto border-t border-surface-high/30">
+          <div class="flex items-center justify-center gap-6 pt-2 mt-auto border-t border-surface-high/30">
               <!-- Harmonized Indicator -->
                <div class="flex items-center gap-1.5" [title]="dataset().harmonization_score ? (((dataset().harmonization_score || 0) * 100) | number:'1.0-1') + '% Harmonized' : 'Not Harmonized'">
                   @if (dataset().harmonization_score && ((dataset().harmonization_score || 0) >= 0.99)) {
@@ -145,14 +141,15 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
                   }
               </div>
           </div>
-          <!-- Size -->
-          <div class="flex justify-end pt-1">
-              <span class="text-[10px] text-text-subtle font-mono" title="Total Size">{{ (dataset().total_size_bytes || 0) / 1048576 | number:'1.1-1' }} MB</span>
-          </div>
+       </div>
+
+       <!-- Last Scanned (outside the box, small) -->
+       <div class="text-[9px] text-text-disabled italic text-right px-1 py-1">
+           {{ dataset().last_scanned_at ? ('Scanned ' + ((dataset().last_scanned_at || 0) * 1000 | date:'short')) : 'Never scanned' }}
        </div>
 
        <!-- Action Bar -->
-       <div class="mt-auto pt-4 border-t border-surface-high/50 flex items-center justify-center">
+       <div class="mt-auto pt-3 border-t border-surface-high/50 flex items-center justify-center">
           <div class="flex justify-center gap-0.5">
              @if (hasActiveProject()) {
              @if (isInProject()) {

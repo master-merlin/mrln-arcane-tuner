@@ -17,6 +17,7 @@ import { ViewerRescanModalComponent } from '../dataset-viewer/components/viewer-
 import { ViewerCacheAdminModalComponent } from '../dataset-viewer/components/viewer-cache-admin-modal';
 import { DatasetRescanOptionsModalComponent } from './components/dataset-rescan-options-modal';
 import { DatasetSingleRescanModalComponent } from './components/dataset-single-rescan-modal';
+import { DatasetStatsComponent } from './components/dataset-stats';
 
 @Component({
   selector: 'app-dataset-manager',
@@ -31,6 +32,7 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
     ViewerCacheAdminModalComponent,
     DatasetRescanOptionsModalComponent,
     DatasetSingleRescanModalComponent,
+    DatasetStatsComponent,
     FormsModule
   ],
   template: `
@@ -66,6 +68,9 @@ import { DatasetSingleRescanModalComponent } from './components/dataset-single-r
                       </div>
                   </div>
               </div>
+
+              <!-- Statistics Panel -->
+              <app-dataset-stats [datasets]="datasets()"></app-dataset-stats>
 
               <!-- Content Card -->
               <div class="bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl p-6 space-y-8">

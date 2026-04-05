@@ -101,13 +101,13 @@ import { ProjectDialogComponent } from '../project-dialog/project-dialog';
                       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                           <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5">LoRA Name</label>
-                          <input type="text" [(ngModel)]="launchLoraName"
+                          <input type="text" [ngModel]="launchLoraName()" (ngModelChange)="launchLoraName.set($event)"
                                  placeholder="my_lora_v1"
                                  class="w-full bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled">
                         </div>
                         <div>
                           <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5">Trigger Word</label>
-                          <input type="text" [(ngModel)]="launchTriggerWord"
+                          <input type="text" [ngModel]="launchTriggerWord()" (ngModelChange)="launchTriggerWord.set($event)"
                                  placeholder="ohwx"
                                  class="w-full bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled">
                         </div>
@@ -336,8 +336,8 @@ export class ProjectDetailComponent implements OnInit {
 
   // Quick Launch state
   selectedTemplateId = signal<string>('');
-  launchLoraName = '';
-  launchTriggerWord = '';
+  launchLoraName = signal('');
+  launchTriggerWord = signal('');
 
   // Schema-driven dataset form (reused from Training Tab)
   trainingSchema = signal<any>(null);
@@ -358,9 +358,11 @@ export class ProjectDetailComponent implements OnInit {
   // Project-scoped dataset names for the DynamicFormGroupComponent autocomplete
   projectDatasetNames = computed(() => this.projectDatasets().map(d => d.name));
 
+  // Track dataset count reactively (FormArray.length is not a signal)
+  datasetCount = signal(0);
+
   canStartTraining = computed(() => {
-    const fa = this.launchForm.get('datasets') as FormArray;
-    return this.selectedTemplateId() && this.launchLoraName && fa && fa.length > 0;
+    return this.selectedTemplateId() && this.launchLoraName() && this.datasetCount() > 0;
   });
 
   ngOnInit() {
@@ -430,8 +432,8 @@ export class ProjectDetailComponent implements OnInit {
     this.templateService.getTemplate('training', templateId).subscribe({
       next: (tpl) => {
         const cfg = tpl.config || {};
-        this.launchLoraName = cfg.lora_name || '';
-        this.launchTriggerWord = cfg.global_triggerword || '';
+        this.launchLoraName.set(cfg.lora_name || '');
+        this.launchTriggerWord.set(cfg.global_triggerword || '');
 
         // Fetch the training schema so we can render the exact same dataset form
         this.http.get(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`).subscribe({
@@ -516,9 +518,15 @@ export class ProjectDetailComponent implements OnInit {
         val = pSchema.default !== undefined ? pSchema.default : '';
         if (pSchema.enum?.length && !val) val = pSchema.enum[0];
       }
+      // If the template's dataset_name doesn't exist in the project context,
+      // fall back to the first available project dataset
+      if (pKey === 'dataset_name' && val && pSchema.enum?.length && !pSchema.enum.includes(val)) {
+        val = pSchema.enum[0];
+      }
       group[pKey] = new FormControl(val);
     }
     fa.push(this.fb.group(group));
+    this.datasetCount.set(fa.length);
   }
 
   // Called by DynamicFormGroupComponent when user clicks "Add Dataset"
@@ -533,6 +541,7 @@ export class ProjectDetailComponent implements OnInit {
     if (key === 'datasets') {
       const fa = this.launchForm.get('datasets') as FormArray;
       fa.removeAt(index);
+      this.datasetCount.set(fa.length);
     }
   }
 
@@ -563,18 +572,21 @@ export class ProjectDetailComponent implements OnInit {
         const config = { ...(tpl.config || {}) };
 
         // Apply overrides
-        config.lora_name = this.launchLoraName;
-        config.global_triggerword = this.launchTriggerWord;
+        config.lora_name = this.launchLoraName();
+        config.global_triggerword = this.launchTriggerWord();
         config.project_id = this.projectId();
 
         // Extract dataset values from the reactive FormArray
         const fa = this.launchForm.get('datasets') as FormArray;
         config.datasets = fa.value.filter((ds: any) => ds.dataset_name);
 
-        // Use the template's definition_id as the plugin_id
-        const pluginId = tpl.definition_id || config.definition_id || '';
+        // Ensure definition_id is in config (for the trainer subprocess)
+        if (!config.definition_id) {
+          config.definition_id = tpl.definition_id || '';
+        }
 
-        this.jobService.createJob(pluginId, config).subscribe({
+        // plugin_id is always 'standard' — definition_id is a config param, not the plugin key
+        this.jobService.createJob('standard', config).subscribe({
           next: () => {
             this.toast.success('Training job queued successfully! Check the Jobs tab.');
             this.projectService.loadProjects();
@@ -680,6 +692,7 @@ export class ProjectDetailComponent implements OnInit {
         fa.removeAt(i);
       }
     }
+    this.datasetCount.set(fa.length);
     this.refreshDatasetSchemaEnum();
   }
 
@@ -688,6 +701,7 @@ export class ProjectDetailComponent implements OnInit {
     const fa = this.launchForm.get('datasets') as FormArray;
     if (!fa) return;
     while (fa.length > 0) fa.removeAt(0);
+    this.datasetCount.set(0);
     this.refreshDatasetSchemaEnum();
   }
 

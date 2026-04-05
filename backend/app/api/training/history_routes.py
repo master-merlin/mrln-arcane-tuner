@@ -47,6 +47,18 @@ async def get_job_stats():
         """).fetchone()
 
         # ── Model family breakdown ───────────────────────────────
+        # Auto-repair legacy records where definition_id was stored as
+        # the plugin_id placeholder "standard" instead of the real model ID.
+        db = get_db()
+        with db.write() as wconn:
+            wconn.execute("""
+                UPDATE job_history
+                SET definition_id = json_extract(config, '$.definition_id')
+                WHERE definition_id = 'standard'
+                  AND json_extract(config, '$.definition_id') IS NOT NULL
+                  AND json_extract(config, '$.definition_id') != ''
+            """)
+
         families = conn.execute("""
             SELECT definition_id, COUNT(*) AS count
             FROM job_history

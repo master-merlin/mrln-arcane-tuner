@@ -201,7 +201,7 @@ class JobManager:
                 "id": job.id,
                 "project_id": config.get("project_id"),
                 "lora_name": config.get("lora_name", ""),
-                "definition_id": plugin_id,
+                "definition_id": config.get("definition_id") or plugin_id,
                 "status": "pending",
                 "config": job.config,
                 "created_at": job.created_at,

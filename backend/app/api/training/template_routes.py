@@ -45,6 +45,8 @@ class UpdateTemplateRequest(BaseModel):
     system_prompt: str | None = None
     config: dict[str, Any] | None = None
     project_id: str | None = None
+    definition_id: str | None = None
+    model_id: str | None = None
 
 
 class BranchTemplateRequest(BaseModel):

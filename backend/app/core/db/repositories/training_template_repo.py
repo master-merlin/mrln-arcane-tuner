@@ -129,7 +129,7 @@ class TrainingTemplateRepository:
         """Update specific fields."""
         updates = dict(updates)
         updates["updated_at"] = time.time()
-        for key in ("id", "created_at", "definition_id"):
+        for key in ("id", "created_at"):
             updates.pop(key, None)
         updates = self._prepare(updates)
 

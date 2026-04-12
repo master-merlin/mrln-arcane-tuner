@@ -89,67 +89,63 @@ class LogTailer:
 
     def _run(self) -> None:
         """Poll the log file and dispatch new entries."""
-        while not self._stop_event.is_set():
-            try:
-                if not os.path.exists(self.log_path):
-                    # File doesn't exist yet — trainer may still be
-                    # initialising the output directory.
-                    self._stop_event.wait(self.poll_interval)
-                    continue
+        # Wait for file to appear
+        while not self._stop_event.is_set() and not os.path.exists(self.log_path):
+            self._stop_event.wait(self.poll_interval)
 
-                file_size = os.path.getsize(self.log_path)
+        if self._stop_event.is_set():
+            return
 
-                # Rotation / truncation detection
-                if file_size < self._offset:
+        try:
+            with open(self.log_path, "r", encoding="utf-8") as f:
+                f.seek(0, os.SEEK_END)
+                file_len = f.tell()
+                
+                # Truncation / Rotation Check
+                if file_len < self._offset:
                     logger.info(
                         "log_tailer_file_truncated",
                         job_id=self.job_id,
                         old_offset=self._offset,
-                        new_size=file_size,
+                        new_size=file_len,
                     )
                     self._offset = 0
 
-                if file_size > self._offset:
-                    self._read_new_lines()
-                    self._save_offset()
-
-            except Exception as exc:
-                logger.warning(
-                    "log_tailer_poll_error",
-                    job_id=self.job_id,
-                    error=str(exc),
-                )
-
-            self._stop_event.wait(self.poll_interval)
-
-    # ── File I/O ──────────────────────────────────────────────────────
-
-    def _read_new_lines(self) -> None:
-        """Read from the current offset to EOF, dispatching each line."""
-        try:
-            with open(self.log_path, "r", encoding="utf-8") as f:
                 f.seek(self._offset)
-                for line in f:
+
+                while not self._stop_event.is_set():
+                    current_pos = f.tell()
+                    line = f.readline()
+
+                    if not line:
+                        # Clear EOF flag for next read
+                        f.seek(current_pos)
+                        
+                        # Occasionally check for file rotation if stuck at EOF
+                        try:
+                            if os.path.exists(self.log_path) and os.path.getsize(self.log_path) < current_pos:
+                                f.seek(0)
+                        except OSError:
+                            pass
+                            
+                        self._stop_event.wait(self.poll_interval)
+                        continue
+
                     line = line.strip()
                     if not line:
                         continue
+                        
                     try:
                         entry = json.loads(line)
                         self.dispatcher(self.job_id, entry)
                     except json.JSONDecodeError:
-                        # Malformed line (partial write?) — skip but keep going
-                        logger.debug(
-                            "log_tailer_bad_json",
-                            job_id=self.job_id,
-                            line=line[:120],
-                        )
-                self._offset = f.tell()
-        except OSError as exc:
-            logger.warning(
-                "log_tailer_read_error",
-                job_id=self.job_id,
-                error=str(exc),
-            )
+                        logger.debug("log_tailer_bad_json", job_id=self.job_id)
+                        
+                    self._offset = f.tell()
+                    self._save_offset()
+
+        except Exception as exc:
+            logger.warning("log_tailer_loop_error", job_id=self.job_id, error=str(exc))
 
     # ── Offset persistence ────────────────────────────────────────────
 

@@ -86,10 +86,18 @@ class StandardPlugin(TrainingPlugin):
 
         try:
             from pathlib import Path
+            output_dir = config.get("output_dir")
             job_id = config.get("job_id", "unknown")
-            boot_log_path = Path(backend_root) / "data" / "outputs" / f"boot_{job_id}.log"
+            
+            if output_dir:
+                boot_log_path = Path(output_dir) / "trainer_stdout.log"
+            else:
+                # Fallback purely if config lacks output_dir
+                boot_log_path = Path(backend_root) / "data" / "outputs" / f"boot_{job_id}.log"
+                
             boot_log_path.parent.mkdir(parents=True, exist_ok=True)
-            boot_log_file = open(boot_log_path, "w")
+            # Use line buffering to ensure tracebacks are immediately written
+            boot_log_file = open(boot_log_path, "w", buffering=1)
         except Exception:
             boot_log_file = subprocess.DEVNULL
 

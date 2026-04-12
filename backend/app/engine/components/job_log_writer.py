@@ -66,6 +66,7 @@ class JobLogWriter:
             self._file.write(
                 json.dumps(entry, separators=(",", ":"), default=str) + "\n",
             )
+            self._file.flush()
         except (OSError, ValueError):
             pass  # Non-fatal — never crash the trainer for a log write
 

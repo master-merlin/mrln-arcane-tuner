@@ -23,6 +23,7 @@ class TrainingLogger:
         elapsed_offset: float = 0.0,
         step_offset: int = 0,
         signal_manager: object | None = None,
+        log_writer: object | None = None,
     ):
         self.max_steps = max_steps
         self.start_time = time.time()
@@ -31,6 +32,7 @@ class TrainingLogger:
         self.elapsed_offset = elapsed_offset
         self.step_offset = step_offset
         self.signal_manager = signal_manager
+        self.log_writer = log_writer
         self._loss_history: list[dict] = []
         self._last_paused_elapsed: float = 0.0
         # Separate training start from logger creation so prep time
@@ -155,6 +157,10 @@ class TrainingLogger:
             
         # Backend structured log
         logger.info("step_progress", **log_data)
+
+        # File-based IPC: emit step metrics to job_log.jsonl
+        if self.log_writer and hasattr(self.log_writer, "step"):
+            self.log_writer.step(log_data)
 
         # Accumulate loss history
         self._loss_history.append({

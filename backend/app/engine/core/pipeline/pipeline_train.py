@@ -65,6 +65,11 @@ class PipelineTrainMixin:
         self.signal_manager = TrainingSignalManager(self.checkpoint_manager.output_dir)
         self.logger_component.signal_manager = self.signal_manager
 
+        # Inject the file-based log writer into the logger component
+        _lw = getattr(self, "_log_writer", None)
+        if _lw:
+            self.logger_component.log_writer = _lw
+
         # Write initial training log
         trainable_comps = self._build_trainable_components()
         self.checkpoint_manager._write_training_log(
@@ -92,6 +97,11 @@ class PipelineTrainMixin:
             f"({trainable_params / max(total_params, 1) * 100:.2f}%)]",
             flush=True,
         )
+        if _lw:
+            _lw.log(
+                f"Trainable {trainable_params:,} of {total_params:,} params "
+                f"({trainable_params / max(total_params, 1) * 100:.2f}%)"
+            )
 
         is_adaptive = OptimizerFactory.is_adaptive(
             self.config.get("optimizer_type", "AdamW8bit"),
@@ -106,14 +116,14 @@ class PipelineTrainMixin:
             and self.global_step == 0
         ):
             self.logger.info("generating_step0_baseline_sample")
-            print("[STATUS:Sampling]", flush=True)
+            self._emit_status("Sampling")
             try:
                 self.sampler.generate_samples(step=-1)  # step -1 → displayed as step 0
             except Exception as e:
                 self.logger.error("step0_sampling_failed", error=str(e))
-                print(f"[WARNING:Step-0 sampling failed: {e}]", flush=True)
+                self._emit_warning(f"Step-0 sampling failed: {e}")
             finally:
-                print("[STATUS:Training]", flush=True)
+                self._emit_status("Training")
 
         # Tell the logger how often we save so it can project save overhead in ETA
         save_every_cfg = int(self.config.get("save_every_n_steps", 0))
@@ -128,7 +138,7 @@ class PipelineTrainMixin:
             signal_action = self.signal_manager.handle_signals()
             if signal_action == "soft_stop":
                 self.logger.info("soft_stop_saving_checkpoint", step=step)
-                print("[STATUS:Saving Checkpoint]", flush=True)
+                self._emit_status("Saving Checkpoint")
                 self.checkpoint_manager.save_checkpoint(
                     step=step,
                     components=self._build_trainable_components(),
@@ -357,7 +367,7 @@ class PipelineTrainMixin:
             save_every = int(self.config.get("save_every_n_steps", 0))
             if save_every > 0 and step > 0 and step % save_every == 0:
                 self.logger.info("periodic_checkpoint_saving", step=step)
-                print("[STATUS:Saving Checkpoint]", flush=True)
+                self._emit_status("Saving Checkpoint")
                 self.logger_component.pause_step_timer()
                 self.checkpoint_manager.save_checkpoint(
                     step=step,
@@ -382,22 +392,22 @@ class PipelineTrainMixin:
                 # Flush metrics buffer + update progress
                 self.logger_component.flush_metrics()
                 self._update_job_progress(step)
-                print("[STATUS:Training]", flush=True)
+                self._emit_status("Training")
 
             # 8b. Sample generation (independent from checkpoint save interval)
             if self.sampler and self.sampler.should_sample(step):
                 self.logger.info("sampling_triggered", step=step)
-                # Broadcast status via stdout marker (log_listener parses these)
-                print("[STATUS:Sampling]", flush=True)
+                # Broadcast status via file-based IPC (LogTailer reads job_log.jsonl)
+                self._emit_status("Sampling")
                 try:
                     self.sampler.generate_samples(step)
                 except Exception as e:
                     self.logger.error(
                         "sampling_failed", step=step, error=str(e)
                     )
-                    print(f"[WARNING:Sampling failed at step {step + 1}: {e}]", flush=True)
+                    self._emit_warning(f"Sampling failed at step {step + 1}: {e}")
                 finally:
-                    print("[STATUS:Training]", flush=True)
+                    self._emit_status("Training")
 
             # 9. Virtual epoch boundary
             if step > 0 and step % steps_per_epoch == 0:
@@ -409,7 +419,7 @@ class PipelineTrainMixin:
         self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
 
         self.logger.info("saving_final_checkpoint")
-        print("[STATUS:Saving Final Checkpoint]", flush=True)
+        self._emit_status("Saving Final Checkpoint")
         self.checkpoint_manager.save_checkpoint(
             step=max_steps,
             components=self._build_trainable_components(),
@@ -423,7 +433,7 @@ class PipelineTrainMixin:
             te_cache=self.get_te_cache(),
             cache_manifest=self._build_cache_manifest(),
         )
-        print("[STATUS:Training]", flush=True)
+        self._emit_status("Training")
 
         # Record final checkpoint + complete job history
         self._record_checkpoint(max_steps, is_final=True)
@@ -440,16 +450,32 @@ class PipelineTrainMixin:
                 )
             else:
                 self.logger.info("generating_final_sample", step=max_steps)
-                print("[STATUS:Sampling]", flush=True)
+                self._emit_status("Sampling")
                 try:
                     self.sampler.generate_samples(last_step, final=True)
                 except Exception as e:
                     self.logger.error(
                         "final_sampling_failed", step=max_steps, error=str(e)
                     )
-                    print(f"[WARNING:Final sampling failed: {e}]", flush=True)
+                    self._emit_warning(f"Final sampling failed: {e}")
                 finally:
-                    print("[STATUS:Training]", flush=True)
+                    self._emit_status("Training")
+
+    # ── File-based IPC helpers ────────────────────────────────────────
+
+    def _emit_status(self, label: str) -> None:
+        """Emit a status label to both file-based IPC and stdout."""
+        _lw = getattr(self, "_log_writer", None)
+        if _lw:
+            _lw.status(label)
+        print(f"[STATUS:{label}]", flush=True)
+
+    def _emit_warning(self, message: str) -> None:
+        """Emit a warning to both file-based IPC and stdout."""
+        _lw = getattr(self, "_log_writer", None)
+        if _lw:
+            _lw.warning(message)
+        print(f"[WARNING:{message}]", flush=True)
 
     # ── Job History Helpers ──────────────────────────────────────────
 

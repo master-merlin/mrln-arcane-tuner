@@ -8,6 +8,7 @@ singleton ``job_manager`` instance.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import os
 import signal
 import threading
@@ -19,6 +20,7 @@ from typing import Any
 
 from app.core.events import event_manager
 from app.core.job import Job, JobStatus
+from app.core.log_tailer import LogTailer, LOG_FILENAME
 from app.core.plugin_manager import plugin_manager
 
 logger = structlog.get_logger(__name__)
@@ -34,6 +36,8 @@ class JobManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Jobs needing post-startup recovery (re-launch paused, re-attach alive)
         self._recovery_jobs: list[dict] = []
+        # Active log tailers keyed by job_id
+        self._tailers: dict[str, LogTailer] = {}
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Store the main event loop for cross-thread broadcasts."""
@@ -72,8 +76,7 @@ class JobManager:
                                 pid=stored_pid,
                                 status=status_str,
                             )
-                            # We can't re-attach stdout, but the process is alive.
-                            # Store in _orphaned_jobs for post-load re-attachment.
+                            # Store for post-load re-attachment of LogTailer + watchdog
                             self._recovery_jobs.append({
                                 "id": row["id"],
                                 "status": status_str,
@@ -133,9 +136,8 @@ class JobManager:
         - ``relaunch_paused``: Process died while paused → re-launch then
           immediately write a pause signal file so the trainer pauses
           after loading the latest checkpoint.
-        - ``running`` / ``paused`` with live PID: Process survived but we
-          can't re-attach stdout.  Status is kept as-is; real-time logs
-          are lost but the training continues.
+        - ``running`` / ``paused`` with live PID: Process survived — re-attach
+          a LogTailer so we resume streaming and start a PID watchdog.
         """
         from app.engine.components.signal_manager import TrainingSignalManager
 
@@ -175,14 +177,26 @@ class JobManager:
                     self._persist_status(job_id, "stopped", error=job.error)
 
             elif entry["status"] in ("running", "paused"):
-                # Process alive but we can't re-attach stdout.
+                # Process alive — re-attach LogTailer + PID watchdog
+                pid = entry.get("pid")
+                output_dir = self._get_job_output_dir(job)
+                log_path = os.path.join(output_dir, LOG_FILENAME)
+
                 logger.info(
-                    "orphaned_job_kept",
+                    "reattaching_orphaned_job",
                     job_id=job_id,
                     status=entry["status"],
-                    pid=entry.get("pid"),
-                    note="Real-time log streaming unavailable until next restart",
+                    pid=pid,
+                    log_path=log_path,
                 )
+
+                # Re-attach LogTailer (resumes from saved offset)
+                tailer = LogTailer(job_id, log_path, self._dispatch_log_entry)
+                tailer.start()
+                self._tailers[job_id] = tailer
+
+                # Start PID watchdog
+                self._start_pid_watchdog(job_id, pid)
 
         self._recovery_jobs.clear()
 
@@ -259,27 +273,195 @@ class JobManager:
         if pid is None or pid <= 0:
             return False
         try:
-            if os.name == "nt":
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-                handle = kernel32.OpenProcess(0x1000, False, pid)
-                if handle:
-                    kernel32.CloseHandle(handle)
-                    return True
-                return False
-            else:
-                os.kill(pid, 0)
-                return True
-        except (OSError, PermissionError):
+            import psutil
+            return psutil.pid_exists(pid)
+        except Exception:
             return False
 
     def delete_job(self, job_id: str) -> None:
         """Remove a job from the registry and the database."""
+        self._stop_tailer(job_id)
         with self._lock:
             if job_id in self._jobs:
                 del self._jobs[job_id]
         self._persist_delete(job_id)
+
+    # ── Log Tailer Dispatcher ────────────────────────────────────────
+
+    def _dispatch_log_entry(self, job_id: str, entry: dict[str, Any]) -> None:
+        """Route a parsed log entry from ``LogTailer`` to the appropriate handler.
+
+        Called from the tailer's background thread for each JSON line
+        read from ``job_log.jsonl``.
+        """
+        msg_type = entry.get("type", "")
+        data = entry.get("data")
+        timestamp = entry.get("t", time.time())
+
+        job = self.get_job(job_id)
+        if not job:
+            return
+
+        loop = self._loop
+        if not loop:
+            return
+
+        if msg_type == "log":
+            with self._lock:
+                job.logs.append(str(data))
+                if len(job.logs) > 1000:
+                    job.logs.pop(0)
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_log", {
+                    "job_id": job_id,
+                    "message": str(data),
+                    "timestamp": timestamp,
+                }),
+                loop,
+            )
+
+        elif msg_type == "status":
+            with self._lock:
+                job.status_label = str(data)
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_update", job.model_dump()),
+                loop,
+            )
+
+        elif msg_type == "step":
+            # Forward step metrics to WebSocket for real-time chart updates
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_log", {
+                    "job_id": job_id,
+                    "message": _json.dumps(data) if isinstance(data, dict) else str(data),
+                    "timestamp": timestamp,
+                }),
+                loop,
+            )
+
+        elif msg_type == "warning":
+            with self._lock:
+                job.warnings.append(str(data))
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_warning", {
+                    "job_id": job_id,
+                    "message": str(data),
+                    "timestamp": timestamp,
+                }),
+                loop,
+            )
+
+        elif msg_type == "cache_ready":
+            self._handle_cache_ready(data, loop)
+
+        elif msg_type == "exit":
+            self._handle_exit_message(job_id, data)
+
+    def _handle_cache_ready(self, ds_names: Any, loop: asyncio.AbstractEventLoop) -> None:
+        """Mark datasets as cache-bearing after trainer reports readiness."""
+        try:
+            from app.core.dataset_manager import dataset_manager as dm
+            if isinstance(ds_names, list):
+                dm.set_loop(loop)
+                dm.mark_cache_created(ds_names)
+        except Exception as e:
+            logger.warning("cache_ready_handle_error", error=str(e))
+
+    def _handle_exit_message(self, job_id: str, data: Any) -> None:
+        """Process an exit message from the trainer subprocess."""
+        job = self.get_job(job_id)
+        if not job:
+            return
+
+        code = data.get("code", 1) if isinstance(data, dict) else 1
+        error = data.get("error") if isinstance(data, dict) else None
+
+        with self._lock:
+            job.finished_at = time.time()
+            job.pid = None
+            if code == 0:
+                job.status = JobStatus.COMPLETED
+            elif job.status != JobStatus.STOPPED:
+                job.status = JobStatus.FAILED
+                job.error = error or f"Process exited with code {code}"
+
+        final_status = "completed" if code == 0 else (
+            "stopped" if job.status == JobStatus.STOPPED else "failed"
+        )
+        kwargs: dict[str, Any] = {"finished_at": job.finished_at}
+        if job.error:
+            kwargs["error"] = job.error
+        self._persist_status(job_id, final_status, **kwargs)
+
+        self._stop_tailer(job_id)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_update", job.model_dump()),
+                self._loop,
+            )
+
+    # ── PID Watchdog ─────────────────────────────────────────────────
+
+    def _start_pid_watchdog(self, job_id: str, pid: int) -> None:
+        """Poll a PID periodically; finalize the job if the process dies.
+
+        This is a safety net for cases where the trainer exits without
+        writing an ``exit`` message to the log file (e.g. OOM kill, segfault).
+        """
+
+        def _watch() -> None:
+            while True:
+                time.sleep(5)
+                if not self._is_pid_alive(pid):
+                    job = self.get_job(job_id)
+                    if not job:
+                        break
+                    if job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+                        # Give the tailer a moment to process any final lines
+                        time.sleep(2)
+                        # Re-check: the exit message handler may have already updated
+                        job = self.get_job(job_id)
+                        if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+                            logger.warning(
+                                "pid_watchdog_process_died",
+                                job_id=job_id,
+                                pid=pid,
+                            )
+                            with self._lock:
+                                job.status = JobStatus.STOPPED
+                                job.finished_at = time.time()
+                                job.pid = None
+                                job.error = "Process exited unexpectedly (detected by watchdog)"
+                            self._persist_status(
+                                job_id, "stopped",
+                                finished_at=job.finished_at,
+                                error=job.error,
+                            )
+                            self._stop_tailer(job_id)
+                            if self._loop:
+                                asyncio.run_coroutine_threadsafe(
+                                    event_manager.broadcast("job_update", job.model_dump()),
+                                    self._loop,
+                                )
+                    break
+
+        thread = threading.Thread(
+            target=_watch,
+            daemon=True,
+            name=f"pid_watchdog_{job_id[:8]}",
+        )
+        thread.start()
+
+    # ── Tailer Management ────────────────────────────────────────────
+
+    def _stop_tailer(self, job_id: str) -> None:
+        """Stop and remove the LogTailer for a job (if active)."""
+        tailer = self._tailers.pop(job_id, None)
+        if tailer:
+            tailer.stop()
+
+    # ── Job Control ──────────────────────────────────────────────────
 
     def start_job(self, job_id: str) -> None:
         """Launch the training subprocess for a job."""
@@ -312,98 +494,16 @@ class JobManager:
                 job.pid = process.pid
                 self._persist_status(job_id, "running", pid=process.pid)
 
-                loop = self._loop
+                # Start file-based log tailing
+                output_dir = self._get_job_output_dir(job)
+                log_path = os.path.join(output_dir, LOG_FILENAME)
 
-                def log_listener(proc, job_obj, loop):
-                    """Stream subprocess stdout to logs and WebSocket."""
-                    thread_logger = structlog.get_logger(__name__)
-                    thread_logger.debug("log_listener_started", job_id=job_obj.id)
+                tailer = LogTailer(job_id, log_path, self._dispatch_log_entry)
+                tailer.start()
+                self._tailers[job_id] = tailer
 
-                    for line in iter(proc.stdout.readline, ""):
-                        if not line:
-                            break
-                        clean_line = line.strip()
-                        if clean_line:
-                            # Parse [CACHE_READY:["ds1","ds2"]] — update dataset has_cache flags
-                            if clean_line.startswith("[CACHE_READY:") and clean_line.endswith("]"):
-                                try:
-                                    import json as _json
-                                    from app.core.dataset_manager import dataset_manager as dm
-                                    payload = clean_line[len("[CACHE_READY:"):-1]
-                                    ds_names = _json.loads(payload)
-                                    dm.set_loop(loop)
-                                    dm.mark_cache_created(ds_names)
-                                except Exception as e:
-                                    thread_logger.warning("cache_ready_parse_error", error=str(e))
-                                continue
-
-                            # Parse [STATUS:label] markers from trainer
-                            if clean_line.startswith("[STATUS:") and clean_line.endswith("]"):
-                                label = clean_line[8:-1]
-                                with self._lock:
-                                    job_obj.status_label = label
-                                asyncio.run_coroutine_threadsafe(
-                                    event_manager.broadcast("job_update", job_obj.model_dump()),
-                                    loop
-                                )
-                                continue
-
-                            # Parse [WARNING:message] markers from trainer
-                            if clean_line.startswith("[WARNING:") and clean_line.endswith("]"):
-                                warning_msg = clean_line[9:-1]
-                                with self._lock:
-                                    job_obj.warnings.append(warning_msg)
-                                asyncio.run_coroutine_threadsafe(
-                                    event_manager.broadcast("job_warning", {
-                                        "job_id": job_obj.id,
-                                        "message": warning_msg,
-                                        "timestamp": time.time()
-                                    }),
-                                    loop
-                                )
-                                continue
-
-                            # Bridge to main server log
-                            thread_logger.info("job_log", job_id=job_obj.id, message=clean_line)
-
-                            # Broadcast to WebSocket
-                            asyncio.run_coroutine_threadsafe(
-                                event_manager.broadcast("job_log", {
-                                    "job_id": job_obj.id,
-                                    "message": clean_line,
-                                    "timestamp": time.time()
-                                }),
-                                loop
-                            )
-
-                            with self._lock:
-                                job_obj.logs.append(clean_line)
-                                if len(job_obj.logs) > 1000:
-                                    job_obj.logs.pop(0)
-
-                    # Process finished
-                    proc.stdout.close()
-                    if proc.stderr:
-                        proc.stderr.close()
-                    proc.wait()
-                    with self._lock:
-                        job_obj.finished_at = time.time()
-                        job_obj.pid = None  # Clear PID reference
-                        if proc.returncode == 0:
-                            job_obj.status = JobStatus.COMPLETED
-                            self._persist_status(job_obj.id, "completed", finished_at=job_obj.finished_at)
-                        elif job_obj.status != JobStatus.STOPPED:
-                            job_obj.status = JobStatus.FAILED
-                            job_obj.error = f"Process exited with code {proc.returncode}"
-                            self._persist_status(job_obj.id, "failed", finished_at=job_obj.finished_at, error=job_obj.error)
-
-                        asyncio.run_coroutine_threadsafe(
-                            event_manager.broadcast("job_update", job_obj.model_dump()),
-                            loop
-                        )
-
-                thread = threading.Thread(target=log_listener, args=(process, job, loop), daemon=True)
-                thread.start()
+                # Start PID watchdog as safety net
+                self._start_pid_watchdog(job_id, process.pid)
 
         except (OSError, ValueError, RuntimeError) as e:
             job.status = JobStatus.FAILED
@@ -423,10 +523,12 @@ class JobManager:
                 job.status = JobStatus.STOPPED
                 job.finished_at = time.time()
                 self._persist_status(job_id, "stopped", finished_at=job.finished_at)
+                self._stop_tailer(job_id)
             except ProcessLookupError:
                 job.status = JobStatus.FAILED
                 job.error = "Process not found"
                 self._persist_status(job_id, "failed", error=job.error)
+                self._stop_tailer(job_id)
             except OSError as e:
                 job.error = str(e)
 
@@ -499,7 +601,7 @@ class JobManager:
 
         output_dir = self._get_job_output_dir(job)
         TrainingSignalManager.send_signal(output_dir, "soft_stop")
-        # Don't change status yet — the process will exit and log_listener will update
+        # Don't change status yet — the process will exit and the exit handler will update
 
     def restart_job(self, job_id: str) -> None:
         """Reset a finished/failed job and re-launch it."""
@@ -511,6 +613,8 @@ class JobManager:
             raise ValueError(f"Cannot restart job in state {job.status}")
 
         logger.info("restarting_job", job_id=job_id)
+
+        self._stop_tailer(job_id)
 
         with self._lock:
             job.status = JobStatus.PENDING

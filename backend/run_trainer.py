@@ -1,7 +1,8 @@
 
 # --------------------------------------------------------------------------------------------------
 # CRITICAL: This script is the entry point for all training jobs.
-# Any print() statement here is captured by the JobManager and bridged to the server log.
+# Output is written to {output_dir}/job_log.jsonl via the JobLogWriter.
+# The backend's LogTailer reads that file to bridge logs to the UI.
 # --------------------------------------------------------------------------------------------------
 
 # Prevent WinError 1314: Windows symlink permission errors in HF Hub cache.
@@ -17,8 +18,7 @@ import json
 import asyncio
 
 # FORCE UNBUFFERED OUTPUT IMMEDIATELY
-# This ensures that prints are flushed to the parent process (JobManager) instantly.
-# Without this, prints might be buffered and lost if the process crashes.
+# Keeps stdout working for local debug even though IPC now uses files.
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
@@ -44,9 +44,48 @@ except Exception:
     traceback.print_exc()
     sys.exit(1)
 
+
+# ── JobLogWriter integration ─────────────────────────────────────────────
+
+_log_writer = None  # Module-level reference for the logging handler bridge
+
+
+def _resolve_output_dir(config: dict, definition_id: str) -> str:
+    """Resolve the training output directory from config.
+
+    Must match the path logic used by the backend's JobManager
+    (``_get_job_output_dir``) and the trainers' CheckpointManager.
+    """
+    output_root = config.get("output_dir", "outputs")
+    lora_name = config.get("lora_name", "untitled")
+    model_part = definition_id.split("/")[-1].replace(":", "_")
+    run_name = f"{lora_name}_{model_part}"
+    return os.path.join(output_root, run_name)
+
+
+class _LogWriterHandler(logging.Handler):
+    """Bridge: forwards Python logging records to the JobLogWriter.
+
+    Attached to the root logger so that all structlog output appearing
+    on stdout is *also* written to the job_log.jsonl file.
+    """
+
+    def __init__(self, writer):
+        super().__init__()
+        self.writer = writer
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if msg:
+                self.writer.log(msg)
+        except Exception:
+            self.handleError(record)
+
+
 # Note: We do NOT use logging.basicConfig anymore as setup_logging handles it.
 
-async def run_async_trainer(trainer):
+async def run_async_trainer(trainer, log_writer=None):
     """
     Helper to run async trainer methods properly.
     
@@ -71,57 +110,49 @@ async def run_async_trainer(trainer):
     try:
         trainer.config.get("quantization_strategy", "fastest")
 
+        # Inject the log writer into the trainer so components can use it
+        if log_writer:
+            trainer._log_writer = log_writer
+
         # ── Phase A: Load all components to CPU ──────────────────────
-        print("[STATUS:Checking Model]", flush=True)
+        _emit_status("Checking Model", log_writer)
         await trainer.setup()
         
-        print("[STATUS:Loading Model]", flush=True)
+        _emit_status("Loading Model", log_writer)
         await trainer.load_model()
         
-        print("[STATUS:Preparing Data]", flush=True)
+        _emit_status("Preparing Data", log_writer)
         await trainer.prepare_data()
 
         # ── TE Quantization + Caching Phase ──────────────────────────
-        #
-        # Key: quantize / load FP8 cache BEFORE moving to GPU.
-        # This avoids the wasteful bf16→GPU→FP8 transition that
-        # doubles peak VRAM (bf16 + FP8 coexist on GPU).
-        # Flow:  CPU bf16 → CPU FP8 (cache or fresh) → GPU FP8
         te_names = list(trainer._get_text_encoders().keys())
         te_quant = trainer.config.get("te_quantization", "none")
         has_te_quant = te_quant != "none" and not trainer.config.get("train_text_encoder", False)
 
         if has_te_quant and te_names:
-            # Quantize on CPU first (cache load or fresh quantization)
-            print("[STATUS:Quantizing Text Encoders]", flush=True)
+            _emit_status("Quantizing Text Encoders", log_writer)
             trainer._quantize_text_encoders()
-            # Now move the (already quantized / FP8) TEs to GPU
             for name in te_names:
                 trainer._move_component_to_gpu(name)
         elif te_names:
-            # No quantization — move bf16 TEs straight to GPU
             for name in te_names:
                 trainer._move_component_to_gpu(name)
 
         if trainer.get_te_cache():
-            print("[STATUS:TE Cache Restored]", flush=True)
+            _emit_status("TE Cache Restored", log_writer)
         trainer._pre_cache_text_embeddings()
 
-        # TEs no longer needed — move to CPU or unload
         trainer._offload_text_encoders()
 
         # ── Latent (VAE) caching phase ───────────────────────────────
-        # Move VAE to GPU for latent encoding, then offload.
         trainer._move_component_to_gpu("vae")
 
         trainer._validate_latent_cache()
         await trainer._pre_cache_latents()
 
-        # VAE no longer needed after latents are cached
         trainer._offload_vae()
 
-        # Notify parent process that cache directories exist,
-        # so it can flag datasets as cache-bearing in the UI.
+        # Notify parent process that cache directories exist
         try:
             ds_configs = trainer.config.get("datasets", [])
             ds_names = list({
@@ -129,25 +160,33 @@ async def run_async_trainer(trainer):
                 for d in ds_configs
             } - {""})
             if ds_names:
+                if log_writer:
+                    log_writer.emit("cache_ready", ds_names)
+                # Keep stdout marker for backward compat with any pipe readers
                 import json as _json
                 print(f"[CACHE_READY:{_json.dumps(ds_names)}]", flush=True)
         except Exception:
-            pass  # Non-critical; don't abort training for this
+            pass  # Non-critical
 
         # ── Phase B: Prepare UNet for training ───────────────────────
-        # Model quantization happens inside prepare_for_training()
-        # via _quantize_components() → _quantize_primary_model()
-        # (after model is moved to GPU and frozen).
-        print("[STATUS:Preparing Training]", flush=True)
+        _emit_status("Preparing Training", log_writer)
         await trainer.prepare_for_training()
 
         # ── Train ────────────────────────────────────────────────────
-        print("[STATUS:Training]", flush=True)
+        _emit_status("Training", log_writer)
         await trainer.train()
     except Exception as e:
         print(f"CRITICAL: Async Trainer Exception: {str(e)}", file=sys.stderr)
         traceback.print_exc()
         raise e
+
+
+def _emit_status(label: str, log_writer=None):
+    """Emit status to both the log writer and stdout (backward compat)."""
+    if log_writer:
+        log_writer.status(label)
+    print(f"[STATUS:{label}]", flush=True)
+
 
 def main():
     logger.info("trainer_entry_point_reached")
@@ -158,9 +197,25 @@ def main():
     
     args = parser.parse_args()
     
+    global _log_writer
+    
     try:
         config = json.loads(args.config)
         logger.info(f"loaded_config: definition_id={args.definition_id} config_keys={list(config.keys())}")
+        
+        # ── Initialise file-based IPC log writer ─────────────────────
+        output_dir = _resolve_output_dir(config, args.definition_id)
+        
+        from app.engine.components.job_log_writer import JobLogWriter
+        _log_writer = JobLogWriter(output_dir)
+        
+        # Bridge Python logging → JobLogWriter so structlog output
+        # also appears in job_log.jsonl for the LogTailer.
+        handler = _LogWriterHandler(_log_writer)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logging.getLogger().addHandler(handler)
+        
+        _log_writer.log(f"Trainer started: definition_id={args.definition_id}")
         
         # Initialize Registry
         registry.initialize()
@@ -170,6 +225,7 @@ def main():
         if not definition:
              logger.error(f"definition_not_found: {args.definition_id}")
              print(f"CRITICAL: Definition ID '{args.definition_id}' not found in registry.", file=sys.stderr)
+             _log_writer.exit(1, error=f"Definition ID '{args.definition_id}' not found")
              sys.exit(1)
              
         logger.info(f"resolved_family: {definition.family}")
@@ -177,35 +233,29 @@ def main():
         if definition.family == "sdxl":
             from app.engine.models.families.sdxl.trainer import SDXLTrainer as TrainerClass
             
-            # Instantiate V2 Trainer
             logger.info("instantiating_sdxl_trainer")
             trainer = TrainerClass(definition=definition, run_config=config)
             
-            # Execute Async Wrapper
             logger.info("starting_async_v2_training")
-            asyncio.run(run_async_trainer(trainer))
+            asyncio.run(run_async_trainer(trainer, _log_writer))
             
         elif definition.family == "flux2":
             from app.engine.models.families.flux2.trainer import Flux2Trainer as TrainerClass
             
-            # Instantiate Flux2 Trainer
             logger.info("instantiating_flux2_trainer")
             trainer = TrainerClass(definition=definition, run_config=config)
             
-            # Execute Async Wrapper
             logger.info("starting_async_flux2_training")
-            asyncio.run(run_async_trainer(trainer))
+            asyncio.run(run_async_trainer(trainer, _log_writer))
             
         elif definition.family == "flux1":
             from app.engine.models.families.flux1.trainer import Flux1Trainer as TrainerClass
             
-            # Instantiate Flux1 Trainer
             logger.info("instantiating_flux1_trainer")
             trainer = TrainerClass(definition=definition, run_config=config)
             
-            # Execute Async Wrapper
             logger.info("starting_async_flux1_training")
-            asyncio.run(run_async_trainer(trainer))
+            asyncio.run(run_async_trainer(trainer, _log_writer))
             
         elif definition.family == "zimage":
             from app.engine.models.families.zimage.trainer import ZImageTrainer as TrainerClass
@@ -213,7 +263,7 @@ def main():
             logger.info("instantiating_zimage_trainer")
             trainer = TrainerClass(definition=definition, run_config=config)
             logger.info("starting_async_zimage_training")
-            asyncio.run(run_async_trainer(trainer))
+            asyncio.run(run_async_trainer(trainer, _log_writer))
             
         elif definition.family == "qwen_image":
             from app.engine.models.families.qwen_image.trainer import QwenImageTrainer as TrainerClass
@@ -221,21 +271,24 @@ def main():
             logger.info("instantiating_qwen_image_trainer")
             trainer = TrainerClass(definition=definition, run_config=config)
             logger.info("starting_async_qwen_image_training")
-            asyncio.run(run_async_trainer(trainer))
+            asyncio.run(run_async_trainer(trainer, _log_writer))
             
         else:
-            # Fallback to Legacy for everything else for now
             logger.info("using_legacy_trainer")
             logger.warning("legacy_trainer_path_incomplete_aborting", family=definition.family)
             print(f"CRITICAL: No trainer registered for family '{definition.family}'. Aborting.", file=sys.stderr)
+            _log_writer.exit(1, error=f"No trainer for family '{definition.family}'")
             sys.exit(1)
 
         logger.info("training_completed_successfully")
+        _log_writer.exit(0)
         sys.exit(0)
 
-    except Exception:
+    except Exception as e:
         print("CRITICAL: Unhandled exception in main execution block.", file=sys.stderr)
         traceback.print_exc()
+        if _log_writer:
+            _log_writer.exit(1, error=str(e))
         sys.exit(1)
 
 if __name__ == "__main__":

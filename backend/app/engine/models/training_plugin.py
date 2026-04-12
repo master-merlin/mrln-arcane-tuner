@@ -71,14 +71,38 @@ class StandardPlugin(TrainingPlugin):
         
         logger.info("launching_trainer", command=" ".join(cmd))
         
+        # Detach the subprocess so it survives backend restarts.
+        # On Windows, DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP prevents
+        # the child from receiving console signals (CTRL+C, etc.) and from
+        # being killed when the parent's console closes.
+        # stdout/stderr → DEVNULL: the trainer writes to job_log.jsonl via
+        # JobLogWriter instead of stdout pipes, which break on parent exit.
+        creation_flags = 0
+        if os.name == "nt":
+            creation_flags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+            )
+
+        try:
+            from pathlib import Path
+            job_id = config.get("job_id", "unknown")
+            boot_log_path = Path(backend_root) / "data" / "outputs" / f"boot_{job_id}.log"
+            boot_log_path.parent.mkdir(parents=True, exist_ok=True)
+            boot_log_file = open(boot_log_path, "w")
+        except Exception:
+            boot_log_file = subprocess.DEVNULL
+
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=boot_log_file,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
             text=True,
-            bufsize=1,
             env=os.environ.copy(),
-            cwd=backend_root # Run from backend root so "from app.engine..." works
+            cwd=backend_root,
+            creationflags=creation_flags,
+            start_new_session=(os.name != "nt"),
         )
         
         return process

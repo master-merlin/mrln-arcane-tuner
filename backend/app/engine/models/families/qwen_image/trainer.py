@@ -67,6 +67,13 @@ class QwenImageTrainer(GenericTrainingPipeline):
         # Architecture params
         self.max_length = TOKENIZER_MAX_LENGTH
 
+    def _update_primary_model(self, new_model: torch.nn.Module) -> None:
+        """Keep self.model in sync after PEFT/quantization wrapping."""
+        self.model = new_model
+        self.components["unet"] = new_model
+        # Also update driver's reference
+        self.driver.model = new_model
+
     @property
     def transformer(self) -> torch.nn.Module:
         """Alias for sampler compatibility (sampler accesses .transformer)."""

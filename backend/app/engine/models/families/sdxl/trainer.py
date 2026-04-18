@@ -65,7 +65,7 @@ class SDXLTrainer(GenericTrainingPipeline):
     def _update_primary_model(self, new_model: torch.nn.Module) -> None:
         self.unet = new_model
         self.components["unet"] = new_model
-        self.driver.transformer = new_model
+        self.driver.unet = new_model
 
     def _resolve_loading_dtype(self) -> torch.dtype:
         """SDXL loads in fp32 — AMP GradScaler requires fp32 params/grads."""

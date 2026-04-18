@@ -58,6 +58,13 @@ class ZImageTrainer(GenericTrainingPipeline):
         arch = getattr(self.definition, "architecture_params", {}) or {}
         self.max_length = int(arch.get("te.max_length", 512))
 
+    def _update_primary_model(self, new_model: torch.nn.Module) -> None:
+        """Keep self.model in sync after PEFT/quantization wrapping."""
+        self.model = new_model
+        self.components["unet"] = new_model
+        # Also update driver's reference
+        self.driver.model = new_model
+
     # -- Disk-backed TE Pre-caching --
 
     def _pre_cache_text_embeddings(self) -> None:

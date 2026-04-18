@@ -290,7 +290,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                 grid: { show: false },
                 ticks: { stroke: cTick, width: 1 },
                 font: '10px Inter, sans-serif',
-                size: 55, // Reduced from 65 to save space
+                size: 70, // Increased from 55 to prevent clipping of scientific notation labels
                 values: (u: uPlot, vals: number[]) => vals.map(v => v?.toExponential(3) ?? ''),
             },
         ];

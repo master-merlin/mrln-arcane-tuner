@@ -28,9 +28,35 @@ export interface ChartDataPoint {
     .training-chart-wrap { width: 100%; }
     .uplot-container { width: 100%; }
 
-    /* uPlot legend overrides — minimal CSS, alignment patched via DOM */
-    .u-legend { font-size: 12px; color: #9ca3af; padding: 4px 0 0 0; }
-    .u-legend .u-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+    /* uPlot legend overrides — stabilized layout with flexbox */
+    .u-legend { 
+      font-size: 11px; 
+      color: #9ca3af; 
+      padding: 8px 0 0 0; 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 16px; 
+      justify-content: center;
+    }
+    .u-legend .u-series { 
+      display: flex; 
+      align-items: baseline; 
+      gap: 4px;
+      min-width: 80px; /* Base stability */
+    }
+    .u-legend .u-label {
+      font-weight: 400;
+      color: #6b7280;
+    }
+    .u-legend .u-value { 
+      font-weight: 600; 
+      font-variant-numeric: tabular-nums; 
+      color: #d1d5db;
+      min-width: 50px; /* Value stability */
+    }
+    /* Specific overrides for longer labels / values */
+    .u-legend .u-series:nth-child(4) { min-width: 130px; } /* Best Loss item needs more room */
+    .u-legend .u-series:nth-child(5) { min-width: 100px; } /* LR often has scientific notation */
   `]
 })
 export class TrainingChartComponent implements AfterViewInit, OnDestroy {

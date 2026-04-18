@@ -31,6 +31,7 @@ export interface Job {
   min_loss?: number;
   min_loss_step?: number;
   completed_steps?: number;
+  completed_epochs?: number;
   training_seconds?: number;
   duration_seconds?: number;
   avg_step_time?: number;

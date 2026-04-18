@@ -39,7 +39,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     readonly data = input<ChartDataPoint[]>([]);
     readonly smoothing = input<number>(0.6);
     readonly smoothingMode = input<SmoothingMode>('ema');
-    readonly height = input<number>(180);
+    readonly height = input<number>(220); // Increased height for better visibility
     readonly totalSteps = input<number>(0);
 
     readonly plateauDetected = output<{ step: number; loss: number }>();
@@ -169,7 +169,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         const empty = (n: number) => Array.from({ length: n }, () => new Float64Array(0));
         const currentData = this.data();
         if (!currentData || currentData.length === 0) {
-            return empty(this.isProdigy() ? 4 : 5) as uPlot.AlignedData;
+            return empty(this.isProdigy() ? 5 : 6) as uPlot.AlignedData;
         }
 
         const prodigy = this.isProdigy();
@@ -189,15 +189,17 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         this._bestLossVal = minLoss === Infinity ? null : minLoss;
         this._bestLossStep = minLoss === Infinity ? null : minStep;
 
+        const bestDummy = Array(currentData.length).fill(null);
+
         if (prodigy) {
-            // Prodigy: 4 data slots — no grad norm at all
+            // Prodigy: 5 data slots — no grad norm at all
             const dEstimate = currentData.map(d => d.d_estimate ?? null);
-            return [steps, smoothedLoss as any, rawLoss as any, dEstimate as any];
+            return [steps, smoothedLoss as any, rawLoss as any, bestDummy as any, dEstimate as any];
         } else {
-            // AdamW: 5 data slots — includes grad norm
+            // AdamW: 6 data slots — includes grad norm
             const lr = currentData.map(d => d.lr);
-            const gradNorm = this.applyEmaSmoothing(currentData.map(d => d.grad_norm ?? null));
-            return [steps, smoothedLoss as any, rawLoss as any, lr as any, gradNorm as any];
+            const gradNorm = currentData.map(d => d.grad_norm ?? null);
+            return [steps, smoothedLoss as any, rawLoss as any, bestDummy as any, lr as any, gradNorm as any];
         }
     }
 
@@ -249,6 +251,13 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                 show: true,
                 value: TrainingChartComponent.fmtSci,
             },
+            {
+                label: 'Best Loss',
+                stroke: 'rgba(34, 197, 94, 0.8)', // Emerald green box in legend
+                width: 0, // Do not draw line
+                scale: 'y',
+                value: () => this._bestLossVal != null ? `${this._bestLossVal.toFixed(4)} @ ${this._bestLossStep}` : '—',
+            },
         ];
 
         // Scales and axes common to both modes
@@ -272,7 +281,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                 ticks: { stroke: cTick, width: 1 },
                 font: '10px Inter, sans-serif',
                 labelFont: '10px Inter, sans-serif',
-                size: 55,
+                size: 35, // Reduced from 55 to eliminate wasted left space
             },
             {
                 side: 1,
@@ -281,7 +290,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                 grid: { show: false },
                 ticks: { stroke: cTick, width: 1 },
                 font: '10px Inter, sans-serif',
-                size: 65,
+                size: 55, // Reduced from 65 to save space
                 values: (u: uPlot, vals: number[]) => vals.map(v => v?.toExponential(3) ?? ''),
             },
         ];
@@ -343,15 +352,6 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                         ctx.moveTo(left, y);
                         ctx.lineTo(right, y);
                         ctx.stroke();
-                        // Label
-                        ctx.fillStyle = 'rgba(34,197,94,0.7)';
-                        ctx.font = '9px Inter, sans-serif';
-                        ctx.textAlign = 'right';
-                        ctx.fillText(
-                            `best ${this._bestLossVal.toFixed(4)} @ ${this._bestLossStep}`,
-                            right - 4,
-                            y - 4,
-                        );
                         ctx.restore();
                     },
                     // ── Loss divergence band (fill between smoothed & raw) ──

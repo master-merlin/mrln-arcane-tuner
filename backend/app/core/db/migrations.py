@@ -37,6 +37,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v3,
         _migrate_v4,
         _migrate_v5,
+        _migrate_v6,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -694,6 +695,17 @@ def _migrate_v5(conn) -> None:
     try:
         conn.execute(
             "ALTER TABLE job_history ADD COLUMN pid INTEGER"
+        )
+    except Exception:
+        pass  # Column already exists
+
+# ── V6: Virtual Epoch Tracking ─────────────────────────────────────
+
+def _migrate_v6(conn) -> None:
+    """Add ``completed_epochs`` column to ``job_history`` to record virtual final epoch."""
+    try:
+        conn.execute(
+            "ALTER TABLE job_history ADD COLUMN completed_epochs REAL"
         )
     except Exception:
         pass  # Column already exists

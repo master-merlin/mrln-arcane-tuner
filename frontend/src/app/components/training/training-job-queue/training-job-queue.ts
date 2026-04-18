@@ -185,7 +185,7 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
 
               <!-- Samples Grid Expander -->
               @if (samplesExpandedJobs().has(job.id)) {
-                <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
+                <div class="bg-base/25 border border-surface-mid/20 rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
                   <div class="flex justify-between items-center mb-3">
                     <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Sample Previews</h4>
                     <div class="flex items-center gap-2">
@@ -232,7 +232,7 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                   </div>
                   @if (jobSamples().get(job.id); as samples) {
                     @if (samples.length > 0) {
-                      <div class="grid grid-cols-4 gap-2 max-h-[38rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
+                      <div class="grid grid-cols-6 gap-2 max-h-[33rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
                         @for (sample of samples; track sample.filename) {
                           <button (click)="openSampleModal(job.id, sample)" class="relative group rounded-theme-lg overflow-hidden border border-surface-mid hover:border-brand/50 transition-all hover:shadow-lg hover:shadow-brand/10 aspect-square bg-surface-high">
                             <img [src]="getSampleImageUrl(job.id, sample.filename)" 
@@ -255,7 +255,7 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
 
               <!-- Chart Expander (above metrics) -->
               @if (chartExpandedJobs().has(job.id)) {
-                <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
+                <div class="bg-base/25 border border-surface-mid/20 rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
                     <div class="flex justify-between items-center mb-4">
                         <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Training Curves</h4>
                         <div class="flex items-center gap-3">
@@ -305,79 +305,113 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
               @if (getLatestMetrics(job); as metrics) {
                 <div [attr.data-testid]="'job-metrics-' + job.id"
                      class="space-y-2">
-                  <!-- Primary Metrics -->
-                  <div class="grid grid-cols-6 gap-4 bg-base/50 p-3 rounded-theme-xl border border-surface-mid/50">
-                   <div class="flex flex-col">
-                    <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Step</span>
-                    <span class="text-sm text-brand font-mono font-bold">{{ metrics.step }}/{{ metrics.total_steps || '?' }}</span>
-                  </div>
-                  <div class="flex flex-col">
-                    <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Loss</span>
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-sm text-brand-light font-mono font-bold">{{ metrics.loss | number:'1.4-6' }}</span>
-                      <span class="text-[10px]" [title]="getLossVelocityTooltip(job)">{{ getLossVelocityIcon(job) }}</span>
+                  <!-- Progress Bar Card -->
+                  <div class="bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20 w-full">
+                    <div class="flex items-center gap-3">
+                      <div class="flex-1 h-1.5 bg-surface-high rounded-full overflow-hidden">
+                        <div class="h-full bg-brand transition-all duration-1000 shadow-[0_0_10px_rgba(var(--color-brand-rgb),0.5)]"
+                             [style.width.%]="metrics.progress">
+                        </div>
+                      </div>
+                      <span class="text-xl font-black text-white italic w-[3.5rem] text-right">{{ metrics.progress }}%</span>
                     </div>
                   </div>
-                  <div class="flex flex-col">
-                    <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Progress</span>
-                    <span class="text-sm text-green-400 font-mono font-bold">{{ metrics.progress }}%</span>
-                  </div>
-                  <div class="flex flex-col">
-                    <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Elapsed</span>
-                    <span class="text-sm text-text-secondary font-mono font-bold">{{ getDuration(job) }}</span>
-                  </div>
-                  <div class="flex flex-col">
-                    <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Step Time</span>
-                    <span class="text-sm text-brand font-mono font-bold">{{ metrics.step_time }}s</span>
-                  </div>
-                   <div class="flex flex-col">
-                    <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">ETC</span>
-                    <span class="text-sm text-blue-300 font-mono font-bold">{{ formatEta(metrics.eta) }}</span>
-                  </div>
+
+                  <!-- Unified Metrics Grid Card -->
+                  <div class="flex justify-between w-full bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20">
+                    <!-- Col 1: Progress (Step / Epoch) -->
+                    <div class="flex flex-col space-y-1 w-24">
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Step</span>
+                        <span class="text-xs text-brand font-mono font-bold">{{ metrics.step }}/{{ metrics.total_steps || '?' }}</span>
+                      </div>
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Epoch</span>
+                        <span class="text-xs text-purple-400 font-mono font-bold">{{ metrics.epoch || '—' }}</span>
+                      </div>
+                    </div>
+                    
+                    <!-- Col 2: Optimization (Loss / Status) -->
+                    <div class="flex flex-col space-y-1 w-28">
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Loss</span>
+                        <span class="text-xs text-brand-light font-mono font-bold">{{ metrics.loss | number:'1.4-6' }}</span>
+                      </div>
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Status</span>
+                        @if (getLossStatus(job); as status) {
+                          <span class="text-xs font-bold uppercase tracking-wider tooltip-trigger"
+                                [class.text-emerald-400]="status.icon === '🟢'"
+                                [class.text-amber-400]="status.icon === '🟡'"
+                                [class.text-danger]="status.icon === '🔴'"
+                                [title]="status.tooltip">
+                            {{ status.text }}
+                          </span>
+                        } @else {
+                          <span class="text-xs text-text-muted italic">—</span>
+                        }
+                      </div>
+                    </div>
+
+                    <!-- Col 3: Throughput (Step Time / Samples/s) -->
+                    <div class="flex flex-col space-y-1 w-28">
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Step Time</span>
+                        <span class="text-xs text-brand font-mono font-bold">{{ metrics.step_time }}s</span>
+                      </div>
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Samples/s</span>
+                        <span class="text-xs text-sky-400 font-mono font-bold">{{ metrics.samples_per_sec || '—' }}</span>
+                      </div>
+                    </div>
+
+                    <!-- Col 4: Hardware & Optimization (VRAM+Res / Grad Norm) -->
+                    <div class="flex flex-col space-y-1 w-32">
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">VRAM <span class="lowercase text-[8px] opacity-70">/ res</span></span>
+                        <span class="text-xs text-emerald-400 font-mono font-bold">
+                          @if (metrics.vram_reserved_mb || metrics.vram_allocated_mb) {
+                            {{ ((metrics.vram_reserved_mb || metrics.vram_allocated_mb) / 1024) | number:'1.1-1' }} GB
+                          } @else {
+                            —
+                          }
+                        </span>
+                        @if (metrics.resolution) {
+                          <span class="text-[9px] text-teal-400 font-mono ml-1">[{{ metrics.resolution }}]</span>
+                        }
+                      </div>
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Grad Norm</span>
+                        <span class="text-xs text-text-secondary font-mono font-bold">{{ metrics.grad_norm != null ? formatGradNorm(metrics.grad_norm) : '—' }}</span>
+                      </div>
+                    </div>
+
+                    <!-- Col 5: Time (Elapsed / ETC) -->
+                    <div class="flex flex-col space-y-1 w-24 text-right">
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Elapsed</span>
+                        <span class="text-xs text-text-secondary font-mono font-bold">{{ getDuration(job) }}</span>
+                      </div>
+                      <div>
+                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">ETC</span>
+                        <span class="text-xs text-blue-300 font-mono font-bold">{{ formatEta(metrics.eta) }}</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <!-- Secondary Metrics (epoch, throughput, resolution, NaN warning) -->
-                  <div class="flex items-center gap-3 px-3 flex-wrap">
-                    @if (metrics.epoch) {
-                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-purple-500/30 bg-purple-500/10 text-purple-400">
-                        Epoch {{ metrics.epoch }}
-                      </span>
-                    }
-                    @if (metrics.samples_per_sec) {
-                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-sky-500/30 bg-sky-500/10 text-sky-400">
-                        {{ metrics.samples_per_sec }} samples/s
-                      </span>
-                    }
-                    @if (metrics.resolution) {
-                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-teal-500/30 bg-teal-500/10 text-teal-400">
-                        {{ metrics.resolution }}
-                      </span>
-                    }
-                    @if (metrics.grad_norm != null) {
-                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-surface-high/50 bg-surface-high/20 text-text-muted">
-                        ∇ {{ formatGradNorm(metrics.grad_norm) }}
-                      </span>
-                    }
-                    @if (metrics.vram_allocated_mb) {
-                      <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-                        VRAM {{ (metrics.vram_allocated_mb / 1024) | number:'1.1-1' }} GB
-                      </span>
-                    }
-                    @if (metrics.nan_count) {
-                      <span class="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border border-red-500/50 bg-red-500/20 text-red-400 animate-pulse"
-                            title="NaN losses detected — consider reducing learning rate">
-                        ⚠ {{ metrics.nan_count }} NaN
-                      </span>
-                    }
-                  </div>
+                  <!-- Anomaly / Secondary Warnings Card -->
+                  @if (metrics.nan_count) {
+                    <div class="bg-red-500/5 p-2 rounded-theme-xl border border-red-500/30 w-full animate-pulse">
+                      <div class="flex items-center gap-3 px-1">
+                          <span class="text-[10px] font-black uppercase tracking-wider text-red-400"
+                                title="NaN losses detected — consider reducing learning rate">
+                            ⚠ {{ metrics.nan_count }} NaN
+                          </span>
+                      </div>
+                    </div>
+                  }
                 </div>
 
-                 <!-- Progress Bar -->
-                <div class="w-full h-1.5 bg-surface-high rounded-full overflow-hidden">
-                  <div class="h-full bg-brand transition-all duration-1000 shadow-[0_0_10px_rgba(var(--color-brand-rgb),0.5)]"
-                       [style.width.%]="metrics.progress">
-                  </div>
-                </div>
               }
 
               <!-- Config Area (Collapsible) -->
@@ -523,45 +557,85 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                     <!-- Training Summary Card (completed/stopped jobs with metrics) -->
                     @if ((job.status === JobStatus.COMPLETED || job.status === JobStatus.STOPPED) && job['avg_loss']) {
                       <div data-testid="training-summary-card"
-                           class="grid grid-cols-3 md:grid-cols-6 gap-3 bg-base/40 p-3 rounded-theme-xl border border-surface-mid/30 mt-2">
-                        <div class="flex flex-col">
-                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Final Loss</span>
-                          <span class="text-sm text-white font-mono font-bold">{{ job['avg_loss'] | number:'1.4-6' }}</span>
-                        </div>
-                        <div class="flex flex-col">
-                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Best Loss</span>
-                          <span class="text-sm text-green-400 font-mono font-bold">{{ job['min_loss'] | number:'1.4-6' }}</span>
-                          @if (job['min_loss_step']) {
-                            <span class="text-[9px] text-text-muted font-mono">@ step {{ job['min_loss_step'] }}</span>
-                          }
-                        </div>
-                        @if (job['avg_loss'] && job['min_loss'] && job['avg_loss'] > 0) {
-                          <div class="flex flex-col">
-                            <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Improvement</span>
-                            <span class="text-sm font-mono font-bold"
-                                  [class]="job['min_loss'] < job['avg_loss'] * 0.9 ? 'text-green-400' : 'text-amber-400'">
-                              {{ ((1 - job['min_loss'] / job['avg_loss']) * 100) | number:'1.1-1' }}%
-                            </span>
+                           class="flex justify-between w-full bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20 mt-2">
+                        
+                        <!-- Col 1: Progress (Steps / Epoch) -->
+                        <div class="flex flex-col space-y-1 w-24">
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Steps</span>
+                            <span class="text-xs text-white font-mono font-bold">{{ job['completed_steps'] || '—' }}</span>
                           </div>
-                        }
-                        <div class="flex flex-col">
-                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Steps</span>
-                          <span class="text-sm text-white font-mono font-bold">{{ job['completed_steps'] || '—' }}</span>
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Epoch</span>
+                            <span class="text-xs text-purple-400 font-mono font-bold">{{ getFinalEpoch(job) }}</span>
+                          </div>
                         </div>
-                        <div class="flex flex-col">
-                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Train Time</span>
-                          <span class="text-sm text-white font-mono font-bold">{{ formatTrainingTime(job['training_seconds']) }}</span>
+
+                        <!-- Col 2: Optimization (Final / Best Loss) -->
+                        <div class="flex flex-col space-y-1 w-28">
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Final Loss</span>
+                            <span class="text-xs text-white font-mono font-bold">{{ job['avg_loss'] | number:'1.4-6' }}</span>
+                          </div>
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Best Loss</span>
+                            <div class="flex items-baseline gap-1">
+                              <span class="text-xs text-green-400 font-mono font-bold">{{ job['min_loss'] | number:'1.4-6' }}</span>
+                              @if (job['min_loss_step']) {
+                                <span class="text-[8px] text-text-muted font-mono">@{{ job['min_loss_step'] }}</span>
+                              }
+                            </div>
+                          </div>
                         </div>
-                        <div class="flex flex-col">
-                          <span class="text-[10px] text-text-subtle uppercase font-bold tracking-wider">Avg Step</span>
-                          <span class="text-sm text-white font-mono font-bold">{{ (job['avg_step_time'] || 0) | number:'1.2-2' }}s</span>
+
+                        <!-- Col 3: Throughput & Performance (Improvement / Avg Step) -->
+                        <div class="flex flex-col space-y-1 w-28">
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Improvement</span>
+                            @if (job['avg_loss'] && job['min_loss'] && job['avg_loss'] > 0) {
+                              <span class="text-xs font-mono font-bold"
+                                    [class]="job['min_loss'] < job['avg_loss'] * 0.9 ? 'text-green-400' : 'text-amber-400'">
+                                {{ ((1 - job['min_loss'] / job['avg_loss']) * 100) | number:'1.1-1' }}%
+                              </span>
+                            } @else {
+                              <span class="text-xs text-text-muted italic">—</span>
+                            }
+                          </div>
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Avg Step</span>
+                            <span class="text-xs text-white font-mono font-bold">{{ (job['avg_step_time'] || 0) | number:'1.2-2' }}s</span>
+                          </div>
                         </div>
+
+                        <!-- Col 4: Settings (Optimizer / LR & Batch) -->
+                        <div class="flex flex-col space-y-1 w-32">
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Optimizer</span>
+                            <span class="text-xs text-sky-400 font-mono font-bold tracking-tight">{{ job.config['optimizer_type'] || 'AdamW' }}</span>
+                          </div>
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">LR / Batch</span>
+                            <div class="flex items-baseline gap-1">
+                              <span class="text-xs text-white font-mono font-bold">{{ formatLR(job.config['learning_rate']) }}</span>
+                              <span class="text-[8px] text-text-disabled font-mono">/ BS {{ job.config['train_batch_size'] || 1 }}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <!-- Col 5: Time (Train Time) -->
+                        <div class="flex flex-col space-y-1 w-24 text-right items-end">
+                          <div>
+                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Train Time</span>
+                            <span class="text-xs text-white font-mono font-bold">{{ formatTrainingTime(job['training_seconds']) }}</span>
+                          </div>
+                        </div>
+
                       </div>
                     }
 
                     <!-- Samples Grid (Archive) -->
                     @if (samplesExpandedJobs().has(job.id)) {
-                      <div class="bg-surface-low border border-surface-mid rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
+                      <div class="bg-base/25 border border-surface-mid/20 rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
                         <div class="flex justify-between items-center mb-3">
                           <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Sample Previews</h4>
                           <button (click)="loadSamples(job.id)" class="p-1 text-brand hover:text-brand/80 transition-colors group" title="Refresh samples">
@@ -570,7 +644,7 @@ import { ModelService, ModelSourceOverride } from '../../../services/model.servi
                         </div>
                         @if (jobSamples().get(job.id); as samples) {
                           @if (samples.length > 0) {
-                            <div class="grid grid-cols-4 gap-2 max-h-[38rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
+                            <div class="grid grid-cols-6 gap-2 max-h-[33rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
                               @for (sample of samples; track sample.filename) {
                                 <button (click)="openSampleModal(job.id, sample)" class="relative group rounded-theme-lg overflow-hidden border border-surface-mid hover:border-brand/50 transition-all hover:shadow-lg hover:shadow-brand/10 aspect-square bg-surface-high">
                                   <img [src]="getSampleImageUrl(job.id, sample.filename)" [alt]="'Step ' + sample.step" class="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy">
@@ -1086,7 +1160,7 @@ export class TrainingJobQueueComponent implements OnInit {
           TrainingJobQueueComponent.CARRY_FORWARD_KEYS.filter(k => metrics[k] == null)
         );
         if (keysNeeded.size > 0) {
-          const lookback = Math.min(15, i);
+          const lookback = Math.min(50, i); // Increased lookback to 50 for more tolerant caching of throttled values
           for (let j = i - 1; j >= i - lookback && keysNeeded.size > 0; j--) {
             const prev = this.parseLogLine(job.logs[j]);
             if (!prev) continue;
@@ -1182,30 +1256,39 @@ export class TrainingJobQueueComponent implements OnInit {
     return `${m}m ${s}s`;
   }
 
-  /** Loss velocity indicator: compares recent vs earlier loss average. */
-  getLossVelocityIcon(job: Job): string {
-    if (!job.logs || job.logs.length < 20) return '';
-    const window = 20;
+  /** Loss velocity status: compares recent vs earlier loss average. Uses a larger window (50 steps) for stability. */
+  getLossStatus(job: Job): { icon: string, text: string, colorClass: string, tooltip: string } | null {
+    if (!job.logs || job.logs.length < 50) return null;
+    const window = 50;
     const losses: number[] = [];
     for (let i = job.logs.length - 1; i >= 0 && losses.length < window * 2; i--) {
       const m = this.parseLogLine(job.logs[i]);
       if (m?.loss != null) losses.unshift(m.loss);
     }
-    if (losses.length < window) return '';
+    if (losses.length < window) return null;
     const recent = losses.slice(-window).reduce((a, b) => a + b, 0) / window;
     const earlier = losses.slice(0, window).reduce((a, b) => a + b, 0) / window;
     const delta = (recent - earlier) / Math.max(earlier, 1e-8);
-    if (delta < -0.01) return '🟢';    // converging
-    if (delta > 0.02)  return '🔴';    // diverging
-    return '🟡';                        // plateau
-  }
+    
+    let icon = '🟡';
+    let text = 'Plateau';
+    let colorClass = 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+    if (delta < -0.01) {
+      icon = '🟢';
+      text = 'Converging';
+      colorClass = 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
+    } else if (delta > 0.02) {
+      icon = '🔴';
+      text = 'Diverging';
+      colorClass = 'text-danger bg-danger/10 border-danger/30';
+    }
 
-  getLossVelocityTooltip(job: Job): string {
-    const icon = this.getLossVelocityIcon(job);
-    if (icon === '🟢') return 'Loss is converging';
-    if (icon === '🔴') return 'Loss is diverging — consider lowering LR';
-    if (icon === '🟡') return 'Loss has plateaued';
-    return 'Waiting for data...';
+    return {
+      icon,
+      text,
+      colorClass,
+      tooltip: `Evaluating over last ${window} steps.\nRecent avg: ${recent.toFixed(5)}\nEarlier avg: ${earlier.toFixed(5)}`
+    };
   }
 
   /** Format grad norm: use scientific notation for very large values. */
@@ -1361,5 +1444,32 @@ export class TrainingJobQueueComponent implements OnInit {
 
   onReloadConfig(job: Job) {
     this.reloadConfig.emit(job.config);
+  }
+
+  getFinalEpoch(job: Job): string {
+    const steps = job.completed_steps;
+    const config = job.config;
+    if (!steps || !config) return '—';
+
+    // If active memory object still has the exact metric
+    const metrics = this.getLatestMetrics(job);
+    if (metrics && metrics.epoch !== undefined) {
+      return metrics.epoch.toString();
+    }
+
+    // Use exact value if available via V6 schema logic
+    if (job.completed_epochs !== undefined && job.completed_epochs !== null) {
+      return job.completed_epochs.toFixed(2);
+    }
+    
+    // Legacy fallback
+    return '—';
+  }
+
+  formatLR(lr: any): string {
+    if (lr == null || lr === 0) return '—';
+    const n = Number(lr);
+    if (n < 0.0001) return n.toExponential(1);
+    return n.toString();
   }
 }

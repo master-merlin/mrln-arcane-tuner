@@ -131,6 +131,7 @@ class PipelineTrainMixin:
             self.logger_component._save_every = save_every_cfg
 
         start_step = self.global_step + 1 if self.global_step > 0 else 0
+        sps_window: list[float] = []  # Sliding window for Samples/s smoothing
         for step in range(start_step, max_steps):
             self.global_step = step
 
@@ -340,15 +341,18 @@ class PipelineTrainMixin:
             if self.scaler.is_enabled():
                 extra["amp_scale"] = float(self.scaler.get_scale())
 
-            # Throughput: samples per second
+            # Throughput: samples per second (SMA smoothed)
             step_time = time.time() - self.logger_component.last_step_time
             if step_time > 0:
-                extra["samples_per_sec"] = round(
-                    batch_size * grad_accum / max(step_time, 0.001), 2
-                )
+                raw_sps = batch_size * grad_accum / max(step_time, 0.001)
+                sps_window.append(raw_sps)
+                if len(sps_window) > 10:  # 10-step simple moving average
+                    sps_window.pop(0)
+                
+                extra["samples_per_sec"] = round(sum(sps_window) / len(sps_window), 2)
 
-            # Live VRAM usage (every 10 steps to minimize overhead)
-            if step % 10 == 0 and torch.cuda.is_available():
+            # Live VRAM usage
+            if torch.cuda.is_available():
                 extra["vram_allocated_mb"] = round(
                     torch.cuda.memory_allocated() / 1024**2
                 )
@@ -582,6 +586,7 @@ class PipelineTrainMixin:
 
             repo.complete(self._job_history_id,
                 completed_steps=max_steps,
+                completed_epochs=round(max_steps / self._steps_per_epoch, 2) if getattr(self, "_steps_per_epoch", 0) else None,
                 duration_seconds=elapsed,
                 training_seconds=elapsed - self.logger_component._total_save_time,
                 avg_loss=sum(losses) / len(losses) if losses else None,

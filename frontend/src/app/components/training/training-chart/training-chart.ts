@@ -28,35 +28,34 @@ export interface ChartDataPoint {
     .training-chart-wrap { width: 100%; }
     .uplot-container { width: 100%; }
 
-    /* uPlot legend overrides — stabilized layout with flexbox */
+    /* uPlot legend overrides — stabilized but non-breaking horizontal layout */
     .u-legend { 
       font-size: 11px; 
       color: #9ca3af; 
-      padding: 8px 0 0 0; 
-      display: flex; 
-      flex-wrap: wrap; 
-      gap: 16px; 
-      justify-content: center;
+      padding: 12px 0 0 0; 
+      text-align: center;
+      line-height: 1.6;
     }
     .u-legend .u-series { 
-      display: flex; 
+      display: inline-flex; 
       align-items: baseline; 
-      gap: 4px;
-      min-width: 80px; /* Base stability */
+      margin: 0 8px;
     }
     .u-legend .u-label {
       font-weight: 400;
       color: #6b7280;
+      margin-right: 4px;
     }
     .u-legend .u-value { 
       font-weight: 600; 
       font-variant-numeric: tabular-nums; 
       color: #d1d5db;
-      min-width: 50px; /* Value stability */
+      min-width: 55px; /* Stable width for numeric values */
+      text-align: left;
     }
-    /* Specific overrides for longer labels / values */
-    .u-legend .u-series:nth-child(4) { min-width: 130px; } /* Best Loss item needs more room */
-    .u-legend .u-series:nth-child(5) { min-width: 100px; } /* LR often has scientific notation */
+    /* Metric-specific widths for stability */
+    .u-legend .u-series:nth-child(4) .u-value { min-width: 110px; } /* Best Loss: "0.0231 @ 4558" */
+    .u-legend .u-series:nth-child(5) .u-value { min-width: 65px; }  /* LR: "1.000e-4" */
   `]
 })
 export class TrainingChartComponent implements AfterViewInit, OnDestroy {

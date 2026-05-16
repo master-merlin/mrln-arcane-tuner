@@ -230,55 +230,30 @@ def main():
              
         logger.info(f"resolved_family: {definition.family}")
         
-        if definition.family == "sdxl":
-            from app.engine.models.families.sdxl.trainer import SDXLTrainer as TrainerClass
-            
-            logger.info("instantiating_sdxl_trainer")
-            trainer = TrainerClass(definition=definition, run_config=config)
-            
-            logger.info("starting_async_v2_training")
-            asyncio.run(run_async_trainer(trainer, _log_writer))
-            
-        elif definition.family == "flux2":
-            from app.engine.models.families.flux2.trainer import Flux2Trainer as TrainerClass
-            
-            logger.info("instantiating_flux2_trainer")
-            trainer = TrainerClass(definition=definition, run_config=config)
-            
-            logger.info("starting_async_flux2_training")
-            asyncio.run(run_async_trainer(trainer, _log_writer))
-            
-        elif definition.family == "flux1":
-            from app.engine.models.families.flux1.trainer import Flux1Trainer as TrainerClass
-            
-            logger.info("instantiating_flux1_trainer")
-            trainer = TrainerClass(definition=definition, run_config=config)
-            
-            logger.info("starting_async_flux1_training")
-            asyncio.run(run_async_trainer(trainer, _log_writer))
-            
-        elif definition.family == "zimage":
-            from app.engine.models.families.zimage.trainer import ZImageTrainer as TrainerClass
-            
-            logger.info("instantiating_zimage_trainer")
-            trainer = TrainerClass(definition=definition, run_config=config)
-            logger.info("starting_async_zimage_training")
-            asyncio.run(run_async_trainer(trainer, _log_writer))
-            
-        elif definition.family == "qwen_image":
-            from app.engine.models.families.qwen_image.trainer import QwenImageTrainer as TrainerClass
-            
-            logger.info("instantiating_qwen_image_trainer")
-            trainer = TrainerClass(definition=definition, run_config=config)
-            logger.info("starting_async_qwen_image_training")
-            asyncio.run(run_async_trainer(trainer, _log_writer))
-            
-        else:
-            logger.info("using_legacy_trainer")
-            logger.warning("legacy_trainer_path_incomplete_aborting", family=definition.family)
-            print(f"CRITICAL: No trainer registered for family '{definition.family}'. Aborting.", file=sys.stderr)
-            _log_writer.exit(1, error=f"No trainer for family '{definition.family}'")
+        # Registry-driven dispatch: every family's ``family.py`` registers a
+        # ``ModelFamily`` subclass with ``family_name`` matching the YAML
+        # ``family`` field.  ``ModelRegistry.discover_families`` (already
+        # run via ``registry.initialize()`` above) imports those modules so
+        # this lookup succeeds for any family present in
+        # ``app/engine/models/families/``.
+        try:
+            family_cls = registry.get_family_class(definition.family)
+        except ValueError as exc:
+            logger.error("trainer_dispatch_failed", family=definition.family, error=str(exc))
+            print(f"CRITICAL: {exc}", file=sys.stderr)
+            _log_writer.exit(1, error=str(exc))
             sys.exit(1)
+
+        family_instance = family_cls(definition, config)
+        TrainerClass = family_instance.get_trainer_class()
+        logger.info(
+            "instantiating_trainer",
+            family=definition.family,
+            trainer_class=TrainerClass.__name__,
+        )
+        trainer = TrainerClass(definition=definition, run_config=config)
+        logger.info("starting_async_training", family=definition.family)
+        asyncio.run(run_async_trainer(trainer, _log_writer))
 
         logger.info("training_completed_successfully")
         _log_writer.exit(0)

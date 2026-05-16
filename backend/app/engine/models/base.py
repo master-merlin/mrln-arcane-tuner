@@ -73,7 +73,9 @@ class BaseTrainingConfig(BaseModel):
     """
 
     # [BASE] General Settings
-    lora_name: str = Field("my_lora", description="The name of the LoRA being trained", json_schema_extra={"group": "BASE"})
+    lora_prefix: str = Field("", description="Prefix for LoRA filename (auto-derived from dataset name)", json_schema_extra={"group": "BASE"})
+    lora_suffix: str = Field("", description="Suffix for LoRA filename (auto-derived from dataset name)", json_schema_extra={"group": "BASE"})
+    lora_name: str = Field("my_lora", description="LoRA filename — supports {placeholder} syntax for dynamic naming", json_schema_extra={"group": "BASE"})
     global_triggerword: str = Field("", description="Global triggerword (e.g. 'CarConcepts')", json_schema_extra={"group": "BASE"})
     mixed_precision: Literal["no", "fp16", "bf16"] = Field("fp16", description="Training precision", json_schema_extra={"group": "BASE"})
     save_precision: Literal["fp16", "bf16", "fp32"] = Field("fp16", description="Precision of the saved LoRA (FP32 = 2x Size)", json_schema_extra={"group": "BASE"})

@@ -1,394 +1,402 @@
 {
+    "lora_prefix": {
+        "tip": "Prefix for LoRA filename. Placeholder: {lora_prefix}",
+        "detail": "A text prefix that can be referenced in the LoRA Name field using the {lora_prefix} placeholder.\n\n**Magic Wand:** Click the wand icon to auto-derive from the first dataset name. Dashes and spaces are converted to underscores, preserving the original letter case.\n\n**Example:** Dataset name `My-Cool-Dataset` → prefix `My_Cool_Dataset`"
+    },
+    "lora_suffix": {
+        "tip": "Suffix for LoRA filename. Placeholder: {lora_suffix}",
+        "detail": "A text suffix that can be referenced in the LoRA Name field using the {lora_suffix} placeholder.\n\n**Magic Wand:** Click the wand icon to auto-derive from the first dataset name. Dashes and spaces are converted to underscores, preserving the original letter case.\n\n**Example:** Dataset name `My-Cool-Dataset` → suffix `My_Cool_Dataset`"
+    },
     "lora_name": {
-        "tip": "Identifier used in filenames and checkpoint directories.",
-        "detail": "The LoRA name is used to generate output filenames like `my_lora_1000.safetensors` and organize checkpoints. Choose a descriptive name without spaces or special characters.\n\nThis name is purely organizational — it does not affect training quality."
+        "tip": "Identifier used in filenames and checkpoint directories. Supports {placeholder} syntax.",
+        "detail": "The LoRA name generates output filenames like `my_lora_1000.safetensors`.\n\n**Dynamic Placeholders:** Use `{field_name}` syntax to insert values from other settings. For example `{lora_prefix}_flux_{lora_suffix}`.\n\nAvailable placeholder names are shown in each setting’s help tooltip (look for the `{name}` identifier).\n\nA live preview below the field shows the resolved filename in real-time."
     },
     "global_triggerword": {
-        "tip": "A unique keyword prepended to every caption during training.",
+        "tip": "A unique keyword prepended to every caption during training. Placeholder: {global_triggerword}",
         "detail": "A trigger word ties your trained concept to a specific token that the base model has never seen. When generating images later, including this word in your prompt activates the LoRA.\n\n**Best practices:**\n- Use a unique, non-dictionary word (e.g. `ohwx`, `sks`, `p3rs0n`)\n- Keep it short (1–2 tokens)\n- Avoid common English words — they already have semantic meaning in the model\n\nLeave empty if you're training a style LoRA that should always apply."
     },
     "mixed_precision": {
-        "tip": "Precision used during training forward/backward passes.",
+        "tip": "Precision used during training forward/backward passes. Placeholder: {mixed_precision}",
         "detail": "Mixed precision trades numeric accuracy for speed and lower VRAM usage by running computations in a smaller floating-point format.\n\n- **no**: Full FP32 — slowest, most VRAM, highest precision. Rarely needed.\n- **fp16**: Half precision with gradient scaling. Best for SDXL. ~40% faster, ~40% less VRAM.\n- **bf16**: Brain Float 16 — wider dynamic range than FP16, no gradient scaler needed. Best for Flux models. Requires Ampere+ GPU (RTX 30xx or newer).\n\n**Rule of thumb:** Use `fp16` for SDXL, `bf16` for Flux."
     },
     "save_precision": {
-        "tip": "Precision of the final saved LoRA weights.",
+        "tip": "Precision of the final saved LoRA weights. Placeholder: {save_precision}",
         "detail": "Controls the numeric precision of the exported `.safetensors` file. This affects file size and inference quality.\n\n- **fp16**: Standard. ~20–40 MB for rank 16. Compatible with everything.\n- **bf16**: Same size as FP16 but preserves more dynamic range. Best for Flux LoRAs.\n- **fp32**: Double the file size. Only useful for archival or further fine-tuning.\n\nFor inference in ComfyUI/WebUI, `fp16` is almost always sufficient."
     },
     "quantization": {
-        "tip": "Compresses the frozen base model to dramatically reduce VRAM usage.",
+        "tip": "Compresses the frozen base model to dramatically reduce VRAM usage. Placeholder: {quantization}",
         "detail": "Quantization reduces the precision of the frozen (non-trainable) UNet or Transformer weights. Since these weights are never updated during training, lower precision has minimal impact on LoRA quality.\n\n- **none**: No quantization. Full precision. Most VRAM.\n- **fp8**: 8-bit float. ~50% VRAM reduction. Minimal quality impact. Recommended starting point.\n- **nf4**: 4-bit NormalFloat. ~75% VRAM reduction. Good for 8GB GPUs.\n- **int8–int4**: Integer quantization at various bit widths.\n\n**Impact:** Quantization only affects the frozen base — your LoRA adapters always train in full precision."
     },
     "quantization_backend": {
-        "tip": "Compresses the frozen base model to dramatically reduce VRAM usage.",
+        "tip": "Compresses the frozen base model to dramatically reduce VRAM usage. Placeholder: {quantization_backend}",
         "detail": "Quantization reduces the precision of the frozen (non-trainable) UNet or Transformer weights. Since these weights are never updated during training, lower precision has minimal impact on LoRA quality.\n\n- **none**: No quantization. Full precision. Most VRAM.\n- **fp8**: 8-bit float. ~50% VRAM reduction. Minimal quality impact. Recommended starting point.\n- **nf4**: 4-bit NormalFloat. ~75% VRAM reduction. Good for 8GB GPUs.\n- **int8–int4**: Integer quantization at various bit widths.\n\n**Impact:** Quantization only affects the frozen base — your LoRA adapters always train in full precision."
     },
     "te_quantization": {
-        "tip": "Separately quantize the frozen text encoder(s) to save additional VRAM.",
+        "tip": "Separately quantize the frozen text encoder(s) to save additional VRAM. Placeholder: {te_quantization}",
         "detail": "Text encoders are also frozen during standard LoRA training and can be quantized independently from the UNet/Transformer.\n\nSDXL has two CLIP text encoders (~1.3 GB total). Flux uses a single large language model (Qwen3 or Mistral, ~2–4 GB).\n\n**When to quantize:**\n- You're on a VRAM-constrained GPU (8–12 GB)\n- You're NOT training the text encoder (`train_text_encoder` is off)\n\n**Warning:** If `train_text_encoder` is enabled, the TE must remain in full precision."
     },
     "te_quantization_backend": {
-        "tip": "Separately quantize the frozen text encoder(s) to save additional VRAM.",
+        "tip": "Separately quantize the frozen text encoder(s) to save additional VRAM. Placeholder: {te_quantization_backend}",
         "detail": "Text encoders are also frozen during standard LoRA training and can be quantized independently from the UNet/Transformer.\n\nSDXL has two CLIP text encoders (~1.3 GB total). Flux uses a single large language model (Qwen3 or Mistral, ~2–4 GB).\n\n**When to quantize:**\n- You're on a VRAM-constrained GPU (8–12 GB)\n- You're NOT training the text encoder (`train_text_encoder` is off)\n\n**Warning:** If `train_text_encoder` is enabled, the TE must remain in full precision."
     },
     "output_dir": {
-        "tip": "Directory where checkpoints and final LoRA files are saved.",
+        "tip": "Directory where checkpoints and final LoRA files are saved. Placeholder: {output_dir}",
         "detail": "All training outputs are written here, including:\n\n- Final LoRA: `{output_dir}/{lora_name}_final.safetensors`\n- Checkpoints: `{output_dir}/checkpoint-{step}/`\n- Training state files for resume\n\nThe directory is created automatically if it doesn't exist."
     },
     "cache_latents": {
-        "tip": "Pre-encode images through the VAE and cache to disk for speed.",
+        "tip": "Pre-encode images through the VAE and cache to disk for speed. Placeholder: {cache_latents}",
         "detail": "When enabled, images are encoded through the VAE once at the start and saved as `.safetensors` files on disk. Subsequent epochs skip the VAE entirely.\n\n**Benefits:**\n- ~30–50% faster training after the first pass\n- VAE can be offloaded from VRAM after caching\n\n**Tradeoff:** Requires extra disk space (~1–5 MB per image depending on resolution). Cache is stored in `{dataset_path}/.cache/`."
     },
     "h_flip": {
-        "tip": "Randomly flip images horizontally during training (50% chance per sample).",
+        "tip": "Randomly flip images horizontally during training (50% chance per sample). Placeholder: {h_flip}",
         "detail": "Applies a random left-right mirror to training images. This doubles the effective diversity of your dataset by showing the model both orientations.\n\n**When to enable:**\n- Landscapes, objects, textures, styles — any symmetric concept\n- General-purpose LoRAs\n\n**When to keep disabled:**\n- Faces and portraits — flipping distorts facial asymmetry and can confuse the model\n- Text or logos — they become mirrored and unreadable\n- Directional subjects — cars, instruments, etc. that have a canonical orientation\n\n**Note:** This augmentation is applied after latent caching (if enabled), so it doesn't affect cached data."
     },
     "v_flip": {
-        "tip": "Randomly flip images vertically during training (50% chance per sample).",
+        "tip": "Randomly flip images vertically during training (50% chance per sample). Placeholder: {v_flip}",
         "detail": "Applies a random top-bottom flip to training images. Much less commonly used than horizontal flip.\n\n**When to enable:**\n- Textures, patterns, and abstract art\n- Microscopy or satellite imagery\n\n**When to keep disabled:**\n- Nearly all other cases — most subjects have a clear 'up' direction. Vertical flips create unnatural orientations that can hurt training quality."
     },
     "quantization_strategy": {
-        "tip": "Controls how quantization is performed: fastest loads everything to GPU first, vram_safe quantizes one component at a time.",
+        "tip": "Controls how quantization is performed: fastest loads everything to GPU first, vram_safe quantizes one component at a time. Placeholder: {quantization_strategy}",
         "detail": "Determines the order of operations when loading and quantizing the model.\n\n- **fastest**: Loads the entire model to GPU in full precision, then quantizes in-place. Fastest but requires enough VRAM to hold the full model briefly.\n- **vram_safe**: Loads and quantizes one component at a time (UNet, then TE, etc.). Slower but never exceeds the quantized model's VRAM footprint.\n\n**Recommendation:** Use `fastest` if you have enough VRAM for the full model. Switch to `vram_safe` if loading fails with OOM errors."
     },
     "store_quantized_version": {
-        "tip": "Cache the quantized model to disk for instant reload on subsequent runs.",
+        "tip": "Cache the quantized model to disk for instant reload on subsequent runs. Placeholder: {store_quantized_version}",
         "detail": "After quantization, the compressed model weights are saved to disk. Future training runs skip the quantization step entirely and load the pre-quantized weights directly.\n\n**Benefits:**\n- Saves 30–60 seconds on subsequent runs\n- Eliminates the brief peak VRAM spike from in-place quantization\n\n**When to disable:**\n- On Blackwell GPUs (RTX 50xx) with native FP8 support — quantization is handled in hardware\n- When experimenting with different quantization levels and you don't want stale cached versions"
     },
     "max_train_steps": {
-        "tip": "Total number of optimizer steps before training ends.",
+        "tip": "Total number of optimizer steps before training ends. Placeholder: {max_train_steps}",
         "detail": "The primary knob for controlling training duration. One 'step' is one optimizer update (after gradient accumulation).\n\n**Guidelines:**\n- **500–1000**: Quick style transfers or simple concepts\n- **1000–3000**: Character likeness, detailed subjects\n- **3000–5000**: Complex multi-concept training\n\nMore steps is NOT always better — watch your loss curve and sample outputs. If loss plateaus or starts rising, you're likely overfitting."
     },
     "train_batch_size": {
-        "tip": "Number of images processed per GPU in each forward pass.",
+        "tip": "Number of images processed per GPU in each forward pass. Placeholder: {train_batch_size}",
         "detail": "Larger batches produce more stable gradients but use more VRAM.\n\n- **1**: Default. Works on most GPUs. Good for small datasets.\n- **2–4**: More stable training. Requires 16+ GB VRAM (depends on resolution).\n- **8+**: Only for high-VRAM setups (24+ GB).\n\nEffective batch size = `train_batch_size × gradient_accumulation_steps`. You can simulate larger batches via gradient accumulation without extra VRAM."
     },
     "gradient_accumulation_steps": {
-        "tip": "Accumulate gradients over N steps before updating weights.",
+        "tip": "Accumulate gradients over N steps before updating weights. Placeholder: {gradient_accumulation_steps}",
         "detail": "Simulates a larger batch size without increasing VRAM usage. The optimizer only updates weights after accumulating gradients from N mini-batches.\n\n**Example:** `batch_size=1, accumulation=4` behaves like `batch_size=4` for gradient quality, but uses the VRAM of `batch_size=1`.\n\n**Tradeoff:** Training takes N× longer per effective step. Total optimizer steps remain the same."
     },
     "gradient_checkpointing": {
-        "tip": "Trade compute for VRAM by recomputing activations during backward pass.",
+        "tip": "Trade compute for VRAM by recomputing activations during backward pass. Placeholder: {gradient_checkpointing}",
         "detail": "Instead of storing all intermediate activations in VRAM (for the backward pass), gradient checkpointing discards them and recomputes on-the-fly.\n\n**Savings:** ~30–50% VRAM reduction for the model activations.\n**Cost:** ~20–30% slower training due to recomputation.\n\nEnable this if you're running out of VRAM. It's the single most effective VRAM optimization after quantization."
     },
     "save_every_n_steps": {
-        "tip": "Save a full checkpoint every N optimizer steps (0 to disable).",
+        "tip": "Save a full checkpoint every N optimizer steps (0 to disable). Placeholder: {save_every_n_steps}",
         "detail": "Periodic checkpoints let you resume training after interruptions and compare quality at different training stages.\n\nEach checkpoint includes:\n- Inference-ready `.safetensors` LoRA file\n- Full PEFT adapter state (for resume)\n- Optimizer, scheduler, and scaler states\n- EMA shadow weights (if enabled)\n- Latent cache manifest (if **Persist Latents** is on)\n- Text embedding cache manifest (if **Persist Embeddings** is on)\n\n**Set to 0** to only save at the end. **Recommended:** `250–500` for long runs."
     },
     "persist_latents": {
-        "tip": "Include the latent cache manifest in checkpoints for seamless resume.",
+        "tip": "Include the latent cache manifest in checkpoints for seamless resume. Placeholder: {persist_latents}",
         "detail": "When enabled, the checkpoint stores a reference map of all pre-encoded latent files (from `cache_latents`). On resume, the pipeline knows which images have already been encoded and skips them.\n\n**Benefits:**\n- Faster resume — no need to re-encode all images through the VAE\n- Only new or changed images are re-encoded\n\n**When to disable:** If you've changed image files between runs and want a full re-encode.\n\nRequires `Save Every N Steps` > 0."
     },
     "persist_embeddings": {
-        "tip": "Include the text embedding cache manifest in checkpoints for seamless resume.",
+        "tip": "Include the text embedding cache manifest in checkpoints for seamless resume. Placeholder: {persist_embeddings}",
         "detail": "When enabled, the checkpoint stores a reference map of all pre-computed text embeddings. On resume, the pipeline knows which captions have already been encoded and skips them.\n\n**Benefits:**\n- Faster resume — no need to re-run captions through the text encoder\n- Only new or changed captions are re-encoded\n\n**When to disable:** If you've modified caption files between runs and want a full re-encode.\n\nRequires `Save Every N Steps` > 0."
     },
     "resume_from_checkpoint": {
-        "tip": "Path to a checkpoint directory to continue training from.",
+        "tip": "Path to a checkpoint directory to continue training from. Placeholder: {resume_from_checkpoint}",
         "detail": "Point this to a `checkpoint-{step}/` directory to resume a previously interrupted training run. The system restores:\n\n- Training step counter\n- LoRA adapter weights\n- Optimizer & scheduler states\n- GradScaler state\n- EMA shadow weights\n- Latent & embedding caches (if persisted)\n\nUse the **Re-Use** toggles below to skip re-encoding images or captions that haven't changed.\n\nLeave empty to start fresh."
     },
     "use_cached_latents": {
-        "tip": "Re-use latent cache from the checkpoint instead of re-encoding all images.",
+        "tip": "Re-use latent cache from the checkpoint instead of re-encoding all images. Placeholder: {use_cached_latents}",
         "detail": "When resuming from a checkpoint that has a persisted latent manifest, this toggle lets you skip VAE encoding for images that haven't changed since the checkpoint was saved.\n\n**How it works:**\n- The manifest maps each image file to its cached `.safetensors` latent\n- On resume, only new or modified images are re-encoded\n- Unchanged images reuse their existing cached latents\n\n**When to disable:** If you've replaced, cropped, or resized images since the checkpoint was saved and want all latents regenerated.\n\nRequires a valid `Resume From Checkpoint` path."
     },
     "use_cached_embeddings": {
-        "tip": "Re-use text embedding cache from the checkpoint instead of re-encoding all captions.",
+        "tip": "Re-use text embedding cache from the checkpoint instead of re-encoding all captions. Placeholder: {use_cached_embeddings}",
         "detail": "When resuming from a checkpoint that has a persisted embedding manifest, this toggle lets you skip text encoder processing for captions that haven't changed.\n\n**How it works:**\n- The manifest maps each caption to its cached text embeddings\n- On resume, only new or modified captions are re-encoded\n- Unchanged captions reuse their existing cached embeddings\n\n**When to disable:** If you've edited caption files since the checkpoint was saved and want all embeddings regenerated.\n\nRequires a valid `Resume From Checkpoint` path."
     },
     "resolutions": {
-        "tip": "Target pixel resolutions for aspect-ratio bucketing.",
+        "tip": "Target pixel resolutions for aspect-ratio bucketing. Placeholder: {resolutions}",
         "detail": "Images are grouped into aspect-ratio buckets based on these target resolutions. The bucketing system finds the optimal width×height combination where both dimensions are divisible by 32.\n\n**Common values:**\n- **512**: SDXL fine-tuning at lower res (faster, less VRAM)\n- **1024**: Native SDXL / Flux resolution\n- **1280–1536**: Higher quality, more VRAM\n\nMultiple resolutions can be selected for mixed-resolution training."
     },
     "resolution_strategy": {
-        "tip": "How multiple resolutions are used during training.",
+        "tip": "How multiple resolutions are used during training. Placeholder: {resolution_strategy}",
         "detail": "When multiple target resolutions are configured:\n\n- **Mixed**: All resolutions are available from the start. Each batch randomly draws from any resolution bucket.\n- **Progressive**: Start training at the smallest resolution, then gradually introduce larger resolutions. This can help the model learn coarse features first."
     },
     "bucketing_mode": {
-        "tip": "How images are assigned to resolution buckets.",
+        "tip": "How images are assigned to resolution buckets. Placeholder: {bucketing_mode}",
         "detail": "Controls how each training image maps to resolution buckets:\n\n- **Kohya**: Each image appears in exactly one bucket — the closest matching aspect ratio. Standard approach, deterministic.\n- **Multi**: Each image appears in every bucket it qualifies for. Increases latent diversity and training data variety at the cost of more cached latents on disk."
     },
     "timestep_sampling": {
-        "tip": "Distribution used to sample noise timesteps during training.",
-        "detail": "Controls which noise levels the model trains on most frequently. Different distributions emphasize different parts of the denoising process.\n\n- **logit_normal**: Default for flow matching (Flux). Concentrates training on mid-range noise levels where learning is most effective.\n- **uniform**: Equal probability across all timesteps. Simple baseline.\n- **sigmoid**: Simplified logit-normal with fixed parameters.\n- **cosmap**: Cosine-mapped schedule. Smooth distribution.\n- **mode**: Emphasizes mid-range timesteps with configurable scale.\n- **flux_shift**: Resolution-dependent shifting. Original Flux training recipe \u2014 higher-res images get more high-noise training.\n- **radc**: Resolution-Aware Dynamic Curriculum. Progressively shifts from high-noise (structure learning) to low-noise (detail refinement) over training, with resolution-aware weighting. Best for multi-phase curriculum learning.\n\n**Recommendation:** `flux_shift` for standard Flux training. `radc` for progressive curriculum training that optimizes structure first, then refines details."
+        "tip": "Distribution used to sample noise timesteps during training. Placeholder: {timestep_sampling}",
+        "detail": "Controls which noise levels the model trains on most frequently. Different distributions emphasize different parts of the denoising process.\n\n- **logit_normal**: Default for flow matching (Flux). Concentrates training on mid-range noise levels where learning is most effective.\n- **uniform**: Equal probability across all timesteps. Simple baseline.\n- **sigmoid**: Simplified logit-normal with fixed parameters.\n- **cosmap**: Cosine-mapped schedule. Smooth distribution.\n- **mode**: Emphasizes mid-range timesteps with configurable scale.\n- **flux_shift**: Resolution-dependent shifting. Original Flux training recipe — higher-res images get more high-noise training.\n- **radc**: Resolution-Aware Dynamic Curriculum. Progressively shifts from high-noise (structure learning) to low-noise (detail refinement) over training, with resolution-aware weighting. Best for multi-phase curriculum learning.\n\n**Recommendation:** `flux_shift` for standard Flux training. `radc` for progressive curriculum training that optimizes structure first, then refines details."
     },
     "logit_normal_mu": {
-        "tip": "Mean of the logit-normal distribution (0.0 = centered).",
+        "tip": "Mean of the logit-normal distribution (0.0 = centered). Placeholder: {logit_normal_mu}",
         "detail": "Shifts the center of mass of the timestep distribution. Only active when `timestep_sampling` is `logit_normal`.\n\n- **Negative values** (e.g. -1.0): More training on low-noise (detail refinement)\n- **0.0**: Balanced (default)\n- **Positive values** (e.g. 1.0): More training on high-noise (composition/structure)"
     },
     "logit_normal_sigma": {
-        "tip": "Width of the logit-normal distribution (1.0 = standard spread).",
+        "tip": "Width of the logit-normal distribution (1.0 = standard spread). Placeholder: {logit_normal_sigma}",
         "detail": "Controls how concentrated the sampling is around the mean. Only active when `timestep_sampling` is `logit_normal`.\n\n- **Small values** (0.1–0.5): Very concentrated — model trains heavily on mid-range noise\n- **1.0**: Standard spread (default)\n- **Large values** (2.0+): Flatter, closer to uniform"
     },
     "mode_scale": {
-        "tip": "Higher values increase emphasis on mid-range timesteps.",
+        "tip": "Higher values increase emphasis on mid-range timesteps. Placeholder: {mode_scale}",
         "detail": "Controls the peakedness of the mode distribution. Only active when `timestep_sampling` is `mode`.\n\n- **1.0**: Nearly uniform\n- **1.5**: Moderate mid-range emphasis (default)\n- **3.0+**: Strong mid-range focus, less training on extremes"
     },
     "flux_shift_base": {
-        "tip": "Shift factor applied to low-resolution images.",
+        "tip": "Shift factor applied to low-resolution images. Placeholder: {flux_shift_base}",
         "detail": "In Flux shift sampling, the noise distribution is shifted based on image resolution. This parameter sets the shift for the lowest resolution.\n\nOnly active when `timestep_sampling` is `flux_shift`. Default: 0.5"
     },
     "flux_shift_max": {
-        "tip": "Shift factor applied to high-resolution images.",
+        "tip": "Shift factor applied to high-resolution images. Placeholder: {flux_shift_max}",
         "detail": "Maximum shift applied at the highest resolution. Higher-resolution images spend more time training on high-noise regions, which helps learn global composition.\n\nOnly active when `timestep_sampling` is `flux_shift`. Default: 1.16"
     },
     "radc_start": {
-        "tip": "Where the noise emphasis begins at the start of training.",
-        "detail": "Controls the center of the Gaussian sampling curve at step 0. The value represents the noise level focus, where 1.0 is pure noise and 0.0 is a clean image.\n\n- **0.8**: Default. Focus on high-noise denoising \u2014 teaches the model to compose the subject from scratch.\n- **0.9\u20131.0**: More aggressive structure-first learning. Good for subjects with complex layouts.\n- **0.5**: Balanced start (similar to old weighted mode).\n\nThe center linearly shifts from `radc_start` to `radc_end` over the course of training, creating a coarse-to-fine curriculum."
+        "tip": "Where the noise emphasis begins at the start of training. Placeholder: {radc_start}",
+        "detail": "Controls the center of the Gaussian sampling curve at step 0. The value represents the noise level focus, where 1.0 is pure noise and 0.0 is a clean image.\n\n- **0.8**: Default. Focus on high-noise denoising — teaches the model to compose the subject from scratch.\n- **0.9–1.0**: More aggressive structure-first learning. Good for subjects with complex layouts.\n- **0.5**: Balanced start (similar to old weighted mode).\n\nThe center linearly shifts from `radc_start` to `radc_end` over the course of training, creating a coarse-to-fine curriculum."
     },
     "radc_end": {
-        "tip": "Where the noise emphasis ends at the final training step.",
-        "detail": "Controls the center of the Gaussian sampling curve at the last step. Lower values focus on low-noise timesteps where fine details and textures are defined.\n\n- **0.2**: Default. Detail refinement \u2014 sharpens textures, edges, and fine features in the final training phase.\n- **0.1**: Very aggressive detail focus. Risk of overfitting on fine details.\n- **0.3\u20130.4**: Moderate refinement. Safer for small datasets.\n- **0.5**: No curriculum shift (static center, like old weighted mode).\n\n**Tip:** Set `radc_start` and `radc_end` to the same value to disable curriculum shifting and use a static focused distribution."
+        "tip": "Where the noise emphasis ends at the final training step. Placeholder: {radc_end}",
+        "detail": "Controls the center of the Gaussian sampling curve at the last step. Lower values focus on low-noise timesteps where fine details and textures are defined.\n\n- **0.2**: Default. Detail refinement — sharpens textures, edges, and fine features in the final training phase.\n- **0.1**: Very aggressive detail focus. Risk of overfitting on fine details.\n- **0.3–0.4**: Moderate refinement. Safer for small datasets.\n- **0.5**: No curriculum shift (static center, like old weighted mode).\n\n**Tip:** Set `radc_start` and `radc_end` to the same value to disable curriculum shifting and use a static focused distribution."
     },
     "radc_width": {
-        "tip": "How broad or narrow the Gaussian sampling curve is.",
-        "detail": "Controls the standard deviation of the Gaussian bell curve that determines timestep sampling probabilities.\n\n- **0.1**: Very narrow \u2014 laser-focused on the center point. Only nearby timesteps are sampled. High risk of neglecting other noise levels.\n- **0.5**: Default. Broad coverage that still emphasizes the center. Good balance.\n- **1.0**: Nearly uniform \u2014 all timesteps are sampled with similar probability.\n\n**Lower values** create a stronger curriculum effect but risk under-training at the extremes. **Higher values** are safer but reduce the benefit of the curriculum."
+        "tip": "How broad or narrow the Gaussian sampling curve is. Placeholder: {radc_width}",
+        "detail": "Controls the standard deviation of the Gaussian bell curve that determines timestep sampling probabilities.\n\n- **0.1**: Very narrow — laser-focused on the center point. Only nearby timesteps are sampled. High risk of neglecting other noise levels.\n- **0.5**: Default. Broad coverage that still emphasizes the center. Good balance.\n- **1.0**: Nearly uniform — all timesteps are sampled with similar probability.\n\n**Lower values** create a stronger curriculum effect but risk under-training at the extremes. **Higher values** are safer but reduce the benefit of the curriculum."
     },
     "radc_res_influence": {
-        "tip": "How much image resolution affects the noise focus at each training stage.",
-        "detail": "Adds a resolution-dependent cross-function that becomes stronger as training progresses.\n\n**At training start (progress=0):** All resolutions are treated equally \u2014 the cross-function has no effect.\n\n**At training end (progress=1):**\n- **High-resolution images** shift toward lower noise \u2192 more detail refinement (they have fine details worth learning)\n- **Low-resolution images** shift toward higher noise \u2192 stay on structure reinforcement (they lack fine detail)\n\n**Values:**\n- **0.0**: Off. All resolutions share the same curve.\n- **0.15**: Default. Moderate resolution awareness.\n- **0.3\u20130.5**: Strong resolution differentiation.\n\n**When to increase:** Multi-resolution training with a wide range (e.g. 512\u20131536). **When to keep low:** Single-resolution training."
+        "tip": "How much image resolution affects the noise focus at each training stage. Placeholder: {radc_res_influence}",
+        "detail": "Adds a resolution-dependent cross-function that becomes stronger as training progresses.\n\n**At training start (progress=0):** All resolutions are treated equally — the cross-function has no effect.\n\n**At training end (progress=1):**\n- **High-resolution images** shift toward lower noise → more detail refinement (they have fine details worth learning)\n- **Low-resolution images** shift toward higher noise → stay on structure reinforcement (they lack fine detail)\n\n**Values:**\n- **0.0**: Off. All resolutions share the same curve.\n- **0.15**: Default. Moderate resolution awareness.\n- **0.3–0.5**: Strong resolution differentiation.\n\n**When to increase:** Multi-resolution training with a wide range (e.g. 512–1536). **When to keep low:** Single-resolution training."
     },
     "network_rank": {
-        "tip": "Dimensionality of the LoRA adapter matrices (higher = more parameters).",
+        "tip": "Dimensionality of the LoRA adapter matrices (higher = more parameters). Placeholder: {network_rank}",
         "detail": "Network rank (also called 'dim') determines the size of the low-rank matrices inserted into the model. It directly affects the number of trainable parameters and the LoRA's capacity to capture fine details.\n\n**Guidelines:**\n- **4–8**: Style transfers, color palettes, simple textures\n- **16**: Good default for most use cases\n- **32–64**: Character likeness, detailed subjects, complex concepts\n- **128+**: Rarely needed. Risk of overfitting on small datasets.\n\n**File size impact:** Rank 16 → ~20 MB, Rank 64 → ~80 MB (for SDXL).\n\nHigher rank does NOT always mean better quality — a rank-16 LoRA on a good dataset often outperforms rank-128 on a poor one."
     },
     "network_alpha": {
-        "tip": "Scaling factor that controls LoRA weight influence during training.",
+        "tip": "Scaling factor that controls LoRA weight influence during training. Placeholder: {network_alpha}",
         "detail": "Alpha acts as a learning rate multiplier for the LoRA weights. The effective scaling is `alpha / rank`.\n\n**Common patterns:**\n- **alpha = rank**: Scaling factor = 1.0. LoRA weights have full influence.\n- **alpha = rank / 2**: Scaling factor = 0.5. More conservative, often more stable.\n- **alpha = 1**: Very conservative. Good for high ranks to prevent instability.\n\n**Rule of thumb:** Start with `alpha = rank / 2` (e.g. rank 16, alpha 8). Increase if the LoRA effect is too weak; decrease if training is unstable."
     },
     "train_text_encoder": {
-        "tip": "Also apply LoRA to the text encoder for better prompt understanding.",
+        "tip": "Also apply LoRA to the text encoder for better prompt understanding. Placeholder: {train_text_encoder}",
         "detail": "When enabled, LoRA adapters are applied to the text encoder(s) in addition to the UNet/Transformer. This teaches the model new vocabulary associations.\n\n**Benefits:**\n- Better response to trigger words\n- Improved understanding of novel concepts\n\n**Costs:**\n- More VRAM usage\n- Higher overfitting risk\n- Cannot quantize the text encoder when training it\n\n**Recommendation:** Enable for character/person training. Leave off for style LoRAs."
     },
     "optimizer_type": {
-        "tip": "Algorithm used to update model weights during training.",
+        "tip": "Algorithm used to update model weights during training. Placeholder: {optimizer_type}",
         "detail": "The optimizer determines how gradients are converted into weight updates.\n\n**Standard (Adam-family):**\n- **AdamW**: Reliable baseline with decoupled weight decay. ~8 bytes/param of optimizer state.\n- **AdamW8bit**: Identical to AdamW but stores optimizer states in 8-bit. ~50% less optimizer VRAM with minimal quality impact. Recommended default.\n- **RAdam**: Rectified Adam — includes automatic variance-based warmup. No manual warmup steps needed.\n- **StableAdamW**: Uses RMS-based gradient scaling for built-in stability. Eliminates need for gradient clipping.\n\n**Adaptive LR (no scheduler needed):**\n- **Prodigy**: Automatically discovers the optimal learning rate — set LR to 1.0. Great for beginners.\n- **ProdigyPlusSF**: Prodigy + Schedule-Free + factored second moments. Lower memory, advanced features (cautious updates, orthograd, FOCUS). Best for multi-network and memory-constrained setups.\n\n**Second-Order (⚠️ high VRAM):**\n- **SophiaH**: Hutchinson-trace Hessian approximation. Faster convergence on some tasks. Requires periodic Hessian updates. ⚠️ Stores full Hessian estimates — may OOM on large models (9B+).\n- **SophiaG**: Gauss-Newton variant. Simpler Hessian estimate, lower overhead than SophiaH.\n\n**Memory-Efficient:**\n- **Lion**: Sign-based optimizer using only momentum — ~50% less state memory than AdamW. Fast, simple.\n- **Adafactor**: Factored second moments (row × column). Extremely low memory for large models. Supports relative step scaling.\n- **Shampoo**: Preconditioned gradients using Kronecker-factored curvature estimates. Higher quality updates but very high VRAM due to preconditioner matrices. ⚠️ May OOM on large models (9B+).\n\n**Advanced:**\n- **AdEMAMix**: Dual EMA — combines fast (β1) and slow (β3) momentum for better long-horizon convergence."
     },
     "learning_rate": {
-        "tip": "Controls how much weights change per optimization step.",
+        "tip": "Controls how much weights change per optimization step. Placeholder: {learning_rate}",
         "detail": "The learning rate is the most important hyperparameter after rank. It determines the magnitude of weight updates.\n\n**Recommended values:**\n- **AdamW / AdamW8bit**: `1e-4` (0.0001) is a safe default. Range: `5e-5` to `5e-4`.\n- **Prodigy / ProdigyPlusSF**: Set to `1.0` — the optimizer adapts automatically.\n\n**Symptoms of wrong LR:**\n- Too high: Loss spikes, artifacts in outputs, training instability\n- Too low: Loss barely decreases, LoRA has weak effect\n- Just right: Smooth, steady loss decrease that gradually plateaus"
     },
     "weight_decay": {
-        "tip": "L2 regularization to prevent weights from growing too large.",
+        "tip": "L2 regularization to prevent weights from growing too large. Placeholder: {weight_decay}",
         "detail": "Weight decay adds a small penalty proportional to the magnitude of weights, encouraging the model to find simpler solutions.\n\n- **0.0**: No regularization\n- **0.01**: Mild regularization (default). Good starting point.\n- **0.1**: Strong regularization. Can prevent overfitting on tiny datasets.\n\nFor LoRA training, the default of 0.01 is usually fine. Only increase if you see overfitting symptoms (loss continues dropping but outputs degrade)."
     },
     "lr_scale_mode": {
-        "tip": "Automatically scales LR by effective batch size to maintain consistent training dynamics.",
+        "tip": "Automatically scales LR by effective batch size to maintain consistent training dynamics. Placeholder: {lr_scale_mode}",
         "detail": "When using batch sizes > 1, gradient estimates have lower variance. The linear scaling rule (Goyal et al. 2017) recommends scaling LR proportionally.\n\n**Effective batch size** = `train_batch_size × gradient_accumulation_steps`\n\n- **none**: No scaling. Use when manually tuning LR for a specific batch size, or with adaptive optimizers (Prodigy, PPSF).\n- **batch**: `LR × effective_batch_size`. Standard recommendation. Prevents under-training at large batch sizes.\n- **sqrt**: `LR × √effective_batch_size`. More conservative — safer for sensitive optimizers (AdEMAMix, Adafactor).\n\n**Example:** Base LR = 1e-4, batch_size = 4, accum = 2 → effective = 8\n- batch mode: 1e-4 × 8 = 8e-4\n- sqrt mode: 1e-4 × √8 ≈ 2.83e-4"
     },
     "beta1": {
-        "tip": "First moment (momentum) coefficient for Adam optimizer.",
+        "tip": "First moment (momentum) coefficient for Adam optimizer. Placeholder: {beta1}",
         "detail": "Controls how much the optimizer remembers past gradient directions. Higher values = smoother, more inertial updates.\n\n- **0.9**: Standard default. Works well for most training.\n- **0.95**: More momentum. Can help with noisy gradients.\n\nOnly applies to AdamW and AdamW8bit."
     },
     "beta2": {
-        "tip": "Second moment (variance smoothing) coefficient for Adam.",
+        "tip": "Second moment (variance smoothing) coefficient for Adam. Placeholder: {beta2}",
         "detail": "Controls how much the optimizer adapts per-parameter learning rates based on gradient variance.\n\n- **0.999**: Standard default. Smooth adaptation.\n- **0.99**: Faster adaptation, more responsive to gradient changes.\n\nOnly applies to AdamW and AdamW8bit. Rarely needs tuning."
     },
     "d_coef": {
-        "tip": "Prodigy's adaptive learning rate scaling coefficient.",
+        "tip": "Prodigy's adaptive learning rate scaling coefficient. Placeholder: {d_coef}",
         "detail": "Scales the automatically estimated learning rate. Think of it as a confidence multiplier.\n\n- **0.5**: Conservative — slower but safer convergence\n- **0.8**: Default — balanced\n- **1.5+**: Aggressive — faster but riskier\n\nOnly active when using the Prodigy optimizer."
     },
     "growth_rate": {
-        "tip": "Maximum allowed growth of Prodigy's learning rate per step.",
+        "tip": "Maximum allowed growth of Prodigy's learning rate per step. Placeholder: {growth_rate}",
         "detail": "Caps how quickly Prodigy can increase its estimated learning rate between steps. Acts as a safety mechanism against LR explosions.\n\n- **1.02**: Default — safe, gradual warmup\n- **1.05**: Faster warmup, slightly riskier\n- **1.0**: Frozen — LR can only decrease\n\nOnly active when using the Prodigy optimizer."
     },
     "decouple": {
-        "tip": "Use AdamW-style decoupled weight decay in Prodigy.",
+        "tip": "Use AdamW-style decoupled weight decay in Prodigy. Placeholder: {decouple}",
         "detail": "When enabled, weight decay is applied directly to the parameters rather than through the gradient. This is the standard approach from the AdamW paper and is recommended for LoRA training.\n\nKeep enabled unless you have a specific reason to disable."
     },
     "safeguard_warmup": {
-        "tip": "Prevents Prodigy from over-estimating the learning rate early.",
+        "tip": "Prevents Prodigy from over-estimating the learning rate early. Placeholder: {safeguard_warmup}",
         "detail": "During the first few hundred steps, Prodigy's learning rate estimate can be noisy. This safeguard prevents large, destructive updates early in training.\n\nAlways keep enabled for LoRA training."
     },
     "use_bias_correction": {
-        "tip": "Corrects initialization bias in Prodigy's moment estimates.",
+        "tip": "Corrects initialization bias in Prodigy's moment estimates. Placeholder: {use_bias_correction}",
         "detail": "Adam-family optimizers have a known initialization bias where the first few moment estimates are inaccurate. Bias correction compensates for this.\n\nKeep enabled for better convergence, especially in short training runs."
     },
     "lr_warmup_steps": {
-        "tip": "Gradually increase LR from 0 to target over N steps.",
+        "tip": "Gradually increase LR from 0 to target over N steps. Placeholder: {lr_warmup_steps}",
         "detail": "Learning rate warmup prevents large, destabilizing updates at the very start of training when the model hasn't seen any data yet.\n\n- **0**: No warmup (default). Fine for constant LR schedules.\n- **50–100**: Light warmup. Recommended for cosine/linear schedules.\n- **200+**: Heavy warmup. Useful for very high learning rates.\n\nWarmup is most beneficial when combined with a cosine or linear LR scheduler."
     },
     "lr_scheduler": {
-        "tip": "How the learning rate changes over the course of training.",
+        "tip": "How the learning rate changes over the course of training. Placeholder: {lr_scheduler}",
         "detail": "The scheduler adjusts the learning rate as training progresses.\n\n- **constant**: LR stays the same throughout. Simple and reliable.\n- **cosine**: LR follows a cosine curve — high at start, gradually decreasing to near-zero. Helps the model settle into fine details near the end.\n- **linear**: LR decreases linearly from initial value to zero.\n\n**Recommendation:** `constant` for short runs (<1000 steps). `cosine` for longer runs (1000+ steps)."
     },
     "ppsf_d_coef": {
-        "tip": "Multiplier for the adaptive learning rate estimate (higher = more aggressive).",
+        "tip": "Multiplier for the adaptive learning rate estimate (higher = more aggressive). Placeholder: {ppsf_d_coef}",
         "detail": "Scales Prodigy's internal learning rate estimate (`d`). Acts as a confidence multiplier on the automatically discovered LR.\n\n- **1.0**: Default — trust Prodigy's estimate as-is\n- **0.5**: Conservative — halve the estimated LR for more cautious training\n- **2.0**: Aggressive — double the estimated LR if `d` is converging too slowly\n\nIf you find training is too slow to converge, try increasing `d_coef` to 1.5 or 2.0. If you see instability, reduce it."
     },
     "ppsf_prodigy_steps": {
-        "tip": "Freeze the adaptive step size after N steps (0 = never freeze).",
+        "tip": "Freeze the adaptive step size after N steps (0 = never freeze). Placeholder: {ppsf_prodigy_steps}",
         "detail": "After this many steps, Prodigy stops adapting the learning rate and locks it at the current value. All Prodigy-specific state memory is freed, which can improve performance.\n\nThis is particularly helpful for diffusion models, which have different gradient behaviour than typical training. Prodigy may keep increasing the LR indefinitely without a cap.\n\n- **0**: Default — Prodigy adapts the LR for the entire run\n- **25% of total steps**: Common guideline from the research\n- **100–500**: Good range for 1000–2000 step LoRA runs\n\nRecent versions of the optimizer handle this better automatically, so this may not be necessary."
     },
     "ppsf_use_bias_correction": {
-        "tip": "Enable RAdam-style automatic warmup instead of manual LR warmup.",
+        "tip": "Enable RAdam-style automatic warmup instead of manual LR warmup. Placeholder: {ppsf_use_bias_correction}",
         "detail": "When enabled, the optimizer uses a variance-based warmup mechanism (from the RAdam paper) that automatically determines the right warmup period.\n\nThis replaces the need for manual `lr_warmup_steps` and adapts to the training dynamics.\n\n- **False**: Default — no automatic warmup\n- **True**: Enable automatic warmup\n\nCan be useful if you're unsure how many warmup steps to use."
     },
     "ppsf_use_stableadamw": {
-        "tip": "Scale updates using RMS normalization for built-in gradient control.",
+        "tip": "Scale updates using RMS normalization for built-in gradient control. Placeholder: {ppsf_use_stableadamw}",
         "detail": "Uses a soft scaling formula based on the Root Mean Square (RMS) of gradients for more accurate learning rate adjustments. This provides internal gradient scaling that eliminates the need for external gradient clipping.\n\n- **True**: Default — recommended. Provides stable gradient handling.\n- **False**: Disable if you want to use your own external gradient clipping instead.\n\n**Important:** When enabled, do not use external gradient clipping — the two mechanisms will conflict and can hamper Prodigy's step size adaptation."
     },
     "ppsf_factored": {
-        "tip": "Use low-rank approximations for the second moment to save memory.",
+        "tip": "Use low-rank approximations for the second moment to save memory. Placeholder: {ppsf_factored}",
         "detail": "Uses Adafactor-style factored second moment estimation instead of storing a full second moment matrix per parameter. This significantly reduces optimizer memory usage.\n\n- **True**: Default — lower memory usage with negligible quality impact\n- **False**: Full second moment. Uses more memory but may help if you encounter numerical issues.\n\nThe memory savings can be substantial for large models. There should be little to no difference in training performance for most use cases."
     },
     "ppsf_eps": {
-        "tip": "Numerical stability constant for the Adam denominator.",
+        "tip": "Numerical stability constant for the Adam denominator. Placeholder: {ppsf_eps}",
         "detail": "Prevents division by zero in the Adam update rule. The default of `1e-8` works for virtually all use cases.\n\n**Advanced:** Setting this to a very different value is not recommended unless you understand the implications."
     },
     "ppsf_use_cautious": {
-        "tip": "Promote parameter updates aligned with the current gradient direction.",
+        "tip": "Promote parameter updates aligned with the current gradient direction. Placeholder: {ppsf_use_cautious}",
         "detail": "From the paper *Cautious Optimizers: Improving Training with One Line of Code*. Applies a modification that favours parameter updates aligned with the current gradient, potentially leading to faster convergence.\n\n- **False**: Default — standard updates\n- **True**: Enable cautious filtering\n\nWhile not 1:1 compatible with Schedule-Free, the implementation does work. Improvements may be limited in some scenarios."
     },
     "ppsf_use_grams": {
-        "tip": "Separate update direction from momentum for sign-based updates.",
+        "tip": "Separate update direction from momentum for sign-based updates. Placeholder: {ppsf_use_grams}",
         "detail": "From the paper *Grams: Gradient Descent with Adaptive Momentum Scaling*. Similar to cautious updates, this modifies the parameter update to separate the update direction from the momentum term.\n\n- **False**: Default\n- **True**: Enable Grams-style updates\n\nMutually beneficial with cautious updates in some scenarios, but test both independently first."
     },
     "ppsf_use_adopt": {
-        "tip": "Delay second moment update for better convergence with any β2 value.",
+        "tip": "Delay second moment update for better convergence with any β2 value. Placeholder: {ppsf_use_adopt}",
         "detail": "A partial implementation of ADOPT (*Modified Adam Can Converge with Any β2 with the Optimal Rate*). Updates the second moment after the parameter update so as to exclude the current gradient from the estimate.\n\n- **False**: Default\n- **True**: Enable the ADOPT modification\n\nThis is an experimental feature that may improve convergence in specific scenarios."
     },
     "ppsf_use_orthograd": {
-        "tip": "Update weights using only the gradient component orthogonal to current weights.",
+        "tip": "Update weights using only the gradient component orthogonal to current weights. Placeholder: {ppsf_use_orthograd}",
         "detail": "From the paper *Grokking at the Edge of Numerical Stability*. Projects the gradient onto the subspace orthogonal to the current weight direction, which can help prevent overfitting and improve generalisation.\n\n- **False**: Default\n- **True**: Enable orthogonal gradient projection\n\nMost useful when training tends to memorize rather than generalize."
     },
     "ppsf_use_focus": {
-        "tip": "Improve noise handling at large step sizes (incompatible with factored mode).",
+        "tip": "Improve noise handling at large step sizes (incompatible with factored mode). Placeholder: {ppsf_use_focus}",
         "detail": "From the paper *FOCUS: First-Order Concentrated Update Scheme*. Modifies the update step to better handle noise, which is especially important at larger step sizes.\n\n- **False**: Default\n- **True**: Enable FOCUS noise handling\n\n**Important:** This feature is incompatible with factored second moments (`ppsf_factored`). Enabling both will disable factorisation, increasing memory usage. Also incompatible with Adam-atan2 (eps=None)."
     },
     "ppsf_use_speed": {
-        "tip": "Replace Prodigy's ratio with a momentum-based directional progress estimate.",
+        "tip": "Replace Prodigy's ratio with a momentum-based directional progress estimate. Placeholder: {ppsf_use_speed}",
         "detail": "SPEED (Simplified Prodigy with rElativE D) is a custom creation that replaces Prodigy's numerator/denominator ratio with a lighter, momentum-based estimate of directional progress.\n\n- **False**: Default — use standard Prodigy estimation\n- **True**: Enable SPEED estimation\n\n**Benefits:** Uses less memory and is scale-insensitive. Can be a better choice when training multiple networks.\n\n**Caution:** Can be unstable with weight decay or during very long training runs. If training for many thousands of steps, use `ppsf_prodigy_steps` to freeze the estimate."
     },
     "ppsf_split_groups": {
-        "tip": "Adapt step size independently for each parameter group (e.g. UNet vs TE).",
+        "tip": "Adapt step size independently for each parameter group (e.g. UNet vs TE). Placeholder: {ppsf_split_groups}",
         "detail": "When training multiple networks (e.g. UNet + text encoder), this allows the optimizer to find a separate learning rate for each one.\n\n- **True**: Default — per-group step size adaptation. Recommended for multi-network training.\n- **False**: All parameter groups share a single combined d-estimate, replicating original Prodigy behaviour.\n\nKeep enabled unless you specifically want all networks to use the same adaptive learning rate."
     },
     "ema": {
-        "tip": "Maintain a smoothed copy of weights for more stable outputs.",
+        "tip": "Maintain a smoothed copy of weights for more stable outputs. Placeholder: {ema}",
         "detail": "Exponential Moving Average keeps a shadow copy of the model weights that updates slowly. The final LoRA uses these smoothed weights instead of the raw training weights.\n\n**Benefits:**\n- Smoother, more consistent outputs\n- Reduces impact of training noise\n\n**Costs:**\n- ~50% more VRAM for the shadow copy\n- Slightly slower per step\n\n**Recommendation:** Enable for production-quality LoRAs. Skip for quick experiments."
     },
     "ema_decay": {
-        "tip": "How slowly the EMA shadow weights update (higher = slower).",
+        "tip": "How slowly the EMA shadow weights update (higher = slower). Placeholder: {ema_decay}",
         "detail": "Controls the interpolation rate between current weights and the shadow copy.\n\n- **0.999**: Default. Shadow weights are 99.9% old + 0.1% new each step.\n- **0.9999**: Very slow updates. More stable but may lag behind training.\n- **0.99**: Faster updates. Shadow more closely tracks current weights.\n\nOnly active when EMA is enabled."
     },
     "noise_offset": {
-        "tip": "Adds a global brightness shift to training noise for better dynamic range.",
+        "tip": "Adds a global brightness shift to training noise for better dynamic range. Placeholder: {noise_offset}",
         "detail": "Standard diffusion training struggles to generate very dark or very bright images because the noise distribution is zero-centered. Noise offset adds a small random shift to the noise, teaching the model about global brightness.\n\n- **0.0**: Disabled (default)\n- **0.05–0.1**: Recommended range. Noticeably improves dark/light scene generation.\n- **0.15+**: Can cause color shifting artifacts.\n\n**Recommendation:** `0.05` is a safe starting point for most training."
     },
     "min_snr_gamma": {
-        "tip": "Reduces the contribution of 'easy' (low-noise) timesteps to the loss.",
+        "tip": "Reduces the contribution of 'easy' (low-noise) timesteps to the loss. Placeholder: {min_snr_gamma}",
         "detail": "Min-SNR (Signal-to-Noise Ratio) Gamma weighting rebalances the training loss so that easy timesteps (where the model already performs well) contribute less.\n\nThe formula: `weight = min(SNR, gamma) / SNR`\n\n- **5.0**: Default from the paper. Good balance.\n- **1.0**: Aggressive reweighting — heavily downweights easy timesteps.\n- **20.0**: Mild reweighting — close to uniform.\n\n**When to use:** Primarily for SDXL epsilon-prediction training. Can improve detail quality."
     },
     "low_vram": {
-        "tip": "Offload the VAE to CPU after latent caching to free GPU memory.",
+        "tip": "Offload the VAE to CPU after latent caching to free GPU memory. Placeholder: {low_vram}",
         "detail": "After all images have been encoded into latents by the VAE, the VAE model is moved to CPU RAM. This frees the VRAM it occupied (~200–400 MB for SDXL, ~400–600 MB for Flux).\n\n- **True**: Default — VAE is offloaded after caching. Recommended.\n- **False**: Keep VAE on GPU. Slightly faster sampling during training (no CPU↔GPU transfer for sample generation).\n\n**When to disable:** Only if you have ample VRAM (24+ GB) and want the fastest possible sample generation during training."
     },
     "offload_to_cpu": {
-        "tip": "Move inactive model components to CPU RAM to free GPU VRAM.",
+        "tip": "Move inactive model components to CPU RAM to free GPU VRAM. Placeholder: {offload_to_cpu}",
         "detail": "Offloads parts of the model that aren't actively being used to system RAM. Components are moved back to GPU on demand.\n\n**Benefits:** Significant VRAM savings.\n**Costs:** Slower training due to CPU↔GPU transfers.\n\nUse as a last resort if quantization and gradient checkpointing aren't enough."
     },
     "cache_text_embeddings": {
-        "tip": "Cache text encoder outputs in memory to avoid re-encoding.",
+        "tip": "Cache text encoder outputs in memory to avoid re-encoding. Placeholder: {cache_text_embeddings}",
         "detail": "After the text encoder processes each caption once, the resulting embeddings are stored in memory and reused for all subsequent encounters.\n\n**Benefits:**\n- Major speed boost (skip TE forward pass every step)\n- Enables text encoder unloading\n\n**Tradeoff:** Uses additional system memory proportional to the number of unique captions."
     },
     "unload_text_encoder": {
-        "tip": "Remove the text encoder from GPU after embeddings are cached.",
+        "tip": "Remove the text encoder from GPU after embeddings are cached. Placeholder: {unload_text_encoder}",
         "detail": "After the first epoch (when all captions have been encoded and cached), the text encoder is moved off GPU entirely, freeing significant VRAM.\n\n**VRAM savings:**\n- SDXL: ~1.3 GB (dual CLIP encoders)\n- Flux: ~2–4 GB (Qwen3/Mistral LLM)\n\nRequires `cache_text_embeddings` to be enabled. The TE is unloaded at the end of the first epoch."
     },
     "sample_every_n_steps": {
-        "tip": "Generate preview images at regular intervals to monitor training progress.",
+        "tip": "Generate preview images at regular intervals to monitor training progress. Placeholder: {sample_every_n_steps}",
         "detail": "When set to a value greater than 0, the pipeline generates sample images using your configured prompts at regular step intervals. This lets you visually monitor what the LoRA is learning.\n\n- **0**: Disabled (default)\n- **100–250**: Frequent sampling. Good for short runs to catch issues early.\n- **500**: Reasonable default for most training.\n\n**Note:** Sampling pauses training briefly and uses additional VRAM. Set `sample_skip_first_n_steps` to avoid wasting time sampling before the LoRA has learned anything meaningful."
     },
     "sample_skip_first_n_steps": {
-        "tip": "Skip generating samples during the initial N steps.",
+        "tip": "Skip generating samples during the initial N steps. Placeholder: {sample_skip_first_n_steps}",
         "detail": "The first few hundred steps usually produce noise or near-identical outputs to the base model. Skipping sampling during this phase saves time.\n\n- **0**: Sample from step 1 (default)\n- **100–200**: Skip early steps. Recommended.\n\nOnly active when `sample_every_n_steps` is greater than 0."
     },
     "dataset_name": {
-        "tip": "Select which dataset to use for this training slot.",
+        "tip": "Select which dataset to use for this training slot. Placeholder: {dataset_name}",
         "detail": "Choose from your existing datasets. Each dataset points to a folder of images with paired caption files.\n\nYou can add the same dataset multiple times with different settings (e.g. different caption prefixes or repeat counts) to create varied training distributions."
     },
     "caption_prefix": {
-        "tip": "Text prepended to every caption in this dataset.",
+        "tip": "Text prepended to every caption in this dataset. Placeholder: {caption_prefix}",
         "detail": "The caption prefix is added before each image's caption text during training. This is typically used to insert the trigger word.\n\n**Example:** If prefix is `ohwx person,` and the caption is `standing in a park`, the model trains on `ohwx person, standing in a park`.\n\n**When to use:**\n- Set to your trigger word for subject LoRAs\n- Leave empty for style LoRAs where captions already contain the necessary context\n- Can include commas and spaces — they're added literally"
     },
     "caption_dropout_rate": {
-        "tip": "Probability of dropping the entire caption for a training sample.",
+        "tip": "Probability of dropping the entire caption for a training sample. Placeholder: {caption_dropout_rate}",
         "detail": "Caption dropout randomly replaces the caption with an empty string for a percentage of training samples. This teaches the model to generate the concept even without explicit text guidance (enabling classifier-free guidance at inference).\n\n- **0.0**: Never drop captions — the LoRA only activates with the exact prompt\n- **0.05–0.1**: Recommended default. Good balance between text-guided and unconditional learning.\n- **0.2+**: Aggressive. The concept becomes more prominent even with unrelated prompts.\n\n**Why it matters:** Without any dropout, the LoRA may not activate properly when using CFG (classifier-free guidance) during generation."
     },
     "num_repeats": {
-        "tip": "How many times each image in this dataset is seen per epoch.",
+        "tip": "How many times each image in this dataset is seen per epoch. Placeholder: {num_repeats}",
         "detail": "Multiplies the effective size of this dataset. If a dataset has 20 images and `num_repeats` is 3, the dataloader treats it as 60 samples per epoch.\n\n**When to increase:**\n- Small datasets (< 30 images) — helps the model see each image more often\n- When mixing datasets of different sizes — use repeats to balance their contribution\n\n**Caution:** High repeats on small datasets increase overfitting risk. Monitor your loss curve."
     },
     "sophia_rho": {
-        "tip": "Hessian clipping threshold — controls per-parameter LR adaptation. ⚠️ SophiaH needs extra VRAM for Hessian estimates — may OOM on 9B+ models.",
+        "tip": "Hessian clipping threshold — controls per-parameter LR adaptation. ⚠️ SophiaH needs extra VRAM for Hessian estimates — may OOM on 9B+ models. Placeholder: {sophia_rho}",
         "detail": "Sophia clips the Hessian-scaled update to prevent extreme per-parameter learning rates.\n\n- **0.04**: Default from the paper. Safe for most tasks.\n- **0.01**: More conservative — smaller effective updates.\n- **0.1+**: More aggressive — allows larger updates on flat loss regions.\n\nLower values are safer but slower; higher values converge faster but risk instability."
     },
     "sophia_p": {
-        "tip": "Gradient clipping threshold for SophiaH.",
+        "tip": "Gradient clipping threshold for SophiaH. Placeholder: {sophia_p}",
         "detail": "Clips the effective gradient before applying the Hessian scaling. Acts as a safety net against outlier gradients.\n\n- **0.01**: Default. Very conservative clipping.\n- **0.05–0.1**: More permissive, allows larger gradient magnitudes.\n\nOnly active for SophiaH (not SophiaG)."
     },
     "sophia_update_period": {
-        "tip": "Steps between Hessian diagonal re-estimations.",
+        "tip": "Steps between Hessian diagonal re-estimations. Placeholder: {sophia_update_period}",
         "detail": "The Hessian trace is expensive to compute, so SophiaH amortises it over multiple steps.\n\n- **10**: Default — re-estimate every 10 steps.\n- **1**: Re-estimate every step (slowest, most accurate).\n- **50+**: Cheaper but the curvature estimate may become stale.\n\nThe Hessian estimate is cached between updates. Lower values give more accurate scaling but increase compute."
     },
     "sophia_num_samples": {
-        "tip": "Number of random vectors for Hutchinson trace estimation.",
+        "tip": "Number of random vectors for Hutchinson trace estimation. Placeholder: {sophia_num_samples}",
         "detail": "SophiaH approximates the Hessian diagonal using random sampling (Hutchinson's method). More samples = more accurate estimate but more compute.\n\n- **1**: Default. Usually sufficient.\n- **3–5**: More accurate trace estimate, useful if training seems noisy.\n- **10**: Diminishing returns beyond this."
     },
     "sophia_hessian_distribution": {
-        "tip": "Distribution for Hutchinson trace sampling vectors.",
+        "tip": "Distribution for Hutchinson trace sampling vectors. Placeholder: {sophia_hessian_distribution}",
         "detail": "Controls the random distribution used to initialize vectors for Hessian trace estimation.\n\n- **gaussian**: Default. Standard normal distribution. Generally more stable.\n- **rademacher**: Random ±1 values. Lower variance estimate but can be noisier.\n\nBoth are theoretically unbiased estimators. Gaussian is the safer choice."
     },
     "sophia_maximize": {
-        "tip": "Maximize the objective instead of minimizing (SophiaG).",
+        "tip": "Maximize the objective instead of minimizing (SophiaG). Placeholder: {sophia_maximize}",
         "detail": "Reverses the optimization direction. Only relevant for reward-maximisation tasks, NOT for standard LoRA training.\n\n**Keep disabled** for all normal training scenarios."
     },
     "sophia_capturable": {
-        "tip": "Enable CUDA graph capture for SophiaG (experimental).",
+        "tip": "Enable CUDA graph capture for SophiaG (experimental). Placeholder: {sophia_capturable}",
         "detail": "Allows the optimizer step to be captured inside a CUDA graph for reduced kernel launch overhead.\n\n**Warning:** Experimental. CUDA-only. May cause issues with dynamic shapes or mixed precision. Keep disabled unless you're specifically optimising kernel launch latency."
     },
     "adafactor_relative_step": {
-        "tip": "Scale the learning rate relative to parameter magnitude.",
+        "tip": "Scale the learning rate relative to parameter magnitude. Placeholder: {adafactor_relative_step}",
         "detail": "When enabled, the effective learning rate is multiplied by the RMS of the parameter tensor. This makes the LR adaptive to the scale of each layer.\n\n- **True**: Default. LR is scaled by parameter magnitude. Set your base LR to `1.0` when using this.\n- **False**: Use the LR as-is (standard behaviour).\n\n**Important:** When `relative_step=True`, the base learning rate should typically be `1.0` because scaling is applied automatically."
     },
     "adafactor_warmup_init": {
-        "tip": "Use Adafactor's built-in warmup schedule.",
+        "tip": "Use Adafactor's built-in warmup schedule. Placeholder: {adafactor_warmup_init}",
         "detail": "Adafactor can manage its own warmup by starting with a very small effective LR and gradually increasing it.\n\n- **False**: Default. Use the external LR scheduler for warmup.\n- **True**: Enable Adafactor's internal warmup. Only valid when `relative_step=True`.\n\n**Note:** Cannot be combined with an external LR scheduler warmup — pick one or the other."
     },
     "adafactor_clip_threshold": {
-        "tip": "Clip the RMS of parameter updates to prevent large jumps.",
+        "tip": "Clip the RMS of parameter updates to prevent large jumps. Placeholder: {adafactor_clip_threshold}",
         "detail": "Limits the root-mean-square magnitude of each parameter update. Prevents catastrophic weight changes.\n\n- **1.0**: Default from the paper. Good baseline.\n- **0.5**: More conservative clipping.\n- **2.0+**: Looser clipping, allows larger updates.\n\nThis is Adafactor's main stability mechanism — rarely needs changing."
     },
     "adafactor_decay_rate": {
-        "tip": "Exponential decay for Adafactor's running average of squared gradients.",
+        "tip": "Exponential decay for Adafactor's running average of squared gradients. Placeholder: {adafactor_decay_rate}",
         "detail": "Controls how quickly old gradient information decays. Adafactor uses `1 - t^decay_rate` as the effective beta2.\n\n- **-0.8**: Default from the paper. Good balance between memory and adaptation speed.\n- **-0.5**: Faster decay (less memory of old gradients, more responsive).\n- **-0.95**: Slower decay (longer memory, smoother).\n\nNegative values are convention — the formula uses `1 - step^decay_rate`."
     },
     "radam_n_sma_threshold": {
-        "tip": "SMA length threshold for RAdam's automatic warmup.",
+        "tip": "SMA length threshold for RAdam's automatic warmup. Placeholder: {radam_n_sma_threshold}",
         "detail": "RAdam (Rectified Adam) uses a variance-based heuristic to decide when enough data has been seen to trust the adaptive learning rate. Below this threshold, it falls back to SGD-like updates.\n\n- **5**: Default from the paper. Good for most cases.\n- **3**: More aggressive — trusts the adaptive LR sooner.\n- **10**: More conservative — longer implicit warmup.\n\nHigher values = longer warmup period before full Adam behaviour kicks in."
     },
     "shampoo_preconditioning_compute_steps": {
-        "tip": "Steps between Kronecker factor updates for Shampoo. ⚠️ Shampoo stores large preconditioner matrices — may OOM on 9B+ models.",
+        "tip": "Steps between Kronecker factor updates for Shampoo. ⚠️ Shampoo stores large preconditioner matrices — may OOM on 9B+ models. Placeholder: {shampoo_preconditioning_compute_steps}",
         "detail": "Shampoo computes second-order preconditioners (Kronecker-factored approximations of the Fisher matrix). This is expensive, so it's amortised over multiple steps.\n\n- **1**: Update every step (most accurate, slowest).\n- **10**: Good balance for most training runs.\n- **100+**: Cheaper but staler preconditioner.\n\nThe preconditioner is cached and reused between compute steps."
     },
     "stableadamw_kahan_sum": {
-        "tip": "Use Kahan compensated summation for higher precision weight updates.",
+        "tip": "Use Kahan compensated summation for higher precision weight updates. Placeholder: {stableadamw_kahan_sum}",
         "detail": "Kahan summation reduces floating-point rounding errors that accumulate over many small updates. Most useful when training in FP16/BF16 where precision is limited.\n\n- **False**: Default. Standard summation — sufficient for most cases.\n- **True**: Enable compensated summation. Slightly slower but higher numerical accuracy.\n\nMost useful for very long training runs (10k+ steps) where accumulated rounding errors could become significant."
     },
     "ademamix_beta3": {
-        "tip": "Slow EMA momentum coefficient for AdEMAMix.",
+        "tip": "Slow EMA momentum coefficient for AdEMAMix. Placeholder: {ademamix_beta3}",
         "detail": "AdEMAMix maintains two exponential moving averages: a fast one (beta1) and a slow one (beta3). The slow EMA provides long-horizon gradient memory.\n\n- **0.9999**: Default. Very slow momentum — remembers gradients from thousands of steps ago.\n- **0.999**: Faster slow momentum — shorter memory horizon.\n- **0.99999**: Even slower — very long memory, may help with complex landscapes.\n\nThe interplay between beta1 (fast) and beta3 (slow) is what gives AdEMAMix its advantage over standard Adam for long training runs."
     },
     "ademamix_alpha": {
-        "tip": "Mixing factor between fast and slow EMA in AdEMAMix.",
+        "tip": "Mixing factor between fast and slow EMA in AdEMAMix. Placeholder: {ademamix_alpha}",
         "detail": "Controls the balance between AdEMAMix's fast momentum (beta1) and slow momentum (beta3).\n\n- **5.0**: Default. Strong contribution from the slow EMA.\n- **1.0**: Equal weight — slow EMA contributes minimally.\n- **10.0**: Slow EMA dominates — very long-horizon gradient influence.\n\nHigher alpha values amplify the slow momentum signal, potentially improving convergence on tasks that benefit from long-range gradient memory."
     },
     "block_swap_config": {
-        "tip": "Offload specific transformer blocks to CPU to fine-tune VRAM usage.",
+        "tip": "Offload specific transformer blocks to CPU to fine-tune VRAM usage. Placeholder: {block_swap_config}",
         "detail": "Block swapping moves selected transformer block groups between GPU and CPU during training. This provides granular control over the speed/VRAM tradeoff.\n\n**How it works:**\n- Each slider controls the percentage of blocks in that group kept on CPU (0% = all on GPU, 100% = all on CPU).\n- Blocks on CPU are swapped to GPU only when needed, then swapped back.\n\n**Guidelines:**\n- Start with 0% everywhere and increase only if you hit OOM.\n- Offloading later blocks (closer to output) is usually less impactful than early blocks.\n- Each percentage point trades ~50–200 MB VRAM for CPU transfer overhead.\n\n**Tradeoff:** More swapping = less VRAM but slower training. Find the minimum swap level that fits your VRAM budget."
     },
     "targeted_layers": {
-        "tip": "Select which transformer layers receive LoRA adapters.",
+        "tip": "Select which transformer layers receive LoRA adapters. Placeholder: {targeted_layers}",
         "detail": "By default, LoRA adapters are applied to all eligible layers in the model. Targeted layer training lets you selectively enable LoRA on specific layers.\n\n**When to use:**\n- Training specific concepts that only need certain layers (e.g. style = mid-to-late layers, structure = early layers)\n- Reducing trainable parameter count to prevent overfitting on small datasets\n- Experimenting with which layers most affect your concept\n\n**When to leave empty:**\n- Most standard training — all layers is the safe default\n- When you're unsure which layers matter\n\nEmpty list = all trainable layers receive LoRA adapters."
     }
 }

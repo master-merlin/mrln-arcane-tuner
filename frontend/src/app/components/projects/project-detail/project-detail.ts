@@ -97,17 +97,59 @@ import { ProjectDialogComponent } from '../project-dialog/project-dialog';
                     </div>
 
                     @if (selectedTemplateId()) {
-                      <!-- LoRA Name & Trigger Word -->
+                      <!-- LoRA Prefix / Suffix / Name / Trigger Word -->
                       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                          <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5">LoRA Name</label>
-                          <input type="text" [ngModel]="launchLoraName()" (ngModelChange)="launchLoraName.set($event)"
-                                 placeholder="my_lora_v1"
-                                 class="w-full bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled">
+                          <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5">LoRA Prefix</label>
+                          <div class="flex gap-2">
+                            <input type="text" [ngModel]="launchLoraPrefix()" (ngModelChange)="launchLoraPrefix.set($event)" (blur)="saveQuickLaunchPreferences()"
+                                   placeholder="e.g. MyDataset"
+                                   class="flex-1 bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled">
+                            <button type="button" (click)="autofillLoraField('prefix')" title="Auto-derive from dataset name"
+                                    class="p-2 bg-surface-mid hover:bg-brand/20 border border-surface-high hover:border-brand/40 rounded-theme-md text-text-muted hover:text-brand transition-all">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m15 4-1 2-2 1 2 1 1 2 1-2 2-1-2-1-1-2Z"/>
+                                <path d="m8 11-1.5 3L3 15.5l3.5 1.5L8 20l1.5-3 3-1.5-3-1.5L8 11Z"/>
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5">LoRA Suffix</label>
+                          <div class="flex gap-2">
+                            <input type="text" [ngModel]="launchLoraSuffix()" (ngModelChange)="launchLoraSuffix.set($event)" (blur)="saveQuickLaunchPreferences()"
+                                   placeholder="e.g. v1"
+                                   class="flex-1 bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled">
+                            <button type="button" (click)="autofillLoraField('suffix')" title="Auto-derive from dataset name"
+                                    class="p-2 bg-surface-mid hover:bg-brand/20 border border-surface-high hover:border-brand/40 rounded-theme-md text-text-muted hover:text-brand transition-all">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m15 4-1 2-2 1 2 1 1 2 1-2 2-1-2-1-1-2Z"/>
+                                <path d="m8 11-1.5 3L3 15.5l3.5 1.5L8 20l1.5-3 3-1.5-3-1.5L8 11Z"/>
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5 flex items-center gap-1.5">
+                            LoRA Name
+                            <span class="text-[10px] font-mono text-text-disabled bg-surface-mid/40 px-1.5 py-0.5 rounded normal-case">supports placeholders</span>
+                          </label>
+                          <input type="text" [ngModel]="launchLoraName()" (ngModelChange)="launchLoraName.set($event)" (blur)="saveQuickLaunchPreferences()"
+                                 placeholder="e.g. prefix_flux_suffix"
+                                 class="w-full bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled font-mono">
+                          <!-- Live Preview -->
+                          @if (launchLoraNamePreview() && launchLoraNamePreview() !== launchLoraName()) {
+                            <div class="flex items-center gap-2 mt-1">
+                              <span class="text-[10px] text-text-disabled uppercase tracking-wider">Preview:</span>
+                              <span class="text-xs text-brand-light font-mono">{{ launchLoraNamePreview() }}.safetensors</span>
+                            </div>
+                          }
                         </div>
                         <div>
                           <label class="block text-xs font-bold uppercase tracking-wider text-text-subtle mb-1.5">Trigger Word</label>
-                          <input type="text" [ngModel]="launchTriggerWord()" (ngModelChange)="launchTriggerWord.set($event)"
+                          <input type="text" [ngModel]="launchTriggerWord()" (ngModelChange)="launchTriggerWord.set($event)" (blur)="saveQuickLaunchPreferences()"
                                  placeholder="ohwx"
                                  class="w-full bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors placeholder:text-text-disabled">
                         </div>
@@ -337,6 +379,8 @@ export class ProjectDetailComponent implements OnInit {
   // Quick Launch state
   selectedTemplateId = signal<string>('');
   launchLoraName = signal('');
+  launchLoraPrefix = signal('');
+  launchLoraSuffix = signal('');
   launchTriggerWord = signal('');
 
   // Schema-driven dataset form (reused from Training Tab)
@@ -361,14 +405,85 @@ export class ProjectDetailComponent implements OnInit {
   // Track dataset count reactively (FormArray.length is not a signal)
   datasetCount = signal(0);
 
+  launchLoraNamePreview = computed(() => {
+    const raw = this.launchLoraName();
+    if (!raw) return '';
+    
+    // We need to fetch the definition_id from the selected template if available
+    const templateId = this.selectedTemplateId();
+    let defId = '';
+    if (templateId) {
+      const templates = this.projectTrainingTemplates();
+      const tpl = templates.find(t => t.id === templateId);
+      if (tpl) defId = tpl.definition_id || '';
+    }
+
+    return raw.replace(/\{(\w+)\}/g, (_: string, key: string) => {
+      if (key === 'lora_prefix') return this.launchLoraPrefix() || '';
+      if (key === 'lora_suffix') return this.launchLoraSuffix() || '';
+      if (key === 'global_triggerword') return this.launchTriggerWord() || '';
+      if (key === 'definition_id') return defId;
+      return '';
+    });
+  });
+
   canStartTraining = computed(() => {
     return this.selectedTemplateId() && this.launchLoraName() && this.datasetCount() > 0;
   });
+
+  cleanDatasetName(): string {
+    const dsArray = this.launchForm.get('datasets') as FormArray;
+    if (!dsArray || dsArray.length === 0) return '';
+    const raw = dsArray.at(0)?.get('dataset_name')?.value || '';
+    return raw.replace(/[-\s]+/g, '_');
+  }
+
+  autofillLoraField(field: 'prefix' | 'suffix'): void {
+    const cleaned = this.cleanDatasetName();
+    if (!cleaned) {
+      this.toast.warning('No dataset configured yet');
+      return;
+    }
+    if (field === 'prefix') {
+      this.launchLoraPrefix.set(cleaned);
+    } else {
+      this.launchLoraSuffix.set(cleaned);
+    }
+    this.saveQuickLaunchPreferences();
+  }
 
   ngOnInit() {
     this.loadDatasets();
     this.loadProjectDatasets();
     this.loadProjectTemplates();
+    this.loadProjectPreferences();
+  }
+
+  private loadProjectPreferences() {
+    this.projectService.getPreferences(this.projectId()).subscribe({
+      next: (prefs) => {
+        const sel = prefs.training_selections || {};
+        if (sel.lora_name !== undefined) this.launchLoraName.set(sel.lora_name);
+        if (sel.lora_prefix !== undefined) this.launchLoraPrefix.set(sel.lora_prefix);
+        if (sel.lora_suffix !== undefined) this.launchLoraSuffix.set(sel.lora_suffix);
+        if (sel.global_triggerword !== undefined) this.launchTriggerWord.set(sel.global_triggerword);
+      }
+    });
+  }
+
+  saveQuickLaunchPreferences() {
+    const sel = {
+      lora_name: this.launchLoraName(),
+      lora_prefix: this.launchLoraPrefix(),
+      lora_suffix: this.launchLoraSuffix(),
+      global_triggerword: this.launchTriggerWord()
+    };
+    this.projectService.getPreferences(this.projectId()).subscribe({
+      next: (prefs) => {
+        const updated = { ...(prefs.training_selections || {}), ...sel };
+        this.projectService.updatePreferences(this.projectId(), { training_selections: updated }).subscribe();
+      }
+    });
   }
 
   onEditSaved() {
@@ -432,8 +547,10 @@ export class ProjectDetailComponent implements OnInit {
     this.templateService.getTemplate('training', templateId).subscribe({
       next: (tpl) => {
         const cfg = tpl.config || {};
-        this.launchLoraName.set(cfg.lora_name || '');
-        this.launchTriggerWord.set(cfg.global_triggerword || '');
+        this.launchLoraName.update(v => v || cfg.lora_name || '');
+        this.launchLoraPrefix.update(v => v || cfg.lora_prefix || '');
+        this.launchLoraSuffix.update(v => v || cfg.lora_suffix || '');
+        this.launchTriggerWord.update(v => v || cfg.global_triggerword || '');
 
         // Fetch the training schema so we can render the exact same dataset form
         this.http.get(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`).subscribe({
@@ -571,19 +688,29 @@ export class ProjectDetailComponent implements OnInit {
         // Clone the config — template stays pristine
         const config = { ...(tpl.config || {}) };
 
+        // Ensure definition_id is in config (for the trainer subprocess and naming resolution)
+        if (!config.definition_id) {
+          config.definition_id = tpl.definition_id || '';
+        }
+
         // Apply overrides
         config.lora_name = this.launchLoraName();
+        config.lora_prefix = this.launchLoraPrefix();
+        config.lora_suffix = this.launchLoraSuffix();
         config.global_triggerword = this.launchTriggerWord();
         config.project_id = this.projectId();
+
+        // Resolve {placeholder} tokens in lora_name before submission
+        if (config.lora_name) {
+          config.lora_name = config.lora_name.replace(/\{(\w+)\}/g, (_: string, key: string) => {
+            const val = config[key];
+            return val !== undefined && val !== null && val !== '' ? String(val) : '';
+          });
+        }
 
         // Extract dataset values from the reactive FormArray
         const fa = this.launchForm.get('datasets') as FormArray;
         config.datasets = fa.value.filter((ds: any) => ds.dataset_name);
-
-        // Ensure definition_id is in config (for the trainer subprocess)
-        if (!config.definition_id) {
-          config.definition_id = tpl.definition_id || '';
-        }
 
         // plugin_id is always 'standard' — definition_id is a config param, not the plugin key
         this.jobService.createJob('standard', config).subscribe({

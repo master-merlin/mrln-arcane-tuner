@@ -162,6 +162,93 @@ export interface TrainingTemplate {
                </div>
 
               @if (!isGroupCollapsed(group.name)) {
+
+              <!-- ═══════════ Custom LoRA Naming Section (General Settings only) ═══════════ -->
+              @if (group.name === 'General Settings' && form.get('lora_prefix')) {
+              <div class="md:col-span-2 bg-surface-mid/20 border border-surface-mid/40 rounded-theme-lg p-5 space-y-4 mb-2">
+                <div class="flex items-center gap-2 mb-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand-light">
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <span class="text-xs font-bold text-text-subtle uppercase tracking-widest">LoRA Naming</span>
+                </div>
+
+                <!-- Prefix + Suffix row -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <!-- Prefix -->
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm font-medium text-text-secondary flex items-center gap-1.5">
+                      LoRA Prefix
+                      @if (hasHelp('lora_prefix')) {
+                        <span class="config-help-icon" [title]="getHelpTip('lora_prefix')" (click)="openHelpModal('lora_prefix'); $event.preventDefault()">?</span>
+                      }
+                    </label>
+                    <div class="flex gap-2">
+                      <input type="text" formControlName="lora_prefix"
+                             data-testid="config-input-lora_prefix"
+                             placeholder="e.g. MyDataset"
+                             class="flex-1 bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white text-sm focus:ring-2 focus:ring-brand outline-none transition-all">
+                      <button type="button" (click)="autofillLoraField('lora_prefix')" title="Auto-derive from dataset name"
+                              data-testid="lora-prefix-wand"
+                              class="p-2 bg-surface-mid hover:bg-brand/20 border border-surface-high hover:border-brand/40 rounded-theme-md text-text-muted hover:text-brand transition-all">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="m15 4-1 2-2 1 2 1 1 2 1-2 2-1-2-1-1-2Z"/>
+                          <path d="m8 11-1.5 3L3 15.5l3.5 1.5L8 20l1.5-3 3-1.5-3-1.5L8 11Z"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Suffix -->
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm font-medium text-text-secondary flex items-center gap-1.5">
+                      LoRA Suffix
+                      @if (hasHelp('lora_suffix')) {
+                        <span class="config-help-icon" [title]="getHelpTip('lora_suffix')" (click)="openHelpModal('lora_suffix'); $event.preventDefault()">?</span>
+                      }
+                    </label>
+                    <div class="flex gap-2">
+                      <input type="text" formControlName="lora_suffix"
+                             data-testid="config-input-lora_suffix"
+                             placeholder="e.g. v1"
+                             class="flex-1 bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white text-sm focus:ring-2 focus:ring-brand outline-none transition-all">
+                      <button type="button" (click)="autofillLoraField('lora_suffix')" title="Auto-derive from dataset name"
+                              data-testid="lora-suffix-wand"
+                              class="p-2 bg-surface-mid hover:bg-brand/20 border border-surface-high hover:border-brand/40 rounded-theme-md text-text-muted hover:text-brand transition-all">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="m15 4-1 2-2 1 2 1 1 2 1-2 2-1-2-1-1-2Z"/>
+                          <path d="m8 11-1.5 3L3 15.5l3.5 1.5L8 20l1.5-3 3-1.5-3-1.5L8 11Z"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- LoRA Name -->
+                <div class="flex flex-col gap-1.5">
+                  <label class="text-sm font-medium text-text-secondary flex items-center gap-1.5">
+                    LoRA Name
+                    @if (hasHelp('lora_name')) {
+                      <span class="config-help-icon" [title]="getHelpTip('lora_name')" (click)="openHelpModal('lora_name'); $event.preventDefault()">?</span>
+                    }
+                    <span class="text-[10px] font-mono text-text-disabled bg-surface-mid/40 px-1.5 py-0.5 rounded">supports placeholders</span>
+                  </label>
+                  <input type="text" formControlName="lora_name"
+                         data-testid="config-input-lora_name"
+                         placeholder="e.g. prefix_flux_suffix"
+                         class="bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white text-sm w-full focus:ring-2 focus:ring-brand outline-none transition-all font-mono">
+                  <!-- Live Preview -->
+                  @if (loraNamePreview() && loraNamePreview() !== form.get('lora_name')?.value) {
+                    <div class="flex items-center gap-2 mt-0.5">
+                      <span class="text-[10px] text-text-disabled uppercase tracking-wider">Preview:</span>
+                      <span class="text-xs text-brand-light font-mono">{{ loraNamePreview() }}.safetensors</span>
+                    </div>
+                  }
+                </div>
+              </div>
+              }
+
               <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6 animate-in fade-in slide-in-from-top-2 duration-200">
 
                   @for (prop of group.props; track prop.key) {
@@ -198,7 +285,7 @@ export interface TrainingTemplate {
                      }
 
                      <!-- Normal Grouping for non-array types (skip block_swap_sliders — rendered near VRAM card) -->
-                     @if (prop.schema.type !== 'array' && !shouldHideField(prop.schema) && !prop.schema.inline_group && prop.schema.ui_type !== 'block_swap_sliders') {
+                     @if (prop.schema.type !== 'array' && !shouldHideField(prop.schema) && !prop.schema.inline_group && prop.schema.ui_type !== 'block_swap_sliders' && !loraCustomKeys.has(prop.key)) {
                          <app-dynamic-form-field
                             [control]="getControl(prop.key)"
                             [schema]="prop.schema"
@@ -370,6 +457,45 @@ export class TrainingDynamicConfigComponent {
 
   // Dataset autocomplete
   availableDatasets = signal<string[]>([]);
+
+  // LoRA Naming — keys handled by the custom section (skipped from generic @for)
+  readonly loraCustomKeys = new Set(['lora_prefix', 'lora_suffix', 'lora_name']);
+
+  /** Live preview of the resolved LoRA filename. */
+  loraNamePreview = signal<string>('');
+
+  /** Derive a clean identifier from a dataset name (replace dashes/spaces with underscores, preserve case). */
+  cleanDatasetName(): string {
+    const dsArray = this.getFormArray('datasets');
+    if (!dsArray || dsArray.length === 0) return '';
+    const raw = dsArray.at(0)?.get('dataset_name')?.value || '';
+    return raw.replace(/[-\s]+/g, '_');
+  }
+
+  /** Magic-wand click: auto-fill a lora naming field from the first dataset name. */
+  autofillLoraField(fieldKey: string): void {
+    const cleaned = this.cleanDatasetName();
+    if (!cleaned) {
+      this.toast.warning('No dataset configured yet');
+      return;
+    }
+    this.form.get(fieldKey)?.setValue(cleaned);
+  }
+
+  /** Resolve {placeholder} tokens in a raw lora_name string using current form values. */
+  resolveLoraName(raw: string): string {
+    const formValues = this.form.getRawValue();
+    return raw.replace(/\{(\w+)\}/g, (_: string, key: string) => {
+      const val = formValues[key];
+      return val !== undefined && val !== null && val !== '' ? String(val) : `{${key}}`;
+    });
+  }
+
+  /** Refresh the loraNamePreview signal from current form state. */
+  private _updateLoraNamePreview(): void {
+    const raw = this.form.get('lora_name')?.value || '';
+    this.loraNamePreview.set(this.resolveLoraName(raw));
+  }
 
   @ViewChild(TrainingTemplateSelectorComponent) templateSelector!: TrainingTemplateSelectorComponent;
   @ViewChild(AdvancedVramCardComponent) advancedVramCard!: AdvancedVramCardComponent;
@@ -941,7 +1067,11 @@ export class TrainingDynamicConfigComponent {
       takeUntilDestroyed(this.destroyRef)
     ).subscribe(() => {
       updateDisabledStates();
+      this._updateLoraNamePreview();
     });
+
+    // Initial preview render
+    this._updateLoraNamePreview();
   }
 
   organizeGroups(properties: { key: string, schema: any }[]) {
@@ -1251,7 +1381,8 @@ export class TrainingDynamicConfigComponent {
   }
 
   isLongInput(key: string, schema: any): boolean {
-    return key === 'lora_name' || key === 'output_dir' || key === 'global_triggerword'
+    return key === 'lora_name' || key === 'lora_prefix' || key === 'lora_suffix'
+      || key === 'output_dir' || key === 'global_triggerword'
       || key === 'save_every_n_steps' || key === 'resume_from_checkpoint'
       || schema.type === 'array' || schema.input_type === 'path';
   }
@@ -1366,6 +1497,13 @@ export class TrainingDynamicConfigComponent {
         if (Array.isArray(raw['targeted_layers']) && raw['targeted_layers'].length === 0) {
           delete raw['targeted_layers'];
         }
+      }
+      // Resolve {placeholder} tokens in lora_name before sending to backend
+      if (raw.lora_name) {
+        raw.lora_name = raw.lora_name.replace(/\{(\w+)\}/g, (_: string, key: string) => {
+          const val = raw[key];
+          return val !== undefined && val !== null && val !== '' ? String(val) : '';
+        });
       }
       // Attach active project scope so the job is linked to the project
       const pid = this.projectId();

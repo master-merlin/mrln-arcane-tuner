@@ -187,6 +187,34 @@ def validate_compatibility(
     return warnings
 
 
+# ── LoRA Name Resolution ─────────────────────────────────────────────────
+
+
+def resolve_lora_name(config: dict[str, Any]) -> str:
+    """Resolve ``{placeholder}`` tokens in ``lora_name`` using config values.
+
+    This is a backend safety-net: the frontend normally resolves
+    placeholders before submission, but API consumers that bypass
+    the UI may send raw template strings.
+
+    Args:
+        config: Full training config dict.
+
+    Returns:
+        Resolved LoRA name with all ``{key}`` tokens replaced.
+    """
+    import re
+
+    raw = config.get("lora_name", "lora")
+
+    def _replacer(match: re.Match) -> str:  # type: ignore[type-arg]
+        key = match.group(1)
+        val = config.get(key, "")
+        return str(val) if val else ""
+
+    return re.sub(r"\{(\w+)\}", _replacer, raw)
+
+
 # ── CheckpointManager ────────────────────────────────────────────────────
 
 
@@ -244,12 +272,13 @@ class CheckpointManager:
         config = config or {}
 
         # Determine paths
+        resolved_name = resolve_lora_name(config)
         if is_final:
             folder_name = "final"
-            lora_filename = f"{config.get('lora_name', 'lora')}_final.safetensors"
+            lora_filename = f"{resolved_name}_final.safetensors"
         else:
             folder_name = f"checkpoint-{step:06d}"
-            lora_filename = f"{config.get('lora_name', 'lora')}_{step:06d}.safetensors"
+            lora_filename = f"{resolved_name}_{step:06d}.safetensors"
 
         save_path = os.path.join(self.output_dir, folder_name)
         os.makedirs(save_path, exist_ok=True)

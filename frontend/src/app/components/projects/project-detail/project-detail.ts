@@ -756,13 +756,47 @@ export class ProjectDetailComponent implements OnInit {
     this.projectService.addProjectDataset(this.projectId(), this.selectedDatasetToAdd).subscribe({
       next: () => {
         this.toast.success('Dataset added to project.');
-        this.loadProjectDatasets();
         this.selectedDatasetToAdd = '';
         this.showDatasetPicker.set(false);
         this.projectService.loadProjects();
+        // Reload project datasets, then sync the Quick Launch form so the
+        // newly-available dataset is picked up without needing a template re-select.
+        this.projectService.getProjectDatasets(this.projectId()).subscribe({
+          next: (ds) => {
+            this.projectDatasets.set(ds);
+            this.syncLaunchFormWithProjectDatasets();
+          },
+          error: () => this.projectDatasets.set([])
+        });
       },
       error: (err: any) => this.toast.error('Failed to add dataset: ' + (err.error?.detail || err.message))
     });
+  }
+
+  /**
+   * Bring the Quick Launch datasets form in sync with the current project datasets.
+   * Refreshes the schema enum, auto-fills any entry whose dataset_name is empty,
+   * and — if the form has no entries but a template is selected — adds a
+   * pre-filled entry so the user doesn't have to re-pick the template.
+   */
+  private syncLaunchFormWithProjectDatasets() {
+    this.refreshDatasetSchemaEnum();
+
+    const names = this.projectDatasetNames();
+    if (names.length === 0) return;
+
+    const fa = this.launchForm.get('datasets') as FormArray;
+    if (!fa) return;
+
+    for (let i = 0; i < fa.length; i++) {
+      const ctl = fa.at(i).get('dataset_name');
+      if (ctl && !ctl.value) ctl.setValue(names[0]);
+    }
+
+    if (fa.length === 0 && this.selectedTemplateId()) {
+      const dsSchemaRef = this.trainingSchema()?.properties?.datasets?.items;
+      if (dsSchemaRef) this.addDatasetArrayItem(dsSchemaRef);
+    }
   }
 
   removeDataset(datasetId: string) {

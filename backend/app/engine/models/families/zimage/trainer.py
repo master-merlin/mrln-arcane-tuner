@@ -303,7 +303,7 @@ class ZImageTrainer(GenericTrainingPipeline):
         """ZImageTransformer2DModel forward pass.
 
         The Z-Image S3-DiT uses a non-standard forward() signature:
-            forward(x: List[Tensor], t, cap_feats: List[Tensor], ...)
+            forward(x: list[Tensor], t, cap_feats: list[Tensor], ...)
         - ``x``: list of per-sample latent tensors [C, 1, H, W]
         - ``t``: timestep tensor [B]
         - ``cap_feats``: list of per-sample text embeddings [Li, D]

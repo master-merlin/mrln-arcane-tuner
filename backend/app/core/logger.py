@@ -2,9 +2,16 @@ import asyncio
 import logging
 import sys
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import structlog
+
+
+# Absolute path to backend/server.log, anchored to this file so it is independent
+# of the process CWD (whether the backend was launched via start_backend.bat,
+# uvicorn from the repo root, an IDE run config, or a restart subprocess).
+SERVER_LOG_PATH = Path(__file__).resolve().parents[2] / "server.log"
 
 
 _log_loop = None
@@ -83,13 +90,10 @@ def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
     """
     # Reset server.log on startup for clean analysis
     if include_file_handler:
-        import os
-        log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "server.log")
-        if os.path.exists(log_path):
-            try:
-                os.remove(log_path)
-            except OSError:
-                pass  # File may be locked by previous process
+        try:
+            SERVER_LOG_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass  # File may be locked by previous process
     
 
     # Shared processors
@@ -126,7 +130,7 @@ def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
     # 2. File Handler (Legacy requirement persistence)
     # Only attach if requested (Main Process), Worker processes should NOT write to file directly
     if include_file_handler:
-        file_handler = logging.FileHandler("server.log", encoding="utf-8")
+        file_handler = logging.FileHandler(SERVER_LOG_PATH, encoding="utf-8")
         file_handler.setFormatter(logging.Formatter("%(message)s"))
         root_logger.addHandler(file_handler)
 

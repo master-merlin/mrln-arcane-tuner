@@ -6,16 +6,15 @@ import asyncio
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.core.logger import get_logger
+from app.core.logger import SERVER_LOG_PATH, get_logger
 
 router = APIRouter(prefix="/system", tags=["System"])
 logger = get_logger(__name__)
 
-_LOG_FILE = Path("server.log")
+_LOG_FILE = SERVER_LOG_PATH
 
 
 async def _restart_server_logic() -> None:

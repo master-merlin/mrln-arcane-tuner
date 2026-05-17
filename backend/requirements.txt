@@ -18,7 +18,7 @@ colorama==0.4.6; sys_platform == 'win32'
 coloredlogs==15.0.1
 datasets==4.5.0
 decord==0.6.0
-diffusers==0.37.1
+diffusers==0.38.0
 dill==0.4.0
 duckduckgo_search==8.1.1
 einops==0.8.2
@@ -93,7 +93,7 @@ rembg==2.0.72
 requests==2.32.5
 rpds-py==0.30.0
 ruff==0.15.2
-safetensors==0.7.0
+safetensors==0.8.0rc0
 sam3==0.1.2
 scikit-image==0.26.0
 scipy==1.17.0

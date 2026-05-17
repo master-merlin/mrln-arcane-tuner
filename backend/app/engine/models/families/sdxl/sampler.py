@@ -76,7 +76,10 @@ class SDXLSampler(GenericSamplingPipeline):
             Dict with ``cond``, ``uncond``, ``pooled_cond``,
             ``pooled_uncond`` tensors.
         """
-        model_dtype = self.pipeline.autocast_dtype
+        # Use the loaded UNet's dtype, not the training-time
+        # autocast_dtype (the two can disagree -- e.g. mixed_precision
+        # defaults to fp16 while the UNet may be loaded in bf16).
+        model_dtype = next(self.pipeline.unet.parameters()).dtype
 
         # Positive prompt
         cond = self.pipeline.encode_text([prompt], dtype=model_dtype)
@@ -145,7 +148,7 @@ class SDXLSampler(GenericSamplingPipeline):
         scheduler = self._inference_scheduler
         scheduler.set_timesteps(num_steps, device=self.device)
 
-        model_dtype = self.pipeline.autocast_dtype
+        model_dtype = next(self.pipeline.unet.parameters()).dtype
         use_amp = getattr(self.pipeline, "use_amp", True)
 
         # Unpack pre-cached embeddings

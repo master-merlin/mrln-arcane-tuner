@@ -82,7 +82,8 @@ class QwenImageSampler(GenericSamplingPipeline):
         Returns dict with ``embeds`` [1, L, D] and ``mask`` [1, L].
         """
         embeds, mask = self.pipeline.encode_text(
-            [prompt], dtype=self.pipeline.autocast_dtype,
+            [prompt],
+            dtype=next(self.pipeline.transformer.parameters()).dtype,
         )
         return {"embeds": embeds, "mask": mask}
 
@@ -127,9 +128,12 @@ class QwenImageSampler(GenericSamplingPipeline):
         ``decode_latents()``.
         """
         device = self.device
-        dtype = self.pipeline.autocast_dtype
         transformer = self.pipeline.transformer
         vae = self.pipeline.vae
+        # Use the loaded transformer's dtype, not training-time
+        # autocast_dtype (which defaults to fp16 while the transformer
+        # may be loaded in bf16).
+        dtype = next(transformer.parameters()).dtype
 
         # VAE scale factor
         vae_sf = (
@@ -175,7 +179,7 @@ class QwenImageSampler(GenericSamplingPipeline):
         device = self.device
         transformer = self.pipeline.transformer
         scheduler = self._get_scheduler()
-        dtype = self.pipeline.autocast_dtype
+        dtype = next(transformer.parameters()).dtype
 
         height = self._sample_height
         width = self._sample_width

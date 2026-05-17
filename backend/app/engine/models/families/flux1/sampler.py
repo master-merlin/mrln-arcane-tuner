@@ -72,7 +72,8 @@ class Flux1Sampler(GenericSamplingPipeline):
             T5 text embedding ``[1, L, 4096]``.
         """
         return self.pipeline.encode_text(
-            [prompt], dtype=self.pipeline.autocast_dtype
+            [prompt],
+            dtype=next(self.pipeline.transformer.parameters()).dtype,
         )
 
     def _create_initial_noise(
@@ -134,7 +135,12 @@ class Flux1Sampler(GenericSamplingPipeline):
             Tuple of (packed_latents ``[1, L, 64]``, latent_h, latent_w).
         """
         latent_h, latent_w = noise.shape[2], noise.shape[3]
-        model_dtype = self.pipeline.autocast_dtype
+        # Use the loaded transformer's dtype, not the training-time
+        # autocast_dtype (which defaults to fp16 even when the model is
+        # bf16 / NF4-dequant-to-bf16 -- there is no outer autocast at
+        # sample time, so a mismatched cast causes per-op repromotion
+        # and drift across the denoising loop).
+        model_dtype = next(self.pipeline.transformer.parameters()).dtype
 
         # 1. Pack noise → sequence [1, L, 64] + img_ids [L, 3]
         latents, img_ids = pack_latents(noise)

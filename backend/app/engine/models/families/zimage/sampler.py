@@ -75,7 +75,8 @@ class ZImageSampler(GenericSamplingPipeline):
         Returns dict with ``embeds`` (list of [L, D] tensors).
         """
         embeds = self.pipeline.encode_text(
-            [prompt], dtype=self.pipeline.autocast_dtype,
+            [prompt],
+            dtype=next(self.pipeline.model.parameters()).dtype,
         )
         return {"embeds": embeds}
 
@@ -124,7 +125,9 @@ class ZImageSampler(GenericSamplingPipeline):
         device = self.device
         transformer = self.pipeline.model
         scheduler = self._get_scheduler()
-        dtype = self.pipeline.autocast_dtype
+        # Use the loaded model's dtype, not training-time autocast_dtype
+        # (which defaults to fp16 while the model may be loaded in bf16).
+        dtype = next(transformer.parameters()).dtype
 
         latents = noise.to(dtype=torch.float32)
         prompt_embeds = prompt_embedding["embeds"]  # list of [L, D]

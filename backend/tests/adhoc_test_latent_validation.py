@@ -10,7 +10,7 @@ Tests the full encode → decode cycle at every stage using native diffusers VAE
   6. Latent distribution validation
 
 Requires: FLUX_VAE_PATH env var pointing to a local Flux VAE directory.
-Run: python -m pytest tests/test_latent_validation.py -v -s
+Run: python -m pytest tests/adhoc_test_latent_validation.py -v -s
 """
 
 import os

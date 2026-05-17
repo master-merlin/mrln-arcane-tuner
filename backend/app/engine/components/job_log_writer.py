@@ -42,6 +42,7 @@ class JobLogWriter:
         self._file = open(  # noqa: SIM115
             self.log_path, "a", encoding="utf-8", buffering=1,
         )
+        self._exit_emitted = False
         # Ensure we close cleanly on process exit
         atexit.register(self.close)
 
@@ -87,7 +88,25 @@ class JobLogWriter:
         self.emit("step", metrics)
 
     def exit(self, code: int, error: str | None = None) -> None:
-        """Write a terminal exit message, then close the file."""
+        """Write a terminal exit message exactly once, then close the file.
+
+        Idempotent: a second call is a no-op (with a stderr warning so the
+        offending site shows up in trainer_stdout.log).  The exit message
+        is what tells the backend JobManager to transition the job to
+        ``COMPLETED`` / ``FAILED`` and remove it from the active queue —
+        writing it more than once, or writing it while real work is still
+        in flight, makes the UI lose track of a live job.
+        """
+        if self._exit_emitted:
+            import sys
+            print(
+                f"WARNING: JobLogWriter.exit() called twice (code={code}); "
+                "ignoring second call to avoid spurious terminal event.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        self._exit_emitted = True
         payload: dict[str, Any] = {"code": code}
         if error:
             payload["error"] = error

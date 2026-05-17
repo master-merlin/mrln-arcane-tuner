@@ -188,6 +188,60 @@ def _emit_status(label: str, log_writer=None):
     print(f"[STATUS:{label}]", flush=True)
 
 
+def _finalize_before_exit(log_writer=None) -> None:
+    """Drain pending GPU work and report leaked children before exit.
+
+    Two failure modes this addresses:
+
+    1. **Background CUDA stream still running**: an exception that fires
+       while async kernels are in flight can race the ``_log_writer.exit``
+       write — the parent reports exit code 0 while the GPU is still busy
+       and the JobManager removes the job from the active queue even
+       though work is ongoing.  ``torch.cuda.synchronize()`` blocks until
+       all pending kernels complete so the reported exit reflects reality.
+
+    2. **Orphaned child processes** (DataLoader workers, HF download
+       helpers, multiprocessing pools): on Windows the trainer is launched
+       with ``CREATE_NEW_PROCESS_GROUP``; any surviving child keeps the
+       GPU pinned but the JobManager's PID watchdog only follows the
+       parent.  We log a warning listing surviving children so the next
+       repro shows exactly which subsystem leaked, then attempt to
+       terminate them so the GPU actually frees.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:
+        pass  # Never block exit on diagnostics
+
+    try:
+        import psutil
+        children = psutil.Process().children(recursive=True)
+        if children:
+            child_info = [
+                {"pid": c.pid, "name": c.name(), "status": c.status()}
+                for c in children
+            ]
+            msg = f"leaked_child_processes_at_exit: {child_info}"
+            print(msg, file=sys.stderr, flush=True)
+            if log_writer:
+                log_writer.warning(msg)
+            for c in children:
+                try:
+                    c.terminate()
+                except Exception:
+                    pass
+            gone, alive = psutil.wait_procs(children, timeout=3)
+            for c in alive:
+                try:
+                    c.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def main():
     logger.info("trainer_entry_point_reached")
     
@@ -256,12 +310,14 @@ def main():
         asyncio.run(run_async_trainer(trainer, _log_writer))
 
         logger.info("training_completed_successfully")
+        _finalize_before_exit(_log_writer)
         _log_writer.exit(0)
         sys.exit(0)
 
     except Exception as e:
         print("CRITICAL: Unhandled exception in main execution block.", file=sys.stderr)
         traceback.print_exc()
+        _finalize_before_exit(_log_writer)
         if _log_writer:
             _log_writer.exit(1, error=str(e))
         sys.exit(1)

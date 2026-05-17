@@ -47,22 +47,43 @@ class ErnieImageSampler(GenericSamplingPipeline):
         from diffusers import FlowMatchEulerDiscreteScheduler
 
         arch = getattr(self.pipeline.definition, "architecture_params", {}) or {}
+        # Match the official ErnieImagePipeline: explicit linear sigmas
+        # are passed to ``set_timesteps`` at sample-time, so ``shift`` and
+        # ``use_dynamic_shifting`` are unused here.  We only need
+        # ``num_train_timesteps`` so the scheduler can convert sigmas to
+        # the ``[0, num_train_timesteps]`` timestep range the transformer
+        # expects.
         self._scheduler = FlowMatchEulerDiscreteScheduler(
             num_train_timesteps=int(arch.get("scheduler.num_train_timesteps", 1000)),
-            shift=float(arch.get("scheduler.shift", 4.0)),
         )
         return self._scheduler
 
     # ── Text encoding ────────────────────────────────────────────────────
 
+    def _model_dtype(self) -> torch.dtype:
+        """Return the actual transformer parameter dtype.
+
+        Match the official ``ErnieImagePipeline`` which uses
+        ``self.transformer.dtype``; do NOT use
+        ``pipeline.autocast_dtype`` (a training-config knob that
+        defaults to fp16 and silently mismatches the bf16-loaded
+        transformer at sample time, causing PyTorch to repromote
+        dtypes per-op and accumulate precision drift over the
+        denoising loop).
+        """
+        return next(self.pipeline.transformer.parameters()).dtype
+
     def encode_prompt(self, prompt: str) -> dict[str, Any]:
         """Encode positive + negative prompt for optional CFG.
 
         Delegates to the trainer's cache-aware ``encode_text``.  Returns
-        already-padded ``(text_bth, attention_mask)`` pairs for both
-        the conditional and unconditional paths.
+        ``(text_bth, attention_mask)`` pairs for both the conditional and
+        unconditional paths; ``denoise()`` re-pads them to a common
+        ``Tmax`` so the CFG batched forward sees matched sequence
+        lengths (otherwise the per-token rope positions diverge between
+        the cond and uncond passes).
         """
-        dtype = self.pipeline.autocast_dtype
+        dtype = self._model_dtype()
         cond_emb, cond_mask = self.pipeline.encode_text([prompt], dtype=dtype)
         uncond_emb, uncond_mask = self.pipeline.encode_text([""], dtype=dtype)
         return {
@@ -73,12 +94,6 @@ class ErnieImageSampler(GenericSamplingPipeline):
         }
 
     # ── Latent helpers ───────────────────────────────────────────────────
-
-    def _resolve_vae_latent_channels(self) -> int:
-        """Return the VAE's latent channel count (32 for ``AutoencoderKLFlux2``)."""
-        vae = self.pipeline.vae
-        z = getattr(getattr(vae, "config", None), "latent_channels", None) or 32
-        return int(z)
 
     def _create_initial_noise(
         self, width: int, height: int, generator: torch.Generator,
@@ -98,10 +113,41 @@ class ErnieImageSampler(GenericSamplingPipeline):
             (1, in_channels, latent_h, latent_w),
             generator=generator,
             device=self.device,
-            dtype=self.pipeline.autocast_dtype,
+            dtype=self._model_dtype(),
         )
 
     # ── Core sampling methods ────────────────────────────────────────────
+
+    @staticmethod
+    def _pad_to_common_length(
+        a_emb: Tensor, a_lens: Tensor, b_emb: Tensor, b_lens: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Right-pad ``a_emb`` and ``b_emb`` so they share ``Tmax``.
+
+        Concatenated CFG forward needs matched sequence lengths so the
+        transformer's per-token position encoding lines up across the
+        two halves of the batch.  Returns ``(text_bth, text_lens)`` ready
+        for a single transformer call on batch size 2.
+        """
+        t_max = int(max(a_emb.shape[1], b_emb.shape[1]))
+        device = a_emb.device
+        dtype = a_emb.dtype
+        feat_dim = a_emb.shape[-1]
+
+        def _right_pad(emb: Tensor) -> Tensor:
+            if emb.shape[1] == t_max:
+                return emb
+            pad = torch.zeros(
+                (emb.shape[0], t_max - emb.shape[1], feat_dim),
+                device=device, dtype=dtype,
+            )
+            return torch.cat([emb, pad], dim=1)
+
+        text_bth = torch.cat([_right_pad(a_emb), _right_pad(b_emb)], dim=0)
+        text_lens = torch.cat([a_lens, b_lens], dim=0).to(
+            dtype=torch.long, device=device,
+        )
+        return text_bth, text_lens
 
     def denoise(
         self,
@@ -113,6 +159,18 @@ class ErnieImageSampler(GenericSamplingPipeline):
     ) -> Tensor:
         """Flow-matching Euler denoising loop with optional CFG.
 
+        Mirrors ``ErnieImagePipeline.__call__`` step-for-step:
+
+        * Linear sigma schedule ``linspace(1, 0, N+1)[:-1]`` →
+          timesteps in ``[0, num_train_timesteps]``.
+        * Single batched forward when CFG is on: concatenate
+          ``[uncond, cond]`` latents and text along the batch dim, then
+          ``chunk(2)`` the velocity prediction.
+        * Timestep is passed verbatim (no ``/ 1000``) because the
+          transformer's ``Timesteps`` embedding consumes the raw value;
+          the pretrained checkpoint expects the full ``[0, 1000]``
+          range.
+
         Returns the un-denormalized patched latents
         ``[1, in_channels, H/16, W/16]``; BN-denormalize + unpatchify +
         VAE decode happen in :meth:`decode_latents`.
@@ -120,7 +178,7 @@ class ErnieImageSampler(GenericSamplingPipeline):
         device = self.device
         transformer = self.pipeline.transformer
         scheduler = self._get_scheduler()
-        dtype = self.pipeline.autocast_dtype
+        dtype = self._model_dtype()
 
         cond_emb = prompt_embedding["cond_emb"]
         cond_mask = prompt_embedding["cond_mask"]
@@ -132,8 +190,20 @@ class ErnieImageSampler(GenericSamplingPipeline):
         uncond_lens = uncond_mask.sum(dim=1).to(dtype=torch.long, device=device)
 
         latents = noise.to(device=device, dtype=dtype)
+        batch_size = latents.shape[0]
 
-        # Linear sigma schedule matching the official pipeline.
+        # Build the (possibly concatenated) text tensors once — outside the
+        # denoising loop, since the prompts don't change per step.
+        if do_cfg:
+            text_bth, text_lens = self._pad_to_common_length(
+                uncond_emb.to(device=device, dtype=dtype), uncond_lens,
+                cond_emb.to(device=device, dtype=dtype), cond_lens,
+            )
+        else:
+            text_bth = cond_emb.to(device=device, dtype=dtype)
+            text_lens = cond_lens
+
+        # Linear sigma schedule -- matches ErnieImagePipeline line ~316.
         sigmas = torch.linspace(1.0, 0.0, num_steps + 1)
         scheduler.set_timesteps(sigmas=sigmas[:-1], device=device)
         timesteps = scheduler.timesteps
@@ -143,31 +213,31 @@ class ErnieImageSampler(GenericSamplingPipeline):
             total_steps = len(timesteps)
             for step_i, t in enumerate(timesteps, 1):
                 print(f"[STATUS:Sampling {step_i}/{total_steps}]", flush=True)
-                t_batch = torch.full(
-                    (latents.shape[0],), t.item(),
-                    device=device, dtype=dtype,
-                )
 
-                # Conditional pass — transformer expects t in [0, 1].
-                pred_cond = transformer(
-                    hidden_states=latents,
-                    timestep=t_batch / 1000.0,
-                    text_bth=cond_emb,
-                    text_lens=cond_lens,
+                if do_cfg:
+                    latent_model_input = torch.cat([latents, latents], dim=0)
+                    t_batch = torch.full(
+                        (batch_size * 2,), t.item(),
+                        device=device, dtype=dtype,
+                    )
+                else:
+                    latent_model_input = latents
+                    t_batch = torch.full(
+                        (batch_size,), t.item(),
+                        device=device, dtype=dtype,
+                    )
+
+                pred = transformer(
+                    hidden_states=latent_model_input,
+                    timestep=t_batch,
+                    text_bth=text_bth,
+                    text_lens=text_lens,
                     return_dict=False,
                 )[0]
 
                 if do_cfg:
-                    pred_uncond = transformer(
-                        hidden_states=latents,
-                        timestep=t_batch / 1000.0,
-                        text_bth=uncond_emb,
-                        text_lens=uncond_lens,
-                        return_dict=False,
-                    )[0]
+                    pred_uncond, pred_cond = pred.chunk(2, dim=0)
                     pred = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
-                else:
-                    pred = pred_cond
 
                 latents = scheduler.step(pred, t, latents, return_dict=False)[0]
 

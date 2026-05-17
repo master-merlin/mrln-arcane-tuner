@@ -269,9 +269,11 @@ class ErnieImageDriver(IModelDriver):
 
         Args:
             noisy_input: Patchified noisy latents ``[B, 128, H/2, W/2]``.
-            timesteps: Scaled timesteps ``[0, 1000]`` (transformer divides
-                by 1000 internally; we keep them in ``[0, 1000]`` for
-                compatibility with the flow-matching pipeline base).
+            timesteps: Timesteps in ``[0, 1000]`` matching the pretrained
+                checkpoint's expected range -- passed verbatim to the
+                transformer's ``Timesteps`` embedding (which does NOT
+                internally rescale; the official ``ErnieImagePipeline``
+                also passes raw ``[0, 1000]`` values).
             text_embeddings: Either a ``(embeddings, attention_mask)``
                 tuple from the cached path, or a raw ``[B, T, D]`` tensor
                 from the direct-encode path (in which case lengths are
@@ -300,13 +302,9 @@ class ErnieImageDriver(IModelDriver):
                 device=text_bth.device,
             )
 
-        # Transformer expects t in [0, 1] (its internal Timesteps embedding
-        # multiplies by 1000).  Our pipeline keeps timesteps in [0, 1000].
-        model_timesteps = timesteps / 1000.0
-
         output = self.transformer(
             hidden_states=noisy_input,
-            timestep=model_timesteps,
+            timestep=timesteps,
             text_bth=text_bth,
             text_lens=text_lens,
             return_dict=False,

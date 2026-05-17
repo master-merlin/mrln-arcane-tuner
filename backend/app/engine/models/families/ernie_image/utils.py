@@ -41,6 +41,18 @@ def unpatchify_latents(latents: Tensor) -> Tensor:
     return latents.reshape(b, c // 4, h * 2, w * 2)
 
 
+def _bn_eps(vae: torch.nn.Module) -> float:
+    """Return the actual BN layer's eps -- never the YAML config value.
+
+    ``vae.config.batch_norm_eps`` (often 1e-4) is what was passed to the
+    BN constructor, but the running variance was accumulated during VAE
+    training with the live ``self.bn.eps`` attribute.  Reading the
+    attribute directly guarantees train-vs-inference symmetry; the
+    official ``ErnieImagePipeline`` hardcodes the matching 1e-5.
+    """
+    return float(getattr(vae.bn, "eps", 1e-5))
+
+
 def bn_normalize(latents: Tensor, vae: torch.nn.Module) -> Tensor:
     """Normalize patchified latents with the VAE's BatchNorm running stats.
 
@@ -51,12 +63,11 @@ def bn_normalize(latents: Tensor, vae: torch.nn.Module) -> Tensor:
     bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(
         device=latents.device, dtype=latents.dtype,
     )
-    eps = getattr(vae.config, "batch_norm_eps", 1e-5)
     bn_std = torch.sqrt(
         vae.bn.running_var.view(1, -1, 1, 1).to(
             device=latents.device, dtype=latents.dtype,
         )
-        + eps,
+        + _bn_eps(vae),
     )
     return (latents - bn_mean) / bn_std
 
@@ -66,11 +77,10 @@ def bn_denormalize(latents: Tensor, vae: torch.nn.Module) -> Tensor:
     bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(
         device=latents.device, dtype=latents.dtype,
     )
-    eps = getattr(vae.config, "batch_norm_eps", 1e-5)
     bn_std = torch.sqrt(
         vae.bn.running_var.view(1, -1, 1, 1).to(
             device=latents.device, dtype=latents.dtype,
         )
-        + eps,
+        + _bn_eps(vae),
     )
     return latents * bn_std + bn_mean

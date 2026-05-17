@@ -376,6 +376,31 @@ class JobManager:
         code = data.get("code", 1) if isinstance(data, dict) else 1
         error = data.get("error") if isinstance(data, dict) else None
 
+        # Diagnostic: if the trainer reported exit but its PID or any
+        # descendants are still alive, training work is still running
+        # (e.g. orphaned DataLoader workers, async CUDA cleanup) and we
+        # are about to remove the job from the active queue while the
+        # GPU is still busy.  Log loudly so the next repro pinpoints the
+        # leaking subsystem.
+        pid = job.pid
+        if pid:
+            try:
+                import psutil
+                if psutil.pid_exists(pid):
+                    proc = psutil.Process(pid)
+                    children = proc.children(recursive=True)
+                    if proc.is_running() or children:
+                        logger.warning(
+                            "exit_message_while_process_alive",
+                            job_id=job_id,
+                            pid=pid,
+                            exit_code=code,
+                            parent_running=proc.is_running(),
+                            child_pids=[c.pid for c in children],
+                        )
+            except Exception:
+                pass
+
         with self._lock:
             job.finished_at = time.time()
             job.pid = None

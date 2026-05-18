@@ -69,6 +69,11 @@ class PipelineTrainMixin:
         _lw = getattr(self, "_log_writer", None)
         if _lw:
             self.logger_component.log_writer = _lw
+            # Cascade to the sampler so its progress messages reach the UI
+            # via the file-based IPC channel (see
+            # docs/superpowers/specs/2026-05-17-ipc-migration-design.md).
+            if getattr(self, "sampler", None) is not None:
+                self.sampler._log_writer = _lw
 
         # Write initial training log
         trainable_comps = self._build_trainable_components()

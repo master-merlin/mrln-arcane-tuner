@@ -42,7 +42,11 @@ class TestJobCRUD:
         assert isinstance(job, Job)
         assert job.status == JobStatus.PENDING
         assert job.plugin_id == "flux/dev"
-        assert job.config == _make_config()
+        # create_job injects job_id into the config dict for downstream use
+        assert job.config["job_id"] == job.id
+        expected_config = _make_config()
+        expected_config["job_id"] = job.id
+        assert job.config == expected_config
 
     def test_create_job_registers_in_jobs_dict(self):
         """Created job should be retrievable via get_job."""
@@ -486,7 +490,8 @@ class TestLoadFromDB:
         job = mgr.get_job("db-job-1")
         assert job is not None
         assert job.status == JobStatus.COMPLETED
-        assert job.plugin_id == "flux/dev"
+        # load_from_db resolves all rows to the single "standard" plugin
+        assert job.plugin_id == "standard"
         assert job.config == {"lora_name": "test"}
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
@@ -512,8 +517,8 @@ class TestLoadFromDB:
         assert job.status == JobStatus.STOPPED
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
-    def test_paused_demoted_to_stopped(self, MockRepo):
-        """Jobs that were paused at shutdown should be marked stopped."""
+    def test_paused_queued_for_relaunch(self, MockRepo):
+        """Paused jobs whose process is dead are loaded as PENDING and queued for relaunch."""
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-paused",
@@ -531,7 +536,9 @@ class TestLoadFromDB:
 
         job = mgr.get_job("db-job-paused")
         assert job is not None
-        assert job.status == JobStatus.STOPPED
+        # Dead-process paused jobs are demoted to PENDING then queued for re-launch
+        assert job.status == JobStatus.PENDING
+        assert any(r["id"] == "db-job-paused" for r in mgr._recovery_jobs)
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_existing_jobs_not_overwritten(self, MockRepo):
@@ -555,8 +562,10 @@ class TestLoadFromDB:
 
         mgr.load_from_db()
 
-        # Should still be the in-memory version
-        assert mgr.get_job("live-job").config == {"from": "memory"}
+        # Should still be the in-memory version (create_job adds a job_id key)
+        cfg = mgr.get_job("live-job").config
+        assert cfg["from"] == "memory"
+        assert "job_id" in cfg  # injected by create_job, not the DB row
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_handles_exception_gracefully(self, MockRepo):

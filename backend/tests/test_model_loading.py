@@ -160,7 +160,7 @@ class TestModelPathResolver:
         # local_files_only pattern that makes mocking single functions fragile.
         with patch.object(ModelPathResolver, "_resolve_hf", return_value="/tmp/cached/repo") as mock_hf:
             result = ModelPathResolver.resolve("huggingface:org/repo")
-            mock_hf.assert_called_once_with("huggingface:org/repo")
+            mock_hf.assert_called_once_with("huggingface:org/repo", local_files_only=False)
             assert result == "/tmp/cached/repo"
 
     def test_hf_uri_with_filename(self):
@@ -169,7 +169,7 @@ class TestModelPathResolver:
 
         with patch.object(ModelPathResolver, "_resolve_hf", return_value="/tmp/cached/file.safetensors") as mock_hf:
             result = ModelPathResolver.resolve("huggingface:org/repo:model.safetensors")
-            mock_hf.assert_called_once_with("huggingface:org/repo:model.safetensors")
+            mock_hf.assert_called_once_with("huggingface:org/repo:model.safetensors", local_files_only=False)
             assert result == "/tmp/cached/file.safetensors"
 
     def test_find_component_explicit_definition(self):

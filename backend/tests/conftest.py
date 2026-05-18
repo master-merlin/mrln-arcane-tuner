@@ -13,6 +13,42 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _isolate_test_db(tmp_path_factory):
+    """Redirect the SQLite singleton to a throwaway DB before any test runs.
+
+    Without this, tests that exercise JobManager or any repository write
+    rows into ``backend/app/arcane_tuner.db`` (the production DB). The
+    DatabaseEngine singleton is constructed lazily on first ``get_db()``
+    call, so we preempt it by installing a pre-initialized instance
+    pointed at a tmp file. Every subsequent ``get_db()`` call — including
+    those buried inside JobHistoryRepository, CheckpointRepository, etc.
+    — sees this test instance.
+    """
+    from app.core.db.engine import DatabaseEngine
+
+    tmp_db_path = tmp_path_factory.mktemp("db") / "test_arcane_tuner.db"
+    test_engine = DatabaseEngine(db_path=str(tmp_db_path))
+    test_engine.initialize()
+
+    # If the singleton was somehow already created (e.g. by another
+    # session-scope fixture), close it before swapping so we don't leak
+    # a connection to the prod DB.
+    if DatabaseEngine._instance is not None:
+        try:
+            DatabaseEngine._instance.close()
+        except Exception:
+            pass
+    DatabaseEngine._instance = test_engine
+
+    yield
+
+    try:
+        test_engine.close()
+    finally:
+        DatabaseEngine._instance = None
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _isolate_test_logging():
     """Redirect all logging to tests/tests.log, keeping server.log clean.
 

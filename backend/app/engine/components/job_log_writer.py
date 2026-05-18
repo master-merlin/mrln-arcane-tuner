@@ -99,6 +99,9 @@ class JobLogWriter:
         """
         if self._exit_emitted:
             import sys
+            # safety-net print: writer can't be trusted (double-exit corner);
+            # the log channel is already closed, so this is the only way to
+            # surface the bug.
             print(
                 f"WARNING: JobLogWriter.exit() called twice (code={code}); "
                 "ignoring second call to avoid spurious terminal event.",

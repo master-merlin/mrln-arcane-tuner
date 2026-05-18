@@ -22,6 +22,7 @@ import asyncio
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
+# safety-net print: pre-init, _log_writer is not constructed until main()
 print("Trainer process started...", flush=True)
 
 try:
@@ -36,10 +37,12 @@ try:
     setup_logging("INFO", include_file_handler=False)
     logger = get_logger("trainer") 
 except ImportError:
+    # safety-net print: pre-init, import-failure handler runs before logging setup completes
     print("CRITICAL: Failed to import dependencies. Check PYTHONPATH and venv.", file=sys.stderr)
     traceback.print_exc()
     sys.exit(1)
 except Exception:
+    # safety-net print: pre-init, unexpected-import-error handler runs before logging setup completes
     print("CRITICAL: Unexpected error during imports.", file=sys.stderr)
     traceback.print_exc()
     sys.exit(1)
@@ -162,9 +165,6 @@ async def run_async_trainer(trainer, log_writer=None):
             if ds_names:
                 if log_writer:
                     log_writer.emit("cache_ready", ds_names)
-                # Keep stdout marker for backward compat with any pipe readers
-                import json as _json
-                print(f"[CACHE_READY:{_json.dumps(ds_names)}]", flush=True)
         except Exception:
             pass  # Non-critical
 
@@ -176,16 +176,16 @@ async def run_async_trainer(trainer, log_writer=None):
         _emit_status("Training", log_writer)
         await trainer.train()
     except Exception as e:
+        # safety-net print: fallback, async-trainer wrapper exception; _log_writer may not exist
         print(f"CRITICAL: Async Trainer Exception: {str(e)}", file=sys.stderr)
         traceback.print_exc()
         raise e
 
 
 def _emit_status(label: str, log_writer=None):
-    """Emit status to both the log writer and stdout (backward compat)."""
+    """Emit status via the JobLogWriter file-based IPC channel."""
     if log_writer:
         log_writer.status(label)
-    print(f"[STATUS:{label}]", flush=True)
 
 
 def _finalize_before_exit(log_writer=None) -> None:
@@ -224,7 +224,6 @@ def _finalize_before_exit(log_writer=None) -> None:
                 for c in children
             ]
             msg = f"leaked_child_processes_at_exit: {child_info}"
-            print(msg, file=sys.stderr, flush=True)
             if log_writer:
                 log_writer.warning(msg)
             for c in children:
@@ -278,6 +277,7 @@ def main():
         
         if not definition:
              logger.error(f"definition_not_found: {args.definition_id}")
+             # safety-net print: belt-and-suspenders: _log_writer.exit(1, error=...) on next line; removed in Phase 2
              print(f"CRITICAL: Definition ID '{args.definition_id}' not found in registry.", file=sys.stderr)
              _log_writer.exit(1, error=f"Definition ID '{args.definition_id}' not found")
              sys.exit(1)
@@ -294,6 +294,7 @@ def main():
             family_cls = registry.get_family_class(definition.family)
         except ValueError as exc:
             logger.error("trainer_dispatch_failed", family=definition.family, error=str(exc))
+            # safety-net print: belt-and-suspenders: _log_writer.exit(1, error=...) on next line; removed in Phase 2
             print(f"CRITICAL: {exc}", file=sys.stderr)
             _log_writer.exit(1, error=str(exc))
             sys.exit(1)
@@ -315,6 +316,7 @@ def main():
         sys.exit(0)
 
     except Exception as e:
+        # safety-net print: fallback, outermost exception handler; _log_writer may not exist
         print("CRITICAL: Unhandled exception in main execution block.", file=sys.stderr)
         traceback.print_exc()
         _finalize_before_exit(_log_writer)

@@ -162,10 +162,10 @@ class GenericSamplingPipeline(ABC):
                 scheme=quant_scheme,
                 reason="NVFP4 prototype tensor does not support aten.expand; sampling unavailable",
             )
-            print(
-                f"[WARNING:Sampling skipped — {quant_scheme} quantization does not support inference ops]",
-                flush=True,
-            )
+            if getattr(self, "_log_writer", None):
+                self._log_writer.warning(
+                    f"Sampling skipped — {quant_scheme} quantization does not support inference ops"
+                )
             return []
 
         displayed_step = step + 1

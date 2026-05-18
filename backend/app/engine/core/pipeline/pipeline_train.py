@@ -97,11 +97,6 @@ class PipelineTrainMixin:
         total_params = sum(p.numel() for p in primary.parameters())
         self._trainable_params = trainable_params
         self._total_params = total_params
-        print(
-            f"[INFO:Trainable {trainable_params:,} of {total_params:,} params "
-            f"({trainable_params / max(total_params, 1) * 100:.2f}%)]",
-            flush=True,
-        )
         if _lw:
             _lw.log(
                 f"Trainable {trainable_params:,} of {total_params:,} params "
@@ -473,18 +468,16 @@ class PipelineTrainMixin:
     # ── File-based IPC helpers ────────────────────────────────────────
 
     def _emit_status(self, label: str) -> None:
-        """Emit a status label to both file-based IPC and stdout."""
+        """Emit a status label via the file-based JobLogWriter IPC channel."""
         _lw = getattr(self, "_log_writer", None)
         if _lw:
             _lw.status(label)
-        print(f"[STATUS:{label}]", flush=True)
 
     def _emit_warning(self, message: str) -> None:
-        """Emit a warning to both file-based IPC and stdout."""
+        """Emit a warning via the file-based JobLogWriter IPC channel."""
         _lw = getattr(self, "_log_writer", None)
         if _lw:
             _lw.warning(message)
-        print(f"[WARNING:{message}]", flush=True)
 
     # ── Job History Helpers ──────────────────────────────────────────
 

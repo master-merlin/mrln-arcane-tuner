@@ -40,9 +40,11 @@ class PipelineLoadingMixin:
         )
         self._assign_components()
 
-        # Surface loader diagnostics as [WARNING:] markers for the parent process
+        # Surface loader diagnostics via the JobLogWriter warning channel
+        _lw = getattr(self, "_log_writer", None)
         for warning in getattr(self.loader, "warnings", []):
-            print(f"[WARNING:{warning}]", flush=True)
+            if _lw:
+                _lw.warning(warning)
 
         # 2. Enrich definition with introspection
         from app.engine.models.registry import ModelRegistry
@@ -135,10 +137,10 @@ class PipelineLoadingMixin:
             te_backend, te_quant = QuantizationFactory.validate_and_fallback(te_quant, te_backend)
             if te_quant == "none":
                 original = self.config.get("te_quantization", "none")
-                print(
-                    f"[WARNING:TE quantization '{original}' not available on this GPU — running without quantization]",
-                    flush=True,
-                )
+                if getattr(self, "_log_writer", None):
+                    self._log_writer.warning(
+                        f"TE quantization '{original}' not available on this GPU — running without quantization"
+                    )
             elif te_quant != "none":
                 for name, te in self._get_text_encoders().items():
                     # Resolve source path for this TE component
@@ -205,10 +207,10 @@ class PipelineLoadingMixin:
             quant_backend, quant_scheme = QuantizationFactory.validate_and_fallback(quant_scheme, quant_backend)
             if quant_scheme == "none":
                 original = self.config.get("quantization", "none")
-                print(
-                    f"[WARNING:Model quantization '{original}' not available on this GPU — running without quantization]",
-                    flush=True,
-                )
+                if getattr(self, "_log_writer", None):
+                    self._log_writer.warning(
+                        f"Model quantization '{original}' not available on this GPU — running without quantization"
+                    )
             elif quant_scheme != "none":
                 comp_name = "transformer" if hasattr(self, "transformer") else "unet"
 

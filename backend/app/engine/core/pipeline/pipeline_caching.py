@@ -246,7 +246,8 @@ class PipelineCachingMixin:
             "pre_caching_latents_start",
             total_missing=self._latent_cache_missing,
         )
-        print("[STATUS:Caching Latents (0%)]", flush=True)
+        if getattr(self, "_log_writer", None):
+            self._log_writer.status("Caching Latents (0%)")
 
         # Build unique work items (deduplicate by id + cache_dir)
         # Each work item is a (path, id, cache_dir, target_w, target_h) tuple.
@@ -313,7 +314,8 @@ class PipelineCachingMixin:
                     )
 
                 pct = round((i + 1) / total * 100)
-                print(f"[STATUS:Caching Latents ({pct}%)]", flush=True)
+                if getattr(self, "_log_writer", None):
+                    self._log_writer.status(f"Caching Latents ({pct}%)")
                 if (i + 1) % 10 == 0 or (i + 1) == total:
                     self.logger.info(
                         "pre_caching_progress",

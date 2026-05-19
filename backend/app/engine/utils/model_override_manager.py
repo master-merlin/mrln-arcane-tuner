@@ -7,6 +7,8 @@ Thin service layer over ``SettingsManager`` that serialises
 
 from __future__ import annotations
 
+import asyncio
+
 import structlog
 
 from app.core.schemas.model_overrides import (
@@ -67,6 +69,63 @@ class ModelOverrideManager:
         settings = ModelOverrideManager._load()
         if settings.overrides.pop(definition_id, None) is not None:
             ModelOverrideManager._save(settings)
+            logger.info("model_override_removed", id=definition_id)
+
+    # ── Async variants (R-API-07) ───────────────────────────────────────
+    # FastAPI routes use these; engine code (is_offline,
+    # resolve_effective_source) keeps the sync API since those are called
+    # from sync trainer-subprocess contexts.
+    #
+    # NOTE: set_override_async / delete_override_async widen the pre-existing
+    # load->mutate->save race window because each `await` releases the event
+    # loop. Two concurrent calls for different definition_ids can interleave
+    # load-A, load-B, save-A, save-B and the second save will clobber the
+    # first override. This is the same hazard the sync versions have under
+    # threading, just easier to trigger from a single event loop. Adding a
+    # lock is deferred per the R-API-07 spec; revisit if telemetry shows
+    # actual override clobbering.
+
+    @staticmethod
+    async def _load_async() -> ModelSettings:
+        """Async variant of :meth:`_load` -- offloaded settings.json read."""
+        return await asyncio.to_thread(ModelOverrideManager._load)
+
+    @staticmethod
+    async def _save_async(settings: ModelSettings) -> None:
+        """Async variant of :meth:`_save` -- offloaded settings.json write."""
+        await asyncio.to_thread(ModelOverrideManager._save, settings)
+
+    @staticmethod
+    async def get_all_async() -> ModelSettings:
+        """Async variant of :meth:`get_all`."""
+        return await ModelOverrideManager._load_async()
+
+    @staticmethod
+    async def get_override_async(definition_id: str) -> ModelOverride | None:
+        """Async variant of :meth:`get_override`."""
+        settings = await ModelOverrideManager._load_async()
+        return settings.overrides.get(definition_id)
+
+    @staticmethod
+    async def set_override_async(
+        definition_id: str, override: ModelOverride,
+    ) -> None:
+        """Async variant of :meth:`set_override`."""
+        settings = await ModelOverrideManager._load_async()
+        settings.overrides[definition_id] = override
+        await ModelOverrideManager._save_async(settings)
+        logger.info(
+            "model_override_saved",
+            id=definition_id,
+            source_type=override.source_type,
+        )
+
+    @staticmethod
+    async def delete_override_async(definition_id: str) -> None:
+        """Async variant of :meth:`delete_override`."""
+        settings = await ModelOverrideManager._load_async()
+        if settings.overrides.pop(definition_id, None) is not None:
+            await ModelOverrideManager._save_async(settings)
             logger.info("model_override_removed", id=definition_id)
 
     # ── Global offline mode ─────────────────────────────────────────────

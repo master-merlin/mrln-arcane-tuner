@@ -1,6 +1,7 @@
 
 import os
 import json
+import asyncio
 from typing import Any
 import structlog
 
@@ -108,8 +109,32 @@ class SettingsManager:
              self.settings[module].update(settings)
         else:
              self.settings[module] = settings
-        
+
         self.save()
+
+    # ── Async variants (R-API-07) ───────────────────────────────────────
+    # Offload disk I/O to a worker thread so FastAPI route handlers
+    # don't block the event loop. Sync versions stay for engine callers
+    # (engine/utils/model_override_manager.py, engine/core/pipeline/pipeline_data.py)
+    # which run in trainer subprocess contexts without an event loop.
+
+    async def load_async(self) -> None:
+        """Async wrapper around load()."""
+        await asyncio.to_thread(self.load)
+
+    async def save_async(self) -> None:
+        """Async wrapper around save()."""
+        await asyncio.to_thread(self.save)
+
+    async def get_module_settings_async(self, module: str) -> dict[str, Any]:
+        """Async wrapper around get_module_settings()."""
+        return await asyncio.to_thread(self.get_module_settings, module)
+
+    async def update_module_settings_async(
+        self, module: str, settings: dict[str, Any],
+    ) -> None:
+        """Async wrapper around update_module_settings()."""
+        await asyncio.to_thread(self.update_module_settings, module, settings)
 
 
 def get_settings_manager() -> SettingsManager:

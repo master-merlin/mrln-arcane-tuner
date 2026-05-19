@@ -130,7 +130,8 @@ class QwenImageTrainer(GenericTrainingPipeline):
         )
 
         if not need_encode:
-            print("[STATUS:TE Cache Loaded from Disk]", flush=True)
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status("TE Cache Loaded from Disk")
             self.logger.info(
                 "text_embedding_cache_complete",
                 cached=len(self.text_cache), source="disk",
@@ -138,7 +139,8 @@ class QwenImageTrainer(GenericTrainingPipeline):
             return
 
         # -- Phase 2: Encode missing (batched) --
-        print("[STATUS:Caching Text Embeddings (0%)]", flush=True)
+        if getattr(self, "_log_writer", None):
+            self._log_writer.status("Caching Text Embeddings (0%)")
         encode_total = len(need_encode)
         batch_size = 4
         dtype = self._resolve_loading_dtype()
@@ -162,7 +164,8 @@ class QwenImageTrainer(GenericTrainingPipeline):
 
                 pct = int(min(i + batch_size, encode_total) / encode_total * 100)
                 if pct % 10 == 0 or (i + batch_size) >= encode_total:
-                    print(f"[STATUS:Caching Text Embeddings ({pct}%)]", flush=True)
+                    if getattr(self, "_log_writer", None):
+                        self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
 
         self.logger.info(
             "text_embedding_cache_complete",

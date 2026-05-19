@@ -111,7 +111,8 @@ class Flux2Trainer(GenericTrainingPipeline):
         )
 
         if not need_encode:
-            print("[STATUS:TE Cache Loaded from Disk]", flush=True)
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status("TE Cache Loaded from Disk")
             self.logger.info(
                 "text_embedding_cache_complete",
                 cached_embeddings=len(self.text_cache),
@@ -122,7 +123,8 @@ class Flux2Trainer(GenericTrainingPipeline):
         # ── Phase 2: Encode missing captions on GPU ───────────────────────
         # Batch-encode directly via driver (avoids per-caption forward pass
         # that _get_cached_text_embeddings would do).
-        print("[STATUS:Caching Text Embeddings (0%)]", flush=True)
+        if getattr(self, "_log_writer", None):
+            self._log_writer.status("Caching Text Embeddings (0%)")
         encode_total = len(need_encode)
         batch_size = 4
         dtype = self._resolve_loading_dtype()
@@ -144,7 +146,8 @@ class Flux2Trainer(GenericTrainingPipeline):
                         TextEmbeddingCache.save(cap, emb_cpu, te_cache_dir, hint)
 
                 pct = round(min(i + batch_size, encode_total) / encode_total * 100)
-                print(f"[STATUS:Caching Text Embeddings ({pct}%)]", flush=True)
+                if getattr(self, "_log_writer", None):
+                    self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
                 if (i + batch_size) % 20 == 0 or (i + batch_size) >= encode_total:
                     self.logger.info(
                         "te_cache_progress",

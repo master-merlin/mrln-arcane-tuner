@@ -139,7 +139,8 @@ class SDXLTrainer(GenericTrainingPipeline):
         )
 
         if not need_encode:
-            print("[STATUS:TE Cache Loaded from Disk]", flush=True)
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status("TE Cache Loaded from Disk")
             self.logger.info(
                 "text_embedding_cache_complete",
                 cached_prompt=len(self.text_cache),
@@ -149,7 +150,8 @@ class SDXLTrainer(GenericTrainingPipeline):
             return
 
         # ── Phase 2: Encode missing captions on GPU ───────────────────
-        print("[STATUS:Caching Text Embeddings (0%)]", flush=True)
+        if getattr(self, "_log_writer", None):
+            self._log_writer.status("Caching Text Embeddings (0%)")
         encode_total = len(need_encode)
         batch_size = 4
 
@@ -173,7 +175,8 @@ class SDXLTrainer(GenericTrainingPipeline):
                         TextEmbeddingCache.save(cap, pool_emb, te2_dir, hint)
 
                 pct = int((i + len(batch_items)) / encode_total * 100)
-                print(f"[STATUS:Caching Text Embeddings ({pct}%)]", flush=True)
+                if getattr(self, "_log_writer", None):
+                    self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
 
         self.logger.info(
             "text_embedding_cache_complete",

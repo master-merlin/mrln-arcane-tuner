@@ -185,10 +185,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.middleware("http")
 async def logging_middleware(request: Request, call_next):
-    """Inject per-request trace ID and log request lifecycle."""
+    """Inject per-request trace ID + span ID and log request lifecycle.
+
+    Per docs/LOGGING.md universal_json_schema (R-LOG-07), every log
+    entry must carry both ``trace_id`` (correlates across services —
+    sourced from the ``X-Trace-ID`` request header when present) and
+    ``span_id`` (unique per request inside this service).
+    """
     trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    span_id = str(uuid.uuid4())
     structlog.contextvars.clear_contextvars()
-    structlog.contextvars.bind_contextvars(trace_id=trace_id)
+    structlog.contextvars.bind_contextvars(trace_id=trace_id, span_id=span_id)
 
     logger.info("request_started", method=request.method, path=request.url.path)
     response = await call_next(request)

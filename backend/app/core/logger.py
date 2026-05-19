@@ -83,6 +83,18 @@ def config_log_level(level_str: str = "INFO"):
         logging.getLogger(logger_name).setLevel(level)
 
 
+def _add_service(_logger, _name, event_dict):
+    """R-LOG-07: stamp every FastAPI-side log entry with the canonical
+    ``service`` identifier from ``docs/LOGGING.md`` universal_json_schema.
+
+    The trainer subprocess writes its own JSONL stream via
+    :class:`JobLogWriter` with a different envelope shape, and is
+    responsible for setting ``service="lora-worker"`` there.
+    """
+    event_dict.setdefault("service", "fastapi-router")
+    return event_dict
+
+
 def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
     """
     Configures structlog for JSON output and standard logging integration.
@@ -94,7 +106,7 @@ def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
             SERVER_LOG_PATH.unlink(missing_ok=True)
         except OSError:
             pass  # File may be locked by previous process
-    
+
 
     # Shared processors
     processors = [
@@ -103,6 +115,7 @@ def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        _add_service,
         structlog.processors.JSONRenderer()
     ]
 

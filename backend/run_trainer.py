@@ -277,8 +277,6 @@ def main():
         
         if not definition:
              logger.error(f"definition_not_found: {args.definition_id}")
-             # safety-net print: belt-and-suspenders: _log_writer.exit(1, error=...) on next line; removed in Phase 2
-             print(f"CRITICAL: Definition ID '{args.definition_id}' not found in registry.", file=sys.stderr)
              _log_writer.exit(1, error=f"Definition ID '{args.definition_id}' not found")
              sys.exit(1)
              
@@ -294,8 +292,6 @@ def main():
             family_cls = registry.get_family_class(definition.family)
         except ValueError as exc:
             logger.error("trainer_dispatch_failed", family=definition.family, error=str(exc))
-            # safety-net print: belt-and-suspenders: _log_writer.exit(1, error=...) on next line; removed in Phase 2
-            print(f"CRITICAL: {exc}", file=sys.stderr)
             _log_writer.exit(1, error=str(exc))
             sys.exit(1)
 

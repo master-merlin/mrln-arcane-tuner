@@ -209,7 +209,8 @@ class SDXLSampler(GenericSamplingPipeline):
 
         total_steps = len(scheduler.timesteps)
         for step_i, t in enumerate(scheduler.timesteps, 1):
-            print(f"[STATUS:Sampling {step_i}/{total_steps}]", flush=True)
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status(f"Sampling {step_i}/{total_steps}")
             t_batch = t.unsqueeze(0).to(self.device)
 
             # Expand latents for CFG: [uncond_input, cond_input]

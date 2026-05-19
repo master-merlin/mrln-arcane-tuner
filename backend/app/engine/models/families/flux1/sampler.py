@@ -194,7 +194,8 @@ class Flux1Sampler(GenericSamplingPipeline):
         use_amp = getattr(self.pipeline, "use_amp", True)
 
         for i in range(num_steps):
-            print(f"[STATUS:Sampling {i + 1}/{num_steps}]", flush=True)
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status(f"Sampling {i + 1}/{num_steps}")
             t = timesteps[i]
             t_next = timesteps[i + 1]
             dt = t_next - t

@@ -234,7 +234,8 @@ class Flux2Sampler(GenericSamplingPipeline):
         with torch.no_grad():
             total_steps = len(timesteps)
             for step_i, t in enumerate(timesteps, 1):
-                print(f"[STATUS:Sampling {step_i}/{total_steps}]", flush=True)
+                if getattr(self, "_log_writer", None):
+                    self._log_writer.status(f"Sampling {step_i}/{total_steps}")
                 ts = t.expand(latents.shape[0]).to(dtype)
                 latent_input = latents.to(dtype)
 

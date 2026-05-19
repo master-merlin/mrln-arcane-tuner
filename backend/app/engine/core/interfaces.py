@@ -229,14 +229,28 @@ class IModelDriver(ABC):
     ) -> Any:
         """Return a :class:`PrecisionSpec` for this family.
 
-        Default delegates to ``PrecisionSpec.from_config()``.
-        Override in families with non-standard precision requirements.
+        Default delegates to ``PrecisionSpec.from_config()``, passing the
+        loaded primary model's dtype so autocast follows the actual
+        weights when they are bf16/fp16 (audit R-TENSOR-10).  Override
+        in families with non-standard precision requirements.
         """
         from app.engine.core.layer_manifest import PrecisionSpec
+
+        # Inspect the loaded primary model so autocast follows the actual
+        # weights, not the config string.  Falls back to config-only when
+        # no model is loaded yet (e.g. unit tests).
+        model_dtype: torch.dtype | None = None
+        try:
+            model = self.get_primary_model()
+            if model is not None:
+                model_dtype = next(model.parameters()).dtype
+        except (StopIteration, AttributeError, NotImplementedError):
+            model_dtype = None
 
         return PrecisionSpec.from_config(
             mixed_precision,
             is_adaptive_optimizer=is_adaptive_optimizer,
+            model_dtype=model_dtype,
         )
 
     # --- Phase 5: Training Loop Hooks ---

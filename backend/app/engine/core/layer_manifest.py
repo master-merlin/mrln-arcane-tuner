@@ -42,27 +42,48 @@ class PrecisionSpec:
         mixed_precision: str,
         *,
         is_adaptive_optimizer: bool = False,
+        model_dtype: torch.dtype | None = None,
     ) -> PrecisionSpec:
         """Build from the ``mixed_precision`` config string.
 
         This is the **default** factory used when no driver overrides
-        ``get_precision_spec()``.  It matches the existing logic in
-        ``pipeline_optimization._configure_optimization``.
+        ``get_precision_spec()``.
 
         Args:
             mixed_precision: One of ``"bf16"``, ``"fp16"``, ``"fp32"``.
+                Gates ``use_amp`` and ``grad_scaler_enabled`` flags.
             is_adaptive_optimizer: Prodigy-style adaptive LR — disables
                 grad scaler even for fp16.
+            model_dtype: Dtype of the actually-loaded primary model
+                parameters.  When the model is already in a low-precision
+                float (bf16 / fp16), ``autocast_dtype`` follows the
+                **model** rather than the config string — autocasting
+                bf16 weights through an fp16 context silently re-promotes
+                every op and accumulates precision drift (audit
+                R-TENSOR-10, symmetrical to the sampler fix in 287b840).
+                When the model is in fp32, the config string is honored
+                so that genuine AMP training (e.g. SDXL fp32 params +
+                fp16 autocast + GradScaler) keeps working.  ``None``
+                preserves the legacy config-only behavior for callers
+                that have no model handle (tests, factories run before
+                load).
         """
+        # Resolve autocast dtype: model wins when it's already low-precision,
+        # config wins when model is fp32 (legitimate AMP) or unknown.
+        def _resolve_autocast(default: torch.dtype) -> torch.dtype:
+            if model_dtype in (torch.bfloat16, torch.float16):
+                return model_dtype
+            return default
+
         if mixed_precision == "bf16":
             return PrecisionSpec(
-                autocast_dtype=torch.bfloat16,
+                autocast_dtype=_resolve_autocast(torch.bfloat16),
                 use_amp=True,
                 grad_scaler_enabled=False,
             )
         if mixed_precision == "fp16":
             return PrecisionSpec(
-                autocast_dtype=torch.float16,
+                autocast_dtype=_resolve_autocast(torch.float16),
                 use_amp=True,
                 grad_scaler_enabled=not is_adaptive_optimizer,
             )

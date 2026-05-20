@@ -142,6 +142,23 @@ class DatasetManager:
         if meta:
             self._media_repo.update(dataset.id, lookup_key, dict(meta))
 
+    # ── Async variants (R-API-07) ───────────────────────────────────────
+    # FastAPI route handlers use these; internal DatasetManager callers
+    # (scan_dataset, save_caption, toggle_image_enabled, crop_media,
+    # apply_adjustments) keep the sync API since they don't run under
+    # an event loop.
+    #
+    # Concurrency note: _persist_media_item_async is safe under concurrent
+    # calls because the underlying op is a single SQL UPDATE inside
+    # `get_db().write()` -- no read-modify-write window at the Python
+    # layer, unlike ModelOverrideManager.set_override_async.
+
+    async def _persist_media_item_async(
+        self, dataset: "Dataset", rel_path: str,
+    ) -> None:
+        """Async variant of :meth:`_persist_media_item`."""
+        await asyncio.to_thread(self._persist_media_item, dataset, rel_path)
+
     def list_datasets(self) -> list[Dataset]:
         return list(self.datasets.values())
 

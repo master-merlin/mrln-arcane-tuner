@@ -130,7 +130,7 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     # Update overlays.json recipe — MERGE or REPLACE based on flag
-    overlays_data = _read_overlays_json(dataset_root)
+    overlays_data = await asyncio.to_thread(_read_overlays_json, dataset_root)
 
     if request.replace_recipe:
         # Full render: replace entire recipe with exactly the blocks sent
@@ -150,17 +150,17 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "operations": merged_ops,
     }
-    _write_overlays_json(dataset_root, overlays_data)
+    await asyncio.to_thread(_write_overlays_json, dataset_root, overlays_data)
 
     # Update metadata
-    overlay_hash = _compute_file_hash(overlay_path)
+    overlay_hash = await asyncio.to_thread(_compute_file_hash, overlay_path)
     lookup_key = request.image_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         dataset.media_metadata[lookup_key]["has_overlay"] = True
         dataset.media_metadata[lookup_key]["overlay_hash"] = overlay_hash
         dataset.media_metadata[lookup_key]["overlay_score_stale"] = True
         dataset.media_metadata[lookup_key]["overlay_dimensions"] = list(dimensions)
-        dataset_manager._persist_media_item(dataset, request.image_path)
+        await dataset_manager._persist_media_item_async(dataset, request.image_path)
 
     logger.info(f"Overlay saved for {request.image_path} in dataset '{name}'")
     return {
@@ -197,7 +197,7 @@ async def get_overlay(name: str, image_path: str):
 async def get_overlay_recipe(name: str, image_path: str):
     """Return the pipeline recipe that produced an overlay."""
     _, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
-    overlays_data = _read_overlays_json(dataset_root)
+    overlays_data = await asyncio.to_thread(_read_overlays_json, dataset_root)
     recipe = overlays_data.get(image_path)
     if not recipe:
         raise HTTPException(status_code=404, detail="No overlay recipe found")
@@ -220,9 +220,9 @@ async def delete_overlay(name: str, image_path: str):
         await asyncio.to_thread(safe_remove, overlay_path)
 
     # Remove from overlays.json
-    overlays_data = _read_overlays_json(dataset_root)
+    overlays_data = await asyncio.to_thread(_read_overlays_json, dataset_root)
     overlays_data.pop(image_path, None)
-    _write_overlays_json(dataset_root, overlays_data)
+    await asyncio.to_thread(_write_overlays_json, dataset_root, overlays_data)
 
     # Clear overlay metadata
     lookup_key = image_path.replace("\\", "/")
@@ -231,7 +231,7 @@ async def delete_overlay(name: str, image_path: str):
         dataset.media_metadata[lookup_key].pop("overlay_hash", None)
         dataset.media_metadata[lookup_key].pop("overlay_score_stale", None)
         dataset.media_metadata[lookup_key].pop("overlay_dimensions", None)
-        dataset_manager._persist_media_item(dataset, image_path)
+        await dataset_manager._persist_media_item_async(dataset, image_path)
 
     logger.info(f"Overlay reverted for {image_path} in dataset '{name}'")
     return {"status": "reverted", "file": image_path}
@@ -262,9 +262,9 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
     await asyncio.to_thread(_commit)
 
     # Remove from overlays.json
-    overlays_data = _read_overlays_json(dataset_root)
+    overlays_data = await asyncio.to_thread(_read_overlays_json, dataset_root)
     overlays_data.pop(request.image_path, None)
-    _write_overlays_json(dataset_root, overlays_data)
+    await asyncio.to_thread(_write_overlays_json, dataset_root, overlays_data)
 
     # Update metadata: overlay is now the original
     lookup_key = request.image_path.replace("\\", "/")
@@ -286,7 +286,7 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
         dataset.media_metadata[lookup_key]["has_masked"] = False
         dataset.media_metadata[lookup_key]["has_masked_caption"] = False
         dataset.media_metadata[lookup_key].pop("mask_info", None)
-        dataset_manager._persist_media_item(dataset, request.image_path)
+        await dataset_manager._persist_media_item_async(dataset, request.image_path)
 
     # Bump version
     await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")

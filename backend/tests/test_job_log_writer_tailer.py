@@ -8,6 +8,7 @@ and caching progress messages stop reaching the UI.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -118,3 +119,52 @@ def test_multiple_messages_arrive_in_order(writer_and_tailer):
         "Caching Latents (50%)",
         "Caching Latents (100%)",
     ]
+
+
+def test_dispatcher_stopping_tailer_advances_offset_past_dispatched_line(tmp_path):
+    # Regression: the exit-message handler in JobManager calls
+    # _stop_tailer from inside the dispatched callback. Before the fix,
+    # tailer.stop() would Thread.join(self) and raise, killing the
+    # polling loop before its offset write — so on the next start
+    # (after a restart) the same exit line was re-dispatched, marking
+    # the restarted job FAILED and detaching the backend from the live
+    # trainer subprocess.
+    collected: list[dict] = []
+
+    writer = JobLogWriter(str(tmp_path))
+    writer.exit(code=1, error="EMA device mismatch")  # writes + closes
+
+    final_size = os.path.getsize(writer.log_path)
+
+    tailer_holder: dict[str, LogTailer] = {}
+
+    def dispatcher(job_id: str, entry: dict) -> None:
+        collected.append(entry)
+        if entry.get("type") == "exit":
+            # Mirror JobManager._handle_exit_message: stop from within
+            # the tailer thread. Must not raise, and must persist offset.
+            tailer_holder["t"].stop()
+
+    tailer = LogTailer(
+        job_id="test-job",
+        log_path=writer.log_path,
+        dispatcher=dispatcher,
+        poll_interval=0.05,
+    )
+    tailer_holder["t"] = tailer
+    tailer.start()
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not collected:
+        time.sleep(0.05)
+    # Give the polling loop a moment to advance offset post-dispatch
+    time.sleep(0.2)
+
+    assert collected and collected[0]["type"] == "exit"
+    with open(tailer.offset_path, "r", encoding="utf-8") as f:
+        persisted_offset = int(f.read().strip())
+    assert persisted_offset == final_size, (
+        f"Offset should be at EOF after dispatching exit; "
+        f"persisted={persisted_offset}, file_size={final_size}. "
+        f"A stale offset re-dispatches the old exit on restart."
+    )

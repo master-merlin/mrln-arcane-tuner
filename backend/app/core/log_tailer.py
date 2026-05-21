@@ -74,13 +74,21 @@ class LogTailer:
         return self._thread
 
     def stop(self) -> None:
-        """Signal the tailer to stop and do a final drain."""
+        """Signal the tailer to stop and persist the final offset.
+
+        Safe to call from the tailer's own thread — when a dispatched
+        handler (e.g. ``exit``) triggers a stop, joining self would raise
+        and abort the polling loop before its offset write, leaving the
+        last-processed line eligible for re-dispatch on the next start.
+        """
         self._stop_event.set()
-        if self._thread and self._thread.is_alive():
+        if (
+            self._thread
+            and self._thread.is_alive()
+            and self._thread is not threading.current_thread()
+        ):
             self._thread.join(timeout=2.0)
-        # Final drain: read anything remaining
         try:
-            self._read_new_lines()
             self._save_offset()
         except Exception:
             pass

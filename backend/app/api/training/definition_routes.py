@@ -26,14 +26,16 @@ async def list_model_definitions():
     """List all available model definitions with introspection data."""
     from app.engine.models.registry import registry
 
+    # R-API-07: batch-load overrides once at the top instead of calling
+    # ModelOverrideManager.get_override per definition (was N+1 settings.json reads).
+    all_settings = await ModelOverrideManager.get_all_async()
     results = []
     for def_id, defn in registry._definitions.items():
         data = defn.model_dump()
         data["component_paths"] = {
             k: v.get("path", "") for k, v in data.get("components", {}).items()
         }
-        # Include source override info
-        override = ModelOverrideManager.get_override(def_id)
+        override = all_settings.overrides.get(def_id)
         data["source_override"] = override.model_dump() if override else None
         results.append(data)
     return results
@@ -107,7 +109,7 @@ async def delete_definition(definition_id: str):
         del registry._paths[definition_id]
 
     # Cascade: remove any source override for this definition
-    ModelOverrideManager.delete_override(definition_id)
+    await ModelOverrideManager.delete_override_async(definition_id)
 
     logger.info("definition_deleted", id=definition_id)
     return {"status": "deleted", "id": definition_id}
@@ -199,7 +201,7 @@ async def enrich_definition(definition_id: str):
 @router.get("/models/settings")
 async def get_model_settings():
     """Get global model settings (offline mode, default path)."""
-    settings = ModelOverrideManager.get_all()
+    settings = await ModelOverrideManager.get_all_async()
     return {
         "global_offline_mode": settings.global_offline_mode,
         "default_model_path": settings.default_model_path,
@@ -209,7 +211,7 @@ async def get_model_settings():
 @router.put("/models/settings")
 async def update_model_settings(body: dict[str, Any]):
     """Update global model settings."""
-    settings = ModelOverrideManager.get_all()
+    settings = await ModelOverrideManager.get_all_async()
 
     if "global_offline_mode" in body:
         settings.global_offline_mode = bool(body["global_offline_mode"])
@@ -223,7 +225,7 @@ async def update_model_settings(body: dict[str, Any]):
             )
         settings.default_model_path = path_str
 
-    ModelOverrideManager._save(settings)
+    await ModelOverrideManager._save_async(settings)
     logger.info(
         "model_settings_updated",
         offline=settings.global_offline_mode,
@@ -241,7 +243,7 @@ async def update_model_settings(body: dict[str, Any]):
 @router.get("/models/definitions/{definition_id}/source")
 async def get_model_source(definition_id: str):
     """Get the source override for a model definition."""
-    override = ModelOverrideManager.get_override(definition_id)
+    override = await ModelOverrideManager.get_override_async(definition_id)
     if override:
         return override.model_dump()
     return {"source_type": "hf_hub", "local_path": None, "skip_update": False}
@@ -280,7 +282,7 @@ async def set_model_source(definition_id: str, override: ModelOverride):
                 ),
             )
 
-    ModelOverrideManager.set_override(definition_id, override)
+    await ModelOverrideManager.set_override_async(definition_id, override)
     logger.info(
         "model_source_updated",
         id=definition_id,
@@ -292,7 +294,7 @@ async def set_model_source(definition_id: str, override: ModelOverride):
 @router.delete("/models/definitions/{definition_id}/source")
 async def delete_model_source(definition_id: str):
     """Remove source override — revert to YAML default."""
-    ModelOverrideManager.delete_override(definition_id)
+    await ModelOverrideManager.delete_override_async(definition_id)
     logger.info("model_source_override_removed", id=definition_id)
     return {"status": "removed", "id": definition_id}
 

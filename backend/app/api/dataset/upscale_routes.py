@@ -39,15 +39,20 @@ async def list_upscale_models(request: UpscaleListRequest):
         raise HTTPException(status_code=404, detail=f"Folder not found: {folder}")
 
     model_exts = {".pth", ".safetensors", ".safetensor", ".pt", ".onnx", ".bin"}
-    models = []
-    for f in folder.iterdir():
-        if f.is_file() and f.suffix.lower() in model_exts:
-            size_mb = f.stat().st_size / (1024 * 1024)
-            models.append({
-                "name": f.name,
-                "path": str(f),
-                "size_mb": round(size_mb, 1),
-            })
+
+    def _scan_models() -> list[dict]:
+        items: list[dict] = []
+        for f in folder.iterdir():
+            if f.is_file() and f.suffix.lower() in model_exts:
+                size_mb = f.stat().st_size / (1024 * 1024)
+                items.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "size_mb": round(size_mb, 1),
+                })
+        return items
+
+    models = await asyncio.to_thread(_scan_models)
     models.sort(key=lambda m: m["name"])
     return {"models": models, "folder": str(folder)}
 

@@ -65,7 +65,7 @@ async def create_definition(request: CreateDefinitionRequest):
 
     yaml_path = await asyncio.to_thread(_write_yaml)
 
-    defn = registry.load_definition(yaml_path)
+    defn = await asyncio.to_thread(registry.load_definition, yaml_path)
     logger.info("definition_created", id=defn.id, family=defn.family, path=yaml_path)
     return defn.model_dump()
 
@@ -84,7 +84,7 @@ async def update_definition(definition_id: str, request: UpdateDefinitionRequest
         return defn.model_dump()
 
     registry.update_definition(definition_id, changes)
-    registry.save_definition(definition_id)
+    await asyncio.to_thread(registry.save_definition, definition_id)
     logger.info("definition_updated", id=definition_id, changed_fields=list(changes.keys()))
     return registry.get_definition(definition_id).model_dump()
 

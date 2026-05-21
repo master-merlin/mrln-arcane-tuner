@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -212,37 +213,40 @@ async def list_job_samples(job_id: str):
     if not sample_dir.is_dir():
         return []
 
-    samples = []
-    for fpath in sample_dir.iterdir():
-        if not fpath.suffix.lower() == ".png":
-            continue
+    def _scan_samples() -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for fpath in sample_dir.iterdir():
+            if not fpath.suffix.lower() == ".png":
+                continue
 
-        parts = fpath.stem.split("_")
-        step = 0
-        index = 0
-        is_final = "final" in parts
-        for i, part in enumerate(parts):
-            if part == "step" or (part.startswith("step") and len(part) > 4):
-                try:
-                    step = int(part.replace("step", ""))
-                except ValueError:
-                    pass
-            elif i == 1:
-                try:
-                    index = int(part)
-                except ValueError:
-                    pass
-        if is_final:
-            step = 999999
+            parts = fpath.stem.split("_")
+            step = 0
+            index = 0
+            is_final = "final" in parts
+            for i, part in enumerate(parts):
+                if part == "step" or (part.startswith("step") and len(part) > 4):
+                    try:
+                        step = int(part.replace("step", ""))
+                    except ValueError:
+                        pass
+                elif i == 1:
+                    try:
+                        index = int(part)
+                    except ValueError:
+                        pass
+            if is_final:
+                step = 999999
 
-        samples.append({
-            "filename": fpath.name,
-            "step": step,
-            "index": index,
-            "path": str(fpath),
-            "created_at": fpath.stat().st_mtime,
-        })
+            items.append({
+                "filename": fpath.name,
+                "step": step,
+                "index": index,
+                "path": str(fpath),
+                "created_at": fpath.stat().st_mtime,
+            })
+        return items
 
+    samples = await asyncio.to_thread(_scan_samples)
     samples.sort(key=lambda s: (s["step"], s["index"]), reverse=True)
     return samples
 

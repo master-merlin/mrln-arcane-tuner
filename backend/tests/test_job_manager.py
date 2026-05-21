@@ -405,6 +405,50 @@ class TestRestartJob:
         assert job.logs == []
         mock_start.assert_called_once_with(job.id)
 
+    @patch.object(JobManager, "start_job")
+    def test_restart_rotates_log_and_drops_offset(self, mock_start, tmp_path):
+        """Regression: restart must clear stale log + offset so the new
+        tailer can't re-dispatch the previous run's exit message.
+
+        Without this, when the backend restarts and the user clicks
+        "Continue" on a failed job, the new LogTailer loads the stale
+        on-disk offset (which can point pre-exit from a buggy prior
+        run), re-reads the old exit line, and immediately marks the
+        restarted job FAILED with the old error.
+        """
+        mgr = JobManager()
+        cfg = _make_config(output_dir=str(tmp_path), lora_name="lora")
+        job = mgr.create_job("flux/dev", cfg)
+        job.status = JobStatus.FAILED
+        job.error = "old EMA crash"
+
+        # Recreate the on-disk artefacts of the previous failed run:
+        # the trainer's job_log.jsonl (with a stale exit message) and
+        # the tailer's persisted offset.
+        out_dir = mgr._get_job_output_dir(job)
+        os.makedirs(out_dir, exist_ok=True)
+        log_path = os.path.join(out_dir, "job_log.jsonl")
+        offset_path = log_path + ".offset"
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write('{"t":1.0,"type":"exit","data":{"code":1,"error":"old EMA crash"}}\n')
+        with open(offset_path, "w", encoding="utf-8") as f:
+            f.write("0")  # stale pre-exit offset
+
+        mgr.restart_job(job.id)
+
+        assert not os.path.exists(log_path), (
+            "active log_path must be cleared so the new trainer starts fresh"
+        )
+        assert not os.path.exists(offset_path), (
+            "stale offset must be removed so the new tailer starts at 0"
+        )
+        # Rotation preserves the previous log for forensics
+        rotated = [
+            n for n in os.listdir(out_dir)
+            if n.startswith("job_log.") and n.endswith(".jsonl") and n != "job_log.jsonl"
+        ]
+        assert rotated, "previous log should be rotated, not deleted"
+
 
 # ── Event Broadcasting ───────────────────────────────────────────────────
 

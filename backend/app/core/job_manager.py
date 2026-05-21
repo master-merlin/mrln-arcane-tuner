@@ -640,6 +640,7 @@ class JobManager:
         logger.info("restarting_job", job_id=job_id)
 
         self._stop_tailer(job_id)
+        self._reset_job_log_state(job)
 
         with self._lock:
             job.status = JobStatus.PENDING
@@ -654,6 +655,49 @@ class JobManager:
         self._persist_status(job_id, "pending", error=None)
 
         self.start_job(job_id)
+
+    def _reset_job_log_state(self, job: Job) -> None:
+        """Rotate the job's log file + drop its tailer offset.
+
+        The trainer writes ``job_log.jsonl`` in append mode, and the
+        tailer persists its byte offset in ``job_log.jsonl.offset``.
+        On restart of a finished/failed job, those files contain the
+        previous run's terminal ``exit`` message — if the next tailer
+        starts from a stale or pre-exit offset (which happens across a
+        backend restart, where the in-memory tailer state is gone but
+        the on-disk offset survives) it re-dispatches that exit and
+        immediately marks the restarted job FAILED with the prior
+        run's error. Rotate the log (so the previous run's logs stay
+        available for forensics) and delete the offset so the new
+        tailer starts at byte 0 of an empty file.
+        """
+        output_dir = self._get_job_output_dir(job)
+        log_path = os.path.join(output_dir, LOG_FILENAME)
+        offset_path = log_path + ".offset"
+
+        if os.path.exists(log_path):
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            rotated = os.path.join(output_dir, f"job_log.{ts}.jsonl")
+            try:
+                os.replace(log_path, rotated)
+                logger.info(
+                    "job_log_rotated_for_restart",
+                    job_id=job.id, rotated_to=rotated,
+                )
+            except OSError as e:
+                logger.warning(
+                    "job_log_rotate_failed",
+                    job_id=job.id, error=str(e),
+                )
+
+        if os.path.exists(offset_path):
+            try:
+                os.remove(offset_path)
+            except OSError as e:
+                logger.warning(
+                    "job_log_offset_remove_failed",
+                    job_id=job.id, error=str(e),
+                )
 
     # ── Sampling Pause ──────────────────────────────────────────────────
 

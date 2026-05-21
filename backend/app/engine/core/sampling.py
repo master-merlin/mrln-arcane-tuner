@@ -16,6 +16,7 @@ Family-specific subclasses implement ``encode_prompt``, ``denoise``,
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 from abc import ABC, abstractmethod
@@ -250,7 +251,18 @@ class GenericSamplingPipeline(ABC):
                 model.train()
             if optimizer and hasattr(optimizer, "train"):
                 optimizer.train()
-            torch.cuda.empty_cache()
+            # Sync first so all denoise kernels complete before we let
+            # the allocator reclaim. gc.collect breaks any circular refs
+            # holding intermediates (PyTorch autograd graphs, scheduler
+            # state). empty_cache returns reserved blocks to the driver,
+            # which on Windows/WDDM is required to release pages from
+            # the shared-memory rail that a transient sampling spike
+            # may have spilled into.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ── Abstract Hooks (family-specific) ─────────────────────────────────
 
@@ -373,6 +385,19 @@ class GenericSamplingPipeline(ABC):
                 comp.to("cpu")
         if names:
             torch.cuda.empty_cache()
+
+    def _ensure_transformer_on_device(self, transformer: torch.nn.Module) -> None:
+        """Place the transformer on the sampling device for denoise.
+
+        Skipped when block swapping is active: the swap manager's
+        pre-forward hooks pull blocks to GPU on demand, and a bulk
+        ``module.to(device)`` would put every block on GPU at once
+        (~40 GB on Qwen-class models), defeating the swap and bloating
+        the sampling peak by the full base-model size.
+        """
+        if getattr(self.pipeline, "_block_swap_managers", None):
+            return
+        transformer.to(self.device)
 
     def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Image.Image:
         """Generate one sample image from a prompt config entry.

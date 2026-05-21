@@ -230,7 +230,7 @@ class Flux2Sampler(GenericSamplingPipeline):
         timesteps = scheduler.timesteps
 
         # Denoising loop
-        transformer.to(device)
+        self._ensure_transformer_on_device(transformer)
         with torch.no_grad():
             total_steps = len(timesteps)
             for step_i, t in enumerate(timesteps, 1):

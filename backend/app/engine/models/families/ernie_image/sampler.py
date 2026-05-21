@@ -208,7 +208,7 @@ class ErnieImageSampler(GenericSamplingPipeline):
         scheduler.set_timesteps(sigmas=sigmas[:-1], device=device)
         timesteps = scheduler.timesteps
 
-        transformer.to(device)
+        self._ensure_transformer_on_device(transformer)
         with torch.no_grad():
             total_steps = len(timesteps)
             for step_i, t in enumerate(timesteps, 1):

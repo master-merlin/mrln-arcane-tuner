@@ -74,6 +74,55 @@ class TestStoreAndSwap:
         ema.store_and_swap()
         assert len(ema.backup) > 0
 
+    def test_backup_skips_frozen_params(self):
+        # Regression: store_and_swap used to clone every parameter,
+        # including the frozen base model. On 20B-class transformers
+        # that ~40 GB transient allocation pushes the sampling peak
+        # past consumer-card VRAM ceilings and spills into WDDM shared
+        # memory. Only the params we'll actually overwrite (shadow,
+        # i.e. trainable LoRA weights) need backing up.
+        model = nn.Sequential(
+            nn.Linear(64, 64, bias=False),  # frozen "base"
+            nn.Linear(64, 4, bias=False),   # trainable "adapter"
+        )
+        model[0].weight.requires_grad = False
+        model[1].weight.requires_grad = True
+        ema = EMAHandler(model, decay=0.99)
+
+        assert len(ema.shadow) == 1
+        ema.store_and_swap()
+        assert set(ema.backup.keys()) == set(ema.shadow.keys()), (
+            "backup must mirror shadow keys (trainable only), not the full model"
+        )
+        backup_numel = sum(t.numel() for t in ema.backup.values())
+        frozen_numel = model[0].weight.numel()
+        assert backup_numel < frozen_numel, (
+            f"backup ({backup_numel} elts) must be smaller than the "
+            f"frozen base ({frozen_numel} elts); it is cloning frozen weights"
+        )
+
+    def test_restore_after_trainable_only_backup(self):
+        # Round-trip: after store_and_swap + restore, the trainable
+        # param must match its original value. Validates that restore
+        # correctly matches by name once backup is dict-shaped.
+        model = nn.Sequential(
+            nn.Linear(8, 8, bias=False),
+            nn.Linear(8, 2, bias=False),
+        )
+        model[0].weight.requires_grad = False
+        model[1].weight.requires_grad = True
+        nn.init.ones_(model[1].weight)
+        original = model[1].weight.data.clone()
+
+        ema = EMAHandler(model, decay=0.99)
+        # Mutate shadow so swap will visibly change the model
+        ema.shadow["1.weight"] = torch.zeros_like(ema.shadow["1.weight"])
+
+        ema.store_and_swap()
+        assert torch.allclose(model[1].weight.data, torch.zeros_like(original))
+        ema.restore()
+        assert torch.allclose(model[1].weight.data, original)
+
 
 class TestRestore:
     def test_restore_reverts_model(self):
@@ -93,7 +142,7 @@ class TestRestore:
         ema = EMAHandler(model, decay=0.99)
         ema.store_and_swap()
         ema.restore()
-        assert ema.backup == []
+        assert ema.backup == {}
 
     def test_restore_noop_without_backup(self):
         model = _make_model()

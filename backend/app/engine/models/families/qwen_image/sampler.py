@@ -222,7 +222,7 @@ class QwenImageSampler(GenericSamplingPipeline):
         guidance = None
 
         # Denoising loop
-        transformer.to(device)
+        self._ensure_transformer_on_device(transformer)
         scheduler.set_begin_index(0)
         with torch.no_grad():
             total_steps = len(timesteps)

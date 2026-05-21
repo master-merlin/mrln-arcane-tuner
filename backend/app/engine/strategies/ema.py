@@ -54,10 +54,21 @@ class EMAHandler:
         """
         Backup current weights and load EMA weights into the model.
         Useful before validation or saving checkpoints.
+
+        Only the parameters tracked in ``self.shadow`` (trainable / LoRA
+        adapter weights) are backed up — those are the only ones the
+        swap will overwrite. Backing up the frozen base model is a pure
+        waste of VRAM (≈ base-model size) that on 20B-class transformers
+        like Qwen-Image pushes the sampling peak past the consumer-card
+        ceiling and triggers WDDM shared-memory fallback, leaving
+        training I/O-bound on system RAM after the swap is undone.
         """
-        self.backup = [p.data.clone() for p in self.model.parameters()]
-        
         param_dict = dict(self.model.named_parameters())
+        self.backup = {
+            name: param_dict[name].data.clone()
+            for name in self.shadow
+            if name in param_dict
+        }
         for name, shadow_data in self.shadow.items():
             if name in param_dict:
                 param_dict[name].data.copy_(shadow_data)
@@ -68,10 +79,13 @@ class EMAHandler:
         """Restore original weights from backup."""
         if not self.backup:
             return
-            
-        for param, backup_data in zip(self.model.parameters(), self.backup):
-            param.data.copy_(backup_data)
-        self.backup = []
+
+        param_dict = dict(self.model.named_parameters())
+        for name, backup_data in self.backup.items():
+            param = param_dict.get(name)
+            if param is not None:
+                param.data.copy_(backup_data)
+        self.backup = {}
         logger.debug("ema_restored", direction="backup_to_model")
 
     def state_dict(self):

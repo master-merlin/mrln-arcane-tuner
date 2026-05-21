@@ -152,7 +152,7 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             if img_path.exists():
                 dataset.media_metadata[lookup_key]["size_bytes"] = img_path.stat().st_size
             # Persist to DB (previously in-memory only — lost on restart)
-            dataset_manager._persist_media_item(dataset, request.image_path)
+            await dataset_manager._persist_media_item_async(dataset, request.image_path)
 
         # Bump patch version for destructive upscale
         await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")

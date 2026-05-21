@@ -93,7 +93,7 @@ async def generate_caption_api(request: GenerateCaptionRequest):
             lookup_key = request.image_rel_path.replace("\\", "/")
             if lookup_key in dataset.media_metadata:
                 dataset.media_metadata[lookup_key]["has_masked_caption"] = True
-                manager._persist_media_item(dataset, request.image_rel_path)
+                await manager._persist_media_item_async(dataset, request.image_rel_path)
 
         return {"caption": caption}
     except (OSError, RuntimeError, ValueError) as e:

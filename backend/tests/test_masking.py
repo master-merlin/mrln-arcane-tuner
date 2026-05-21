@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
 
@@ -24,6 +24,7 @@ def test_generate_mask_success(mock_to_thread, mock_manager, mock_service_instan
     mock_dataset.path = str(tmp_path)
     mock_dataset.media_metadata = {"image.jpg": {"has_mask": False}}
     mock_manager.get_dataset.return_value = mock_dataset
+    mock_manager._persist_media_item_async = AsyncMock()
 
     payload = {
         "dataset_name": "test_ds",
@@ -37,7 +38,7 @@ def test_generate_mask_success(mock_to_thread, mock_manager, mock_service_instan
     assert response.status_code == 200
     assert response.json()["mask_path"] == "masks/image.png"
     mock_mask_image.save.assert_called_once()
-    mock_manager._persist_media_item.assert_called_once()
+    mock_manager._persist_media_item_async.assert_called_once()
     assert mock_dataset.media_metadata["image.jpg"]["has_mask"] is True
 
 
@@ -84,12 +85,13 @@ def test_delete_mask_success(mock_to_thread, mock_manager, mock_service_instance
         "image.jpg": {"has_mask": True, "has_masked": True, "has_masked_caption": True, "mask_info": {}},
     }
     mock_manager.get_dataset.return_value = mock_dataset
+    mock_manager._persist_media_item_async = AsyncMock()
 
     response = client.delete("/api/datasets/test_ds/masking/delete?image_rel_path=image.jpg")
 
     assert response.status_code == 200
     assert response.json()["status"] == "deleted"
-    mock_manager._persist_media_item.assert_called_once()
+    mock_manager._persist_media_item_async.assert_called_once()
     assert mock_dataset.media_metadata["image.jpg"]["has_mask"] is False
     assert mock_dataset.media_metadata["image.jpg"]["has_masked"] is False
 
@@ -132,6 +134,7 @@ def test_apply_mask_success(mock_to_thread, mock_manager, mock_service, client, 
     mock_dataset.path = str(tmp_path)
     mock_dataset.media_metadata = {"image.jpg": {"has_masked": False}}
     mock_manager.get_dataset.return_value = mock_dataset
+    mock_manager._persist_media_item_async = AsyncMock()
 
     payload = {
         "dataset_name": "test_ds",
@@ -140,7 +143,7 @@ def test_apply_mask_success(mock_to_thread, mock_manager, mock_service, client, 
     }
     response = client.post("/api/datasets/test_ds/masking/apply", json=payload)
     assert response.status_code == 200
-    mock_manager._persist_media_item.assert_called_once()
+    mock_manager._persist_media_item_async.assert_called_once()
     assert mock_dataset.media_metadata["image.jpg"]["has_masked"] is True
 
 

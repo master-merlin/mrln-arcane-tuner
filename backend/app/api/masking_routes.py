@@ -76,7 +76,7 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
     lookup_key = request.image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         dataset.media_metadata[lookup_key]["has_mask"] = True
-        dataset_manager._persist_media_item(dataset, request.image_rel_path)
+        await dataset_manager._persist_media_item_async(dataset, request.image_rel_path)
 
     return MaskGenerationResponse(
         mask_path=f"masks/{mask_filename}",
@@ -121,7 +121,7 @@ async def apply_mask(name: str, request: ApplyMaskRequest):
     lookup_key = request.image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         dataset.media_metadata[lookup_key]["has_masked"] = True
-        dataset_manager._persist_media_item(dataset, request.image_rel_path)
+        await dataset_manager._persist_media_item_async(dataset, request.image_rel_path)
 
     return {
         "status": "success",
@@ -186,7 +186,7 @@ async def delete_mask(name: str, image_rel_path: str):
         dataset.media_metadata[lookup_key]["has_masked"] = False
         dataset.media_metadata[lookup_key]["has_masked_caption"] = False
         dataset.media_metadata[lookup_key].pop("mask_info", None)
-        dataset_manager._persist_media_item(dataset, image_rel_path)
+        await dataset_manager._persist_media_item_async(dataset, image_rel_path)
 
     return {"status": "deleted", "message": "Mask deleted successfully"}
 

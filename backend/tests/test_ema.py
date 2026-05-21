@@ -114,3 +114,19 @@ class TestStateDictRoundTrip:
         new_shadow = {"weight": torch.zeros(2, 4)}
         ema.load_state_dict(new_shadow)
         assert torch.allclose(ema.shadow["weight"], torch.zeros(2, 4))
+
+    def test_load_state_dict_rebinds_to_param_device(self):
+        # Regression: checkpoints are saved with map_location="cpu", so on
+        # resume the loaded shadow tensors must be moved to each parameter's
+        # current device. Without this, EMA.step() mixes CPU shadow with
+        # CUDA params and raises a device-mismatch RuntimeError.
+        if not torch.cuda.is_available():
+            import pytest
+            pytest.skip("CUDA not available")
+        model = _make_model().to("cuda")
+        ema = EMAHandler(model, decay=0.99)
+        cpu_shadow = {"weight": torch.zeros(2, 4, device="cpu")}
+        ema.load_state_dict(cpu_shadow)
+        assert ema.shadow["weight"].device.type == "cuda"
+        # Real-world reproduction: step() must not raise device mismatch
+        ema.step()

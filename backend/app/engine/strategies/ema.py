@@ -78,5 +78,12 @@ class EMAHandler:
         return self.shadow
         
     def load_state_dict(self, state_dict):
-        self.shadow = state_dict
+        # Move shadow tensors to each parameter's current device. Checkpoints
+        # are saved with map_location="cpu" so without this the first step()
+        # after resume mixes CPU shadow with CUDA params and crashes.
+        param_devices = {name: p.device for name, p in self.model.named_parameters()}
+        self.shadow = {
+            name: (t.to(param_devices[name]) if name in param_devices else t)
+            for name, t in state_dict.items()
+        }
         logger.debug("ema_state_loaded", shadow_params=len(self.shadow))

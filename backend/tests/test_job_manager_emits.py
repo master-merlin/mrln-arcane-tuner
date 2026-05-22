@@ -47,3 +47,29 @@ async def test_delete_job_broadcasts_entity_changed(job_manager_with_loop):
         "id": "nonexistent-job-id",
         "payload": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_create_job_broadcasts_entity_changed(job_manager_with_loop):
+    """Job creation broadcasts entity.changed with op=created and the full payload."""
+    mgr = job_manager_with_loop
+    mock_broadcast = AsyncMock()
+
+    with patch("app.core.job_manager.event_manager.broadcast", mock_broadcast):
+        job = mgr.create_job(plugin_id="test_plugin", config={"foo": "bar"})
+        # create_job schedules broadcast via run_coroutine_threadsafe;
+        # yield to the loop so it actually runs.
+        await asyncio.sleep(0.05)
+
+    entity_calls = [
+        c for c in mock_broadcast.await_args_list
+        if c.args and c.args[0] == "entity.changed"
+    ]
+    created = [c for c in entity_calls if c.args[1]["op"] == "created"]
+    assert len(created) == 1, (
+        f"expected one created event, got {len(created)} from {entity_calls}"
+    )
+    envelope = created[0].args[1]
+    assert envelope["entity"] == "job"
+    assert envelope["id"] == job.id
+    assert envelope["payload"]["id"] == job.id

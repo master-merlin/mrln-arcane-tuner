@@ -237,6 +237,20 @@ class JobManager:
         except Exception as e:
             logger.warning("jobs_create_db_failed", error=str(e))
 
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="job",
+                    op="created",
+                    id=job.id,
+                    payload=job.model_dump(),
+                ),
+                loop,
+            )
+
         return job
 
     def list_jobs(self) -> list[Job]:

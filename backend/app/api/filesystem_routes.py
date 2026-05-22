@@ -67,27 +67,36 @@ async def browse_filesystem(path: str = "outputs") -> dict:
             detail="Access denied: path is outside allowed directories.",
         )
 
-    if not resolved.is_dir():
+    def _scan() -> tuple[bool, bool, list[dict[str, str]]]:
+        """Run all blocking filesystem stats in a worker thread.
+
+        Returns (is_dir, permission_denied, entries).
+        """
+        if not resolved.is_dir():
+            return False, False, []
+        items: list[dict[str, str]] = []
+        try:
+            for entry in sorted(resolved.iterdir(), key=lambda e: e.name.lower()):
+                if entry.is_dir():
+                    is_checkpoint = (entry / "training_state.json").exists()
+                    items.append({
+                        "name": entry.name,
+                        "path": entry.as_posix(),
+                        "type": "checkpoint" if is_checkpoint else "directory",
+                    })
+        except PermissionError:
+            return True, True, []
+        return True, False, items
+
+    is_dir, permission_denied, entries = await asyncio.to_thread(_scan)
+    if not is_dir:
         raise HTTPException(status_code=404, detail=f"Directory not found: {resolved}")
-
-    parent = resolved.parent
-    entries: list[dict[str, str]] = []
-
-    try:
-        for entry in sorted(resolved.iterdir(), key=lambda e: e.name.lower()):
-            if entry.is_dir():
-                is_checkpoint = (entry / "training_state.json").exists()
-                entries.append({
-                    "name": entry.name,
-                    "path": entry.as_posix(),
-                    "type": "checkpoint" if is_checkpoint else "directory",
-                })
-    except PermissionError:
+    if permission_denied:
         raise HTTPException(status_code=403, detail=f"Permission denied: {resolved}")
 
     return {
         "path": resolved.as_posix(),
-        "parent": parent.as_posix(),
+        "parent": resolved.parent.as_posix(),
         "entries": entries,
     }
 

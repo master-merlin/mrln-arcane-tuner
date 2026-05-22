@@ -278,9 +278,13 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
         dataset.media_metadata[lookup_key].pop("has_overlay", None)
         dataset.media_metadata[lookup_key].pop("overlay_hash", None)
         dataset.media_metadata[lookup_key].pop("overlay_score_stale", None)
-        # Recalculate size
-        if img_path.exists():
-            dataset.media_metadata[lookup_key]["size_bytes"] = img_path.stat().st_size
+        # Recalculate size (paired exists+stat in one thread hop)
+        def _size_if_exists(p: Path) -> int | None:
+            return p.stat().st_size if p.exists() else None
+
+        new_size = await asyncio.to_thread(_size_if_exists, img_path)
+        if new_size is not None:
+            dataset.media_metadata[lookup_key]["size_bytes"] = new_size
         # Invalidate masks (dimensions may have changed)
         dataset.media_metadata[lookup_key]["has_mask"] = False
         dataset.media_metadata[lookup_key]["has_masked"] = False

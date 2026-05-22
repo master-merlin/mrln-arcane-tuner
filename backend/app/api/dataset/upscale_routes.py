@@ -154,8 +154,12 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             dataset.media_metadata[lookup_key]["has_masked"] = False
             dataset.media_metadata[lookup_key]["has_masked_caption"] = False
             dataset.media_metadata[lookup_key].pop("mask_info", None)
-            if img_path.exists():
-                dataset.media_metadata[lookup_key]["size_bytes"] = img_path.stat().st_size
+            def _size_if_exists(p: Path) -> int | None:
+                return p.stat().st_size if p.exists() else None
+
+            new_size = await asyncio.to_thread(_size_if_exists, img_path)
+            if new_size is not None:
+                dataset.media_metadata[lookup_key]["size_bytes"] = new_size
             # Persist to DB (previously in-memory only — lost on restart)
             await dataset_manager._persist_media_item_async(dataset, request.image_path)
 

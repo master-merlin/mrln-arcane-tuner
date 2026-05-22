@@ -1,0 +1,11 @@
+# Patterns forbidden inside `async def` handlers under app/api/.
+# Each line is a Python regex (raw string semantics). Lines starting with # are comments.
+# A match is an error UNLESS:
+#   - the same line contains `to_thread` or `aiofiles`
+#   - the match is inside a nested `def _foo():` block (those run in to_thread via the caller)
+#   - the match is allowlisted in sync_io_allowed.txt
+get_db\(\)\.(read|write)\(\)
+\.read_text\(
+\.write_text\(
+\.iterdir\(\)
+yaml\.safe_(load|dump)\(

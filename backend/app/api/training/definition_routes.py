@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
 from app.core.schemas.model_overrides import ModelOverride
 from app.engine.utils.model_override_manager import ModelOverrideManager
@@ -288,6 +289,15 @@ async def set_model_source(definition_id: str, override: ModelOverride):
         id=definition_id,
         source=override.source_type,
     )
+    # Broadcast for the frontend RegistryStore. We're already on the event
+    # loop here, so a direct await is fine — no run_coroutine_threadsafe.
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="registry_model",
+        op="updated",
+        id=definition_id,
+        payload=override.model_dump(mode="json"),
+    )
     return override.model_dump()
 
 
@@ -296,6 +306,13 @@ async def delete_model_source(definition_id: str):
     """Remove source override — revert to YAML default."""
     await ModelOverrideManager.delete_override_async(definition_id)
     logger.info("model_source_override_removed", id=definition_id)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="registry_model",
+        op="deleted",
+        id=definition_id,
+        payload=None,
+    )
     return {"status": "removed", "id": definition_id}
 
 

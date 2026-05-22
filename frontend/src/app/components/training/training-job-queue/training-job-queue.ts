@@ -793,19 +793,46 @@ export class TrainingJobQueueComponent implements OnInit {
   private storeSeeded = false;
 
   constructor() {
-    // Reconcile JobStore deletions into the local jobs/historicalJobs signals.
-    // The store is canonical for *which jobs exist*; the local signals carry
-    // richer per-job state (logs, sample lists) that the store doesn't track,
-    // so we only PRUNE rows missing from the store rather than full-overwrite.
-    // This is the minimal hook needed to make optimistic delete visible while
-    // leaving start/stop/pause refresh paths untouched.
+    // Bidirectional reconciliation between JobStore and the local
+    // jobs/historicalJobs signals. The store is canonical for *which jobs
+    // exist*; the local signals carry richer per-job state (logs, sample
+    // lists, WS-driven status) that the store doesn't track. So we:
+    //   1. PRUNE local rows the store no longer knows about (e.g. successful
+    //      optimistic delete).
+    //   2. ADD store rows missing from local, partitioned by status — this
+    //      restores rows when an optimistic delete rolls back on HTTP failure.
+    // We never overwrite a local row that's already present: WS job_update
+    // events carry richer state we'd lose by full-mirroring from the store.
     effect(() => {
       const all = this.jobStore.entities();
       if (all.length === 0 && !this.storeSeeded) return;
       this.storeSeeded = true;
-      const knownIds = new Set(all.map(j => j.id));
-      this.jobs.update(rows => rows.filter(j => knownIds.has(j.id)));
-      this.historicalJobs.update(rows => rows.filter(j => knownIds.has(j.id)));
+
+      const storeIds = new Set(all.map(j => j.id));
+
+      // ── Prune: drop local rows the store no longer knows about ────────
+      this.jobs.update(rows => rows.filter(j => storeIds.has(j.id)));
+      this.historicalJobs.update(rows => rows.filter(j => storeIds.has(j.id)));
+
+      // ── Add: re-introduce store rows missing from local, partitioned ──
+      const localActiveIds = new Set(this.jobs().map(j => j.id));
+      const localArchiveIds = new Set(this.historicalJobs().map(j => j.id));
+      const missingActive: Job[] = [];
+      const missingArchive: Job[] = [];
+      for (const j of all) {
+        const isActive = this.ACTIVE_STATUSES.has(j.status);
+        if (isActive && !localActiveIds.has(j.id)) {
+          missingActive.push(j);
+        } else if (!isActive && !localArchiveIds.has(j.id)) {
+          missingArchive.push(j);
+        }
+      }
+      if (missingActive.length > 0) {
+        this.jobs.update(rows => [...rows, ...missingActive]);
+      }
+      if (missingArchive.length > 0) {
+        this.historicalJobs.update(rows => [...rows, ...missingArchive]);
+      }
     });
   }
 

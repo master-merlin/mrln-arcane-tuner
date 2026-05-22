@@ -3,6 +3,7 @@ import { Injectable, inject, OnDestroy, signal, WritableSignal } from '@angular/
 import { Subject, Observable, timer } from 'rxjs';
 import { takeUntil, filter, map } from 'rxjs/operators';
 import { RuntimeConfigService } from './runtime-config.service';
+import type { EntityChangedMessage } from '../state/entity-events';
 
 export interface WsEvent<T = any> {
     type: string;
@@ -20,6 +21,13 @@ export class WebSocketService implements OnDestroy {
 
     // Signals for critical global state
     public isConnected: WritableSignal<boolean> = signal(false);
+
+    // Latest server-pushed entity.changed event; consumed by EntityStore effects.
+    public entityChanged: WritableSignal<EntityChangedMessage | null> = signal(null);
+
+    // Incremented on every reconnect (not initial connect); stores subscribe via effect()
+    // and call loadAll() when n > 0 to re-hydrate from the authoritative source.
+    public reconnected: WritableSignal<number> = signal(0);
 
     // Observable stream of all messages
     public messages$ = this.messageSubject.asObservable();
@@ -67,6 +75,7 @@ export class WebSocketService implements OnDestroy {
                     if (this.hasConnectedBefore) {
                         console.log('[WebSocket] Reconnected');
                         this.reconnectedSubject.next();
+                        this.reconnected.update(n => n + 1);
 
                         if (previousId && previousId !== newId) {
                             console.log('[WebSocket] Server restarted (new instance)');
@@ -78,6 +87,10 @@ export class WebSocketService implements OnDestroy {
                 }
 
                 this.messageSubject.next(data);
+
+                if (data.type === 'entity.changed') {
+                    this.entityChanged.set(data.payload as EntityChangedMessage);
+                }
             } catch (e) {
                 console.error('[WebSocket] Failed to parse message', e);
             }

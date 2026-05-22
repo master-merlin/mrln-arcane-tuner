@@ -13,13 +13,13 @@ class FooStore extends EntityStore<Foo> {
     constructor(ws: WebSocketService, toast: ToastService) { super(ws, toast); }
     protected async loadAll(): Promise<void> { /* no-op for tests */ }
 
-    // Expose protected runner + seeder for testing
+    // Test helpers — call protected methods directly, no `as any` casts.
     public async _runOptimistic(args: Parameters<EntityStore<Foo>['runOptimistic']>[0]) {
-        return (this as any).runOptimistic(args);
+        return this.runOptimistic(args);
     }
 
     public _seed(rows: Foo[]) {
-        (this as any)._entities.set(new Map(rows.map(r => [r.id, r])));
+        this.setAll(rows);
     }
 }
 
@@ -57,11 +57,13 @@ describe('EntityStore', () => {
 
     it('rolls back on HTTP failure and shows toast', async () => {
         store._seed([{ id: '1', name: 'one' }]);
-        await store._runOptimistic({
+        const result = await store._runOptimistic({
             apply: m => { const n = new Map(m); n.delete('1'); return n; },
             request: () => Promise.reject(new Error('boom')),
             errorMessage: 'reverted',
         });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toEqual(new Error('boom'));
         expect(store.entities()).toEqual([{ id: '1', name: 'one' }]);
         expect(toastMock.error).toHaveBeenCalledWith('reverted');
     });
@@ -94,7 +96,11 @@ describe('EntityStore', () => {
 
     it('batch-removes on bulk_deleted', () => {
         store._seed([{ id: '1', name: 'one' }, { id: '2', name: 'two' }, { id: '3', name: 'three' }]);
-        wsMock.entityChanged.set({ entity: 'foo', op: 'bulk_deleted', id: '', payload: { ids: ['1', '3'] } });
+        wsMock.entityChanged.set({
+            entity: 'foo',
+            op: 'bulk_deleted',
+            payload: { ids: ['1', '3'] },
+        });
         TestBed.tick();
         expect(store.entities()).toEqual([{ id: '2', name: 'two' }]);
     });
@@ -104,5 +110,11 @@ describe('EntityStore', () => {
         wsMock.reconnected.update(n => n + 1);
         TestBed.tick();
         expect(loadAll).toHaveBeenCalled();
+    });
+
+    it('byId returns the same computed signal for the same id', () => {
+        const a = store.byId('1');
+        const b = store.byId('1');
+        expect(a).toBe(b);  // identity check — same signal instance
     });
 });

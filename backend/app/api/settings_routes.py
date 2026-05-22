@@ -53,7 +53,10 @@ async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, An
         config_log_level(settings["log_level"])
         logger.info("log_level_updated", level=settings["log_level"])
 
-    manager.update_module_settings(module, settings)
+    # Use the async variant so SettingsStore subscribers get an
+    # entity.changed:updated broadcast (emission lives inside the async
+    # method — sync callers in engine subprocesses don't have a loop).
+    await manager.update_module_settings_async(module, settings)
 
     # Rewrite runtime config when port settings change
     if module == "application":

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 
 from app.api._path_guard import safe_remove
 from app.core.dataset_manager import dataset_manager
+from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
 from app.api.schemas.overlay_schemas import (
     ModelDownloadRequest,
@@ -74,6 +75,15 @@ def _resolve_dataset(name: str) -> tuple:
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return dataset, Path(dataset.path)
+
+
+def _overlay_id(dataset_name: str, image_path: str) -> str:
+    """Composite id used by the frontend OverlayStore.
+
+    Mirrors the media_item key shape so the overlay can be associated
+    with its underlying media file. Forward-slash normalized.
+    """
+    return f"{dataset_name}/{image_path.replace(chr(92), '/')}"
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +173,28 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
         await dataset_manager._persist_media_item_async(dataset, request.image_path)
 
     logger.info(f"Overlay saved for {request.image_path} in dataset '{name}'")
+
+    # Broadcast for the frontend OverlayStore. Upsert semantics: a render
+    # either creates a brand-new overlay or rewrites an existing one — we
+    # emit `updated` for both rather than tracking the pre-state, which
+    # matches how registry/settings stores handle PUT-style endpoints.
+    overlay_id = _overlay_id(name, request.image_path)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="overlay",
+        op="updated",
+        id=overlay_id,
+        payload={
+            "id": overlay_id,
+            "dataset_name": name,
+            "media_file": request.image_path,
+            "overlay_file": f"overlays/{Path(request.image_path).stem}.png",
+            "dimensions": list(dimensions),
+            "hash": overlay_hash,
+            "operations": merged_ops,
+        },
+    )
+
     return {
         "status": "overlay_saved",
         "file": request.image_path,
@@ -234,6 +266,15 @@ async def delete_overlay(name: str, image_path: str):
         await dataset_manager._persist_media_item_async(dataset, image_path)
 
     logger.info(f"Overlay reverted for {image_path} in dataset '{name}'")
+
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="overlay",
+        op="deleted",
+        id=_overlay_id(name, image_path),
+        payload=None,
+    )
+
     return {"status": "reverted", "file": image_path}
 
 
@@ -296,6 +337,20 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
     await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")
 
     logger.info(f"Overlay committed for {request.image_path} in dataset '{name}'")
+
+    # Commit flattens the overlay into the original and removes the
+    # overlay file, so from the OverlayStore's perspective the overlay
+    # is gone — emit `deleted`. The underlying media item's mutations
+    # (new size/dims, mask invalidation) are broadcast separately by
+    # _persist_media_item_async above.
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="overlay",
+        op="deleted",
+        id=_overlay_id(name, request.image_path),
+        payload=None,
+    )
+
     return {"status": "committed", "file": request.image_path}
 
 

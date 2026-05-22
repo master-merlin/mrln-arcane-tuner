@@ -233,6 +233,21 @@ class DatasetManager:
         )
         self.datasets[name] = dataset
         self._persist_dataset(dataset)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="created",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+
         return dataset
 
     def scan_dataset(self, name: str, force_full: bool = False) -> Dataset:
@@ -880,13 +895,26 @@ class DatasetManager:
     def delete_dataset(self, name: str, delete_files: bool = False):
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
-            
+
         dataset = self.datasets[name]
         if delete_files and os.path.exists(dataset.path):
             shutil.rmtree(dataset.path)
-            
+
         del self.datasets[name]
         self._dataset_repo.delete(dataset.id)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="deleted",
+                    id=dataset.id,
+                ),
+                loop,
+            )
 
     def update_dataset(self, current_name: str, new_name: str, new_description: str, new_classifier: str = "") -> Dataset:
         if current_name not in self.datasets:
@@ -931,6 +959,21 @@ class DatasetManager:
         dataset.description = new_description
         dataset.classifier = new_classifier
         self._persist_dataset(dataset)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="updated",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+
         return dataset
 
     def get_dataset_pairs(self, name: str) -> list[dict]:

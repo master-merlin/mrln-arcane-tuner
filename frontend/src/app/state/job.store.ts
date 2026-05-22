@@ -26,6 +26,19 @@ export class JobStore extends EntityStore<Job> {
         this.setAll(jobs);
     }
 
+    /**
+     * Loads historical/archived jobs and MERGES them into the store
+     * (without clearing active jobs already loaded via `loadAll`). The
+     * archive page seeds these so `deleteJob` can optimistically remove
+     * an archived row.
+     */
+    async loadHistory(): Promise<void> {
+        const jobs = await firstValueFrom(this.api.listJobHistory());
+        for (const job of jobs) {
+            this.upsert(job);
+        }
+    }
+
     async deleteJob(id: string): Promise<void> {
         await this.runOptimistic({
             apply: m => { const n = new Map(m); n.delete(id); return n; },

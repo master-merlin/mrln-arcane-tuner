@@ -21,6 +21,7 @@ describe('JobStore', () => {
     let store: JobStore;
     let api: {
         listJobs: jasmine.Spy,
+        listJobHistory: jasmine.Spy,
         deleteJob: jasmine.Spy,
     };
     let wsMock: {
@@ -32,6 +33,7 @@ describe('JobStore', () => {
     beforeEach(() => {
         api = {
             listJobs: jasmine.createSpy('listJobs').and.returnValue(of([makeJob('a'), makeJob('b')])),
+            listJobHistory: jasmine.createSpy('listJobHistory').and.returnValue(of([])),
             deleteJob: jasmine.createSpy('deleteJob').and.returnValue(of({ status: 'deleted', job_id: 'a' })),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
@@ -70,5 +72,13 @@ describe('JobStore', () => {
         await store.deleteJob('a');
         expect(store.entities().map(j => j.id).sort()).toEqual(['a', 'b']);
         expect(toastMock.error).toHaveBeenCalledWith(`Couldn't delete job — restored.`);
+    });
+
+    it('loadHistory merges historical jobs into the store', async () => {
+        api.listJobHistory.and.returnValue(of([makeJob('h1'), makeJob('h2')]));
+        await store.loadAll();      // seeds a, b
+        await store.loadHistory();  // adds h1, h2
+        const ids = store.entities().map(j => j.id).sort();
+        expect(ids).toEqual(['a', 'b', 'h1', 'h2']);
     });
 });

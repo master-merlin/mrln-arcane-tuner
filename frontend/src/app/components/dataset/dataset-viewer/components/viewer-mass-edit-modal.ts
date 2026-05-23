@@ -2,6 +2,7 @@ import { Component, input, output, inject, signal, computed, OnInit } from '@ang
 import { DatasetService, PipelineBlock } from '../../../../services/dataset';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { ToastService } from '../../../../services/toast';
+import { OverlayStore } from '../../../../state/overlay.store';
 
 @Component({
     selector: 'app-viewer-mass-edit-modal',
@@ -175,6 +176,7 @@ export class ViewerMassEditModalComponent implements OnInit {
     private datasetService = inject(DatasetService);
     private rtc = inject(RuntimeConfigService);
     private toast = inject(ToastService);
+    private overlayStore = inject(OverlayStore);
 
     datasetName = input.required<string>();
     pairs = input.required<any[]>();
@@ -292,17 +294,17 @@ export class ViewerMassEditModalComponent implements OnInit {
         const target = queue[idx];
         this.progress.set({ current: idx, total: queue.length, currentFile: target });
 
-        this.datasetService.renderPipeline(this.datasetName(), target, blocks).subscribe({
-            next: () => {
-                this.progress.update(p => ({ ...p, current: idx + 1 }));
-                setTimeout(() => this.processQueue(queue, blocks, idx + 1), 50);
-            },
-            error: (err) => {
-                this.toast.error(`Failed: ${this.getFilename(target)} — ${err?.error?.detail || err.message}`);
-                // Continue with next
-                this.progress.update(p => ({ ...p, current: idx + 1 }));
-                setTimeout(() => this.processQueue(queue, blocks, idx + 1), 50);
+        // The OverlayStore handles the optimistic upsert and the rollback
+        // toast on failure. We still surface a per-item progress toast
+        // here so the user sees *which* file failed in a long queue.
+        void this.overlayStore.renderPipeline(this.datasetName(), target, blocks).then(result => {
+            if (!result.ok) {
+                const err = result.error as { error?: { detail?: string }; message?: string } | undefined;
+                this.toast.error(`Failed: ${this.getFilename(target)} — ${err?.error?.detail || err?.message || 'failed'}`);
             }
+            // Continue with next regardless of success/failure
+            this.progress.update(p => ({ ...p, current: idx + 1 }));
+            setTimeout(() => this.processQueue(queue, blocks, idx + 1), 50);
         });
     }
 

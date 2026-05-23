@@ -4,6 +4,7 @@ import { CommonModule } from '@angular/common';
 import { DatasetService, CurvePoint, CurvesConfig, ImageAdjustments, HistogramData, PipelineBlock } from '../../../../services/dataset';
 import { ToastService } from '../../../../services/toast';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
+import { OverlayStore } from '../../../../state/overlay.store';
 import { CurvesEditorComponent } from './curves-editor';
 import { HistogramDisplayComponent } from './histogram-display';
 import { HSLPanelComponent, HSLConfig } from './hsl-panel';
@@ -815,6 +816,7 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
     private datasetService = inject(DatasetService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
+    private overlayStore = inject(OverlayStore);
 
     currentPair = input.required<any>();
     datasetName = input.required<string>();
@@ -1130,6 +1132,11 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
     private loadOverlayRecipe(): void {
         const pair = this.currentPair();
         if (!pair) return;
+        // Seed OverlayStore so the commit/delete mutations have a current
+        // row to optimistically remove. The component still drives its
+        // own recipe-to-signal mapping (the store doesn't model the
+        // editor's curves/HSL/etc. state).
+        void this.overlayStore.loadFor(this.datasetName(), pair.media_file);
         this.datasetService.getOverlayRecipe(this.datasetName(), pair.media_file).subscribe({
             next: (res: any) => {
                 this.hasOverlay.set(true);
@@ -2224,20 +2231,20 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
                 resize_method: this.upscaleResizeMethod(),
             },
         }];
-        this.datasetService.renderPipeline(
+        // OverlayStore handles the optimistic upsert + rollback toast on
+        // failure; the OptimisticResult exposes the response payload so
+        // the success toast can include the rendered dimensions.
+        void this.overlayStore.renderPipeline(
             this.datasetName(), pair.media_file, blocks,
-        ).subscribe({
-            next: (res: any) => {
-                this.isUpscaling.set(false);
+        ).then(result => {
+            this.isUpscaling.set(false);
+            if (result.ok) {
                 this.hasOverlay.set(true);
-                this.toast.success(`Upscale applied as overlay (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                const dims = result.value.dimensions;
+                this.toast.success(`Upscale applied as overlay (${dims?.[0]}×${dims?.[1]})`);
                 this.applied.emit();
                 this.loadImage();
-            },
-            error: (err) => {
-                this.isUpscaling.set(false);
-                this.toast.error(`Upscale failed: ${err?.error?.detail || err.message}`);
-            },
+            }
         });
     }
 
@@ -2308,20 +2315,19 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
                 tile_pad: 32,
             },
         }];
-        this.datasetService.renderPipeline(
+        // OverlayStore handles the optimistic upsert + rollback toast on
+        // failure; see applyUpscale for the pattern.
+        void this.overlayStore.renderPipeline(
             this.datasetName(), pair.media_file, blocks,
-        ).subscribe({
-            next: (res: any) => {
-                this.isRestoring.set(false);
+        ).then(result => {
+            this.isRestoring.set(false);
+            if (result.ok) {
                 this.hasOverlay.set(true);
-                this.toast.success(`Restoration applied (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                const dims = result.value.dimensions;
+                this.toast.success(`Restoration applied (${dims?.[0]}×${dims?.[1]})`);
                 this.applied.emit();
                 this.loadImage();
-            },
-            error: (err) => {
-                this.isRestoring.set(false);
-                this.toast.error(`Restoration failed: ${err?.error?.detail || err.message}`);
-            },
+            }
         });
     }
 
@@ -2514,19 +2520,18 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
         }
 
         this.isRendering.set(true);
-        this.datasetService.renderPipeline(
+        // OverlayStore handles the optimistic upsert + rollback toast on
+        // failure; see applyUpscale for the pattern.
+        void this.overlayStore.renderPipeline(
             this.datasetName(), pair.media_file, blocks, 512, 32, true,
-        ).subscribe({
-            next: (res: any) => {
-                this.isRendering.set(false);
+        ).then(result => {
+            this.isRendering.set(false);
+            if (result.ok) {
                 this.hasOverlay.set(true);
-                this.toast.success(`Overlay saved (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                const dims = result.value.dimensions;
+                this.toast.success(`Overlay saved (${dims?.[0]}×${dims?.[1]})`);
                 this.applied.emit();
-            },
-            error: (err) => {
-                this.isRendering.set(false);
-                this.toast.error(`Render failed: ${err?.error?.detail || err.message}`);
-            },
+            }
         });
     }
 
@@ -2534,35 +2539,30 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
         const pair = this.currentPair();
         if (!pair) return;
 
-        this.datasetService.deleteOverlay(this.datasetName(), pair.media_file).subscribe({
-            next: () => {
-                this.hasOverlay.set(false);
-                this.toast.success('Overlay reverted — original restored');
-                this.applied.emit();
-            },
-            error: (err) => this.toast.error(`Revert failed: ${err?.error?.detail || err.message}`),
-        });
+        // Optimistic delete through the store. The store toasts on failure
+        // and restores the row; success path updates local UI immediately.
+        this.hasOverlay.set(false);
+        this.toast.success('Overlay reverted — original restored');
+        this.applied.emit();
+        void this.overlayStore.deleteOverlay(this.datasetName(), pair.media_file);
     }
 
     commitOverlay(): void {
         const pair = this.currentPair();
         if (!pair) return;
 
+        // Optimistic commit through the store. The store toasts on failure
+        // and restores the overlay row; success path updates local UI
+        // immediately (commit flattens overlay into original, so the row
+        // is removed locally and the image reloads to pick up the new
+        // base file).
         this.showCommitConfirm.set(false);
-        this.isApplying.set(true);
-        this.datasetService.commitOverlay(this.datasetName(), pair.media_file).subscribe({
-            next: () => {
-                this.isApplying.set(false);
-                this.hasOverlay.set(false);
-                this.toast.success('Overlay committed — now the original');
-                this.applied.emit();
-                this.loadImage();
-            },
-            error: (err) => {
-                this.isApplying.set(false);
-                this.toast.error(`Commit failed: ${err?.error?.detail || err.message}`);
-            },
-        });
+        this.isApplying.set(false);
+        this.hasOverlay.set(false);
+        this.toast.success('Overlay committed — now the original');
+        this.applied.emit();
+        this.loadImage();
+        void this.overlayStore.commitOverlay(this.datasetName(), pair.media_file);
     }
 
     onCubeFileSelected(event: Event): void {

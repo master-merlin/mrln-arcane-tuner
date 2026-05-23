@@ -292,6 +292,11 @@ export class ViewerMassEditModalComponent implements OnInit {
         const target = queue[idx];
         this.progress.set({ current: idx, total: queue.length, currentFile: target });
 
+        // TODO(state): migrate this per-item loop to overlayStore.renderPipeline
+        // once the store method surfaces per-call success/failure. Today
+        // OverlayStore.renderPipeline returns Promise<void> (toast-on-error
+        // happens inside the store), but this loop needs per-iteration error
+        // details to report which file failed in the progress toast.
         this.datasetService.renderPipeline(this.datasetName(), target, blocks).subscribe({
             next: () => {
                 this.progress.update(p => ({ ...p, current: idx + 1 }));

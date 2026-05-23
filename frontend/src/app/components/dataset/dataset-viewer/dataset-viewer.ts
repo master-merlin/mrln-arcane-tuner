@@ -616,18 +616,14 @@ export class DatasetViewerComponent implements OnInit {
         //   - the `entity.changed:updated` broadcast from the backend
         //     reconciles other tabs;
         //   - the user sees the standard toast on failure.
-        // After the promise settles, re-read the store and roll the local
-        // `pairs` back if the store's view of `enabled` doesn't match what
-        // we just applied (i.e. the store rolled back, or the row was
-        // never present and the fallthrough HTTP path failed silently).
-        const key = `${this.datasetName()}/${event.media_file}`;
-        const hadStoreRow = !!this.mediaItemStore.byId(key)();
+        // The store returns an OptimisticResult; on `!result.ok` we
+        // authoritatively roll back the local `pairs` snapshot. This holds
+        // whether or not the store had the row pre-seeded (i.e. it covers
+        // the fallthrough HTTP path inside the store too).
         void this.mediaItemStore
             .toggleEnabled(this.datasetName(), event.media_file, event.enabled)
-            .then(() => {
-                if (!hadStoreRow) return; // no rollback signal available
-                const storeRow = this.mediaItemStore.byId(key)();
-                if (storeRow && storeRow.enabled !== event.enabled) {
+            .then(result => {
+                if (!result.ok) {
                     this.pairs.set(previous);
                 }
             });

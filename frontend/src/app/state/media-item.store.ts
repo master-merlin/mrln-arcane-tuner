@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { EntityStore } from './entity-store';
+import { EntityStore, OptimisticResult } from './entity-store';
 import { DatasetService } from '../services/dataset';
 import { WebSocketService } from '../services/websocket.service';
 import { ToastService } from '../services/toast';
@@ -109,25 +109,31 @@ export class MediaItemStore extends EntityStore<MediaItem> {
      * (e.g. caller toggling before loadForDataset), falls through to a
      * plain HTTP call and lets the server-emitted entity.changed event
      * reconcile.
+     *
+     * Returns an {@link OptimisticResult} so callers maintaining their own
+     * optimistic projections (e.g. `dataset-viewer.ts` keeps a richer
+     * `pairs` snapshot) can authoritatively roll back on failure
+     * regardless of whether the row was pre-seeded in the store.
      */
     async toggleEnabled(
         datasetName: string,
         mediaFile: string,
         enabled: boolean,
-    ): Promise<void> {
+    ): Promise<OptimisticResult<unknown>> {
         const key = mediaKey(datasetName, mediaFile);
         const current = this.byId(key)();
         if (!current) {
             try {
-                await firstValueFrom(
+                const value = await firstValueFrom(
                     this.api.toggleImageEnabled(datasetName, mediaFile, enabled),
                 );
-            } catch {
+                return { ok: true, value };
+            } catch (error) {
                 this.toast.error(`Couldn't update — reverted.`);
+                return { ok: false, error };
             }
-            return;
         }
-        await this.runOptimistic({
+        return this.runOptimistic({
             apply: m => new Map(m).set(key, { ...current, enabled }),
             request: () =>
                 firstValueFrom(

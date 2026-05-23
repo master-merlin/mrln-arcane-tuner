@@ -83,6 +83,8 @@ export class SettingsStore extends EntityStore<ModuleSettings> {
             apply: m => {
                 const n = new Map(m);
                 const current = n.get(module);
+                // TODO(post-merge): backend replaces non-dict modules outright (settings_manager.py:107-111).
+                // All current modules are dicts so merge-here matches; revisit if a non-dict module is added.
                 const mergedSettings = {
                     ...(current?.settings ?? {}),
                     ...settings,

@@ -1,9 +1,10 @@
-import { Component, inject, signal, output, OnInit } from '@angular/core';
+import { Component, inject, signal, output, OnInit, effect } from '@angular/core';
 import { ToastService } from '../../../services/toast';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { LiveLogViewerComponent } from '../live-log-viewer/live-log-viewer';
+import { SettingsStore } from '../../../state/settings.store';
 
 interface ApplicationSettings {
     backend_port: number;
@@ -221,8 +222,24 @@ export class ServerControlComponent implements OnInit {
     private http = inject(HttpClient);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
+    private settingsStore = inject(SettingsStore);
 
     readonly restartRequest = output<void>();
+
+    constructor() {
+        // Mirror SettingsStore's `application` module into the local
+        // `settings` signal. The store is canonical (cross-tab updates
+        // arrive via entity.changed:settings); local `settings` carries
+        // pending edit state via `pendingChanges` that the store doesn't
+        // model, so we only overwrite the signal when the store row
+        // changes — never clobbering the user's in-flight edits beyond
+        // what the store has already persisted.
+        effect(() => {
+            const row = this.settingsStore.byId('application')();
+            if (!row) return;
+            this.settings.set(row.settings as unknown as ApplicationSettings);
+        });
+    }
 
     isActionPending = signal<boolean>(false);
     settings = signal<ApplicationSettings | null>(null);
@@ -246,33 +263,28 @@ export class ServerControlComponent implements OnInit {
     }
 
     loadSettings() {
-        this.http.get<ApplicationSettings>(`${this.rtc.apiUrl}/settings/application`).subscribe({
-            next: (s) => {
-                this.settings.set(s);
+        // Seed the store; the effect above mirrors the resulting row into
+        // the local `settings` signal.
+        void this.settingsStore.loadModule('application')
+            .then(() => {
                 this.pendingChanges = {};
                 this.settingsDirty.set(false);
-            },
-            error: (err) => console.error('Failed to fetch settings', err)
-        });
+            })
+            .catch((err) => console.error('Failed to fetch settings', err));
     }
 
     onSettingChange(key: keyof ApplicationSettings, value: string | number) {
-        // Log level is applied immediately (hot-swap)
+        // Log level is applied immediately (hot-swap) through the store.
+        // The store toasts on failure and rolls the merge back; success
+        // toast remains a custom message so we fire it eagerly.
         if (key === 'log_level') {
-            this.http.put(`${this.rtc.apiUrl}/settings/application`, { [key]: value }).subscribe({
-                next: () => {
-                    this.toast.success(`Log level set to ${value}`);
-                    const cur = this.settings();
-                    if (cur) this.settings.set({ ...cur, log_level: value as string });
-                },
-                error: (err) => {
-                    this.toast.error(`Failed to set log level: ${err.error?.detail || err.message}`);
-                }
-            });
+            this.toast.success(`Log level set to ${value}`);
+            void this.settingsStore.updateModule('application', { [key]: value });
             return;
         }
 
-        // For port settings, stage the change
+        // For port settings, stage the change locally — saveSettings will
+        // flush them through the store.
         this.pendingChanges[key] = value;
         this.settingsDirty.set(true);
         // Update local display
@@ -281,37 +293,28 @@ export class ServerControlComponent implements OnInit {
     }
 
     onToggleChange(key: keyof ApplicationSettings, value: boolean) {
-        // Apply toggle settings immediately
-        this.http.put(`${this.rtc.apiUrl}/settings/application`, { [key]: value }).subscribe({
-            next: () => {
-                this.toast.success(`${key.replace(/_/g, ' ')} ${value ? 'enabled' : 'disabled'}`);
-                const cur = this.settings();
-                if (cur) this.settings.set({ ...cur, [key]: value } as ApplicationSettings);
-            },
-            error: (err) => {
-                this.toast.error(`Failed to update: ${err.error?.detail || err.message}`);
-            }
-        });
+        // Apply toggle settings immediately through the store.
+        this.toast.success(`${key.replace(/_/g, ' ')} ${value ? 'enabled' : 'disabled'}`);
+        void this.settingsStore.updateModule('application', { [key]: value });
     }
 
     saveSettings() {
         if (!this.settings()) return;
+        if (Object.keys(this.pendingChanges).length === 0) {
+            this.settingsDirty.set(false);
+            return;
+        }
         this.isSavingSettings.set(true);
 
-        const payload = { ...this.settings()!, ...this.pendingChanges };
+        // Push only the diff — the backend merges into the existing
+        // module dict, and SettingsStore mirrors that merge locally.
+        const diff = { ...this.pendingChanges };
+        this.pendingChanges = {};
+        this.settingsDirty.set(false);
+        this.toast.success('Settings saved. Port changes require a restart to take effect.');
 
-        this.http.put(`${this.rtc.apiUrl}/settings/application`, payload).subscribe({
-            next: () => {
-                this.isSavingSettings.set(false);
-                this.settingsDirty.set(false);
-                this.pendingChanges = {};
-                this.toast.success('Settings saved. Port changes require a restart to take effect.');
-            },
-            error: (err) => {
-                this.isSavingSettings.set(false);
-                this.toast.error('Failed to save settings: ' + (err.error?.detail || err.message));
-            }
-        });
+        void this.settingsStore.updateModule('application', diff)
+            .finally(() => this.isSavingSettings.set(false));
     }
 
     // ── Model Settings ──────────────────────────────────────────────────

@@ -136,11 +136,36 @@ class DatasetManager:
 
         Used by single-file operations (crop, adjust, mask) to avoid
         persisting the entire dataset + all media items on every edit.
+
+        Also broadcasts an ``entity.changed`` event so the frontend
+        MediaItemStore stays in sync. Emitting from this single chokepoint
+        (rather than every caller) covers all media-item mutation paths —
+        toggle_image_enabled, save_caption, crop_media, apply_adjustments,
+        mask generate/apply/delete, overlay render/commit/delete, upscale.
         """
         lookup_key = rel_path.replace(os.sep, "/")
         meta = dataset.media_metadata.get(lookup_key)
         if meta:
             self._media_repo.update(dataset.id, lookup_key, dict(meta))
+
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                from app.core.events import emit_entity_change
+                payload = {
+                    **dict(meta),
+                    "media_file": lookup_key,
+                    "dataset_name": dataset.name,
+                }
+                asyncio.run_coroutine_threadsafe(
+                    emit_entity_change(
+                        event_manager.broadcast,
+                        entity="media_item",
+                        op="updated",
+                        id=f"{dataset.name}/{lookup_key}",
+                        payload=payload,
+                    ),
+                    loop,
+                )
 
     # ── Async variants (R-API-07) ───────────────────────────────────────
     # FastAPI route handlers use these; internal DatasetManager callers
@@ -233,6 +258,21 @@ class DatasetManager:
         )
         self.datasets[name] = dataset
         self._persist_dataset(dataset)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="created",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+
         return dataset
 
     def scan_dataset(self, name: str, force_full: bool = False) -> Dataset:
@@ -880,13 +920,26 @@ class DatasetManager:
     def delete_dataset(self, name: str, delete_files: bool = False):
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
-            
+
         dataset = self.datasets[name]
         if delete_files and os.path.exists(dataset.path):
             shutil.rmtree(dataset.path)
-            
+
         del self.datasets[name]
         self._dataset_repo.delete(dataset.id)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="deleted",
+                    id=dataset.id,
+                ),
+                loop,
+            )
 
     def update_dataset(self, current_name: str, new_name: str, new_description: str, new_classifier: str = "") -> Dataset:
         if current_name not in self.datasets:
@@ -931,6 +984,21 @@ class DatasetManager:
         dataset.description = new_description
         dataset.classifier = new_classifier
         self._persist_dataset(dataset)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="updated",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+
         return dataset
 
     def get_dataset_pairs(self, name: str) -> list[dict]:
@@ -1180,7 +1248,23 @@ class DatasetManager:
                 except OSError:
                     pass
 
-    
+        # Broadcast media_item deletion so the frontend MediaItemStore
+        # drops the row. The id mirrors the composite key used by updates
+        # so the FE store keys match.
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="media_item",
+                    op="deleted",
+                    id=f"{dataset.name}/{lookup_key}",
+                ),
+                loop,
+            )
+
+
     def crop_media(self, name: str, relative_path: str, target_w: int, target_h: int, origin: str = "center", crop_x: int | None = None, crop_y: int | None = None):
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")

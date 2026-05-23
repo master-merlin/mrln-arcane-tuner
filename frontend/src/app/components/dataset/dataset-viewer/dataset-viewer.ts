@@ -4,6 +4,7 @@ import { DomSanitizer } from '@angular/platform-browser';
 import { FormsModule } from '@angular/forms';
 import { DatasetService, Dataset } from '../../../services/dataset';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
+import { MediaItemStore } from '../../../state/media-item.store';
 
 // Sub-components
 import { ViewerToolbarComponent } from './components/viewer-toolbar';
@@ -260,6 +261,7 @@ export class DatasetViewerComponent implements OnInit {
     datasetService = inject(DatasetService);
     sanitizer = inject(DomSanitizer);
     private toast = inject(ToastService);
+    private mediaItemStore = inject(MediaItemStore);
 
     pairs = signal<any[]>([]);
     currentIndex = signal(0);
@@ -398,6 +400,10 @@ export class DatasetViewerComponent implements OnInit {
     // --- Data Loading ---
     loadPairs() {
         this.datasetService.getDatasetPairs(this.datasetName()).subscribe(data => this.pairs.set(data));
+        // Seed the MediaItemStore so optimistic mutations (e.g. enable/disable
+        // toggle) find a current row in the store map. The store keeps items
+        // from other datasets, so this is additive.
+        void this.mediaItemStore.loadForDataset(this.datasetName());
     }
 
     onMaskGenerated() {
@@ -592,7 +598,9 @@ export class DatasetViewerComponent implements OnInit {
 
     // --- Exclusion Handlers ---
     handleExclusionToggle(event: { media_file: string, enabled: boolean }) {
-        // Optimistic update — apply immediately for instant visual feedback
+        // Local optimistic update — instant visual feedback on the richer
+        // `pairs` list (which carries caption_content / masked_caption_content
+        // / etc. that the MediaItemStore intentionally does not model).
         const previous = this.pairs();
         const updated = previous.map(p => {
             if (p.media_file === event.media_file) {
@@ -602,13 +610,23 @@ export class DatasetViewerComponent implements OnInit {
         });
         this.pairs.set(updated);
 
-        // Persist to backend; revert on error
-        this.datasetService.toggleImageEnabled(this.datasetName(), event.media_file, event.enabled).subscribe({
-            error: err => {
-                console.error('Failed to toggle image:', err);
-                this.pairs.set(previous);
-            }
-        });
+        // Route the HTTP call through the store so:
+        //   - the store's optimistic apply + rollback runs (other components
+        //     subscribed to the store see consistent state);
+        //   - the `entity.changed:updated` broadcast from the backend
+        //     reconciles other tabs;
+        //   - the user sees the standard toast on failure.
+        // The store returns an OptimisticResult; on `!result.ok` we
+        // authoritatively roll back the local `pairs` snapshot. This holds
+        // whether or not the store had the row pre-seeded (i.e. it covers
+        // the fallthrough HTTP path inside the store too).
+        void this.mediaItemStore
+            .toggleEnabled(this.datasetName(), event.media_file, event.enabled)
+            .then(result => {
+                if (!result.ok) {
+                    this.pairs.set(previous);
+                }
+            });
     }
 
     handleEnableAll() {

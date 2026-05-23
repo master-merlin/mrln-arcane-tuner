@@ -237,6 +237,20 @@ class JobManager:
         except Exception as e:
             logger.warning("jobs_create_db_failed", error=str(e))
 
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="job",
+                    op="created",
+                    id=job.id,
+                    payload=job.model_dump(),
+                ),
+                loop,
+            )
+
         return job
 
     def list_jobs(self) -> list[Job]:
@@ -279,12 +293,25 @@ class JobManager:
             return False
 
     def delete_job(self, job_id: str) -> None:
-        """Remove a job from the registry and the database."""
+        """Remove a job from the registry and the database. Broadcasts entity.changed."""
         self._stop_tailer(job_id)
         with self._lock:
             if job_id in self._jobs:
                 del self._jobs[job_id]
         self._persist_delete(job_id)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="job",
+                    op="deleted",
+                    id=job_id,
+                ),
+                loop,
+            )
 
     # ── Log Tailer Dispatcher ────────────────────────────────────────
 

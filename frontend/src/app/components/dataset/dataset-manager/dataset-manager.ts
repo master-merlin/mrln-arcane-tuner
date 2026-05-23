@@ -5,6 +5,7 @@ import { WebSocketService } from '../../../services/websocket.service';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ProjectService } from '../../../services/project.service';
+import { DatasetStore } from '../../../state/dataset.store';
 import { DatasetViewerComponent } from '../dataset-viewer/dataset-viewer';
 
 // Sub-components
@@ -180,9 +181,46 @@ export class DatasetManagerComponent implements OnInit {
   private ws = inject(WebSocketService);
   protected projectService = inject(ProjectService);
   private destroyRef = inject(DestroyRef);
+  private datasetStore = inject(DatasetStore);
 
   datasets = signal<Dataset[]>([]);
   searchTerm = signal('');
+
+  // Tracks whether the DatasetStore has been seeded at least once. Until
+  // then, the existing loadDatasets() subscriber is authoritative for the
+  // first render; after seeding, the effect below reconciles
+  // creations/deletions from the store into the local `datasets` signal
+  // (so optimistic mutations land this tick) without clobbering the
+  // WS-driven `has_cache` updates the component patches in-place.
+  private storeSeeded = false;
+
+  constructor() {
+    // Bidirectional reconciliation between DatasetStore and the local
+    // `datasets` signal. The store is canonical for *which datasets
+    // exist*; the local signal carries WS-patched per-row state
+    // (`has_cache` from `dataset_cache_ready`) that the store doesn't
+    // track. So we:
+    //   1. PRUNE local rows the store no longer knows about (successful
+    //      optimistic delete).
+    //   2. ADD store rows missing from local — restores rows when an
+    //      optimistic delete rolls back and surfaces creates.
+    // Existing local rows are never overwritten — preserves per-row
+    // updates from `dataset_cache_ready`.
+    effect(() => {
+      const all = this.datasetStore.entities();
+      if (all.length === 0 && !this.storeSeeded) return;
+      this.storeSeeded = true;
+
+      const storeIds = new Set(all.map(d => d.id));
+      this.datasets.update(rows => rows.filter(d => storeIds.has(d.id)));
+
+      const localIds = new Set(this.datasets().map(d => d.id));
+      const missing = all.filter(d => !localIds.has(d.id));
+      if (missing.length > 0) {
+        this.datasets.update(rows => [...rows, ...missing]);
+      }
+    });
+  }
 
   // UI State
   showCreateModal = signal(false);
@@ -232,6 +270,8 @@ export class DatasetManagerComponent implements OnInit {
 
   loadDatasets() {
     this.datasetService.listDatasets().subscribe(data => this.datasets.set(data));
+    // Seed the store so optimistic mutations can find current rows by id.
+    void this.datasetStore.loadAll();
   }
 
   // --- Viewer Actions ---
@@ -264,21 +304,20 @@ export class DatasetManagerComponent implements OnInit {
     const editDs = this.editingDataset();
 
     if (editDs) {
-      this.datasetService.updateDataset(editDs.name, data.name, data.description, data.classifier).subscribe({
-        next: () => {
-          this.showCreateModal.set(false);
-          this.loadDatasets();
-        },
-        error: (err) => this.toast.error('Failed to update dataset: ' + err.error.detail)
+      // Optimistic update through the store. The store fills missing
+      // fields from the cached entity and toasts on failure.
+      this.showCreateModal.set(false);
+      void this.datasetStore.updateDataset(editDs.id, {
+        name: data.name,
+        description: data.description,
+        classifier: data.classifier,
       });
     } else {
-      this.datasetService.createDataset(data.name, data.description, data.classifier).subscribe({
-        next: () => {
-          this.showCreateModal.set(false);
-          this.loadDatasets();
-        },
-        error: (err) => this.toast.error('Failed to create dataset: ' + err.error.detail)
-      });
+      // Create cannot be optimistic — backend assigns the UUID — but the
+      // store's createDataset upserts the row on HTTP success so the new
+      // dataset appears immediately via the reconcile effect.
+      this.showCreateModal.set(false);
+      void this.datasetStore.createDataset(data.name, data.description, data.classifier);
     }
   }
 
@@ -325,13 +364,14 @@ export class DatasetManagerComponent implements OnInit {
       }
     }
 
-    this.datasetService.deleteDataset(name, deleteFiles).subscribe({
-      next: () => this.loadDatasets(),
-      error: (err) => {
-        if (!silent) this.toast.error('Failed to delete dataset: ' + err.message);
-        console.error('Failed to delete', name, err);
-      }
-    });
+    // The store keys by id, but callers here have only `name`. Look up the
+    // current row in the local signal (which mirrors the store post-seed).
+    const ds = this.datasets().find(d => d.name === name);
+    if (!ds) {
+      // Row already gone (e.g. another tab deleted it) — nothing to do.
+      return;
+    }
+    void this.datasetStore.deleteDataset(ds.id, deleteFiles);
   }
 
   handleUpload(data: { datasetName: string, files: FileList }) {

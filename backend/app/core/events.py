@@ -68,3 +68,6 @@ class EventManager:
 
 # Global Instance
 event_manager = EventManager()
+
+# Public re-export so callers can `from app.core.events import emit_entity_change`
+from app.core.entity_events import emit_entity_change  # noqa: E402, F401

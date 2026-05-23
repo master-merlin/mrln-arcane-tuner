@@ -133,8 +133,41 @@ class SettingsManager:
     async def update_module_settings_async(
         self, module: str, settings: dict[str, Any],
     ) -> None:
-        """Async wrapper around update_module_settings()."""
+        """Async wrapper around update_module_settings().
+
+        After the disk write completes, broadcasts an `entity.changed:updated`
+        event so the frontend SettingsStore can reconcile optimistic
+        mutations. We're already on the event loop here, so a direct await
+        is fine — no run_coroutine_threadsafe needed.
+
+        The sync variant deliberately does NOT emit: it's only called from
+        trainer subprocesses (engine/utils/model_override_manager.py,
+        engine/core/pipeline/pipeline_data.py) where there is no loop or
+        broadcast to reach.
+        """
+        # Lazy import to avoid a circular dependency (events -> logger ->
+        # ... -> settings_manager) at module import time.
+        from app.core.events import emit_entity_change, event_manager
+
         await asyncio.to_thread(self.update_module_settings, module, settings)
+
+        # Re-read the merged module dict so the broadcast reflects the
+        # actual on-disk state (the sync update merges into existing keys
+        # — callers may have passed a partial delta).
+        merged = self.settings.get(module, {})
+        merged_dict = (
+            dict(merged) if isinstance(merged, dict) else {"value": merged}
+        )
+        # Shape the payload so the frontend EntityStore can upsert it
+        # directly: `id` keys the row, and `settings` carries the actual
+        # module dict (mirrors the ModuleSettings TS interface).
+        await emit_entity_change(
+            event_manager.broadcast,
+            entity="settings",
+            op="updated",
+            id=module,
+            payload={"id": module, "module": module, "settings": merged_dict},
+        )
 
 
 def get_settings_manager() -> SettingsManager:

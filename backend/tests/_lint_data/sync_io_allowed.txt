@@ -1,0 +1,5 @@
+# Allowlist of known sync-I/O lines we deliberately keep.
+# Format: <relative-path>:<line>: <pattern-id-or-snippet>
+# Lines starting with # are comments. Blank lines ignored.
+# Add new entries when you intentionally accept a pattern (rare). Each entry
+# should have a comment explaining why.

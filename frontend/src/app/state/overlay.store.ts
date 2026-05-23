@@ -1,9 +1,21 @@
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { EntityStore } from './entity-store';
+import { EntityStore, OptimisticResult } from './entity-store';
 import { DatasetService, PipelineBlock } from '../services/dataset';
 import { WebSocketService } from '../services/websocket.service';
 import { ToastService } from '../services/toast';
+
+/**
+ * Shape returned by ``POST /datasets/{name}/render-pipeline``. Mirrors
+ * the dict returned by ``overlay_routes.render_pipeline`` server-side.
+ */
+export interface RenderPipelineResponse {
+    status: string;
+    file: string;
+    overlay: string;
+    dimensions: [number, number] | number[];
+    hash: string;
+}
 
 /**
  * Frontend view of a backend overlay — the result of running the
@@ -102,6 +114,10 @@ export class OverlayStore extends EntityStore<Overlay> {
      * payload (with hash/dimensions) lands via ``entity.changed:updated``.
      *
      * Rolls back + toasts on HTTP failure.
+     *
+     * Returns an {@link OptimisticResult} so callers can surface
+     * response fields (e.g. ``dimensions``) in their own success toast
+     * or use the raw HTTP error for per-item failure reporting in loops.
      */
     async renderPipeline(
         datasetName: string,
@@ -110,7 +126,7 @@ export class OverlayStore extends EntityStore<Overlay> {
         tileSize: number = 512,
         tilePad: number = 32,
         replaceRecipe: boolean = false,
-    ): Promise<void> {
+    ): Promise<OptimisticResult<RenderPipelineResponse>> {
         const id = overlayKey(datasetName, mediaFile);
         const next: Overlay = {
             id,
@@ -120,7 +136,7 @@ export class OverlayStore extends EntityStore<Overlay> {
                 .filter(b => b.enabled)
                 .map(b => ({ type: b.type, enabled: b.enabled, params: b.params })),
         };
-        await this.runOptimistic({
+        return this.runOptimistic<RenderPipelineResponse>({
             apply: m => new Map(m).set(id, next),
             request: () =>
                 firstValueFrom(
@@ -132,7 +148,7 @@ export class OverlayStore extends EntityStore<Overlay> {
                         tilePad,
                         replaceRecipe,
                     ),
-                ),
+                ) as Promise<RenderPipelineResponse>,
             errorMessage: `Couldn't render overlay — reverted.`,
         });
     }

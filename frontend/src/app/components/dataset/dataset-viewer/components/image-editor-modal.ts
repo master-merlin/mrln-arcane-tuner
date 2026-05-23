@@ -2231,24 +2231,20 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
                 resize_method: this.upscaleResizeMethod(),
             },
         }];
-        // TODO(state): migrate to overlayStore.renderPipeline when the store
-        // method surfaces the response (dimensions/hash) — currently
-        // OverlayStore.renderPipeline returns Promise<void>, but the toast
-        // here reports the rendered dimensions from the HTTP response.
-        this.datasetService.renderPipeline(
+        // OverlayStore handles the optimistic upsert + rollback toast on
+        // failure; the OptimisticResult exposes the response payload so
+        // the success toast can include the rendered dimensions.
+        void this.overlayStore.renderPipeline(
             this.datasetName(), pair.media_file, blocks,
-        ).subscribe({
-            next: (res: any) => {
-                this.isUpscaling.set(false);
+        ).then(result => {
+            this.isUpscaling.set(false);
+            if (result.ok) {
                 this.hasOverlay.set(true);
-                this.toast.success(`Upscale applied as overlay (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                const dims = result.value.dimensions;
+                this.toast.success(`Upscale applied as overlay (${dims?.[0]}×${dims?.[1]})`);
                 this.applied.emit();
                 this.loadImage();
-            },
-            error: (err) => {
-                this.isUpscaling.set(false);
-                this.toast.error(`Upscale failed: ${err?.error?.detail || err.message}`);
-            },
+            }
         });
     }
 
@@ -2319,22 +2315,19 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
                 tile_pad: 32,
             },
         }];
-        // TODO(state): migrate to overlayStore.renderPipeline when the store
-        // method surfaces the response (dimensions/hash) — see applyUpscale.
-        this.datasetService.renderPipeline(
+        // OverlayStore handles the optimistic upsert + rollback toast on
+        // failure; see applyUpscale for the pattern.
+        void this.overlayStore.renderPipeline(
             this.datasetName(), pair.media_file, blocks,
-        ).subscribe({
-            next: (res: any) => {
-                this.isRestoring.set(false);
+        ).then(result => {
+            this.isRestoring.set(false);
+            if (result.ok) {
                 this.hasOverlay.set(true);
-                this.toast.success(`Restoration applied (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                const dims = result.value.dimensions;
+                this.toast.success(`Restoration applied (${dims?.[0]}×${dims?.[1]})`);
                 this.applied.emit();
                 this.loadImage();
-            },
-            error: (err) => {
-                this.isRestoring.set(false);
-                this.toast.error(`Restoration failed: ${err?.error?.detail || err.message}`);
-            },
+            }
         });
     }
 
@@ -2527,21 +2520,18 @@ export class ImageEditorModalComponent implements OnInit, OnDestroy {
         }
 
         this.isRendering.set(true);
-        // TODO(state): migrate to overlayStore.renderPipeline when the store
-        // method surfaces the response (dimensions/hash) — see applyUpscale.
-        this.datasetService.renderPipeline(
+        // OverlayStore handles the optimistic upsert + rollback toast on
+        // failure; see applyUpscale for the pattern.
+        void this.overlayStore.renderPipeline(
             this.datasetName(), pair.media_file, blocks, 512, 32, true,
-        ).subscribe({
-            next: (res: any) => {
-                this.isRendering.set(false);
+        ).then(result => {
+            this.isRendering.set(false);
+            if (result.ok) {
                 this.hasOverlay.set(true);
-                this.toast.success(`Overlay saved (${res.dimensions?.[0]}×${res.dimensions?.[1]})`);
+                const dims = result.value.dimensions;
+                this.toast.success(`Overlay saved (${dims?.[0]}×${dims?.[1]})`);
                 this.applied.emit();
-            },
-            error: (err) => {
-                this.isRendering.set(false);
-                this.toast.error(`Render failed: ${err?.error?.detail || err.message}`);
-            },
+            }
         });
     }
 

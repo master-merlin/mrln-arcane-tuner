@@ -9,7 +9,7 @@ import { FormsModule } from '@angular/forms';
 import { TrainingChartComponent, ChartDataPoint, SmoothingMode } from '../training-chart/training-chart';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
-import { ModelService, ModelSourceOverride } from '../../../services/model.service';
+import { ModelSourceOverride } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
 @Component({
@@ -740,7 +740,6 @@ import { RegistryStore } from '../../../state/registry.store';
 export class TrainingJobQueueComponent implements OnInit {
   jobService = inject(JobService);
   projectService = inject(ProjectService);
-  private modelService = inject(ModelService);
   private rtc = inject(RuntimeConfigService);
   jobs = signal<Job[]>([]);
   historicalJobs = signal<Job[]>([]);

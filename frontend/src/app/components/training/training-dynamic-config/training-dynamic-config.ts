@@ -6,6 +6,7 @@ import { DatasetService } from '../../../services/dataset';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
 import { ModelService } from '../../../services/model.service';
+import { RegistryStore } from '../../../state/registry.store';
 
 import { Subject } from 'rxjs';
 import { debounceTime } from 'rxjs/operators';
@@ -435,6 +436,7 @@ export class TrainingDynamicConfigComponent {
   private toast = inject(ToastService);
   private systemService = inject(SystemService);
   private modelService = inject(ModelService);
+  private registryStore = inject(RegistryStore);
 
   // VRAM estimation
   vramReport = signal<VRAMReport | null>(null);
@@ -1534,19 +1536,19 @@ export class TrainingDynamicConfigComponent {
 
   /** Fetch the source override for a definition and populate the badge signal. */
   private loadSourceOverride(defId: string): void {
-    this.modelService.getModelSource(defId).subscribe({
-      next: (override) => this.modelSourceOverride.set(override),
-      error: () => this.modelSourceOverride.set(null),
-    });
+    // Seed the store so cross-tab updates flow through byId; mirror the
+    // result into the local badge signal once seeded.
+    void this.registryStore.loadFor(defId)
+      .then(() => this.modelSourceOverride.set(this.registryStore.byId(defId)() ?? null))
+      .catch(() => this.modelSourceOverride.set(null));
   }
 
   /** Called by the modal after saving or resetting a source override. */
   onSourceOverrideSaved(override: ModelSourceOverride | null): void {
     this.modelSourceOverride.set(override);
-    // Re-fetch from backend to ensure consistency
-    const defId = this.currentDefinitionId();
-    if (defId) {
-      this.loadSourceOverride(defId);
-    }
+    // The modal already persisted the change through RegistryStore;
+    // no extra refetch needed — the store row reflects the new value
+    // and the badge effect will keep this signal in sync on the next
+    // store mutation.
   }
 }

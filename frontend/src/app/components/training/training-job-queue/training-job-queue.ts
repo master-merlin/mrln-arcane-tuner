@@ -10,6 +10,7 @@ import { TrainingChartComponent, ChartDataPoint, SmoothingMode } from '../traini
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
 import { ModelService, ModelSourceOverride } from '../../../services/model.service';
+import { RegistryStore } from '../../../state/registry.store';
 
 @Component({
   selector: 'app-training-job-queue',
@@ -784,6 +785,7 @@ export class TrainingJobQueueComponent implements OnInit {
   wsService = inject(WebSocketService);
   private destroyRef = inject(DestroyRef);
   private jobStore = inject(JobStore);
+  private registryStore = inject(RegistryStore);
 
   // Tracks whether the JobStore has been seeded at least once. Until then,
   // the existing loadJobs/loadHistory subscribers are authoritative for first
@@ -833,6 +835,27 @@ export class TrainingJobQueueComponent implements OnInit {
       if (missingArchive.length > 0) {
         this.historicalJobs.update(rows => [...rows, ...missingArchive]);
       }
+    });
+
+    // Mirror RegistryStore rows we've already seeded into the local
+    // `jobModelSources` cache (template reads from the cache). Only
+    // patches keys the cache already knows about — never adds new ones
+    // (the loadModelSources path remains the seed). This makes
+    // cross-tab updates (entity.changed:registry_model) reflect in the
+    // queue header badges without a refresh.
+    effect(() => {
+      const all = this.registryStore.entities();
+      if (all.length === 0) return;
+      const cached = this.jobModelSources();
+      let mutated = false;
+      const next = new Map(cached);
+      for (const row of all) {
+        if (cached.has(row.id) && cached.get(row.id) !== row) {
+          next.set(row.id, row);
+          mutated = true;
+        }
+      }
+      if (mutated) this.jobModelSources.set(next);
     });
   }
 
@@ -1444,16 +1467,20 @@ export class TrainingJobQueueComponent implements OnInit {
     const cached = this.jobModelSources();
     for (const defId of defIds) {
       if (!cached.has(defId)) {
-        this.modelService.getModelSource(defId).subscribe({
-          next: (src) => {
+        // Route through the store so cross-tab updates land in jobModelSources
+        // (the reconcile effect below mirrors store rows into the local cache).
+        // On 404 (no override exists), loadFor rejects silently — we just
+        // skip the cache write, matching the prior HTTP error branch.
+        void this.registryStore.loadFor(defId).then(() => {
+          const src = this.registryStore.byId(defId)();
+          if (src) {
             this.jobModelSources.update(prev => {
               const next = new Map(prev);
               next.set(defId, src);
               return next;
             });
-          },
-          error: () => { /* No override = HF Hub default, skip */ }
-        });
+          }
+        }).catch(() => { /* No override = HF Hub default, skip */ });
       }
     }
   }

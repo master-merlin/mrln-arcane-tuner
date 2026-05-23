@@ -8,6 +8,7 @@ import {
   ModelSourceType,
   PathValidationResult,
 } from '../../../services/model.service';
+import { RegistryStore } from '../../../state/registry.store';
 
 @Component({
   selector: 'app-model-source-config',
@@ -186,6 +187,7 @@ export class ModelSourceConfigComponent implements OnInit {
 
   private modelService = inject(ModelService);
   private toast = inject(ToastService);
+  private registryStore = inject(RegistryStore);
 
   sourceType = signal<ModelSourceType>('hf_hub');
   localPath = signal<string>('');
@@ -202,18 +204,20 @@ export class ModelSourceConfigComponent implements OnInit {
   });
 
   ngOnInit(): void {
-    this.modelService.getModelSource(this.definitionId()).subscribe({
-      next: (override) => {
+    // Seed the store so subsequent reads via byId reflect the persisted
+    // state. Once seeded, the byId signal also picks up cross-tab updates
+    // via entity.changed:registry_model broadcasts.
+    void this.registryStore.loadFor(this.definitionId()).then(() => {
+      const override = this.registryStore.byId(this.definitionId())();
+      if (override) {
         this.sourceType.set(override.source_type);
         this.localPath.set(override.local_path || '');
         this.skipUpdate.set(override.skip_update);
         this.hasExistingOverride.set(
           override.source_type !== 'hf_hub' || override.skip_update,
         );
-      },
-      error: () => {
-        // No override exists — defaults applied
-      },
+      }
+      // No override → defaults remain in place.
     });
   }
 
@@ -264,27 +268,23 @@ export class ModelSourceConfigComponent implements OnInit {
       skip_update: this.sourceType() === 'hf_hub' ? this.skipUpdate() : true,
     };
 
-    this.modelService.setModelSource(this.definitionId(), override).subscribe({
-      next: (result) => {
-        this.toast.success('Model source updated');
-        this.saved.emit(result);
-        this.close.emit();
-      },
-      error: (err) => {
-        const msg = err.error?.detail || 'Failed to save source override';
-        this.toast.error(msg);
-      },
-    });
+    // Optimistic mutation through the store. The store toasts on
+    // failure and rolls the row back; success path emits the override
+    // and closes. Closing immediately is safe — the store's rollback
+    // will surface via entity.changed broadcasts to any other consumer.
+    this.close.emit();
+    this.saved.emit(override);
+    this.toast.success('Model source updated');
+    void this.registryStore.setOverride(this.definitionId(), override);
   }
 
   resetToDefault(): void {
-    this.modelService.deleteModelSource(this.definitionId()).subscribe({
-      next: () => {
-        this.toast.success('Source reset to HF Hub default');
-        this.saved.emit(null);
-        this.close.emit();
-      },
-      error: () => this.toast.error('Failed to reset source'),
-    });
+    // Optimistic clear through the store. The store toasts on failure
+    // and restores the row; the parent receives null immediately so the
+    // badge updates this tick.
+    this.close.emit();
+    this.saved.emit(null);
+    this.toast.success('Source reset to HF Hub default');
+    void this.registryStore.clearOverride(this.definitionId());
   }
 }

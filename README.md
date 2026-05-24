@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.3.1-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 21 · FastAPI
+`v0.3.2-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 21 · FastAPI
 
 ---
 

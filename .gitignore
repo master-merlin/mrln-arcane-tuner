@@ -5,6 +5,7 @@
 *.md
 !README.md
 !documentation/**/*.md
+!backend/app/engine/models/families/*/vendor/*.md
 
 # ========================
 # Backend data directories

@@ -143,3 +143,59 @@ def test_generate_thumbnail_handles_mp4_first_frame(tmp_path):
     assert dst.exists()
     with Image.open(dst) as img:
         assert max(img.size) == 256
+
+
+# ── ensure_thumbnail ────────────────────────────────────────────────
+
+
+def test_ensure_thumbnail_generates_when_missing(tmp_path):
+    _make_image(tmp_path / "a.jpg")
+
+    result = thumbnails.ensure_thumbnail(str(tmp_path), "a.jpg")
+
+    assert result is not None
+    assert result.exists()
+    assert result == tmp_path / ".thumbnails" / "a.webp"
+
+
+def test_ensure_thumbnail_returns_existing_without_regeneration(tmp_path):
+    """Second call must reuse the existing thumbnail (mtime unchanged)."""
+    _make_image(tmp_path / "a.jpg")
+
+    first = thumbnails.ensure_thumbnail(str(tmp_path), "a.jpg")
+    assert first is not None
+    first_mtime = first.stat().st_mtime_ns
+
+    second = thumbnails.ensure_thumbnail(str(tmp_path), "a.jpg")
+    assert second == first
+    assert second.stat().st_mtime_ns == first_mtime
+
+
+def test_ensure_thumbnail_returns_none_when_source_missing(tmp_path):
+    result = thumbnails.ensure_thumbnail(str(tmp_path), "ghost.jpg")
+    assert result is None
+
+
+def test_ensure_thumbnail_returns_none_when_source_corrupt(tmp_path):
+    (tmp_path / "broken.jpg").write_bytes(b"junk")
+
+    result = thumbnails.ensure_thumbnail(str(tmp_path), "broken.jpg")
+    assert result is None
+
+
+# ── invalidate_thumbnail ────────────────────────────────────────────────
+
+
+def test_invalidate_thumbnail_removes_existing_file(tmp_path):
+    _make_image(tmp_path / "a.jpg")
+    thumbnails.ensure_thumbnail(str(tmp_path), "a.jpg")
+    assert (tmp_path / ".thumbnails" / "a.webp").exists()
+
+    thumbnails.invalidate_thumbnail(str(tmp_path), "a.jpg")
+
+    assert not (tmp_path / ".thumbnails" / "a.webp").exists()
+
+
+def test_invalidate_thumbnail_silent_when_missing(tmp_path):
+    """Must not raise when there's nothing to delete."""
+    thumbnails.invalidate_thumbnail(str(tmp_path), "ghost.jpg")  # no exception

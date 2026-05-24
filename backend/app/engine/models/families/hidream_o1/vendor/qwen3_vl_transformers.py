@@ -1008,14 +1008,21 @@ class Qwen3VLTextModel(Qwen3VLPreTrainedModel):
             if self.gradient_checkpointing and torch.is_grad_enabled():
                 # Use HuggingFace's _gradient_checkpointing_func which already has
                 # use_reentrant=False baked in from gradient_checkpointing_enable().
+                # MRLN-PATCH(4): torch 2.10's torch.utils.checkpoint rejects
+                # unrecognized kwargs; Saganaki22's upstream depended on the
+                # older permissive forwarding. Wrap per-layer kwargs in a
+                # closure so checkpoint only sees positional args.
+                def _layer_call(hs, _layer=decoder_layer):
+                    return _layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=text_position_ids,
+                        past_key_values=past_key_values,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                    )
                 layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=text_position_ids,
-                    past_key_values=past_key_values,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
+                    _layer_call, hidden_states,
                 )
                 _gc_count += 1
             else:

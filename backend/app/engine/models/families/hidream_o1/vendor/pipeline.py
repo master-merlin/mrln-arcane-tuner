@@ -1,15 +1,25 @@
+# ruff: noqa
 import torch
 import einops
 import numpy as np
 import tqdm
 from PIL import Image
 import torchvision.transforms.v2 as transforms
+
 from diffusers import FlowMatchEulerDiscreteScheduler
 # FlowUniPCMultistepScheduler generates more details than FlowMatchEulerDiscreteScheduler
 from .fm_solvers_unipc import FlowUniPCMultistepScheduler  # noqa: E402
+
 from .flash_scheduler import FlashFlowMatchEulerDiscreteScheduler
-from .utils import resize_pilimage, calculate_dimensions, get_rope_index_fix_point, find_closest_resolution
-from .utils import create_layout_reference_images, load_layout_bboxes
+from .seam_smoothing import apply_seam_smoothing
+from .utils import (
+    resize_pilimage,
+    calculate_dimensions,
+    create_layout_reference_images,
+    get_rope_index_fix_point,
+    find_closest_resolution,
+    load_layout_bboxes,
+)
 
 TIMESTEP_TOKEN_NUM = 1
 NOISE_SCALE = 8.0
@@ -103,11 +113,13 @@ def clamp_tensor(tensor, percentage = 0.1):
     src_dtype = tensor.dtype
     return torch.clamp(tensor.float(), min=lower_bound, max=upper_bound).to(src_dtype)
 
+
 @torch.no_grad()
 def generate_image(
         model,
         processor,
         prompt: str,
+        negative_prompt: str = "",
         ref_image_paths: list = None,
         height: int = 1440,
         width: int = 2560,
@@ -122,37 +134,39 @@ def generate_image(
         noise_clip_std: float = 0.0,
         keep_original_aspect: bool = False,
         layout_bboxes: str = None,
+        seam_smooth_steps: int = 0,
+        seam_smooth_strength: float = 0.5,
+        seam_smooth_schedule: str = "constant",
+        seam_smooth_shift_mode: str = "rotate",
+        seam_smooth_adaptive_threshold: float = 0.0,
+        seam_smooth_multiscale: bool = False,
+        seam_smooth_cfg_aware: bool = False,
         callback=None,
-        # MRLN-PATCH(1): flash-attn flag externalized — see vendor/README.md
         use_flash_attn: bool = True,
-        # MRLN-PATCH(2): dtype threaded — default still bfloat16, but callers can override
-        dtype: torch.dtype | None = None,
+        use_sage_attn: bool = False,
 ) -> Image.Image:
     device = model.device
-    dtype = dtype or torch.bfloat16
+    dtype = getattr(model, "hidream_dtype", None)
+    if dtype is None:
+        dtype = next(model.parameters()).dtype
     model_config = model.config
     tokenizer = processor.tokenizer if hasattr(processor, 'tokenizer') else processor
 
-    # When `keep_original_aspect` is enabled and exactly one reference image is
-    # provided, resize the reference to max_size=2048 (patch-aligned) and derive
-    # the target image dimensions from the resized reference. This bypasses the
-    # predefined-resolution snapping so the output preserves the reference's
-    # original aspect ratio.
+    # When `keep_original_aspect` is enabled and at least one reference image is
+    # provided, resize image_1 to max_size=2048 (patch-aligned) and derive the
+    # target image dimensions from it. This bypasses the predefined-resolution
+    # snapping so the output follows image_1's original aspect ratio.
     preresized_ref_pil = None
-    if keep_original_aspect and ref_image_paths and len(ref_image_paths) == 1:
-        pil_orig = Image.open(ref_image_paths[0]).convert("RGB")
+    if keep_original_aspect and ref_image_paths:
+        ref0 = ref_image_paths[0]
+        pil_orig = ref0.convert("RGB") if isinstance(ref0, Image.Image) else Image.open(ref0).convert("RGB")
         preresized_ref_pil = resize_pilimage(pil_orig, 2048, PATCH_SIZE)
         width, height = preresized_ref_pil.size
         print(
-            f"[info] keep_original_aspect: target size set to {width}x{height} "
-            f"from reference image"
+            f"[info] keep_image1_aspect: target size set to {width}x{height} "
+            f"from image_1"
         )
     else:
-        if keep_original_aspect:
-            print(
-                "[warning] keep_original_aspect requires exactly one reference "
-                "image; falling back to default resolution snapping."
-            )
         w, h = find_closest_resolution(width, height)
         if w != width or h != height:
             print(f"[warning] Resolution snapped from {width}x{height} to {w}x{h}")
@@ -165,7 +179,7 @@ def generate_image(
         cond_sample = build_t2i_text_sample(prompt, height, width, tokenizer, processor, model_config)
         uncond_sample = None
         if guidance_scale > 1.0:
-            uncond_sample = build_t2i_text_sample(" ", height, width, tokenizer, processor, model_config)
+            uncond_sample = build_t2i_text_sample(negative_prompt or " ", height, width, tokenizer, processor, model_config)
         
         def to_device(s):
             return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in s.items()}
@@ -186,10 +200,12 @@ def generate_image(
         spatial_merge_size = model_config.vision_config.spatial_merge_size
         
         if preresized_ref_pil is not None:
-            ref_pils = [preresized_ref_pil]
+            ref_pils = [preresized_ref_pil] + [
+                p.convert("RGB") if isinstance(p, Image.Image) else Image.open(p).convert("RGB")
+                for p in ref_image_paths[1:]
+            ]
         else:
-            ref_pils = [Image.open(p).convert("RGB") for p in ref_image_paths]
-
+            ref_pils = [p.convert("RGB") if isinstance(p, Image.Image) else Image.open(p).convert("RGB") for p in ref_image_paths]
         K = len(ref_pils)
         layout_data = None
         if layout_bboxes is not None and len(layout_bboxes) > 0 and preresized_ref_pil is None:
@@ -199,20 +215,20 @@ def generate_image(
             except Exception as e:
                 print(f"Incorrect layout_bboxes: {layout_bboxes}, {e}")
 
-        if K == 1: max_size = max(height, width)  # noqa: E701
-        elif K == 2: max_size = max(height, width) * 48 // 64  # noqa: E701
-        elif K <= 4: max_size = max(height, width) // 2  # noqa: E701
-        elif K <= 8: max_size = max(height, width) * 24 // 64  # noqa: E701
-        else: max_size = max(height, width) // 4  # noqa: E701
+        if K == 1: max_size = max(height, width)
+        elif K == 2: max_size = max(height, width) * 48 // 64
+        elif K <= 4: max_size = max(height, width) // 2
+        elif K <= 8: max_size = max(height, width) * 24 // 64
+        else: max_size = max(height, width) // 4
 
         if layout_data is not None:
             ref_pils = create_layout_reference_images(
-                ref_pils = ref_pils,
-                layout_bboxes = layout_data,
-                image_width = width,
-                image_height = height,
-                ref_max_size = max_size,
-                patch_size = PATCH_SIZE,
+                ref_pils=ref_pils,
+                layout_bboxes=layout_data,
+                image_width=width,
+                image_height=height,
+                ref_max_size=max_size,
+                patch_size=PATCH_SIZE,
             )
 
         ref_pils_resized, ref_images = [], []
@@ -237,9 +253,9 @@ def generate_image(
         h_patches = height // PATCH_SIZE
         w_patches = width // PATCH_SIZE
 
-        if K <= 4: cond_img_size = CONDITION_IMAGE_SIZE  # noqa: E701
-        elif K <= 8: cond_img_size = CONDITION_IMAGE_SIZE * 48 // 64  # noqa: E701
-        else: cond_img_size = CONDITION_IMAGE_SIZE // 2  # noqa: E701
+        if K <= 4: cond_img_size = CONDITION_IMAGE_SIZE
+        elif K <= 8: cond_img_size = CONDITION_IMAGE_SIZE * 48 // 64
+        else: cond_img_size = CONDITION_IMAGE_SIZE // 2
 
         ref_pils_vlm = []
         for pil_r in ref_pils_resized:
@@ -255,7 +271,7 @@ def generate_image(
         samples = []
         captions = [prompt]
         if guidance_scale > 1.0:
-            captions.append(" ")
+            captions.append(negative_prompt or " ")
             
         for caption in captions:
             boi_token = getattr(tokenizer, "boi_token", "<|boi_token|>")
@@ -332,9 +348,9 @@ def generate_image(
         noise_scale_schedule = [noise_scale_start]
 
     torch.manual_seed(seed + 1)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed + 1)  # noqa: E701
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed + 1)
 
-    def forward_once(sample, z_in, t_pixeldit, precomputed_image_embeds=None, precomputed_deepstack_image_embeds=None):
+    def forward_once(sample, z_in, t_pixeldit):
         with torch.autocast(device.type, dtype=dtype, cache_enabled=False):
             kwargs = {
                 "input_ids": sample['input_ids'],
@@ -342,23 +358,20 @@ def generate_image(
                 "vinputs": z_in,
                 "timestep": t_pixeldit.reshape(-1).to(device),
                 "token_types": sample['token_types'],
-                "use_flash_attn": use_flash_attn,  # MRLN-PATCH(1): flash-attn flag externalized — see vendor/README.md
-                "precomputed_image_embeds": precomputed_image_embeds,
-                "precomputed_deepstack_image_embeds": precomputed_deepstack_image_embeds
+                "use_flash_attn": use_flash_attn,
+                "use_sage_attn": use_sage_attn,
             }
-            if "pixel_values" in sample: kwargs["pixel_values"] = sample["pixel_values"]  # noqa: E701
-            if "image_grid_thw" in sample: kwargs["image_grid_thw"] = sample["image_grid_thw"]  # noqa: E701
+            if "pixel_values" in sample: kwargs["pixel_values"] = sample["pixel_values"]
+            if "image_grid_thw" in sample: kwargs["image_grid_thw"] = sample["image_grid_thw"]
 
             outputs = model(**kwargs)
             
         x_pred = outputs.x_pred
-        emb = getattr(outputs, "cond_image_embeds", None)
-        ds_emb = getattr(outputs, "cond_deepstack_image_embeds", None)
         # x_pred = clamp_tensor(x_pred, percentage = 0.01)
         if ref_patches is None:
             return x_pred[0, sample['vinput_mask'][0]].unsqueeze(0)
         else:
-            return x_pred[0, sample['vinput_mask'][0]][:tgt_image_len].unsqueeze(0), emb, ds_emb
+            return x_pred[0, sample['vinput_mask'][0]][:tgt_image_len].unsqueeze(0)
 
     def _decode_x0_preview(x0_pred):
         """Convert a model-predicted x_0 (patch layout, [-1,1]) to a PIL image."""
@@ -370,8 +383,7 @@ def generate_image(
         arr_p = np.round(np.clip(img_t[0].numpy().transpose(1, 2, 0) * 255, 0, 255)).astype(np.uint8)
         return Image.fromarray(arr_p).convert("RGB")
 
-    cond_image_embeds = None
-    cond_deepstack_image_embeds = None
+    seam_smooth_steps = max(0, min(int(seam_smooth_steps or 0), len(sched.timesteps)))
 
     for step_idx, step_t in enumerate(tqdm.tqdm(sched.timesteps, desc="Generating")):
         t_pixeldit = 1.0 - step_t.float() / 1000.0
@@ -390,20 +402,7 @@ def generate_image(
             preview_x0 = x_pred_cond
         else:
             vinputs = torch.cat([z, ref_patches], dim=1)
-            x_vis_list = []
-            for sample in samples:
-                xp, emb, ds_emb = forward_once(
-                    sample, 
-                    vinputs, 
-                    t_pixeldit, 
-                    precomputed_image_embeds=cond_image_embeds,
-                    precomputed_deepstack_image_embeds=cond_deepstack_image_embeds
-                )
-                if emb is not None and ds_emb is not None:
-                    cond_image_embeds = emb.detach()
-                    cond_deepstack_image_embeds = [d.detach() for d in ds_emb]
-                x_vis_list.append(xp)
-            #x_vis_list = [forward_once(sample, vinputs, t_pixeldit) for sample in samples]
+            x_vis_list = [forward_once(sample, vinputs, t_pixeldit) for sample in samples]
             x_vis_stacked = torch.cat(x_vis_list, dim=0)
             
             z_rep = z.expand(len(samples), -1, -1)
@@ -423,6 +422,29 @@ def generate_image(
             z = sched.step(model_output.float(), step_t.to(dtype=torch.float32), z.float(), s_noise=noise_scale_schedule[step_idx], noise_clip_std=noise_clip_std, return_dict=False)[0].to(dtype)
         else:
             z = sched.step(model_output.float(), step_t.to(dtype=torch.float32), z.float(), return_dict=False)[0].to(dtype)
+
+        if seam_smooth_steps > 0 and step_idx >= len(sched.timesteps) - seam_smooth_steps:
+            smooth_idx = step_idx - (len(sched.timesteps) - seam_smooth_steps)
+            z, _smooth_info = apply_seam_smoothing(
+                z=z,
+                samples=samples,
+                ref_patches=ref_patches,
+                t_pixeldit=t_pixeldit,
+                sigma=sigma,
+                dtype=dtype,
+                h_patches=h_patches,
+                w_patches=w_patches,
+                smoothing_step_idx=smooth_idx,
+                total_smoothing_steps=seam_smooth_steps,
+                base_strength=float(seam_smooth_strength),
+                schedule=seam_smooth_schedule,
+                shift_mode=seam_smooth_shift_mode,
+                forward_once=forward_once,
+                guidance_scale=guidance_scale,
+                multiscale=bool(seam_smooth_multiscale),
+                cfg_aware=bool(seam_smooth_cfg_aware),
+                adaptive_threshold=float(seam_smooth_adaptive_threshold),
+            )
 
         if callback is not None:
             try:

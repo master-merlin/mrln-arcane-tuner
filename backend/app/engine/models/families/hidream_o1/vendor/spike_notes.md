@@ -182,6 +182,39 @@ Where `lora_key` is the module name stripped of `model.model.` / `model.` prefix
 
 6. **Definition YAML (Task 14):** `lora.target_preset` field (string preset name) instead of `target_modules` / `excluded_modules`. Recipe constants (`noise_scale`, `timestep_type`, `max_loss`, `loss_target`) remain.
 
+## Task 2b — Expanded vendoring
+
+**Saganaki22 SHA:** `1f1dd545faa3ea436aa2fc89f2a555f0cbc88651`
+
+**Files vendored (7 total including compat shim):**
+
+| File | Lines | Notes |
+|---|---|---|
+| `pipeline.py` | 460 | Replaced HiDream-ai version; Saganaki22 version adds seam_smoothing, use_sage_attn, richer scheduler options |
+| `qwen3_vl_transformers.py` | 2201 | Custom model class with `x_embedder` + `final_layer2` |
+| `flash_scheduler.py` | 445 | |
+| `fm_solvers_unipc.py` | 800 | |
+| `seam_smoothing.py` | 149 | |
+| `utils.py` | 368 | |
+| `compat.py` | 35 | Saganaki22 shim (`TransformersKwargs`, `Unpack`, `auto_docstring`, `check_model_inputs`) — one level above `models/` in original repo |
+
+**Previous patches (1 & 2 from Task 2) NOT needed against Saganaki22:**
+- Patch 1 (flash-attn flag): `generate_image()` already has `use_flash_attn: bool = True` as an explicit parameter.
+- Patch 2 (torch_dtype threading): dtype is derived from `model.hidream_dtype` (or `next(model.parameters()).dtype`) — no hardcoded dtype.
+- Patch 3 (gradient checkpointing): still N/A for the same reason as Task 2.
+
+**One new MRLN-PATCH applied:**
+- `qwen3_vl_transformers.py` line 136: changed `from ..compat import` → `from .compat import` to account for the fact that both files now live in the same `vendor/` package (in Saganaki22's layout, `compat.py` is one level above `models/`).
+
+**Import smoke test result:**
+```
+pipeline ok
+model ok
+```
+Both modules import cleanly. The torch cpp-extensions warning (`upgrade to >=2.11.0, found 2.10.0+cu130`) is pre-existing and non-blocking (documented in Task 3 notes above).
+
+**Lint:** 25 upstream-style violations across the vendored files (E701 single-line colon blocks in `pipeline.py`, E402 non-top-of-file imports in `qwen3_vl_transformers.py` from conditional guard patterns, F401 unused `scipy.stats` in `fm_solvers_unipc.py`). Added file-level `# ruff: noqa` to all 7 vendored files; `ruff check` now passes cleanly. Upstream code preserved unmodified except for the MRLN-PATCH and the noqa directives.
+
 ## Task 4 — Recipe convergence
 
 (Filled in by Task 4.)

@@ -4,11 +4,30 @@ Usage (from backend/):
     python -m app.engine.models.families.hidream_o1.vendor._refresh \
         --revision <commit-sha>
 
-Clones HiDream-ai/HiDream-O1 at the specified revision into a temp dir,
-copies the pipeline file(s) we use, strips unrelated extras, and writes
-the SHA to vendor/REVISION.
+Clones Saganaki22/HiDream_O1-ComfyUI at the specified revision into a temp
+dir, copies the six Python files we vendor, and writes the SHA to
+vendor/REVISION.
+
+IMPORTANT — TWO upstream sources:
+- Python code (this script): https://github.com/Saganaki22/HiDream_O1-ComfyUI
+  Rationale: HiDream-ai's GitHub repo (HiDream-ai/HiDream-O1-Image) is
+  inference-only and does NOT include the custom model class
+  (Qwen3VLModelOutputWithPast + x_embedder + final_layer2) required for
+  training. Saganaki22's MIT-licensed ComfyUI integration vendors the
+  actual checkpoint architecture and re-implements ai-toolkit's May 2026
+  LoRA training recipe.
+- Model weights (HuggingFace): https://huggingface.co/HiDream-ai/HiDream-O1-Image
+  Weights are NOT tracked via this script. They are pinned by the model
+  definition YAML's components.unet.revision field.
 
 Runs manually only. NEVER imported at module-load time.
+
+After running:
+1. Inspect the diff.
+2. Re-apply or forward-port any `# MRLN-PATCH:` markers (currently only the
+   relative-import fix in qwen3_vl_transformers.py).
+3. Update REVISION and append a row to CHANGELOG.md.
+4. Open a PR with the diff. Refreshes are never automatic — they go through review.
 """
 
 from __future__ import annotations
@@ -20,12 +39,19 @@ import sys
 import tempfile
 from pathlib import Path
 
-UPSTREAM_REPO = "https://github.com/HiDream-ai/HiDream-O1-Image.git"
+UPSTREAM_REPO = "https://github.com/Saganaki22/HiDream_O1-ComfyUI.git"
 VENDOR_DIR = Path(__file__).parent
 
-# Files copied from the upstream repo (relative paths from upstream root).
+# Files copied from the upstream repo (key = path relative to upstream root,
+# value = destination filename inside vendor/).
 FILES_TO_COPY: dict[str, str] = {
-    "models/pipeline.py": "pipeline.py",
+    "hidream_o1/models/pipeline.py": "pipeline.py",
+    "hidream_o1/models/qwen3_vl_transformers.py": "qwen3_vl_transformers.py",
+    "hidream_o1/models/flash_scheduler.py": "flash_scheduler.py",
+    "hidream_o1/models/fm_solvers_unipc.py": "fm_solvers_unipc.py",
+    "hidream_o1/models/seam_smoothing.py": "seam_smoothing.py",
+    "hidream_o1/models/utils.py": "utils.py",
+    "hidream_o1/compat.py": "compat.py",
 }
 
 
@@ -55,7 +81,13 @@ def main() -> int:
             shutil.copy2(src, dst)
             print(f"  copied {upstream_rel} -> {local_name}")
 
-    (VENDOR_DIR / "REVISION").write_text(args.revision + "\n")
+    (VENDOR_DIR / "REVISION").write_text(
+        f"# Vendored Python code source: Saganaki22/HiDream_O1-ComfyUI (GitHub)\n"
+        f"SAGANAKI22_SHA={args.revision}\n\n"
+        f"# Model weights source: HiDream-ai/HiDream-O1-Image (HuggingFace)\n"
+        f"# (Not pinned via this file — pinned by the definition YAML's components.unet.revision.)\n"
+        f"HIDREAM_AI_REPO=https://huggingface.co/HiDream-ai/HiDream-O1-Image\n"
+    )
     print(f"Wrote REVISION: {args.revision}")
     print(
         "NOW: re-apply or forward-port every `# MRLN-PATCH:` marker,\n"

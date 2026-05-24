@@ -1,2 +1,6 @@
-# Pinned upstream commit SHA from https://github.com/HiDream-ai/HiDream-O1-Image
-4e56686b857587e6723eb542f73bcab48b19c9ee
+# Vendored Python code source: Saganaki22/HiDream_O1-ComfyUI (GitHub)
+SAGANAKI22_SHA=1f1dd545faa3ea436aa2fc89f2a555f0cbc88651
+
+# Model weights source: HiDream-ai/HiDream-O1-Image (HuggingFace)
+# (Not pinned via this file — pinned by the definition YAML's components.unet.revision.)
+HIDREAM_AI_REPO=https://huggingface.co/HiDream-ai/HiDream-O1-Image

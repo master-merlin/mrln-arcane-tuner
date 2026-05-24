@@ -59,6 +59,12 @@ export interface TrainingTemplate {
               
               @if (selectedDefinition(); as model) {
                 <div class="flex items-center gap-2">
+                  @if (model.architecture_params?.['transformer.type'] === 'unified_transformer') {
+                    <span class="badge-architecture"
+                          title="Pixel-space Unified Transformer — different VRAM characteristics than diffusion models">
+                      Unified Transformer
+                    </span>
+                  }
                   @if (modelSourceOverride(); as src) {
                     @if (src.source_type !== 'hf_hub') {
                       <span class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full cursor-default"

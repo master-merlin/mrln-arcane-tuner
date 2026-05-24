@@ -362,6 +362,13 @@ class PipelineTrainMixin:
                 extra=extra,
             )
 
+            # Persist current step to job_history every step so the UI's
+            # "Step X / Y" counter ticks live. Previously this only ran
+            # inside the periodic-save block, which meant the DB lagged by
+            # up to `save_every_n_steps - 1` steps. The actual write is a
+            # single integer update — cheap enough to run every step.
+            self._update_job_progress(step)
+
             # 8. Periodic save
             save_every = int(self.config.get("save_every_n_steps", 0))
             if save_every > 0 and step > 0 and step % save_every == 0:

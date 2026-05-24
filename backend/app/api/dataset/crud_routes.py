@@ -163,6 +163,36 @@ async def get_dataset_media(name: str, image_rel_path: str = Query(...)):
     return FileResponse(str(file_path))
 
 
+@router.get("/datasets/{name}/thumbnail")
+async def get_dataset_thumbnail(name: str, image_rel_path: str = Query(...)):
+    """Serve a 256px WebP thumbnail for a dataset image; generates if missing."""
+    from app.core.dataset import thumbnails
+
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    dataset_root = Path(dataset.path)
+    # Validate the resolved source path stays inside the dataset directory.
+    validate_path_within(dataset_root / image_rel_path, dataset_root)
+
+    thumb_path = await asyncio.to_thread(
+        thumbnails.ensure_thumbnail, dataset.path, image_rel_path,
+    )
+    if thumb_path is None:
+        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
+
+    etag = str(thumb_path.stat().st_mtime_ns)
+    return FileResponse(
+        str(thumb_path),
+        media_type="image/webp",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "ETag": etag,
+        },
+    )
+
+
 @router.delete("/datasets/{name}/pairs/{filename:path}")
 async def delete_media_pair(name: str, filename: str):
     """Delete a media file and its associated caption."""

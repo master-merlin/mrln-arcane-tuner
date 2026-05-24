@@ -427,3 +427,71 @@ def test_harmonize_files_error(mock_to_thread, mock_manager, client):
     response = client.post("/api/datasets/ghost/harmonize")
     assert response.status_code == 404
 
+
+# ── Thumbnail Endpoint ───────────────────────────────────────────────────
+
+
+class TestThumbnailEndpoint:
+    def test_get_thumbnail_returns_webp(self, client, tmp_path, monkeypatch):
+        from PIL import Image
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "ep_ds"
+        ds_path.mkdir()
+        Image.new("RGB", (640, 480), "blue").save(ds_path / "img.jpg")
+
+        dataset_manager.create_dataset("ep_ds", path=str(ds_path))
+
+        response = client.get(
+            "/api/datasets/ep_ds/thumbnail", params={"image_rel_path": "img.jpg"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/webp"
+        assert "etag" in {k.lower() for k in response.headers}
+        assert len(response.content) > 0
+
+        # Cleanup
+        dataset_manager.delete_dataset("ep_ds", delete_files=True)
+
+    def test_get_thumbnail_404_when_source_missing(self, client, tmp_path, monkeypatch):
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "ep_404"
+        ds_path.mkdir()
+        dataset_manager.create_dataset("ep_404", path=str(ds_path))
+
+        response = client.get(
+            "/api/datasets/ep_404/thumbnail", params={"image_rel_path": "ghost.jpg"},
+        )
+        assert response.status_code == 404
+
+        dataset_manager.delete_dataset("ep_404", delete_files=True)
+
+    def test_get_thumbnail_rejects_path_traversal(self, client, tmp_path, monkeypatch):
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "ep_trav"
+        ds_path.mkdir()
+        dataset_manager.create_dataset("ep_trav", path=str(ds_path))
+
+        response = client.get(
+            "/api/datasets/ep_trav/thumbnail",
+            params={"image_rel_path": "../../etc/passwd"},
+        )
+        # validate_path_within raises HTTPException(403) on escape
+        assert response.status_code in (400, 403, 404)
+
+        dataset_manager.delete_dataset("ep_trav", delete_files=True)
+

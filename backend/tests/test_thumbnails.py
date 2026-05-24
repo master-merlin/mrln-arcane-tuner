@@ -32,10 +32,11 @@ def test_thumbnail_path_for_uses_stem_and_webp(tmp_path):
     assert thumbnails.thumbnail_path_for(str(tmp_path), "img_001.jpg") == expected
 
 
-def test_thumbnail_path_for_normalizes_forward_slash_keys(tmp_path):
-    # lookup keys in media_metadata are forward-slash normalized
+def test_thumbnail_path_for_normalizes_backslash_keys(tmp_path):
+    # rel_path may arrive with Windows-style backslashes from OS APIs;
+    # the helper normalizes them before extracting the stem.
     expected = tmp_path / ".thumbnails" / "img_001.webp"
-    assert thumbnails.thumbnail_path_for(str(tmp_path), "img_001.png") == expected
+    assert thumbnails.thumbnail_path_for(str(tmp_path), "sub\\img_001.png") == expected
 
 
 # ── generate_thumbnail (images) ─────────────────────────────────────────

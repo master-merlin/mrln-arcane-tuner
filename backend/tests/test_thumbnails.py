@@ -111,3 +111,35 @@ def test_generate_thumbnail_handles_gif(tmp_path):
     assert dst.exists()
     with Image.open(dst) as img:
         assert max(img.size) == 256
+
+
+# ── generate_thumbnail (MP4) ─────────────────────────────────────────────
+
+
+def test_generate_thumbnail_handles_mp4_first_frame(tmp_path):
+    """Encode a 2-frame MP4 with PyAV and verify thumbnail extraction."""
+    import av
+    import numpy as np
+
+    src = tmp_path / "clip.mp4"
+    with av.open(str(src), mode="w") as container:
+        stream = container.add_stream("h264", rate=24)
+        stream.width = 320
+        stream.height = 240
+        stream.pix_fmt = "yuv420p"
+
+        for color in ((200, 50, 50), (50, 200, 50)):
+            frame_arr = np.full((240, 320, 3), color, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(frame_arr, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+    dst = tmp_path / ".thumbnails" / "clip.webp"
+    ok = thumbnails.generate_thumbnail(str(src), dst)
+
+    assert ok is True
+    assert dst.exists()
+    with Image.open(dst) as img:
+        assert max(img.size) == 256

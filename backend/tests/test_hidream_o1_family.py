@@ -135,3 +135,96 @@ def test_lora_wrapper_forward_adds_lora_to_base_output():
         wrapper.lora_up.copy_(torch.randn_like(wrapper.lora_up) * 0.01)
     out2 = wrapper(x)
     assert not torch.allclose(out2, base(x))
+
+
+def test_saver_writes_safetensors_and_sidecar(tmp_path):
+    """Saver produces ``<name>.safetensors`` + ``hidream_o1_lora_config.json`` sidecar."""
+    import torch
+    import torch.nn as nn
+    from app.engine.models.families.hidream_o1.lora_wrapper import (
+        HiDreamO1LoRALinear,
+        inject_lora_layers,
+    )
+    from app.engine.models.families.hidream_o1.saver import HiDreamO1Saver
+
+    class Mini(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Sequential(nn.Linear(8, 8), nn.Linear(8, 8))
+
+    m = Mini()
+    inject_lora_layers(m, rank=2, alpha=2.0)
+
+    saver = HiDreamO1Saver()
+    out_dir = tmp_path / "my_lora"
+    saver.save(
+        model=m,
+        out_dir=str(out_dir),
+        name="my_lora",
+        metadata={
+            "rank": 2,
+            "alpha": 2.0,
+            "vendor_revision": "abc123",
+            "base_model": "HiDream-ai/HiDream-O1-Image",
+            "noise_scale": 8.0,
+            "timestep_type": "linear",
+            "max_loss": 1.0,
+            "excluded_modules": ["lm_head", "patch_embed", "visual"],
+            "target_preset": "aitoolkit",
+        },
+    )
+
+    assert (out_dir / "my_lora.safetensors").exists()
+    assert (out_dir / "hidream_o1_lora_config.json").exists()
+
+
+def test_saver_keys_use_diffusion_model_prefix_kohya_style(tmp_path):
+    """LoRA keys MUST use ``diffusion_model.<key>.{lora_down,lora_up,alpha}`` — the
+    convention ComfyUI's native HiDream-O1 LoRA loader expects (matches
+    Kijai-published reference LoRAs).
+    """
+    import json
+    import torch
+    import torch.nn as nn
+    from safetensors import safe_open
+
+    from app.engine.models.families.hidream_o1.lora_wrapper import (
+        inject_lora_layers,
+    )
+    from app.engine.models.families.hidream_o1.saver import HiDreamO1Saver
+
+    class Mini(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Sequential(nn.Linear(8, 8))
+
+    m = Mini()
+    inject_lora_layers(m, rank=2, alpha=2.0)
+
+    saver = HiDreamO1Saver()
+    out_dir = tmp_path / "k"
+    saver.save(
+        model=m,
+        out_dir=str(out_dir),
+        name="k",
+        metadata={"rank": 2, "alpha": 2.0},
+    )
+
+    with safe_open(str(out_dir / "k.safetensors"), framework="pt") as f:
+        keys = sorted(f.keys())
+
+    # Every key starts with diffusion_model.
+    assert all(k.startswith("diffusion_model.") for k in keys), keys
+    # Three keys per LoRA layer (down, up, alpha) — 1 layer × 3 = 3 keys total
+    assert len(keys) == 3
+    suffixes = sorted({k.rsplit(".", 1)[1] for k in keys})
+    assert suffixes == ["alpha", "weight", "weight"][:3] or set(suffixes) == {"alpha", "weight"}
+    # Validate the specific suffixes per key
+    assert any(k.endswith(".lora_down.weight") for k in keys)
+    assert any(k.endswith(".lora_up.weight") for k in keys)
+    assert any(k.endswith(".alpha") for k in keys)
+
+    # Sidecar JSON is well-formed
+    sidecar = json.loads((out_dir / "hidream_o1_lora_config.json").read_text())
+    assert "rank" in sidecar
+    assert "alpha" in sidecar

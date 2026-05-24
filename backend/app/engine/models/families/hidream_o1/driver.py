@@ -131,14 +131,10 @@ class HiDreamO1Driver(IModelDriver):
         )
 
     def get_saver(self) -> IModelSaver:
-        """Return HiDream-O1 LoRA saver.
+        """Return HiDream-O1 LoRA saver (ComfyUI-compatible kohya format)."""
+        # Lazy import keeps the heavy safetensors import off the registry-
+        # discovery path.
+        from .saver import HiDreamO1Saver
 
-        NOTE: Stub — Task 12 implements ``HiDreamO1Saver`` and replaces this
-        method body. Until then, calling this raises ``NotImplementedError``
-        rather than a confusing ``ModuleNotFoundError``.
-        """
-        raise NotImplementedError(
-            "HiDreamO1Saver not yet implemented (Task 12). "
-            "Driver registered and usable for training-step wiring; "
-            "save-time path will activate after Task 12 lands.",
-        )
+        save_dtype = getattr(self.definition, "save_dtype", None) or "bf16"
+        return HiDreamO1Saver(save_dtype=save_dtype)

@@ -1,0 +1,39 @@
+id: hidream_o1_image
+family: hidream_o1
+name: "HiDream-O1-Image (Full)"
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 5e-6
+components:
+  repo:
+    path: huggingface:HiDream-ai/HiDream-O1-Image
+    type: diffusers
+    params: {}
+detected_precision:
+  unet: torch.bfloat16
+architecture_params:
+  base_resolution: 1024
+  steps_default: 50
+  guidance_scale_default: 5.0
+  transformer.type: unified_transformer
+training:
+  noise_scale: 8.0
+  timestep_type: linear
+  max_loss: 1.0
+lora:
+  rank_default: 32
+  alpha_default: 32
+  excluded_substrings:
+  - lm_head
+  - patch_embed
+  - visual
+  target_preset: aitoolkit
+model_size_mb:
+  transformer: 0.0
+lora_targetable_modules: []
+block_topology: []
+vram_profile:
+  bf16_no_quant_1024_b1: 0
+  bf16_int4_1024_b1: 0

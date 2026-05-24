@@ -241,3 +241,27 @@ def test_sampler_is_async_callable_with_default_constants():
     assert DEFAULT_STEPS_FULL == 50
     assert DEFAULT_GUIDANCE_FULL == 5.0
     assert asyncio.iscoroutinefunction(HiDreamO1Sampler.sample)
+
+
+def test_definition_yaml_loads_into_model_definition():
+    """The hidream_o1_image YAML parses into a valid ModelDefinition.
+
+    Mirrors the ERNIE family's definition-load test pattern.
+    """
+    yaml_path = (
+        Path(__file__).parent.parent
+        / "app/engine/models/families/hidream_o1/definitions/hidream_o1_image.yaml"
+    )
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+
+    # Project schema convention: if components values are strings, wrap them
+    # as `{"path": <string>}` for ModelDefinition consumption.
+    if "components" in data:
+        for k, v in data["components"].items():
+            if isinstance(v, str):
+                data["components"][k] = {"path": v}
+
+    definition = ModelDefinition(**data)
+    assert definition.id == "hidream_o1_image"
+    assert definition.family == "hidream_o1"

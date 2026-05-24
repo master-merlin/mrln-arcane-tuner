@@ -163,6 +163,16 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             # Persist to DB (previously in-memory only — lost on restart)
             await dataset_manager._persist_media_item_async(dataset, request.image_path)
 
+        # Source pixels were overwritten — refresh thumbnail.
+        from app.core.dataset import thumbnails
+
+        await asyncio.to_thread(
+            thumbnails.invalidate_thumbnail, dataset.path, request.image_path,
+        )
+        await asyncio.to_thread(
+            thumbnails.ensure_thumbnail, dataset.path, request.image_path,
+        )
+
         # Bump patch version for destructive upscale
         await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")
         return {"status": "upscaled", "file": request.image_path, **result}

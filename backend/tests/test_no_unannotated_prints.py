@@ -25,9 +25,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Python files added under backend/app/engine/ or backend/run_trainer.py
 # are automatically covered by the glob; add others here explicitly if
 # they should also be covered.
+#
+# Vendored third-party code (e.g., `families/*/vendor/`) is excluded —
+# we don't own its style and don't reformat it.
+def _engine_python_files() -> list[Path]:
+    """All .py files under backend/app/engine/ except vendored ones."""
+    engine_root = REPO_ROOT / "backend" / "app" / "engine"
+    return [
+        p for p in engine_root.rglob("*.py")
+        if "vendor" not in p.relative_to(engine_root).parts
+    ]
+
+
 IN_SCOPE = [
     REPO_ROOT / "backend" / "run_trainer.py",
-    *(REPO_ROOT / "backend" / "app" / "engine").rglob("*.py"),
+    *_engine_python_files(),
 ]
 
 PRINT_PATTERN = re.compile(r"\bprint\s*\(")

@@ -302,6 +302,16 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
 
     await asyncio.to_thread(_commit)
 
+    # Source pixels were overwritten by _commit — refresh thumbnail.
+    from app.core.dataset import thumbnails
+
+    await asyncio.to_thread(
+        thumbnails.invalidate_thumbnail, dataset.path, request.image_path,
+    )
+    await asyncio.to_thread(
+        thumbnails.ensure_thumbnail, dataset.path, request.image_path,
+    )
+
     # Remove from overlays.json
     overlays_data = await asyncio.to_thread(_read_overlays_json, dataset_root)
     overlays_data.pop(request.image_path, None)

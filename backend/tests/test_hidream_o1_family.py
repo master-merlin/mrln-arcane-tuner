@@ -228,3 +228,16 @@ def test_saver_keys_use_diffusion_model_prefix_kohya_style(tmp_path):
     sidecar = json.loads((out_dir / "hidream_o1_lora_config.json").read_text())
     assert "rank" in sidecar
     assert "alpha" in sidecar
+
+
+def test_sampler_is_async_callable_with_default_constants():
+    """Sampler.sample is async and exposes Full-variant defaults."""
+    import asyncio
+    from app.engine.models.families.hidream_o1.sampler import (
+        HiDreamO1Sampler,
+        DEFAULT_STEPS_FULL,
+        DEFAULT_GUIDANCE_FULL,
+    )
+    assert DEFAULT_STEPS_FULL == 50
+    assert DEFAULT_GUIDANCE_FULL == 5.0
+    assert asyncio.iscoroutinefunction(HiDreamO1Sampler.sample)

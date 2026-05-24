@@ -272,8 +272,8 @@ async def download_dataset(name: str):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path in dataset_root.rglob("*"):
-                # Skip .cache subdirectory
-                if ".cache" in file_path.parts:
+                # Skip derived/cache subdirectories
+                if ".cache" in file_path.parts or ".thumbnails" in file_path.parts:
                     continue
                 if file_path.is_file():
                     arc_name = file_path.relative_to(dataset_root)

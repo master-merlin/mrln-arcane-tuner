@@ -452,6 +452,7 @@ class TestThumbnailEndpoint:
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/webp"
         assert "etag" in {k.lower() for k in response.headers}
+        assert response.headers.get("cache-control") == "public, max-age=3600"
         assert len(response.content) > 0
 
         # Cleanup

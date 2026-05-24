@@ -182,7 +182,7 @@ async def get_dataset_thumbnail(name: str, image_rel_path: str = Query(...)):
     if thumb_path is None:
         raise HTTPException(status_code=404, detail="Thumbnail unavailable")
 
-    etag = str(thumb_path.stat().st_mtime_ns)
+    etag = f'"{thumb_path.stat().st_mtime_ns}"'
     return FileResponse(
         str(thumb_path),
         media_type="image/webp",

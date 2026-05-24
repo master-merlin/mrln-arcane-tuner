@@ -90,3 +90,24 @@ def test_generate_thumbnail_atomic_write_no_partial_files(tmp_path):
 
     tmp_files = list(dst.parent.glob("*.tmp"))
     assert tmp_files == []
+
+
+# ── generate_thumbnail (GIF) ─────────────────────────────────────────────
+
+
+def test_generate_thumbnail_handles_gif(tmp_path):
+    """PIL opens the first frame of a GIF by default."""
+    src = tmp_path / "src.gif"
+    frames = [
+        Image.new("RGB", (400, 300), (255, 0, 0)),
+        Image.new("RGB", (400, 300), (0, 255, 0)),
+    ]
+    frames[0].save(src, save_all=True, append_images=frames[1:], format="GIF")
+
+    dst = tmp_path / ".thumbnails" / "src.webp"
+    ok = thumbnails.generate_thumbnail(str(src), dst)
+
+    assert ok is True
+    assert dst.exists()
+    with Image.open(dst) as img:
+        assert max(img.size) == 256

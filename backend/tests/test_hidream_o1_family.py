@@ -45,3 +45,28 @@ def test_loader_manifest_is_single_unified_model():
     assert len(manifest) == 1
     spec = manifest[0]
     assert spec.key == "unet"
+
+
+def test_driver_reports_no_vae_no_text_encoder():
+    """Pixel-space unified model — VAE and TE are intentionally None.
+
+    HiDream-O1 has no separate VAE or text encoder. The base
+    ``GenericTrainingPipeline`` is patched in Task 10 to tolerate this.
+    """
+    from app.engine.models.families.hidream_o1.driver import HiDreamO1Driver
+
+    definition = ModelDefinition(id="x", family="hidream_o1", name="X")
+    driver = HiDreamO1Driver(definition, device=torch.device("cpu"))
+
+    # Before assign_components — all None / not yet wired
+    assert driver.get_text_encoders() == {}
+    assert driver.get_vae() is None
+
+    # After assigning the unified model
+    import torch.nn as nn
+    fake_model = nn.Linear(4, 4)
+    driver.assign_components({"unet": fake_model})
+
+    assert driver.get_primary_model() is fake_model
+    assert driver.get_text_encoders() == {}
+    assert driver.get_vae() is None

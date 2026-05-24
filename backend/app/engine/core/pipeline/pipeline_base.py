@@ -50,7 +50,17 @@ class PipelineBaseMixin(BaseTrainer):
     def encode_text(
         self, captions: list[str], dtype: torch.dtype
     ) -> Any:
-        """Encode captions into text embeddings.  Delegates to the family driver."""
+        """Encode captions into text embeddings.  Delegates to the family driver.
+
+        Returns ``None`` when the driver reports no text encoders (e.g.
+        pixel-space families like HiDream-O1 that handle text encoding
+        inside their ``forward_pass``).
+        """
+        # Task 10: tolerate no-TE families (e.g. HiDream-O1 pixel-space).
+        # If the driver declares no text encoders, text encoding is handled
+        # inside forward_pass — return None so the training loop passes it through.
+        if not self.driver.get_text_encoders():
+            return None
         return self.driver.encode_text(captions, dtype)
 
     def forward_pass(

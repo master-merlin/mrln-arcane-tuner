@@ -20,13 +20,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-UPSTREAM_REPO = "https://github.com/HiDream-ai/HiDream-O1.git"
+UPSTREAM_REPO = "https://github.com/HiDream-ai/HiDream-O1-Image.git"
 VENDOR_DIR = Path(__file__).parent
 
 # Files copied from the upstream repo (relative paths from upstream root).
 FILES_TO_COPY: dict[str, str] = {
-    # "upstream/relative/path.py": "local-name.py"
-    # Filled in by Task 2 based on what the upstream repo actually contains.
+    "models/pipeline.py": "pipeline.py",
 }
 
 

@@ -218,6 +218,20 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         # Config keys used by the recipe (pulled in compute_loss / _sample_sigma):
         self.config.setdefault("timestep_type", TIMESTEP_TYPE)
 
+    def _create_sampler(self):
+        """Create a HiDreamO1Sampler when sampling is configured.
+
+        Mirrors the convention used by other families (ernie_image, flux1, etc.):
+        return ``None`` when ``sample_every_n_steps`` is 0 to short-circuit the
+        whole sampling pipeline; otherwise instantiate the sampler.
+        """
+        interval = int(self.config.get("sample_every_n_steps", 0))
+        sample_before = bool(self.config.get("sample_before_training", True))
+        if interval <= 0 and not sample_before:
+            return None
+        from .sampler import HiDreamO1Sampler
+        return HiDreamO1Sampler(self)
+
     def _assign_components(self) -> None:
         """Wire components via driver + load processor/tokenizer for recipe.
 

@@ -230,9 +230,12 @@ def test_saver_keys_use_diffusion_model_prefix_kohya_style(tmp_path):
     assert "alpha" in sidecar
 
 
-def test_sampler_is_async_callable_with_default_constants():
-    """Sampler.sample is async and exposes Full-variant defaults."""
-    import asyncio
+def test_sampler_extends_generic_sampling_pipeline_and_overrides_sample_single():
+    """Sampler must extend the base sampling pipeline and override the
+    monolithic-sample entry point so the base ``generate_samples(step)`` flow
+    drives our family without calling the unused 3-phase hooks.
+    """
+    from app.engine.core.sampling import GenericSamplingPipeline
     from app.engine.models.families.hidream_o1.sampler import (
         HiDreamO1Sampler,
         DEFAULT_STEPS_FULL,
@@ -240,7 +243,37 @@ def test_sampler_is_async_callable_with_default_constants():
     )
     assert DEFAULT_STEPS_FULL == 50
     assert DEFAULT_GUIDANCE_FULL == 5.0
-    assert asyncio.iscoroutinefunction(HiDreamO1Sampler.sample)
+    assert issubclass(HiDreamO1Sampler, GenericSamplingPipeline)
+    # The override on _sample_single is what makes the family work end-to-end
+    # against the vendored monolithic generate_image. Confirm it's not the base
+    # implementation.
+    assert HiDreamO1Sampler._sample_single is not GenericSamplingPipeline._sample_single
+
+
+def test_trainer_create_sampler_returns_instance_when_configured():
+    """``_create_sampler`` returns a HiDreamO1Sampler when sampling is enabled."""
+    from app.engine.models.families.hidream_o1.sampler import HiDreamO1Sampler
+    from app.engine.models.families.hidream_o1.trainer import HiDreamO1Trainer
+
+    # Construct a minimal trainer-shaped stub. We don't actually invoke the
+    # full GenericTrainingPipeline lifecycle — just the _create_sampler hook.
+    # The base GenericSamplingPipeline.__init__ reads .config and .device
+    # from the trainer, so the stub provides both.
+    class _Stub:
+        config = {"sample_every_n_steps": 250}
+        definition = ModelDefinition(id="x", family="hidream_o1", name="X")
+        device = torch.device("cpu")
+
+    sampler = HiDreamO1Trainer._create_sampler(_Stub())
+    assert isinstance(sampler, HiDreamO1Sampler)
+
+    # When sampling fully disabled, returns None.
+    class _Off:
+        config = {"sample_every_n_steps": 0, "sample_before_training": False}
+        definition = ModelDefinition(id="x", family="hidream_o1", name="X")
+        device = torch.device("cpu")
+
+    assert HiDreamO1Trainer._create_sampler(_Off()) is None
 
 
 def test_definition_yaml_loads_into_model_definition():

@@ -1,25 +1,34 @@
-"""HiDream-O1 sampler — pixel-space text-to-image generation.
+"""HiDream-O1 sampler — extends ``GenericSamplingPipeline``.
 
-Wraps the vendored ``pipeline.generate_image(...)`` call in
-``asyncio.to_thread`` so the WebSocket-driven training loop isn't
-blocked. The HiDream-O1 model is pixel-space (no VAE decode), so the
-vendored helper returns PIL images directly.
+HiDream-O1's vendored ``generate_image(...)`` is a monolithic end-to-end
+inference call (no separate encode_prompt / denoise / decode_latents phases),
+so we override ``_sample_single`` directly rather than implementing the
+generic 3-phase lifecycle hooks. The abstract hooks are stubbed to raise
+``NotImplementedError`` — they're never called because ``_sample_single``
+short-circuits them.
 
-Default sampling constants reflect the FULL variant per the HF model
-card: 50 inference steps, guidance scale 5.0. The Dev (distilled)
-variant uses 28 / 1.0 — that variant is deferred to a follow-up PR.
+The base ``GenericSamplingPipeline.generate_samples(step)`` still drives:
+- eval mode + gradient-checkpointing disable
+- EMA swap
+- wildcard expansion of ``[triggerword]`` / ``[captionprefix]``
+- output dir resolution
+- PNG save + WebSocket broadcast
+- restore training state
 
-The vendored ``generate_image`` exposes many knobs (resolution,
-scheduler choice, num_samples, etc.). We forward kwargs as-is and let
-the family definition YAML supply defaults — see Task 14.
+Default sampling constants reflect the FULL variant per the HF model card:
+50 inference steps, guidance scale 5.0. The Dev (distilled) variant uses
+28 / 1.0 — deferred to a follow-up PR.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import structlog
+import torch
+from PIL import Image
+
+from app.engine.core.sampling import GenericSamplingPipeline
 
 from .vendor import pipeline as vendored_pipeline
 
@@ -31,107 +40,145 @@ DEFAULT_WIDTH: int = 1024
 DEFAULT_HEIGHT: int = 1024
 
 
-class HiDreamO1Sampler:
-    """Generate samples via the vendored HiDream-O1 pipeline."""
+class HiDreamO1Sampler(GenericSamplingPipeline):
+    """Sample images via the vendored monolithic ``generate_image``.
 
-    def __init__(self, driver: Any, definition: Any, processor: Any = None):
-        """Args:
-            driver: A ``HiDreamO1Driver`` instance with the loaded model.
-            definition: ``ModelDefinition`` (used to read defaults like
-                ``steps_default``, ``guidance_scale_default`` from
-                ``architecture_params`` if present).
-            processor: Optional processor for handling image/text formatting.
-                If not provided, will be loaded from the HF repo if needed.
-        """
-        self.driver = driver
-        self.definition = definition
-        self.processor = processor
-        self.logger = structlog.get_logger(self.__class__.__name__)
+    Overrides ``_sample_single`` instead of implementing the 3-phase
+    lifecycle hooks because HiDream-O1 doesn't expose encode/denoise/decode
+    separately — its custom unified transformer does all three internally.
+    """
 
-    async def sample(
+    def __init__(self, pipeline: Any) -> None:
+        super().__init__(pipeline)
+        self._processor: Any = None  # lazy-loaded on first sample
+
+    # ── Main override ────────────────────────────────────────────────────
+
+    def _sample_single(
         self,
-        prompts: list[str],
-        *,
-        steps: int | None = None,
-        guidance_scale: float | None = None,
-        width: int = DEFAULT_WIDTH,
-        height: int = DEFAULT_HEIGHT,
-        seed: int | None = None,
-        **kwargs: Any,
-    ) -> list[Any]:
-        """Generate one image per prompt and return PIL images.
+        prompt_cfg: dict[str, Any],
+        step: int,
+    ) -> Image.Image:
+        """Generate one sample via the vendored ``generate_image()``."""
+        prompt = prompt_cfg.get("prompt", "")
+        seed = int(prompt_cfg.get("seed", 42))
+        width = int(prompt_cfg.get("width", DEFAULT_WIDTH))
+        height = int(prompt_cfg.get("height", DEFAULT_HEIGHT))
+        num_steps = int(prompt_cfg.get("num_inference_steps", DEFAULT_STEPS_FULL))
+        guidance = float(prompt_cfg.get("guidance_scale", DEFAULT_GUIDANCE_FULL))
 
-        Args:
-            prompts: List of text prompts.
-            steps: Inference steps. Falls back to definition's
-                ``steps_default`` or ``DEFAULT_STEPS_FULL``.
-            guidance_scale: CFG scale. Falls back to definition's
-                ``guidance_scale_default`` or ``DEFAULT_GUIDANCE_FULL``.
-            width: Output width (must be patch-aligned: multiple of 32).
-            height: Output height (must be patch-aligned: multiple of 32).
-            seed: Optional RNG seed.
-            **kwargs: Forwarded to ``generate_image`` (e.g.,
-                ``num_samples``, ``scheduler``).
+        # Lazy-load processor on first sample.
+        processor = self._get_processor()
+        model = self.pipeline._get_primary_model()
 
-        Returns:
-            One PIL image per prompt (typed ``Any`` to keep PIL import
-            optional — caller iterates and saves them).
-        """
-        arch_params = getattr(self.definition, "architecture_params", {}) or {}
-        steps = steps or arch_params.get("steps_default") or DEFAULT_STEPS_FULL
-        guidance_scale = (
-            guidance_scale
-            or arch_params.get("guidance_scale_default")
-            or DEFAULT_GUIDANCE_FULL
+        self.logger.info(
+            "hidream_o1.sampler.generate_start",
+            step=step + 1,
+            prompt_chars=len(prompt),
+            steps=num_steps,
+            guidance=guidance,
+            width=width,
+            height=height,
+            seed=seed,
         )
 
-        model = self.driver.get_primary_model()
-        processor = self.processor
+        result = vendored_pipeline.generate_image(
+            model=model,
+            processor=processor,
+            prompt=prompt,
+            height=height,
+            width=width,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance,
+            seed=seed,
+            use_flash_attn=False,    # safer default — flash-attn may not be installed
+            use_sage_attn=False,
+        )
 
-        # If processor is not provided, lazy-load it from the HF repo
-        if processor is None:
-            def _load_processor():
-                from transformers import AutoProcessor
-                repo = (
-                    getattr(
-                        getattr(self.definition, "components", {}) or {}, "unet", None,
-                    ) or {}
-                )
+        # generate_image returns either a single PIL image or a list. Normalize.
+        if isinstance(result, list):
+            image = result[0]
+        else:
+            image = result
+
+        self.logger.info(
+            "hidream_o1.sampler.generate_complete",
+            step=step + 1,
+            size=(image.width, image.height),
+        )
+        return image
+
+    # ── Lazy processor ───────────────────────────────────────────────────
+
+    def _get_processor(self) -> Any:
+        """Lazy-load AutoProcessor from the HF repo (cached after first call)."""
+        if self._processor is not None:
+            return self._processor
+
+        from transformers import AutoProcessor
+
+        # Try the trainer's processor field first (if the loader path
+        # populated it); fall back to AutoProcessor.from_pretrained.
+        trainer_processor = getattr(self.pipeline, "processor", None)
+        if trainer_processor is not None:
+            self._processor = trainer_processor
+            return self._processor
+
+        repo_id = "HiDream-ai/HiDream-O1-Image"
+        defn = getattr(self.pipeline, "definition", None)
+        if defn is not None:
+            components = getattr(defn, "components", None) or {}
+            unet_spec = (
+                components.get("unet") if isinstance(components, dict) else None
+            )
+            if unet_spec is not None:
                 repo_id = (
-                    getattr(repo, "repo", None)
-                    or getattr(repo, "path", None)
-                    or "HiDream-ai/HiDream-O1-Image"
+                    getattr(unet_spec, "repo", None)
+                    or getattr(unet_spec, "path", None)
+                    or repo_id
                 )
-                return AutoProcessor.from_pretrained(repo_id, trust_remote_code=True)
 
-            processor = _load_processor()
+        self.logger.info(
+            "hidream_o1.sampler.loading_processor",
+            repo_id=repo_id,
+        )
+        self._processor = AutoProcessor.from_pretrained(
+            repo_id, trust_remote_code=False,
+        )
+        return self._processor
 
-        def _blocking_generate() -> list[Any]:
-            outputs: list[Any] = []
-            for prompt in prompts:
-                self.logger.info(
-                    "hidream_o1.sampler.generate",
-                    prompt_chars=len(prompt),
-                    steps=steps,
-                    guidance_scale=guidance_scale,
-                    width=width,
-                    height=height,
-                )
-                # The vendored generate_image signature requires processor.
-                result = vendored_pipeline.generate_image(
-                    model=model,
-                    processor=processor,
-                    prompt=prompt,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance_scale,
-                    width=width,
-                    height=height,
-                    seed=seed,
-                    **kwargs,
-                )
-                # generate_image returns a single PIL image per prompt
-                # (pixel-space, no VAE decode).
-                outputs.append(result)
-            return outputs
+    # ── Abstract-hook stubs ──────────────────────────────────────────────
+    # These exist solely to satisfy ABC instantiation. They are never
+    # invoked because we override _sample_single above.
 
-        return await asyncio.to_thread(_blocking_generate)
+    def encode_prompt(self, prompt: str) -> Any:  # pragma: no cover
+        raise NotImplementedError(
+            "HiDream-O1 uses monolithic generate_image — see _sample_single override.",
+        )
+
+    def denoise(
+        self,
+        noise: torch.Tensor,
+        prompt_embedding: Any,
+        num_steps: int,
+        guidance_scale: float,
+        seed: int,
+    ) -> Any:  # pragma: no cover
+        raise NotImplementedError(
+            "HiDream-O1 uses monolithic generate_image — see _sample_single override.",
+        )
+
+    def decode_latents(self, latents: Any) -> Image.Image:  # pragma: no cover
+        raise NotImplementedError(
+            "HiDream-O1 uses monolithic generate_image — see _sample_single override.",
+        )
+
+    def _create_initial_noise(
+        self,
+        width: int,
+        height: int,
+        generator: torch.Generator,
+    ) -> torch.Tensor:  # pragma: no cover
+        raise NotImplementedError(
+            "HiDream-O1 uses monolithic generate_image — see _sample_single override.",
+        )

@@ -97,6 +97,91 @@ The vendored `pipeline.py` is **inference-only** and does not show the training 
 - Symlinks not active on Windows without dev-mode; degraded cache (HF warning) — not blocking.
 - GPU confirmed: RTX PRO 6000 Blackwell, 102.6 GB VRAM.
 
+## Task 3a — Recipe derivation from Saganaki22's trainer
+
+Researched [Saganaki22/HiDream_O1-ComfyUI](https://github.com/Saganaki22/HiDream_O1-ComfyUI) (MIT) to derive the actual training recipe. Two findings — one about the recipe, one structural.
+
+### Recipe (ai-toolkit May 2026 as implemented in Saganaki22)
+
+```python
+# Image → patches (PATCH_SIZE = 32 from models/pipeline.py)
+patches = einops.rearrange(image, "b c (h p1) (w p2) -> b (h w) (c p1 p2)", p1=32, p2=32)
+# patches shape: (1, num_patches, 3*32*32) where num_patches = (H/32) * (W/32)
+
+# Sigma sampling (linear timestep_type)
+sigma = torch.rand(batch_size).clamp(T_EPS, 0.9999)   # T_EPS = 0.001
+# (sigmoid and shift modes also supported)
+
+# Forward noise injection
+noise = torch.randn_like(patches)
+scaled_noise = noise * 8.0                             # noise_scale = 8.0
+noisy = (1.0 - sigma) * patches + sigma * scaled_noise
+timestep = 1.0 - sigma
+
+# Custom model forward (NOT stock transformers — see structural finding below)
+outputs = model(
+    input_ids=text_sample["input_ids"],
+    position_ids=text_sample["position_ids"],
+    vinputs=noisy,                                     # noisy image patches
+    timestep=timestep,
+    token_types=text_sample["token_types"],
+    use_flash_attn=...,
+    use_sage_attn=...,
+)
+x0_pred = outputs.x_pred[0, text_sample["vinput_mask"][0]].unsqueeze(0)
+
+# Velocity-equivalent loss (default; "x0" mode also available)
+sigma_loss = sigma.clamp_min(T_EPS)
+velocity_pred = (noisy - x0_pred) / sigma_loss
+velocity_target = scaled_noise - patches
+loss = F.mse_loss(velocity_pred, velocity_target).clamp(max=1.0)   # max_loss = 1.0
+```
+
+### Structural finding — model class is CUSTOM
+
+**Saganaki22 does NOT use stock `Qwen3VLForConditionalGeneration`.** They vendor a custom class in `models/qwen3_vl_transformers.py` (~700 lines) that:
+- Extends Qwen3VL building blocks (config classes, attention, MLP, decoder layer) imported from `transformers.models.qwen3_vl`.
+- Adds an `x_embedder` (proj1/proj2) that projects image patches into the model's hidden space.
+- Adds `final_layer2.linear` (the pixel-prediction head).
+- Adds `Qwen3VLModelOutputWithPast.x_pred: Optional[torch.FloatTensor]` to the output dataclass.
+- Accepts `vinputs`, `timestep`, `token_types`, `use_flash_attn`, `use_sage_attn` forward kwargs (not in stock transformers).
+
+The HF repo's `config.json` declares `architectures=["Qwen3VLForConditionalGeneration"]` for compatibility, but the checkpoint contains weights for the additional `x_embedder` and `final_layer2` modules. Loading via stock `AutoModelForImageTextToText` silently drops them. Our loader MUST instantiate the custom class.
+
+### LoRA targeting (from `training/lora.py`)
+
+Saganaki22's `target_preset` options:
+- `"aitoolkit"` / `"ai-toolkit"` / `"ostris"` — all linear-like layers EXCEPT names containing `lm_head` / `patch_embed` / `visual`. This is the documented ai-toolkit recipe.
+- `"attention"` (default `"attention+pixel"`) — only `language_model.layers.N.self_attn.{q,k,v,o}_proj`.
+- Adds `"mlp"` → also include `language_model.layers.N.mlp.{gate,up,down}_proj`.
+- Adds `"pixel"` → also include the pixel heads `x_embedder.proj1/proj2`, `final_layer2.linear`.
+
+The visual encoder (`model.visual.*`) is always excluded — too large and not the trainable side.
+
+### LoRA artifact format (from `training/lora.py:lora_state_dict`)
+
+```python
+state[f"diffusion_model.{lora_key}.lora_down.weight"] = layer.lora_down  # (rank, in_features)
+state[f"diffusion_model.{lora_key}.lora_up.weight"]   = layer.lora_up    # (out_features, rank)
+state[f"diffusion_model.{lora_key}.alpha"]            = torch.tensor(alpha)
+```
+
+Where `lora_key` is the module name stripped of `model.model.` / `model.` prefix. Kohya/ai-toolkit style — NOT peft-native (which uses `.lora_A.weight` / `.lora_B.weight`). ComfyUI's native HiDream-O1 LoRA loader expects this format.
+
+### Implications for our plan (revising in place)
+
+1. **Task 2 must be extended (call it Task 2b):** also vendor `models/qwen3_vl_transformers.py` + the helpers it pulls in (likely `flash_scheduler.py`, `fm_solvers_unipc.py`, `utils.py`, `seam_smoothing.py` — to be confirmed by reading pipeline.py imports).
+
+2. **Task 8 (loader):** instantiate the vendored custom class — NOT `AutoModelForImageTextToText`. Load HF weights via `state_dict` after manual class construction.
+
+3. **Task 11 (trainer):** implement the recipe above. NOT peft. Use a small custom `LoRALinear` wrapper (mirror Saganaki22's `HiDreamO1LoRALinear` — 50 lines of code). The injection helper mirrors `inject_lora_layers`.
+
+4. **Task 12 (saver):** key format `diffusion_model.<lora_key>.{lora_down.weight, lora_up.weight, alpha}`. Mirror Saganaki22's `lora_state_dict`. Sidecar JSON unchanged.
+
+5. **Task 13 (sampler):** use `pipeline.generate_image(...)` from the vendored file.
+
+6. **Definition YAML (Task 14):** `lora.target_preset` field (string preset name) instead of `target_modules` / `excluded_modules`. Recipe constants (`noise_scale`, `timestep_type`, `max_loss`, `loss_target`) remain.
+
 ## Task 4 — Recipe convergence
 
 (Filled in by Task 4.)

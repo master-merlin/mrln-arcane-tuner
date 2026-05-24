@@ -57,12 +57,15 @@ def update_metadata_after_edit(
     lookup_key: str,
     full_path: str,
     new_dims: tuple[int, int] | None = None,
+    dataset_path: str | None = None,
 ) -> None:
     """Update lightweight metadata fields after a destructive edit.
 
     Clears the solid hash (content changed), updates size_bytes,
-    and nullifies mask references (physical files already deleted
-    by ``invalidate_mask_files``).
+    nullifies mask references (physical files already deleted
+    by ``invalidate_mask_files``), and — when ``dataset_path`` is
+    supplied — invalidates and regenerates the source's thumbnail
+    so the next GET serves a fresh image.
 
     Args:
         metadata: The dataset's ``media_metadata`` dict.
@@ -70,6 +73,9 @@ def update_metadata_after_edit(
         full_path: Absolute path to the edited file.
         new_dims: Optional ``(width, height)`` if dimensions changed (crop).
             If None, dimensions are left unchanged (adjustment).
+        dataset_path: When provided, the source's thumbnail is invalidated
+            and regenerated. Callers that mutate source pixels should
+            pass this; metadata-only edits may omit it.
     """
     if lookup_key not in metadata:
         return
@@ -99,3 +105,11 @@ def update_metadata_after_edit(
         entry["target_width"] = w
         entry["target_height"] = h
         entry["is_majority_ar"] = True
+
+    # Refresh the thumbnail so subsequent GETs serve the new pixels.
+    if dataset_path is not None:
+        # Local import to avoid a circular import path through scan helpers.
+        from app.core.dataset import thumbnails
+
+        thumbnails.invalidate_thumbnail(dataset_path, lookup_key)
+        thumbnails.ensure_thumbnail(dataset_path, lookup_key)

@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from app.engine.strategies.ema import EMAHandler
 from app.engine.core.interfaces import BaseTrainer
@@ -50,7 +51,17 @@ class PipelineBaseMixin(BaseTrainer):
     def encode_text(
         self, captions: list[str], dtype: torch.dtype
     ) -> Any:
-        """Encode captions into text embeddings.  Delegates to the family driver."""
+        """Encode captions into text embeddings.  Delegates to the family driver.
+
+        Returns ``None`` when the driver reports no text encoders (e.g.
+        pixel-space families like HiDream-O1 that handle text encoding
+        inside their ``forward_pass``).
+        """
+        # Task 10: tolerate no-TE families (e.g. HiDream-O1 pixel-space).
+        # If the driver declares no text encoders, text encoding is handled
+        # inside forward_pass — return None so the training loop passes it through.
+        if not self.driver.get_text_encoders():
+            return None
         return self.driver.encode_text(captions, dtype)
 
     def forward_pass(
@@ -130,6 +141,42 @@ class PipelineBaseMixin(BaseTrainer):
             Weight tensor [B] or None.
         """
         return None
+
+    def _compute_step_loss(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        timesteps: torch.Tensor,
+        batch: dict[str, Any],
+        grad_accum: int,
+    ) -> torch.Tensor:
+        """Compute loss for one gradient-accumulation step.
+
+        Default: weighted MSE between ``pred`` and ``target``, scaled by
+        ``1/grad_accum``.  Override in family trainers that bypass the
+        latent/noise pipeline and compute their own recipe loss (e.g.
+        HiDream-O1's pixel-space velocity loss computed inside
+        ``forward_pass`` / ``compute_loss``).
+
+        Args:
+            pred: Model prediction from ``forward_pass``.
+            target: Training target from ``compute_target``.
+            timesteps: Sampled timesteps.
+            batch: Full batch dict.
+            grad_accum: Gradient accumulation steps (used for scaling).
+
+        Returns:
+            Scalar loss tensor, already divided by ``grad_accum``.
+        """
+        loss_weight = self.compute_loss_weight(timesteps)
+        if loss_weight is not None:
+            loss = F.mse_loss(pred.float(), target.float(), reduction="none")
+            loss = loss.mean(dim=list(range(1, len(loss.shape)))) * loss_weight
+            loss = loss.mean()
+        else:
+            loss = F.mse_loss(pred.float(), target.float())
+
+        return loss / grad_accum
 
     def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
         """Add family-specific data to the batch dict.

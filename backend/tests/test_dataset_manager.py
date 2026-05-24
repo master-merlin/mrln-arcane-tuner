@@ -467,3 +467,26 @@ class TestThumbnailInvalidation:
         manager.delete_media_pair("tn_del", "a.jpg")
 
         assert not thumb.exists()
+
+    def test_harmonize_files_purges_and_rebuilds_thumbnails(self, manager, tmp_path):
+        from app.core.dataset import thumbnails
+
+        ds_path = tmp_path / "datasets" / "tn_harm"
+        ds_path.mkdir(parents=True)
+        _create_image(str(ds_path / "orig.png"))
+
+        manager.create_dataset("tn_harm", path=str(ds_path))
+        manager.scan_dataset("tn_harm")
+
+        old_thumb = thumbnails.thumbnail_path_for(str(ds_path), "orig.png")
+        assert old_thumb.exists()
+
+        manager.harmonize_files("tn_harm")
+
+        # The old-named thumbnail is gone
+        assert not old_thumb.exists()
+        # The new-named thumbnail exists (harmonize renames to {base}_00001.jpg)
+        new_thumb_dir = ds_path / ".thumbnails"
+        webps = list(new_thumb_dir.glob("*.webp"))
+        assert len(webps) == 1
+        assert webps[0].name.endswith("_00001.webp")

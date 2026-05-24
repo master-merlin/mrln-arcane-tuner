@@ -1553,6 +1553,13 @@ class DatasetManager:
             # Store final name for metadata remapping
             entry["final_media_file"] = f"{final_stem}.jpg"
 
+        # Purge `.thumbnails/` — stems changed, scan will rebuild.
+        from app.core.dataset import thumbnails
+
+        thumb_dir = thumbnails.thumbnail_dir(dataset.path)
+        if thumb_dir.exists():
+            shutil.rmtree(thumb_dir, ignore_errors=True)
+
         # --- Pass 3: Remap in-memory metadata old→new before scan ---
         # This ensures scan_dataset sees correct metadata (hashes, scores, etc.)
         # for renamed files, and recalculates for converted files.

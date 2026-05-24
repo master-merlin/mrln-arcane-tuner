@@ -230,6 +230,64 @@ def test_saver_keys_use_diffusion_model_prefix_kohya_style(tmp_path):
     assert "alpha" in sidecar
 
 
+def test_saver_writes_ss_header_metadata_for_inference_tools(tmp_path):
+    """Safetensors header must carry Kohya ``ss_*`` keys so ComfyUI's metadata
+    viewer / lora-inspector / Civitai can display rank, alpha, optimizer, LR,
+    seed, etc. without falling back to the sidecar JSON.
+    """
+    import torch
+    import torch.nn as nn
+    from safetensors import safe_open
+    from app.engine.models.families.hidream_o1.lora_wrapper import inject_lora_layers
+    from app.engine.models.families.hidream_o1.saver import HiDreamO1Saver
+
+    class Mini(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Sequential(nn.Linear(8, 8))
+
+    m = Mini()
+    inject_lora_layers(m, rank=4, alpha=8.0)
+
+    saver = HiDreamO1Saver()
+    out_dir = tmp_path / "meta"
+    cfg = {
+        "optimizer_type": "AdamW",
+        "lr_scheduler": "cosine",
+        "learning_rate": 1e-4,
+        "max_train_steps": 6000,
+        "train_batch_size": 1,
+        "seed": 42,
+        "lora_name": "my_lora",
+        "save_precision": "fp16",
+    }
+    saver.save(
+        components={"unet": m, "config": cfg},
+        path=out_dir / "meta.safetensors",
+        metadata={"step": 1000, "ss_session_id": "job-xyz"},
+    )
+
+    with safe_open(str(out_dir / "meta.safetensors"), framework="pt") as f:
+        md = f.metadata() or {}
+
+    assert md.get("modelspec.architecture") == "hidream_o1"
+    assert md.get("ss_network_dim") == "4"
+    assert md.get("ss_network_alpha") == "8.0"
+    assert md.get("ss_optimizer") == "AdamW"
+    assert md.get("ss_lr_scheduler") == "cosine"
+    assert md.get("ss_learning_rate") == "0.0001"
+    assert md.get("ss_steps") == "6000"
+    assert md.get("ss_seed") == "42"
+    assert md.get("ss_output_name") == "my_lora"
+    assert md.get("ss_step") == "1000"
+    assert md.get("ss_session_id") == "job-xyz"
+
+    # save_precision="fp16" → saved tensors are fp16
+    with safe_open(str(out_dir / "meta.safetensors"), framework="pt") as f:
+        sample_key = next(k for k in f.keys() if k.endswith(".lora_down.weight"))
+        assert f.get_tensor(sample_key).dtype == torch.float16
+
+
 def test_sampler_extends_generic_sampling_pipeline_and_overrides_sample_single():
     """Sampler must extend the base sampling pipeline and override the
     monolithic-sample entry point so the base ``generate_samples(step)`` flow

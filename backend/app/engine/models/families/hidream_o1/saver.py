@@ -21,9 +21,9 @@ from typing import Any
 import structlog
 import torch
 import torch.nn as nn
-from safetensors.torch import save_file
 
 from app.engine.core.interfaces import IModelSaver
+from app.engine.utils.safe_save import safe_save_file
 
 from .lora_wrapper import HiDreamO1LoRALinear
 from .vendor.pipeline import NOISE_SCALE as NOISE_SCALE_DEFAULT
@@ -88,23 +88,15 @@ class HiDreamO1Saver(IModelSaver):
         path: Path,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Base-interface conforming ``save`` (Fix: Concern 4, Task 16).
+        """Base-interface conforming ``save``.
 
         ``CheckpointManager.save_checkpoint`` calls
         ``saver.save(components_dict, dist_path, metadata=metadata)``
         where ``dist_path`` is a ``Path`` to the ``.safetensors`` file.
 
-        We adapt to our custom ``_save_lora`` method by:
-        - extracting the model from ``components["unet"]``
-        - splitting ``path`` into ``(parent_dir, stem)``
-        - reading LoRA name + training config from ``components["config"]``
-
-        Args:
-            components: Dict with ``"unet"`` (model with LoRA wrappers)
-                and optional ``"config"`` (training config dict).
-            path: Desired output ``.safetensors`` path.
-                Parent directory is used as ``out_dir``; stem as LoRA name.
-            metadata: Extra metadata fields for the sidecar JSON.
+        Honors ``config["save_precision"]`` (fp16/bf16/fp32) by switching
+        ``self.save_dtype`` for this call so different runs can pick their
+        artifact precision via training settings.
         """
         path = Path(path)
         model = components.get("unet")
@@ -113,21 +105,30 @@ class HiDreamO1Saver(IModelSaver):
             return
 
         config = components.get("config") or {}
-        # Merge training config into metadata so the sidecar is informative
+
+        # Per-call save_dtype override from training config
+        prev_dtype = self.save_dtype
+        if isinstance(config, dict) and config.get("save_precision"):
+            self.save_dtype = _resolve_dtype(config.get("save_precision"))
+
         merged_meta: dict[str, Any] = {
             "noise_scale": float(config.get("noise_scale", NOISE_SCALE_DEFAULT)),
             "timestep_type": config.get("timestep_type", "linear"),
             "max_loss": float(config.get("max_loss", 1.0)),
+            "config": config if isinstance(config, dict) else None,
         }
         if metadata:
             merged_meta.update(metadata)
 
-        self._save_lora(
-            model=model,
-            out_dir=str(path.parent),
-            name=path.stem,
-            metadata=merged_meta,
-        )
+        try:
+            self._save_lora(
+                model=model,
+                out_dir=str(path.parent),
+                name=path.stem,
+                metadata=merged_meta,
+            )
+        finally:
+            self.save_dtype = prev_dtype
 
     # ── Direct API (used by tests and external callers) ───────────────────
 
@@ -177,7 +178,9 @@ class HiDreamO1Saver(IModelSaver):
 
         state = _build_state_dict(layers, dtype=self.save_dtype)
         weights_path = out_path / f"{name}.safetensors"
-        save_file(state, str(weights_path))
+
+        header_metadata = self._build_header_metadata(layers, metadata or {})
+        safe_save_file(state, str(weights_path), metadata=header_metadata)
 
         sidecar = self._build_sidecar(layers, metadata or {})
         sidecar_path = out_path / "hidream_o1_lora_config.json"
@@ -190,8 +193,89 @@ class HiDreamO1Saver(IModelSaver):
             layers=len(layers),
             state_keys=len(state),
             dtype=str(self.save_dtype),
+            header_meta_keys=len(header_metadata),
         )
         return out_path
+
+    def _build_header_metadata(
+        self,
+        layers: list[HiDreamO1LoRALinear],
+        metadata: dict[str, Any],
+    ) -> dict[str, str]:
+        """Build Kohya-compatible ss_* header for the .safetensors file.
+
+        Mirrors ``GenericLoRASaver``'s metadata so ComfyUI / lora-inspector /
+        Civitai can read rank, alpha, optimizer, learning rate, seed, etc.
+        directly from the header. Rank/alpha are read off the wrappers
+        because we don't use PEFT — there's no ``peft_config`` to query.
+        """
+        rank = int(metadata.get("rank") or (layers[0].rank if layers else 0))
+        alpha = float(metadata.get("alpha") or (layers[0].alpha if layers else 0.0))
+
+        header: dict[str, str] = {
+            "format": "pt",
+            "software": '{"name": "Arcane Tuner"}',
+            "version": "1.0",
+            "ss_network_dim": str(rank),
+            "ss_network_alpha": str(alpha),
+            "modelspec.architecture": "hidream_o1",
+        }
+
+        config = metadata.get("config")
+        if isinstance(config, dict):
+            _MAP_STR = {
+                "optimizer_type": "ss_optimizer",
+                "lr_scheduler": "ss_lr_scheduler",
+                "mixed_precision": "ss_mixed_precision",
+                "lora_name": "ss_output_name",
+                "definition_id": "ss_sd_model_name",
+                "model_family": "ss_base_model_version",
+                "global_triggerword": "ss_training_comment",
+                "timestep_sampling": "ss_timestep_sampling",
+            }
+            _MAP_NUM = {
+                "learning_rate": "ss_learning_rate",
+                "max_train_steps": "ss_steps",
+                "train_batch_size": "ss_batch_size_per_device",
+                "gradient_accumulation_steps": "ss_gradient_accumulation_steps",
+                "noise_offset": "ss_noise_offset",
+                "min_snr_gamma": "ss_min_snr_gamma",
+                "lr_warmup_steps": "ss_warmup_steps",
+                "weight_decay": "ss_weight_decay",
+                "seed": "ss_seed",
+            }
+            for cfg_key, ss_key in _MAP_STR.items():
+                val = config.get(cfg_key)
+                if val is not None and str(val).strip():
+                    header[ss_key] = str(val)
+            for cfg_key, ss_key in _MAP_NUM.items():
+                val = config.get(cfg_key)
+                if val is not None:
+                    header[ss_key] = str(val)
+
+            resolutions = config.get("resolutions")
+            if resolutions and isinstance(resolutions, list):
+                r = resolutions[0]
+                header["ss_resolution"] = f"({r},{r})"
+
+            datasets = config.get("datasets")
+            if datasets and isinstance(datasets, list):
+                header["ss_num_train_images"] = str(
+                    sum(d.get("num_repeats", 1) for d in datasets if isinstance(d, dict))
+                )
+
+        # HiDream-O1 recipe fields — useful when inspecting why a LoRA behaves
+        # a certain way at inference (noise_scale and max_loss are non-default).
+        for k in ("noise_scale", "timestep_type", "max_loss", "vendor_revision"):
+            if k in metadata and metadata[k] is not None:
+                header[f"ss_{k}"] = str(metadata[k])
+
+        # Caller-provided step/job_id from CheckpointManager
+        for k in ("step", "ss_session_id"):
+            if k in metadata and metadata[k] is not None:
+                header[k if k.startswith("ss_") else f"ss_{k}"] = str(metadata[k])
+
+        return header
 
     def _build_sidecar(
         self,

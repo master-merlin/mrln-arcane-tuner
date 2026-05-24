@@ -276,6 +276,24 @@ def test_trainer_create_sampler_returns_instance_when_configured():
     assert HiDreamO1Trainer._create_sampler(_Off()) is None
 
 
+def test_trainer_build_trainable_components_returns_empty_dict():
+    """``_build_trainable_components`` must NOT return the full unet.
+
+    The base default returns ``{"unet": <model>}`` which the
+    CheckpointManager dumps via ``save_pretrained`` — a ~35 GB sharded
+    write for HiDream-O1's non-peft Qwen3VLForConditionalGeneration.
+    The actual LoRA artifact is saved separately via ``saver.save(...)``;
+    the per-component dump is wasted disk for this family.
+    """
+    from app.engine.models.families.hidream_o1.trainer import HiDreamO1Trainer
+
+    # Bare unbound-method call — we don't need a real trainer instance.
+    result = HiDreamO1Trainer._build_trainable_components(object())
+    assert result == {}, (
+        "must be empty — full-model save_pretrained would write 35 GB/checkpoint"
+    )
+
+
 def test_definition_yaml_loads_into_model_definition():
     """The hidream_o1_image YAML parses into a valid ModelDefinition.
 

@@ -82,6 +82,24 @@ class HiDreamO1Sampler(GenericSamplingPipeline):
             seed=seed,
         )
 
+        # Per-step status callback so the UI shows "Sampling X/Y" instead of
+        # a generic "Sampling" for the whole 20-step generation. The vendored
+        # generate_image fires callback(step_idx, total_steps, preview_fn)
+        # once per denoising step.
+        emit_status = getattr(self.pipeline, "_emit_status", None)
+
+        def _progress_callback(
+            step_idx: int,
+            total_steps: int,
+            _preview_fn: Any,
+        ) -> None:
+            if emit_status is not None:
+                # step_idx is 0-based; display 1-based for the UI
+                try:
+                    emit_status(f"Sampling {step_idx + 1}/{total_steps}")
+                except Exception:
+                    pass  # status emit must never break sampling
+
         result = vendored_pipeline.generate_image(
             model=model,
             processor=processor,
@@ -91,6 +109,7 @@ class HiDreamO1Sampler(GenericSamplingPipeline):
             num_inference_steps=num_steps,
             guidance_scale=guidance,
             seed=seed,
+            callback=_progress_callback,
             use_flash_attn=False,    # safer default — flash-attn may not be installed
             use_sage_attn=False,
         )

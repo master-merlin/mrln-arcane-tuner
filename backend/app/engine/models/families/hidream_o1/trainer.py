@@ -229,6 +229,29 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         # Config keys used by the recipe (pulled in compute_loss / _sample_sigma):
         self.config.setdefault("timestep_type", TIMESTEP_TYPE)
 
+    def _build_trainable_components(self) -> dict[str, Any]:
+        """Skip the per-component checkpoint dump.
+
+        The base default returns ``{"unet": <full model>}``, which causes
+        ``CheckpointManager._save_train_state`` to call
+        ``comp.save_pretrained(...)`` on the full Qwen3VLForConditionalGeneration
+        — a ~35 GB sharded dump alongside the LoRA. For peft-wrapped families
+        ``save_pretrained`` writes only the adapter (small); for our custom
+        LoRA wrappers it writes the entire frozen base, which is wasted disk
+        and IO.
+
+        The actual LoRA artifact (the diff we care about) is already written
+        separately by ``CheckpointManager.save_checkpoint`` at
+        ``<output_dir>/<lora>_<step>.safetensors`` via ``self.saver.save(...)``
+        — that path is unaffected.
+
+        Returning an empty dict means resume from a checkpoint won't restore
+        the LoRA wrapper parameters automatically; resumption-with-LoRA would
+        need a separate ``load_lora`` call. That's a follow-up — the priority
+        here is to stop the 35 GB per-checkpoint waste.
+        """
+        return {}
+
     def _create_sampler(self):
         """Create a HiDreamO1Sampler when sampling is configured.
 

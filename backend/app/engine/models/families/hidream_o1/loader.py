@@ -108,13 +108,24 @@ class HiDreamO1Loader(GenericComponentLoader):
 
         # Step 1: resolve snapshot dir (HF cache); does NOT re-download if cached.
         t0 = time.time()
-        snap_dir = Path(
-            snapshot_download(
+        try:
+            snap_dir = Path(
+                snapshot_download(
+                    repo_id=repo_id,
+                    revision=revision,
+                    local_files_only=False,  # allow download if missing; existing cache hits will short-circuit
+                ),
+            )
+        except OSError as e:
+            self.logger.error(
+                "hidream_o1.load.snapshot_failed",
                 repo_id=repo_id,
                 revision=revision,
-                local_files_only=False,  # allow download if missing; existing cache hits will short-circuit
-            ),
-        )
+                error=str(e),
+            )
+            raise RuntimeError(
+                f"snapshot_download for {repo_id} failed: {e}",
+            ) from e
         self.logger.info(
             "hidream_o1.load.snapshot_resolved",
             snap_dir=str(snap_dir),
@@ -154,7 +165,17 @@ class HiDreamO1Loader(GenericComponentLoader):
         t2 = time.time()
         state_dict: dict[str, torch.Tensor] = {}
         for shard in shard_files:
-            shard_state = load_file(str(shard))
+            try:
+                shard_state = load_file(str(shard))
+            except Exception as e:
+                self.logger.error(
+                    "hidream_o1.load.shard_failed",
+                    shard=shard.name,
+                    error=str(e),
+                )
+                raise RuntimeError(
+                    f"failed to load shard {shard.name}: {e}",
+                ) from e
             state_dict.update(shard_state)
             self.logger.debug(
                 "hidream_o1.load.shard_loaded",
@@ -198,6 +219,47 @@ class HiDreamO1Loader(GenericComponentLoader):
             unexpected=len(unexpected),
             seconds=round(time.time() - t3, 2),
         )
+
+        # Step 5b: materialize any parameters still on meta device (params whose
+        # names weren't in the checkpoint). load_state_dict(strict=False) silently
+        # leaves them on meta; .to(device) would crash. Initialize them to zeros so
+        # they're at least usable downstream (caller is responsible for proper init).
+        meta_params = [
+            (name, p) for name, p in model.named_parameters() if p.device.type == "meta"
+        ]
+        meta_buffers = [
+            (name, b) for name, b in model.named_buffers() if b.device.type == "meta"
+        ]
+        if meta_params or meta_buffers:
+            self.warnings.append(
+                f"{len(meta_params)} parameter(s) and {len(meta_buffers)} buffer(s) "
+                f"still on meta device after load — zeroing them (sample: "
+                f"{[n for n, _ in meta_params[:3]]})",
+            )
+            self.logger.warning(
+                "hidream_o1.load.meta_residual",
+                params=len(meta_params),
+                buffers=len(meta_buffers),
+                sample_params=[n for n, _ in meta_params[:5]],
+            )
+            # Materialize meta tensors as zeros on CPU; the subsequent .to(device)
+            # call moves them to the final device.
+            for name, p in meta_params:
+                new_p = torch.zeros(p.shape, dtype=p.dtype if p.dtype != torch.float32 or dtype is None else dtype)
+                # Walk to the parent module and assign
+                parts = name.split(".")
+                parent = model
+                for part in parts[:-1]:
+                    parent = getattr(parent, part)
+                setattr(parent, parts[-1], torch.nn.Parameter(new_p, requires_grad=p.requires_grad))
+            for name, b in meta_buffers:
+                new_b = torch.zeros(b.shape, dtype=b.dtype)
+                parts = name.split(".")
+                parent = model
+                for part in parts[:-1]:
+                    parent = getattr(parent, part)
+                # buffers: register again (preserves persistent flag is harder to detect; default True)
+                parent.register_buffer(parts[-1], new_b)
 
         # Step 6: move to target device
         if target_device.type != "meta":

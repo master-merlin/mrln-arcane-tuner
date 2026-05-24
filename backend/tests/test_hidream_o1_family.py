@@ -276,22 +276,33 @@ def test_trainer_create_sampler_returns_instance_when_configured():
     assert HiDreamO1Trainer._create_sampler(_Off()) is None
 
 
-def test_trainer_build_trainable_components_returns_empty_dict():
-    """``_build_trainable_components`` must NOT return the full unet.
-
-    The base default returns ``{"unet": <model>}`` which the
-    CheckpointManager dumps via ``save_pretrained`` — a ~35 GB sharded
-    write for HiDream-O1's non-peft Qwen3VLForConditionalGeneration.
-    The actual LoRA artifact is saved separately via ``saver.save(...)``;
-    the per-component dump is wasted disk for this family.
+def test_trainer_build_trainable_components_passes_lora_proxy():
+    """``_build_trainable_components`` returns ``{"unet": <proxy>}`` so the
+    saver can still walk ``model.modules()`` to collect LoRA wrappers, but
+    the proxy hides ``save_pretrained``/``state_dict`` so
+    ``CheckpointManager._save_train_state`` doesn't dump the full 35 GB
+    Qwen3VLForConditionalGeneration on every checkpoint.
     """
-    from app.engine.models.families.hidream_o1.trainer import HiDreamO1Trainer
-
-    # Bare unbound-method call — we don't need a real trainer instance.
-    result = HiDreamO1Trainer._build_trainable_components(object())
-    assert result == {}, (
-        "must be empty — full-model save_pretrained would write 35 GB/checkpoint"
+    import torch.nn as nn
+    from app.engine.models.families.hidream_o1.trainer import (
+        HiDreamO1Trainer,
+        _LoraOnlyComponentProxy,
     )
+
+    class _Stub:
+        def _get_primary_model(self):
+            return nn.Linear(4, 4)
+
+    result = HiDreamO1Trainer._build_trainable_components(_Stub())
+    assert set(result.keys()) == {"unet"}
+    proxy = result["unet"]
+    assert isinstance(proxy, _LoraOnlyComponentProxy)
+    # Must NOT expose save_pretrained/state_dict (those trigger the 35 GB dump)
+    assert not hasattr(proxy, "save_pretrained")
+    assert not hasattr(proxy, "state_dict")
+    assert not isinstance(proxy, nn.Module)
+    # Must expose modules() so the saver can find LoRA wrappers
+    assert callable(getattr(proxy, "modules", None))
 
 
 def test_definition_yaml_loads_into_model_definition():

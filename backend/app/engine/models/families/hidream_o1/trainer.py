@@ -82,6 +82,25 @@ __all__ = [
 ]
 
 
+class _LoraOnlyComponentProxy:
+    """Thin wrapper that hides full-model save_pretrained / state_dict.
+
+    Passed into ``CheckpointManager.save_checkpoint`` via
+    ``_build_trainable_components`` so the saver can still find the model
+    (it walks ``.modules()`` to collect ``HiDreamO1LoRALinear`` wrappers),
+    while ``_save_train_state`` sees an object that is NOT an ``nn.Module``
+    and lacks ``save_pretrained`` / ``state_dict`` — falling into the
+    ``skipping_component_no_state_dict`` branch and avoiding the ~35 GB
+    full-base dump for HiDream-O1's non-peft Qwen3VLForConditionalGeneration.
+    """
+
+    def __init__(self, model: nn.Module) -> None:
+        self._model = model
+
+    def modules(self):
+        return self._model.modules()
+
+
 # ── Pixel-passthrough LatentManager (Concern 1) ───────────────────────────
 
 class _PixelPassthroughLatentManager:
@@ -225,27 +244,32 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         self.config.setdefault("timestep_type", TIMESTEP_TYPE)
 
     def _build_trainable_components(self) -> dict[str, Any]:
-        """Skip the per-component checkpoint dump.
+        """Pass the unet to the saver, but skip the per-component dump.
 
-        The base default returns ``{"unet": <full model>}``, which causes
+        Returning ``{"unet": <full model>}`` (the base default) causes
         ``CheckpointManager._save_train_state`` to call
         ``comp.save_pretrained(...)`` on the full Qwen3VLForConditionalGeneration
         — a ~35 GB sharded dump alongside the LoRA. For peft-wrapped families
-        ``save_pretrained`` writes only the adapter (small); for our custom
-        LoRA wrappers it writes the entire frozen base, which is wasted disk
-        and IO.
+        that writes only the adapter (small); for our custom LoRA wrappers it
+        writes the entire frozen base, which is wasted disk and IO.
 
-        The actual LoRA artifact (the diff we care about) is already written
-        separately by ``CheckpointManager.save_checkpoint`` at
-        ``<output_dir>/<lora>_<step>.safetensors`` via ``self.saver.save(...)``
-        — that path is unaffected.
+        Returning ``{}`` stopped the dump but ALSO starved
+        ``HiDreamO1Saver.save`` of the model — ``components.get("unet")``
+        returned ``None`` and the saver bailed out silently (logged
+        ``no_unet_in_components`` and no ``.safetensors`` was written).
 
-        Returning an empty dict means resume from a checkpoint won't restore
-        the LoRA wrapper parameters automatically; resumption-with-LoRA would
-        need a separate ``load_lora`` call. That's a follow-up — the priority
-        here is to stop the 35 GB per-checkpoint waste.
+        Workaround: wrap the model in ``_LoraOnlyComponentProxy``, which
+        exposes only ``.modules()`` (all the saver needs to find
+        ``HiDreamO1LoRALinear`` wrappers). The proxy is NOT an ``nn.Module``
+        and has neither ``save_pretrained`` nor ``state_dict``, so
+        ``_save_train_state`` falls into the ``skipping_component_no_state_dict``
+        branch — no 35 GB dump.
+
+        Resume-with-LoRA still requires a separate ``load_lora`` follow-up
+        (LoRA wrapper params aren't persisted in train_state); the priority
+        here is correct distribution-LoRA output + no waste.
         """
-        return {}
+        return {"unet": _LoraOnlyComponentProxy(self._get_primary_model())}
 
     def _create_sampler(self):
         """Create a HiDreamO1Sampler when sampling is configured.

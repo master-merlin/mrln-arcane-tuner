@@ -434,7 +434,7 @@ class TestThumbnailInvalidation:
         img_path = ds_path / "a.jpg"
         _create_image(str(img_path), 400, 300)
 
-        ds = manager.create_dataset("tn_crop", path=str(ds_path))
+        manager.create_dataset("tn_crop", path=str(ds_path))
         manager.scan_dataset("tn_crop")
 
         thumb = thumbnails.thumbnail_path_for(str(ds_path), "a.jpg")

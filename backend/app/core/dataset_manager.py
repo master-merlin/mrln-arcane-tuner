@@ -446,6 +446,22 @@ class DatasetManager:
                             )
                             scored_count += 1
 
+                        # ── Sub-step 4: Thumbnail ──
+                        from app.core.dataset import thumbnails
+
+                        if self._loop and not self._loop.is_closed():
+                            asyncio.run_coroutine_threadsafe(
+                                event_manager.broadcast("scan_progress", {
+                                    "dataset": name,
+                                    "file": f,
+                                    "current": min(current_progress_idx, total_for_progress),
+                                    "total": total_for_progress,
+                                    "status": "Generating thumbnail...",
+                                }),
+                                self._loop,
+                            )
+                        thumbnails.ensure_thumbnail(dataset.path, rel_path)
+
                 except Exception as e:
                     logger.error("metadata_extraction_failed", path=rel_path, error=str(e))
 

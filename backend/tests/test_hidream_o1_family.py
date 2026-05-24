@@ -157,7 +157,7 @@ def test_saver_writes_safetensors_and_sidecar(tmp_path):
 
     saver = HiDreamO1Saver()
     out_dir = tmp_path / "my_lora"
-    saver.save(
+    saver.save_lora(
         model=m,
         out_dir=str(out_dir),
         name="my_lora",
@@ -203,7 +203,7 @@ def test_saver_keys_use_diffusion_model_prefix_kohya_style(tmp_path):
 
     saver = HiDreamO1Saver()
     out_dir = tmp_path / "k"
-    saver.save(
+    saver.save_lora(
         model=m,
         out_dir=str(out_dir),
         name="k",

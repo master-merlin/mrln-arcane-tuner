@@ -9,7 +9,6 @@ from typing import Any
 
 import structlog
 import torch
-import torch.nn.functional as F
 
 from app.engine.factories.optimizer import OptimizerFactory
 
@@ -236,16 +235,12 @@ class PipelineTrainMixin:
                     # Target (family hook)
                     target = self.compute_target(prepared_latents, prepared_noise, timesteps)
 
-                    # Loss with optional weighting
-                    loss_weight = self.compute_loss_weight(timesteps)
-                    if loss_weight is not None:
-                        loss = F.mse_loss(pred.float(), target.float(), reduction="none")
-                        loss = loss.mean(dim=list(range(1, len(loss.shape)))) * loss_weight
-                        loss = loss.mean()
-                    else:
-                        loss = F.mse_loss(pred.float(), target.float())
-
-                    loss = loss / grad_accum  # Scale for accumulation
+                    # Loss — family hook allows full override (e.g. pixel-space
+                    # families like HiDream-O1 that bypass the latent/noise path
+                    # and compute their own recipe loss in forward_pass).
+                    loss = self._compute_step_loss(
+                        pred, target, timesteps, batch, grad_accum,
+                    )
 
                 # 4. Backward
                 if torch.isnan(loss) or torch.isinf(loss):

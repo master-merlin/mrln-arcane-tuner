@@ -17,20 +17,31 @@ LoRA targets via the "aitoolkit" preset (all linear-like layers except
 wrapper (NOT peft) because the save format must match ComfyUI's native
 HiDream-O1 LoRA loader's kohya-style key convention.
 
-Integration note (Task 16):
-    The base ``GenericTrainingPipeline`` training loop assumes a VAE is
-    present for latent encoding.  HiDream-O1 is pixel-space — it has no
-    VAE.  ``forward_pass`` is overridden to bypass the latent encoding step
-    by pulling pixel values directly from the batch dict.  The base's noisy
-    latent arguments (``noisy_input``, ``timesteps``) are intentionally
-    ignored; the recipe re-computes them internally.  The E2E training path
-    (Task 16) will require a LatentManager bypass (either a passthrough
-    LatentManager or overriding the latent-fetch block) — tracked there.
+Integration notes (Task 16):
+    1. **LatentManager bypass** — the base training loop calls
+       ``latent_manager.encode_and_cache_batch()`` which raises when
+       ``vae=None``.  We install a ``_PixelPassthroughLatentManager``
+       (see below) via ``_configure_managers`` so the base loop receives
+       the raw pixel tensor untouched.  ``forward_pass`` pulls pixels from
+       ``batch["images"]`` directly, so the passthrough value is ignored.
+
+    2. **Training-step override** — the base loop computes
+       ``loss = F.mse_loss(pred, target)`` where ``pred = forward_pass(...)``
+       and ``target = compute_target(...)``.  Our ``compute_target`` returns
+       ``x0_pred.detach()`` making MSE = 0.  We override the ``_train_step``
+       hook (see ``_run_train_step``) to instead call ``compute_loss(batch)``
+       which produces the correct velocity loss with a grad_fn.
+
+    3. **Saver signature conformance** — ``IModelSaver.save(components, path,
+       metadata)`` vs ``HiDreamO1Saver.save(model, out_dir, name, metadata)``.
+       Fixed in saver.py by adding a base-conforming ``save`` that wraps the
+       custom one.
 """
 
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import einops
@@ -70,6 +81,63 @@ __all__ = [
     "PATCH_SIZE",
     "LORA_EXCLUDED_SUBSTRINGS",
 ]
+
+
+# ── Pixel-passthrough LatentManager (Concern 1) ───────────────────────────
+
+class _PixelPassthroughLatentManager:
+    """Drop-in LatentManager replacement for pixel-space families.
+
+    HiDream-O1 is pixel-space — it has no VAE.  The base training loop
+    calls ``latent_manager.encode_and_cache_batch()`` unconditionally on
+    cache miss; injecting this passthrough avoids the VAE-required raise.
+
+    Behaviour:
+    - ``load_cached_latents``: always returns ``None`` (cache miss path).
+      HiDream-O1 does not cache latents — the model processes pixels live.
+    - ``encode_and_cache_batch``: returns the pixel tensor as-is.  The
+      base loop will store this as ``latents``; ``forward_pass`` ignores
+      it and pulls ``batch["images"]`` directly.
+    - ``check_cache_coverage``: reports all items as cached so
+      ``_pre_cache_latents`` is a no-op.
+    - ``latent_filename`` / ``_validate_shape``: delegated to a stub so
+      ``_build_cache_manifest`` and similar helpers don't crash.
+    """
+
+    def load_cached_latents(
+        self,
+        ids: list[str],
+        cache_dirs: list[str] | None = None,
+        source_paths: list[str] | None = None,
+    ) -> torch.Tensor | None:
+        """Always report a cache miss — pixel-space has no latent cache."""
+        return None
+
+    def encode_and_cache_batch(
+        self,
+        image_batch: torch.Tensor,
+        ids: list[str],
+        cache_dirs: list[str] | None = None,
+        mirror_dir: str | None = None,
+        source_paths: list[str] | None = None,
+    ) -> torch.Tensor:
+        """Return pixel values unchanged — no VAE encoding needed."""
+        return image_batch
+
+    def check_cache_coverage(
+        self,
+        ids: list[str],
+        cache_dirs: list[str],
+        source_paths: list[str] | None = None,
+    ) -> tuple[int, int, list[str]]:
+        """Report all items as cached so pre-cache step is skipped."""
+        n = len(ids)
+        return n, 0, []
+
+    @staticmethod
+    def latent_filename(img_id: str, source_path: str) -> str:
+        """Stub — pixel-space families don't write latent files."""
+        return f"{img_id}.safetensors"
 
 
 def _sample_sigma(
@@ -114,17 +182,24 @@ def _sample_sigma(
 class HiDreamO1Trainer(GenericTrainingPipeline):
     """Pixel-space LoRA trainer for HiDream-O1-Image (Full).
 
-    Overrides:
-    - ``_setup_family``: wires loader + driver (no saver until Task 12).
+    Overrides (Task 16 integration fixes in addition to family-specific
+    behaviour):
+    - ``_setup_family``: wires loader + driver.
+    - ``_configure_managers``: installs ``_PixelPassthroughLatentManager``
+      instead of the VAE-requiring ``LatentManager`` (Fix: Concern 1).
+    - ``_validate_latent_cache`` / ``_pre_cache_latents``: no-ops — pixel
+      space families carry no latent cache (Fix: Concern 1).
+    - ``_compute_step_loss``: calls ``compute_loss(batch)`` directly,
+      bypassing the base MSE which would be zero due to the detached
+      ``compute_target`` return (Fix: Concern 2).
     - ``_apply_peft``: replaces peft's ``get_peft_model`` with our custom
       ``inject_lora_layers`` so saved LoRA keys follow kohya / ComfyUI
       convention rather than peft-native naming.
     - ``forward_pass``: ignores base-prepared noisy latents and implements
       the full HiDream-O1 recipe (patchify, sigma, noise, custom forward).
-      Delegates to ``compute_loss(batch)``.
-    - ``compute_target``: returns a zeros sentinel — loss is entirely
-      computed inside ``forward_pass`` / ``compute_loss``; the base MSE
-      is therefore 0 by construction and does not alter training.
+    - ``compute_target``: returns ``x0_pred.detach()`` as a same-shape
+      sentinel — actual loss is computed in ``_compute_step_loss`` /
+      ``compute_loss``; this value is not used for the backward pass.
 
     The optimizer picks up LoRA params automatically because
     ``inject_lora_layers`` sets ``requires_grad=True`` on ``lora_down``
@@ -135,13 +210,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:
-        """Initialize HiDream-O1-specific loader, driver, and recipe knobs.
-
-        NOTE: The saver is deferred to Task 12 (``HiDreamO1Saver``).
-        ``GenericTrainingPipeline`` calls ``driver.get_saver()`` at
-        checkpoint time; the driver's stub raises ``NotImplementedError``
-        until Task 12 lands.
-        """
+        """Initialize HiDream-O1-specific loader, driver, and recipe knobs."""
         self.driver = HiDreamO1Driver(self.definition, self.device)
         self.loader = HiDreamO1Loader(self.device)
         self.lora_injection: LoRAInjectionResult | None = None
@@ -198,6 +267,46 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
                 hint="compute_loss will raise if called without a processor",
             )
             return None
+
+    # ── Integration fixes (Task 16) ──────────────────────────────────────
+
+    def _configure_managers(self, max_train_steps: int) -> None:
+        """Override to install pixel-passthrough LatentManager (Fix: Concern 1).
+
+        The base creates ``LatentManager(vae=None, ...)`` which raises on
+        ``encode_and_cache_batch``.  We replace it with a passthrough that
+        returns pixel values unchanged — ``forward_pass`` uses
+        ``batch["images"]`` directly so the passthrough value is ignored.
+        """
+        super()._configure_managers(max_train_steps)
+        # Replace after super() sets it — ensures CheckpointManager is set up
+        # correctly and only the LatentManager is substituted.
+        self.latent_manager = _PixelPassthroughLatentManager()
+        logger.info("hidream_o1.trainer.pixel_passthrough_latent_manager_installed")
+
+    def _validate_latent_cache(self) -> None:
+        """No-op: pixel-space families carry no latent cache (Fix: Concern 1)."""
+        self._latent_cache_missing = 0
+
+    async def _pre_cache_latents(self) -> None:
+        """No-op: pixel-space families have no latents to pre-cache (Fix: Concern 1)."""
+
+    def _compute_step_loss(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        timesteps: torch.Tensor,
+        batch: dict[str, Any],
+        grad_accum: int,
+    ) -> torch.Tensor:
+        """Compute HiDream-O1 velocity loss via compute_loss (Fix: Concern 2).
+
+        The base MSE would be 0 because ``compute_target`` returns
+        ``x0_pred.detach()``.  Instead, call ``compute_loss(batch)`` which
+        runs the full recipe and returns a scalar loss with a grad_fn.
+        """
+        loss = self.compute_loss(batch)
+        return loss / grad_accum
 
     # ── LoRA injection (overrides peft path) ─────────────────────────────
 
@@ -417,15 +526,22 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         processor = getattr(self, "processor", None)
         tokenizer = getattr(self, "tokenizer", None) or processor
 
-        # Accept both key conventions
-        pixel_values = batch.get("pixel_values") or batch.get("images")
+        # Accept both key conventions — use explicit None checks to avoid
+        # "Boolean value of Tensor is ambiguous" when the tensor is non-empty.
+        pixel_values = batch.get("pixel_values")
+        if pixel_values is None:
+            pixel_values = batch.get("images")
         if pixel_values is None:
             raise ValueError(
                 "compute_loss requires 'pixel_values' or 'images' in batch."
             )
         pixel_values = pixel_values.to(device, dtype=dtype)
 
-        captions = batch.get("caption") or batch.get("captions") or [""]
+        captions = batch.get("caption")
+        if captions is None:
+            captions = batch.get("captions")
+        if not captions:
+            captions = [""]
         caption = captions[0] if isinstance(captions, (list, tuple)) else captions
 
         height = pixel_values.shape[-2]

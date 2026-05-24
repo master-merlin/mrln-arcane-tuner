@@ -8,11 +8,9 @@ existing-family tests stay isolated.
 
 from __future__ import annotations
 
-import pytest
 import torch
 import torch.nn as nn
 
-from app.engine.core.definitions import ModelDefinition
 from app.engine.core.interfaces import IModelDriver, IModelSaver
 
 

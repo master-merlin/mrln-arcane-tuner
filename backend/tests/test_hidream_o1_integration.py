@@ -134,20 +134,15 @@ def _make_trainer(definition: ModelDefinition | None = None) -> HiDreamO1Trainer
 class TestPixelPassthroughLatentManager:
     """_PixelPassthroughLatentManager never raises even without a VAE."""
 
-    def test_load_cached_latents_returns_sentinel_to_silence_miss_warning(self):
-        """Returns a non-None sentinel so the base loop skips the per-step
-        ``latent_cache_miss`` warning + ``encode_and_cache_batch`` fallback.
-
-        The actual tensor value is unused — HiDreamO1Trainer.forward_pass /
-        compute_loss reads patches from batch["images"] directly. The
-        sentinel just needs to be a tensor that survives the base loop's
-        ``latents.to(device, dtype=...)`` call.
+    def test_load_cached_latents_returns_none(self):
+        """Must return None so the base loop falls into encode_and_cache_batch
+        which returns the 4D image tensor. A non-None sentinel would short
+        the cache-miss warning but break the base loop's later
+        ``latents.shape[1]`` noise-offset shaping.
         """
         lm = _PixelPassthroughLatentManager()
-        result = lm.load_cached_latents(["id1", "id2"], ["dir1"], ["path1"])
-        assert result is not None, "must NOT return None (would spam cache_miss warnings)"
-        assert isinstance(result, torch.Tensor)
-        assert result.shape[0] == 2, "size should match ids length"
+        result = lm.load_cached_latents(["id1"], ["dir1"], ["path1"])
+        assert result is None, "must always return None (always cache miss)"
 
     def test_encode_and_cache_batch_returns_input_unchanged(self):
         lm = _PixelPassthroughLatentManager()

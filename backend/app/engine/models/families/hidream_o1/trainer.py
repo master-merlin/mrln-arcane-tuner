@@ -109,19 +109,14 @@ class _PixelPassthroughLatentManager:
         cache_dirs: list[str] | None = None,
         source_paths: list[str] | None = None,
     ) -> torch.Tensor | None:
-        """Return a sentinel non-None tensor to short-circuit the base loop's
-        cache-miss path.
+        """Always report a cache miss — pixel-space has no latent cache.
 
-        The base training loop emits a ``latent_cache_miss`` warning every
-        time this returns ``None`` and then falls back to
-        ``encode_and_cache_batch``. For HiDream-O1 there is no VAE — the
-        ``latents`` value is irrelevant because ``forward_pass`` /
-        ``compute_loss`` reads pixel patches from ``batch["images"]``
-        directly. Returning a length-N zero tensor satisfies the
-        ``if latents is None`` check (no warn, no fallback call) and
-        survives the subsequent ``.to(device, dtype=...)`` call cleanly.
+        Must return None so the base loop falls into ``encode_and_cache_batch``,
+        which returns the actual 4D ``batch["images"]`` tensor. The base loop
+        later does ``latents.shape[1]`` for noise-offset shaping — that only
+        works on the 4D image tensor, not on a length-N sentinel.
         """
-        return torch.zeros(len(ids), dtype=torch.float32)
+        return None
 
     def encode_and_cache_batch(
         self,

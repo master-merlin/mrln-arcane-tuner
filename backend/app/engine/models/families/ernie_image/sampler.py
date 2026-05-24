@@ -47,14 +47,26 @@ class ErnieImageSampler(GenericSamplingPipeline):
         from diffusers import FlowMatchEulerDiscreteScheduler
 
         arch = getattr(self.pipeline.definition, "architecture_params", {}) or {}
-        # Match the official ErnieImagePipeline: explicit linear sigmas
-        # are passed to ``set_timesteps`` at sample-time, so ``shift`` and
-        # ``use_dynamic_shifting`` are unused here.  We only need
-        # ``num_train_timesteps`` so the scheduler can convert sigmas to
-        # the ``[0, num_train_timesteps]`` timestep range the transformer
-        # expects.
+        # FlowMatchEulerDiscreteScheduler.set_timesteps applies the
+        # ``shift * s / (1 + (shift - 1) * s)`` transform UNCONDITIONALLY
+        # when ``use_dynamic_shifting`` is False — passing explicit sigmas
+        # only bypasses the *generation* of sigmas, not the shift transform.
+        # ERNIE-Image's pretrained scheduler ships with ``shift=4.0``;
+        # defaulting to 1.0 produces a flat schedule that visibly distorts
+        # samples (audited against the official pipeline output).
         self._scheduler = FlowMatchEulerDiscreteScheduler(
             num_train_timesteps=int(arch.get("scheduler.num_train_timesteps", 1000)),
+            shift=float(arch.get("scheduler.shift", 4.0)),
+            use_dynamic_shifting=bool(arch.get("scheduler.use_dynamic_shifting", False)),
+            base_shift=float(arch.get("scheduler.base_shift", 0.5)),
+            max_shift=float(arch.get("scheduler.max_shift", 1.15)),
+            base_image_seq_len=int(arch.get("scheduler.base_image_seq_len", 256)),
+            max_image_seq_len=int(arch.get("scheduler.max_image_seq_len", 4096)),
+            shift_terminal=arch.get("scheduler.shift_terminal", None),
+            invert_sigmas=bool(arch.get("scheduler.invert_sigmas", False)),
+            use_karras_sigmas=bool(arch.get("scheduler.use_karras_sigmas", False)),
+            use_exponential_sigmas=bool(arch.get("scheduler.use_exponential_sigmas", False)),
+            use_beta_sigmas=bool(arch.get("scheduler.use_beta_sigmas", False)),
         )
         return self._scheduler
 

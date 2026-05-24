@@ -63,13 +63,18 @@ class QwenImageSampler(GenericSamplingPipeline):
 
         # Match config from YAML definition
         arch = getattr(self.pipeline.definition, "architecture_params", {}) or {}
+        # ``shift_terminal`` triggers ``stretch_shift_to_terminal`` inside
+        # ``set_timesteps`` — Qwen-Image-2512 ships with ``shift_terminal=0.02``,
+        # and omitting it silently skips the terminal-stretch step (visible
+        # quality drift on the last few denoise iterations).
         self._scheduler = FlowMatchEulerDiscreteScheduler(
             num_train_timesteps=int(arch.get("scheduler.num_train_timesteps", 1000)),
-            use_dynamic_shifting=True,
+            use_dynamic_shifting=bool(arch.get("scheduler.use_dynamic_shifting", True)),
             base_shift=float(arch.get("scheduler.base_shift", 0.5)),
             max_shift=float(arch.get("scheduler.max_shift", 0.9)),
             base_image_seq_len=int(arch.get("scheduler.base_image_seq_len", 256)),
             max_image_seq_len=int(arch.get("scheduler.max_image_seq_len", 8192)),
+            shift_terminal=arch.get("scheduler.shift_terminal", 0.02),
         )
         return self._scheduler
 

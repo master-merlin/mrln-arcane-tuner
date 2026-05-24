@@ -1231,6 +1231,11 @@ class DatasetManager:
         # Bump version (multimedia count changed)
         self._bump_version(dataset, "minor")
 
+        # Thumbnail (best-effort — survives missing file)
+        from app.core.dataset import thumbnails
+
+        thumbnails.delete_thumbnail(dataset.path, media_file)
+
         # ── Step 2: Best-effort filesystem cleanup ──────────────────
         # DB is already consistent — file deletion failures are harmless.
         try:

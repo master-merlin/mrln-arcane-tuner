@@ -450,3 +450,20 @@ class TestThumbnailInvalidation:
         assert thumb.exists()
         assert thumb.stat().st_mtime_ns > first_mtime, \
             "thumbnail mtime should advance after crop"
+
+    def test_delete_media_pair_removes_thumbnail(self, manager, tmp_path):
+        from app.core.dataset import thumbnails
+
+        ds_path = tmp_path / "datasets" / "tn_del"
+        ds_path.mkdir(parents=True)
+        _create_image(str(ds_path / "a.jpg"))
+
+        manager.create_dataset("tn_del", path=str(ds_path))
+        manager.scan_dataset("tn_del")
+
+        thumb = thumbnails.thumbnail_path_for(str(ds_path), "a.jpg")
+        assert thumb.exists()
+
+        manager.delete_media_pair("tn_del", "a.jpg")
+
+        assert not thumb.exists()

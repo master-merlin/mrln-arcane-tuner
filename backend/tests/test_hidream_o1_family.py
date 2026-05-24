@@ -70,3 +70,68 @@ def test_driver_reports_no_vae_no_text_encoder():
     assert driver.get_primary_model() is fake_model
     assert driver.get_text_encoders() == {}
     assert driver.get_vae() is None
+
+
+def test_trainer_recipe_constants_match_spec():
+    """Recipe constants must match the ai-toolkit May 2026 documented values
+    derived from Saganaki22's trainer (spike_notes.md Task 3a).
+    """
+    from app.engine.models.families.hidream_o1.trainer import (
+        NOISE_SCALE,
+        TIMESTEP_TYPE,
+        MAX_LOSS,
+        LORA_EXCLUDED_SUBSTRINGS,
+    )
+    assert NOISE_SCALE == 8.0
+    assert TIMESTEP_TYPE == "linear"
+    assert MAX_LOSS == 1.0
+    assert set(LORA_EXCLUDED_SUBSTRINGS) == {"lm_head", "patch_embed", "visual"}
+
+
+def test_lora_inject_replaces_only_targeted_modules():
+    """LoRA injection wraps linear-like modules and skips excluded names."""
+    import torch.nn as nn
+    from app.engine.models.families.hidream_o1.lora_wrapper import (
+        HiDreamO1LoRALinear,
+        inject_lora_layers,
+    )
+
+    class Mini(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Sequential(nn.Linear(8, 8), nn.Linear(8, 8))
+            self.lm_head = nn.Linear(8, 8)
+            self.visual = nn.Sequential(nn.Linear(8, 8))
+
+    m = Mini()
+    result = inject_lora_layers(m, rank=4, alpha=4.0)
+    # Two linear layers in language_model should be wrapped; lm_head and visual.* skipped.
+    assert len(result.layers) == 2
+    # The wrapped types are HiDreamO1LoRALinear
+    for layer in result.layers:
+        assert isinstance(layer, HiDreamO1LoRALinear)
+    # Excluded modules remain plain Linear
+    assert isinstance(m.lm_head, nn.Linear)
+    assert isinstance(m.visual[0], nn.Linear)
+
+
+def test_lora_wrapper_forward_adds_lora_to_base_output():
+    """The wrapper's forward returns base(x) + low-rank residual * scaling."""
+    import torch
+    import torch.nn as nn
+    from app.engine.models.families.hidream_o1.lora_wrapper import (
+        HiDreamO1LoRALinear,
+    )
+    base = nn.Linear(8, 8)
+    wrapper = HiDreamO1LoRALinear(
+        base, lora_key="test", rank=2, alpha=2.0,
+    )
+    x = torch.randn(1, 8)
+    out = wrapper(x)
+    # lora_up is initialized to zeros, so at init time wrapper(x) == base(x)
+    assert torch.allclose(out, base(x))
+    # After perturbing lora_up, output should differ
+    with torch.no_grad():
+        wrapper.lora_up.copy_(torch.randn_like(wrapper.lora_up) * 0.01)
+    out2 = wrapper(x)
+    assert not torch.allclose(out2, base(x))

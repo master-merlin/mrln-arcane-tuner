@@ -124,7 +124,10 @@ class HiDreamO1Driver(IModelDriver):
         on the Qwen3VLForConditionalGeneration API from the vendor code.
         """
         raise NotImplementedError(
-            "forward_pass not yet implemented for HiDream-O1.",
+            "HiDreamO1Driver.forward_pass is intentionally not implemented. "
+            "Use HiDreamO1Trainer.compute_loss(batch) instead — the recipe "
+            "calls the model with custom kwargs (vinputs, timestep, "
+            "token_types) that don't match the generic forward_pass shape.",
         )
 
     def get_saver(self) -> IModelSaver:

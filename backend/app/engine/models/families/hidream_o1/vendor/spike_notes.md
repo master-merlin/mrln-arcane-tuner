@@ -281,3 +281,28 @@ Skipped for PR A: depends on a working vendored-class load. Numbers will be fill
 ## Task 5 — VRAM measurements
 
 (Filled in by Task 5.)
+
+## Post-merge: torch 2.10 gradient-checkpointing fix (2026-05-24)
+
+First real training run after PR B merge errored with:
+
+```
+ValueError: Unexpected keyword arguments: attention_mask, position_ids,
+past_key_values, cache_position, position_embeddings
+```
+
+at `qwen3_vl_transformers.py:1011`, inside the per-layer gradient-checkpointing
+call. Root cause: **torch 2.10's `torch.utils.checkpoint.checkpoint` tightened
+kwarg forwarding** — it now raises on unrecognized kwargs rather than silently
+passing them to the wrapped function. Saganaki22's upstream was written against
+a more permissive torch version.
+
+Fixed via `# MRLN-PATCH(4):` (see `vendor/README.md`): wrap the per-layer call
+in a closure that captures the kwargs, so `checkpoint` only sees positional
+args (the closure + `hidden_states`). The non-GC branch (`else:`) is unchanged
+— it never went through `checkpoint` and was always fine.
+
+**Forward-port note for future refreshes:** if Saganaki22 updates their code
+to handle torch 2.10+ themselves, our patch becomes redundant. Check the
+upstream `_gradient_checkpointing_func` call site on each refresh and either
+drop or forward-port accordingly.

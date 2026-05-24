@@ -49,12 +49,26 @@ are pinned separately in the definition YAML's `components.unet.revision` field.
 
 ## Patches applied
 
-One patch was necessary to adapt Saganaki22's code to our vendor package layout:
+Two patches are currently applied. Both are marked with `# MRLN-PATCH(N):`
+comments and must be forward-ported on every refresh.
 
 1. **Relative import fix in `qwen3_vl_transformers.py`** (`# MRLN-PATCH:` at line 136):
    Saganaki22's package places `compat.py` one level above `models/`, so the
    original import is `from ..compat import ...`. In our `vendor/` package both
    files are at the same level, so the import was changed to `from .compat import ...`.
+
+2. **Gradient-checkpointing kwargs wrap in `qwen3_vl_transformers.py`**
+   (`# MRLN-PATCH(4):` around line 1011): torch 2.10's
+   `torch.utils.checkpoint.checkpoint` no longer silently forwards arbitrary
+   kwargs to the wrapped function; it raises
+   `ValueError: Unexpected keyword arguments: ...` when the wrapped layer's
+   per-layer kwargs (`attention_mask`, `position_ids`, `past_key_values`,
+   `cache_position`, `position_embeddings`) are passed as kwargs through
+   `_gradient_checkpointing_func`. The patch wraps the per-layer call in a
+   closure (`_layer_call`) that captures those kwargs, so `checkpoint` only
+   sees positional args (the closure + hidden_states). Saganaki22's upstream
+   depended on the older permissive forwarding; this patch is the version-skew
+   fix.
 
 Previously applied patches from Task 2 (against HiDream-ai's pipeline) are **no
 longer needed**:

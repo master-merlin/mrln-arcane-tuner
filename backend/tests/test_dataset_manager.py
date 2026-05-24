@@ -418,3 +418,35 @@ class TestArToDisplay:
         # portrait display should put H:W
         parts = result.split(":")
         assert len(parts) == 2
+
+
+# ── Thumbnail Invalidation ───────────────────────────────────────────────
+
+
+class TestThumbnailInvalidation:
+    """Mutations that call update_metadata_after_edit must refresh the thumbnail."""
+
+    def test_crop_regenerates_thumbnail(self, manager, tmp_path):
+        from app.core.dataset import thumbnails
+
+        ds_path = tmp_path / "datasets" / "tn_crop"
+        ds_path.mkdir(parents=True)
+        img_path = ds_path / "a.jpg"
+        _create_image(str(img_path), 400, 300)
+
+        ds = manager.create_dataset("tn_crop", path=str(ds_path))
+        manager.scan_dataset("tn_crop")
+
+        thumb = thumbnails.thumbnail_path_for(str(ds_path), "a.jpg")
+        assert thumb.exists(), "scan should have generated the initial thumbnail"
+        first_mtime = thumb.stat().st_mtime_ns
+
+        # Ensure mtime granularity does not collide on Windows (100 ns)
+        import time as _time
+        _time.sleep(0.05)
+
+        manager.crop_media("tn_crop", "a.jpg", target_w=200, target_h=150)
+
+        assert thumb.exists()
+        assert thumb.stat().st_mtime_ns > first_mtime, \
+            "thumbnail mtime should advance after crop"

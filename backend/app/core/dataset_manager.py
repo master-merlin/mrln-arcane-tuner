@@ -1334,6 +1334,7 @@ class DatasetManager:
         update_metadata_after_edit(
             dataset.media_metadata, lookup_key, full_path,
             new_dims=(target_w, target_h),
+            dataset_path=dataset.path,
         )
         self._persist_media_item(dataset, relative_path)
         return True
@@ -1373,7 +1374,10 @@ class DatasetManager:
 
         # Update lightweight metadata (dimensions unchanged)
         lookup_key = relative_path.replace(os.sep, "/")
-        update_metadata_after_edit(dataset.media_metadata, lookup_key, full_path)
+        update_metadata_after_edit(
+            dataset.media_metadata, lookup_key, full_path,
+            dataset_path=dataset.path,
+        )
 
         self._persist_media_item(dataset, relative_path)
         return True

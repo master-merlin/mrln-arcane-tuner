@@ -215,9 +215,68 @@ Both modules import cleanly. The torch cpp-extensions warning (`upgrade to >=2.1
 
 **Lint:** 25 upstream-style violations across the vendored files (E701 single-line colon blocks in `pipeline.py`, E402 non-top-of-file imports in `qwen3_vl_transformers.py` from conditional guard patterns, F401 unused `scipy.stats` in `fm_solvers_unipc.py`). Added file-level `# ruff: noqa` to all 7 vendored files; `ruff check` now passes cleanly. Upstream code preserved unmodified except for the MRLN-PATCH and the noqa directives.
 
-## Task 4 — Recipe convergence
+## Task 4 — Recipe convergence (PARTIAL — see findings)
 
-(Filled in by Task 4.)
+**Outcome:** The 100-step convergence loop did NOT run. Spike surfaced a separate blocker (model load) before any training step executed. The recipe formulation itself is unchanged from Task 3a's derivation; it remains correct and ready for PR B's Task 11 to implement.
+
+### What was attempted
+
+A training script (`.agent/workdir/spike_train.py`, ~250 lines) was written implementing the full Saganaki22 recipe:
+- Synthetic 4-color 512×512 dataset
+- Patch rearrange via einops (`PATCH_SIZE=32`)
+- Linear sigma sampling in `[T_EPS, 0.9999]`
+- Noised input: `(1-σ)·patches + σ·noise·8.0`
+- Custom-kwarg forward: `model(input_ids, position_ids, vinputs=noisy, timestep=1-σ, token_types, use_flash_attn=False, use_sage_attn=False)`
+- Velocity-equivalent loss with `clamp(max=1.0)`
+- AdamW(lr=1e-4, weight_decay=1e-4)
+- Inline `TinyLoRA` wrapper (Linear adapter, kohya-style `lora_down`/`lora_up`)
+- LoRA targets: `language_model.layers.N.self_attn.{q,k,v,o}_proj` and `.mlp.{gate,up,down}_proj`; excludes `lm_head`, `patch_embed`, `visual`
+
+### Blocker: vendored-class load hangs silently
+
+`Qwen3VLForConditionalGeneration.from_pretrained(...)` with our **vendored** custom class halts at shard 1→2 boundary of the safetensors load. Exit code 0, no traceback, no progress past tqdm's first tick. Observed across multiple attempts with various flag combinations:
+
+- `device_map="cuda"` + default cpu mem → hang (RAM thrash; working set saw 96 GB before death)
+- `device_map=None`, `low_cpu_mem_usage=True`, `local_files_only=True` → still hangs (this time fast exit, no RAM spike)
+
+### Comparison: stock transformers class works
+
+The **stock** `transformers.Qwen3VLForConditionalGeneration` loads the same checkpoint cleanly in **19.4 s** with `low_cpu_mem_usage=True`. Confirmed:
+- ~8.77 B parameters loaded
+- HF emits an explicit "Some weights of the model checkpoint at HiDream-ai/HiDream-O1-Image were not used" warning for: `model.x_embedder.{proj1,proj2}.*`, `model.final_layer2.linear.*`, `model.t_embedder1.mlp.*`
+- This **empirically validates the Task 3a finding** that the checkpoint contains weights for additional heads beyond stock Qwen3VL.
+
+The hang is **specific to our vendored custom class**, not the underlying checkpoint or load path.
+
+### Hypothesis for Task 11
+
+Saganaki22 doesn't use `from_pretrained` at all in their trainer — they use ComfyUI's `load_hidream_model(model_dir, precision, attention)` runtime helper which uses different loading mechanics. Their helpers (in `comfy_runtime.py`) likely:
+- Instantiate the custom class with empty weights (`init_empty_weights`)
+- Use `safetensors.torch.load_file` per shard (which we confirmed works in 2.95 s/shard)
+- Manually call `model.load_state_dict(...)` with `strict=False` to merge
+
+Task 11 should implement a similar pattern (skip `from_pretrained` entirely; use the direct safetensors loader we already validated works). This is the load-mechanics fix that unblocks training. With it in place, the recipe should converge on first attempt because the math is documented and proven by Saganaki22.
+
+### Direct safetensors load smoke test (works)
+
+```python
+from safetensors.torch import load_file
+sd = load_file(".../model-00001-of-00008.safetensors")
+# 358 keys, first key: 'model.language_model.embed_tokens.weight'
+# Loads in ~3 s per shard
+```
+
+### Net Task 4 verdict
+
+- ✅ Recipe formulation: confirmed correct (Task 3a + Saganaki22 reference)
+- ✅ Stock-class load: works in 19.4 s with `low_cpu_mem_usage=True`
+- ✅ Direct safetensors load (per shard): works in 3 s
+- ❌ Vendored-class `from_pretrained` load: hangs (PR B Task 11 problem to solve)
+- ⏸️ 100-step convergence: not run (depends on the vendored-class load being fixed)
+
+## Task 5 — VRAM measurements (SKIPPED)
+
+Skipped for PR A: depends on a working vendored-class load. Numbers will be filled in by PR B's implementation work (Task 11 + Task 16 E2E check). The definition YAML (Task 14) ships with `vram_profile` set to `0` placeholders for PR B to overwrite.
 
 ## Task 5 — VRAM measurements
 

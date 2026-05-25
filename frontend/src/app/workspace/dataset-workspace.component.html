@@ -1,0 +1,97 @@
+@if (ws(); as w) {
+    <div class="workspace">
+        <header class="ws-topbar">
+            <div class="crumbs">
+                <span class="muted">Workspace</span>
+                <span class="sep">/</span>
+                <span class="last">{{ dataset()?.name ?? w.datasetId }}</span>
+                @if (dataset()?.version; as v) {
+                    <span class="tag brand version">v{{ v }}</span>
+                }
+            </div>
+
+            <div class="ctx-slot">
+                <app-context-switcher/>
+            </div>
+
+            <div class="spacer"></div>
+
+            <app-segmented
+                [options]="modeOptions"
+                [value]="w.mode"
+                (changed)="onModeChange($event)"/>
+
+            <div class="mass-actions">
+                <button class="btn" type="button" (click)="openMass('mass-caption')">
+                    <app-ico name="Edit" [size]="12"/> Mass Caption
+                </button>
+                <button class="btn" type="button" (click)="openMass('mass-mask')">
+                    <app-ico name="Shield" [size]="12"/> Mass Mask
+                </button>
+                <button class="btn" type="button" (click)="openMass('mass-edit')">
+                    <app-ico name="Wand2" [size]="12"/> Mass Edit
+                </button>
+            </div>
+
+            <app-icon-button
+                icon="X"
+                title="Close workspace (Esc)"
+                (click)="overlay.closeWorkspace()"/>
+        </header>
+
+        <section class="ws-body">
+            @switch (w.mode) {
+                @case ('browse') {
+                    <app-workspace-browse
+                        [datasetId]="w.datasetId"
+                        [pairs]="pairs()"
+                        [datasetName]="dataset()?.name ?? w.datasetId"/>
+                }
+                @case ('details') {
+                    @defer {
+                        <app-workspace-details
+                            [datasetId]="w.datasetId"
+                            [imageIndex]="w.imageIndex"
+                            [pairs]="pairs()"
+                            [datasetName]="dataset()?.name ?? w.datasetId"
+                            (pairsChanged)="refreshPairs()"
+                            (pairDeleted)="onPairDeleted($event)"/>
+                    } @loading {
+                        <div class="defer-loading">Loading details…</div>
+                    }
+                }
+                @case ('edit') {
+                    @defer {
+                        <app-workspace-edit
+                            [datasetId]="w.datasetId"
+                            [imageIndex]="w.imageIndex"
+                            [pairs]="pairs()"
+                            [datasetName]="dataset()?.name ?? w.datasetId"/>
+                    } @loading {
+                        <div class="defer-loading">Loading editor…</div>
+                    }
+                }
+            }
+        </section>
+
+        <footer class="ws-filmstrip">
+            @if (filmstripImages().length > 0) {
+                <div class="filmstrip-meta">
+                    <span class="eyebrow">POSITION</span>
+                    <span class="mono">
+                        {{ w.imageIndex + 1 }}
+                        <span class="muted">/ {{ filmstripImages().length }}</span>
+                    </span>
+                </div>
+                <app-filmstrip-scrubber
+                    [images]="filmstripImages()"
+                    [activeIndex]="w.imageIndex"
+                    [viewportSize]="1"
+                    [threshold]="140"
+                    (seek)="onSeek($event)"/>
+            } @else {
+                <div class="filmstrip-empty muted">No images in this dataset yet.</div>
+            }
+        </footer>
+    </div>
+}

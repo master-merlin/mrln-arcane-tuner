@@ -1,0 +1,102 @@
+<div style="position: relative;">
+    <button
+        class="ctx-pill"
+        [class.open]="open()"
+        (click)="toggle()"
+        type="button">
+        <span class="kind">SCOPE</span>
+        @if (scope.scope().kind === 'global') {
+            <span
+                style="
+                    width: 12px; height: 12px; border-radius: 50%;
+                    border: 1.5px solid var(--color-text-muted);
+                    position: relative; flex-shrink: 0; display: inline-block;
+                "
+                aria-hidden="true">
+                <span
+                    style="
+                        position: absolute; inset: 1px 3px;
+                        border-left: 1.2px solid var(--color-text-muted);
+                        border-right: 1.2px solid var(--color-text-muted);
+                        border-radius: 50%;
+                    "></span>
+            </span>
+            <span style="font-weight: 600;">Global</span>
+        } @else {
+            <span
+                class="swatch"
+                [style.background]="activeProject()?.color ?? 'var(--color-brand)'"></span>
+            <span style="font-weight: 600;">{{ activeProject()?.name ?? 'Project' }}</span>
+        }
+        <app-ico class="chev" name="ChevronDown" [size]="12" />
+    </button>
+
+    @if (open()) {
+        <div class="popover" style="top: calc(100% + 6px); left: 0; min-width: 320px;">
+            <div class="popover-section">WORKSPACE SCOPE</div>
+            <div
+                class="popover-item"
+                [class.active]="scope.scope().kind === 'global'"
+                (click)="pickGlobal()">
+                <span
+                    style="
+                        width: 12px; height: 12px; border-radius: 50%;
+                        border: 1.5px solid var(--color-text-muted);
+                        position: relative; flex-shrink: 0; display: inline-block;
+                    "
+                    aria-hidden="true">
+                    <span
+                        style="
+                            position: absolute; inset: 1px 3px;
+                            border-left: 1.2px solid var(--color-text-muted);
+                            border-right: 1.2px solid var(--color-text-muted);
+                            border-radius: 50%;
+                        "></span>
+                </span>
+                <div style="flex: 1; line-height: 1.2;">
+                    <div style="font-size: 12.5px; font-weight: 600;">Global</div>
+                    <div style="font-size: 10.5px; color: var(--color-text-muted);">
+                        All datasets &amp; jobs
+                    </div>
+                </div>
+                @if (scope.scope().kind === 'global') {
+                    <app-ico
+                        name="Check"
+                        [size]="13"
+                        style="color: var(--color-brand);" />
+                }
+            </div>
+
+            @if (projects.allProjects().length > 0) {
+                <div class="popover-section">PROJECTS</div>
+                @for (p of projects.allProjects(); track p.id) {
+                    <div
+                        class="popover-item"
+                        [class.active]="scope.projectId() === p.id"
+                        (click)="pickProject(p.id)">
+                        <span class="swatch" [style.background]="p.color"></span>
+                        <div style="flex: 1; line-height: 1.2;">
+                            <div style="font-size: 12.5px; font-weight: 600;">{{ p.name }}</div>
+                            <div style="font-size: 10.5px; color: var(--color-text-muted);">
+                                {{ p.stats?.datasets ?? 0 }} datasets ·
+                                {{ p.stats?.jobs ?? 0 }} jobs
+                            </div>
+                        </div>
+                        @if (scope.projectId() === p.id) {
+                            <app-ico
+                                name="Check"
+                                [size]="13"
+                                style="color: var(--color-brand);" />
+                        }
+                    </div>
+                }
+            }
+
+            <div class="popover-divider"></div>
+            <div class="popover-item" style="color: var(--color-text-secondary);">
+                <app-ico name="Plus" [size]="13" />
+                <span>New project…</span>
+            </div>
+        </div>
+    }
+</div>

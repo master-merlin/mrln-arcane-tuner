@@ -1,0 +1,26 @@
+<div class="topbar">
+    <div class="crumbs">
+        @for (c of crumbs(); track $index; let i = $index) {
+            @if (i > 0) { <span class="sep">/</span> }
+            <span class="seg" [class.last]="c.last">{{ c.label }}</span>
+        }
+    </div>
+
+    @if (showScope()) {
+        <div style="margin-left: 14px;">
+            <app-context-switcher />
+        </div>
+    }
+
+    <div class="search" style="margin-left: auto;">
+        <app-ico name="Search" [size]="13" />
+        <span style="flex: 1;">Search datasets, captions, jobs…</span>
+        <span class="kbd">&#8984;K</span>
+    </div>
+    <button class="icon-btn" type="button">
+        <app-ico name="Bell" [size]="15" />
+    </button>
+    <button class="icon-btn" type="button">
+        <app-ico name="Settings" [size]="15" />
+    </button>
+</div>

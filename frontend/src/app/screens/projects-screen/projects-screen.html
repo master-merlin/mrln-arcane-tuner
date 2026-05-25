@@ -1,0 +1,80 @@
+<div class="ps-screen">
+    <div class="page-head">
+        <div>
+            <div class="eyebrow">WORKSPACE</div>
+            <h1 class="page-title">Projects</h1>
+            <p class="page-sub">
+                Group datasets, templates and training runs by intent.
+                Each project owns its own caption, mask and training presets.
+            </p>
+        </div>
+        <div class="ps-actions">
+            <button class="btn primary" type="button" (click)="newProject()">
+                <app-ico name="Plus" [size]="14"/> New project
+            </button>
+        </div>
+    </div>
+
+    <div class="ps-kpi-rail">
+        <app-kpi-tile label="PROJECTS" [value]="kpis().projects" accent="brand" sub="in this workspace"/>
+        <app-kpi-tile label="ACTIVE JOBS" [value]="kpis().jobs" accent="success" sub="across projects"/>
+        <app-kpi-tile label="TEMPLATES" [value]="kpis().templates" accent="teal" sub="caption · mask · training"/>
+        <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="violet" sub="linked in projects"/>
+    </div>
+
+    <div class="ps-grid">
+        @for (c of cards(); track trackById($index, c)) {
+            <div class="card lift ps-card" (click)="open(c.project)">
+                <div class="ps-card-accent" [style.background]="c.project.color || '#6366f1'"></div>
+                <div class="ps-card-head">
+                    <div class="ps-card-head-left">
+                        <div class="ps-card-badge"
+                             [style.background]="'linear-gradient(135deg, ' + (c.project.color || '#6366f1') + ', color-mix(in oklab, ' + (c.project.color || '#6366f1') + ' 70%, black))'"
+                             [style.box-shadow]="'0 4px 12px ' + (c.project.color || '#6366f1') + '40'">
+                            {{ c.initials }}
+                        </div>
+                        <div class="ps-card-titles">
+                            <div class="ps-card-name">{{ c.project.name }}</div>
+                            <div class="ps-card-updated">updated {{ c.updatedLabel }}</div>
+                        </div>
+                    </div>
+                    <button class="icon-btn" type="button"
+                            (click)="editProject(c.project, $event)"
+                            title="Edit project">
+                        <app-ico name="Settings" [size]="13"/>
+                    </button>
+                </div>
+
+                <div class="ps-card-desc">
+                    {{ c.project.description || 'No description.' }}
+                </div>
+
+                <div class="ps-card-stats">
+                    <div>
+                        <div class="ps-stat-label">Datasets</div>
+                        <div class="ps-stat-value mono">{{ c.datasets }}</div>
+                    </div>
+                    <div>
+                        <div class="ps-stat-label">Templates</div>
+                        <div class="ps-stat-value mono">{{ c.templates }}</div>
+                    </div>
+                    <div>
+                        <div class="ps-stat-label">Jobs</div>
+                        <div class="ps-stat-value mono" [class.jobs-active]="c.jobs > 0" [class.jobs-idle]="c.jobs === 0">
+                            {{ c.jobs }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- New project card -->
+        <div class="card lift ps-new-card" (click)="newProject()">
+            <div class="ps-new-bubble">
+                <app-ico name="Plus" [size]="20"/>
+            </div>
+            <div class="ps-new-label">New project</div>
+            <div class="ps-new-sub">group datasets &amp; templates</div>
+        </div>
+    </div>
+</div>

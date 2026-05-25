@@ -1,0 +1,389 @@
+import {
+    ChangeDetectionStrategy,
+    Component,
+    DestroyRef,
+    OnInit,
+    computed,
+    inject,
+    signal,
+} from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
+import { IcoComponent } from '../../icons/ico.component';
+import { OverlayStore } from '../../state/overlay.store';
+import { DatasetService } from '../../services/dataset';
+import { ToastService } from '../../services/toast';
+
+interface MassCaptionModalData {
+    datasetId?: string;
+    datasetName?: string;
+}
+
+type CaptionStrategy = 'keep' | 'overwrite';
+
+/**
+ * Mass Captioning modal.
+ *
+ * Ports the workflow from the orphan
+ * [viewer-mass-caption-modal](../../components/dataset/dataset-viewer/components/viewer-mass-caption-modal.ts)
+ * into the new design shell from `modals.jsx → MassCaptionModal`. The
+ * orphan modal depended on a parent's `pairs` input + a Settings child
+ * (`app-dataset-caption-settings`); to keep this modal self-contained we
+ * fetch the dataset's pairs on init and ship a minimal inline settings
+ * block — model, task, system prompt, max-tokens — matching the design
+ * source. Advanced template management is deferred to a future PR
+ * (TODO(frontend)) since it requires a separate templates service.
+ */
+@Component({
+    selector: 'app-modal-mass-caption',
+    standalone: true,
+    imports: [FormsModule, IcoComponent],
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    template: `
+        <div class="modal-head">
+            <div>
+                <div class="eyebrow">MASS CAPTIONING</div>
+                <div class="modal-title">Recaption your entire dataset using AI</div>
+            </div>
+            <button class="icon-btn" type="button" (click)="overlay.closeModal()" aria-label="Close">×</button>
+        </div>
+
+        <div class="modal-body mc-body">
+            @if (!data.datasetName) {
+                <div class="mc-empty">
+                    <app-ico name="Info" [size]="18"/>
+                    Open a dataset workspace first — mass captioning is per-dataset.
+                </div>
+            } @else if (running()) {
+                <div class="mc-progress">
+                    <div class="mc-progress-head">
+                        <div>
+                            <div class="eyebrow brand">NEURAL PROCESSING</div>
+                            <div class="mc-progress-pct">{{ pct() }}%</div>
+                        </div>
+                        <div class="mc-progress-queue">
+                            <div class="eyebrow">QUEUE STATUS</div>
+                            <span class="mono">{{ progress().current }} / {{ progress().total }}</span>
+                        </div>
+                    </div>
+                    <div class="mc-progress-bar"><div class="mc-progress-bar-fill" [style.width.%]="pct()"></div></div>
+                    <div class="mc-progress-cur">
+                        <span class="eyebrow">CURRENT FRAME</span>
+                        <span class="mono">{{ progress().currentFile }}</span>
+                    </div>
+                </div>
+
+                <button class="btn danger-out mc-stop" type="button" (click)="cancel()">
+                    <app-ico name="X" [size]="12"/> Stop Process
+                </button>
+            } @else {
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
+                        <span class="eyebrow">CAPTION STRATEGY</span>
+                    </div>
+                    <div class="mc-choices">
+                        <button type="button" class="mc-choice"
+                                [class.active]="strategy() === 'keep'"
+                                (click)="strategy.set('keep')">
+                            @if (strategy() === 'keep') { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Incremental</div>
+                            <div class="mc-choice-desc">Only caption images without a text file. Existing captions are preserved.</div>
+                        </button>
+                        <button type="button" class="mc-choice"
+                                [class.active]="strategy() === 'overwrite'"
+                                (click)="strategy.set('overwrite')">
+                            @if (strategy() === 'overwrite') { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Destructive</div>
+                            <div class="mc-choice-desc">Recaption everything. Previous captions will be overwritten.</div>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
+                        <span class="eyebrow">NEURAL ARCHITECTURE</span>
+                    </div>
+                    <div class="mc-settings">
+                        <div class="mc-grid">
+                            <div>
+                                <label class="field-label">Caption model</label>
+                                <input class="input mono" [(ngModel)]="modelId" placeholder="e.g. florence-2">
+                            </div>
+                            <div>
+                                <label class="field-label">Task</label>
+                                <input class="input mono" [(ngModel)]="task" placeholder="detailed">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="field-label">System prompt</label>
+                            <textarea class="input"
+                                      rows="3"
+                                      [(ngModel)]="systemPrompt"></textarea>
+                        </div>
+                        <div class="mc-grid-3">
+                            <div>
+                                <div class="mc-slider-head">
+                                    <span class="field-label">Max tokens</span>
+                                    <span class="mono muted">{{ maxTokens() }}</span>
+                                </div>
+                                <input type="range" min="64" max="2048" step="1" [(ngModel)]="maxTokens" class="mc-range">
+                            </div>
+                            <div>
+                                <div class="mc-slider-head">
+                                    <span class="field-label">Beams</span>
+                                    <span class="mono muted">{{ beams() }}</span>
+                                </div>
+                                <input type="range" min="1" max="10" step="1" [(ngModel)]="beams" class="mc-range">
+                            </div>
+                            <div>
+                                <div class="mc-slider-head">
+                                    <span class="field-label">Repetition</span>
+                                    <span class="mono muted">{{ (repetition() / 100).toFixed(2) }}</span>
+                                </div>
+                                <input type="range" min="100" max="200" step="1" [(ngModel)]="repetition" class="mc-range">
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            }
+        </div>
+
+        @if (data.datasetName && !running()) {
+            <div class="modal-foot mc-foot">
+                <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
+                <button class="btn cta" type="button" (click)="start()">
+                    <app-ico name="Play" [size]="12"/> Execute Mass Captioning
+                </button>
+            </div>
+        }
+    `,
+    styles: [`
+        .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
+        .mc-body { display: flex; flex-direction: column; gap: 20px; }
+        .mc-empty {
+            display: flex; align-items: center; gap: 10px;
+            padding: 24px; justify-content: center;
+            color: var(--color-text-muted); font-size: 13px;
+        }
+
+        .mc-section { display: flex; flex-direction: column; gap: 12px; }
+        .mc-section-head { display: flex; align-items: center; gap: 8px; }
+        .mc-section-bar {
+            width: 3px; height: 14px; border-radius: 2px; background: var(--color-brand);
+        }
+        .eyebrow {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
+            text-transform: uppercase; color: var(--color-text-subtle);
+        }
+        .eyebrow.brand { color: var(--color-brand); }
+
+        .mc-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .mc-choice {
+            position: relative;
+            text-align: left;
+            padding: 14px 16px;
+            background: var(--color-surface-mid);
+            border: 1px solid var(--color-border-default);
+            border-radius: var(--radius-theme-2xl);
+            cursor: pointer;
+            transition: border-color 120ms;
+        }
+        .mc-choice:hover { border-color: var(--color-brand); }
+        .mc-choice.active {
+            border-color: var(--color-brand);
+            background: color-mix(in oklab, var(--color-brand) 8%, var(--color-surface-mid));
+        }
+        .mc-choice-dot {
+            position: absolute; top: 10px; right: 10px;
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--color-brand);
+        }
+        .mc-choice-title {
+            font-size: 13.5px; font-weight: 700; font-style: italic;
+            color: var(--color-text-primary); margin-bottom: 4px;
+        }
+        .mc-choice-desc { font-size: 10.5px; color: var(--color-text-subtle); line-height: 1.5; }
+
+        .mc-settings {
+            background: color-mix(in oklab, var(--color-surface-mid) 70%, transparent);
+            border: 1px solid var(--color-border-default);
+            border-radius: var(--radius-theme-2xl);
+            padding: 16px;
+            display: flex; flex-direction: column; gap: 12px;
+        }
+        .mc-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; }
+        .mc-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+        .mc-slider-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .mc-range { width: 100%; accent-color: var(--color-brand); }
+        .muted { color: var(--color-text-muted); }
+
+        .mc-progress {
+            padding: 20px 22px;
+            background: var(--color-surface-mid);
+            border: 1px solid var(--color-border-default);
+            border-radius: var(--radius-theme-2xl);
+        }
+        .mc-progress-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+        .mc-progress-pct {
+            font-size: 28px; font-weight: 900; font-style: italic;
+            margin-top: 4px; color: var(--color-text-primary);
+            font-variant-numeric: tabular-nums;
+        }
+        .mc-progress-queue { text-align: right; }
+        .mc-progress-bar {
+            height: 10px;
+            background: var(--color-base);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: 999px;
+            overflow: hidden;
+            padding: 2px;
+        }
+        .mc-progress-bar-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--color-brand), var(--color-brand-light));
+            transition: width 300ms;
+            box-shadow: 0 0 10px color-mix(in oklab, var(--color-brand) 50%, transparent);
+        }
+        .mc-progress-cur { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+        .mc-progress-cur .mono { font-size: 11.5px; color: var(--color-text-secondary); }
+        .mc-stop { width: 100%; justify-content: center; }
+
+        .mc-foot { display: flex; justify-content: flex-end; gap: 8px; }
+        .btn.cta {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: var(--color-brand);
+            color: white;
+            font-weight: 800; font-style: italic;
+            text-transform: uppercase;
+            letter-spacing: 0.10em;
+            padding: 10px 18px;
+            border-radius: var(--radius-theme-xl);
+        }
+        .btn.danger-out {
+            display: inline-flex; align-items: center; gap: 8px;
+            color: var(--color-danger);
+            border: 1px solid color-mix(in oklab, var(--color-danger) 30%, transparent);
+            background: color-mix(in oklab, var(--color-danger) 8%, transparent);
+            padding: 12px 16px;
+            border-radius: var(--radius-theme-xl);
+            font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+        }
+    `],
+})
+export class MassCaptionModalComponent implements OnInit {
+    protected overlay = inject(OverlayStore);
+    private datasetsApi = inject(DatasetService);
+    private toast = inject(ToastService);
+
+    protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
+
+    protected strategy = signal<CaptionStrategy>('keep');
+    protected modelId = signal<string>('florence-2');
+    protected task = signal<string>('detailed');
+    protected systemPrompt = signal<string>('Describe this image in detail.');
+    protected maxTokens = signal<number>(512);
+    protected beams = signal<number>(3);
+    protected repetition = signal<number>(110);
+
+    protected running = signal<boolean>(false);
+    protected pairs = signal<any[]>([]);
+    protected progress = signal<{ current: number; total: number; currentFile: string }>({
+        current: 0, total: 0, currentFile: '',
+    });
+
+    protected pct = computed(() => {
+        const p = this.progress();
+        return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+    });
+
+    constructor() {
+        // Stop the recursive setTimeout queue if the modal is destroyed
+        // mid-run (e.g. the user clicked the × button). Without this, the
+        // queue keeps firing HTTP calls and toasts after the component is
+        // gone. `processQueue` already checks `running()` before each
+        // iteration, so flipping the flag is enough to abort cleanly.
+        const destroyRef = inject(DestroyRef);
+        destroyRef.onDestroy(() => this.running.set(false));
+    }
+
+    ngOnInit(): void {
+        if (!this.data.datasetName) return;
+        void this.loadPairs(this.data.datasetName);
+    }
+
+    private async loadPairs(name: string): Promise<void> {
+        try {
+            const pairs = await firstValueFrom(this.datasetsApi.getDatasetPairs(name));
+            this.pairs.set(pairs ?? []);
+        } catch {
+            this.pairs.set([]);
+        }
+    }
+
+    protected start(): void {
+        const name = this.data.datasetName;
+        if (!name) return;
+        const all = this.pairs();
+        const candidates = this.strategy() === 'keep'
+            ? all.filter(p => !p.caption_content?.trim())
+            : [...all];
+
+        if (candidates.length === 0) {
+            this.toast.info('No images need captioning.');
+            return;
+        }
+        if (!confirm(`Start captioning ${candidates.length} images?`)) return;
+
+        this.running.set(true);
+        this.progress.set({ current: 0, total: candidates.length, currentFile: '' });
+        this.processQueue(candidates, 0);
+    }
+
+    private processQueue(queue: any[], idx: number): void {
+        if (!this.running() || idx >= queue.length) {
+            this.running.set(false);
+            if (idx >= queue.length) {
+                this.toast.success(`Mass captioning complete — ${queue.length} images processed.`);
+            }
+            return;
+        }
+
+        const name = this.data.datasetName!;
+        const pair = queue[idx];
+        this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
+
+        const params = {
+            task: this.task(),
+            max_tokens: this.maxTokens(),
+            num_beams: this.beams(),
+            repetition_penalty: this.repetition() / 100,
+        };
+
+        this.datasetsApi.generateCaption(
+            name,
+            pair.media_file,
+            this.modelId(),
+            params,
+            this.systemPrompt(),
+            'original',
+        ).subscribe({
+            next: (res: any) => {
+                const fname = pair.caption_file
+                    || pair.media_file.substring(0, pair.media_file.lastIndexOf('.')) + '.txt';
+                this.datasetsApi.saveCaption(name, fname, res.caption).subscribe(() => {
+                    pair.caption_file = fname;
+                    pair.caption_content = res.caption;
+                    setTimeout(() => this.processQueue(queue, idx + 1), 100);
+                });
+            },
+            error: () => this.processQueue(queue, idx + 1),
+        });
+    }
+
+    protected cancel(): void {
+        this.running.set(false);
+    }
+}

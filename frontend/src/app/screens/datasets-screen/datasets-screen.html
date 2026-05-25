@@ -1,0 +1,81 @@
+<div class="ds-screen">
+    <div class="page-head">
+        <div>
+            <div class="eyebrow">DATASETS · LIBRARY</div>
+            <h1 class="page-title">
+                @if (scope.projectId()) {
+                    Project · Datasets
+                } @else {
+                    Dataset Library
+                }
+            </h1>
+            <p class="page-sub">
+                @if (scope.projectId()) {
+                    {{ kpis().datasets }} datasets in this project · {{ kpis().images }} images
+                } @else {
+                    {{ kpis().datasets }} datasets across all projects · {{ kpis().images }} images
+                }
+            </p>
+        </div>
+        <div class="ds-actions">
+            <button class="btn" type="button" (click)="openRescan()">
+                <app-ico name="RefreshCw" [size]="14"/> Rescan all
+            </button>
+            <button class="btn primary" type="button" (click)="openNewDataset()">
+                <app-ico name="Plus" [size]="14"/> New dataset
+            </button>
+        </div>
+    </div>
+
+    <div class="ds-kpi-rail">
+        <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="brand" sub="in scope"/>
+        <app-kpi-tile label="IMAGES" [value]="kpis().images" accent="teal" sub="across datasets"/>
+        <app-kpi-tile label="CAPTIONED" [value]="kpis().captioned" accent="success" sub="ready for training"/>
+        <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="violet" sub="with overlays"/>
+        <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="warning" sub="latents on disk"/>
+    </div>
+
+    <div class="ds-grid">
+        @for (d of visibleDatasets(); track trackById($index, d)) {
+            <div class="card lift hover-host ds-card" (click)="openCard(d)">
+                <div class="ph-img car ds-card-img">
+                    @if (hpsTone(d); as tone) {
+                        <span class="tag ds-card-hps" [class]="tone">HPS {{ hpsLabel(d) }}</span>
+                    }
+                    @if (scopeIsGlobal && projectBadge(); as pb) {
+                        <span class="chip ds-card-project">
+                            <span class="dot" [style.background]="pb.color"></span>{{ pb.name }}
+                        </span>
+                    }
+                    <span class="ds-card-pills">
+                        <app-state-pills [state]="stateOf(d)"/>
+                    </span>
+                </div>
+
+                <div class="ds-card-body">
+                    <div class="ds-card-title-row">
+                        <div class="ds-card-title-stack">
+                            <div class="ds-card-name">{{ d.name }}</div>
+                            <div class="ds-card-meta">
+                                <span class="mono">{{ sizeLabel(d.total_size_bytes) }}</span>
+                                <span class="ds-card-sep">·</span>
+                                <span class="mono">v{{ d.version }}</span>
+                            </div>
+                        </div>
+                        @if (d.classifier) {
+                            <app-chip-tag>{{ d.classifier }}</app-chip-tag>
+                        }
+                    </div>
+
+                    <div class="ds-card-counts">
+                        <span><b class="mono">{{ d.file_count }}</b> files</span>
+                        <span><b class="mono">{{ d.multimedia_count }}</b> images</span>
+                        <span><b class="mono">{{ d.caption_count }}</b> captioned</span>
+                    </div>
+                </div>
+            </div>
+        } @empty {
+            <p class="muted ds-empty">No datasets in this scope yet.</p>
+        }
+    </div>
+</div>

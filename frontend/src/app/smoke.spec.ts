@@ -6,6 +6,9 @@ import { provideRouter, Router } from '@angular/router';
 import { routes } from './app.routes';
 import { ShellComponent } from './shell/shell.component';
 import { SystemStore } from './state/system.store';
+import { KpiTileComponent } from './ui/kpi-tile/kpi-tile.component';
+import { ChipComponent } from './ui/chip/chip.component';
+import { StatePillsComponent } from './ui/state-pills/state-pills.component';
 
 describe('Smoke Test', () => {
     it('should pass a basic assertion', () => {
@@ -59,4 +62,32 @@ describe('Shell routing — smoke', () => {
             expect(location.path()).toBe(path);
         });
     }
+});
+
+describe('UI primitives — smoke', () => {
+    it('KpiTile renders .kpi root', () => {
+        const f = TestBed.createComponent(KpiTileComponent);
+        f.componentRef.setInput('label', 'Datasets');
+        f.componentRef.setInput('value', 79);
+        f.detectChanges();
+        expect(f.nativeElement.querySelector('.kpi')).toBeTruthy();
+        expect(f.nativeElement.querySelector('.kpi-label')?.textContent).toContain('Datasets');
+        expect(f.nativeElement.querySelector('.kpi-value')?.textContent).toContain('79');
+    });
+
+    it('Chip renders .chip root', () => {
+        const f = TestBed.createComponent(ChipComponent);
+        f.detectChanges();
+        expect(f.nativeElement.querySelector('.chip')).toBeTruthy();
+    });
+
+    it('StatePills renders 3 pills with correct on-state', () => {
+        const f = TestBed.createComponent(StatePillsComponent);
+        f.componentRef.setInput('state', { harmonized: true, captioned: false, masked: true });
+        f.detectChanges();
+        expect(f.nativeElement.querySelectorAll('.state-pill').length).toBe(3);
+        expect(f.nativeElement.querySelector('.state-pill.H.on')).toBeTruthy();
+        expect(f.nativeElement.querySelector('.state-pill.C.on')).toBeFalsy();
+        expect(f.nativeElement.querySelector('.state-pill.M.on')).toBeTruthy();
+    });
 });

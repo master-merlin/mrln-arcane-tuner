@@ -1,0 +1,116 @@
+.ds-screen {
+    padding: 24px 28px 32px;
+}
+
+.ds-actions { display: flex; gap: 8px; }
+
+.ds-kpi-rail {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.ds-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 14px;
+}
+
+.ds-card {
+    padding: 0;
+    overflow: hidden;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+}
+
+.ds-card-img {
+    aspect-ratio: 1.55;
+    border-radius: 0;
+    flex-shrink: 0;
+    position: relative;
+}
+
+.ds-card-hps {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+}
+
+.ds-card-project {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 8px;
+    background: oklch(0.10 0.01 265 / 0.75);
+    backdrop-filter: blur(6px);
+    border-color: oklch(1 0 0 / 0.15);
+}
+
+.ds-card-pills {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+}
+
+.ds-card-body {
+    padding: 12px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+}
+
+.ds-card-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.ds-card-title-stack {
+    line-height: 1.2;
+    min-width: 0;
+    flex: 1;
+}
+
+.ds-card-name {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text-primary);
+}
+
+.ds-card-meta {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    margin-top: 4px;
+}
+
+.ds-card-sep { opacity: 0.4; }
+
+.ds-card-counts {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    align-items: center;
+}
+
+.ds-card-counts b {
+    color: var(--color-text-secondary);
+}
+
+.ds-empty {
+    padding: 24px;
+    text-align: center;
+    grid-column: 1 / -1;
+}

@@ -1,0 +1,54 @@
+<div class="page-head">
+    <div>
+        <div class="eyebrow">SYSTEM</div>
+        <h1 class="page-title">Server</h1>
+        <p class="page-sub">Manage the backend instance, settings, and logs.</p>
+    </div>
+</div>
+
+<!-- Health KPI rail -->
+<div class="server-kpi-rail">
+    <app-kpi-tile label="STATUS" value="Healthy" accent="success" sub="backend.api"/>
+    <!-- TODO(backend): wire to /system/health uptime field -->
+    <app-kpi-tile label="UPTIME" value="—" accent="brand" sub="needs /system/health"/>
+    <!-- TODO(backend): wire to /models/definitions count -->
+    <app-kpi-tile label="MODELS" value="—" accent="teal" sub="needs aggregation"/>
+    <!-- TODO(backend): wire to /jobs?status=running count -->
+    <app-kpi-tile label="ACTIVE JOBS" value="—" accent="warning" sub="needs aggregation"/>
+</div>
+
+<div class="server-grid">
+    <div class="card">
+        <div class="card-head"><div class="card-title">CONFIGURATION</div></div>
+        <div class="card-body">
+            <app-server-control (restartRequest)="restart()"/>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-head"><div class="card-title">LIVE LOG</div></div>
+        <div class="card-body" style="padding:0;">
+            <app-live-log-viewer/>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top:12px;">
+    <button type="button"
+            class="card-head server-terminal-head"
+            (click)="terminalOpen.set(!terminalOpen())">
+        <div class="card-title">TERMINAL</div>
+        <span>{{ terminalOpen() ? '−' : '+' }}</span>
+    </button>
+    @if (terminalOpen()) {
+        <div class="card-body"><app-live-terminal/></div>
+    }
+</div>
+
+@if (isRestarting()) {
+    <div class="modal-backdrop">
+        <div class="modal" style="max-width:480px;">
+            <div class="modal-head"><div>Restarting backend</div></div>
+            <div class="modal-body">The backend is performing a graceful restart…</div>
+        </div>
+    </div>
+}

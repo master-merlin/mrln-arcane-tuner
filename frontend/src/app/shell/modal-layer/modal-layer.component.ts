@@ -11,6 +11,9 @@ import { SimilarImagesModalComponent } from '../../modals/similar-images/similar
 import { MaskPreviewModalComponent } from '../../modals/mask-preview/mask-preview.component';
 import { CropPreviewModalComponent } from '../../modals/crop-preview/crop-preview.component';
 import { ProjectDialogComponent } from '../../modals/project-dialog/project-dialog.component';
+import { ModelSourceModalComponent } from '../../modals/model-source/model-source.component';
+import { BrowseFolderModalComponent } from '../../modals/browse-folder/browse-folder.component';
+import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
 
 /**
  * Modal stack renderer.
@@ -18,10 +21,14 @@ import { ProjectDialogComponent } from '../../modals/project-dialog/project-dial
  * Phase 3 wired the four dataset-management modals (`new-dataset` /
  * `rescan` / `analyze` / `cache`). Phase 4 added six more: three
  * mass-action modals (caption / mask / edit) plus three image-related
- * modals (similar-images / mask-preview / crop-preview). Phase 5 adds
- * `project-dialog`. Each branch uses `@defer` so the modal body bundle
- * loads on demand. Modals not yet implemented fall through to a
- * placeholder so the wiring stays testable.
+ * modals (similar-images / mask-preview / crop-preview). Phase 5 added
+ * `project-dialog`. Phase 8 closes out the final three: `model-source`
+ * and `browse-folder` (both backend-blocked stubs) plus the generic
+ * typed `confirm` modal. All 14 ModalKind values are covered; the
+ * `@default` branch logs a loud console error so missing wiring shows
+ * up immediately during development.
+ *
+ * Each branch uses `@defer` so the modal body bundle loads on demand.
  */
 @Component({
     selector: 'app-modal-layer',
@@ -38,6 +45,9 @@ import { ProjectDialogComponent } from '../../modals/project-dialog/project-dial
         MaskPreviewModalComponent,
         CropPreviewModalComponent,
         ProjectDialogComponent,
+        ModelSourceModalComponent,
+        BrowseFolderModalComponent,
+        ConfirmModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -79,15 +89,24 @@ import { ProjectDialogComponent } from '../../modals/project-dialog/project-dial
                             @case ('project-dialog') {
                                 @defer { <app-modal-project-dialog/> }
                             }
+                            @case ('model-source') {
+                                @defer { <app-modal-model-source/> }
+                            }
+                            @case ('browse-folder') {
+                                @defer { <app-modal-browse-folder/> }
+                            }
+                            @case ('confirm') {
+                                @defer { <app-modal-confirm/> }
+                            }
                             @default {
                                 <div class="modal-head">
                                     <div>{{ m.kind }}</div>
                                     <button class="icon-btn" type="button"
-                                            (click)="overlay.closeModal()"
+                                            (click)="onUnknown(m.kind)"
                                             aria-label="Close">×</button>
                                 </div>
                                 <div class="modal-body">
-                                    Modal "{{ m.kind }}" not yet implemented.
+                                    Modal "{{ m.kind }}" has no wired component.
                                 </div>
                             }
                         }
@@ -100,4 +119,14 @@ import { ProjectDialogComponent } from '../../modals/project-dialog/project-dial
 export class ModalLayerComponent {
     protected overlay = inject(OverlayStore);
     protected stack = computed(() => this.overlay.modalStack());
+
+    /**
+     * Fallback handler for ModalKind values without a `@case` branch.
+     * Logs to console so missing wiring is loud during development, then
+     * closes the modal so the user isn't stranded.
+     */
+    protected onUnknown(kind: string): void {
+        console.error('[ModalLayer] unknown modal kind:', kind);
+        this.overlay.closeModal();
+    }
 }

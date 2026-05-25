@@ -2,7 +2,6 @@
 @source "../src/**/*.{html,ts}";
 @import "./styles/base.css";
 @import "./styles/components.css";
-@import "./styles/utilities.css";
 
 /* ================================================================
    THEME – Design tokens for MRLN Arcane Tuner

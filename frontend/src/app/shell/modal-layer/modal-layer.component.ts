@@ -10,17 +10,18 @@ import { MassEditModalComponent } from '../../modals/mass-edit/mass-edit.compone
 import { SimilarImagesModalComponent } from '../../modals/similar-images/similar-images.component';
 import { MaskPreviewModalComponent } from '../../modals/mask-preview/mask-preview.component';
 import { CropPreviewModalComponent } from '../../modals/crop-preview/crop-preview.component';
+import { ProjectDialogComponent } from '../../modals/project-dialog/project-dialog.component';
 
 /**
  * Modal stack renderer.
  *
  * Phase 3 wired the four dataset-management modals (`new-dataset` /
- * `rescan` / `analyze` / `cache`). Phase 4 adds six more: three
+ * `rescan` / `analyze` / `cache`). Phase 4 added six more: three
  * mass-action modals (caption / mask / edit) plus three image-related
- * modals (similar-images / mask-preview / crop-preview). Each branch
- * uses `@defer` so the modal body bundle loads on demand. Modals not
- * yet implemented fall through to a placeholder so the wiring stays
- * testable.
+ * modals (similar-images / mask-preview / crop-preview). Phase 5 adds
+ * `project-dialog`. Each branch uses `@defer` so the modal body bundle
+ * loads on demand. Modals not yet implemented fall through to a
+ * placeholder so the wiring stays testable.
  */
 @Component({
     selector: 'app-modal-layer',
@@ -36,6 +37,7 @@ import { CropPreviewModalComponent } from '../../modals/crop-preview/crop-previe
         SimilarImagesModalComponent,
         MaskPreviewModalComponent,
         CropPreviewModalComponent,
+        ProjectDialogComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -73,6 +75,9 @@ import { CropPreviewModalComponent } from '../../modals/crop-preview/crop-previe
                             }
                             @case ('crop-preview') {
                                 @defer { <app-modal-crop-preview/> }
+                            }
+                            @case ('project-dialog') {
+                                @defer { <app-modal-project-dialog/> }
                             }
                             @default {
                                 <div class="modal-head">

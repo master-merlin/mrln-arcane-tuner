@@ -65,6 +65,11 @@
                         @if (d.classifier) {
                             <app-chip-tag>{{ d.classifier }}</app-chip-tag>
                         }
+                        <button class="icon-btn ds-card-delete" type="button"
+                                (click)="deleteDataset(d, $event)"
+                                [title]="scope.projectId() ? 'Remove from project' : 'Delete from library'">
+                            <app-ico [name]="scope.projectId() ? 'X' : 'Trash2'" [size]="13"/>
+                        </button>
                     </div>
 
                     <div class="ds-card-counts">

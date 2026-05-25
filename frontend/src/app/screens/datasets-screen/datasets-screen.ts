@@ -1,7 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { Dataset } from '../../services/dataset';
+import { Dataset, DatasetService } from '../../services/dataset';
 import { ProjectService } from '../../services/project.service';
+import { ToastService } from '../../services/toast';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
@@ -40,7 +41,9 @@ interface ProjectBadge {
 })
 export class DatasetsScreen {
     private datasets = inject(DatasetStore);
+    private datasetsApi = inject(DatasetService);
     private projects = inject(ProjectService);
+    private toast = inject(ToastService);
     protected scope = inject(ScopeStore);
     protected overlay = inject(OverlayStore);
 
@@ -162,5 +165,60 @@ export class DatasetsScreen {
 
     protected openRescan(): void {
         this.overlay.openModal('rescan');
+    }
+
+    /**
+     * Scope-aware delete.
+     *
+     * - **Global scope**: removes the dataset from the library (existing
+     *   `DELETE /datasets/{name}` endpoint).
+     * - **Project scope**: detaches the dataset from the active project via
+     *   {@link ProjectService.removeProjectDataset}. The dataset remains in
+     *   the library.
+     *
+     * A native `confirm()` gates both paths for now; the dedicated `confirm`
+     * modal ships in Phase 8 and this call site will switch to
+     * `overlay.openModal('confirm', ...)` then.
+     */
+    protected deleteDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        const projectId = this.scope.projectId();
+
+        if (projectId) {
+            if (!confirm(`Remove "${d.name}" from this project? It will stay in the library.`)) return;
+            // TODO(frontend): replace native confirm with overlay.openModal('confirm', ...) when Phase 8 lands.
+            this.projects.removeProjectDataset(projectId, d.id ?? d.name).subscribe({
+                next: () => {
+                    this.toast.success(`Removed "${d.name}" from project.`);
+                    // Refresh the scope filter and the global library list.
+                    void this.refreshAfterDelete(projectId);
+                },
+                error: (err: { error?: { detail?: string }; message?: string }) =>
+                    this.toast.error('Failed to remove from project: ' + (err?.error?.detail || err?.message)),
+            });
+            return;
+        }
+
+        // Global scope: actual library delete.
+        if (!confirm(`Delete "${d.name}" from the library? This cannot be undone.`)) return;
+        this.datasetsApi.deleteDataset(d.name).subscribe({
+            next: () => {
+                this.toast.success(`Deleted "${d.name}".`);
+                void this.datasets.loadAll().catch(() => {});
+            },
+            error: (err: { error?: { detail?: string }; message?: string }) =>
+                this.toast.error('Failed to delete dataset: ' + (err?.error?.detail || err?.message)),
+        });
+    }
+
+    private async refreshAfterDelete(projectId: string): Promise<void> {
+        try {
+            // Refresh project membership immediately so the scope-filtered grid
+            // drops the removed dataset without waiting for the next scope tick.
+            const rows = await firstValueFrom(this.projects.getProjectDatasets(projectId));
+            this.projectDatasetIds.set(new Set(rows.map(r => r.id)));
+        } catch {
+            this.projectDatasetIds.set(new Set());
+        }
     }
 }

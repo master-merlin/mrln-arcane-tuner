@@ -1,0 +1,326 @@
+<div class="pd-screen">
+    <div class="pd-back-row">
+        <button class="btn ghost sm" type="button" routerLink="/projects">
+            <app-ico name="ChevronLeft" [size]="14"/> Projects
+        </button>
+    </div>
+
+    @if (project(); as p) {
+        <div class="card pd-header-card">
+            <div class="pd-accent" [style.background]="p.color || '#6366f1'"></div>
+
+            <div class="pd-header-row">
+                <div class="pd-header-left">
+                    <div class="pd-badge"
+                         [style.background]="'linear-gradient(135deg, ' + (p.color || '#6366f1') + ', color-mix(in oklab, ' + (p.color || '#6366f1') + ' 70%, black))'"
+                         [style.box-shadow]="'0 6px 16px ' + (p.color || '#6366f1') + '40'">
+                        {{ initialsOf(p.name) }}
+                    </div>
+                    <div class="pd-title-stack">
+                        <div class="eyebrow">PROJECT<span class="pd-id">· {{ p.id }}</span></div>
+                        <h1 class="pd-title">{{ p.name }}</h1>
+                        <div class="pd-desc">{{ p.description || 'No description.' }}</div>
+                    </div>
+                </div>
+                <div class="pd-header-actions">
+                    <button class="btn sm" type="button" (click)="editProject()" title="Edit project">
+                        <app-ico name="Pencil" [size]="13"/>
+                    </button>
+                    <button class="btn sm danger-out" type="button" (click)="deleteProject()" title="Delete project">
+                        <app-ico name="Trash2" [size]="13"/>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 5-stat strip -->
+            <div class="pd-stat-strip">
+                <div>
+                    <div class="pd-stat-label">DATASETS</div>
+                    <div class="pd-stat-value-row">
+                        <div class="pd-stat-value">{{ p.stats?.datasets ?? 0 }}</div>
+                    </div>
+                    <div class="pd-stat-sub">linked</div>
+                </div>
+                <div>
+                    <div class="pd-stat-label">TEMPLATES</div>
+                    <div class="pd-stat-value-row">
+                        <div class="pd-stat-value">{{ (p.stats?.captioning_templates ?? 0) + (p.stats?.masking_templates ?? 0) + (p.stats?.training_templates ?? 0) }}</div>
+                    </div>
+                    <div class="pd-stat-sub">caption · mask · training</div>
+                </div>
+                <div>
+                    <div class="pd-stat-label">ACTIVE JOBS</div>
+                    <div class="pd-stat-value-row">
+                        <div class="pd-stat-value">{{ p.stats?.jobs ?? 0 }}</div>
+                    </div>
+                    <div class="pd-stat-sub">{{ (p.stats?.jobs ?? 0) > 0 ? 'running / queued' : 'no runs yet' }}</div>
+                </div>
+                <div>
+                    <div class="pd-stat-label">RUNS</div>
+                    <div class="pd-stat-value-row">
+                        <div class="pd-stat-value">{{ runs().length }}</div>
+                    </div>
+                    <div class="pd-stat-sub">history</div>
+                </div>
+                <div>
+                    <div class="pd-stat-label">UPDATED</div>
+                    <div class="pd-stat-value-row">
+                        <div class="pd-stat-value small">{{ formatUpdated(p.updated_at) }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sub-tabs -->
+        <div class="pd-tabs-wrap">
+            <app-tabs [tabs]="tabs" [active]="tab()" (changed)="onTabChange($event)"/>
+        </div>
+
+        @switch (tab()) {
+            @case ('overview') {
+                <div class="pd-overview">
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <app-ico name="Activity" [size]="11"/> Recent activity
+                            </div>
+                            <span class="muted" style="font-size: 11px;">stub</span>
+                        </div>
+                        <div class="pd-activity-list">
+                            <!-- TODO(backend): no per-project activity feed endpoint yet; stub list. -->
+                            <div class="pd-activity-row">
+                                <div class="pd-activity-icon">
+                                    <app-ico name="Sparkles" [size]="12"/>
+                                </div>
+                                <div class="pd-activity-text">
+                                    <div class="pd-activity-title">Project created</div>
+                                    <div class="pd-activity-sub">{{ p.name }}</div>
+                                </div>
+                                <span class="pd-activity-when">{{ formatUpdated(p.created_at) }}</span>
+                            </div>
+                            @if (runs().length === 0) {
+                                <div class="pd-empty">No runs yet for this project.</div>
+                            } @else {
+                                @for (r of runs().slice(0, 3); track trackJob($index, r)) {
+                                    <div class="pd-activity-row">
+                                        <div class="pd-activity-icon">
+                                            <app-ico name="Play" [size]="12"/>
+                                        </div>
+                                        <div class="pd-activity-text">
+                                            <div class="pd-activity-title">{{ r.lora_name || r.id }}</div>
+                                            <div class="pd-activity-sub">{{ r.status_label || r.status }}</div>
+                                        </div>
+                                        <span class="pd-activity-when">{{ formatUpdated(r.created_at) }}</span>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+
+                    <div class="pd-side-col">
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="card-title">
+                                    <app-ico name="Zap" [size]="11"/> Quick actions
+                                </div>
+                            </div>
+                            <div class="pd-quick">
+                                <button class="btn" type="button" (click)="onTabChange('quick-train')">
+                                    <app-ico name="Sparkles" [size]="13"/> Train from template
+                                </button>
+                                <button class="btn" type="button" (click)="onTabChange('datasets')">
+                                    <app-ico name="Plus" [size]="13"/> Manage datasets
+                                </button>
+                                <button class="btn" type="button" (click)="onTabChange('templates')">
+                                    <app-ico name="Files" [size]="13"/> Templates
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @case ('datasets') {
+                @defer {
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <app-ico name="Database" [size]="11"/> Datasets in this project · {{ projectDatasets().length }}
+                            </div>
+                        </div>
+                        @if (projectDatasets().length === 0) {
+                            <div class="pd-empty">No datasets linked. Add some from the Datasets screen.</div>
+                        } @else {
+                            <table class="tbl">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Images</th>
+                                        <th>Captioned</th>
+                                        <th>Masked</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @for (d of projectDatasets(); track trackDataset($index, d)) {
+                                        <tr>
+                                            <td>
+                                                <div style="font-weight: 600; font-size: 13px;">{{ d.name }}</div>
+                                            </td>
+                                            <td class="mono">{{ $any(d).multimedia_count ?? '—' }}</td>
+                                            <td class="mono">{{ $any(d).caption_count ?? '—' }}</td>
+                                            <td class="mono">{{ $any(d).mask_count ?? '—' }}</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                    </div>
+                }
+            }
+
+            @case ('templates') {
+                @defer {
+                    @if (templateSections().length === 0) {
+                        <div class="card pd-empty">Loading templates…</div>
+                    } @else {
+                        <div style="display: flex; flex-direction: column; gap: 14px;">
+                            @for (s of templateSections(); track trackSection($index, s)) {
+                                <div class="card">
+                                    <div class="card-head">
+                                        <div class="card-title">
+                                            <app-ico name="Files" [size]="11"/> {{ s.label }} · {{ s.items.length }}
+                                        </div>
+                                    </div>
+                                    <div class="pd-template-section">
+                                        @if (s.items.length === 0) {
+                                            <div class="pd-empty">No project {{ s.domain }} templates yet.</div>
+                                        } @else {
+                                            @for (t of s.items; track trackTemplate($index, t)) {
+                                                <div class="pd-template-row">
+                                                    <span class="pd-template-dot" [style.background]="templateDomainTone(s.domain)"></span>
+                                                    <div class="pd-template-text">
+                                                        <div class="pd-template-name">{{ t.name }}</div>
+                                                        <div class="pd-template-sub">{{ t.definition_id || t.model_id || '' }}</div>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                }
+            }
+
+            @case ('quick-train') {
+                @defer {
+                    <div class="pd-quick-train">
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="card-title">
+                                    <app-ico name="Sparkles" [size]="11"/> Train from template
+                                </div>
+                            </div>
+                            <div class="pd-qt-body">
+                                <div>
+                                    <label class="field-label">Training preset</label>
+                                    <div class="pd-qt-presets">
+                                        @for (preset of presets; track trackPreset($index, preset)) {
+                                            <div class="pd-qt-preset"
+                                                 [class.active]="selectedPreset() === preset.id"
+                                                 (click)="selectedPreset.set(preset.id)">
+                                                <div class="pd-qt-preset-name">{{ preset.name }}</div>
+                                                <div class="pd-qt-preset-sub">{{ preset.sub }}</div>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="field-label">Dataset</label>
+                                    @if (projectDatasets().length === 0) {
+                                        <div class="pd-empty">No datasets linked to this project yet.</div>
+                                    } @else {
+                                        <select class="select" [value]="selectedDataset()" (change)="selectedDataset.set($any($event.target).value)">
+                                            <option value="">Pick a dataset…</option>
+                                            @for (d of projectDatasets(); track trackDataset($index, d)) {
+                                                <option [value]="d.id">{{ d.name }}</option>
+                                            }
+                                        </select>
+                                    }
+                                </div>
+                                <div class="pd-qt-foot">
+                                    <button class="btn" type="button" routerLink="/training">
+                                        <app-ico name="Sliders" [size]="13"/> Full configuration
+                                    </button>
+                                    <button class="btn primary right" type="button" disabled title="Quick train wiring lands in Phase 6">
+                                        <app-ico name="Play" [size]="13"/> Start training
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-head">
+                                <div class="card-title">Estimate</div>
+                            </div>
+                            <div class="pd-qt-estimate-stub">
+                                TODO(backend): wall-time / VRAM / output-size estimates require the
+                                <span class="mono">POST /training/estimate</span> endpoint (planned for Phase 6).
+                            </div>
+                        </div>
+                    </div>
+                }
+            }
+
+            @case ('runs') {
+                @defer {
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <app-ico name="Activity" [size]="11"/> Runs in this project · {{ runs().length }}
+                            </div>
+                            <button class="btn sm" type="button" routerLink="/jobs">Open in Jobs ›</button>
+                        </div>
+                        @if (runs().length === 0) {
+                            <div class="pd-empty">No runs for this project yet.</div>
+                        } @else {
+                            <table class="tbl">
+                                <thead>
+                                    <tr>
+                                        <th>Run</th>
+                                        <th>Status</th>
+                                        <th>Steps</th>
+                                        <th>Best loss</th>
+                                        <th>Duration</th>
+                                        <th>When</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @for (r of runs(); track trackJob($index, r)) {
+                                        <tr>
+                                            <td class="mono" style="font-size: 12px; font-weight: 600;">{{ r.lora_name || r.id }}</td>
+                                            <td>
+                                                @if (jobStatusTone(r.status); as tone) {
+                                                    <span class="chip" [class]="tone">{{ r.status_label || r.status }}</span>
+                                                }
+                                            </td>
+                                            <td class="mono">{{ r.completed_steps ?? '—' }}</td>
+                                            <td class="mono">{{ r.min_loss !== undefined && r.min_loss !== null ? r.min_loss.toFixed(4) : '—' }}</td>
+                                            <td class="mono">{{ r.duration_seconds ? (r.duration_seconds / 60).toFixed(1) + ' min' : '—' }}</td>
+                                            <td class="muted" style="font-size: 11.5px;">{{ formatUpdated(r.created_at) }}</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                    </div>
+                }
+            }
+        }
+    } @else {
+        <div class="card pd-empty">
+            Project not found. <button class="btn ghost sm" type="button" routerLink="/projects">Back to Projects</button>
+        </div>
+    }
+</div>

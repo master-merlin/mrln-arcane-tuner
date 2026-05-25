@@ -1,0 +1,143 @@
+<div class="jobs-grid">
+    <aside class="queue-pane">
+        <app-training-job-queue/>
+    </aside>
+
+    <main class="detail-pane">
+        @if (selectedJob(); as j) {
+            <div class="page-head">
+                <div>
+                    <div class="eyebrow">
+                        <span class="sdot" [class.success]="j.status === JobStatus.RUNNING"></span>
+                        RUN · #{{ j.id.slice(0, 8).toUpperCase() }}
+                    </div>
+                    <h1 class="page-title detail-title">
+                        {{ j.config?.['definition_id'] || j.plugin_id }}
+                        <span class="muted"> · </span>
+                        {{ j.config?.['lora_name'] || 'untitled' }}
+                    </h1>
+                    <div class="page-sub mono">
+                        @if (j.pid) {
+                            <span>PID {{ j.pid }}</span>
+                            <span> · </span>
+                        }
+                        <span>status {{ j.status }}</span>
+                    </div>
+                </div>
+                <div class="detail-actions">
+                    <button class="btn"
+                            (click)="pauseJob()"
+                            [disabled]="j.status !== JobStatus.RUNNING">
+                        Pause
+                    </button>
+                    <button class="btn" (click)="viewLogs()">Logs</button>
+                    <!-- TODO(backend): replace soft-stop proxy with a dedicated checkpoint endpoint -->
+                    <button class="btn"
+                            (click)="saveCheckpoint()"
+                            [disabled]="j.status !== JobStatus.RUNNING">
+                        Save checkpoint
+                    </button>
+                    <button class="btn danger-out"
+                            (click)="stopJob()"
+                            [disabled]="j.status !== JobStatus.RUNNING && j.status !== JobStatus.PAUSED">
+                        Stop
+                    </button>
+                </div>
+            </div>
+
+            <!-- TRAINING CURVES -->
+            <section class="card collapse-card">
+                <button class="card-head" type="button" (click)="toggle('curves')">
+                    <span class="card-title">TRAINING CURVES</span>
+                    <span class="caret">{{ expanded().curves ? '−' : '+' }}</span>
+                </button>
+                @if (expanded().curves) {
+                    <div class="card-body">
+                        @if (chartSamples().length > 0) {
+                            <app-loss-chart
+                                [samples]="chartSamples()"
+                                [emaAlpha]="0.2"
+                            />
+                        } @else {
+                            <p class="muted">
+                                Waiting for first STEP_LOG entries… curve appears once training emits losses.
+                            </p>
+                        }
+                    </div>
+                }
+            </section>
+
+            <!-- SAMPLE PREVIEWS -->
+            <section class="card collapse-card">
+                <button class="card-head" type="button" (click)="toggle('samples')">
+                    <span class="card-title">SAMPLE PREVIEWS</span>
+                    <span class="caret">{{ expanded().samples ? '−' : '+' }}</span>
+                </button>
+                @if (expanded().samples) {
+                    <div class="card-body samples-strip">
+                        @if (currentSamples().length > 0) {
+                            @for (s of currentSamples(); track s.filename) {
+                                <div class="sample-tile">
+                                    <div class="sample-label mono">
+                                        {{ s.step === 999999 ? 'final' : 'step ' + (s.step ?? '?') }}
+                                    </div>
+                                    <div class="sample-name mono">{{ s.filename }}</div>
+                                </div>
+                            }
+                        } @else {
+                            <!-- TODO(backend): expose a thumbnail endpoint so we can show actual images here. -->
+                            <p class="muted">No sample previews yet.</p>
+                        }
+                    </div>
+                }
+            </section>
+
+            <!-- RUN CONFIG -->
+            <section class="card collapse-card">
+                <button class="card-head" type="button" (click)="toggle('config')">
+                    <span class="card-title">RUN CONFIG</span>
+                    <span class="caret">{{ expanded().config ? '−' : '+' }}</span>
+                </button>
+                @if (expanded().config) {
+                    <div class="card-body">
+                        <pre class="config-json mono">{{ selectedConfigJson() }}</pre>
+                    </div>
+                }
+            </section>
+
+            <!-- LOG TAIL -->
+            <section class="card collapse-card">
+                <button class="card-head" type="button" (click)="toggle('log')">
+                    <span class="card-title">LOG TAIL</span>
+                    <span class="caret">{{ expanded().log ? '−' : '+' }}</span>
+                </button>
+                @if (expanded().log) {
+                    <div class="card-body">
+                        @if (logTail().length > 0) {
+                            <div class="log-tail mono">
+                                @for (line of logTail(); track $index) {
+                                    <div class="log-tail-line">{{ line }}</div>
+                                }
+                            </div>
+                        } @else {
+                            <p class="muted">No log output yet.</p>
+                        }
+                    </div>
+                }
+            </section>
+        } @else {
+            <p class="muted detail-empty">Select a job from the queue.</p>
+        }
+    </main>
+
+    <aside class="system-pane">
+        <div class="card system-card">
+            <div class="card-head static">
+                <span class="card-title">SYSTEM</span>
+            </div>
+            <div class="card-body">
+                <app-system-monitor/>
+            </div>
+        </div>
+    </aside>
+</div>

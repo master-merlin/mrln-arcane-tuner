@@ -53,7 +53,9 @@
                             [datasetId]="w.datasetId"
                             [imageIndex]="w.imageIndex"
                             [pairs]="pairs()"
-                            [datasetName]="dataset()?.name ?? w.datasetId"/>
+                            [datasetName]="dataset()?.name ?? w.datasetId"
+                            (pairsChanged)="refreshPairs()"
+                            (pairDeleted)="onPairDeleted($event)"/>
                     } @loading {
                         <div class="defer-loading">Loading details…</div>
                     }

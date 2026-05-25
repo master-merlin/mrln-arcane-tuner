@@ -1,6 +1,7 @@
 import {
     ChangeDetectionStrategy,
     Component,
+    DestroyRef,
     OnInit,
     computed,
     inject,
@@ -297,6 +298,16 @@ export class MassCaptionModalComponent implements OnInit {
         const p = this.progress();
         return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
     });
+
+    constructor() {
+        // Stop the recursive setTimeout queue if the modal is destroyed
+        // mid-run (e.g. the user clicked the × button). Without this, the
+        // queue keeps firing HTTP calls and toasts after the component is
+        // gone. `processQueue` already checks `running()` before each
+        // iteration, so flipping the flag is enough to abort cleanly.
+        const destroyRef = inject(DestroyRef);
+        destroyRef.onDestroy(() => this.running.set(false));
+    }
 
     ngOnInit(): void {
         if (!this.data.datasetName) return;

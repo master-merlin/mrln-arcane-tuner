@@ -1,6 +1,7 @@
 import {
     ChangeDetectionStrategy,
     Component,
+    DestroyRef,
     OnInit,
     computed,
     inject,
@@ -405,6 +406,16 @@ export class MassMaskModalComponent implements OnInit {
             case 'caption':  return 'Caption Masked Images';
         }
     });
+
+    constructor() {
+        // Stop the recursive setTimeout queues (mask generate + masked
+        // captioning) if the modal is destroyed mid-run. Each queue checks
+        // `running()` before its next iteration, so flipping the flag on
+        // teardown aborts cleanly. The Apply tab is a single HTTP call and
+        // does not need this guard, but the flag reset is harmless there.
+        const destroyRef = inject(DestroyRef);
+        destroyRef.onDestroy(() => this.running.set(false));
+    }
 
     ngOnInit(): void {
         if (!this.data.datasetName) return;

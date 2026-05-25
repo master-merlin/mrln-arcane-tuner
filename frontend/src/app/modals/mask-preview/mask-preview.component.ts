@@ -79,7 +79,9 @@ interface MaskPreviewData {
                     <input type="range" min="0" max="1" step="0.05"
                            [(ngModel)]="opacity" class="mp-range">
                 </div>
-                <button class="btn cta" type="button" (click)="bakeMask()">
+                <button class="btn cta" type="button"
+                        [disabled]="true"
+                        title="Coming soon — wired in cleanup PR">
                     <app-ico name="Check" [size]="12"/> Bake mask
                 </button>
             } @else {
@@ -189,11 +191,8 @@ export class MaskPreviewModalComponent implements OnInit {
                `?image_rel_path=${encodeURIComponent(pair.media_file)}&opacity=${this.opacity()}`;
     });
 
-    protected bakeMask(): void {
-        // TODO(frontend): wire to the dataset mask-bake endpoint once the
-        // workspace exposes a callback channel back to the details mask
-        // sidebar. For now this closes the modal so the user can re-run
-        // the mask-apply flow from the mass-mask modal.
-        this.overlay.closeModal();
-    }
+    // TODO(frontend): wire `Bake mask` to the dataset mask-bake endpoint
+    // once the new workspace exposes a callback channel back to the details
+    // mask sidebar. Until then the button is disabled (see template) so the
+    // user gets a clear signal instead of a silent close.
 }

@@ -1,6 +1,7 @@
 import {
     ChangeDetectionStrategy,
     Component,
+    DestroyRef,
     OnInit,
     computed,
     inject,
@@ -303,7 +304,6 @@ interface SourceImage {
 })
 export class MassEditModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
-    private overlayStore = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
@@ -325,12 +325,22 @@ export class MassEditModalComponent implements OnInit {
         return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
     });
 
+    constructor() {
+        // Stop the recursive setTimeout queue if the modal is destroyed
+        // mid-run (e.g. the user clicked the × button). Without this, the
+        // queue keeps firing HTTP calls and toasts after the component is
+        // gone. `processQueue` already checks `running()` before each
+        // iteration, so flipping the flag is enough to abort cleanly.
+        const destroyRef = inject(DestroyRef);
+        destroyRef.onDestroy(() => this.running.set(false));
+    }
+
     protected sourceCandidates = computed(() => this.pairs().filter(p => p.metadata?.has_overlay));
 
     protected targetCandidates = computed(() => {
         const src = this.source();
         return this.pairs().filter(
-            p => p.metadata && !(p as any).media_type?.includes?.('video')
+            p => p.metadata && !(p.metadata as any)?.media_type?.includes?.('video')
                 && (!src || p.media_file !== src.media_file),
         );
     });
@@ -432,7 +442,7 @@ export class MassEditModalComponent implements OnInit {
         const target = queue[idx];
         this.progress.set({ current: idx, total: queue.length, currentFile: target });
 
-        void this.overlayStore.renderPipeline(name, target, blocks).then((result: any) => {
+        void this.overlay.renderPipeline(name, target, blocks).then((result: any) => {
             if (!result.ok) {
                 this.toast.error(`Failed: ${target}`);
             }

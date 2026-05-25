@@ -107,7 +107,9 @@ const RATIOS: ReadonlyArray<readonly [string, number]> = [
                 <span class="mono warning">{{ outputSize().w }}×{{ outputSize().h }}</span>
             </div>
             <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
-            <button class="btn cta warning" type="button" (click)="saveCrop()">
+            <button class="btn cta warning" type="button"
+                    [disabled]="true"
+                    title="Coming soon — wired in cleanup PR">
                 <app-ico name="Check" [size]="12"/> Save crop
             </button>
         </div>
@@ -290,11 +292,10 @@ export class CropPreviewModalComponent implements OnInit {
         this.aspect.set('16:9');
     }
 
-    protected saveCrop(): void {
-        // TODO(frontend): wire to a backend save-crop endpoint. The
-        // existing orphan modal supported interactive resize + persistence,
-        // but the persistence path is bundled with EditMode and will land
-        // alongside the editor-body extraction in the cleanup PR.
-        this.overlay.closeModal();
-    }
+    // TODO(frontend): wire to a backend save-crop endpoint. The existing
+    // orphan modal supported interactive resize + persistence, but the
+    // persistence path is bundled with EditMode and will land alongside the
+    // editor-body extraction in the cleanup PR. Until then the Save crop
+    // button is disabled (see template) so the user gets a clear signal
+    // instead of a silent no-op.
 }

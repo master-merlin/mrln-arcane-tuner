@@ -108,38 +108,60 @@ export class DatasetWorkspaceComponent {
         // No-op if `loadAll` already ran on the Datasets screen.
         void this.datasets.loadAll().catch(() => undefined);
 
-        // Whenever the workspace targets a new datasetId, ensure we have
-        // both the dataset row and its pairs cached locally.
+        // Effect 1 — resolve the dataset row.
+        //
+        // Tracks only `ws()`. When the workspace opens by id BEFORE the
+        // dataset store has hydrated, the by-name HTTP fetch will 404
+        // (endpoint is keyed by name, not id). That's fine — we silently
+        // return, and Effect 2 will pick up the row once `loadAll()`
+        // resolves and `dataset()` becomes non-null.
         effect(() => {
             const w = this.ws();
             if (!w) return;
-            void this.ensureDatasetLoaded(w.datasetId);
+            void this.ensureDatasetRow(w.datasetId);
+        });
+
+        // Effect 2 — load pairs once both workspace and dataset are known.
+        //
+        // Tracks BOTH `ws()` and `dataset()`. This is the key dependency
+        // fix: without `dataset()` in the read path the effect would not
+        // re-run when `DatasetStore.loadAll()` later populates the
+        // store, leaving pairs empty for ever.
+        effect(() => {
+            const w = this.ws();
+            const d = this.dataset();
+            if (!w || !d) return;
+            void this.ensurePairsLoaded(d.name);
         });
     }
 
-    private async ensureDatasetLoaded(idOrName: string): Promise<void> {
-        // Resolve the dataset row first (need the canonical `name` for /pairs).
-        let row =
+    /** Resolve the dataset row (store first, fallback HTTP by id-or-name). */
+    private async ensureDatasetRow(idOrName: string): Promise<void> {
+        const existing =
             (this.datasets.entities() ?? []).find(
                 (d: Dataset) => d.id === idOrName || d.name === idOrName,
             ) ?? this.extraDatasets()[idOrName] ?? null;
+        if (existing) return;
 
-        if (!row) {
-            try {
-                row = await firstValueFrom(this.datasetsApi.getDataset(idOrName));
-                this.extraDatasets.update(m => ({ ...m, [idOrName]: row! }));
-            } catch {
-                return;
-            }
-        }
-
-        // Pairs cache is keyed by dataset.name — skip if already present.
-        if (this.pairsByDataset()[row.name]) return;
         try {
-            const pairs = await firstValueFrom(this.datasetsApi.getDatasetPairs(row.name));
-            this.pairsByDataset.update(m => ({ ...m, [row!.name]: pairs ?? [] }));
+            const row = await firstValueFrom(this.datasetsApi.getDataset(idOrName));
+            this.extraDatasets.update(m => ({ ...m, [idOrName]: row }));
         } catch {
-            this.pairsByDataset.update(m => ({ ...m, [row!.name]: [] }));
+            // 404 is expected when the id can't be resolved as a name —
+            // `loadAll()` (started in the constructor) will hydrate the
+            // store and Effect 2 will then pick the row up via `dataset()`.
+            return;
+        }
+    }
+
+    /** Load /pairs for a dataset (keyed by canonical `name`). */
+    private async ensurePairsLoaded(name: string): Promise<void> {
+        if (this.pairsByDataset()[name]) return;
+        try {
+            const pairs = await firstValueFrom(this.datasetsApi.getDatasetPairs(name));
+            this.pairsByDataset.update(m => ({ ...m, [name]: pairs ?? [] }));
+        } catch {
+            this.pairsByDataset.update(m => ({ ...m, [name]: [] }));
         }
     }
 
@@ -157,5 +179,44 @@ export class DatasetWorkspaceComponent {
 
     protected onModeChange(mode: WorkspaceMode): void {
         this.overlay.setWorkspaceMode(mode);
+    }
+
+    /**
+     * Re-fetch the current dataset's pairs after a mutation (e.g. mask
+     * generated / mask deleted by DetailsMode). Invalidates the cache
+     * entry and re-runs the loader.
+     */
+    protected refreshPairs(): void {
+        const d = this.dataset();
+        if (!d) return;
+        this.pairsByDataset.update(m => {
+            const next = { ...m };
+            delete next[d.name];
+            return next;
+        });
+        void this.ensurePairsLoaded(d.name);
+    }
+
+    /**
+     * A pair was deleted server-side. Remove it from the local cache,
+     * close the workspace if the dataset is now empty, otherwise clamp
+     * the image cursor so the user sees the next-best pair.
+     */
+    protected onPairDeleted(event: { index: number; mediaFile: string }): void {
+        const d = this.dataset();
+        if (!d) return;
+        const list = (this.pairsByDataset()[d.name] ?? []).filter(
+            (p: any) => p?.media_file !== event.mediaFile,
+        );
+        this.pairsByDataset.update(m => ({ ...m, [d.name]: list }));
+
+        if (list.length === 0) {
+            this.overlay.closeWorkspace();
+            return;
+        }
+        const w = this.ws();
+        if (w && w.imageIndex >= list.length) {
+            this.overlay.setWorkspaceImage(list.length - 1);
+        }
     }
 }

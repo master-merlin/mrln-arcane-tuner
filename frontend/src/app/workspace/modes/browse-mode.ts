@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input } from '@angular/core';
 import { ViewerGridViewComponent } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
 import { OverlayStore } from '../../state/overlay.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -45,9 +45,6 @@ export class BrowseMode {
 
     protected overlay = inject(OverlayStore);
     protected rtc = inject(RuntimeConfigService);
-
-    /** Map a grid-click index back into the workspace's image cursor. */
-    protected indexFor = computed<(i: number) => number>(() => (i: number) => i);
 
     protected openDetail(idx: number): void {
         this.overlay.setWorkspaceImage(idx);

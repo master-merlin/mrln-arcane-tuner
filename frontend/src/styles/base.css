@@ -1,0 +1,24 @@
+/* Body + scrollbar reset — ported from design tokens.css */
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+    font-family: var(--font-sans);
+    background: var(--color-base);
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.005em;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+input, textarea, select { font: inherit; color: inherit; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--color-surface-low); }
+::-webkit-scrollbar-thumb {
+    background: var(--color-surface-higher);
+    border-radius: 5px;
+    border: 2px solid var(--color-surface-low);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-bright); }

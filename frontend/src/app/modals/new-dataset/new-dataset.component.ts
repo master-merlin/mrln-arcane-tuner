@@ -1,11 +1,18 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { AbstractControl, FormBuilder, ReactiveFormsModule } from '@angular/forms';
 import { IcoComponent } from '../../icons/ico.component';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 
 const STANDARD_CLASSIFIERS = ['vehicle', 'person', 'style', 'object', 'landscape'] as const;
 const NAME_FORBIDDEN = /[<>:"/\\|?*]/;
+
+/** Rejects null/empty/whitespace-only values. `Validators.required` accepts "   " — this does not. */
+function nonEmptyTrimmed(c: AbstractControl): { required: true } | null {
+    const v = c.value as string | null;
+    return (v ?? '').trim().length === 0 ? { required: true } : null;
+}
 
 /**
  * New Dataset modal — wraps the design's "NewDataset" modal in the
@@ -83,14 +90,24 @@ export class NewDatasetModalComponent {
     protected submitting = signal(false);
 
     protected form = this.fb.nonNullable.group({
-        name: ['', [Validators.required]],
+        name: ['', [nonEmptyTrimmed]],
         classifier: [''],
         description: [''],
     });
 
+    /**
+     * Wrap the name control's value stream as a signal so downstream computeds
+     * re-evaluate on every keystroke. `form.controls.name.value` is a plain
+     * getter (not a signal) and would never trigger computed recomputation.
+     */
+    private nameValue = toSignal(this.form.controls.name.valueChanges, {
+        initialValue: this.form.controls.name.value ?? '',
+    });
+
     /** Reactive validity for the forbidden-chars check. */
     protected nameInvalid = computed<boolean>(() => {
-        const v = this.form.controls.name.value ?? '';
+        const v = (this.nameValue() ?? '').trim();
+        if (v.length === 0) return false; // nonEmptyTrimmed handles empty
         return NAME_FORBIDDEN.test(v);
     });
 

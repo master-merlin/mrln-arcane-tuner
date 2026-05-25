@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Dataset } from '../../services/dataset';
 import { ProjectService } from '../../services/project.service';
@@ -38,7 +38,7 @@ interface ProjectBadge {
     templateUrl: './datasets-screen.html',
     styleUrl: './datasets-screen.css',
 })
-export class DatasetsScreen implements OnInit {
+export class DatasetsScreen {
     private datasets = inject(DatasetStore);
     private projects = inject(ProjectService);
     protected scope = inject(ScopeStore);
@@ -46,6 +46,22 @@ export class DatasetsScreen implements OnInit {
 
     /** Dataset ids that belong to the active project, when one is scoped. */
     private projectDatasetIds = signal<Set<string>>(new Set());
+
+    constructor() {
+        // Load the global dataset list once on mount. Idempotent: re-runs are
+        // harmless because setAll replaces the entity map.
+        void this.datasets.loadAll().catch(() => {
+            // Errors surface as toasts via the entity-store base; nothing to do.
+        });
+
+        // Reactively refresh the project-membership filter whenever scope
+        // changes. Switching scope from the context-switcher or sidebar must
+        // update the grid immediately — ngOnInit fired only on mount.
+        effect(() => {
+            const pid = this.scope.projectId();
+            void this.refreshProjectMembership(pid);
+        });
+    }
 
     /** Source of truth — all datasets currently in the entity store. */
     private allDatasets = this.datasets.entities;
@@ -82,22 +98,8 @@ export class DatasetsScreen implements OnInit {
         return this.scope.projectId() === null;
     }
 
-    async ngOnInit(): Promise<void> {
-        // Idempotent: re-runs are harmless because setAll replaces the map.
-        try {
-            await this.datasets.loadAll();
-        } catch {
-            // Errors surface as toasts via the entity-store base; nothing else to do.
-        }
-
-        // Mirror current scope into the project-membership set so the
-        // visibleDatasets computed has data when scope is project.
-        await this.refreshProjectMembership();
-    }
-
-    /** Re-fetches the active project's dataset list. Called on mount; if scope changes the user reloads. */
-    private async refreshProjectMembership(): Promise<void> {
-        const pid = this.scope.projectId();
+    /** Re-fetches the active project's dataset list. Driven by the scope effect in the constructor. */
+    private async refreshProjectMembership(pid: string | null): Promise<void> {
         if (!pid) {
             this.projectDatasetIds.set(new Set());
             return;

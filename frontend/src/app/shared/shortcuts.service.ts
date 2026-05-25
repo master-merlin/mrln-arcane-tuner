@@ -18,8 +18,11 @@ import { OverlayStore } from '../state/overlay.store';
 export class GlobalShortcutsService {
     private overlay = inject(OverlayStore);
     private destroyRef = inject(DestroyRef);
+    private installed = false;
 
     install(): void {
+        if (this.installed) return;
+        this.installed = true;
         fromEvent<KeyboardEvent>(window, 'keydown')
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe(e => this.handle(e));

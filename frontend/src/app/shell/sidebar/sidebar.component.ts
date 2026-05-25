@@ -1,4 +1,5 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { IcoComponent } from '../../icons/ico.component';
 import { ScopeStore } from '../../state/scope.store';
@@ -6,6 +7,7 @@ import { SystemStore } from '../../state/system.store';
 import { ProjectService } from '../../services/project.service';
 import { DatasetService } from '../../services/dataset';
 import { JobService } from '../../services/job';
+import { RuntimeConfigService } from '../../services/runtime-config.service';
 
 /**
  * Sidebar — brand, jump-to placeholder, screen nav, active-scope card,
@@ -36,14 +38,26 @@ const NAV: ReadonlyArray<NavItem> = [
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './sidebar.component.html',
 })
-export class SidebarComponent {
+export class SidebarComponent implements OnInit {
     protected scope = inject(ScopeStore);
     protected system = inject(SystemStore);
     protected projects = inject(ProjectService);
     protected datasets = inject(DatasetService);
     protected jobs = inject(JobService);
+    private http = inject(HttpClient);
+    private rtc = inject(RuntimeConfigService);
 
     protected nav = NAV;
+
+    protected appVersion = signal<string>('…');
+
+    ngOnInit() {
+        const versionUrl = this.rtc.apiUrl.replace('/api', '/');
+        this.http.get<{ version: string }>(versionUrl).subscribe({
+            next: (r) => this.appVersion.set(r.version),
+            error: () => this.appVersion.set('?.?.?'),
+        });
+    }
 
     protected activeProject = computed(() => {
         const id = this.scope.projectId();

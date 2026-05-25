@@ -5,6 +5,7 @@ import { TopbarComponent } from './topbar/topbar.component';
 import { WorkspaceLayerComponent } from './workspace-layer/workspace-layer.component';
 import { ModalLayerComponent } from './modal-layer/modal-layer.component';
 import { GlobalShortcutsService } from '../shared/shortcuts.service';
+import { ProjectService } from '../services/project.service';
 import { ToastContainerComponent } from '../components/shared/toast-container/toast-container';
 
 /**
@@ -40,8 +41,10 @@ import { ToastContainerComponent } from '../components/shared/toast-container/to
 })
 export class ShellComponent implements OnInit {
     private shortcuts = inject(GlobalShortcutsService);
+    private projects = inject(ProjectService);
 
     ngOnInit() {
         this.shortcuts.install();
+        this.projects.loadProjects();
     }
 }

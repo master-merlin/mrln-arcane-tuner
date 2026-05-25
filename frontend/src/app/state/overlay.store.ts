@@ -1,9 +1,35 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { EntityStore, OptimisticResult } from './entity-store';
 import { DatasetService, PipelineBlock } from '../services/dataset';
 import { WebSocketService } from '../services/websocket.service';
 import { ToastService } from '../services/toast';
+
+// ── Shell-overlay extension ─────────────────────────────────────────────
+// Phase 2 of the frontend overhaul adds workspace + modal-stack state to
+// this store so the shell's overlay layers can be driven from a single
+// injectable. These concepts are unrelated to the per-image `Overlay`
+// entity below — they happen to share the name "overlay" because both
+// describe things layered above the page content.
+
+export type WorkspaceMode = 'browse' | 'details' | 'edit';
+
+export interface WorkspaceState {
+    datasetId: string;
+    mode: WorkspaceMode;
+    imageIndex: number;
+}
+
+export type ModalKind =
+    | 'mass-caption' | 'mass-mask' | 'mass-edit'
+    | 'new-dataset' | 'rescan' | 'analyze' | 'cache'
+    | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
+    | 'model-source' | 'browse-folder' | 'confirm';
+
+export interface ModalEntry {
+    kind: ModalKind;
+    data?: unknown;
+}
 
 /**
  * Shape returned by ``POST /datasets/{name}/render-pipeline``. Mirrors
@@ -178,5 +204,44 @@ export class OverlayStore extends EntityStore<Overlay> {
             request: () => firstValueFrom(this.api.deleteOverlay(datasetName, mediaFile)),
             errorMessage: `Couldn't revert overlay — restored.`,
         });
+    }
+
+    // ── Shell-overlay layer (workspace + modal stack) ───────────────────
+    // These signals drive the dataset workspace overlay and the modal
+    // stack mounted by `app-shell`. Stack semantics (not single slot) so
+    // a modal can open another modal (e.g. confirm-on-delete).
+
+    readonly workspace = signal<WorkspaceState | null>(null);
+    readonly modalStack = signal<ModalEntry[]>([]);
+    readonly topModal = computed<ModalEntry | null>(() => this.modalStack().at(-1) ?? null);
+
+    openWorkspace(datasetId: string, mode: WorkspaceMode = 'browse'): void {
+        this.workspace.set({ datasetId, mode, imageIndex: 0 });
+    }
+
+    closeWorkspace(): void {
+        this.workspace.set(null);
+    }
+
+    setWorkspaceMode(mode: WorkspaceMode): void {
+        const w = this.workspace();
+        if (w) this.workspace.set({ ...w, mode });
+    }
+
+    setWorkspaceImage(imageIndex: number): void {
+        const w = this.workspace();
+        if (w) this.workspace.set({ ...w, imageIndex });
+    }
+
+    openModal(kind: ModalKind, data?: unknown): void {
+        this.modalStack.update(s => [...s, { kind, data }]);
+    }
+
+    closeModal(): void {
+        this.modalStack.update(s => s.slice(0, -1));
+    }
+
+    closeAllModals(): void {
+        this.modalStack.set([]);
     }
 }

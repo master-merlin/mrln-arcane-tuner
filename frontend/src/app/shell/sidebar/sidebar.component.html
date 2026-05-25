@@ -1,0 +1,190 @@
+<aside class="side">
+    <div class="side-brand">
+        <div class="side-logo">M</div>
+        <div class="side-brand-text">
+            <div class="side-brand-title">MRLN</div>
+            <div class="side-brand-sub">Arcane Tuner</div>
+        </div>
+    </div>
+
+    <div
+        style="
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 10px;
+            background: var(--color-surface-mid);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-theme-md);
+            color: var(--color-text-muted);
+            font-size: 12px; margin-bottom: 6px;
+        ">
+        <app-ico name="Search" [size]="13" />
+        <span>Jump to…</span>
+        <span class="kbd" style="margin-left: auto;">&#8984;K</span>
+    </div>
+
+    <div class="side-section">Workspace</div>
+    @for (item of nav; track item.id) {
+        <a
+            class="side-item"
+            [routerLink]="item.path"
+            routerLinkActive="active">
+            <span class="ico"><app-ico [name]="item.ico" [size]="16" /></span>
+            <span>{{ item.label }}</span>
+            @if (item.id === 'datasets' && datasetCount() !== null) {
+                <span class="count">{{ datasetCount() }}</span>
+            }
+            @if (item.id === 'jobs' && jobCount() !== null) {
+                <span class="count">{{ jobCount() }}</span>
+            }
+        </a>
+    }
+
+    <div class="side-section">Active scope</div>
+    @if (activeProject(); as p) {
+        <a
+            [routerLink]="['/projects', p.id]"
+            [style.background]="'color-mix(in oklab, ' + p.color + ' 12%, transparent)'"
+            [style.border]="'1px solid color-mix(in oklab, ' + p.color + ' 35%, transparent)'"
+            style="
+                padding: 6px 10px;
+                border-radius: var(--radius-theme-md);
+                display: flex; align-items: center; gap: 8px;
+                margin-bottom: 2px; cursor: pointer;
+                text-decoration: none; color: inherit;
+            ">
+            <div
+                [style.background]="'linear-gradient(135deg, ' + p.color + ', color-mix(in oklab, ' + p.color + ' 70%, black))'"
+                style="
+                    width: 18px; height: 18px; border-radius: 4px;
+                    display: flex; align-items: center; justify-content: center;
+                    font-size: 10px; font-weight: 700; color: white;
+                ">
+                {{ activeProjectInitials() }}
+            </div>
+            <div style="line-height: 1.15; flex: 1; min-width: 0;">
+                <div
+                    style="
+                        font-size: 12.5px; font-weight: 600;
+                        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                    ">{{ p.name }}</div>
+                <div style="font-size: 10px; color: var(--color-text-muted);">
+                    {{ p.stats?.datasets ?? 0 }} datasets ·
+                    {{ p.stats?.jobs ?? 0 }} jobs
+                </div>
+            </div>
+            <button
+                class="icon-btn"
+                style="width: 22px; height: 22px;"
+                (click)="$event.preventDefault(); $event.stopPropagation(); scope.setGlobal()"
+                title="Back to global"
+                type="button">
+                <app-ico name="X" [size]="12" />
+            </button>
+        </a>
+    } @else {
+        <div
+            style="
+                padding: 6px 10px;
+                background: var(--color-surface-mid);
+                border: 1px solid var(--color-border-subtle);
+                border-radius: var(--radius-theme-md);
+                display: flex; align-items: center; gap: 8px;
+                margin-bottom: 2px;
+            ">
+            <span
+                style="
+                    width: 12px; height: 12px; border-radius: 50%;
+                    border: 1.5px solid var(--color-text-muted);
+                    position: relative; flex-shrink: 0; display: inline-block;
+                "
+                aria-hidden="true">
+                <span
+                    style="
+                        position: absolute; inset: 1px 3px;
+                        border-left: 1.2px solid var(--color-text-muted);
+                        border-right: 1.2px solid var(--color-text-muted);
+                        border-radius: 50%;
+                    "></span>
+            </span>
+            <div style="line-height: 1.15; flex: 1;">
+                <div style="font-size: 12.5px; font-weight: 600;">Global</div>
+                <div style="font-size: 10px; color: var(--color-text-muted);">
+                    all datasets &amp; jobs
+                </div>
+            </div>
+        </div>
+    }
+
+    <div class="side-foot">
+        <div class="side-system">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span
+                    style="
+                        font-size: 10px; letter-spacing: 0.12em;
+                        text-transform: uppercase; color: var(--color-text-muted);
+                        font-weight: 600;
+                    ">System</span>
+                @if (system.sidebar().tempC > 0) {
+                    <span
+                        class="chip danger"
+                        style="padding: 1px 6px; font-size: 10px;">
+                        <app-ico name="Thermometer" [size]="10" />
+                        {{ system.sidebar().tempC.toFixed(0) }}°C
+                    </span>
+                }
+            </div>
+            <div style="margin-bottom: 8px;">
+                <div class="row">
+                    <span class="lbl">GPU</span>
+                    <span class="val">{{ system.sidebar().gpuPct.toFixed(0) }}%</span>
+                </div>
+                <div class="bar">
+                    <i [style.width.%]="system.sidebar().gpuPct"
+                       [style.background]="'var(--color-warning)'"></i>
+                </div>
+            </div>
+            <div style="margin-bottom: 8px;">
+                <div class="row">
+                    <span class="lbl">VRAM</span>
+                    <span class="val">
+                        {{ system.sidebar().vramUsedGB.toFixed(1) }} /
+                        {{ system.sidebar().vramTotalGB.toFixed(1) }} GB
+                    </span>
+                </div>
+                <div class="bar">
+                    <i [style.width.%]="vramPct()"
+                       [style.background]="'var(--color-warning)'"></i>
+                </div>
+            </div>
+            <div>
+                <div class="row">
+                    <span class="lbl">Power</span>
+                    <span class="val">{{ system.sidebar().powerW.toFixed(0) }} W</span>
+                </div>
+                <div class="bar">
+                    <i [style.width.%]="powerPct()"
+                       [style.background]="'var(--color-warning)'"></i>
+                </div>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 4px 8px;">
+            <div
+                style="
+                    width: 26px; height: 26px; border-radius: 999px;
+                    background: var(--color-surface-higher);
+                    display: flex; align-items: center; justify-content: center;
+                    font-size: 11px; font-weight: 600;
+                ">S</div>
+            <div style="line-height: 1.1;">
+                <div style="font-size: 12px; font-weight: 500;">sebastian</div>
+                <div style="font-size: 10px; color: var(--color-text-muted);">
+                    v0.3.2-alpha
+                </div>
+            </div>
+            <app-ico
+                name="Settings"
+                [size]="14"
+                style="margin-left: auto; color: var(--color-text-muted);" />
+        </div>
+    </div>
+</aside>

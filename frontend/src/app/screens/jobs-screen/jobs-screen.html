@@ -47,16 +47,27 @@
 
             <!-- TRAINING CURVES -->
             <section class="card collapse-card">
-                <button class="card-head" type="button" (click)="toggle('curves')">
-                    <span class="card-title">TRAINING CURVES</span>
-                    <span class="caret">{{ expanded().curves ? '−' : '+' }}</span>
-                </button>
+                <div class="card-head curves-head">
+                    <button class="card-head-toggle" type="button" (click)="toggle('curves')">
+                        <span class="card-title">TRAINING CURVES</span>
+                    </button>
+                    <div class="card-head-tools" (click)="$event.stopPropagation()">
+                        <app-segmented
+                            [options]="logScaleOptions"
+                            [value]="logScale()"
+                            (changed)="logScale.set($event)"
+                        />
+                        <button class="card-head-caret" type="button" (click)="toggle('curves')">
+                            <span class="caret">{{ expanded().curves ? '−' : '+' }}</span>
+                        </button>
+                    </div>
+                </div>
                 @if (expanded().curves) {
                     <div class="card-body">
                         @if (chartSamples().length > 0) {
                             <app-loss-chart
                                 [samples]="chartSamples()"
-                                [emaAlpha]="0.2"
+                                [logScale]="logScale()"
                             />
                         } @else {
                             <p class="muted">

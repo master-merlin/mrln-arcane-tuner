@@ -12,6 +12,7 @@ import { TrainingJobQueueComponent } from '../../components/training/training-jo
 import { JobService, type Job, JobStatus } from '../../services/job';
 import { JobStore } from '../../state/job.store';
 import { LossChartComponent, type LossSample } from '../../ui/loss-chart/loss-chart.component';
+import { SegmentedComponent } from '../../ui/segmented/segmented.component';
 
 type SectionKey = 'curves' | 'samples' | 'config' | 'log';
 
@@ -20,6 +21,11 @@ interface JobSampleMeta {
     step?: number;
 }
 
+// TODO(frontend): The Jobs screen + LossChart pushed the initial bundle past 2 MB.
+// angular.json now has a 2.5 MB error budget. Investigate before next release:
+//   - lucide-angular icon tree-shaking
+//   - whether entity-store is being eagerly bundled by all screens
+//   - whether the lazy chunks are being correctly emitted
 @Component({
     selector: 'app-jobs-screen',
     standalone: true,
@@ -27,6 +33,7 @@ interface JobSampleMeta {
         TrainingJobQueueComponent,
         SystemMonitorComponent,
         LossChartComponent,
+        SegmentedComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './jobs-screen.html',
@@ -98,6 +105,14 @@ export class JobsScreen {
         config: false,
         log: false,
     });
+
+    /** Linear vs log scaling on the loss y-axis (wired into LossChart.logScale). */
+    protected readonly logScale = signal<boolean>(false);
+
+    protected readonly logScaleOptions: ReadonlyArray<{ value: boolean; label: string }> = [
+        { value: false, label: 'lin' },
+        { value: true, label: 'log' },
+    ];
 
     constructor() {
         // Hydrate the JobStore so we have a list to render. The queue

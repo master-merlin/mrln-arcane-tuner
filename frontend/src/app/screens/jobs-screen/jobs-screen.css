@@ -83,6 +83,54 @@
     text-align: center;
 }
 
+/*
+ * Composite card head (used by TRAINING CURVES): a left-aligned title that
+ * still toggles, plus a right-side cluster of tools (segmented log/lin
+ * toggle + caret) that should NOT propagate clicks to the toggle.
+ */
+.collapse-card .card-head.curves-head {
+    padding: 4px 8px 4px 0;
+    cursor: default;
+}
+
+.collapse-card .card-head.curves-head:hover {
+    background: transparent;
+}
+
+.collapse-card .card-head-toggle {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    padding: 8px 14px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+}
+
+.collapse-card .card-head-toggle:hover {
+    background: var(--color-surface-mid);
+}
+
+.collapse-card .card-head-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    padding-right: 6px;
+}
+
+.collapse-card .card-head-caret {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 4px 6px;
+    cursor: pointer;
+    font: inherit;
+}
+
 .config-json {
     margin: 0;
     padding: 10px 14px;

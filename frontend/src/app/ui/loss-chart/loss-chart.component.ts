@@ -13,6 +13,29 @@ import {
 
 import { ema, linearTicks, mapY } from './loss-chart-geometry';
 
+// TODO(frontend): Plot LR series on a secondary axis with scientific notation.
+//   Per spec §4.5. Samples already include the `lr` field via LossSample.
+//   Implementation note: add a second polyline path using a secondary y-scale
+//   for LR values; format axis labels as `1.0e-4` style.
+
+/**
+ * Iterative min/max over a numeric array. Used instead of `Math.min(...arr)` /
+ * `Math.max(...arr)` because the spread form passes every element as a
+ * function argument and exceeds JS engine argument-count limits (~125k in V8)
+ * on long training runs — crashing the chart silently.
+ */
+function arrayMin(vals: ReadonlyArray<number>): number {
+    let m = Infinity;
+    for (const v of vals) if (v < m) m = v;
+    return m;
+}
+
+function arrayMax(vals: ReadonlyArray<number>): number {
+    let m = -Infinity;
+    for (const v of vals) if (v > m) m = v;
+    return m;
+}
+
 export interface LossSample {
     step: number;
     loss: number;
@@ -270,8 +293,8 @@ export class LossChartComponent {
     private readonly yDomain = computed<[number, number]>(() => {
         const vals = this.transformed();
         if (vals.length === 0) return [0, 1];
-        let lo = Math.min(...vals);
-        let hi = Math.max(...vals);
+        let lo = arrayMin(vals);
+        let hi = arrayMax(vals);
         if (lo === hi) {
             // Pad to avoid divide-by-zero in mapY.
             const eps = Math.abs(lo) > 0 ? Math.abs(lo) * 0.1 : 1;
@@ -352,7 +375,8 @@ export class LossChartComponent {
     protected readonly bestLine = computed<{ pos: number; label: string } | null>(() => {
         const samples = this.samples();
         if (samples.length === 0) return null;
-        const best = Math.min(...samples.map((s) => s.loss));
+        let best = Infinity;
+        for (const s of samples) if (s.loss < best) best = s.loss;
         if (!Number.isFinite(best)) return null;
         const vTransformed = this.logScale() && best > 0 ? Math.log10(best) : best;
         return {

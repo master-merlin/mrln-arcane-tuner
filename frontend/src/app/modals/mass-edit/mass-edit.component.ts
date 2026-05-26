@@ -21,7 +21,13 @@ interface MassEditModalData {
 
 interface SourceImage {
     media_file: string;
-    metadata?: { has_overlay?: boolean; [k: string]: unknown };
+    metadata?: {
+        has_overlay?: boolean;
+        width?: number;
+        height?: number;
+        aspect_ratio?: number;
+        [k: string]: unknown;
+    };
     [k: string]: unknown;
 }
 
@@ -90,10 +96,11 @@ interface SourceImage {
                             @for (p of sourceCandidates(); track p.media_file) {
                                 <button type="button"
                                         class="me-tile"
+                                        [style.aspect-ratio]="aspectRatio(p)"
                                         [class.active]="source()?.media_file === p.media_file"
                                         (click)="pickSource(p)"
                                         [title]="p.media_file">
-                                    <img class="me-thumb" [src]="thumbUrl(p)" alt=""/>
+                                    <img class="me-thumb" [src]="thumbUrl(p)" alt="" loading="lazy" decoding="async"/>
                                     @if (source()?.media_file === p.media_file) {
                                         <span class="me-check"><app-ico name="Check" [size]="10"/></span>
                                     }
@@ -135,10 +142,11 @@ interface SourceImage {
                             @let on = selectedTargets().has(p.media_file);
                             <button type="button"
                                     class="me-tile"
+                                    [style.aspect-ratio]="aspectRatio(p)"
                                     [class.active]="on"
                                     (click)="toggleTarget(p.media_file)"
                                     [title]="p.media_file">
-                                <img class="me-thumb" [src]="thumbUrl(p)" alt=""/>
+                                <img class="me-thumb" [src]="thumbUrl(p)" alt="" loading="lazy" decoding="async"/>
                                 @if (on) {
                                     <span class="me-check small"><app-ico name="Check" [size]="8"/></span>
                                 }
@@ -196,13 +204,21 @@ interface SourceImage {
 
         .me-grid {
             display: grid;
-            grid-template-columns: repeat(12, 1fr);
-            gap: 6px;
-            max-height: 180px;
+            grid-template-columns: repeat(6, 1fr);
+            grid-auto-rows: min-content;
+            align-items: start;
+            gap: 8px;
+            max-height: 320px;
             overflow-y: auto;
             padding: 2px;
         }
+        /* Target grid can be larger — usually many more candidates than sources. */
+        .me-grid.targets { max-height: 420px; }
         .me-tile {
+            /* aspect-ratio is set inline per-tile from metadata.width/height
+               so portraits stay tall and landscapes stay short — the image
+               fills the box without crop/letterbox in either orientation.
+               Fallback square applies when metadata is missing. */
             position: relative;
             aspect-ratio: 1;
             border-radius: var(--radius-theme-md);
@@ -359,9 +375,25 @@ export class MassEditModalComponent implements OnInit {
         }
     }
 
+    /** Image's natural aspect ratio for inline `aspect-ratio` styling on the
+     *  tile box. Falls back to square when metadata is missing so first paint
+     *  stays stable even before scan metadata is populated. */
+    protected aspectRatio(p: SourceImage): string {
+        const w = p.metadata?.width;
+        const h = p.metadata?.height;
+        if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
+            return `${w} / ${h}`;
+        }
+        const ar = p.metadata?.aspect_ratio;
+        if (typeof ar === 'number' && ar > 0) return String(ar);
+        return '1';
+    }
+
     protected thumbUrl(p: SourceImage): string {
+        // Use the 256px /thumbnail endpoint, not /media — the grid renders
+        // dozens of tiles and full-res loads were saturating bandwidth.
         const name = this.data.datasetName!;
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(name)}/${encodeURIComponent(p.media_file)}`;
+        return `${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/thumbnail?image_rel_path=${encodeURIComponent(p.media_file)}`;
     }
 
     protected pickSource(p: SourceImage): void {

@@ -9,9 +9,12 @@ import {
 import { firstValueFrom } from 'rxjs';
 import { OverlayStore, type WorkspaceMode } from '../state/overlay.store';
 import { DatasetStore } from '../state/dataset.store';
+import { MediaItemStore, MediaItem } from '../state/media-item.store';
 import { DatasetService, Dataset } from '../services/dataset';
 import { ScopeStore } from '../state/scope.store';
-import { SegmentedComponent } from '../ui/segmented/segmented.component';
+import { ToastService } from '../services/toast';
+import { RuntimeConfigService } from '../services/runtime-config.service';
+import { SegmentedComponent, type SegOption } from '../ui/segmented/segmented.component';
 import { IconButtonComponent } from '../ui/icon-button/icon-button.component';
 import { ContextSwitcherComponent } from '../shell/context-switcher/context-switcher.component';
 import { IcoComponent } from '../icons/ico.component';
@@ -20,25 +23,39 @@ import { BrowseMode } from './modes/browse-mode';
 import { DetailsMode } from './modes/details-mode';
 import { EditMode } from './modes/edit-mode';
 
+/** Heavy per-image caption text — intentionally NOT in MediaItemStore
+ *  (large, not broadcast over WS). Kept here as a thin local cache. */
+interface CaptionRow {
+    caption_content?: string;
+    masked_caption_content?: string;
+}
+
 /**
  * Fullscreen dataset workspace overlay.
  *
  * Mounted by `<app-workspace-layer>` whenever {@link OverlayStore.workspace}
  * is non-null. Owns:
- *  - the topbar (breadcrumbs + version chip + scope switcher + mode switch
- *    + mass-action buttons + close)
- *  - the mode body (browse / details / edit, switched via `@switch`; the
- *    heavier details + edit modes are `@defer`-ed so they don't add to
- *    the initial workspace bundle)
+ *  - the topbar (back · dataset info · mode segmented · scope/actions/close)
+ *  - the browse-mode secondary toolbar
+ *  - the mode body (browse / details / edit, switched via `@switch`)
  *  - the bottom filmstrip scrubber
  *
- * Dataset resolution: looks up the dataset by id-or-name in
- * {@link DatasetStore}. If not present (e.g. the workspace was opened
- * before the store hydrated), fetches it directly via {@link DatasetService}.
- * Pairs (the image list with readiness flags) are fetched once per
- * dataset via the `/pairs` endpoint and stashed in a local signal — this
- * mirrors what `dataset-viewer.ts` does and avoids depending on the
- * MediaItemStore until it migrates to drive the legacy viewer too.
+ * State architecture:
+ *   {@link MediaItemStore} is the SOURCE OF TRUTH for per-image
+ *   metadata (enabled, has_mask, has_caption, dimensions, HPS, etc.).
+ *   Mutations go through the store's `runOptimistic` methods —
+ *   instant apply, rollback + toast on HTTP failure, WS
+ *   `entity.changed` broadcast for cross-tab consistency.
+ *
+ *   Caption TEXT (`caption_content`, `masked_caption_content`) is
+ *   too large to push through the WS bus, so it stays in
+ *   {@link captionsByDataset} — a per-dataset Map keyed by
+ *   `media_file`. The workspace's {@link pairs} computed merges the
+ *   two sources back into the legacy pair shape that the orphan-tree
+ *   grid + detail components still expect.
+ *
+ *   Mutation handlers below are the SOLE entry points; child
+ *   components (browse-mode, details-mode) only emit intent events.
  */
 @Component({
     selector: 'app-dataset-workspace',
@@ -62,9 +79,15 @@ export class DatasetWorkspaceComponent {
     protected scope = inject(ScopeStore);
     private datasets = inject(DatasetStore);
     private datasetsApi = inject(DatasetService);
+    private mediaItems = inject(MediaItemStore);
+    private toast = inject(ToastService);
+    private rtc = inject(RuntimeConfigService);
 
-    /** Pairs cache, keyed by datasetName. */
-    private pairsByDataset = signal<Record<string, any[]>>({});
+    /** Per-dataset caption text cache. `media_file` → {caption_content, ...}. */
+    private captionsByDataset = signal<Record<string, Map<string, CaptionRow>>>({});
+    /** Datasets whose `/pairs` we've fetched at least once (acts as the
+     *  load-state marker; the actual rows now live in MediaItemStore). */
+    private loadedDatasets = signal<Set<string>>(new Set());
     /** Resolved-on-demand dataset rows (for ids not in the store yet). */
     private extraDatasets = signal<Record<string, Dataset>>({});
 
@@ -81,27 +104,133 @@ export class DatasetWorkspaceComponent {
         return this.extraDatasets()[w.datasetId] ?? null;
     });
 
-    /** Pairs for the current dataset (or empty until loaded). */
+    /**
+     * Pair list for the active dataset, projected from MediaItemStore +
+     * the local caption-text cache. Re-emits whenever either source
+     * changes — store optimistic updates and WS `entity.changed` events
+     * propagate here automatically. Legacy pair shape is preserved so
+     * the orphan-tree grid + detail components don't need to know about
+     * the store split.
+     */
     protected pairs = computed<any[]>(() => {
         const d = this.dataset();
         if (!d) return [];
-        return this.pairsByDataset()[d.name] ?? [];
+        const items = this.mediaItems.byDataset(d.name)();
+        const captions = this.captionsByDataset()[d.name] ?? new Map();
+        return items.map(item => projectPair(item, captions.get(item.media_file)));
     });
 
-    /** Filmstrip-shaped readiness flags for the pairs. */
-    protected filmstripImages = computed(() =>
-        this.pairs().map(p => ({
+    /**
+     * Pairs filtered by the active secondary-toolbar filter. Browse mode
+     * shows this projection; Details / Edit (and the filmstrip) operate
+     * on the full {@link pairs} list so navigation isn't constrained by
+     * the active filter.
+     */
+    protected visiblePairs = computed<any[]>(() => {
+        const list = this.pairs();
+        switch (this.filter()) {
+            case 'captioned':
+                return list.filter(p => !!p?.caption_content?.trim());
+            case 'masked':
+                return list.filter(p => !!p?.metadata?.has_mask);
+            case 'low_hps':
+                return list.filter(p => {
+                    const q = p?.metadata?.quality_score;
+                    return typeof q === 'number' && q < 0.24;
+                });
+            case 'all':
+            default:
+                return list;
+        }
+    });
+
+    /** Filmstrip-shaped rows: readiness flags + a thumbnail URL per pair.
+     *  Uses the dataset's `/thumbnail` endpoint (256px WebP, generated on
+     *  first request) rather than the full media URL — keeps the strip
+     *  cheap to load even for big 4K/8K source images. */
+    protected filmstripImages = computed(() => {
+        const d = this.dataset();
+        const name = d?.name ?? '';
+        return this.pairs().map(p => ({
             harmonized: !!p?.metadata?.has_overlay,
             captioned: !!(p?.caption_content?.trim()),
             masked: !!p?.metadata?.has_mask,
-        })),
-    );
+            thumbnailUrl: p?.media_file && name
+                ? this.datasetsApi.thumbnailUrl(name, p.media_file)
+                : undefined,
+            mediaType: p?.media_type ?? 'image',
+        }));
+    });
 
-    protected modeOptions: ReadonlyArray<{ value: WorkspaceMode; label: string }> = [
-        { value: 'browse', label: 'Browse' },
-        { value: 'details', label: 'Details' },
-        { value: 'edit', label: 'Edit' },
+    /** Collapsed state for the bottom filmstrip; toggled by the centered arrow. */
+    protected filmstripCollapsed = signal<boolean>(false);
+    protected toggleFilmstrip(): void {
+        this.filmstripCollapsed.update(v => !v);
+    }
+
+
+    protected modeOptions: ReadonlyArray<SegOption<WorkspaceMode>> = [
+        { value: 'browse', label: 'Browse', icon: 'Grid3x3' },
+        { value: 'details', label: 'Details', icon: 'Image' },
+        { value: 'edit', label: 'Edit', icon: 'Sliders' },
     ];
+
+    /** Browse-mode secondary toolbar state. Local for now — wiring the filter
+     *  selection through to the grid is a follow-up; today the tabs are
+     *  selectable visuals only. */
+    protected filter = signal<'all' | 'captioned' | 'masked' | 'low_hps'>('all');
+    protected density = signal<number>(5);
+
+    /** Training-readiness pair count (enabled + has caption) over total. */
+    protected trainingCounts = computed<{ ready: number; total: number }>(() => {
+        const list = this.pairs();
+        const total = list.length;
+        const ready = list.reduce((n, p) =>
+            n + (p?.metadata?.enabled !== false && !!p?.caption_content?.trim() ? 1 : 0), 0);
+        return { ready, total };
+    });
+
+    /** Per-tab counts shown next to the filter chips. */
+    protected filterCounts = computed<{
+        all: number; captioned: number; masked: number; lowHps: number;
+    }>(() => {
+        const list = this.pairs();
+        let captioned = 0, masked = 0, lowHps = 0;
+        for (const p of list) {
+            if (p?.caption_content?.trim()) captioned++;
+            if (p?.metadata?.has_mask) masked++;
+            const q = p?.metadata?.quality_score;
+            if (typeof q === 'number' && q < 0.24) lowHps++;
+        }
+        return { all: list.length, captioned, masked, lowHps };
+    });
+
+    /** HPS range readout — min/max quality_score over the loaded pairs. */
+    protected hpsRangeLabel = computed<string | null>(() => {
+        const xs = this.pairs()
+            .map(p => p?.metadata?.quality_score)
+            .filter((q): q is number => typeof q === 'number');
+        if (xs.length === 0) return null;
+        const lo = Math.min(...xs);
+        const hi = Math.max(...xs);
+        return `${lo.toFixed(2)} – ${hi.toFixed(2)}`;
+    });
+
+    /** Eyebrow row shows `image N / M` whenever we're not in browse mode. */
+    protected showImageIndex = computed<boolean>(() => {
+        const m = this.ws()?.mode;
+        return m === 'details' || m === 'edit';
+    });
+
+    /** Media file of the pair at the active cursor — null when no
+     *  pair is loaded. Drives the browse-mode tile highlight + scroll. */
+    protected activeMediaFile = computed<string | null>(() => {
+        const w = this.ws();
+        if (!w) return null;
+        const list = this.pairs();
+        const idx = w.imageIndex;
+        return idx >= 0 && idx < list.length ? (list[idx]?.media_file ?? null) : null;
+    });
 
     constructor() {
         // Ensure the dataset store is hydrated so the lookup above succeeds.
@@ -133,6 +262,7 @@ export class DatasetWorkspaceComponent {
             if (!w || !d) return;
             void this.ensurePairsLoaded(d.name);
         });
+
     }
 
     /** Resolve the dataset row (store first, fallback HTTP by id-or-name). */
@@ -154,15 +284,40 @@ export class DatasetWorkspaceComponent {
         }
     }
 
-    /** Load /pairs for a dataset (keyed by canonical `name`). */
+    /**
+     * Fetch `/pairs` once per dataset, route metadata into MediaItemStore
+     * (the source of truth), and copy caption text into the local cache.
+     * Idempotent — re-entry while a fetch is in flight just resolves to
+     * the same `loadedDatasets` flip.
+     */
     private async ensurePairsLoaded(name: string): Promise<void> {
-        if (this.pairsByDataset()[name]) return;
+        if (this.loadedDatasets().has(name)) return;
+        // Mark loaded BEFORE the await so re-entries don't double-fetch.
+        this.loadedDatasets.update(s => new Set(s).add(name));
         try {
-            const pairs = await firstValueFrom(this.datasetsApi.getDatasetPairs(name));
-            this.pairsByDataset.update(m => ({ ...m, [name]: pairs ?? [] }));
+            const pairs = (await firstValueFrom(
+                this.datasetsApi.getDatasetPairs(name),
+            )) as any[];
+            const captions = new Map<string, CaptionRow>();
+            for (const p of pairs ?? []) {
+                if (!p?.media_file) continue;
+                this.mediaItems.upsertFromPair(name, p);
+                captions.set(p.media_file, {
+                    caption_content: p.caption_content,
+                    masked_caption_content: p.masked_caption_content,
+                });
+            }
+            this.captionsByDataset.update(m => ({ ...m, [name]: captions }));
         } catch {
-            this.pairsByDataset.update(m => ({ ...m, [name]: [] }));
+            // Leave `loadedDatasets` flipped — the user can manually
+            // refresh; further auto-retries would just spam the API.
+            this.captionsByDataset.update(m => ({ ...m, [name]: new Map() }));
         }
+    }
+
+    /** Pretty-prints an HTTP error payload's `detail` (or falls back to message). */
+    private errMsg(err: any, fallback: string): string {
+        return `${fallback}: ${err?.error?.detail || err?.message || 'unknown error'}`;
     }
 
     protected openMass(kind: 'mass-caption' | 'mass-mask' | 'mass-edit'): void {
@@ -173,6 +328,31 @@ export class DatasetWorkspaceComponent {
         });
     }
 
+    /** Per-dataset Analyze / Cache / Rescan actions from the topbar. */
+    protected openAction(kind: 'analyze' | 'cache' | 'rescan'): void {
+        const d = this.dataset();
+        if (!d) return;
+        if (kind === 'cache' && !d.has_cache) return;
+        this.overlay.openModal(kind, { datasetName: d.name });
+    }
+
+    protected setFilter(v: 'all' | 'captioned' | 'masked' | 'low_hps'): void {
+        this.filter.set(v);
+    }
+
+    protected onDensityChange(v: number | string): void {
+        const n = typeof v === 'string' ? parseInt(v, 10) : v;
+        if (Number.isFinite(n)) this.density.set(Math.max(3, Math.min(7, n as number)));
+    }
+
+    /** Re-include every excluded pair. MediaItemStore handles optimistic
+     *  apply + rollback + toast. */
+    protected enableAll(): void {
+        const d = this.dataset();
+        if (!d) return;
+        void this.mediaItems.enableAll(d.name);
+    }
+
     protected onSeek(idx: number): void {
         this.overlay.setWorkspaceImage(idx);
     }
@@ -181,42 +361,178 @@ export class DatasetWorkspaceComponent {
         this.overlay.setWorkspaceMode(mode);
     }
 
+    /** Toggle a pair's `enabled` flag via the store (cross-tab + rollback). */
+    protected onToggleExclusion(event: { media_file: string; enabled: boolean }): void {
+        const d = this.dataset();
+        if (!d) return;
+        void this.mediaItems.toggleEnabled(d.name, event.media_file, event.enabled);
+    }
+
     /**
-     * Re-fetch the current dataset's pairs after a mutation (e.g. mask
-     * generated / mask deleted by DetailsMode). Invalidates the cache
-     * entry and re-runs the loader.
+     * Persist a caption edit. Two-layer optimistic:
+     *   - MediaItemStore.saveCaption stamps `caption_file` + `has_caption`
+     *     (with its own rollback baked in).
+     *   - The local caption-text cache snap-stamps the new content; on
+     *     store failure we restore the previous text.
+     */
+    protected onSaveCaption(
+        event: { pair: any; content: string; isMasked: boolean },
+    ): void {
+        const d = this.dataset();
+        if (!d) return;
+        const { pair, content, isMasked } = event;
+        if (!pair?.media_file) return;
+        const mediaFile: string = pair.media_file;
+        const filename = pair.caption_file
+            || mediaFile.substring(0, mediaFile.lastIndexOf('.')) + '.txt';
+
+        // Snapshot + apply locally.
+        const previous = this.captionsByDataset()[d.name] ?? new Map();
+        const prevRow = previous.get(mediaFile) ?? {};
+        const nextRow: CaptionRow = isMasked
+            ? { ...prevRow, masked_caption_content: content }
+            : { ...prevRow, caption_content: content };
+        this.captionsByDataset.update(m => {
+            const map = new Map(m[d.name] ?? []);
+            map.set(mediaFile, nextRow);
+            return { ...m, [d.name]: map };
+        });
+
+        void this.mediaItems
+            .saveCaption(d.name, mediaFile, filename, content)
+            .then(result => {
+                if (result.ok) {
+                    this.toast.success('Caption saved.');
+                } else {
+                    // Roll back the local text cache too.
+                    this.captionsByDataset.update(m => {
+                        const map = new Map(m[d.name] ?? []);
+                        map.set(mediaFile, prevRow);
+                        return { ...m, [d.name]: map };
+                    });
+                }
+            });
+    }
+
+    /**
+     * Delete a pair. Optimistic at both layers: MediaItemStore removes
+     * the row; local caption cache drops the text entry; the cursor
+     * clamps to the new tail or the workspace closes if empty. On
+     * failure the store rolls back its row — we restore the caption
+     * row and the cursor.
+     */
+    protected onDeletePairRequested(pair: any): void {
+        const d = this.dataset();
+        if (!d || !pair?.media_file) return;
+        if (!confirm('Delete this entry?')) return;
+        const mediaFile: string = pair.media_file;
+
+        // Snapshot caption + cursor before the optimistic apply.
+        const w = this.ws();
+        const prevIdx = w?.imageIndex ?? 0;
+        const prevCaptions = this.captionsByDataset()[d.name] ?? new Map();
+        const prevRow = prevCaptions.get(mediaFile);
+
+        // Drop the caption row locally; MediaItemStore.deletePair will
+        // remove the metadata row optimistically and roll back on error.
+        this.captionsByDataset.update(m => {
+            const map = new Map(m[d.name] ?? []);
+            map.delete(mediaFile);
+            return { ...m, [d.name]: map };
+        });
+
+        void this.mediaItems.deletePair(d.name, mediaFile).then(result => {
+            if (result.ok) {
+                // After-removal: clamp cursor / close if empty.
+                const remaining = this.mediaItems.byDataset(d.name)().length;
+                if (remaining === 0) {
+                    this.overlay.closeWorkspace();
+                } else if (w && w.imageIndex >= remaining) {
+                    this.overlay.setWorkspaceImage(remaining - 1);
+                }
+                this.toast.success('Entry deleted.');
+            } else {
+                // Restore caption row + cursor; store rolled itself back.
+                this.captionsByDataset.update(m => {
+                    const map = new Map(m[d.name] ?? []);
+                    if (prevRow) map.set(mediaFile, prevRow);
+                    return { ...m, [d.name]: map };
+                });
+                if (w) this.overlay.setWorkspaceImage(prevIdx);
+            }
+        });
+    }
+
+    /** Delete the mask for a pair — store handles optimistic flip + rollback. */
+    protected onDeleteMaskRequested(pair: any): void {
+        const d = this.dataset();
+        if (!d || !pair?.metadata?.has_mask) return;
+        if (!confirm('Delete the mask for this image?')) return;
+        void this.mediaItems
+            .deleteMask(d.name, pair.media_file)
+            .then(result => {
+                if (result.ok) this.toast.success('Mask deleted.');
+            });
+    }
+
+    /**
+     * Re-fetch `/pairs` after a server-driven mutation that we don't
+     * model locally — currently only mask generation, where the server
+     * produces a new file and the workspace needs the fresh metadata
+     * (mask size, dimensions, etc.) to render the preview.
+     *
+     * Clears both the load marker (so ensurePairsLoaded re-runs) and
+     * the caption cache for this dataset. MediaItemStore entries are
+     * left in place; upsertFromPair will overlay new values on top
+     * (preserving any entries the server might no longer report — see
+     * the "stale-on-reload caveat" in MediaItemStore.loadForDataset).
      */
     protected refreshPairs(): void {
         const d = this.dataset();
         if (!d) return;
-        this.pairsByDataset.update(m => {
+        this.loadedDatasets.update(s => {
+            const n = new Set(s);
+            n.delete(d.name);
+            return n;
+        });
+        this.captionsByDataset.update(m => {
             const next = { ...m };
             delete next[d.name];
             return next;
         });
         void this.ensurePairsLoaded(d.name);
     }
+}
 
-    /**
-     * A pair was deleted server-side. Remove it from the local cache,
-     * close the workspace if the dataset is now empty, otherwise clamp
-     * the image cursor so the user sees the next-best pair.
-     */
-    protected onPairDeleted(event: { index: number; mediaFile: string }): void {
-        const d = this.dataset();
-        if (!d) return;
-        const list = (this.pairsByDataset()[d.name] ?? []).filter(
-            (p: any) => p?.media_file !== event.mediaFile,
-        );
-        this.pairsByDataset.update(m => ({ ...m, [d.name]: list }));
+/**
+ * Merge a MediaItem (metadata source of truth) with its optional
+ * caption row into the legacy pair shape that the orphan-tree
+ * grid + detail components expect:
+ *
+ *   { stem, media_file, media_type, caption_file, caption_content,
+ *     masked_caption_content, metadata: { ...all-other-MediaItem-fields } }
+ *
+ * The pair-level keys (`stem`, `media_file`, `media_type`,
+ * `caption_file`) are hoisted out of the MediaItem; everything else
+ * (enabled, has_mask, dimensions, HPS, etc.) goes into `metadata`.
+ */
+function projectPair(item: MediaItem, caption?: CaptionRow): any {
+    const {
+        id, dataset_name, media_file, stem, media_type, caption_file,
+        ...metadata
+    } = item;
+    return {
+        stem: stem ?? stripExt(media_file),
+        media_file,
+        media_type: media_type ?? (item.is_video ? 'video' : 'image'),
+        caption_file,
+        caption_content: caption?.caption_content,
+        masked_caption_content: caption?.masked_caption_content,
+        metadata,
+    };
+}
 
-        if (list.length === 0) {
-            this.overlay.closeWorkspace();
-            return;
-        }
-        const w = this.ws();
-        if (w && w.imageIndex >= list.length) {
-            this.overlay.setWorkspaceImage(list.length - 1);
-        }
-    }
+function stripExt(path: string): string {
+    const dot = path.lastIndexOf('.');
+    return dot > 0 ? path.substring(0, dot) : path;
 }

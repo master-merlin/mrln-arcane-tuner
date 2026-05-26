@@ -9,48 +9,165 @@
     inset: 0;
     z-index: 90; /* below modals (100), above shell */
     background: var(--color-base);
-    display: grid;
-    grid-template-rows: 56px 1fr auto;
+    /* Flex column (not grid) so the filmstrip is always last regardless
+       of whether the secondary toolbar renders. A grid with fixed row
+       template would mis-place rows when an @if child was absent. */
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
 }
+.ws-topbar, .ws-secondary, .ws-filmstrip { flex-shrink: 0; }
+.ws-body { flex: 1; min-height: 0; }
 
 /* ── Topbar ──────────────────────────────────────────────── */
+/*
+ * 3-column grid with `1fr auto 1fr` so the center column (mode tabs)
+ * stays anchored to the viewport centre regardless of how wide the
+ * left (dataset info + path with optional `image N/M`) or right
+ * (context-switcher + actions) clusters grow. With flex + space-between
+ * the segmented control would shift right whenever the path eyebrow
+ * picked up extra content on mode changes — visible jump in UX.
+ */
 .ws-topbar {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
-    gap: 12px;
-    padding: 0 18px;
-    height: 56px;
-    background: var(--color-surface-low);
-    border-bottom: 1px solid var(--color-border-default);
+    column-gap: 14px;
+    padding: 8px 18px;
+    background: var(--color-base);
+    border-bottom: 1px solid var(--color-border-subtle);
+    min-height: 56px;
 }
 
-.crumbs {
+.ws-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    justify-self: start;
+}
+.ws-center {
+    display: flex;
+    align-items: center;
+    justify-self: center;
+}
+.ws-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    justify-self: end;
+}
+
+.ws-back { padding-left: 6px; }
+
+.ws-divider {
+    width: 1px;
+    height: 22px;
+    background: var(--color-border-subtle);
+    flex-shrink: 0;
+}
+.ws-divider.thin { height: 18px; margin: 0 2px; }
+
+.ws-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ws-info-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12.5px;
-    color: var(--color-text-secondary);
-    letter-spacing: -0.005em;
+    min-width: 0;
 }
-.crumbs .muted { color: var(--color-text-muted); }
-.crumbs .sep { color: var(--color-text-subtle); }
-.crumbs .last { color: var(--color-text-primary); font-weight: 600; }
-.crumbs .version {
-    margin-left: 4px;
-    font-family: var(--font-mono);
+.ws-info-row .muted { color: var(--color-text-muted); }
+.ws-name {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ws-info-row .tag {
+    /* Override default uppercase mono — version reads cleaner as plain. */
+    text-transform: none;
+    letter-spacing: 0;
     font-size: 10.5px;
 }
 
-.ctx-slot { display: flex; align-items: center; }
-
-.spacer { flex: 1; }
-
-.mass-actions { display: flex; align-items: center; gap: 6px; margin-left: 8px; }
-.mass-actions .btn {
-    display: inline-flex;
+.ws-info-eyebrow {
+    display: flex;
     align-items: center;
     gap: 6px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    min-width: 0;
+}
+.ws-info-eyebrow .sep { color: var(--color-text-subtle); }
+.ws-info-eyebrow .path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 460px;
+}
+
+/* ── Secondary toolbar (browse mode only) ───────────────── */
+.ws-secondary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 18px;
+    background: var(--color-base);
+    border-bottom: 1px solid var(--color-border-subtle);
+    flex-wrap: wrap;
+}
+
+.mass-actions { display: flex; align-items: center; gap: 6px; }
+.mass-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Tinted mass-mask / mass-edit buttons matching the design swatches */
+.ws-mass-mask {
+    background: oklch(0.68 0.14 155 / 0.12);
+    color: var(--color-success);
+    border-color: oklch(0.68 0.14 155 / 0.30);
+}
+.ws-mass-mask:hover { background: oklch(0.68 0.14 155 / 0.20); }
+
+.ws-mass-edit {
+    background: oklch(0.65 0.18 295 / 0.12);
+    color: var(--color-violet);
+    border-color: oklch(0.65 0.18 295 / 0.30);
+}
+.ws-mass-edit:hover { background: oklch(0.65 0.18 295 / 0.20); }
+
+.ws-filters .filter-count {
+    opacity: 0.6;
+    margin-left: 4px;
+    font-size: 10.5px;
+}
+
+.ws-hps { display: flex; align-items: center; gap: 8px; }
+.ws-hps .eyebrow,
+.ws-density .eyebrow {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+}
+
+.ws-density {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.ws-density input[type="range"] {
+    width: 90px;
+    accent-color: var(--color-brand);
+}
+.ws-density-val {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    min-width: 14px;
+    text-align: right;
 }
 
 /* ── Body ───────────────────────────────────────────────── */
@@ -74,6 +191,7 @@
 
 /* ── Filmstrip ──────────────────────────────────────────── */
 .ws-filmstrip {
+    position: relative;
     padding: 10px 18px 12px;
     background: var(--color-surface-low);
     border-top: 1px solid var(--color-border-subtle);
@@ -81,6 +199,50 @@
     flex-direction: column;
     gap: 8px;
     flex-shrink: 0;
+    /* Smooth height/padding collapse so the toggle feels physical. */
+    transition: padding 140ms ease;
+}
+.ws-filmstrip.collapsed {
+    padding: 0;
+    gap: 0;
+    /* Collapsed strip is a thin shelf — just enough to host the toggle
+       button without forcing it to overlap the body content above. */
+    min-height: 22px;
+}
+
+/* Centered toggle tab — sits ON the top border, half above/half below. */
+.ws-filmstrip-toggle {
+    position: absolute;
+    left: 50%;
+    top: -12px;
+    transform: translateX(-50%);
+    z-index: 5;
+    width: 38px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-surface-low);
+    border: 1px solid var(--color-border-subtle);
+    border-bottom: none;
+    border-top-left-radius: var(--radius-theme-md);
+    border-top-right-radius: var(--radius-theme-md);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background 120ms, color 120ms;
+}
+.ws-filmstrip-toggle:hover {
+    background: var(--color-surface-mid);
+    color: var(--color-text-primary);
+}
+/* When collapsed the strip is a thin shelf — center the toggle
+   INSIDE it instead of letting it float upward into the body
+   (which would overlap canvas-footer content in Details mode). */
+.ws-filmstrip.collapsed .ws-filmstrip-toggle {
+    top: 50%;
+    transform: translate(-50%, -50%);
+    border-bottom: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
 }
 .filmstrip-meta {
     display: flex;

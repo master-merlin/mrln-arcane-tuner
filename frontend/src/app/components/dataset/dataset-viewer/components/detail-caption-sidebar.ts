@@ -1,4 +1,4 @@
-import { Component, input, output, model, inject, signal, effect } from '@angular/core';
+import { Component, input, output, model, inject, signal, computed, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
 import { DatasetService } from '../../../../services/dataset';
@@ -30,15 +30,40 @@ import { ToastService } from '../../../../services/toast';
                 </div>
                 
                 <!-- Textarea -->
-                <textarea 
-                    [(ngModel)]="captionText" 
+                <textarea
+                    [(ngModel)]="captionText"
                     (ngModelChange)="onCaptionChange()"
                     class="flex-1 min-h-0 bg-surface-mid text-text-secondary p-3 resize-none focus:outline-none focus:bg-surface-high/50 transition-colors font-mono text-xs leading-relaxed scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
                     placeholder="Enter caption for this image..."
                 ></textarea>
-                <div class="shrink-0 px-3 py-1 text-[10px] text-text-subtle italic bg-surface-mid/30 flex justify-between items-center">
-                    <span>{{ (captionText() || '').length }} chars</span>
-                    <span><span class="font-bold">Ctrl+Enter</span> save</span>
+
+                <!-- Tag chips + char count -->
+                <div class="shrink-0 px-3 py-2 border-t border-surface-mid bg-surface-mid/30 flex items-center justify-between gap-2">
+                    <div class="flex flex-wrap gap-1 min-w-0 items-center">
+                        @for (t of derivedTagChips(); track t) {
+                            <span class="tag" style="text-transform: none; letter-spacing: 0; font-family: var(--font-sans);">{{ t }}</span>
+                        }
+                        @if (tagOverflowCount() > 0) {
+                            <span class="tag" style="text-transform: none; letter-spacing: 0;">+{{ tagOverflowCount() }}</span>
+                        }
+                    </div>
+                    <span class="mono text-[10px] text-text-muted whitespace-nowrap">{{ (captionText() || '').length }} chars</span>
+                </div>
+
+                <!-- Copy / Revert / shortcut hint -->
+                <div class="shrink-0 px-3 py-2 flex gap-1.5 items-center border-t border-surface-mid bg-surface-mid/20">
+                    <button type="button" (click)="copyCaption()"
+                            class="flex-1 px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors flex items-center justify-center gap-1.5 border border-surface-high/40">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        Copy
+                    </button>
+                    <button type="button" (click)="revertCaption()" [disabled]="!isDirty()"
+                            [class.opacity-40]="!isDirty()"
+                            class="flex-1 px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors flex items-center justify-center gap-1.5 border border-surface-high/40">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+                        Revert
+                    </button>
+                    <span class="text-[10px] text-text-subtle italic whitespace-nowrap pl-1"><span class="font-bold">Ctrl+Enter</span> save</span>
                 </div>
             </div>
 
@@ -107,6 +132,7 @@ export class DetailCaptionSidebarComponent {
 
     saveRequested = output<void>();
     captionChanged = output<void>();
+    captionReverted = output<void>();
 
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
@@ -114,11 +140,37 @@ export class DetailCaptionSidebarComponent {
     currentSettings: CaptionSettingsState | null = null;
     private lastModelId: string | null = null;
 
+    /** Up to 4 leading comma-separated tokens for the tag-chip strip.
+     *  Captions in this dataset format are typically comma-delimited tag
+     *  lists; falls back to an empty array when the caption is prose. */
+    protected derivedTagChips = computed<string[]>(() => {
+        const tokens = this.captionTokens();
+        return tokens.slice(0, 4);
+    });
+    protected tagOverflowCount = computed<number>(() => {
+        const tokens = this.captionTokens();
+        return Math.max(0, tokens.length - 4);
+    });
+    private captionTokens = computed<string[]>(() => {
+        const text = (this.captionText() || '').trim();
+        if (!text || !text.includes(',')) return [];
+        return text.split(',').map(s => s.trim()).filter(Boolean);
+    });
+
     constructor() {
-        // Clear stale suggestion when navigating to a different image
+        // Sync textarea with the active pair's caption (or its masked variant)
+        // whenever the user navigates to a different image or toggles the
+        // masked-caption view. Re-fires on pair identity change only, so
+        // in-place save mutations (parent assigns pair.caption_content) do
+        // not clobber an in-progress edit.
         effect(() => {
-            this.currentPair(); // track
+            const pair = this.currentPair();
+            const masked = this.showMasked();
             this.suggestedCaption.set(null);
+            const text = masked && pair?.masked_caption_content != null
+                ? pair.masked_caption_content
+                : pair?.caption_content ?? '';
+            this.captionText.set(text);
         });
     }
 
@@ -180,5 +232,27 @@ export class DetailCaptionSidebarComponent {
 
     discardSuggestion() {
         this.suggestedCaption.set(null);
+    }
+
+    copyCaption(): void {
+        const text = this.captionText() || '';
+        if (!text) return;
+        const nav = navigator as Navigator & { clipboard?: { writeText?: (s: string) => Promise<void> } };
+        if (nav.clipboard?.writeText) {
+            void nav.clipboard.writeText(text)
+                .then(() => this.toast.success('Caption copied to clipboard.'))
+                .catch(() => this.toast.error('Clipboard copy failed.'));
+        } else {
+            this.toast.error('Clipboard API unavailable in this browser.');
+        }
+    }
+
+    revertCaption(): void {
+        const pair = this.currentPair();
+        const text = this.showMasked() && pair?.masked_caption_content != null
+            ? pair.masked_caption_content
+            : pair?.caption_content ?? '';
+        this.captionText.set(text);
+        this.captionReverted.emit();
     }
 }

@@ -2,13 +2,14 @@ import { ChangeDetectionStrategy, Component, computed, inject, input, signal } f
 import { IcoComponent } from '../../../../icons/ico.component';
 import { CropPanelComponent } from '../panels/crop-panel.component';
 import { WhiteBalancePanelComponent } from '../panels/white-balance-panel.component';
+import { CurvesPanelComponent } from '../panels/curves-panel.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
 @Component({
     selector: 'app-edit-left-panel',
     standalone: true,
-    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent],
+    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="tabs">
@@ -59,6 +60,9 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                 }
                 @case ('white_balance') {
                     <app-wb-panel/>
+                }
+                @case ('curves') {
+                    <app-curves-panel/>
                 }
                 @default {
                     <div class="panel-todo">

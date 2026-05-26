@@ -2,6 +2,7 @@ import { Component, input, output, model, inject, signal, computed, effect } fro
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
 import { DatasetService } from '../../../../services/dataset';
+import { DatasetStore } from '../../../../state/dataset.store';
 import { ToastService } from '../../../../services/toast';
 
 @Component({
@@ -23,12 +24,15 @@ import { ToastService } from '../../../../services/toast';
                     </button>
                 </div>
                 
-                <!-- Caption header -->
-                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid">
-                    <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
-                    <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair()?.caption_file || '(New File)' }}</p>
+                <!-- Caption header — filename on the left, char count on the right -->
+                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid flex items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
+                        <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair()?.caption_file || '(New File)' }}</p>
+                    </div>
+                    <span class="mono text-[10px] text-text-muted whitespace-nowrap mt-0.5" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
                 </div>
-                
+
                 <!-- Textarea -->
                 <textarea
                     [(ngModel)]="captionText"
@@ -37,18 +41,18 @@ import { ToastService } from '../../../../services/toast';
                     placeholder="Enter caption for this image..."
                 ></textarea>
 
-                <!-- Tag chips + char count -->
-                <div class="shrink-0 px-3 py-2 border-t border-surface-mid bg-surface-mid/30 flex items-center justify-between gap-2">
-                    <div class="flex flex-wrap gap-1 min-w-0 items-center">
-                        @for (t of derivedTagChips(); track t) {
+                <!-- Dataset tags — pulled from the parent dataset (create/edit modal). Hidden when empty. -->
+                @if (visibleDatasetTags().length > 0) {
+                    <div class="shrink-0 px-3 py-2 border-t border-surface-mid bg-surface-mid/30 flex flex-wrap gap-1 items-center">
+                        <span class="text-[9px] font-bold uppercase tracking-widest text-text-subtle mr-1">Tags</span>
+                        @for (t of visibleDatasetTags(); track t) {
                             <span class="tag" style="text-transform: none; letter-spacing: 0; font-family: var(--font-sans);">{{ t }}</span>
                         }
-                        @if (tagOverflowCount() > 0) {
-                            <span class="tag" style="text-transform: none; letter-spacing: 0;">+{{ tagOverflowCount() }}</span>
+                        @if (datasetTagOverflow() > 0) {
+                            <span class="tag" style="text-transform: none; letter-spacing: 0;" [title]="datasetTags().slice(6).join(', ')">+{{ datasetTagOverflow() }}</span>
                         }
                     </div>
-                    <span class="mono text-[10px] text-text-muted whitespace-nowrap">{{ (captionText() || '').length }} chars</span>
-                </div>
+                }
 
                 <!-- Copy / Revert / shortcut hint -->
                 <div class="shrink-0 px-3 py-2 flex gap-1.5 items-center border-t border-surface-mid bg-surface-mid/20">
@@ -121,7 +125,11 @@ import { ToastService } from '../../../../services/toast';
 })
 export class DetailCaptionSidebarComponent {
     private datasetService = inject(DatasetService);
+    private datasets = inject(DatasetStore);
     private toast = inject(ToastService);
+
+    /** Max tag chips shown before collapsing the rest into an overflow chip. */
+    private static readonly TAG_CHIP_LIMIT = 6;
 
     datasetName = input.required<string>();
     currentPair = input.required<any>();
@@ -140,22 +148,21 @@ export class DetailCaptionSidebarComponent {
     currentSettings: CaptionSettingsState | null = null;
     private lastModelId: string | null = null;
 
-    /** Up to 4 leading comma-separated tokens for the tag-chip strip.
-     *  Captions in this dataset format are typically comma-delimited tag
-     *  lists; falls back to an empty array when the caption is prose. */
-    protected derivedTagChips = computed<string[]>(() => {
-        const tokens = this.captionTokens();
-        return tokens.slice(0, 4);
+    /**
+     * Tags configured on the parent dataset (create/edit modal). The chip
+     * strip below the textarea is hidden when this is empty.
+     */
+    protected datasetTags = computed<string[]>(() => {
+        const name = this.datasetName();
+        const ds = this.datasets.entities().find(d => d.name === name);
+        return ds?.tags ?? [];
     });
-    protected tagOverflowCount = computed<number>(() => {
-        const tokens = this.captionTokens();
-        return Math.max(0, tokens.length - 4);
-    });
-    private captionTokens = computed<string[]>(() => {
-        const text = (this.captionText() || '').trim();
-        if (!text || !text.includes(',')) return [];
-        return text.split(',').map(s => s.trim()).filter(Boolean);
-    });
+    protected visibleDatasetTags = computed<string[]>(() =>
+        this.datasetTags().slice(0, DetailCaptionSidebarComponent.TAG_CHIP_LIMIT),
+    );
+    protected datasetTagOverflow = computed<number>(() =>
+        Math.max(0, this.datasetTags().length - DetailCaptionSidebarComponent.TAG_CHIP_LIMIT),
+    );
 
     constructor() {
         // Sync textarea with the active pair's caption (or its masked variant)

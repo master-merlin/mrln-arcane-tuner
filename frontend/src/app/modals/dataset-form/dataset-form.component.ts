@@ -10,6 +10,54 @@ import { OverlayStore } from '../../state/overlay.store';
 const STANDARD_CLASSIFIERS = ['vehicle', 'person', 'style', 'object', 'landscape'] as const;
 const NAME_FORBIDDEN = /[<>:"/\\|?*]/;
 
+const LEET_LIGHT: Record<string, string> = {
+    a: '4', A: '4', e: '3', E: '3', i: '1', I: '1', o: '0', O: '0',
+};
+const LEET_FULL: Record<string, string> = {
+    ...LEET_LIGHT,
+    s: '5', S: '5', t: '7', T: '7',
+};
+
+function stripSeparators(s: string): string {
+    return s.replace(/[^A-Za-z0-9]+/g, '');
+}
+
+/**
+ * Trigger-word generation strategies. Each takes the raw (untrimmed)
+ * name and returns a candidate. Empty results mean "not applicable for
+ * this input" and the caller should skip to the next strategy.
+ *
+ * The wand button cycles through these on repeat clicks, giving the
+ * user alternative phrasings without forcing them to invent one.
+ */
+const TRIGGER_STRATEGIES: ReadonlyArray<(raw: string) => string> = [
+    // 0 — Leet (light): strip seps, first vowel → leet number
+    //     "911 Targa" → "911T4rga"
+    (raw) => {
+        const s = stripSeparators(raw);
+        const m = /[aeioAEIO]/.exec(s);
+        return m ? s.slice(0, m.index) + LEET_LIGHT[m[0]] + s.slice(m.index + 1) : s;
+    },
+    // 1 — Leet (full): strip seps, replace all leet-able letters (a/e/i/o/s/t)
+    //     "911 Targa" → "9174rg4", "My Style" → "My57yl3"
+    (raw) => stripSeparators(raw).replace(/[aeiostAEIOST]/g, (ch) => LEET_FULL[ch] ?? ch),
+    // 2 — Compact: strip seps, preserve case
+    //     "911 Targa" → "911Targa"
+    (raw) => stripSeparators(raw),
+    // 3 — Lowercase compact: strip seps, lowercase
+    //     "911 Targa" → "911targa"
+    (raw) => stripSeparators(raw).toLowerCase(),
+    // 4 — Initials: first letter of each alpha token + whole digit tokens
+    //     "Porsche 911 Targa" → "P911T", "Mercedes Benz 300SL" → "MB300SL"
+    //     Skipped (empty return) when the result would collapse to <2 chars.
+    (raw) => {
+        const tokens = raw.split(/[^A-Za-z0-9]+/).filter(Boolean);
+        if (tokens.length === 0) return '';
+        const out = tokens.map((t) => (/^\d/.test(t) ? t : t.charAt(0).toUpperCase())).join('');
+        return out.length >= 2 ? out : '';
+    },
+];
+
 /** Rejects null/empty/whitespace-only values. `Validators.required` accepts "   " — this does not. */
 function nonEmptyTrimmed(c: AbstractControl): { required: true } | null {
     const v = c.value as string | null;
@@ -66,9 +114,18 @@ interface DatasetFormModalData {
                 </select>
 
                 <label class="field-label df-mt">Trigger word</label>
-                <input class="input mono" type="text" formControlName="trigger_word"
-                       autocomplete="off" spellcheck="false"
-                       placeholder="e.g. mrlnstyle"/>
+                <div class="df-input-row">
+                    <input class="input mono" type="text" formControlName="trigger_word"
+                           autocomplete="off" spellcheck="false"
+                           placeholder="e.g. mrlnstyle"/>
+                    <button type="button" class="df-wand-btn"
+                            (click)="generateTriggerFromName()"
+                            [disabled]="!canGenerateTrigger()"
+                            title="Generate from name"
+                            aria-label="Generate trigger word from name">
+                        <app-ico name="WandSparkles" [size]="14"/>
+                    </button>
+                </div>
                 <div class="field-hint">Token baked into captions for LoRA activation.</div>
 
                 <label class="field-label df-mt">Tags</label>
@@ -135,6 +192,31 @@ interface DatasetFormModalData {
         }
         .input.mono { font-family: var(--font-mono, monospace); }
 
+        .df-input-row {
+            display: flex;
+            gap: 6px;
+            align-items: stretch;
+        }
+        .df-input-row .input { flex: 1 1 auto; min-width: 0; }
+        .df-wand-btn {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            border: 1px solid var(--color-border, var(--color-border-subtle));
+            background: var(--color-surface-input, var(--color-surface-low));
+            color: var(--color-text-muted);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+        }
+        .df-wand-btn:hover:not(:disabled) {
+            color: var(--color-brand, #6b8afd);
+            border-color: var(--color-brand, #6b8afd);
+        }
+        .df-wand-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
         .df-chip-input {
             display: flex;
             flex-wrap: wrap;
@@ -192,6 +274,11 @@ export class DatasetFormModalComponent {
     protected tagDraft = signal('');
     protected tags = signal<string[]>([]);
 
+    /** Index of the next trigger strategy to apply on wand click. */
+    private nextTriggerStrategy = signal(0);
+    /** The last value the wand wrote, used to detect manual edits. */
+    private lastGeneratedTrigger = signal('');
+
     /** Dataset id pulled from the topmost modal entry's data payload. */
     private datasetId = computed<string | null>(() => {
         const data = this.overlay.topModal()?.data as DatasetFormModalData | undefined;
@@ -236,6 +323,11 @@ export class DatasetFormModalComponent {
         return NAME_FORBIDDEN.test(v);
     });
 
+    protected canGenerateTrigger = computed<boolean>(() => {
+        const v = (this.nameValue() ?? '').trim();
+        return v.length > 0 && !NAME_FORBIDDEN.test(v);
+    });
+
     /** Reactive lookup of the dataset being edited (null in create mode). */
     private editingDataset = computed(() => {
         const id = this.datasetId();
@@ -266,6 +358,45 @@ export class DatasetFormModalComponent {
 
     protected titlecase(s: string): string {
         return s.charAt(0).toUpperCase() + s.slice(1);
+    }
+
+    /**
+     * Derive a trigger word from the current name and write it into the
+     * `trigger_word` field. The wand cycles through {@link TRIGGER_STRATEGIES}
+     * on successive clicks — e.g. "911 Targa" yields, in order:
+     * "911T4rga" → "9174rg4" → "911Targa" → "911targa" → "911T".
+     *
+     * The cycle resets to strategy 0 whenever the current field value
+     * differs from the last value the wand wrote (i.e. the user edited
+     * or cleared it manually), so a click after a manual edit always
+     * gives the canonical "leet-light" result first.
+     */
+    protected generateTriggerFromName(): void {
+        const raw = (this.form.controls.name.value ?? '').trim();
+        if (!raw) return;
+
+        const current = this.form.controls.trigger_word.value ?? '';
+        const continuing = current !== '' && current === this.lastGeneratedTrigger();
+        let idx = continuing ? this.nextTriggerStrategy() : 0;
+
+        // Try strategies starting at `idx`; skip empty / duplicate results
+        // (e.g. initials strategy on a single-word name). Loop at most N times.
+        let trigger = '';
+        const total = TRIGGER_STRATEGIES.length;
+        for (let attempts = 0; attempts < total; attempts++) {
+            const candidate = TRIGGER_STRATEGIES[idx](raw);
+            idx = (idx + 1) % total;
+            if (candidate && candidate !== current) {
+                trigger = candidate;
+                break;
+            }
+        }
+        if (!trigger) return;
+
+        this.form.controls.trigger_word.setValue(trigger);
+        this.form.controls.trigger_word.markAsDirty();
+        this.lastGeneratedTrigger.set(trigger);
+        this.nextTriggerStrategy.set(idx);
     }
 
     // ── Tag chip input ─────────────────────────────────────────────────

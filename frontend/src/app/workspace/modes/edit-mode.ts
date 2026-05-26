@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, input } from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { PipelineEditorState } from './edit/pipeline-editor.state';
@@ -66,6 +66,7 @@ export class EditMode {
     protected overlay = inject(OverlayStore);
     protected datasets = inject(DatasetService);
     private state = inject(PipelineEditorState);
+    private destroyRef = inject(DestroyRef);
 
     protected currentPair = computed(() => {
         const list = this.pairs();
@@ -104,6 +105,13 @@ export class EditMode {
                 this.renderTimer = null;
                 void this.state.renderNow(false);
             }, 250);
+        });
+
+        this.destroyRef.onDestroy(() => {
+            if (this.renderTimer) {
+                clearTimeout(this.renderTimer);
+                this.renderTimer = null;
+            }
         });
     }
 }

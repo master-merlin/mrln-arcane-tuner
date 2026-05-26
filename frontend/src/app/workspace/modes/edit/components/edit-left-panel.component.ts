@@ -1,12 +1,13 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
+import { CropPanelComponent } from '../panels/crop-panel.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
 @Component({
     selector: 'app-edit-left-panel',
     standalone: true,
-    imports: [IcoComponent],
+    imports: [IcoComponent, CropPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="tabs">
@@ -48,6 +49,13 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
             <!-- Panel switch — cases added in Phase 6 (Tasks 14-24). -->
             @switch (active()) {
+                @case ('crop') {
+                    <app-crop-panel
+                        [datasetName]="datasetName()"
+                        [mediaFile]="mediaFile()"
+                        [width]="width()"
+                        [height]="height()"/>
+                }
                 @default {
                     <div class="panel-todo">
                         Panel "<b>{{ activeLabel() }}</b>" implementation pending.
@@ -139,6 +147,11 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
     `],
 })
 export class EditLeftPanelComponent {
+    datasetName = input.required<string>();
+    mediaFile = input.required<string>();
+    width = input<number | undefined>(undefined);
+    height = input<number | undefined>(undefined);
+
     protected state = inject(PipelineEditorState);
 
     protected active = signal<TabKind>('crop');

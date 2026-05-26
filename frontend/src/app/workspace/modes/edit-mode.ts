@@ -21,7 +21,11 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
         @if (currentPair(); as pair) {
             <div class="edit-grid">
                 <aside class="pane left">
-                    <app-edit-left-panel/>
+                    <app-edit-left-panel
+                        [datasetName]="datasetName()"
+                        [mediaFile]="pair.media_file"
+                        [width]="pair.metadata?.width"
+                        [height]="pair.metadata?.height"/>
                 </aside>
                 <main class="pane center">
                     <app-edit-canvas

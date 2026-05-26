@@ -1,5 +1,5 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { OverlayStore } from '../../../state/overlay.store';
+import { Overlay, OverlayStore } from '../../../state/overlay.store';
 import { DatasetService, PipelineBlock } from '../../../services/dataset';
 import {
     OperationKind, PIPELINE_ORDER, BACKEND_TYPE_FOR, DEFAULT_PARAMS,
@@ -184,7 +184,7 @@ export class PipelineEditorState {
         // Load (or refresh) the overlay row in the store.
         await this.overlay.loadFor(datasetName, mediaFile);
         const id = `${datasetName}/${mediaFile}`;
-        const row = (this.overlay.entities() ?? []).find((o: any) => o.id === id);
+        const row = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
 
         // No overlay → defaults.
         if (!row?.operations || row.operations.length === 0) {
@@ -221,7 +221,10 @@ export class PipelineEditorState {
             case 'color_match':
                 this.colorMatch.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
             case 'hsl_selective':
+                // HslParams is a per-band dict — replace wholesale (not merge), so removing a band on the server actually removes it here.
                 this.hslSelective.update(o => ({ ...o, enabled, params: { ...params } })); return;
+            // `hue_saturation` and `contrast` are two backend ops that collapse into the single frontend `color_tone` panel.
+            // Use `enabled || o.enabled` so the second op doesn't clobber the first's enable flag.
             case 'hue_saturation':
                 this.colorTone.update(o => ({
                     ...o, enabled: enabled || o.enabled,

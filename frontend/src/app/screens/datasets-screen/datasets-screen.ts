@@ -7,6 +7,10 @@ import { ToastService } from '../../services/toast';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
+import {
+    SearchStore,
+    type DatasetSearchField,
+} from '../../state/search.store';
 import { IcoComponent } from '../../icons/ico.component';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { ChipTagComponent } from '../../ui/chip-tag/chip-tag.component';
@@ -48,6 +52,7 @@ export class DatasetsScreen {
     private toast = inject(ToastService);
     protected scope = inject(ScopeStore);
     protected overlay = inject(OverlayStore);
+    protected search = inject(SearchStore);
 
     /** Dataset ids that belong to the active project, when one is scoped. */
     private projectDatasetIds = signal<Set<string>>(new Set());
@@ -71,14 +76,39 @@ export class DatasetsScreen {
     /** Source of truth — all datasets currently in the entity store. */
     private allDatasets = this.datasets.entities;
 
-    /** Scope-filtered list: project membership when scoped, else everything. */
+    /** Scope-filtered list narrowed by the topbar search query. */
     protected visibleDatasets = computed<Dataset[]>(() => {
         const all = this.allDatasets() ?? [];
         const pid = this.scope.projectId();
-        if (!pid) return all;
-        const allowed = this.projectDatasetIds();
-        return all.filter(d => allowed.has(d.id));
+        const scoped = !pid
+            ? all
+            : all.filter(d => this.projectDatasetIds().has(d.id));
+
+        const query = this.search.query().trim().toLowerCase();
+        if (!query) return scoped;
+
+        const enabled = this.search.fields();
+        // Safety net: if the user unchecks everything, fall back to name
+        // so the result isn't empty-by-accident.
+        const fields: ReadonlySet<DatasetSearchField> =
+            enabled.size === 0 ? new Set(['name']) : enabled;
+
+        return scoped.filter(d => this.matchesSearch(d, query, fields));
     });
+
+    private matchesSearch(
+        d: Dataset,
+        q: string,
+        fields: ReadonlySet<DatasetSearchField>,
+    ): boolean {
+        if (fields.has('name') && d.name?.toLowerCase().includes(q)) return true;
+        if (fields.has('classifier') && d.classifier?.toLowerCase().includes(q)) return true;
+        if (fields.has('description') && d.description?.toLowerCase().includes(q)) return true;
+        if (fields.has('trigger_word') && d.trigger_word?.toLowerCase().includes(q)) return true;
+        if (fields.has('notes') && d.notes?.toLowerCase().includes(q)) return true;
+        if (fields.has('tags') && d.tags?.some(t => t.toLowerCase().includes(q))) return true;
+        return false;
+    }
 
     /** KPI rail aggregates. */
     protected kpis = computed(() => {
@@ -284,6 +314,10 @@ export class DatasetsScreen {
     }
 
     // ── Actions ────────────────────────────────────────────────────────
+
+    protected clearSearch(): void {
+        this.search.query.set('');
+    }
 
     protected openCard(d: Dataset): void {
         this.overlay.openWorkspace(d.id ?? d.name, 'browse');

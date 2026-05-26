@@ -137,7 +137,14 @@
                 </div>
             </div>
         } @empty {
-            <p class="muted ds-empty">No datasets in this scope yet.</p>
+            @if (search.query().trim()) {
+                <p class="muted ds-empty">
+                    No datasets match "{{ search.query() }}".
+                    <button type="button" class="search-filter-reset" (click)="clearSearch()">Clear search</button>
+                </p>
+            } @else {
+                <p class="muted ds-empty">No datasets in this scope yet.</p>
+            }
         }
     </div>
 </div>

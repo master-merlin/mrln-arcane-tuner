@@ -9,6 +9,8 @@ import { OverlayStore } from '../../state/overlay.store';
 
 const STANDARD_CLASSIFIERS = ['vehicle', 'person', 'style', 'object', 'landscape'] as const;
 const NAME_FORBIDDEN = /[<>:"/\\|?*]/;
+/** Sentinel select-option value that switches the category control into inline-text-entry mode. */
+const CUSTOM_CLASSIFIER_KEY = '__custom__';
 
 const LEET_LIGHT: Record<string, string> = {
     a: '4', A: '4', e: '3', E: '3', i: '1', I: '1', o: '0', O: '0',
@@ -108,10 +110,27 @@ interface DatasetFormModalData {
                 <label class="field-label df-mt">Category</label>
                 <select class="select" formControlName="classifier">
                     <option value="">None / Uncategorized</option>
-                    @for (s of classifierOptions(); track s) {
-                        <option [value]="s">{{ titlecase(s) }}</option>
+                    <optgroup label="Standard">
+                        @for (s of standardClassifiers; track s) {
+                            <option [value]="s">{{ titlecase(s) }}</option>
+                        }
+                    </optgroup>
+                    @if (reusableClassifiers().length > 0) {
+                        <optgroup label="Previously used">
+                            @for (c of reusableClassifiers(); track c) {
+                                <option [value]="c">{{ titlecase(c) }}</option>
+                            }
+                        </optgroup>
                     }
+                    <option [value]="CUSTOM_CLASSIFIER_KEY">+ Create new category…</option>
                 </select>
+                @if (classifierValue() === CUSTOM_CLASSIFIER_KEY) {
+                    <input class="input df-mt-sm" type="text"
+                           [value]="customClassifierValue()"
+                           (input)="onCustomClassifierInput($event)"
+                           placeholder="New category name"
+                           autocomplete="off" spellcheck="false"/>
+                }
 
                 <label class="field-label df-mt">Trigger word</label>
                 <div class="df-input-row">
@@ -179,6 +198,7 @@ interface DatasetFormModalData {
     styles: [`
         .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
         .df-mt { margin-top: 12px; }
+        .df-mt-sm { margin-top: 6px; }
         .df-textarea { min-height: 64px; resize: vertical; font-family: var(--font-sans); }
         .field-error {
             color: var(--color-danger);
@@ -295,18 +315,40 @@ export class DatasetFormModalComponent {
         notes: [''],
     });
 
+    /** Template-accessible constants. */
+    protected readonly standardClassifiers = STANDARD_CLASSIFIERS;
+    protected readonly CUSTOM_CLASSIFIER_KEY = CUSTOM_CLASSIFIER_KEY;
+
     /**
-     * Available classifier options: the standard set, plus the current
-     * dataset's classifier if it isn't already in the standard set (so
-     * edit mode never silently drops a previously-saved custom value).
+     * Current value of the `classifier` form control, exposed as a signal
+     * for the template (used to toggle the inline custom-entry input).
+     * The form control itself drives the `<select>` via `formControlName`,
+     * which handles the Angular @for + selected-option timing correctly.
      */
-    protected classifierOptions = computed<string[]>(() => {
-        const std = [...STANDARD_CLASSIFIERS];
-        const cur = this.editingDataset()?.classifier?.trim().toLowerCase();
-        if (cur && !std.includes(cur as (typeof STANDARD_CLASSIFIERS)[number])) {
-            return [...std, cur];
+    protected classifierValue = toSignal(this.form.controls.classifier.valueChanges, {
+        initialValue: this.form.controls.classifier.value,
+    });
+    /** Free-text value when the dropdown is in custom-entry mode. */
+    protected customClassifierValue = signal('');
+
+    /**
+     * Categories observed on existing datasets that aren't in the standard
+     * set — these become the "Previously used" optgroup, so a custom
+     * category typed on one dataset becomes selectable on every other.
+     */
+    protected reusableClassifiers = computed<string[]>(() => {
+        const std = new Set<string>([...STANDARD_CLASSIFIERS]);
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const d of this.datasets.entities()) {
+            const c = (d.classifier ?? '').trim();
+            if (!c) continue;
+            if (std.has(c.toLowerCase())) continue;
+            if (seen.has(c)) continue;
+            seen.add(c);
+            out.push(c);
         }
-        return std;
+        return out.sort((a, b) => a.localeCompare(b));
     });
 
     /**
@@ -344,20 +386,48 @@ export class DatasetFormModalComponent {
             if (!this.isEdit() || this.prefilled()) return;
             const ds = this.editingDataset();
             if (!ds) return;
+            const saved = (ds.classifier ?? '').trim();
+            const isStandard = (STANDARD_CLASSIFIERS as readonly string[]).includes(saved.toLowerCase());
+            // Standards go through lowercased (matches option values); reusables
+            // are kept verbatim — they match an option in the "Previously used"
+            // group, which is sourced live from `datasets.entities()`.
+            const classifier = saved ? (isStandard ? saved.toLowerCase() : saved) : '';
             this.form.patchValue({
                 name: ds.name ?? '',
-                classifier: (ds.classifier ?? '').toLowerCase(),
+                classifier,
                 trigger_word: ds.trigger_word ?? '',
                 description: ds.description ?? '',
                 notes: ds.notes ?? '',
             });
+            this.customClassifierValue.set('');
             this.tags.set([...(ds.tags ?? [])]);
             this.prefilled.set(true);
+        });
+
+        // When the dropdown moves off the custom sentinel (e.g. the user
+        // picks a different category), discard the in-progress custom draft.
+        effect(() => {
+            if (this.classifierValue() !== CUSTOM_CLASSIFIER_KEY && this.customClassifierValue() !== '') {
+                this.customClassifierValue.set('');
+            }
         });
     }
 
     protected titlecase(s: string): string {
         return s.charAt(0).toUpperCase() + s.slice(1);
+    }
+
+    // ── Category dropdown / inline custom entry ────────────────────────
+
+    protected onCustomClassifierInput(ev: Event): void {
+        this.customClassifierValue.set((ev.target as HTMLInputElement).value);
+    }
+
+    /** Resolve the persisted classifier from current UI state. */
+    private resolveClassifier(): string {
+        const sel = this.form.controls.classifier.value;
+        if (sel === CUSTOM_CLASSIFIER_KEY) return this.customClassifierValue().trim();
+        return sel;
     }
 
     /**
@@ -459,7 +529,8 @@ export class DatasetFormModalComponent {
         // Flush any uncommitted tag draft before reading the form.
         if (this.tagDraft().trim()) this.commitDraftTag();
 
-        const { name, description, classifier, trigger_word, notes } = this.form.getRawValue();
+        const { name, description, trigger_word, notes } = this.form.getRawValue();
+        const classifier = this.resolveClassifier();
         const extra = {
             trigger_word: (trigger_word ?? '').trim(),
             tags: this.tags(),
@@ -473,7 +544,7 @@ export class DatasetFormModalComponent {
                 await this.datasets.updateDataset(id, {
                     name: (name ?? '').trim(),
                     description: description ?? '',
-                    classifier: classifier ?? '',
+                    classifier,
                     trigger_word: extra.trigger_word,
                     tags: extra.tags,
                     notes: extra.notes,
@@ -483,7 +554,7 @@ export class DatasetFormModalComponent {
                 const created = await this.datasets.createDataset(
                     (name ?? '').trim(),
                     description ?? '',
-                    classifier ?? '',
+                    classifier,
                     extra,
                 );
                 if (created) this.overlay.closeModal();

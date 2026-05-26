@@ -2,11 +2,12 @@ import { ChangeDetectionStrategy, Component, inject, input } from '@angular/core
 import { IcoComponent } from '../../../../icons/ico.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { HistogramPanelComponent } from './histogram-panel.component';
+import { PipelineOrderListComponent } from './pipeline-order-list.component';
 
 @Component({
     selector: 'app-edit-right-panel',
     standalone: true,
-    imports: [IcoComponent, HistogramPanelComponent],
+    imports: [IcoComponent, HistogramPanelComponent, PipelineOrderListComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <section class="section histogram">
@@ -30,8 +31,7 @@ import { HistogramPanelComponent } from './histogram-panel.component';
                 <span class="title">PIPELINE ORDER</span>
             </div>
             <div class="section-body">
-                <!-- PipelineOrderList mounts here in Task 14. -->
-                <div class="placeholder">Pipeline list — Task 14</div>
+                <app-pipeline-order-list/>
             </div>
         </section>
 
@@ -63,12 +63,7 @@ import { HistogramPanelComponent } from './histogram-panel.component';
         .section-head .mute { margin-left: auto; color: var(--color-text-muted); font-size: 10.5px; }
         .section-body { padding-top: 8px; }
         .divider { height: 1px; background: var(--color-border-subtle); margin: 8px 16px; }
-        .placeholder {
-            padding: 14px; border: 1px dashed var(--color-border-subtle);
-            border-radius: var(--radius-theme-md);
-            text-align: center; color: var(--color-text-muted); font-size: 12px;
-        }
-        .actions {
+.actions {
             margin-top: auto; padding: 14px 16px;
             border-top: 1px solid var(--color-border-subtle);
             background: var(--color-surface-low);

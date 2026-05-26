@@ -120,7 +120,15 @@
 }
 
 .mass-actions { display: flex; align-items: center; gap: 6px; }
-.mass-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+/* Lock mass-action buttons to a uniform width so the trio reads as a
+   single segmented unit regardless of label length. */
+.mass-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 132px;
+}
 
 /* Tinted mass-mask / mass-edit buttons matching the design swatches */
 .ws-mass-mask {
@@ -151,6 +159,39 @@
     text-transform: none;
     letter-spacing: 0;
     font-weight: 400;
+}
+
+/* Masked / Overlay view toggles — tinted-on-active per legacy palette. */
+.ws-toggles { display: flex; align-items: center; gap: 6px; }
+.ws-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    background: var(--color-surface-low);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+    cursor: pointer;
+    transition: background 120ms, color 120ms, border-color 120ms;
+}
+.ws-toggle:hover:not(:disabled) {
+    background: var(--color-surface-mid);
+    color: var(--color-text-primary);
+}
+.ws-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+.ws-toggle.success.active {
+    background: oklch(0.68 0.14 155 / 0.18);
+    color: var(--color-success);
+    border-color: oklch(0.68 0.14 155 / 0.40);
+}
+.ws-toggle.violet.active {
+    background: oklch(0.65 0.18 295 / 0.18);
+    color: var(--color-violet);
+    border-color: oklch(0.65 0.18 295 / 0.40);
 }
 
 .ws-density {

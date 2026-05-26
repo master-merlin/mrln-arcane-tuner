@@ -114,6 +114,27 @@
                     </div>
                 }
 
+                <div class="ws-toggles">
+                    <button type="button"
+                            class="ws-toggle success"
+                            [class.active]="showMasked()"
+                            [disabled]="!hasMaskedImages()"
+                            (click)="toggleMaskedView()"
+                            [title]="hasMaskedImages() ? 'Toggle masked view — show masked images and captions' : 'No masked images in this dataset'">
+                        <app-ico name="Shield" [size]="12"/>
+                        Masked
+                    </button>
+                    <button type="button"
+                            class="ws-toggle violet"
+                            [class.active]="showOverlay()"
+                            [disabled]="!hasOverlayImages()"
+                            (click)="toggleOverlayView()"
+                            [title]="hasOverlayImages() ? 'Toggle overlay view — show edited overlays instead of originals' : 'No overlay images in this dataset'">
+                        <app-ico name="Layers" [size]="12"/>
+                        Overlay
+                    </button>
+                </div>
+
                 <div class="ws-density">
                     <span class="eyebrow">Density</span>
                     <input type="range" min="3" max="7" step="1"
@@ -140,6 +161,8 @@
                         [datasetName]="dataset()?.name ?? w.datasetId"
                         [density]="density()"
                         [activeMediaFile]="activeMediaFile()"
+                        [showMasked]="showMasked()"
+                        [showOverlay]="showOverlay()"
                         (saveCaption)="onSaveCaption($event)"
                         (toggleExclusion)="onToggleExclusion($event)"
                         (deletePair)="onDeletePairRequested($event)"/>

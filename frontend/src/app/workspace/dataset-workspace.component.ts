@@ -180,6 +180,19 @@ export class DatasetWorkspaceComponent {
      *  selectable visuals only. */
     protected filter = signal<'all' | 'captioned' | 'masked' | 'low_hps'>('all');
     protected density = signal<number>(5);
+    /** Render masked variants of images + masked_caption_content when true. */
+    protected showMasked = signal<boolean>(false);
+    /** Render edited overlays in place of originals when true (legacy default). */
+    protected showOverlay = signal<boolean>(true);
+
+    /** True when at least one pair has a masked-image flag — drives toggle enablement. */
+    protected hasMaskedImages = computed<boolean>(() =>
+        this.pairs().some(p => !!p?.metadata?.has_masked),
+    );
+    /** True when at least one pair has an editor-produced overlay file. */
+    protected hasOverlayImages = computed<boolean>(() =>
+        this.pairs().some(p => !!p?.metadata?.has_overlay),
+    );
 
     /** Training-readiness pair count (enabled + has caption) over total. */
     protected trainingCounts = computed<{ ready: number; total: number }>(() => {
@@ -343,6 +356,13 @@ export class DatasetWorkspaceComponent {
     protected onDensityChange(v: number | string): void {
         const n = typeof v === 'string' ? parseInt(v, 10) : v;
         if (Number.isFinite(n)) this.density.set(Math.max(3, Math.min(7, n as number)));
+    }
+
+    protected toggleMaskedView(): void {
+        if (this.hasMaskedImages()) this.showMasked.update(v => !v);
+    }
+    protected toggleOverlayView(): void {
+        if (this.hasOverlayImages()) this.showOverlay.update(v => !v);
     }
 
     /** Re-include every excluded pair. MediaItemStore handles optimistic

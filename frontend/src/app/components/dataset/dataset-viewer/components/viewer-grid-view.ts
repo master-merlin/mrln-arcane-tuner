@@ -54,18 +54,20 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                              </div>
 
                              <!-- Loading dots — sit behind the media (z-index 0).
-                                  Visible while the full-res image is in flight
-                                  OR while we're still waiting on the workspace's
-                                  filmstrip thumbnails to settle (so the grid
-                                  doesn't fire 26 large requests in parallel
-                                  with 26 thumbnail requests). The loaded
-                                  media covers the dots. -->
-                             <span class="grid-thumb-loader" aria-hidden="true">
-                                 <span></span><span></span><span></span>
-                             </span>
+                                  Hidden once the tile's media reports a load
+                                  event because the on-top img/video is rendered
+                                  at opacity-80 at rest, so without an explicit
+                                  hide the dots would bleed through every
+                                  loaded tile. -->
+                             @if (!isLoaded(pair)) {
+                                 <span class="grid-thumb-loader" aria-hidden="true">
+                                     <span></span><span></span><span></span>
+                                 </span>
+                             }
 
                               @if (pair.media_type === 'video') {
                                 <video [src]="getMediaUrl(pair.media_file)"
+                                       (loadeddata)="onTileLoaded($event, pair)"
                                        class="w-full h-full object-cover transition-opacity relative z-[1]"
                                        [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"></video>
                                 <div class="absolute bottom-2 right-2 bg-surface-low/60 text-white p-1 rounded-theme-sm z-10">
@@ -73,6 +75,7 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                                 </div>
                              } @else {
                                 <img [src]="getDisplayUrl(pair)"
+                                     (load)="onTileLoaded($event, pair)"
                                      (error)="onOverlayError(pair)"
                                      class="w-full h-full object-cover transition-opacity relative z-[1]"
                                      [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"
@@ -258,6 +261,39 @@ export class ViewerGridViewComponent {
             if (s.has(mf)) return s;
             const next = new Set(s);
             next.add(mf);
+            return next;
+        });
+    }
+
+    /**
+     * Set of URLs that have successfully reported `load`/`loadeddata`.
+     * Keyed by full URL (not by `media_file`) so toggling showMasked /
+     * showOverlay doesn't invalidate tiles whose effective URL didn't
+     * change — a base image with no masked variant keeps the same URL
+     * across the masked toggle, so the loader must NOT reappear on it.
+     * For tiles where the URL does change, the new URL starts absent
+     * from the set, the loader shows, and onTileLoaded re-adds once
+     * the new variant paints.
+     */
+    private loadedUrls = signal<Set<string>>(new Set());
+
+    protected isLoaded(pair: any): boolean {
+        return this.loadedUrls().has(this.getDisplayUrl(pair));
+    }
+
+    protected onTileLoaded(event: Event, pair: any): void {
+        const target = event.target as HTMLImageElement | HTMLVideoElement | null;
+        // currentSrc is what the browser actually fetched (resolved + winning
+        // <picture>/srcset entry). Fall back to the computed displayUrl when
+        // currentSrc is empty (some test envs).
+        const url = (target as HTMLImageElement)?.currentSrc
+            || (target as HTMLImageElement)?.src
+            || this.getDisplayUrl(pair);
+        if (!url) return;
+        this.loadedUrls.update(s => {
+            if (s.has(url)) return s;
+            const next = new Set(s);
+            next.add(url);
             return next;
         });
     }

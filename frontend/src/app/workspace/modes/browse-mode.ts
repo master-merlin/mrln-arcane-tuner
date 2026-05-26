@@ -40,6 +40,8 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
             [hideToolbar]="true"
             [density]="density()"
             [activeMediaFile]="activeMediaFile()"
+            [showMasked]="showMasked()"
+            [showOverlay]="showOverlay()"
             (detailRequested)="openDetail($event)"
             (editRequested)="openEdit($event)"
             (captionSaved)="onCaptionSaved($event)"
@@ -72,6 +74,10 @@ export class BrowseMode {
      *  cursor — filmstrip seek, details-mode navigation, etc.). When
      *  non-null, the grid scrolls that tile into view and outlines it. */
     activeMediaFile = input<string | null>(null);
+    /** Render masked variants of images + masked_caption_content when true. */
+    showMasked = input<boolean>(false);
+    /** Render edited overlays in place of originals when true (legacy default). */
+    showOverlay = input<boolean>(true);
 
     /** Caption was edited and the textarea lost focus while dirty. */
     saveCaption = output<{ pair: any; content: string; isMasked: boolean }>();

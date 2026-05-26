@@ -51,7 +51,7 @@ export class PipelineEditorState {
     readonly colorTone    = signal(mkOp('color_tone'));
     readonly vignette     = signal(mkOp('vignette'));
     readonly lens         = signal(mkOp('lens'));
-    readonly sharpen      = signal(mkOp('sharpen'));
+    readonly sharpen      = signal<OpEntry<SharpenParams>>(mkOp('sharpen') as OpEntry<SharpenParams>);
     readonly denoise      = signal(mkOp('denoise'));
     readonly faceRestore  = signal(mkOp('face_restore'));
     readonly upscale      = signal(mkOp('upscale'));

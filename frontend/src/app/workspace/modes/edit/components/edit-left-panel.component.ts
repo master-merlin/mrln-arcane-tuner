@@ -5,13 +5,14 @@ import { WhiteBalancePanelComponent } from '../panels/white-balance-panel.compon
 import { CurvesPanelComponent } from '../panels/curves-panel.component';
 import { ColorTonePanelComponent } from '../panels/color-tone-panel.component';
 import { HslPanelWrapperComponent } from '../panels/hsl-panel.component';
+import { SharpenPanelComponent } from '../panels/sharpen-panel.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
 @Component({
     selector: 'app-edit-left-panel',
     standalone: true,
-    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent, ColorTonePanelComponent, HslPanelWrapperComponent],
+    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent, ColorTonePanelComponent, HslPanelWrapperComponent, SharpenPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="tabs">
@@ -71,6 +72,9 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                 }
                 @case ('hsl_selective') {
                     <app-hsl-panel-wrap/>
+                }
+                @case ('sharpen') {
+                    <app-sharpen-panel/>
                 }
                 @default {
                     <div class="panel-todo">

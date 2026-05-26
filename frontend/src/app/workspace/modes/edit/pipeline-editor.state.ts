@@ -173,8 +173,77 @@ export class PipelineEditorState {
         this.markClean();
     }
 
-    // hydrate() / applyAndSave() / revert() are wired in Phase 3 (Task 9).
-    async hydrate(_datasetName: string, _mediaFile: string): Promise<void> { this.resetAll(); }
+    /**
+     * Hydrate working state from the saved overlay recipe. If no overlay
+     * exists, reset to defaults. Always marks clean (dirty=false) afterwards.
+     */
+    async hydrate(datasetName: string, mediaFile: string): Promise<void> {
+        this.datasetName.set(datasetName);
+        this.mediaFile.set(mediaFile);
+
+        // Load (or refresh) the overlay row in the store.
+        await this.overlay.loadFor(datasetName, mediaFile);
+        const id = `${datasetName}/${mediaFile}`;
+        const row = (this.overlay.entities() ?? []).find((o: any) => o.id === id);
+
+        // No overlay → defaults.
+        if (!row?.operations || row.operations.length === 0) {
+            this.resetAll();
+            this.markClean();
+            return;
+        }
+
+        // Reset first, then apply each recipe op into the corresponding signal.
+        this.resetAll();
+        for (const op of row.operations) {
+            this.applyRecipeOp(op.type, op.params ?? {}, op.enabled !== false);
+        }
+        this.markClean();
+    }
+
+    /**
+     * Project a backend-type op (e.g. `hue_saturation`) into the matching
+     * frontend signal. `hue_saturation` + `contrast` both feed `color_tone`.
+     * Unknown types are ignored (forward-compat).
+     */
+    private applyRecipeOp(type: string, params: any, enabled: boolean): void {
+        switch (type) {
+            case 'denoise':
+                this.denoise.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'face_restore':
+                this.faceRestore.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'white_balance':
+                this.whiteBalance.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'curves':
+                this.curves.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'cube_lut':
+                this.lut.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'color_match':
+                this.colorMatch.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'hsl_selective':
+                this.hslSelective.update(o => ({ ...o, enabled, params: { ...params } })); return;
+            case 'hue_saturation':
+                this.colorTone.update(o => ({
+                    ...o, enabled: enabled || o.enabled,
+                    params: { ...o.params, hue_shift: params.hue_shift ?? 0, saturation: params.saturation ?? 1 },
+                })); return;
+            case 'contrast':
+                this.colorTone.update(o => ({
+                    ...o, enabled: enabled || o.enabled,
+                    params: { ...o.params, contrast: params.contrast ?? 1 },
+                })); return;
+            case 'vignette':
+                this.vignette.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'lens_correction':
+                this.lens.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'sharpening':
+                this.sharpen.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+            case 'upscale':
+                this.upscale.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
+        }
+    }
+
+    // applyAndSave() / revert() are wired in Task 9.
     async applyAndSave(): Promise<void> { this.markClean(); }
     async revert(): Promise<void> { this.resetAll(); }
 }

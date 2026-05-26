@@ -9,6 +9,8 @@ import {
 import { FormsModule } from '@angular/forms';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
+import { MediaItemStore } from '../../state/media-item.store';
+import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 
 interface MaskPreviewData {
@@ -61,7 +63,16 @@ interface MaskPreviewData {
 
             <div class="mp-viewport" [class.mask]="mode() === 'mask'">
                 @if (imageUrl(); as url) {
-                    <img [src]="url" class="mp-image" alt=""/>
+                    <!-- Bouncing-dots overlay shown while the backend is
+                         re-rendering the composite (e.g. on slider drag) —
+                         hidden once the current URL reports a load event. -->
+                    @if (isImageLoading()) {
+                        <span class="mp-loader" aria-hidden="true">
+                            <span></span><span></span><span></span>
+                        </span>
+                    }
+                    <img [src]="url" class="mp-image" alt=""
+                         (load)="onImageLoaded($event)"/>
                 } @else {
                     <div class="muted mp-empty-text">No image to preview.</div>
                 }
@@ -80,9 +91,17 @@ interface MaskPreviewData {
                            [(ngModel)]="opacity" class="mp-range">
                 </div>
                 <button class="btn cta" type="button"
-                        [disabled]="true"
-                        title="Coming soon — wired in cleanup PR">
-                    <app-ico name="Check" [size]="12"/> Bake mask
+                        [disabled]="!canBake() || isBaking()"
+                        [title]="bakeTooltip()"
+                        (click)="onBake()">
+                    @if (isBaking()) {
+                        <span class="mp-spinner" aria-hidden="true">
+                            <span></span><span></span><span></span>
+                        </span>
+                        Baking…
+                    } @else {
+                        <app-ico name="Check" [size]="12"/> Bake mask
+                    }
                 </button>
             } @else {
                 <div class="mp-meta">
@@ -158,17 +177,94 @@ interface MaskPreviewData {
             font-weight: 700;
             padding: 9px 16px;
             border-radius: var(--radius-theme-lg);
+            cursor: pointer;
+            border: none;
         }
+        .btn.cta:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Three-dot loader inside the preview viewport. Sits centered on
+           top of the still-displayed previous image so the user has
+           confidence the slider drag is triggering a backend render. */
+        .mp-loader {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            pointer-events: none;
+            z-index: 2;
+        }
+        .mp-loader > span {
+            width: 10px;
+            height: 10px;
+            background: var(--color-brand);
+            border-radius: 50%;
+            box-shadow: 0 1px 4px oklch(0 0 0 / 0.45);
+            animation: mp-bounce 1.1s ease-in-out infinite;
+        }
+        .mp-loader > span:nth-child(2) { animation-delay: 0.15s; }
+        .mp-loader > span:nth-child(3) { animation-delay: 0.30s; }
+        @keyframes mp-bounce {
+            0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
+            40%           { transform: translateY(-8px); opacity: 1; }
+        }
+
+        /* Inline spinner used inside the Bake button while the bake POST
+           is in flight. Same dots, smaller scale. */
+        .mp-spinner {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .mp-spinner > span {
+            width: 5px;
+            height: 5px;
+            background: currentColor;
+            border-radius: 50%;
+            animation: mp-bounce 1.1s ease-in-out infinite;
+        }
+        .mp-spinner > span:nth-child(2) { animation-delay: 0.15s; }
+        .mp-spinner > span:nth-child(3) { animation-delay: 0.30s; }
     `],
 })
 export class MaskPreviewModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
     private rtc = inject(RuntimeConfigService);
+    private mediaItems = inject(MediaItemStore);
+    private toast = inject(ToastService);
 
     protected data: MaskPreviewData = (this.overlay.topModal()?.data as MaskPreviewData) ?? {};
 
     protected mode = signal<'preview' | 'mask'>('preview');
     protected opacity = signal<number>(0.65);
+    /** Truthy while the bake POST is in flight — disables the Bake button
+     *  and swaps the label/icon for an inline spinner. */
+    protected isBaking = signal<boolean>(false);
+
+    /**
+     * URLs that have successfully reported `load`. Each composite-preview
+     * URL is unique per opacity step (the slider stamps it into the query
+     * string), so a fresh URL means the loader should surface until the
+     * backend produces and the browser paints the new variant.
+     */
+    private loadedUrls = signal<Set<string>>(new Set());
+
+    protected isImageLoading = computed<boolean>(() => {
+        const u = this.imageUrl();
+        return !!u && !this.loadedUrls().has(u);
+    });
+
+    /** Bake is only meaningful when a raw mask file exists for the pair. */
+    protected canBake = computed<boolean>(() =>
+        !!this.data.pair?.metadata?.has_mask && !!this.data.datasetName,
+    );
+
+    protected bakeTooltip = computed<string>(() => {
+        if (this.isBaking()) return 'Baking…';
+        if (!this.canBake()) return 'No mask available to bake';
+        return `Bake masked image at ${(this.opacity() * 100).toFixed(0)}% mix`;
+    });
 
     ngOnInit(): void {
         if (this.data.mode) this.mode.set(this.data.mode);
@@ -191,8 +287,39 @@ export class MaskPreviewModalComponent implements OnInit {
                `?image_rel_path=${encodeURIComponent(pair.media_file)}&opacity=${this.opacity()}`;
     });
 
-    // TODO(frontend): wire `Bake mask` to the dataset mask-bake endpoint
-    // once the new workspace exposes a callback channel back to the details
-    // mask sidebar. Until then the button is disabled (see template) so the
-    // user gets a clear signal instead of a silent close.
+    protected onImageLoaded(event: Event): void {
+        const target = event.target as HTMLImageElement | null;
+        const url = target?.currentSrc || target?.src;
+        if (!url) return;
+        this.loadedUrls.update(s => {
+            if (s.has(url)) return s;
+            const next = new Set(s);
+            next.add(url);
+            return next;
+        });
+    }
+
+    /**
+     * Persist the current opacity as a baked masked image. Routes through
+     * MediaItemStore.applyMask so the local row's `has_masked` flag flips
+     * on success — that's what unlocks the workspace's masked-view toggle
+     * for this pair.
+     */
+    protected async onBake(): Promise<void> {
+        if (!this.canBake() || this.isBaking()) return;
+        const name = this.data.datasetName!;
+        const mediaFile = this.data.pair?.media_file;
+        if (!mediaFile) return;
+
+        this.isBaking.set(true);
+        try {
+            const result = await this.mediaItems.applyMask(name, mediaFile, this.opacity());
+            if (result.ok) {
+                this.toast.success('Masked image baked.');
+                this.overlay.closeModal();
+            }
+        } finally {
+            this.isBaking.set(false);
+        }
+    }
 }

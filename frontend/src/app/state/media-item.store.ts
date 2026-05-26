@@ -241,6 +241,37 @@ export class MediaItemStore extends EntityStore<MediaItem> {
     }
 
     /**
+     * Bake a mask onto an image: backend composites `<image>` with its
+     * `<mask>` at the given opacity, writes the result to
+     * `masked/<stem>.jpg`, and flips `has_masked: true` server-side.
+     *
+     * Not optimistic — the bake is a real image-compositing step that
+     * takes meaningful time, and flipping `has_masked: true` before the
+     * file is on disk would let the masked-view URL race the bake and
+     * 404. We wait for HTTP success, then patch the local row.
+     */
+    async applyMask(
+        datasetName: string,
+        mediaFile: string,
+        opacity: number,
+    ): Promise<OptimisticResult<unknown>> {
+        try {
+            const value = await firstValueFrom(
+                this.api.applyMask(datasetName, mediaFile, opacity),
+            );
+            const key = mediaKey(datasetName, mediaFile);
+            const current = this.byId(key)();
+            if (current) {
+                this.upsert({ ...current, has_masked: true });
+            }
+            return { ok: true, value };
+        } catch (error) {
+            this.toast.error(`Couldn't bake mask.`);
+            return { ok: false, error };
+        }
+    }
+
+    /**
      * Optimistically deletes the mask for a pair (flips `has_mask: false`).
      * No bulk "set true" path — mask creation is async (Meta SAM 3 etc.)
      * and the workspace pulls the resulting metadata via a re-fetch.

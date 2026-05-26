@@ -59,6 +59,47 @@ export class PipelineEditorState {
     /** User-mutable pipeline order. Mirrors PIPELINE_ORDER initially. */
     readonly operationOrder = signal<OperationKind[]>([...PIPELINE_ORDER]);
 
+    /** URL of the most-recent live-preview overlay PNG (from renderPipeline
+     *  with replaceRecipe=false). Null until first render completes. */
+    readonly previewOverlay = signal<{ url: string; hash: string } | null>(null);
+
+    /** True while a render request is in flight (drives a small spinner). */
+    readonly rendering = signal<boolean>(false);
+
+    private pendingRender = false;
+
+    /**
+     * Trigger a render based on current blocks(). Called by the debounced
+     * effect in EditMode whenever blocks() changes with stable image identity.
+     *
+     * `replaceRecipe` defaults false (preview); applyAndSave passes true.
+     * In-flight handling: one slot queue; if a new call arrives mid-flight,
+     * one more render fires after the current finishes (latest wins).
+     */
+    async renderNow(replaceRecipe = false): Promise<void> {
+        const name = this.datasetName();
+        const file = this.mediaFile();
+        if (!name || !file) return;
+
+        if (this.rendering()) { this.pendingRender = true; return; }
+        this.rendering.set(true);
+        try {
+            const result = await this.overlay.renderPipeline(
+                name, file, this.blocks(), 512, 32, replaceRecipe,
+            );
+            if (result.ok) {
+                const r = result.value;
+                this.previewOverlay.set({ url: r.overlay, hash: r.hash });
+            }
+        } finally {
+            this.rendering.set(false);
+            if (this.pendingRender) {
+                this.pendingRender = false;
+                void this.renderNow(false);
+            }
+        }
+    }
+
     /** Snapshot of last-saved state — used to compute `dirty`. */
     private savedSnapshot = signal<string>('');
 
@@ -246,7 +287,26 @@ export class PipelineEditorState {
         }
     }
 
-    // applyAndSave() / revert() are wired in Task 9.
-    async applyAndSave(): Promise<void> { this.markClean(); }
-    async revert(): Promise<void> { this.resetAll(); }
+    /**
+     * Promote the current preview to the saved recipe (replaceRecipe=true).
+     * Snapshots state so `dirty` clears.
+     */
+    async applyAndSave(): Promise<void> {
+        await this.renderNow(true);
+        this.markClean();
+    }
+
+    /**
+     * Delete the saved overlay and reset working state to defaults.
+     */
+    async revert(): Promise<void> {
+        const name = this.datasetName();
+        const file = this.mediaFile();
+        if (name && file) {
+            await this.overlay.deleteOverlay(name, file);
+        }
+        this.resetAll();
+        this.previewOverlay.set(null);
+        this.markClean();
+    }
 }

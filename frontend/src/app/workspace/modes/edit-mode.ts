@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input } from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { PipelineEditorState } from './edit/pipeline-editor.state';
@@ -65,10 +65,45 @@ export class EditMode {
 
     protected overlay = inject(OverlayStore);
     protected datasets = inject(DatasetService);
+    private state = inject(PipelineEditorState);
 
     protected currentPair = computed(() => {
         const list = this.pairs();
         const idx = this.imageIndex();
         return idx >= 0 && idx < list.length ? list[idx] : null;
     });
+
+    private renderTimer: ReturnType<typeof setTimeout> | null = null;
+
+    private identity = computed<string | null>(() => {
+        const p = this.currentPair();
+        return p?.media_file ? `${this.datasetName()}/${p.media_file}` : null;
+    });
+
+    constructor() {
+        // 1. Identity change → hydrate.
+        let lastIdentity = '';
+        effect(() => {
+            const id = this.identity();
+            const p = this.currentPair();
+            if (!id || id === lastIdentity || !p) return;
+            lastIdentity = id;
+            if (this.renderTimer) { clearTimeout(this.renderTimer); this.renderTimer = null; }
+            void this.state.hydrate(this.datasetName(), p.media_file);
+        });
+
+        // 2. Blocks change with stable identity → debounced render.
+        let lastBlocksJson = '';
+        effect(() => {
+            const id = this.identity();
+            const blocksJson = JSON.stringify(this.state.blocks());
+            if (!id || blocksJson === lastBlocksJson) return;
+            lastBlocksJson = blocksJson;
+            if (this.renderTimer) clearTimeout(this.renderTimer);
+            this.renderTimer = setTimeout(() => {
+                this.renderTimer = null;
+                void this.state.renderNow(false);
+            }, 250);
+        });
+    }
 }

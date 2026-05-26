@@ -3,6 +3,7 @@ import { IcoComponent } from '../../../../icons/ico.component';
 import { OverlayStore } from '../../../../state/overlay.store';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer.component';
+import { PipelineEditorState } from '../pipeline-editor.state';
 
 @Component({
     selector: 'app-edit-canvas',
@@ -104,25 +105,27 @@ export class EditCanvasComponent {
 
     private overlay = inject(OverlayStore);
     private rtc = inject(RuntimeConfigService);
+    private state = inject(PipelineEditorState);
 
     // Source = the dataset's media URL.
     protected sourceUrl = computed(() =>
         `${this.rtc.mediaBaseUrl}/${this.datasetName()}/${encodeURIComponent(this.mediaFile())}`,
     );
 
-    // Overlay URL = saved overlay only (live preview wired in Task 9).
+    // Overlay URL — prefers the live preview signal; falls back to saved overlay.
     protected overlayUrl = computed<string | null>(() => {
+        const preview = this.state.previewOverlay();
+        if (preview) {
+            return `${this.rtc.mediaBaseUrl}/${preview.url}?h=${preview.hash}`;
+        }
+        // Fall back to the saved overlay if no preview yet.
         if (!this.hasOverlay()) return null;
         const id = `${this.datasetName()}/${this.mediaFile()}`;
-        const ov = this.lookupOverlay(id);
+        const ov = (this.overlay.entities() ?? []).find((o: any) => o.id === id);
         if (!ov?.overlay_file) return null;
         const hash = ov.hash ? `?h=${ov.hash}` : '';
         return `${this.rtc.mediaBaseUrl}/${ov.overlay_file}${hash}`;
     });
-
-    private lookupOverlay(id: string) {
-        return (this.overlay.entities() ?? []).find((o) => o.id === id);
-    }
 
     protected meta = computed<CanvasMeta>(() => ({
         res: null, ar: null, orientation: null, size: null,

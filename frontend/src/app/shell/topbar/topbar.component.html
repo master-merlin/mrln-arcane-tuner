@@ -22,30 +22,37 @@
             (input)="onSearchInput($event)"
         />
         @if (onDatasetsRoute()) {
-            <button class="search-filter-btn" type="button"
-                    (click)="toggleFieldMenu()"
-                    [class.active]="fieldMenuOpen()"
-                    [title]="fieldButtonTitle()">
-                <app-ico name="SlidersHorizontal" [size]="12" />
-                <span class="mono">{{ search.fields().size }}/{{ totalFields }}</span>
-                <app-ico name="ChevronDown" [size]="10" />
-            </button>
-            @if (fieldMenuOpen()) {
-                <div class="search-filter-popover" (click)="$event.stopPropagation()">
-                    <div class="search-filter-head">
-                        <span>Search in</span>
-                        <button type="button" class="link-btn" (click)="search.resetFields()">Reset</button>
+            <div class="search-filter-anchor">
+                <button class="chip solid search-filter-btn"
+                        type="button"
+                        (click)="toggleFieldMenu()"
+                        [class.active]="fieldMenuOpen()"
+                        [attr.aria-expanded]="fieldMenuOpen()"
+                        [title]="fieldButtonTitle()">
+                    <app-ico name="SlidersHorizontal" [size]="11" />
+                    <span class="mono">{{ search.fields().size }}/{{ totalFields }}</span>
+                    <app-ico name="ChevronDown" [size]="10" />
+                </button>
+                @if (fieldMenuOpen()) {
+                    <div class="popover search-filter-popover">
+                        <div class="search-filter-head">
+                            <span class="popover-section" style="padding: 0;">Search in</span>
+                            <button type="button" class="search-filter-reset"
+                                    (click)="search.resetFields()">Reset</button>
+                        </div>
+                        <div class="popover-divider"></div>
+                        @for (f of allFields; track f.key) {
+                            <label class="popover-item search-filter-row">
+                                <input type="checkbox"
+                                       class="search-filter-check"
+                                       [checked]="search.fields().has(f.key)"
+                                       (change)="onFieldToggle(f.key, $event)" />
+                                <span>{{ f.label }}</span>
+                            </label>
+                        }
                     </div>
-                    @for (f of allFields; track f.key) {
-                        <label class="search-filter-row">
-                            <input type="checkbox"
-                                   [checked]="search.fields().has(f.key)"
-                                   (change)="onFieldToggle(f.key, $event)" />
-                            <span>{{ f.label }}</span>
-                        </label>
-                    }
-                </div>
-            }
+                }
+            </div>
         }
     </div>
     <button class="icon-btn" type="button">

@@ -80,6 +80,7 @@
     .crumbs .seg { color: var(--color-text-muted); }
     .crumbs .seg.last { color: var(--color-text-primary); font-weight: 600; }
     .search {
+        position: relative;
         margin-left: auto;
         min-width: 280px;
         display: flex; align-items: center; gap: 8px;
@@ -99,6 +100,81 @@
         border-radius: 3px;
         color: var(--color-text-secondary);
     }
+
+    /* Search input replaces the old placeholder <span>; visual chrome
+       (background, border, gap) comes from the parent .search. */
+    .search-input {
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+        border: 0;
+        outline: none;
+        padding: 0;
+        margin: 0;
+        height: auto;
+        color: var(--color-text-primary);
+        font: inherit;
+        font-size: 12px;
+    }
+    .search-input::placeholder {
+        color: var(--color-text-muted);
+    }
+    .search-input::-webkit-search-cancel-button {
+        appearance: none;
+        -webkit-appearance: none;
+    }
+
+    /* Field-selector pill inside the topbar search bar. Inherits the
+       .chip.solid base; this just shrinks padding and tightens spacing
+       so it fits inside the search row. */
+    .chip.search-filter-btn {
+        padding: 2px 7px;
+        gap: 4px;
+        font-size: 11px;
+        cursor: pointer;
+        color: var(--color-text-secondary);
+    }
+    .chip.search-filter-btn:hover { color: var(--color-text-primary); }
+    .chip.search-filter-btn.active {
+        border-color: var(--color-brand);
+        color: var(--color-text-primary);
+    }
+    .chip.search-filter-btn .mono { font-family: var(--font-mono); }
+
+    /* Anchor for the field-filter popover. Mirrors the
+       context-switcher's `position: relative` wrapper pattern. */
+    .search-filter-anchor { position: relative; display: inline-flex; }
+
+    /* Reuses .popover; only positioning + width are local. */
+    .popover.search-filter-popover {
+        top: calc(100% + 6px);
+        right: 0;
+        min-width: 220px;
+    }
+    .search-filter-head {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 4px 8px 2px;
+    }
+    .search-filter-reset {
+        background: none; border: 0; padding: 0;
+        color: var(--color-brand);
+        font-size: 11px; font-weight: 500;
+        cursor: pointer;
+    }
+    .search-filter-reset:hover { text-decoration: underline; }
+
+    /* Each row reuses .popover-item; adjustments for checkbox alignment. */
+    .popover-item.search-filter-row {
+        padding: 5px 8px;
+        font-size: 12.5px;
+        gap: 8px;
+    }
+    .search-filter-check {
+        margin: 0;
+        accent-color: var(--color-brand);
+        cursor: pointer;
+    }
+
     .icon-btn {
         width: 32px; height: 32px;
         border-radius: var(--radius-theme-md);

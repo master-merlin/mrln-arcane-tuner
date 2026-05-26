@@ -1,6 +1,7 @@
 import {
     ChangeDetectionStrategy,
     Component,
+    ElementRef,
     HostListener,
     computed,
     inject,
@@ -51,6 +52,7 @@ export class TopbarComponent {
     protected scope = inject(ScopeStore);
     protected projects = inject(ProjectService);
     protected search = inject(SearchStore);
+    private host = inject(ElementRef<HTMLElement>);
 
     protected fieldMenuOpen = signal(false);
 
@@ -130,20 +132,16 @@ export class TopbarComponent {
         this.fieldMenuOpen.update(v => !v);
     }
 
-    protected closeFieldMenu(): void {
-        if (this.fieldMenuOpen()) this.fieldMenuOpen.set(false);
-    }
-
-    @HostListener('document:click', ['$event'])
-    protected onDocumentClick(event: MouseEvent): void {
+    @HostListener('document:mousedown', ['$event'])
+    protected onOutsidePointer(event: MouseEvent): void {
         if (!this.fieldMenuOpen()) return;
-        const target = event.target as HTMLElement | null;
-        if (target?.closest('.search')) return;
-        this.fieldMenuOpen.set(false);
+        if (!this.host.nativeElement.contains(event.target as Node)) {
+            this.fieldMenuOpen.set(false);
+        }
     }
 
     @HostListener('document:keydown.escape')
     protected onEsc(): void {
-        this.closeFieldMenu();
+        if (this.fieldMenuOpen()) this.fieldMenuOpen.set(false);
     }
 }

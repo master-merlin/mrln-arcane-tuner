@@ -27,6 +27,23 @@ interface SimilarImagesData {
 }
 
 /**
+ * Inline SVG placeholder for the broken-thumbnail case. Mirrors the helper
+ * used in the Analyze modal so failed loads look intentional across the app.
+ */
+const THUMB_FALLBACK_DATA_URI =
+    'data:image/svg+xml;utf8,' +
+    encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" preserveAspectRatio="xMidYMid slice">
+            <rect width="160" height="90" fill="oklch(0.14 0.01 265)"/>
+            <g stroke="oklch(0.40 0.01 265)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(56 30)">
+                <rect x="0" y="0" width="48" height="32" rx="3"/>
+                <circle cx="14" cy="12" r="3"/>
+                <path d="M4 28 L18 17 L30 22 L44 12"/>
+            </g>
+        </svg>`,
+    );
+
+/**
  * Similar Images modal — visualizes a cluster of near-duplicates.
  *
  * Ports the workflow from the orphan
@@ -62,7 +79,10 @@ interface SimilarImagesData {
                     @for (it of items(); track it.path) {
                         <div class="si-card">
                             <div class="si-thumb-wrap">
-                                <img class="si-thumb" [src]="thumbUrl(it.path)" alt="">
+                                <img class="si-thumb"
+                                     [src]="thumbUrl(it.path)"
+                                     alt=""
+                                     (error)="onThumbError($event)">
 
                                 <div class="si-badges">
                                     @if (it.isOriginal) {
@@ -82,18 +102,20 @@ interface SimilarImagesData {
                                     }
                                 </div>
 
-                                <div class="si-foot">
-                                    <span class="mono si-path">{{ it.path }}</span>
-                                    @if (!it.isOriginal) {
-                                        <button class="icon-btn danger"
-                                                type="button"
-                                                [disabled]="deleting() === it.path"
-                                                (click)="deleteOne(it)"
-                                                title="Delete similar image">
-                                            <app-ico name="Trash2" [size]="12"/>
-                                        </button>
-                                    }
-                                </div>
+                                <!-- Filename anchored bottom-left in the shared filename-label
+                                     style; delete button is a separate bottom-right overlay so
+                                     the filename's vertical position is identical on every card,
+                                     regardless of whether the row also carries an action button. -->
+                                <span class="filename-label si-filename" [title]="it.path">{{ it.path }}</span>
+                                @if (!it.isOriginal) {
+                                    <button class="icon-btn si-delete"
+                                            type="button"
+                                            [disabled]="deleting() === it.path"
+                                            (click)="deleteOne(it)"
+                                            title="Delete similar image">
+                                        <app-ico name="Trash2" [size]="12"/>
+                                    </button>
+                                }
                             </div>
                         </div>
                     }
@@ -123,21 +145,29 @@ interface SimilarImagesData {
             border: 1px solid var(--color-border-subtle);
             box-shadow: var(--shadow-md);
         }
+        /* Square thumb area — uses the full 256×256 thumbnail space.
+           object-fit:contain so portraits and landscapes both render whole
+           without cropping (letterboxed on the short axis against the dark
+           surface). */
         .si-thumb-wrap {
             position: relative;
             width: 100%;
-            aspect-ratio: 16/9;
-            background: var(--color-surface-low);
+            aspect-ratio: 1 / 1;
+            background:
+                linear-gradient(135deg,
+                    oklch(0.12 0.01 265) 0%,
+                    oklch(0.16 0.01 265) 100%);
         }
         .si-thumb {
             width: 100%; height: 100%;
-            object-fit: cover;
+            object-fit: contain;
             display: block;
         }
 
         .si-badges {
             position: absolute; top: 10px; left: 10px;
             display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+            max-width: calc(100% - 20px);
         }
         .si-tag {
             padding: 2px 8px; border-radius: 3px;
@@ -151,19 +181,31 @@ interface SimilarImagesData {
         .si-tag.dark    { background: oklch(0.10 0.01 265 / 0.7); color: var(--color-text-secondary); font-weight: 600; }
         .si-tag.mono { font-family: var(--font-mono); }
 
-        .si-foot {
-            position: absolute; left: 0; right: 0; bottom: 0;
-            padding: 8px 12px;
-            background: linear-gradient(transparent, oklch(0.08 0.01 265 / 0.85));
-            display: flex; align-items: center; gap: 10px;
+        /* Filename label — anchored bottom-left so it's always at the same
+           y-coordinate, regardless of whether the card carries a delete button. */
+        .si-filename {
+            position: absolute;
+            left: 10px;
+            bottom: 10px;
+            max-width: calc(100% - 56px);
         }
-        .si-path {
-            font-size: 10.5px; color: var(--color-text-muted);
-            flex: 1;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        .si-delete {
+            position: absolute;
+            right: 10px;
+            bottom: 10px;
+            background: oklch(0.08 0.01 265 / 0.78);
+            backdrop-filter: blur(6px);
+            border: 1px solid oklch(0.70 0.17 25 / 0.4);
+            box-shadow: 0 2px 6px oklch(0 0 0 / 0.55);
+            color: var(--color-danger);
+            width: 28px; height: 28px;
+            border-radius: var(--radius-theme-md);
         }
-        .icon-btn.danger { color: var(--color-danger); }
-        .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .si-delete:hover {
+            background: oklch(0.70 0.17 25 / 0.25);
+            border-color: oklch(0.70 0.17 25 / 0.7);
+        }
+        .si-delete:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .si-foot { display: flex; align-items: center; gap: 10px; }
         .modal-foot .si-hint { margin-right: auto; font-size: 11.5px; color: var(--color-text-muted); }
@@ -195,8 +237,21 @@ export class SimilarImagesModalComponent implements OnInit {
     }
 
     protected thumbUrl(path: string): string {
+        // Use the API thumbnail endpoint instead of the static /media mount —
+        // /media only resolves for datasets stored under default_root, and
+        // encodeURIComponent on the path turns "/" into "%2F" which the static
+        // mount won't decode. The /thumbnail endpoint resolves dataset paths
+        // through dataset_manager.get_dataset so it works for every dataset.
         const name = this.data.datasetName ?? '';
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(name)}/${encodeURIComponent(path)}`;
+        return `${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/thumbnail?image_rel_path=${encodeURIComponent(path)}`;
+    }
+
+    /** Drop a placeholder in when /thumbnail returns 404 or the decode fails. */
+    protected onThumbError(event: Event): void {
+        const img = event.target as HTMLImageElement;
+        if (img.dataset['fallback'] === '1') return;
+        img.dataset['fallback'] = '1';
+        img.src = THUMB_FALLBACK_DATA_URI;
     }
 
     protected resCompare(it: SimilarItem): 'higher' | 'lower' | 'same' {

@@ -26,7 +26,7 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                                     [class.active]="active() === t.kind"
                                     [class.ai]="group.kind === 'ai'"
                                     (click)="active.set(t.kind)">
-                                <app-ico [name]="$any(t.icon)" [size]="11"/>
+                                <app-ico [name]="t.icon" [size]="11"/>
                                 <span>{{ t.label }}</span>
                             </button>
                         }

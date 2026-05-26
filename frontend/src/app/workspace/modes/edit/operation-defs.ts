@@ -5,6 +5,8 @@
  * [image-editor-modal.ts:960-962, 2078].
  */
 
+import { type IconKey } from '../../../icons/ico.component';
+
 export type OperationKind =
     | 'denoise'
     | 'face_restore'
@@ -27,7 +29,7 @@ export type TabGroup = 'adjust' | 'ai';
 export interface TabDef {
     kind: TabKind;
     label: string;
-    icon: string;       // @lucide/angular icon name
+    icon: IconKey;      // @lucide/angular icon name (type-safe)
     group: TabGroup;
 }
 

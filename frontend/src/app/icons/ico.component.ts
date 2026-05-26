@@ -16,7 +16,7 @@ import { LucideDynamicIcon, type LucideIcon, type LucideIconData, icons } from '
 
 // All exported names from `icons` start with `Lucide`. Strip that prefix
 // for the public API of this component so the call sites stay short.
-type IconKey = keyof typeof icons extends `Lucide${infer R}` ? R : never;
+export type IconKey = keyof typeof icons extends `Lucide${infer R}` ? R : never;
 
 @Component({
     selector: 'app-ico',

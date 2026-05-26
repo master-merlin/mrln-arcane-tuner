@@ -72,10 +72,30 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
                                 @defer { <app-modal-cache/> }
                             }
                             @case ('mass-caption') {
-                                @defer { <app-modal-mass-caption/> }
+                                @defer (on immediate) {
+                                    <app-modal-mass-caption/>
+                                } @loading {
+                                    <div class="modal-head">
+                                        <div>
+                                            <div class="eyebrow">MASS CAPTIONING</div>
+                                            <div class="modal-title">Loading…</div>
+                                        </div>
+                                    </div>
+                                    <div class="modal-body" style="color: var(--color-text-muted); padding: 40px; text-align: center; font-size: 13px;">Preparing captioning engine…</div>
+                                }
                             }
                             @case ('mass-mask') {
-                                @defer { <app-modal-mass-mask/> }
+                                @defer (on immediate) {
+                                    <app-modal-mass-mask/>
+                                } @loading {
+                                    <div class="modal-head">
+                                        <div>
+                                            <div class="eyebrow">MASS MASKING</div>
+                                            <div class="modal-title">Loading…</div>
+                                        </div>
+                                    </div>
+                                    <div class="modal-body" style="color: var(--color-text-muted); padding: 40px; text-align: center; font-size: 13px;">Preparing segmentation engine…</div>
+                                }
                             }
                             @case ('mass-edit') {
                                 @defer (on immediate) { <app-modal-mass-edit/> }

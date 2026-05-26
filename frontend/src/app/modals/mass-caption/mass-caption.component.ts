@@ -13,31 +13,32 @@ import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
+import {
+    DatasetCaptionSettingsComponent,
+    CaptionSettingsState,
+} from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
 
 interface MassCaptionModalData {
     datasetId?: string;
     datasetName?: string;
+    /** Optional initial target — 'masked' captions go to masked_captions/. */
+    initialTarget?: 'original' | 'masked';
 }
 
 type CaptionStrategy = 'keep' | 'overwrite';
 
 /**
- * Mass Captioning modal.
- *
- * Ports the workflow from the orphan
- * [viewer-mass-caption-modal](../../components/dataset/dataset-viewer/components/viewer-mass-caption-modal.ts)
- * into the new design shell from `modals.jsx → MassCaptionModal`. The
- * orphan modal depended on a parent's `pairs` input + a Settings child
- * (`app-dataset-caption-settings`); to keep this modal self-contained we
- * fetch the dataset's pairs on init and ship a minimal inline settings
- * block — model, task, system prompt, max-tokens — matching the design
- * source. Advanced template management is deferred to a future PR
- * (TODO(frontend)) since it requires a separate templates service.
+ * Mass Captioning modal — drives a recursive HTTP queue over the active
+ * dataset's pairs. Delegates the AI knobs (model picker, params, system
+ * prompt, template management) to the shared
+ * `<app-dataset-caption-settings>` component — the new design shell wraps
+ * it, but the controls themselves are identical to the legacy modal so
+ * keyboard / template muscle memory transfers.
  */
 @Component({
     selector: 'app-modal-mass-caption',
     standalone: true,
-    imports: [FormsModule, IcoComponent],
+    imports: [FormsModule, IcoComponent, DatasetCaptionSettingsComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -58,7 +59,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
                 <div class="mc-progress">
                     <div class="mc-progress-head">
                         <div>
-                            <div class="eyebrow brand">NEURAL PROCESSING</div>
+                            <div class="eyebrow brand">{{ progress().current === 0 ? 'LOADING MODEL…' : 'NEURAL PROCESSING' }}</div>
                             <div class="mc-progress-pct">{{ pct() }}%</div>
                         </div>
                         <div class="mc-progress-queue">
@@ -106,45 +107,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
                         <span class="eyebrow">NEURAL ARCHITECTURE</span>
                     </div>
                     <div class="mc-settings">
-                        <div class="mc-grid">
-                            <div>
-                                <label class="field-label">Caption model</label>
-                                <input class="input mono" [(ngModel)]="modelId" placeholder="e.g. florence-2">
-                            </div>
-                            <div>
-                                <label class="field-label">Task</label>
-                                <input class="input mono" [(ngModel)]="task" placeholder="detailed">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="field-label">System prompt</label>
-                            <textarea class="input"
-                                      rows="3"
-                                      [(ngModel)]="systemPrompt"></textarea>
-                        </div>
-                        <div class="mc-grid-3">
-                            <div>
-                                <div class="mc-slider-head">
-                                    <span class="field-label">Max tokens</span>
-                                    <span class="mono muted">{{ maxTokens() }}</span>
-                                </div>
-                                <input type="range" min="64" max="2048" step="1" [(ngModel)]="maxTokens" class="mc-range">
-                            </div>
-                            <div>
-                                <div class="mc-slider-head">
-                                    <span class="field-label">Beams</span>
-                                    <span class="mono muted">{{ beams() }}</span>
-                                </div>
-                                <input type="range" min="1" max="10" step="1" [(ngModel)]="beams" class="mc-range">
-                            </div>
-                            <div>
-                                <div class="mc-slider-head">
-                                    <span class="field-label">Repetition</span>
-                                    <span class="mono muted">{{ (repetition() / 100).toFixed(2) }}</span>
-                                </div>
-                                <input type="range" min="100" max="200" step="1" [(ngModel)]="repetition" class="mc-range">
-                            </div>
-                        </div>
+                        <app-dataset-caption-settings (settingsChanged)="onSettingsChange($event)"/>
                     </div>
                 </section>
             }
@@ -153,8 +116,11 @@ type CaptionStrategy = 'keep' | 'overwrite';
         @if (data.datasetName && !running()) {
             <div class="modal-foot mc-foot">
                 <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
-                <button class="btn cta" type="button" (click)="start()">
-                    <app-ico name="Play" [size]="12"/> Execute Mass Captioning
+                <button class="btn cta" type="button"
+                        [disabled]="!currentSettings"
+                        (click)="start()">
+                    <app-ico name="Play" [size]="12"/>
+                    {{ target() === 'masked' ? 'Caption Masked Images' : 'Execute Mass Captioning' }}
                 </button>
             </div>
         }
@@ -211,13 +177,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
             border: 1px solid var(--color-border-default);
             border-radius: var(--radius-theme-2xl);
             padding: 16px;
-            display: flex; flex-direction: column; gap: 12px;
         }
-        .mc-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; }
-        .mc-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-        .mc-slider-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-        .mc-range { width: 100%; accent-color: var(--color-brand); }
-        .muted { color: var(--color-text-muted); }
 
         .mc-progress {
             padding: 20px 22px;
@@ -261,7 +221,9 @@ type CaptionStrategy = 'keep' | 'overwrite';
             letter-spacing: 0.10em;
             padding: 10px 18px;
             border-radius: var(--radius-theme-xl);
+            cursor: pointer; border: none;
         }
+        .btn.cta:disabled { opacity: 0.45; cursor: not-allowed; }
         .btn.danger-out {
             display: inline-flex; align-items: center; gap: 8px;
             color: var(--color-danger);
@@ -270,6 +232,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
             padding: 12px 16px;
             border-radius: var(--radius-theme-xl);
             font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+            cursor: pointer;
         }
     `],
 })
@@ -281,12 +244,12 @@ export class MassCaptionModalComponent implements OnInit {
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
     protected strategy = signal<CaptionStrategy>('keep');
-    protected modelId = signal<string>('florence-2');
-    protected task = signal<string>('detailed');
-    protected systemPrompt = signal<string>('Describe this image in detail.');
-    protected maxTokens = signal<number>(512);
-    protected beams = signal<number>(3);
-    protected repetition = signal<number>(110);
+    protected target = signal<'original' | 'masked'>('original');
+
+    /** Latest snapshot from the shared caption-settings component. Null
+     *  until the child emits its first `settingsChanged` (which fires on
+     *  init), so the CTA disables in the meantime. */
+    protected currentSettings: CaptionSettingsState | null = null;
 
     protected running = signal<boolean>(false);
     protected pairs = signal<any[]>([]);
@@ -300,16 +263,13 @@ export class MassCaptionModalComponent implements OnInit {
     });
 
     constructor() {
-        // Stop the recursive setTimeout queue if the modal is destroyed
-        // mid-run (e.g. the user clicked the × button). Without this, the
-        // queue keeps firing HTTP calls and toasts after the component is
-        // gone. `processQueue` already checks `running()` before each
-        // iteration, so flipping the flag is enough to abort cleanly.
+        // Abort the recursive queue if the modal closes mid-run.
         const destroyRef = inject(DestroyRef);
         destroyRef.onDestroy(() => this.running.set(false));
     }
 
     ngOnInit(): void {
+        if (this.data.initialTarget) this.target.set(this.data.initialTarget);
         if (!this.data.datasetName) return;
         void this.loadPairs(this.data.datasetName);
     }
@@ -323,19 +283,32 @@ export class MassCaptionModalComponent implements OnInit {
         }
     }
 
+    protected onSettingsChange(state: CaptionSettingsState): void {
+        this.currentSettings = state;
+    }
+
     protected start(): void {
         const name = this.data.datasetName;
-        if (!name) return;
+        if (!name || !this.currentSettings) return;
         const all = this.pairs();
-        const candidates = this.strategy() === 'keep'
-            ? all.filter(p => !p.caption_content?.trim())
-            : [...all];
+        const target = this.target();
+        const mode = this.strategy();
+
+        const candidates = target === 'masked'
+            ? (mode === 'keep'
+                ? all.filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
+                : all.filter(p => p.metadata?.has_mask))
+            : (mode === 'keep'
+                ? all.filter(p => !p.caption_content?.trim())
+                : [...all]);
 
         if (candidates.length === 0) {
-            this.toast.info('No images need captioning.');
+            this.toast.info(target === 'masked'
+                ? 'No masked images need captioning.'
+                : 'No images need captioning.');
             return;
         }
-        if (!confirm(`Start captioning ${candidates.length} images?`)) return;
+        if (!confirm(`Start captioning ${candidates.length} ${target} images?`)) return;
 
         this.running.set(true);
         this.progress.set({ current: 0, total: candidates.length, currentFile: '' });
@@ -343,7 +316,7 @@ export class MassCaptionModalComponent implements OnInit {
     }
 
     private processQueue(queue: any[], idx: number): void {
-        if (!this.running() || idx >= queue.length) {
+        if (!this.running() || idx >= queue.length || !this.currentSettings) {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Mass captioning complete — ${queue.length} images processed.`);
@@ -353,31 +326,31 @@ export class MassCaptionModalComponent implements OnInit {
 
         const name = this.data.datasetName!;
         const pair = queue[idx];
+        const settings = this.currentSettings;
+        const target = this.target();
         this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
-
-        const params = {
-            task: this.task(),
-            max_tokens: this.maxTokens(),
-            num_beams: this.beams(),
-            repetition_penalty: this.repetition() / 100,
-        };
 
         this.datasetsApi.generateCaption(
             name,
             pair.media_file,
-            this.modelId(),
-            params,
-            this.systemPrompt(),
-            'original',
+            settings.resolvedModelId,
+            settings.params,
+            settings.systemPrompt,
+            target,
         ).subscribe({
             next: (res: any) => {
-                const fname = pair.caption_file
-                    || pair.media_file.substring(0, pair.media_file.lastIndexOf('.')) + '.txt';
-                this.datasetsApi.saveCaption(name, fname, res.caption).subscribe(() => {
-                    pair.caption_file = fname;
-                    pair.caption_content = res.caption;
+                if (target === 'original') {
+                    const fname = pair.caption_file
+                        || pair.media_file.substring(0, pair.media_file.lastIndexOf('.')) + '.txt';
+                    this.datasetsApi.saveCaption(name, fname, res.caption).subscribe(() => {
+                        pair.caption_file = fname;
+                        pair.caption_content = res.caption;
+                        setTimeout(() => this.processQueue(queue, idx + 1), 100);
+                    });
+                } else {
+                    // Backend auto-saves masked-target captions to masked_captions/.
                     setTimeout(() => this.processQueue(queue, idx + 1), 100);
-                });
+                }
             },
             error: () => this.processQueue(queue, idx + 1),
         });

@@ -13,6 +13,14 @@ import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
+import {
+    DatasetMaskingSettingsComponent,
+    MaskingSettingsState,
+} from '../../components/dataset/dataset-masking-settings/dataset-masking-settings';
+import {
+    DatasetCaptionSettingsComponent,
+    CaptionSettingsState,
+} from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
 
 interface MassMaskModalData {
     datasetId?: string;
@@ -23,19 +31,23 @@ type Tab = 'generate' | 'apply' | 'caption';
 type Strategy = 'keep' | 'overwrite';
 
 /**
- * Mass Masking modal — three sub-tabs (Generate / Apply / Caption).
+ * Mass Masking modal — three tabs (Generate / Apply / Caption).
  *
- * Ports the workflow from the orphan
- * [viewer-mass-masking-modal](../../components/dataset/dataset-viewer/components/viewer-mass-masking-modal.ts)
- * and the design shell from `modals.jsx → MassMaskModal`. Detailed masking
- * parameter UI (advanced SAM template editor) is simplified for this PR —
- * we expose the load-bearing knobs (method, concept prompt, dilate) and
- * defer the rest to a TODO(frontend).
+ * The AI configuration UIs are delegated to the shared
+ * `<app-dataset-masking-settings>` and `<app-dataset-caption-settings>`
+ * components — identical controls to the legacy modal so template /
+ * preset behaviour is preserved. The new design only re-skins the
+ * outer shell (eyebrows, strategy cards, progress panel, CTA).
  */
 @Component({
     selector: 'app-modal-mass-mask',
     standalone: true,
-    imports: [FormsModule, IcoComponent],
+    imports: [
+        FormsModule,
+        IcoComponent,
+        DatasetMaskingSettingsComponent,
+        DatasetCaptionSettingsComponent,
+    ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head success-accent">
@@ -99,12 +111,14 @@ type Strategy = 'keep' | 'overwrite';
                             <button type="button" class="mm-choice"
                                     [class.active]="strategy() === 'keep'"
                                     (click)="strategy.set('keep')">
+                                @if (strategy() === 'keep') { <span class="mm-choice-dot"></span> }
                                 <div class="mm-choice-title">Incremental</div>
                                 <div class="mm-choice-desc">Only mask images without a mask file. Existing masks are preserved.</div>
                             </button>
                             <button type="button" class="mm-choice"
                                     [class.active]="strategy() === 'overwrite'"
                                     (click)="strategy.set('overwrite')">
+                                @if (strategy() === 'overwrite') { <span class="mm-choice-dot"></span> }
                                 <div class="mm-choice-title">Destructive</div>
                                 <div class="mm-choice-desc">Remask everything. Previous mask files will be replaced.</div>
                             </button>
@@ -114,46 +128,64 @@ type Strategy = 'keep' | 'overwrite';
                     <section class="mm-section">
                         <div class="mm-section-head">
                             <span class="mm-section-bar"></span>
-                            <span class="eyebrow">SEGMENTATION ENGINE</span>
+                            <span class="eyebrow">SEGMENTATION MODEL</span>
                         </div>
                         <div class="mm-settings">
-                            <div class="mm-grid">
-                                <div>
-                                    <label class="field-label">Method</label>
-                                    <input class="input mono" [(ngModel)]="modelId" placeholder="sam3">
-                                </div>
-                                <div>
-                                    <label class="field-label">Concept prompt</label>
-                                    <input class="input mono" [(ngModel)]="conceptPrompt" placeholder="subject">
-                                </div>
-                            </div>
-                            <div>
-                                <div class="mm-slider-head">
-                                    <span class="field-label">Dilate / shrink</span>
-                                    <span class="mono muted">{{ dilate() >= 0 ? '+' : '' }}{{ dilate() }} px</span>
-                                </div>
-                                <input type="range" min="-20" max="20" [(ngModel)]="dilate" class="mm-range">
-                            </div>
+                            <app-dataset-masking-settings (settingsChanged)="onMaskingSettingsChange($event)"/>
                         </div>
                     </section>
                 } @else if (tab() === 'apply') {
+                    @if (applyWarnings().length > 0) {
+                        <div class="mm-warning">
+                            <app-ico name="TriangleAlert" [size]="14"/>
+                            <div>
+                                @for (w of applyWarnings(); track w) {
+                                    <p>{{ w }}</p>
+                                }
+                            </div>
+                        </div>
+                    }
+
                     <section class="mm-section">
                         <div class="mm-section-head">
                             <span class="mm-section-bar"></span>
-                            <span class="eyebrow">APPLY SAVED MASKS</span>
+                            <span class="eyebrow">APPLY STRATEGY</span>
+                        </div>
+                        <div class="mm-choices">
+                            <button type="button" class="mm-choice"
+                                    [class.active]="!applyOverwrite()"
+                                    (click)="applyOverwrite.set(false)">
+                                @if (!applyOverwrite()) { <span class="mm-choice-dot"></span> }
+                                <div class="mm-choice-title">Incremental</div>
+                                <div class="mm-choice-desc">Skip images that already have a masked version.</div>
+                            </button>
+                            <button type="button" class="mm-choice"
+                                    [class.active]="applyOverwrite()"
+                                    (click)="applyOverwrite.set(true)">
+                                @if (applyOverwrite()) { <span class="mm-choice-dot"></span> }
+                                <div class="mm-choice-title">Regenerate</div>
+                                <div class="mm-choice-desc">Re-apply masks to all images, replacing existing outputs.</div>
+                            </button>
+                        </div>
+                    </section>
+
+                    <section class="mm-section">
+                        <div class="mm-section-head">
+                            <span class="mm-section-bar"></span>
+                            <span class="eyebrow">BACKGROUND OPACITY</span>
                         </div>
                         <div class="mm-settings">
                             <div>
                                 <div class="mm-slider-head">
-                                    <span class="field-label">Background opacity</span>
-                                    <span class="mono muted">{{ (applyOpacity() * 100).toFixed(0) }}%</span>
+                                    <span class="field-label">Opacity</span>
+                                    <span class="mono">{{ (applyOpacity() * 100).toFixed(0) }}%</span>
                                 </div>
-                                <input type="range" min="0" max="1" step="0.05" [(ngModel)]="applyOpacity" class="mm-range">
+                                <input type="range" min="0" max="1" step="0.01"
+                                       [value]="applyOpacity()"
+                                       (input)="applyOpacity.set(+$any($event.target).value)"
+                                       class="mm-range">
+                                <p class="mm-hint">0% = black background (subject only) · 100% = fully visible background</p>
                             </div>
-                            <label class="mm-check">
-                                <input type="checkbox" [(ngModel)]="applyOverwrite">
-                                Overwrite existing masked outputs
-                            </label>
                         </div>
                     </section>
 
@@ -166,37 +198,33 @@ type Strategy = 'keep' | 'overwrite';
                     <section class="mm-section">
                         <div class="mm-section-head">
                             <span class="mm-section-bar"></span>
-                            <span class="eyebrow">CAPTION MASKED REGIONS</span>
+                            <span class="eyebrow">CAPTION STRATEGY</span>
                         </div>
                         <div class="mm-choices">
                             <button type="button" class="mm-choice"
                                     [class.active]="captionStrategy() === 'keep'"
                                     (click)="captionStrategy.set('keep')">
+                                @if (captionStrategy() === 'keep') { <span class="mm-choice-dot"></span> }
                                 <div class="mm-choice-title">Incremental</div>
-                                <div class="mm-choice-desc">Only caption masked images without a caption yet.</div>
+                                <div class="mm-choice-desc">Only caption masked images without an existing masked caption.</div>
                             </button>
                             <button type="button" class="mm-choice"
                                     [class.active]="captionStrategy() === 'overwrite'"
                                     (click)="captionStrategy.set('overwrite')">
+                                @if (captionStrategy() === 'overwrite') { <span class="mm-choice-dot"></span> }
                                 <div class="mm-choice-title">Destructive</div>
-                                <div class="mm-choice-desc">Recaption every masked image.</div>
+                                <div class="mm-choice-desc">Recaption all masked images, replacing existing captions.</div>
                             </button>
                         </div>
+                    </section>
+
+                    <section class="mm-section">
+                        <div class="mm-section-head">
+                            <span class="mm-section-bar"></span>
+                            <span class="eyebrow">NEURAL ARCHITECTURE</span>
+                        </div>
                         <div class="mm-settings">
-                            <div class="mm-grid">
-                                <div>
-                                    <label class="field-label">Caption model</label>
-                                    <input class="input mono" [(ngModel)]="captionModelId" placeholder="florence-2">
-                                </div>
-                                <div>
-                                    <label class="field-label">Task</label>
-                                    <input class="input mono" [(ngModel)]="captionTask" placeholder="detailed">
-                                </div>
-                            </div>
-                            <div>
-                                <label class="field-label">System prompt</label>
-                                <textarea class="input" rows="2" [(ngModel)]="captionPrompt"></textarea>
-                            </div>
+                            <app-dataset-caption-settings (settingsChanged)="onCaptionSettingsChange($event)"/>
                         </div>
                     </section>
                 }
@@ -205,7 +233,9 @@ type Strategy = 'keep' | 'overwrite';
             @if (!running()) {
                 <div class="modal-foot mm-foot">
                     <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
-                    <button class="btn cta success" type="button" (click)="start()">
+                    <button class="btn cta success" type="button"
+                            [disabled]="!canStart()"
+                            (click)="start()">
                         <app-ico name="Play" [size]="12"/> {{ ctaLabel() }}
                     </button>
                 </div>
@@ -231,9 +261,11 @@ type Strategy = 'keep' | 'overwrite';
             font-size: 11.5px; font-weight: 700; letter-spacing: 0.12em;
             text-transform: uppercase;
             color: var(--color-text-subtle);
+            border: none;
             border-bottom: 2px solid transparent;
             margin-bottom: -1px;
             background: transparent;
+            cursor: pointer;
         }
         .mm-tab.active {
             color: var(--color-text-primary);
@@ -255,17 +287,24 @@ type Strategy = 'keep' | 'overwrite';
 
         .mm-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .mm-choice {
+            position: relative;
             text-align: left;
             padding: 14px 16px;
             background: var(--color-surface-mid);
             border: 1px solid var(--color-border-default);
             border-radius: var(--radius-theme-2xl);
             cursor: pointer;
+            transition: border-color 120ms;
         }
         .mm-choice:hover { border-color: var(--color-success); }
         .mm-choice.active {
             border-color: var(--color-success);
             background: color-mix(in oklab, var(--color-success) 8%, var(--color-surface-mid));
+        }
+        .mm-choice-dot {
+            position: absolute; top: 10px; right: 10px;
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--color-success);
         }
         .mm-choice-title {
             font-size: 13.5px; font-weight: 700; font-style: italic;
@@ -280,11 +319,30 @@ type Strategy = 'keep' | 'overwrite';
             padding: 16px;
             display: flex; flex-direction: column; gap: 12px;
         }
-        .mm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        /* Re-tint range sliders and checkboxes inside the embedded
+           <app-dataset-masking-settings> so they match this modal's
+           success/green accent. ::ng-deep pierces the shared component's
+           emulated encapsulation; targeting form controls only leaves
+           the brand-coloured "+" template button alone. Checkboxes are
+           styled with appearance:none + explicit background-color in
+           the global styles.css, so accent-color alone is ignored —
+           the checked/hover/focus colours have to be overridden directly. */
+        .mm-settings ::ng-deep input[type="range"] {
+            accent-color: var(--color-success) !important;
+        }
+        .mm-settings ::ng-deep input[type="checkbox"]:checked {
+            background-color: var(--color-success) !important;
+            border-color: var(--color-success) !important;
+        }
+        .mm-settings ::ng-deep input[type="checkbox"]:hover {
+            border-color: var(--color-success) !important;
+        }
+        .mm-settings ::ng-deep input[type="checkbox"]:focus-visible {
+            outline-color: var(--color-success) !important;
+        }
         .mm-slider-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
         .mm-range { width: 100%; accent-color: var(--color-success); }
-        .muted { color: var(--color-text-muted); }
-        .mm-check { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+        .mm-hint { font-size: 10px; color: var(--color-text-subtle); margin-top: 6px; }
 
         .mm-info {
             padding: 12px 14px;
@@ -295,6 +353,17 @@ type Strategy = 'keep' | 'overwrite';
             font-size: 11.5px; color: var(--color-text-secondary); line-height: 1.55;
         }
         .mm-info app-ico { color: var(--color-chart-lr); margin-top: 1px; flex-shrink: 0; }
+
+        .mm-warning {
+            padding: 12px 14px;
+            background: color-mix(in oklab, var(--color-warning) 10%, transparent);
+            border: 1px solid color-mix(in oklab, var(--color-warning) 30%, transparent);
+            border-radius: var(--radius-theme-md);
+            display: flex; align-items: flex-start; gap: 10px;
+            font-size: 11.5px; color: var(--color-warning); line-height: 1.55;
+        }
+        .mm-warning app-ico { margin-top: 1px; flex-shrink: 0; }
+        .mm-warning p { margin: 0; }
 
         .mm-progress {
             padding: 20px 22px;
@@ -337,7 +406,9 @@ type Strategy = 'keep' | 'overwrite';
             letter-spacing: 0.10em;
             padding: 10px 18px;
             border-radius: var(--radius-theme-xl);
+            cursor: pointer; border: none;
         }
+        .btn.cta.success:disabled { opacity: 0.45; cursor: not-allowed; }
         .btn.danger-out {
             display: inline-flex; align-items: center; gap: 8px;
             color: var(--color-danger);
@@ -346,6 +417,7 @@ type Strategy = 'keep' | 'overwrite';
             padding: 12px 16px;
             border-radius: var(--radius-theme-xl);
             font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+            cursor: pointer;
         }
     `],
 })
@@ -364,19 +436,21 @@ export class MassMaskModalComponent implements OnInit {
 
     protected tab = signal<Tab>('generate');
     protected strategy = signal<Strategy>('keep');
-    protected modelId = signal<string>('sam3');
-    protected conceptPrompt = signal<string>('subject');
-    protected dilate = signal<number>(2);
+
+    /** Latest snapshot from the shared masking-settings component. */
+    protected maskingSettings: MaskingSettingsState | null = null;
 
     // Apply tab
     protected applyOpacity = signal<number>(0);
     protected applyOverwrite = signal<boolean>(false);
+    /** Server-emitted warnings from the most recent mass-apply call
+     *  (e.g. partial coverage, missing masks). Surfaced as a banner. */
+    protected applyWarnings = signal<string[]>([]);
 
     // Caption tab
     protected captionStrategy = signal<Strategy>('keep');
-    protected captionModelId = signal<string>('florence-2');
-    protected captionTask = signal<string>('detailed');
-    protected captionPrompt = signal<string>('Describe the masked subject in detail.');
+    /** Latest snapshot from the shared caption-settings component. */
+    protected captionSettings: CaptionSettingsState | null = null;
 
     protected pairs = signal<any[]>([]);
     protected running = signal<boolean>(false);
@@ -407,12 +481,19 @@ export class MassMaskModalComponent implements OnInit {
         }
     });
 
+    /** Enable the CTA only when the active tab has the inputs it needs. */
+    protected canStart = computed<boolean>(() => {
+        switch (this.tab()) {
+            case 'generate': return !!this.maskingSettings;
+            case 'apply':    return this.maskedCount() > 0;
+            case 'caption':  return !!this.captionSettings;
+        }
+    });
+
     constructor() {
-        // Stop the recursive setTimeout queues (mask generate + masked
-        // captioning) if the modal is destroyed mid-run. Each queue checks
-        // `running()` before its next iteration, so flipping the flag on
-        // teardown aborts cleanly. The Apply tab is a single HTTP call and
-        // does not need this guard, but the flag reset is harmless there.
+        // Abort any in-flight recursive queue (generate, masked-caption) if
+        // the modal closes mid-run. Apply is a single HTTP call and ignores
+        // this, but the flag reset is harmless.
         const destroyRef = inject(DestroyRef);
         destroyRef.onDestroy(() => this.running.set(false));
     }
@@ -431,6 +512,14 @@ export class MassMaskModalComponent implements OnInit {
         }
     }
 
+    protected onMaskingSettingsChange(state: MaskingSettingsState): void {
+        this.maskingSettings = state;
+    }
+
+    protected onCaptionSettingsChange(state: CaptionSettingsState): void {
+        this.captionSettings = state;
+    }
+
     protected start(): void {
         switch (this.tab()) {
             case 'generate': this.startGenerate(); break;
@@ -446,7 +535,7 @@ export class MassMaskModalComponent implements OnInit {
     // ── Generate ───────────────────────────────────────────────
     private startGenerate(): void {
         const name = this.data.datasetName;
-        if (!name) return;
+        if (!name || !this.maskingSettings) return;
         const mode = this.strategy();
         const candidates = mode === 'keep'
             ? this.pairs().filter(p => !p.metadata?.has_mask)
@@ -464,7 +553,7 @@ export class MassMaskModalComponent implements OnInit {
     }
 
     private processMaskQueue(queue: any[], idx: number): void {
-        if (!this.running() || idx >= queue.length) {
+        if (!this.running() || idx >= queue.length || !this.maskingSettings) {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Mass masking complete — ${queue.length} images processed.`);
@@ -473,13 +562,11 @@ export class MassMaskModalComponent implements OnInit {
         }
         const name = this.data.datasetName!;
         const pair = queue[idx];
+        const settings = this.maskingSettings;
         this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
 
-        this.datasetsApi.generateMask(name, pair.media_file, this.modelId(), {
-            concept_prompt: this.conceptPrompt(),
-            dilate: this.dilate(),
-        }).subscribe({
-            next: () => setTimeout(() => this.processMaskQueue(queue, idx + 1), 80),
+        this.datasetsApi.generateMask(name, pair.media_file, settings.modelId, settings.params).subscribe({
+            next: () => setTimeout(() => this.processMaskQueue(queue, idx + 1), 100),
             error: () => this.processMaskQueue(queue, idx + 1),
         });
     }
@@ -493,15 +580,19 @@ export class MassMaskModalComponent implements OnInit {
             this.toast.warning('No masks found. Generate masks first.');
             return;
         }
-        if (!confirm(`Apply masks to ${maskCount} images?`)) return;
+        if (!confirm(`Apply masks to ${maskCount} images with ${(this.applyOpacity() * 100).toFixed(0)}% background opacity?`)) return;
 
+        this.applyWarnings.set([]);
         this.running.set(true);
         this.progress.set({ current: 0, total: maskCount, currentFile: 'batch apply' });
 
         this.datasetsApi.massApplyMasks(name, this.applyOpacity(), this.applyOverwrite()).subscribe({
             next: (res: any) => {
                 this.running.set(false);
-                this.toast.success(`Applied masks to ${res.applied ?? maskCount} images.`);
+                if (Array.isArray(res?.warnings)) this.applyWarnings.set(res.warnings);
+                const applied = res?.applied ?? maskCount;
+                const skipped = res?.skipped ?? 0;
+                this.toast.success(`Applied masks to ${applied} images (${skipped} skipped).`);
             },
             error: (err: any) => {
                 this.running.set(false);
@@ -513,14 +604,14 @@ export class MassMaskModalComponent implements OnInit {
     // ── Caption (masked) ───────────────────────────────────────
     private startCaption(): void {
         const name = this.data.datasetName;
-        if (!name) return;
+        if (!name || !this.captionSettings) return;
         const mode = this.captionStrategy();
         const candidates = mode === 'keep'
             ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
             : this.pairs().filter(p => p.metadata?.has_mask);
 
         if (candidates.length === 0) {
-            this.toast.info('No masked images need captioning.');
+            this.toast.info('No masked images need captioning. Generate and apply masks first.');
             return;
         }
         if (!confirm(`Start captioning ${candidates.length} masked images?`)) return;
@@ -531,7 +622,7 @@ export class MassMaskModalComponent implements OnInit {
     }
 
     private processCaptionQueue(queue: any[], idx: number): void {
-        if (!this.running() || idx >= queue.length) {
+        if (!this.running() || idx >= queue.length || !this.captionSettings) {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Masked captioning complete — ${queue.length} processed.`);
@@ -540,14 +631,13 @@ export class MassMaskModalComponent implements OnInit {
         }
         const name = this.data.datasetName!;
         const pair = queue[idx];
+        const settings = this.captionSettings;
         this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
 
         this.datasetsApi.generateCaption(
             name, pair.media_file,
-            this.captionModelId(),
-            { task: this.captionTask() },
-            this.captionPrompt(),
-            'masked',
+            settings.resolvedModelId, settings.params,
+            settings.systemPrompt, 'masked',
         ).subscribe({
             next: () => setTimeout(() => this.processCaptionQueue(queue, idx + 1), 100),
             error: () => this.processCaptionQueue(queue, idx + 1),

@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, inject, input } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
+import { HistogramPanelComponent } from './histogram-panel.component';
 
 @Component({
     selector: 'app-edit-right-panel',
     standalone: true,
-    imports: [IcoComponent],
+    imports: [IcoComponent, HistogramPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <section class="section histogram">
@@ -15,8 +16,9 @@ import { PipelineEditorState } from '../pipeline-editor.state';
                 <span class="mono mute">RGB</span>
             </div>
             <div class="section-body histogram-body">
-                <!-- HistogramPanel mounts here in Task 13. -->
-                <div class="placeholder">Histogram — Task 13</div>
+                <app-histogram-panel
+                    [datasetName]="datasetName()"
+                    [mediaFile]="mediaFile()"/>
             </div>
         </section>
 

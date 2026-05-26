@@ -41,7 +41,8 @@ import { PipelineEditorState } from '../pipeline-editor.state';
                     <div class="ab-divider"
                          (pointerdown)="onSplitPointerDown($event)"
                          (pointermove)="onSplitPointerMove($event)"
-                         (pointerup)="onSplitPointerUp($event)">
+                         (pointerup)="onSplitPointerUp($event)"
+                         (pointercancel)="onSplitPointerCancel($event)">
                         <div class="ab-handle">↔</div>
                     </div>
                 }
@@ -170,19 +171,22 @@ export class EditCanvasComponent {
     protected compareOn = signal<boolean>(false);
     protected splitPercent = signal<number>(50);
     private dragging = signal<boolean>(false);
+    private dragPointerId: number | null = null;
     private stageRef = viewChild<ElementRef<HTMLElement>>('stage');
 
     toggleCompare(): void { this.compareOn.update(v => !v); }
 
     onSplitPointerDown(e: PointerEvent): void {
         if (!this.compareOn()) return;
+        if (this.dragging()) return;  // already tracking another pointer
         (e.target as Element).setPointerCapture(e.pointerId);
+        this.dragPointerId = e.pointerId;
         this.dragging.set(true);
         e.preventDefault();
     }
 
     onSplitPointerMove(e: PointerEvent): void {
-        if (!this.dragging()) return;
+        if (!this.dragging() || e.pointerId !== this.dragPointerId) return;
         const stage = this.stageRef()?.nativeElement;
         if (!stage) return;
         const rect = stage.getBoundingClientRect();
@@ -191,7 +195,18 @@ export class EditCanvasComponent {
     }
 
     onSplitPointerUp(e: PointerEvent): void {
+        if (e.pointerId !== this.dragPointerId) return;
+        this.endDrag(e);
+    }
+
+    onSplitPointerCancel(e: PointerEvent): void {
+        if (e.pointerId !== this.dragPointerId) return;
+        this.endDrag(e);
+    }
+
+    private endDrag(e: PointerEvent): void {
         this.dragging.set(false);
+        this.dragPointerId = null;
         (e.target as Element).releasePointerCapture?.(e.pointerId);
     }
 

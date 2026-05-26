@@ -14,8 +14,39 @@
 
     <div class="search" style="margin-left: auto;">
         <app-ico name="Search" [size]="13" />
-        <span style="flex: 1;">Search datasets, captions, jobs…</span>
-        <span class="kbd">&#8984;K</span>
+        <input
+            class="search-input"
+            type="search"
+            [placeholder]="searchPlaceholder()"
+            [value]="search.query()"
+            (input)="onSearchInput($event)"
+        />
+        @if (onDatasetsRoute()) {
+            <button class="search-filter-btn" type="button"
+                    (click)="toggleFieldMenu()"
+                    [class.active]="fieldMenuOpen()"
+                    [title]="fieldButtonTitle()">
+                <app-ico name="SlidersHorizontal" [size]="12" />
+                <span class="mono">{{ search.fields().size }}/{{ totalFields }}</span>
+                <app-ico name="ChevronDown" [size]="10" />
+            </button>
+            @if (fieldMenuOpen()) {
+                <div class="search-filter-popover" (click)="$event.stopPropagation()">
+                    <div class="search-filter-head">
+                        <span>Search in</span>
+                        <button type="button" class="link-btn" (click)="search.resetFields()">Reset</button>
+                    </div>
+                    @for (f of allFields; track f.key) {
+                        <label class="search-filter-row">
+                            <input type="checkbox"
+                                   [checked]="search.fields().has(f.key)"
+                                   (change)="onFieldToggle(f.key, $event)" />
+                            <span>{{ f.label }}</span>
+                        </label>
+                    }
+                </div>
+            }
+        }
     </div>
     <button class="icon-btn" type="button">
         <app-ico name="Bell" [size]="15" />

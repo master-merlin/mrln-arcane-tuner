@@ -40,10 +40,11 @@ export class DatasetStore extends EntityStore<Dataset> {
         name: string,
         description: string = '',
         classifier: string = '',
+        extra: { trigger_word?: string; tags?: string[]; notes?: string } = {},
     ): Promise<Dataset | null> {
         try {
             const created = await firstValueFrom(
-                this.api.createDataset(name, description, classifier),
+                this.api.createDataset(name, description, classifier, extra),
             );
             // Surface the row immediately for the caller; the WS broadcast
             // will upsert again (idempotent).
@@ -85,6 +86,11 @@ export class DatasetStore extends EntityStore<Dataset> {
                     next.name,
                     next.description,
                     next.classifier ?? '',
+                    {
+                        trigger_word: next.trigger_word ?? '',
+                        tags: next.tags ?? [],
+                        notes: next.notes ?? '',
+                    },
                 ),
             ),
             errorMessage: `Couldn't update dataset — reverted.`,

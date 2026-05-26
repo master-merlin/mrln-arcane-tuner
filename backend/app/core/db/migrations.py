@@ -38,6 +38,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v4,
         _migrate_v5,
         _migrate_v6,
+        _migrate_v7,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -709,4 +710,18 @@ def _migrate_v6(conn) -> None:
         )
     except Exception:
         pass  # Column already exists
+
+# ── V7: Dataset-level LoRA metadata ────────────────────────────────
+
+def _migrate_v7(conn) -> None:
+    """Add ``trigger_word``, ``tags`` (comma-joined) and ``notes`` to ``datasets``."""
+    for ddl in (
+        "ALTER TABLE datasets ADD COLUMN trigger_word TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE datasets ADD COLUMN tags         TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE datasets ADD COLUMN notes        TEXT NOT NULL DEFAULT ''",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass  # Column already exists
 

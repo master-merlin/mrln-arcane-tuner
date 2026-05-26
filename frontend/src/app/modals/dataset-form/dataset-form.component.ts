@@ -1,0 +1,364 @@
+import {
+    ChangeDetectionStrategy, Component, computed, effect, inject, signal,
+} from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { AbstractControl, FormBuilder, ReactiveFormsModule } from '@angular/forms';
+import { IcoComponent } from '../../icons/ico.component';
+import { DatasetStore } from '../../state/dataset.store';
+import { OverlayStore } from '../../state/overlay.store';
+
+const STANDARD_CLASSIFIERS = ['vehicle', 'person', 'style', 'object', 'landscape'] as const;
+const NAME_FORBIDDEN = /[<>:"/\\|?*]/;
+
+/** Rejects null/empty/whitespace-only values. `Validators.required` accepts "   " — this does not. */
+function nonEmptyTrimmed(c: AbstractControl): { required: true } | null {
+    const v = c.value as string | null;
+    return (v ?? '').trim().length === 0 ? { required: true } : null;
+}
+
+interface DatasetFormModalData {
+    /** When set, modal runs in edit mode against this dataset id (or name as fallback). */
+    datasetId?: string;
+}
+
+/**
+ * Dataset form modal — context-aware Create / Edit dialog.
+ *
+ * The modal opens via `overlay.openModal('dataset-form')` for creation,
+ * or `overlay.openModal('dataset-form', { datasetId })` for edit. In
+ * edit mode the form is prefilled once from {@link DatasetStore} and
+ * submits patch through `datasetStore.updateDataset`.
+ *
+ * Fields mirror the backend `UpdateDatasetRequest` payload — name +
+ * classifier + description + trigger_word + tags + notes. The legacy
+ * `dataset-form-modal` covered only the first three; the LoRA-flavored
+ * three were added in the overhaul once migration v7 landed.
+ */
+@Component({
+    selector: 'app-modal-dataset-form',
+    standalone: true,
+    imports: [ReactiveFormsModule, IcoComponent],
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    template: `
+        <div class="modal-head">
+            <div>
+                <div class="eyebrow">{{ isEdit() ? 'EDIT' : 'CREATE' }}</div>
+                <div class="modal-title">{{ isEdit() ? 'Edit Dataset' : 'New Dataset' }}</div>
+            </div>
+            <button class="icon-btn" type="button" (click)="overlay.closeModal()" aria-label="Close">×</button>
+        </div>
+
+        <div class="modal-body">
+            <form [formGroup]="form" (ngSubmit)="submit()">
+                <label class="field-label">Name</label>
+                <input class="input" type="text" formControlName="name" autocomplete="off"
+                       placeholder="My_New_Concept" autofocus/>
+                @if (nameInvalid()) {
+                    <div class="field-error">Name contains forbidden characters (&lt; &gt; : " / \\ | ? *)</div>
+                }
+
+                <label class="field-label df-mt">Category</label>
+                <select class="select" formControlName="classifier">
+                    <option value="">None / Uncategorized</option>
+                    @for (s of classifierOptions(); track s) {
+                        <option [value]="s">{{ titlecase(s) }}</option>
+                    }
+                </select>
+
+                <label class="field-label df-mt">Trigger word</label>
+                <input class="input mono" type="text" formControlName="trigger_word"
+                       autocomplete="off" spellcheck="false"
+                       placeholder="e.g. mrlnstyle"/>
+                <div class="field-hint">Token baked into captions for LoRA activation.</div>
+
+                <label class="field-label df-mt">Tags</label>
+                <div class="df-chip-input"
+                     [class.is-focused]="tagInputFocus()"
+                     (click)="focusTagInput($event)">
+                    @for (t of tags(); track $index) {
+                        <span class="chip df-chip">
+                            {{ t }}
+                            <button type="button" class="df-chip-x" (click)="removeTag($index)"
+                                    [attr.aria-label]="'Remove tag ' + t">
+                                <app-ico name="X" [size]="10"/>
+                            </button>
+                        </span>
+                    }
+                    <input #tagInput class="df-chip-text" type="text"
+                           [value]="tagDraft()"
+                           (input)="onTagInput($event)"
+                           (keydown)="onTagKeydown($event)"
+                           (focus)="tagInputFocus.set(true)"
+                           (blur)="onTagBlur()"
+                           [placeholder]="tags().length === 0 ? 'Add tags — comma or Enter to confirm' : ''"
+                           autocomplete="off" spellcheck="false"/>
+                </div>
+
+                <label class="field-label df-mt">Description</label>
+                <textarea class="input df-textarea" rows="3" formControlName="description"
+                          placeholder="Optional description for this dataset"></textarea>
+
+                <label class="field-label df-mt">Notes / training hints</label>
+                <textarea class="input df-textarea" rows="2" formControlName="notes"
+                          placeholder="Internal notes — LR, rank, prompt tips, etc."></textarea>
+            </form>
+        </div>
+
+        <div class="modal-foot">
+            <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
+            <button class="btn primary" type="button"
+                    [disabled]="form.invalid || nameInvalid() || submitting()"
+                    (click)="submit()">
+                @if (isEdit()) {
+                    <app-ico name="Check" [size]="14"/>
+                    {{ submitting() ? 'Saving…' : 'Save Changes' }}
+                } @else {
+                    <app-ico name="Plus" [size]="14"/>
+                    {{ submitting() ? 'Creating…' : 'Create Dataset' }}
+                }
+            </button>
+        </div>
+    `,
+    styles: [`
+        .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
+        .df-mt { margin-top: 12px; }
+        .df-textarea { min-height: 64px; resize: vertical; font-family: var(--font-sans); }
+        .field-error {
+            color: var(--color-danger);
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        .field-hint {
+            color: var(--color-text-muted);
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        .input.mono { font-family: var(--font-mono, monospace); }
+
+        .df-chip-input {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-height: 38px;
+            padding: 6px 8px;
+            border: 1px solid var(--color-border, var(--color-border-subtle));
+            background: var(--color-surface-input, var(--color-surface-low));
+            border-radius: 6px;
+            cursor: text;
+            transition: border-color 0.12s ease;
+        }
+        .df-chip-input.is-focused {
+            border-color: var(--color-brand, #6b8afd);
+            box-shadow: 0 0 0 1px var(--color-brand, #6b8afd);
+        }
+        .df-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 6px;
+            font-size: 11px;
+        }
+        .df-chip-x {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0 0 0 2px;
+            display: inline-flex;
+            align-items: center;
+            color: inherit;
+            cursor: pointer;
+            opacity: 0.6;
+        }
+        .df-chip-x:hover { opacity: 1; }
+        .df-chip-text {
+            flex: 1 1 80px;
+            min-width: 80px;
+            border: none;
+            outline: none;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            padding: 2px 0;
+        }
+    `],
+})
+export class DatasetFormModalComponent {
+    private fb = inject(FormBuilder);
+    private datasets = inject(DatasetStore);
+    protected overlay = inject(OverlayStore);
+
+    protected submitting = signal(false);
+    protected tagInputFocus = signal(false);
+    protected tagDraft = signal('');
+    protected tags = signal<string[]>([]);
+
+    /** Dataset id pulled from the topmost modal entry's data payload. */
+    private datasetId = computed<string | null>(() => {
+        const data = this.overlay.topModal()?.data as DatasetFormModalData | undefined;
+        return data?.datasetId ?? null;
+    });
+
+    protected isEdit = computed<boolean>(() => this.datasetId() !== null);
+
+    protected form = this.fb.nonNullable.group({
+        name: ['', [nonEmptyTrimmed]],
+        classifier: [''],
+        trigger_word: [''],
+        description: [''],
+        notes: [''],
+    });
+
+    /**
+     * Available classifier options: the standard set, plus the current
+     * dataset's classifier if it isn't already in the standard set (so
+     * edit mode never silently drops a previously-saved custom value).
+     */
+    protected classifierOptions = computed<string[]>(() => {
+        const std = [...STANDARD_CLASSIFIERS];
+        const cur = this.editingDataset()?.classifier?.trim().toLowerCase();
+        if (cur && !std.includes(cur as (typeof STANDARD_CLASSIFIERS)[number])) {
+            return [...std, cur];
+        }
+        return std;
+    });
+
+    /**
+     * Wrap the name control's value stream as a signal so downstream computeds
+     * re-evaluate on every keystroke.
+     */
+    private nameValue = toSignal(this.form.controls.name.valueChanges, {
+        initialValue: this.form.controls.name.value ?? '',
+    });
+
+    protected nameInvalid = computed<boolean>(() => {
+        const v = (this.nameValue() ?? '').trim();
+        if (v.length === 0) return false;
+        return NAME_FORBIDDEN.test(v);
+    });
+
+    /** Reactive lookup of the dataset being edited (null in create mode). */
+    private editingDataset = computed(() => {
+        const id = this.datasetId();
+        return id ? this.datasets.byId(id)() : null;
+    });
+
+    private prefilled = signal(false);
+
+    constructor() {
+        // Prefill the form once when the dataset becomes available in
+        // edit mode. Guarded so re-renders triggered by tags() / draft()
+        // edits don't clobber the user's in-progress changes.
+        effect(() => {
+            if (!this.isEdit() || this.prefilled()) return;
+            const ds = this.editingDataset();
+            if (!ds) return;
+            this.form.patchValue({
+                name: ds.name ?? '',
+                classifier: (ds.classifier ?? '').toLowerCase(),
+                trigger_word: ds.trigger_word ?? '',
+                description: ds.description ?? '',
+                notes: ds.notes ?? '',
+            });
+            this.tags.set([...(ds.tags ?? [])]);
+            this.prefilled.set(true);
+        });
+    }
+
+    protected titlecase(s: string): string {
+        return s.charAt(0).toUpperCase() + s.slice(1);
+    }
+
+    // ── Tag chip input ─────────────────────────────────────────────────
+
+    protected focusTagInput(ev: MouseEvent): void {
+        const tgt = ev.target as HTMLElement;
+        if (tgt.tagName === 'INPUT' || tgt.closest('.df-chip-x')) return;
+        const input = (ev.currentTarget as HTMLElement).querySelector<HTMLInputElement>('.df-chip-text');
+        input?.focus();
+    }
+
+    protected onTagInput(ev: Event): void {
+        this.tagDraft.set((ev.target as HTMLInputElement).value);
+    }
+
+    protected onTagKeydown(ev: KeyboardEvent): void {
+        if (ev.key === 'Enter' || ev.key === ',') {
+            ev.preventDefault();
+            this.commitDraftTag();
+        } else if (ev.key === 'Backspace' && this.tagDraft().length === 0 && this.tags().length > 0) {
+            this.removeTag(this.tags().length - 1);
+        }
+    }
+
+    protected onTagBlur(): void {
+        // Commit on blur so a user who tabbed away doesn't lose their draft.
+        this.commitDraftTag();
+        this.tagInputFocus.set(false);
+    }
+
+    private commitDraftTag(): void {
+        const raw = this.tagDraft().trim();
+        if (!raw) return;
+        // Split on comma in case the user pasted "a, b, c".
+        const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+        if (parts.length === 0) return;
+        const existing = new Set(this.tags());
+        const next = [...this.tags()];
+        for (const p of parts) {
+            if (!existing.has(p)) {
+                next.push(p);
+                existing.add(p);
+            }
+        }
+        this.tags.set(next);
+        this.tagDraft.set('');
+    }
+
+    protected removeTag(index: number): void {
+        const next = this.tags().slice();
+        next.splice(index, 1);
+        this.tags.set(next);
+    }
+
+    // ── Submit ─────────────────────────────────────────────────────────
+
+    async submit(): Promise<void> {
+        if (this.form.invalid || this.nameInvalid() || this.submitting()) return;
+
+        // Flush any uncommitted tag draft before reading the form.
+        if (this.tagDraft().trim()) this.commitDraftTag();
+
+        const { name, description, classifier, trigger_word, notes } = this.form.getRawValue();
+        const extra = {
+            trigger_word: (trigger_word ?? '').trim(),
+            tags: this.tags(),
+            notes: notes ?? '',
+        };
+
+        this.submitting.set(true);
+        try {
+            if (this.isEdit()) {
+                const id = this.datasetId()!;
+                await this.datasets.updateDataset(id, {
+                    name: (name ?? '').trim(),
+                    description: description ?? '',
+                    classifier: classifier ?? '',
+                    trigger_word: extra.trigger_word,
+                    tags: extra.tags,
+                    notes: extra.notes,
+                });
+                this.overlay.closeModal();
+            } else {
+                const created = await this.datasets.createDataset(
+                    (name ?? '').trim(),
+                    description ?? '',
+                    classifier ?? '',
+                    extra,
+                );
+                if (created) this.overlay.closeModal();
+            }
+        } finally {
+            this.submitting.set(false);
+        }
+    }
+}

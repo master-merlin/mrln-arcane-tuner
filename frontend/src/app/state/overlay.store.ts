@@ -22,7 +22,7 @@ export interface WorkspaceState {
 
 export type ModalKind =
     | 'mass-caption' | 'mass-mask' | 'mass-edit'
-    | 'new-dataset' | 'rescan' | 'analyze' | 'cache'
+    | 'dataset-form' | 'rescan' | 'analyze' | 'cache'
     | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
     | 'model-source' | 'browse-folder' | 'confirm';
 
@@ -243,5 +243,29 @@ export class OverlayStore extends EntityStore<Overlay> {
 
     closeAllModals(): void {
         this.modalStack.set([]);
+    }
+
+    /**
+     * Patch the data payload of a modal at `depth` from the top
+     * (0 = topmost). Used by modals that need to persist UI state
+     * across child-modal pushes — when a child modal is closed, the
+     * parent is re-instantiated (it lives behind `@if (last)`) and
+     * re-reads its `data`. Mutating in place keeps the rest of the
+     * stack stable.
+     */
+    patchModalData(patch: Record<string, unknown>, depth = 0): void {
+        this.modalStack.update(s => {
+            if (!s.length) return s;
+            const idx = s.length - 1 - depth;
+            if (idx < 0 || idx >= s.length) return s;
+            const cur = s[idx];
+            const next: ModalEntry = {
+                ...cur,
+                data: { ...(cur.data as Record<string, unknown> ?? {}), ...patch },
+            };
+            const out = s.slice();
+            out[idx] = next;
+            return out;
+        });
     }
 }

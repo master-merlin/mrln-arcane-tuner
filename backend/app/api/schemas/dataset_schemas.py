@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateDatasetRequest(BaseModel):
@@ -10,6 +10,9 @@ class CreateDatasetRequest(BaseModel):
     name: str
     description: str = ""
     classifier: str = ""
+    trigger_word: str = ""
+    tags: list[str] = Field(default_factory=list)
+    notes: str = ""
 
 
 class UpdateDatasetRequest(BaseModel):
@@ -17,6 +20,9 @@ class UpdateDatasetRequest(BaseModel):
     name: str
     description: str
     classifier: str = ""
+    trigger_word: str = ""
+    tags: list[str] = Field(default_factory=list)
+    notes: str = ""
 
 
 class CaptionRequest(BaseModel):

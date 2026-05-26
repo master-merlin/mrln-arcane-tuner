@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } 
 import { firstValueFrom } from 'rxjs';
 import { Dataset, DatasetService } from '../../services/dataset';
 import { ProjectService } from '../../services/project.service';
+import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { ToastService } from '../../services/toast';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
@@ -43,6 +44,7 @@ export class DatasetsScreen {
     private datasets = inject(DatasetStore);
     private datasetsApi = inject(DatasetService);
     private projects = inject(ProjectService);
+    private rtc = inject(RuntimeConfigService);
     private toast = inject(ToastService);
     protected scope = inject(ScopeStore);
     protected overlay = inject(OverlayStore);
@@ -88,6 +90,51 @@ export class DatasetsScreen {
         return { datasets: list.length, images, captioned, masked, cached };
     });
 
+    /**
+     * HPS-Median KPI — aggregate quality across visible datasets. The histogram
+     * bins each dataset's `median_quality_score` into 10 equal-width buckets
+     * across the observed min..max range, mirroring the design's MiniHisto.
+     */
+    protected hpsStats = computed(() => {
+        const scores = this.visibleDatasets()
+            .map(d => d.median_quality_score)
+            .filter((v): v is number => v != null && !Number.isNaN(v))
+            .sort((a, b) => a - b);
+        if (scores.length === 0) {
+            return { median: null as number | null, min: 0, max: 0, buckets: new Array(10).fill(0) as number[] };
+        }
+        const n = scores.length;
+        const mid = n >> 1;
+        const median = n % 2 ? scores[mid] : (scores[mid - 1] + scores[mid]) / 2;
+        const min = scores[0];
+        const max = scores[n - 1];
+        const range = max - min || 1;
+        const buckets = new Array(10).fill(0);
+        for (const s of scores) {
+            let i = Math.floor(((s - min) / range) * 10);
+            if (i >= 10) i = 9;
+            buckets[i]++;
+        }
+        return { median, min, max, buckets };
+    });
+
+    protected hpsMedianLabel = computed(() => {
+        const m = this.hpsStats().median;
+        return m == null ? '—' : m.toFixed(4);
+    });
+
+    protected hpsRangeLabel = computed(() => {
+        const s = this.hpsStats();
+        if (s.median == null) return '';
+        return `range ${s.min.toFixed(3)} – ${s.max.toFixed(3)}`;
+    });
+
+    protected hpsHistoMax = computed(() => {
+        let m = 0;
+        for (const b of this.hpsStats().buckets) if (b > m) m = b;
+        return m || 1;
+    });
+
     /** Project badge lookup for cards (only shown in Global scope). */
     protected projectBadge = computed<ProjectBadge | null>(() => {
         // TODO(backend): no per-dataset project-membership index is exposed
@@ -117,29 +164,91 @@ export class DatasetsScreen {
 
     // ── Card UI helpers ────────────────────────────────────────────────
 
-    /** HPS score is optional on Dataset; render '—' when missing. */
+    /**
+     * HPSv2 quality — backend exposes it as `median_quality_score` (median of per-image
+     * `quality_score` values, only present once images have been scored). Returns '—' when
+     * no image has been scored yet so the chip is hidden in {@link hpsTone}.
+     */
     protected hpsLabel(d: Dataset): string {
-        const v = d.harmonization_score;
+        const v = d.median_quality_score;
         if (v === undefined || v === null || Number.isNaN(v)) return '—';
         return v.toFixed(4);
     }
 
-    /** Tone for the HPS chip — design uses success/warning/danger thresholds. */
+    /** Tone for the HPS chip — matches legacy thresholds (≥0.27 good, ≥0.24 warn). */
     protected hpsTone(d: Dataset): 'success' | 'warning' | 'danger' | '' {
-        const v = d.harmonization_score;
+        const v = d.median_quality_score;
         if (v === undefined || v === null || Number.isNaN(v)) return '';
-        if (v >= 0.26) return 'success';
+        if (v >= 0.27) return 'success';
         if (v >= 0.24) return 'warning';
         return 'danger';
     }
 
-    /** Coarse readiness flags fed into <app-state-pills/>. */
-    protected stateOf(d: Dataset): { harmonized: boolean; captioned: boolean; masked: boolean } {
+    /**
+     * Readiness flags + per-pill coverage tooltips fed into <app-state-pills/>.
+     *
+     * Denominator is `multimedia_count` (images) since the H/C/M conditions
+     * apply per image. Harmonized count is approximated as
+     * `round(harmonization_score × images)` because the backend exposes only
+     * the aggregate ratio, not a per-file harmonized boolean in the list endpoint.
+     */
+    protected stateOf(d: Dataset): {
+        harmonized: boolean;
+        captioned: boolean;
+        masked: boolean;
+        titles: { harmonized: string; captioned: string; masked: string };
+    } {
+        const total = d.multimedia_count ?? 0;
+        const captioned = d.caption_count ?? 0;
+        const masked = d.mask_count ?? 0;
+        const harmonScore = d.harmonization_score ?? 0;
+        const harmonized = Math.round(harmonScore * total);
+        const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
+        const fmt = (label: string, n: number, percent: number) =>
+            total > 0
+                ? `${label} ${n}/${total} files (${percent}%)`
+                : `${label}: no images yet`;
         return {
-            harmonized: !!d.harmonization_score && (d.harmonization_score ?? 0) > 0,
+            harmonized: harmonScore > 0,
             captioned: !!d.caption_coverage,
-            masked: (d.mask_count ?? 0) > 0,
+            masked: masked > 0,
+            titles: {
+                harmonized: fmt('Harmonized', harmonized, Math.round(harmonScore * 100)),
+                captioned: fmt('Captioned', captioned, pct(captioned)),
+                masked: fmt('Masked', masked, pct(masked)),
+            },
         };
+    }
+
+    /**
+     * Compact relative time for the card's last-scanned badge ("12m ago",
+     * "2h ago", "3d ago", "5w ago"). Returns "Never" when the dataset
+     * has never been scanned. `last_scanned_at` is unix seconds.
+     */
+    protected lastScanRelative(d: Dataset): string {
+        const ts = d.last_scanned_at;
+        if (!ts) return 'Never';
+        const diffSec = Math.max(0, Date.now() / 1000 - ts);
+        if (diffSec < 60) return 'just now';
+        const minutes = Math.floor(diffSec / 60);
+        if (minutes < 60) return `${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours}h ago`;
+        const days = Math.floor(hours / 24);
+        if (days < 7) return `${days}d ago`;
+        const weeks = Math.floor(days / 7);
+        if (weeks < 5) return `${weeks}w ago`;
+        const months = Math.floor(days / 30);
+        if (months < 12) return `${months}mo ago`;
+        const years = Math.floor(days / 365);
+        return `${years}y ago`;
+    }
+
+    /** Absolute locale date/time for the badge's tooltip (legacy format). */
+    protected lastScanAbsolute(d: Dataset): string {
+        const ts = d.last_scanned_at;
+        if (!ts) return 'Never scanned';
+        return `Last scanned ${new Date(ts * 1000).toLocaleString()}`;
     }
 
     /** Pretty MB/GB. */
@@ -153,6 +262,27 @@ export class DatasetsScreen {
     /** Track function for the dataset grid. */
     protected trackById = (_: number, d: Dataset) => d.id ?? d.name;
 
+    /**
+     * URL of the dataset's preview thumbnail, or `null` when none is available
+     * (dataset missing on disk, or no preview chosen yet). Matches the pattern
+     * used by the legacy dataset-card: `${mediaBaseUrl}/${name}/${preview_image}`.
+     */
+    protected previewUrl(d: Dataset): string | null {
+        if (!d.preview_image || d.missing) return null;
+        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(d.name)}/${d.preview_image}`;
+    }
+
+    /**
+     * Hide the broken <img> when its src 404s — the @else branch already
+     * renders the ImageOff fallback, so we just blank the failed img out
+     * by setting display:none. Avoids flashing the browser broken-image
+     * glyph over the gradient backdrop on missing-preview datasets.
+     */
+    protected onPreviewError(event: Event): void {
+        const img = event.target as HTMLImageElement;
+        img.style.display = 'none';
+    }
+
     // ── Actions ────────────────────────────────────────────────────────
 
     protected openCard(d: Dataset): void {
@@ -160,11 +290,43 @@ export class DatasetsScreen {
     }
 
     protected openNewDataset(): void {
-        this.overlay.openModal('new-dataset');
+        this.overlay.openModal('dataset-form');
     }
 
     protected openRescan(): void {
         this.overlay.openModal('rescan');
+    }
+
+    /** Per-dataset rescan from the card action bar. */
+    protected rescanDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        this.overlay.openModal('rescan', { datasetName: d.name });
+    }
+
+    /** Per-dataset analyze from the card action bar. */
+    protected analyzeDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        this.overlay.openModal('analyze', { datasetName: d.name });
+    }
+
+    /** Per-dataset cache admin from the card action bar. Disabled in template when !has_cache. */
+    protected cacheDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        if (!d.has_cache) return;
+        this.overlay.openModal('cache', { datasetName: d.name });
+    }
+
+    /** Triggers a browser download of the dataset zip. Mirrors the legacy flow. */
+    protected downloadDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        const url = this.datasetsApi.getDownloadUrl(d.name);
+        window.open(url, '_blank');
+    }
+
+    /** Per-dataset edit-metadata — opens the dataset-form modal in edit mode. */
+    protected editDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        this.overlay.openModal('dataset-form', { datasetId: d.id ?? d.name });
     }
 
     /**

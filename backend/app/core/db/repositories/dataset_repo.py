@@ -27,6 +27,7 @@ class DatasetRepository:
         "caption_coverage", "missing", "preview_image",
         "majority_ar", "harmonization_score", "classifier",
         "version", "has_cache", "source_type", "license", "updated_at",
+        "trigger_word", "tags", "notes",
     ]
 
     # ── Reads ────────────────────────────────────────────────────────
@@ -74,6 +75,10 @@ class DatasetRepository:
         for key in ("caption_coverage", "missing", "has_cache"):
             if key in data:
                 data[key] = int(bool(data[key]))
+
+        # tags is a list[str] in-memory; joined for SQLite storage.
+        if isinstance(data.get("tags"), list):
+            data["tags"] = ",".join(str(t).strip() for t in data["tags"] if str(t).strip())
 
         cols = [c for c in self._COLUMNS if c in data]
 
@@ -123,6 +128,10 @@ class DatasetRepository:
                 for key in ("caption_coverage", "missing", "has_cache"):
                     if key in data:
                         data[key] = int(bool(data[key]))
+                if isinstance(data.get("tags"), list):
+                    data["tags"] = ",".join(
+                        str(t).strip() for t in data["tags"] if str(t).strip()
+                    )
 
                 cols = [c for c in self._COLUMNS if c in data]
                 placeholders = ", ".join("?" for _ in cols)

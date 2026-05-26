@@ -53,6 +53,9 @@ async def create_dataset(request: CreateDatasetRequest):
             request.name,
             request.description,
             classifier=request.classifier,
+            trigger_word=request.trigger_word,
+            tags=request.tags,
+            notes=request.notes,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -60,7 +63,7 @@ async def create_dataset(request: CreateDatasetRequest):
 
 @router.patch("/datasets/{name}", response_model=Dataset)
 async def update_dataset(name: str, request: UpdateDatasetRequest):
-    """Update dataset metadata (name, description, classifier)."""
+    """Update dataset metadata (name, description, classifier, trigger_word, tags, notes)."""
     try:
         logger.info("updating_dataset", old_name=name, new_name=request.name)
         return await asyncio.to_thread(
@@ -69,6 +72,9 @@ async def update_dataset(name: str, request: UpdateDatasetRequest):
             request.name,
             request.description,
             new_classifier=request.classifier,
+            new_trigger_word=request.trigger_word,
+            new_tags=request.tags,
+            new_notes=request.notes,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -6,15 +6,32 @@
 
 .ds-kpi-rail {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap: 12px;
     margin-bottom: 18px;
 }
 
+/* Card grid mirrors the 6-col KPI rail (same gap), so 1 card = 1 KPI width.
+   Roomy enough for the 7 action icons on the bottom of each card. */
 .ds-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+}
+
+.ds-mini-histo {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 24px;
+    margin-top: 6px;
+}
+
+.ds-mini-histo-bar {
+    flex: 1;
+    background: var(--color-warning);
+    border-radius: 1px;
+    min-height: 1px;
 }
 
 .ds-card {
@@ -26,12 +43,42 @@
 }
 
 .ds-card-img {
-    aspect-ratio: 1.55;
+    aspect-ratio: 16 / 10;
     border-radius: 0;
     flex-shrink: 0;
     position: relative;
+    background: var(--color-surface-low);
+    overflow: hidden;
 }
 
+.ds-card-img-el {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    opacity: 0.92;
+    transition: opacity 160ms;
+}
+
+.ds-card:hover .ds-card-img-el { opacity: 1; }
+
+.ds-card-img-missing {
+    background: linear-gradient(135deg,
+        oklch(0.16 0.01 265) 0%,
+        oklch(0.20 0.01 265) 100%);
+}
+
+.ds-card-img-fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-disabled);
+}
+
+/* HPS pill on dataset cards uses the shared `.hps-pill` from
+   components.css — only positioning is local. */
 .ds-card-hps {
     position: absolute;
     top: 8px;
@@ -48,6 +95,8 @@
     border-color: oklch(1 0 0 / 0.15);
 }
 
+/* H/C/M cluster on dataset cards reuses `.state-pills-pad`; only
+   positioning is local. */
 .ds-card-pills {
     position: absolute;
     bottom: 8px;
@@ -55,10 +104,10 @@
 }
 
 .ds-card-body {
-    padding: 12px 14px 12px;
+    padding: 14px 16px 12px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     flex: 1;
 }
 
@@ -109,17 +158,46 @@
     color: var(--color-text-secondary);
 }
 
+.ds-card-scanned {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+}
+
 .ds-empty {
     padding: 24px;
     text-align: center;
     grid-column: 1 / -1;
 }
 
-.ds-card-delete {
-    color: var(--color-text-muted);
-    flex-shrink: 0;
+.ds-card-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    gap: 2px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-low);
 }
 
-.ds-card-delete:hover {
+.ds-action {
+    color: var(--color-text-subtle);
+    transition: color 120ms, background 120ms;
+}
+
+.ds-action:hover:not([disabled]) {
+    color: var(--color-brand);
+    background: var(--color-surface-mid);
+}
+
+.ds-action[disabled] {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.ds-action-danger:hover:not([disabled]) {
     color: var(--color-danger);
 }

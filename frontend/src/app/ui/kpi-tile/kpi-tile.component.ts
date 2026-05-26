@@ -12,6 +12,8 @@ export type KpiAccent = 'brand' | 'success' | 'warning' | 'danger' | 'teal' | 'v
     selector: 'app-kpi-tile',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
+    host: { style: 'display: block; height: 100%;' },
+    styles: [`.kpi { height: 100%; }`],
     template: `
         <div class="kpi" [class.compact]="compact()">
             @if (accent(); as a) {

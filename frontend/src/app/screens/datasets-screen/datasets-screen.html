@@ -19,10 +19,10 @@
         </div>
         <div class="ds-actions">
             <button class="btn" type="button" (click)="openRescan()">
-                <app-ico name="RefreshCw" [size]="14"/> Rescan all
+                <app-ico name="RefreshCw" [size]="14"/> Rescan
             </button>
             <button class="btn primary" type="button" (click)="openNewDataset()">
-                <app-ico name="Plus" [size]="14"/> New dataset
+                <app-ico name="Plus" [size]="14"/> New Dataset
             </button>
         </div>
     </div>
@@ -31,23 +31,47 @@
         <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="brand" sub="in scope"/>
         <app-kpi-tile label="IMAGES" [value]="kpis().images" accent="teal" sub="across datasets"/>
         <app-kpi-tile label="CAPTIONED" [value]="kpis().captioned" accent="success" sub="ready for training"/>
-        <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="violet" sub="with overlays"/>
-        <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="warning" sub="latents on disk"/>
+        <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="danger" sub="with overlays"/>
+        <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="violet" sub="latents on disk"/>
+        <app-kpi-tile label="HPS — MEDIAN" [value]="hpsMedianLabel()" accent="warning" [sub]="hpsRangeLabel()">
+            <div class="ds-mini-histo">
+                @for (b of hpsStats().buckets; track $index) {
+                    <div class="ds-mini-histo-bar"
+                         [style.height.%]="(b / hpsHistoMax()) * 100"
+                         [style.opacity]="0.5 + (b / hpsHistoMax()) * 0.5"></div>
+                }
+            </div>
+        </app-kpi-tile>
     </div>
 
     <div class="ds-grid">
         @for (d of visibleDatasets(); track trackById($index, d)) {
             <div class="card lift hover-host ds-card" (click)="openCard(d)">
-                <div class="ph-img car ds-card-img">
+                <div class="ds-card-img" [class.ds-card-img-missing]="!previewUrl(d)">
+                    @if (previewUrl(d); as src) {
+                        <img class="ds-card-img-el"
+                             [src]="src"
+                             [alt]="d.name"
+                             loading="lazy"
+                             (error)="onPreviewError($event)"/>
+                    } @else {
+                        <div class="ds-card-img-fallback">
+                            <app-ico name="ImageOff" [size]="28"/>
+                        </div>
+                    }
+
                     @if (hpsTone(d); as tone) {
-                        <span class="tag ds-card-hps" [class]="tone">HPS {{ hpsLabel(d) }}</span>
+                        <span [class]="'ds-card-hps hps-pill ' + tone" title="Median HPSv2 quality score">
+                            <span class="hps-pill-label">HPS</span>
+                            <span class="hps-pill-value">{{ hpsLabel(d) }}</span>
+                        </span>
                     }
                     @if (scopeIsGlobal && projectBadge(); as pb) {
                         <span class="chip ds-card-project">
                             <span class="dot" [style.background]="pb.color"></span>{{ pb.name }}
                         </span>
                     }
-                    <span class="ds-card-pills">
+                    <span class="ds-card-pills state-pills-pad">
                         <app-state-pills [state]="stateOf(d)"/>
                     </span>
                 </div>
@@ -65,18 +89,51 @@
                         @if (d.classifier) {
                             <app-chip-tag>{{ d.classifier }}</app-chip-tag>
                         }
-                        <button class="icon-btn ds-card-delete" type="button"
-                                (click)="deleteDataset(d, $event)"
-                                [title]="scope.projectId() ? 'Remove from project' : 'Delete from library'">
-                            <app-ico [name]="scope.projectId() ? 'X' : 'Trash2'" [size]="13"/>
-                        </button>
                     </div>
 
                     <div class="ds-card-counts">
                         <span><b class="mono">{{ d.file_count }}</b> files</span>
                         <span><b class="mono">{{ d.multimedia_count }}</b> images</span>
                         <span><b class="mono">{{ d.caption_count }}</b> captioned</span>
+                        <span class="ds-card-scanned" [title]="lastScanAbsolute(d)">
+                            <app-ico name="Clock" [size]="10"/>
+                            {{ lastScanRelative(d) }}
+                        </span>
                     </div>
+                </div>
+
+                <div class="ds-card-actions" (click)="$event.stopPropagation()">
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="openCard(d)" title="Open workspace">
+                        <app-ico name="Eye" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="editDataset(d, $event)" title="Edit metadata">
+                        <app-ico name="Pencil" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="rescanDataset(d, $event)" title="Rescan files">
+                        <app-ico name="RefreshCw" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="analyzeDataset(d, $event)" title="Analyze dataset">
+                        <app-ico name="BarChart2" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="cacheDataset(d, $event)"
+                            [disabled]="!d.has_cache"
+                            [title]="d.has_cache ? 'Cache administration' : 'No cache data'">
+                        <app-ico name="Database" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="downloadDataset(d, $event)" title="Download as zip">
+                        <app-ico name="Download" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action ds-action-danger" type="button"
+                            (click)="deleteDataset(d, $event)"
+                            [title]="scope.projectId() ? 'Remove from project' : 'Delete from library'">
+                        <app-ico [name]="scope.projectId() ? 'FolderMinus' : 'Trash2'" [size]="14"/>
+                    </button>
                 </div>
             </div>
         } @empty {

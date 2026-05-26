@@ -24,7 +24,30 @@ export interface Dataset {
   classifier?: string;
   version: string;
   has_cache?: boolean;
+  trigger_word?: string;
+  tags?: string[];
+  notes?: string;
   median_quality_score?: number | null;
+  /** Per-image scan metadata, keyed by relative image path. Populated by
+   *  the singular {@link DatasetService.getDataset} endpoint; the list
+   *  endpoint omits it for payload-size reasons. */
+  media_metadata?: Record<string, {
+    width?: number;
+    height?: number;
+    aspect_ratio?: number;
+    orientation?: string;
+    size_bytes?: number;
+    has_mask?: boolean;
+    has_masked?: boolean;
+    has_masked_caption?: boolean;
+    has_overlay?: boolean;
+    enabled?: boolean;
+    quality_score?: number;
+    target_width?: number;
+    target_height?: number;
+    is_majority_ar?: boolean;
+    [k: string]: unknown;
+  }>;
 }
 
 export interface CurvePoint {
@@ -104,6 +127,18 @@ export class DatasetService {
   // State for the viewer modal
   datasetViewerOpen = signal<string | null>(null);
 
+  /**
+   * URL of the 256px WebP thumbnail for a dataset image. Backed by
+   * `GET /datasets/{name}/thumbnail` which generates the thumbnail
+   * on first request (slow path) and serves it cached thereafter
+   * (fast, ETag-validated). Callers should pair the `<img>` with a
+   * CSS loading state — see `.thumb-frame` in the workspace styles.
+   */
+  thumbnailUrl(datasetName: string, mediaFile: string): string {
+    return `${this.apiUrl}/${encodeURIComponent(datasetName)}/thumbnail`
+      + `?image_rel_path=${encodeURIComponent(mediaFile)}`;
+  }
+
   listDatasets(): Observable<Dataset[]> {
     return this.http.get<Dataset[]>(this.apiUrl);
   }
@@ -112,8 +147,20 @@ export class DatasetService {
     return this.http.get<Dataset>(`${this.apiUrl}/${encodeURIComponent(name)}`);
   }
 
-  createDataset(name: string, description: string, classifier: string = ''): Observable<Dataset> {
-    return this.http.post<Dataset>(this.apiUrl, { name, description, classifier });
+  createDataset(
+    name: string,
+    description: string,
+    classifier: string = '',
+    extra: { trigger_word?: string; tags?: string[]; notes?: string } = {},
+  ): Observable<Dataset> {
+    return this.http.post<Dataset>(this.apiUrl, {
+      name,
+      description,
+      classifier,
+      trigger_word: extra.trigger_word ?? '',
+      tags: extra.tags ?? [],
+      notes: extra.notes ?? '',
+    });
   }
 
   scanDataset(name: string, forceFull: boolean = false): Observable<Dataset> {
@@ -138,8 +185,21 @@ export class DatasetService {
     return this.http.delete(`${this.apiUrl}/${encodeURIComponent(name)}?delete_files=${deleteFiles}`);
   }
 
-  updateDataset(currentName: string, newName: string, description: string, classifier: string = ''): Observable<Dataset> {
-    return this.http.patch<Dataset>(`${this.apiUrl}/${encodeURIComponent(currentName)}`, { name: newName, description, classifier });
+  updateDataset(
+    currentName: string,
+    newName: string,
+    description: string,
+    classifier: string = '',
+    extra: { trigger_word?: string; tags?: string[]; notes?: string } = {},
+  ): Observable<Dataset> {
+    return this.http.patch<Dataset>(`${this.apiUrl}/${encodeURIComponent(currentName)}`, {
+      name: newName,
+      description,
+      classifier,
+      trigger_word: extra.trigger_word ?? '',
+      tags: extra.tags ?? [],
+      notes: extra.notes ?? '',
+    });
   }
 
   getDatasetPairs(name: string): Observable<any[]> {

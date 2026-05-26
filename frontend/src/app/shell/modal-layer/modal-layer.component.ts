@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
-import { NewDatasetModalComponent } from '../../modals/new-dataset/new-dataset.component';
+import { DatasetFormModalComponent } from '../../modals/dataset-form/dataset-form.component';
 import { RescanModalComponent } from '../../modals/rescan/rescan.component';
 import { AnalyzeModalComponent } from '../../modals/analyze/analyze.component';
 import { CacheModalComponent } from '../../modals/cache/cache.component';
@@ -34,7 +34,7 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
     selector: 'app-modal-layer',
     standalone: true,
     imports: [
-        NewDatasetModalComponent,
+        DatasetFormModalComponent,
         RescanModalComponent,
         AnalyzeModalComponent,
         CacheModalComponent,
@@ -54,10 +54,13 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
         @for (m of stack(); track $index; let last = $last) {
             @if (last) {
                 <div class="modal-backdrop" (click)="overlay.closeModal()">
-                    <div class="modal" (click)="$event.stopPropagation()">
+                    <div class="modal"
+                         [class.modal-wide]="m.kind === 'analyze'"
+                         [class.modal-xl]="m.kind === 'crop-preview'"
+                         (click)="$event.stopPropagation()">
                         @switch (m.kind) {
-                            @case ('new-dataset') {
-                                @defer { <app-modal-new-dataset/> }
+                            @case ('dataset-form') {
+                                @defer { <app-modal-dataset-form/> }
                             }
                             @case ('rescan') {
                                 @defer { <app-modal-rescan/> }
@@ -75,7 +78,7 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
                                 @defer { <app-modal-mass-mask/> }
                             }
                             @case ('mass-edit') {
-                                @defer { <app-modal-mass-edit/> }
+                                @defer (on immediate) { <app-modal-mass-edit/> }
                             }
                             @case ('similar-images') {
                                 @defer { <app-modal-similar-images/> }

@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 from typing import Any
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 import shutil
 from PIL import Image
 from app.core.settings_manager import get_settings_manager
@@ -45,6 +45,21 @@ class Dataset(BaseModel):
     classifier: str = ""
     version: str = "1.0.0"
     has_cache: bool = False
+    trigger_word: str = ""
+    tags: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _split_tags(cls, v: Any) -> list[str]:
+        """Accept ``list[str]`` or comma-joined ``str`` (DB storage form)."""
+        if v is None or v == "":
+            return []
+        if isinstance(v, list):
+            return [str(t).strip() for t in v if str(t).strip()]
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(",") if t.strip()]
+        return []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -229,30 +244,42 @@ class DatasetManager:
             return self.datasets[name].version
         return None
 
-    def create_dataset(self, name: str, description: str = "", path: str = None, classifier: str = "") -> Dataset:
+    def create_dataset(
+        self,
+        name: str,
+        description: str = "",
+        path: str = None,
+        classifier: str = "",
+        trigger_word: str = "",
+        tags: list[str] | None = None,
+        notes: str = "",
+    ) -> Dataset:
         if name in self.datasets:
             if self.datasets[name].missing and os.path.exists(self.datasets[name].path):
                  self.datasets[name].missing = False
                  self._persist_dataset(self.datasets[name])
                  return self.datasets[name]
             raise ValueError(f"Dataset '{name}' already exists.")
-        
+
         if path is None:
             # Sanitize name for path
             safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip()
             if not safe_name:
                 safe_name = f"dataset_{int(time.time())}"
             path = os.path.join(self.default_root, safe_name)
-        
+
         if not os.path.exists(path):
             os.makedirs(path)
-            
+
         dataset = Dataset(
             id=str(uuid.uuid4()),
             name=name,
             path=path,
             description=description,
             classifier=classifier,
+            trigger_word=trigger_word,
+            tags=tags or [],
+            notes=notes,
             created_at=time.time(),
             version="1.0.0"
         )
@@ -957,7 +984,16 @@ class DatasetManager:
                 loop,
             )
 
-    def update_dataset(self, current_name: str, new_name: str, new_description: str, new_classifier: str = "") -> Dataset:
+    def update_dataset(
+        self,
+        current_name: str,
+        new_name: str,
+        new_description: str,
+        new_classifier: str = "",
+        new_trigger_word: str = "",
+        new_tags: list[str] | None = None,
+        new_notes: str = "",
+    ) -> Dataset:
         if current_name not in self.datasets:
             raise ValueError(f"Dataset '{current_name}' not found.")
             
@@ -999,6 +1035,9 @@ class DatasetManager:
             
         dataset.description = new_description
         dataset.classifier = new_classifier
+        dataset.trigger_word = new_trigger_word
+        dataset.tags = new_tags or []
+        dataset.notes = new_notes
         self._persist_dataset(dataset)
 
         loop = self._loop
@@ -1098,8 +1137,30 @@ class DatasetManager:
                 # Ensure we use the correct key format (forward slashes)
                 lookup_key = p["media_file"].replace(os.sep, '/')
                 if str(lookup_key) in dataset.media_metadata:
-                    p["metadata"] = dataset.media_metadata[lookup_key]
-                    
+                    meta = dataset.media_metadata[lookup_key]
+                    # Self-heal stale has_overlay flag: if metadata claims
+                    # an overlay but the PNG isn't on disk, the recipe and
+                    # file were lost (e.g. external cleanup, partial render).
+                    # Drop the flag so consumers (mass-edit, H pill, image
+                    # request fallback) don't try to use a missing file.
+                    if meta.get("has_overlay"):
+                        stem = p.get("stem") or os.path.splitext(
+                            os.path.basename(p["media_file"]),
+                        )[0]
+                        overlay_path = os.path.join(
+                            dataset.path, "overlays", f"{stem}.png",
+                        )
+                        if not os.path.exists(overlay_path):
+                            meta.pop("has_overlay", None)
+                            meta.pop("overlay_hash", None)
+                            meta.pop("overlay_score_stale", None)
+                            meta.pop("overlay_dimensions", None)
+                            try:
+                                self._persist_media_item(dataset, lookup_key)
+                            except Exception:
+                                pass
+                    p["metadata"] = meta
+
         return result
 
     def read_caption(self, name: str, filename: str) -> str:

@@ -147,28 +147,82 @@
                             <div class="card-title">
                                 <app-ico name="Database" [size]="11"/> Datasets in this project · {{ projectDatasets().length }}
                             </div>
+                            <div style="display: flex; gap: 6px;">
+                                <button class="btn sm" type="button" (click)="toggleDatasetPicker()"
+                                        [disabled]="availableDatasets().length === 0"
+                                        [title]="availableDatasets().length === 0 ? 'All library datasets already linked' : 'Link an existing dataset'">
+                                    <app-ico name="Plus" [size]="12"/> Link existing
+                                </button>
+                                <button class="btn primary sm" type="button" (click)="newDatasetInProject()">
+                                    <app-ico name="Plus" [size]="12"/> New dataset
+                                </button>
+                            </div>
                         </div>
+
+                        @if (showDatasetPicker()) {
+                            <div class="pd-picker">
+                                <label class="pd-picker-label">Select dataset to link</label>
+                                <div class="pd-picker-row">
+                                    <select class="select pd-picker-select"
+                                            [value]="datasetToLink()"
+                                            (change)="datasetToLink.set($any($event.target).value)">
+                                        <option value="">Choose a dataset…</option>
+                                        @for (d of availableDatasets(); track d.id) {
+                                            <option [value]="d.id">{{ d.name }}</option>
+                                        }
+                                    </select>
+                                    <button class="btn primary sm" type="button"
+                                            (click)="linkSelectedDataset()"
+                                            [disabled]="!datasetToLink()">
+                                        Link
+                                    </button>
+                                    <button class="btn ghost sm" type="button" (click)="toggleDatasetPicker()">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        }
+
                         @if (projectDatasets().length === 0) {
-                            <div class="pd-empty">No datasets linked. Add some from the Datasets screen.</div>
+                            <div class="pd-empty">No datasets linked. Use "Link existing" or "New dataset" above.</div>
                         } @else {
                             <table class="tbl">
                                 <thead>
                                     <tr>
+                                        <th style="width: 56px;"></th>
                                         <th>Name</th>
                                         <th>Images</th>
                                         <th>Captioned</th>
                                         <th>Masked</th>
+                                        <th style="width: 48px;"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     @for (d of projectDatasets(); track trackDataset($index, d)) {
                                         <tr>
                                             <td>
+                                                <div class="pd-ds-thumb" [class.pd-ds-thumb-missing]="!previewUrl(d)">
+                                                    @if (previewUrl(d); as src) {
+                                                        <img [src]="src" [alt]="d.name" loading="lazy"
+                                                             (error)="onPreviewError($event)"/>
+                                                    } @else {
+                                                        <app-ico name="ImageOff" [size]="14"/>
+                                                    }
+                                                </div>
+                                            </td>
+                                            <td>
                                                 <div style="font-weight: 600; font-size: 13px;">{{ d.name }}</div>
                                             </td>
                                             <td class="mono">{{ $any(d).multimedia_count ?? '—' }}</td>
                                             <td class="mono">{{ $any(d).caption_count ?? '—' }}</td>
                                             <td class="mono">{{ $any(d).mask_count ?? '—' }}</td>
+                                            <td>
+                                                <button class="icon-btn" type="button"
+                                                        (click)="removeDatasetFromProject(d, $event)"
+                                                        title="Remove from project">
+                                                    <app-ico name="X" [size]="13"/>
+                                                </button>
+                                            </td>
                                         </tr>
                                     }
                                 </tbody>
@@ -190,10 +244,43 @@
                                         <div class="card-title">
                                             <app-ico name="Files" [size]="11"/> {{ s.label }} · {{ s.items.length }}
                                         </div>
+                                        <button class="btn sm" type="button"
+                                                (click)="openBranchPicker(s.domain)"
+                                                title="Branch a global template into this project">
+                                            <app-ico name="Plus" [size]="12"/> Branch
+                                        </button>
                                     </div>
+
+                                    @if (branchPickerDomain() === s.domain) {
+                                        <div class="pd-picker">
+                                            <label class="pd-picker-label">Branch global {{ s.domain }} template into project</label>
+                                            <div class="pd-picker-row">
+                                                <select class="select pd-picker-select"
+                                                        [value]="templateToBranch()"
+                                                        (change)="templateToBranch.set($any($event.target).value)">
+                                                    <option value="">Choose a template…</option>
+                                                    @for (t of branchableTemplates(); track t.id) {
+                                                        <option [value]="t.id">{{ t.name }}</option>
+                                                    }
+                                                </select>
+                                                <button class="btn primary sm" type="button"
+                                                        (click)="branchSelectedTemplate()"
+                                                        [disabled]="!templateToBranch()">
+                                                    Branch
+                                                </button>
+                                                <button class="btn ghost sm" type="button" (click)="closeBranchPicker()">
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                            @if (branchableTemplates().length === 0) {
+                                                <div class="pd-picker-empty">No global {{ s.domain }} templates available.</div>
+                                            }
+                                        </div>
+                                    }
+
                                     <div class="pd-template-section">
                                         @if (s.items.length === 0) {
-                                            <div class="pd-empty">No project {{ s.domain }} templates yet.</div>
+                                            <div class="pd-empty">No project {{ s.domain }} templates yet. Use "Branch" to copy a global one.</div>
                                         } @else {
                                             @for (t of s.items; track trackTemplate($index, t)) {
                                                 <div class="pd-template-row">
@@ -202,6 +289,11 @@
                                                         <div class="pd-template-name">{{ t.name }}</div>
                                                         <div class="pd-template-sub">{{ t.definition_id || t.model_id || '' }}</div>
                                                     </div>
+                                                    <button class="icon-btn" type="button"
+                                                            (click)="deleteProjectTemplate(s.domain, t)"
+                                                            title="Delete this project template">
+                                                        <app-ico name="Trash2" [size]="13"/>
+                                                    </button>
                                                 </div>
                                             }
                                         }
@@ -224,37 +316,147 @@
                             </div>
                             <div class="pd-qt-body">
                                 <div>
-                                    <label class="field-label">Training preset</label>
-                                    <div class="pd-qt-presets">
-                                        @for (preset of presets; track trackPreset($index, preset)) {
-                                            <div class="pd-qt-preset"
-                                                 [class.active]="selectedPreset() === preset.id"
-                                                 (click)="selectedPreset.set(preset.id)">
-                                                <div class="pd-qt-preset-name">{{ preset.name }}</div>
-                                                <div class="pd-qt-preset-sub">{{ preset.sub }}</div>
-                                            </div>
-                                        }
-                                    </div>
-                                </div>
-                                <div>
-                                    <label class="field-label">Dataset</label>
-                                    @if (projectDatasets().length === 0) {
-                                        <div class="pd-empty">No datasets linked to this project yet.</div>
+                                    <label class="field-label">Training template</label>
+                                    @if (projectTrainingTemplates().length === 0) {
+                                        <div class="pd-empty">
+                                            No project training templates yet. Branch one from the
+                                            <button class="btn ghost sm" type="button" (click)="onTabChange('templates')">Templates</button> tab.
+                                        </div>
                                     } @else {
-                                        <select class="select" [value]="selectedDataset()" (change)="selectedDataset.set($any($event.target).value)">
-                                            <option value="">Pick a dataset…</option>
-                                            @for (d of projectDatasets(); track trackDataset($index, d)) {
-                                                <option [value]="d.id">{{ d.name }}</option>
+                                        <select class="select"
+                                                [value]="selectedTemplateId()"
+                                                (change)="onSelectTrainingTemplate($any($event.target).value)">
+                                            <option value="">Choose a template…</option>
+                                            @for (t of projectTrainingTemplates(); track trackTemplate($index, t)) {
+                                                <option [value]="t.id">{{ t.name }} — {{ t.definition_id || '' }}</option>
                                             }
                                         </select>
                                     }
                                 </div>
+
+                                @if (selectedTemplateId()) {
+                                    <div class="pd-qt-grid-2">
+                                        <div>
+                                            <label class="field-label">LoRA prefix</label>
+                                            <div class="pd-qt-input-row">
+                                                <input class="input" type="text"
+                                                       placeholder="e.g. mydataset"
+                                                       [value]="loraPrefix()"
+                                                       (input)="loraPrefix.set($any($event.target).value)"
+                                                       (blur)="saveQuickTrainPreferences()"/>
+                                                <button class="icon-btn" type="button"
+                                                        title="Auto-derive from selected dataset"
+                                                        (click)="autofillLora('prefix')">
+                                                    <app-ico name="Sparkles" [size]="13"/>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="field-label">LoRA suffix</label>
+                                            <div class="pd-qt-input-row">
+                                                <input class="input" type="text"
+                                                       placeholder="e.g. v1"
+                                                       [value]="loraSuffix()"
+                                                       (input)="loraSuffix.set($any($event.target).value)"
+                                                       (blur)="saveQuickTrainPreferences()"/>
+                                                <button class="icon-btn" type="button"
+                                                        title="Auto-derive from selected dataset"
+                                                        (click)="autofillLora('suffix')">
+                                                    <app-ico name="Sparkles" [size]="13"/>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="pd-qt-grid-2">
+                                        <div>
+                                            <label class="field-label">
+                                                LoRA name
+                                                <span class="pd-qt-hint">supports &#123;placeholders&#125;</span>
+                                            </label>
+                                            <input class="input mono" type="text"
+                                                   placeholder="{lora_prefix}_{definition_id}_{lora_suffix}"
+                                                   [value]="loraName()"
+                                                   (input)="loraName.set($any($event.target).value)"
+                                                   (blur)="saveQuickTrainPreferences()"/>
+                                            @if (loraNamePreview() && loraNamePreview() !== loraName()) {
+                                                <div class="pd-qt-preview">
+                                                    <span class="pd-qt-preview-label">Preview:</span>
+                                                    <span class="mono pd-qt-preview-value">{{ loraNamePreview() }}.safetensors</span>
+                                                </div>
+                                            }
+                                        </div>
+                                        <div>
+                                            <label class="field-label">Trigger word</label>
+                                            <div class="pd-qt-input-row">
+                                                <input class="input" type="text" placeholder="ohwx"
+                                                       [value]="triggerWord()"
+                                                       (input)="triggerWord.set($any($event.target).value)"
+                                                       (blur)="saveQuickTrainPreferences()"/>
+                                                <button class="icon-btn" type="button"
+                                                        title="Read trigger word from a dataset row"
+                                                        (click)="fillTriggerFromDataset()">
+                                                    <app-ico name="Wand2" [size]="13"/>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <div class="pd-qt-rows-head">
+                                            <label class="field-label" style="margin-bottom: 0;">Datasets</label>
+                                            <button class="btn ghost sm" type="button" (click)="addQtRow()"
+                                                    [disabled]="projectDatasets().length === 0"
+                                                    title="Add another dataset row">
+                                                <app-ico name="Plus" [size]="12"/> Add row
+                                            </button>
+                                        </div>
+
+                                        @if (projectDatasets().length === 0) {
+                                            <div class="pd-empty">No datasets linked to this project yet.</div>
+                                        } @else {
+                                            <div class="pd-qt-rows">
+                                                @for (row of qtRows(); track trackQtRow($index, row); let i = $index) {
+                                                    <div class="pd-qt-row">
+                                                        <select class="select pd-qt-row-ds"
+                                                                [value]="row.datasetId"
+                                                                (change)="setQtRowDataset(i, $any($event.target).value)">
+                                                            <option value="">Pick a dataset…</option>
+                                                            @for (d of projectDatasets(); track trackDataset($index, d)) {
+                                                                <option [value]="d.id">{{ d.name }}</option>
+                                                            }
+                                                        </select>
+                                                        <input class="input pd-qt-row-cap" type="text"
+                                                               placeholder="Caption prefix (optional)"
+                                                               [value]="row.captionPrefix"
+                                                               (input)="setQtRowCaptionPrefix(i, $any($event.target).value)"/>
+                                                        <button class="icon-btn" type="button"
+                                                                title="Fill caption prefix from dataset trigger word"
+                                                                (click)="fillCaptionFromDatasetTrigger(i)">
+                                                            <app-ico name="Wand2" [size]="13"/>
+                                                        </button>
+                                                        <button class="icon-btn" type="button"
+                                                                title="Remove this row"
+                                                                (click)="removeQtRow(i)">
+                                                            <app-ico name="X" [size]="13"/>
+                                                        </button>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+
                                 <div class="pd-qt-foot">
                                     <button class="btn" type="button" routerLink="/training">
                                         <app-ico name="Sliders" [size]="13"/> Full configuration
                                     </button>
-                                    <button class="btn primary right" type="button" disabled title="Quick train wiring lands in Phase 6">
-                                        <app-ico name="Play" [size]="13"/> Start training
+                                    <button class="btn primary right" type="button"
+                                            (click)="startQuickTrain()"
+                                            [disabled]="!canStartQuickTrain()"
+                                            [title]="canStartQuickTrain() ? 'Queue training job' : 'Pick a template, a dataset, and a LoRA name'">
+                                        <app-ico name="Play" [size]="13"/>
+                                        {{ quickTrainSubmitting() ? 'Queuing…' : 'Start training' }}
                                     </button>
                                 </div>
                             </div>

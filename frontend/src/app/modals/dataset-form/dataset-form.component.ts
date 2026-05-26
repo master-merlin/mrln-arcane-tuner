@@ -3,7 +3,9 @@ import {
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { AbstractControl, FormBuilder, ReactiveFormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
+import { ProjectService } from '../../services/project.service';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 
@@ -69,6 +71,8 @@ function nonEmptyTrimmed(c: AbstractControl): { required: true } | null {
 interface DatasetFormModalData {
     /** When set, modal runs in edit mode against this dataset id (or name as fallback). */
     datasetId?: string;
+    /** When set on create, the new dataset is auto-linked to this project. */
+    projectId?: string;
 }
 
 /**
@@ -287,6 +291,7 @@ interface DatasetFormModalData {
 export class DatasetFormModalComponent {
     private fb = inject(FormBuilder);
     private datasets = inject(DatasetStore);
+    private projects = inject(ProjectService);
     protected overlay = inject(OverlayStore);
 
     protected submitting = signal(false);
@@ -303,6 +308,12 @@ export class DatasetFormModalComponent {
     private datasetId = computed<string | null>(() => {
         const data = this.overlay.topModal()?.data as DatasetFormModalData | undefined;
         return data?.datasetId ?? null;
+    });
+
+    /** Project to auto-link a newly created dataset to. Null in edit mode. */
+    private projectIdToLink = computed<string | null>(() => {
+        const data = this.overlay.topModal()?.data as DatasetFormModalData | undefined;
+        return data?.projectId ?? null;
     });
 
     protected isEdit = computed<boolean>(() => this.datasetId() !== null);
@@ -557,7 +568,17 @@ export class DatasetFormModalComponent {
                     classifier,
                     extra,
                 );
-                if (created) this.overlay.closeModal();
+                if (created) {
+                    const projectId = this.projectIdToLink();
+                    if (projectId && created.id) {
+                        try {
+                            await firstValueFrom(this.projects.addProjectDataset(projectId, created.id));
+                        } catch {
+                            // Linking failed but the dataset exists; surface via the close-then-toast path upstream.
+                        }
+                    }
+                    this.overlay.closeModal();
+                }
             }
         } finally {
             this.submitting.set(false);

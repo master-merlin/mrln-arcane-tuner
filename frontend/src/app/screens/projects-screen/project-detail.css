@@ -72,20 +72,32 @@
 /* Quick train */
 .pd-quick-train { display: grid; grid-template-columns: 1fr 320px; gap: 14px; }
 .pd-qt-body { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
-.pd-qt-presets { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
-.pd-qt-preset {
-    padding: 10px 12px;
-    border: 1px solid var(--color-border-subtle);
-    background: var(--color-surface-mid);
-    border-radius: var(--radius-theme-md);
-    cursor: pointer;
+.pd-qt-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pd-qt-input-row { display: flex; gap: 6px; align-items: stretch; }
+.pd-qt-input-row .input { flex: 1; }
+.pd-qt-hint {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-text-subtle);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: 6px;
+    padding: 1px 5px;
+    background: color-mix(in oklab, var(--color-surface-mid) 50%, transparent);
+    border-radius: 3px;
 }
-.pd-qt-preset.active {
-    border-color: var(--color-brand);
-    background: color-mix(in oklab, var(--color-brand) 8%, var(--color-surface-mid));
+.pd-qt-preview {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 4px;
 }
-.pd-qt-preset-name { font-size: 12px; font-weight: 600; }
-.pd-qt-preset-sub { font-family: var(--font-mono); font-size: 10px; color: var(--color-text-muted); margin-top: 2px; }
+.pd-qt-preview-label {
+    font-size: 10px;
+    color: var(--color-text-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.pd-qt-preview-value { font-size: 12px; color: var(--color-brand); }
 .pd-qt-foot {
     display: flex; gap: 10px;
     padding-top: 8px;
@@ -98,3 +110,51 @@
     color: var(--color-text-muted);
     line-height: 1.5;
 }
+
+.pd-ds-thumb {
+    width: 48px; height: 32px; border-radius: 4px;
+    overflow: hidden;
+    background: var(--color-surface-mid);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--color-text-subtle);
+    flex-shrink: 0;
+}
+.pd-ds-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pd-ds-thumb-missing { background: var(--color-surface-mid); }
+
+/* Inline pickers (dataset link, template branch) */
+.pd-picker {
+    margin: 0 14px 12px;
+    padding: 12px;
+    background: color-mix(in oklab, var(--color-brand) 4%, var(--color-surface-mid));
+    border: 1px solid color-mix(in oklab, var(--color-brand) 30%, var(--color-border-subtle));
+    border-radius: 6px;
+}
+.pd-picker-label {
+    display: block;
+    font-size: 9.5px;
+    color: var(--color-text-muted);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.pd-picker-row { display: flex; gap: 8px; align-items: center; }
+.pd-picker-select { flex: 1; }
+.pd-picker-empty {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--color-text-subtle);
+    font-style: italic;
+}
+
+/* Quick Train multi-row datasets */
+.pd-qt-rows-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.pd-qt-rows { display: flex; flex-direction: column; gap: 6px; }
+.pd-qt-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto auto;
+    gap: 6px;
+    align-items: stretch;
+}
+.pd-qt-row-ds, .pd-qt-row-cap { width: 100%; }

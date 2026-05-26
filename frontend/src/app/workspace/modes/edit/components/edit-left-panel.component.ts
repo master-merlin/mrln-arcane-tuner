@@ -1,13 +1,14 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
 import { CropPanelComponent } from '../panels/crop-panel.component';
+import { WhiteBalancePanelComponent } from '../panels/white-balance-panel.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
 @Component({
     selector: 'app-edit-left-panel',
     standalone: true,
-    imports: [IcoComponent, CropPanelComponent],
+    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="tabs">
@@ -55,6 +56,9 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                         [mediaFile]="mediaFile()"
                         [width]="width()"
                         [height]="height()"/>
+                }
+                @case ('white_balance') {
+                    <app-wb-panel/>
                 }
                 @default {
                     <div class="panel-todo">

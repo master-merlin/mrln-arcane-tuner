@@ -82,18 +82,49 @@ export class EditMode {
     });
 
     constructor() {
-        // 1. Identity change → hydrate.
         let lastIdentity = '';
+        let pendingIdentity = '';
+
         effect(() => {
             const id = this.identity();
             const p = this.currentPair();
             if (!id || id === lastIdentity || !p) return;
+
+            // First time: just hydrate.
+            if (!lastIdentity) {
+                lastIdentity = id;
+                void this.state.hydrate(this.datasetName(), p.media_file);
+                return;
+            }
+
+            // Already had an image; guard if dirty.
+            if (this.state.dirty()) {
+                if (!confirm('Discard unsaved adjustments?')) {
+                    // Roll back the navigation. The workspace owns the index;
+                    // we re-read identity from the old one by resetting via
+                    // OverlayStore.setWorkspaceImage. The identity computed
+                    // will then re-fire with lastIdentity unchanged.
+                    pendingIdentity = lastIdentity;
+                    queueMicrotask(() => {
+                        // Trick: ask the workspace to restore the previous image.
+                        // We extract the index from the previous identity.
+                        const prev = pendingIdentity.split('/').pop();
+                        if (prev) {
+                            const list = this.pairs();
+                            const idx = list.findIndex(x => x?.media_file === prev);
+                            if (idx >= 0) this.overlay.setWorkspaceImage(idx);
+                        }
+                    });
+                    return;
+                }
+            }
+
             lastIdentity = id;
             if (this.renderTimer) { clearTimeout(this.renderTimer); this.renderTimer = null; }
             void this.state.hydrate(this.datasetName(), p.media_file);
         });
 
-        // 2. Blocks change with stable identity → debounced render.
+        // Blocks → debounced render (same as Task 9 step 2).
         let lastBlocksJson = '';
         effect(() => {
             const id = this.identity();

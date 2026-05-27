@@ -7,6 +7,7 @@ retrofit callsites) emit `model.download_progress` events via the shared
 """
 from __future__ import annotations
 
+import asyncio
 import time as _time
 from typing import Literal, Optional
 from pydantic import BaseModel
@@ -69,3 +70,47 @@ class RateLimiter:
             self._last_emit_pct = percent
             return True
         return False
+
+
+# ── Loop capture + emit helpers ───────────────────────────────────────────
+
+from app.core.events import event_manager  # noqa: E402
+
+# Captured by main.lifespan on startup. Worker-thread code (WSProgressTqdm)
+# uses this with `asyncio.run_coroutine_threadsafe` to schedule emits onto
+# the main loop. None before startup → emits become no-ops (safe for tests
+# that don't start the app).
+_APP_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_app_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Called by main.lifespan on startup."""
+    global _APP_LOOP
+    _APP_LOOP = loop
+
+
+def get_app_loop() -> Optional[asyncio.AbstractEventLoop]:
+    return _APP_LOOP
+
+
+async def emit_download_progress(payload: DownloadProgress) -> None:
+    """Broadcast a single download-progress event. Awaitable variant —
+    use directly from async code (e.g., model_registry.download_model)."""
+    await event_manager.broadcast("model.download_progress", payload.model_dump())
+
+
+def schedule_emit_from_thread(payload: DownloadProgress) -> None:
+    """Fire-and-forget emit from a worker thread.
+
+    No-op if the loop hasn't been captured yet (e.g., during tests
+    before app startup). Errors are swallowed — progress UI is
+    best-effort and must never affect download correctness.
+    """
+    loop = _APP_LOOP
+    if loop is None:
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(emit_download_progress(payload), loop)
+    except RuntimeError:
+        # Loop closed or stopped — ignore
+        pass

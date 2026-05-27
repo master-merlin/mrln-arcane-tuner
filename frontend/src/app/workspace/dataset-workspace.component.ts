@@ -17,6 +17,7 @@ import { RuntimeConfigService } from '../services/runtime-config.service';
 import { SegmentedComponent, type SegOption } from '../ui/segmented/segmented.component';
 import { IconButtonComponent } from '../ui/icon-button/icon-button.component';
 import { ContextSwitcherComponent } from '../shell/context-switcher/context-switcher.component';
+import { ProjectMembershipPillComponent } from './project-membership-pill/project-membership-pill.component';
 import { IcoComponent } from '../icons/ico.component';
 import { FilmstripScrubberComponent } from './filmstrip-scrubber/filmstrip-scrubber.component';
 import { BrowseMode } from './modes/browse-mode';
@@ -64,6 +65,7 @@ interface CaptionRow {
         SegmentedComponent,
         IconButtonComponent,
         ContextSwitcherComponent,
+        ProjectMembershipPillComponent,
         IcoComponent,
         FilmstripScrubberComponent,
         BrowseMode,

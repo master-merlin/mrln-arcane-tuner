@@ -65,7 +65,7 @@ class Qwen3VLModel(CaptionModel):
         from functools import partial
 
         with with_progress(model_id=model_id, category="caption"):
-            m_tqdm = partial(
+            model_tqdm = partial(
                 WSProgressTqdm,
                 source="hf", model_id=f"{model_id}/model", category="caption",
             )
@@ -74,17 +74,17 @@ class Qwen3VLModel(CaptionModel):
                 dtype=dtype,
                 device_map="auto" if device == "cuda" else None,
                 trust_remote_code=True,
-                tqdm_class=m_tqdm,
+                tqdm_class=model_tqdm,
             )
 
-            p_tqdm = partial(
+            proc_tqdm = partial(
                 WSProgressTqdm,
                 source="hf", model_id=f"{model_id}/processor", category="caption",
             )
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
                 trust_remote_code=True,
-                tqdm_class=p_tqdm,
+                tqdm_class=proc_tqdm,
             )
 
         self.loaded_variant = variant

@@ -57,7 +57,7 @@ class YoutuVLModel(CaptionModel):
         from functools import partial
 
         with with_progress(model_id=model_id, category="caption"):
-            m_tqdm = partial(
+            model_tqdm = partial(
                 WSProgressTqdm,
                 source="hf", model_id=f"{model_id}/model", category="caption",
             )
@@ -67,10 +67,10 @@ class YoutuVLModel(CaptionModel):
                 device_map="auto" if self.device == "cuda" else None,
                 trust_remote_code=True,
                 attn_implementation=attn_impl,
-                tqdm_class=m_tqdm,
+                tqdm_class=model_tqdm,
             ).eval()
 
-            p_tqdm = partial(
+            proc_tqdm = partial(
                 WSProgressTqdm,
                 source="hf", model_id=f"{model_id}/processor", category="caption",
             )
@@ -78,7 +78,7 @@ class YoutuVLModel(CaptionModel):
                 model_id,
                 trust_remote_code=True,
                 use_fast=True,
-                tqdm_class=p_tqdm,
+                tqdm_class=proc_tqdm,
             )
 
         # Inject our bundled fast image processor if the loaded one is slow.

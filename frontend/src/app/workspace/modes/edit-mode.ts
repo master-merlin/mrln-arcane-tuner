@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, input } f
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { PipelineEditorState } from './edit/pipeline-editor.state';
+import { PreviewPipeline } from './edit/preview/preview-pipeline';
 import { EditLeftPanelComponent } from './edit/components/edit-left-panel.component';
 import { EditCanvasComponent } from './edit/components/edit-canvas.component';
 import { EditRightPanelComponent } from './edit/components/edit-right-panel.component';
@@ -16,7 +17,7 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
     standalone: true,
     imports: [EditLeftPanelComponent, EditCanvasComponent, EditRightPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
-    providers: [PipelineEditorState],
+    providers: [PipelineEditorState, PreviewPipeline],
     template: `
         @if (currentPair(); as pair) {
             <div class="edit-grid">

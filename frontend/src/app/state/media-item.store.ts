@@ -1,4 +1,4 @@
-import { Injectable, Signal, computed, inject } from '@angular/core';
+import { Injectable, Signal, computed, effect, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { EntityStore, OptimisticResult } from './entity-store';
 import { DatasetService } from '../services/dataset';
@@ -90,6 +90,26 @@ export class MediaItemStore extends EntityStore<MediaItem> {
 
     constructor(ws: WebSocketService, toast: ToastService) {
         super(ws, toast);
+
+        // Bridge overlay WS events to media-item state. Save / Revert /
+        // Bake-in mutate an overlay and the backend emits
+        // entity.changed:overlay:created|updated|deleted, but does NOT
+        // reliably emit a follow-up media_item event for the has_overlay
+        // flag. Without this bridge, Browse / Details / Edit panes show
+        // stale state until the user navigates away and back.
+        //
+        // Overlay id format is `${dataset_name}/${media_file}` — same
+        // composite as MediaItem.id — so we can route the event directly.
+        effect(() => {
+            const msg = ws.entityChanged();
+            if (!msg || msg.entity !== 'overlay') return;
+            if (msg.op === 'bulk_deleted') return;
+            const current = this.byId(msg.id)();
+            if (!current) return;
+            const hasOverlay = msg.op !== 'deleted';
+            if ((current.has_overlay ?? false) === hasOverlay) return;
+            this.upsert({ ...current, has_overlay: hasOverlay });
+        });
     }
 
     public override async loadAll(): Promise<void> {

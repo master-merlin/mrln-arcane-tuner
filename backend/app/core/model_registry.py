@@ -110,6 +110,10 @@ async def download_model(
     timeout: float = 300.0,
 ) -> Path:
     """Download a model from the registry.  Skips if already exists."""
+    # Deferred import — app.api.events.download_progress pulls in
+    # `event_manager` from app.core.events, which is imported transitively
+    # by many modules. Importing at module top here risks circular-import
+    # surprises during cold-start ordering.
     from app.api.events.download_progress import (
         DownloadProgress, RateLimiter, emit_download_progress,
     )

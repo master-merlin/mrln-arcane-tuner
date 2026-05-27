@@ -11,7 +11,7 @@ import { ColorMatchParams } from '../operation-defs';
     template: `
         <div class="info">
             <app-ico name="Info" [size]="13"/>
-            <p>Applied first, before the rest of the pipeline (server convention).</p>
+            <p>Applies on Save (preview shows the rest of the pipeline only; this op runs server-side first).</p>
         </div>
 
         <div class="enable-row">

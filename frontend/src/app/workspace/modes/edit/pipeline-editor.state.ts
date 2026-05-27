@@ -45,7 +45,7 @@ export class PipelineEditorState {
 
     readonly whiteBalance = signal(mkOp('white_balance'));
     readonly curves       = signal(mkOp('curves'));
-    readonly lut          = signal(mkOp('lut'));
+    readonly lut          = signal<OpEntry<LutParams>>(mkOp('lut') as OpEntry<LutParams>);
     readonly colorMatch   = signal(mkOp('color_match'));
     readonly hslSelective = signal(mkOp('hsl_selective'));
     readonly colorTone    = signal(mkOp('color_tone'));

@@ -144,4 +144,4 @@ export const DEFAULT_PARAMS = {
     denoise:        { folder: 'models/restore', model: null, strength: 0.6, tile_size: 512 } satisfies RestoreParams,
     face_restore:   { folder: 'models/restore', model: null, strength: 0.6, tile_size: 512, face_only: true } satisfies RestoreParams,
     upscale:        { folder: 'models/upscale', model: null, tile_size: 512, target_scale: 2, resize_method: 'lanczos' } satisfies UpscaleParams,
-} as const;
+};

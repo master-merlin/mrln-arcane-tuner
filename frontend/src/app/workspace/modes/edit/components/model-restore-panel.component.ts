@@ -5,6 +5,12 @@ import { DatasetService } from '../../../../services/dataset';
 
 export type ModelRestoreKind = 'denoise' | 'face' | 'upscale';
 
+export interface ModelEntry {
+    name: string;
+    path: string;
+    size_mb: number;
+}
+
 @Component({
     selector: 'app-model-restore-panel',
     standalone: true,
@@ -29,8 +35,8 @@ export type ModelRestoreKind = 'denoise' | 'face' | 'upscale';
             <label>Model</label>
             <select class="input" [value]="model() ?? ''" (change)="modelChanged.emit($any($event.target).value || null)">
                 <option value="">— select —</option>
-                @for (m of models(); track m) {
-                    <option [value]="m">{{ m }}</option>
+                @for (m of models(); track m.path) {
+                    <option [value]="m.path">{{ m.name }} ({{ m.size_mb }} MB)</option>
                 }
             </select>
             <div class="hint">{{ models().length }} model(s) found</div>
@@ -118,7 +124,7 @@ export class ModelRestorePanelComponent {
     @Output() resizeMethodChanged = new EventEmitter<string>();
 
     private datasets = inject(DatasetService);
-    protected models = signal<string[]>([]);
+    protected models = signal<ModelEntry[]>([]);
 
     constructor() {
         effect(() => { void this.scan(); });  // initial scan
@@ -132,7 +138,7 @@ export class ModelRestorePanelComponent {
                 : (this.datasets as any).listRestoreModels;
             if (typeof fn !== 'function') { this.models.set([]); return; }
             const resp: any = await firstValueFrom(fn.call(this.datasets, this.folder()));
-            this.models.set(Array.isArray(resp?.models) ? resp.models : []);
+            this.models.set(Array.isArray(resp?.models) ? (resp.models as ModelEntry[]) : []);
         } catch {
             this.models.set([]);
         }

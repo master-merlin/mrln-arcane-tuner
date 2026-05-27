@@ -1,4 +1,4 @@
-import { Injectable, Signal, computed, effect, inject } from '@angular/core';
+import { Injectable, Signal, computed, effect, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { EntityStore, OptimisticResult } from './entity-store';
 import { DatasetService } from '../services/dataset';
@@ -88,6 +88,21 @@ export class MediaItemStore extends EntityStore<MediaItem> {
 
     private _byDatasetCache = new Map<string, Signal<MediaItem[]>>();
 
+    /**
+     * Monotonic counter bumped whenever the original image bytes for some
+     * media file MAY have changed under the same URL. Bake-in is the
+     * concrete trigger today — backend replaces the original file in
+     * place. Consumers (Details / Browse / filmstrip) append this to
+     * `<img>` URLs as a cache-bust query param to force a re-fetch.
+     *
+     * Global rather than per-item because Bake is rare and user-initiated;
+     * the cost of a few extra refreshes across the grid is negligible
+     * compared to per-item bookkeeping. Revert also bumps (we can't
+     * distinguish Bake from Revert by WS event alone) — the resulting
+     * re-fetch is harmless since the bytes are unchanged.
+     */
+    readonly mediaRev = signal<number>(0);
+
     constructor(ws: WebSocketService, toast: ToastService) {
         super(ws, toast);
 
@@ -104,6 +119,12 @@ export class MediaItemStore extends EntityStore<MediaItem> {
             const msg = ws.entityChanged();
             if (!msg || msg.entity !== 'overlay') return;
             if (msg.op === 'bulk_deleted') return;
+            if (msg.op === 'deleted') {
+                // Bake-in rewrites the original bytes at the same URL.
+                // Revert also fires this branch — the resulting refetch
+                // is harmless since the bytes are unchanged.
+                this.mediaRev.update(r => r + 1);
+            }
             const current = this.byId(msg.id)();
             if (!current) return;
             const hasOverlay = msg.op !== 'deleted';

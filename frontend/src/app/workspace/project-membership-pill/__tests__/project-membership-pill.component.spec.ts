@@ -113,6 +113,18 @@ describe('ProjectMembershipPillComponent', () => {
         expect(loadProjects).toHaveBeenCalled();
     });
 
+    it('remove() error path toasts and stays "member"', () => {
+        getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
+        removeProjectDataset.and.returnValue(throwError(() => ({ error: { detail: 'boom' } })));
+        setDataset({ id: 'd1', name: 'ds-1' });
+        projectId.set('p1');
+        fixture.detectChanges();
+        expect(component.state()).toBe('member');
+        component.remove();
+        expect(component.state()).toBe('member');
+        expect(toast.error).toHaveBeenCalled();
+    });
+
     it('falls back to dataset name when id is absent', () => {
         setDataset({ name: 'ds-noid' });
         projectId.set('p1');

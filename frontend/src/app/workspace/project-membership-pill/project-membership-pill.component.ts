@@ -121,7 +121,7 @@ export class ProjectMembershipPillComponent {
                 this.projects.loadProjects();
             },
             error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Failed to add to project: ' + (err?.error?.detail || err?.message)),
+                this.toast.error('Failed to add to project: ' + (err?.error?.detail || err?.message || 'unknown error')),
         });
     }
 
@@ -137,7 +137,7 @@ export class ProjectMembershipPillComponent {
                 this.projects.loadProjects();
             },
             error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Failed to remove from project: ' + (err?.error?.detail || err?.message)),
+                this.toast.error('Failed to remove from project: ' + (err?.error?.detail || err?.message || 'unknown error')),
         });
     }
 

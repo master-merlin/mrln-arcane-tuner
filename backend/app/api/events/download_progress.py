@@ -10,7 +10,10 @@ from __future__ import annotations
 import asyncio
 import time as _time
 from typing import Literal, Optional
+
 from pydantic import BaseModel
+
+from app.core.events import event_manager
 
 
 class DownloadProgress(BaseModel):
@@ -73,8 +76,6 @@ class RateLimiter:
 
 
 # ── Loop capture + emit helpers ───────────────────────────────────────────
-
-from app.core.events import event_manager  # noqa: E402
 
 # Captured by main.lifespan on startup. Worker-thread code (WSProgressTqdm)
 # uses this with `asyncio.run_coroutine_threadsafe` to schedule emits onto

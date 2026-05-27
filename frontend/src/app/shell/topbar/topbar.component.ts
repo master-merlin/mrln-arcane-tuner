@@ -124,6 +124,10 @@ export class TopbarComponent {
         this.search.query.set(value);
     }
 
+    protected clearSearch(): void {
+        this.search.query.set('');
+    }
+
     protected onFieldToggle(key: DatasetSearchField, event: Event): void {
         const checked = (event.target as HTMLInputElement).checked;
         this.search.setField(key, checked);

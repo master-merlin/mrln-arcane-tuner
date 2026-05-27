@@ -141,6 +141,24 @@
     }
     .chip.search-filter-btn .mono { font-family: var(--font-mono); }
 
+    /* Quick-clear (X) inside the search input — only rendered when the
+       query has content. Matches the legacy dataset toolbar's pattern. */
+    .search-clear-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 18px; height: 18px;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        border-radius: 999px;
+        color: var(--color-text-subtle);
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .search-clear-btn:hover {
+        background: var(--color-surface-high);
+        color: var(--color-text-primary);
+    }
+
     /* Anchor for the field-filter popover. Mirrors the
        context-switcher's `position: relative` wrapper pattern. */
     .search-filter-anchor { position: relative; display: inline-flex; }

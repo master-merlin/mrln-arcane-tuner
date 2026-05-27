@@ -81,11 +81,20 @@ export class PipelineEditorState {
         const file = this.mediaFile();
         if (!name || !file) return;
 
+        // Nothing to render — skip the round-trip and clear any stale preview.
+        // `replaceRecipe=true` (Apply & save) still needs to fall through so
+        // an "all disabled" save can wipe the saved overlay's recipe entry.
+        const blocks = this.blocks();
+        if (blocks.length === 0 && !replaceRecipe) {
+            this.previewOverlay.set(null);
+            return;
+        }
+
         if (this.rendering()) { this.pendingRender = true; return; }
         this.rendering.set(true);
         try {
             const result = await this.overlay.renderPipeline(
-                name, file, this.blocks(), 512, 32, replaceRecipe,
+                name, file, blocks, 512, 32, replaceRecipe,
             );
             if (result.ok) {
                 const r = result.value;

@@ -220,10 +220,12 @@ export class EditCanvasComponent {
     );
 
     // Overlay URL — prefers the live preview signal; falls back to saved overlay.
+    // `/media` is mounted at the dataset-roots parent dir, so the dataset name
+    // must prefix the recipe-relative `overlays/<stem>.png` path.
     protected overlayUrl = computed<string | null>(() => {
         const preview = this.state.previewOverlay();
         if (preview) {
-            return `${this.rtc.mediaBaseUrl}/${preview.url}?h=${preview.hash}`;
+            return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(this.datasetName())}/${preview.url}?h=${preview.hash}`;
         }
         // Fall back to the saved overlay if no preview yet.
         if (!this.hasOverlay()) return null;
@@ -231,7 +233,7 @@ export class EditCanvasComponent {
         const ov = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
         if (!ov?.overlay_file) return null;
         const hash = ov.hash ? `?h=${ov.hash}` : '';
-        return `${this.rtc.mediaBaseUrl}/${ov.overlay_file}${hash}`;
+        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(ov.dataset_name)}/${ov.overlay_file}${hash}`;
     });
 
     protected meta = computed<CanvasMeta>(() => ({

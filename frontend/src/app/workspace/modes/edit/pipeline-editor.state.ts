@@ -49,7 +49,7 @@ export class PipelineEditorState {
     readonly colorMatch   = signal(mkOp('color_match'));
     readonly hslSelective = signal(mkOp('hsl_selective'));
     readonly colorTone    = signal(mkOp('color_tone'));
-    readonly vignette     = signal(mkOp('vignette'));
+    readonly vignette     = signal<OpEntry<VignetteParams>>(mkOp('vignette') as OpEntry<VignetteParams>);
     readonly lens         = signal(mkOp('lens'));
     readonly sharpen      = signal<OpEntry<SharpenParams>>(mkOp('sharpen') as OpEntry<SharpenParams>);
     readonly denoise      = signal(mkOp('denoise'));

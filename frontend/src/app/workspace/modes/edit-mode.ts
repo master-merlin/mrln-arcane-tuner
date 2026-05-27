@@ -31,7 +31,9 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
                     <app-edit-canvas
                         [datasetName]="datasetName()"
                         [mediaFile]="pair.media_file"
-                        [hasOverlay]="!!pair?.metadata?.has_overlay"/>
+                        [hasOverlay]="!!pair?.metadata?.has_overlay"
+                        (prev)="onPrev()"
+                        (next)="onNext()"/>
                 </main>
                 <aside class="pane right">
                     <app-edit-right-panel
@@ -77,6 +79,16 @@ export class EditMode {
         const idx = this.imageIndex();
         return idx >= 0 && idx < list.length ? list[idx] : null;
     });
+
+    protected onPrev(): void {
+        const idx = this.imageIndex();
+        if (idx > 0) this.overlay.setWorkspaceImage(idx - 1);
+    }
+
+    protected onNext(): void {
+        const idx = this.imageIndex();
+        if (idx < this.pairs().length - 1) this.overlay.setWorkspaceImage(idx + 1);
+    }
 
     private renderTimer: ReturnType<typeof setTimeout> | null = null;
 

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import time as _time
-from typing import Literal, Optional
+from contextlib import contextmanager
+from typing import Generator, Literal, Optional
 
+from huggingface_hub.utils import tqdm as hf_tqdm  # type: ignore[attr-defined]
 from pydantic import BaseModel
 
 from app.core.events import event_manager
@@ -115,3 +117,131 @@ def schedule_emit_from_thread(payload: DownloadProgress) -> None:
     except RuntimeError:
         # Loop closed or stopped — ignore
         pass
+
+
+# ── HF tqdm subclass + context manager ───────────────────────────────────────
+
+def _make_payload(
+    *,
+    source: str,
+    model_id: str,
+    category: str,
+    status: str,
+    current: int,
+    total: Optional[int],
+    error: Optional[str] = None,
+) -> DownloadProgress:
+    percent = (int(current * 100 / total) if (total and total > 0) else None)
+    return DownloadProgress(
+        source=source,  # type: ignore[arg-type]
+        model_id=model_id,
+        category=category,  # type: ignore[arg-type]
+        status=status,  # type: ignore[arg-type]
+        current_bytes=current,
+        total_bytes=total,
+        percent=percent,
+        error=error,
+    )
+
+
+class WSProgressTqdm(hf_tqdm):
+    """Drop-in tqdm subclass for `huggingface_hub`'s `tqdm_class=` parameter.
+
+    Emits a 'starting' event on init, throttled 'downloading' events on
+    `update()`, and a 'complete' event on `close()`. Errors during the
+    download are reported by the surrounding `with_progress` context manager
+    — not from inside the tqdm itself, since exceptions surface in the
+    caller, not in the bar.
+    """
+
+    def __init__(
+        self,
+        *args,
+        source: str = "hf",
+        model_id: str = "",
+        category: str = "",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._meta_source = source
+        self._meta_model_id = model_id or (kwargs.get("desc") or "unknown")
+        self._meta_category = category
+        self._rate = RateLimiter()
+        self._closed_emit_sent = False
+        self._update_called = False
+        schedule_emit_from_thread(
+            _make_payload(
+                source=source,
+                model_id=self._meta_model_id,
+                category=category,
+                status="starting",
+                current=0,
+                total=self.total,
+            )
+        )
+
+    def update(self, n: int = 1) -> "bool | None":
+        self._update_called = True
+        ret = super().update(n)
+        total = self.total
+        percent = (int(self.n * 100 / total) if (total and total > 0) else None)
+        if self._rate.allow("downloading", percent):
+            schedule_emit_from_thread(
+                _make_payload(
+                    source=self._meta_source,
+                    model_id=self._meta_model_id,
+                    category=self._meta_category,
+                    status="downloading",
+                    current=int(self.n),
+                    total=total,
+                )
+            )
+        return ret
+
+    def close(self) -> None:
+        if not self._closed_emit_sent and self._update_called:
+            self._closed_emit_sent = True
+            schedule_emit_from_thread(
+                _make_payload(
+                    source=self._meta_source,
+                    model_id=self._meta_model_id,
+                    category=self._meta_category,
+                    status="complete",
+                    current=int(self.n),
+                    total=self.total,
+                )
+            )
+        super().close()
+
+
+@contextmanager
+def with_progress(*, model_id: str, category: str) -> Generator[None, None, None]:
+    """Wrap an HF download callsite to ensure starting/complete/error events fire.
+
+    When the HF library does its own download, `WSProgressTqdm` (if passed
+    via `tqdm_class`) emits its own starting/downloading/complete events.
+    This context manager guarantees a starting/complete pair even when no
+    tqdm was created (cache hit) and emits an `error` event if the body
+    raises — the tqdm subclass cannot observe caller exceptions.
+
+    Note: when both the context manager and `WSProgressTqdm` fire, the
+    frontend store deduplicates by `(source, model_id)` and treats the
+    later state as authoritative.
+    """
+    payload_kw: dict = dict(source="hf", model_id=model_id, category=category)
+    schedule_emit_from_thread(
+        _make_payload(**payload_kw, status="starting", current=0, total=None)
+    )
+    try:
+        yield
+    except Exception as exc:
+        schedule_emit_from_thread(
+            _make_payload(
+                **payload_kw, status="error", current=0, total=None, error=str(exc)
+            )
+        )
+        raise
+    else:
+        schedule_emit_from_thread(
+            _make_payload(**payload_kw, status="complete", current=0, total=None)
+        )

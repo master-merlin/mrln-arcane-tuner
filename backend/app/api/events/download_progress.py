@@ -20,7 +20,7 @@ class DownloadProgress(BaseModel):
     """
     source: Literal["curated", "hf"]
     model_id: str
-    category: str  # 'restore' | 'upscale' | 'caption' | 'mask' | 'training'
+    category: Literal["restore", "upscale", "caption", "mask", "training"]
     status: Literal["starting", "downloading", "complete", "error"]
     current_bytes: int = 0
     total_bytes: Optional[int] = None

@@ -151,12 +151,13 @@ export class DatasetWorkspaceComponent {
     protected filmstripImages = computed(() => {
         const d = this.dataset();
         const name = d?.name ?? '';
+        const rev = this.mediaItems.mediaRev();
         return this.pairs().map(p => ({
             harmonized: !!p?.metadata?.has_overlay,
             captioned: !!(p?.caption_content?.trim()),
             masked: !!p?.metadata?.has_mask,
             thumbnailUrl: p?.media_file && name
-                ? this.datasetsApi.thumbnailUrl(name, p.media_file)
+                ? `${this.datasetsApi.thumbnailUrl(name, p.media_file)}&t=${rev}`
                 : undefined,
             mediaType: p?.media_type ?? 'image',
         }));

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
 import { ViewerGridViewComponent } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
 import { OverlayStore } from '../../state/overlay.store';
+import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 
 /**
@@ -39,6 +40,7 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
             [apiUrl]="rtc.apiUrl"
             [hideToolbar]="true"
             [density]="density()"
+            [lastUpdateTime]="mediaItems.mediaRev()"
             [activeMediaFile]="activeMediaFile()"
             [showMasked]="showMasked()"
             [showOverlay]="showOverlay()"
@@ -87,6 +89,7 @@ export class BrowseMode {
     deletePair = output<any>();
 
     protected overlay = inject(OverlayStore);
+    protected mediaItems = inject(MediaItemStore);
     protected rtc = inject(RuntimeConfigService);
 
     /** Lookup: media_file → unfiltered index, rebuilt when pairs change. */

@@ -53,19 +53,33 @@ class YoutuVLModel(CaptionModel):
         # This avoids KeyError: 'sdpa' and ImportError: FlashAttention2.
         attn_impl = "eager"
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=dtype,
-            device_map="auto" if self.device == "cuda" else None,
-            trust_remote_code=True,
-            attn_implementation=attn_impl
-        ).eval()
-        
-        self.processor = AutoProcessor.from_pretrained(
-            model_id,
-            trust_remote_code=True,
-            use_fast=True
-        )
+        from app.api.events.download_progress import WSProgressTqdm, with_progress
+        from functools import partial
+
+        with with_progress(model_id=model_id, category="caption"):
+            m_tqdm = partial(
+                WSProgressTqdm,
+                source="hf", model_id=f"{model_id}/model", category="caption",
+            )
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=dtype,
+                device_map="auto" if self.device == "cuda" else None,
+                trust_remote_code=True,
+                attn_implementation=attn_impl,
+                tqdm_class=m_tqdm,
+            ).eval()
+
+            p_tqdm = partial(
+                WSProgressTqdm,
+                source="hf", model_id=f"{model_id}/processor", category="caption",
+            )
+            self.processor = AutoProcessor.from_pretrained(
+                model_id,
+                trust_remote_code=True,
+                use_fast=True,
+                tqdm_class=p_tqdm,
+            )
 
         # Inject our bundled fast image processor if the loaded one is slow.
         # This caps vision tokens via max_num_patches for much faster inference.

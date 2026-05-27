@@ -13,6 +13,7 @@ import { DetailMaskingSidebarComponent } from '../../components/dataset/dataset-
 import { DetailMediaContainerComponent } from '../../components/dataset/dataset-viewer/components/detail-media-container';
 import { DetailCaptionSidebarComponent } from '../../components/dataset/dataset-viewer/components/detail-caption-sidebar';
 import { OverlayStore } from '../../state/overlay.store';
+import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { IcoComponent } from '../../icons/ico.component';
 import { CanvasFooterComponent } from '../shared/canvas-footer.component';
@@ -47,6 +48,7 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                         [currentPair]="pair"
                         [datasetName]="datasetName()"
                         [mediaBaseUrl]="rtc.mediaBaseUrl"
+                        [lastUpdateTime]="mediaItems.mediaRev()"
                         (openMaskPreviewRequested)="openMaskPreview()"
                         (showMaskDetails)="openMaskDetails()"
                         (deleteMaskRequested)="deleteMask.emit(pair)"
@@ -58,6 +60,7 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                         [datasetName]="datasetName()"
                         [mediaBaseUrl]="rtc.mediaBaseUrl"
                         [apiUrl]="rtc.apiUrl"
+                        [lastUpdateTime]="mediaItems.mediaRev()"
                         (prevRequested)="prev()"
                         (nextRequested)="next()"
                         (deleteRequested)="deletePair.emit(pair)"/>
@@ -198,6 +201,7 @@ export class DetailsMode {
     toggleExclusion = output<{ media_file: string; enabled: boolean }>();
 
     protected overlay = inject(OverlayStore);
+    protected mediaItems = inject(MediaItemStore);
     protected rtc = inject(RuntimeConfigService);
 
     /** Caption editor is two-way bound; the local `isDirty` mirrors the

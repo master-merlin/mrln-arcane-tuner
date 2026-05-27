@@ -110,6 +110,14 @@ async def download_model(
     timeout: float = 300.0,
 ) -> Path:
     """Download a model from the registry.  Skips if already exists."""
+    # Deferred import — app.api.events.download_progress pulls in
+    # `event_manager` from app.core.events, which is imported transitively
+    # by many modules. Importing at module top here risks circular-import
+    # surprises during cold-start ordering.
+    from app.api.events.download_progress import (
+        DownloadProgress, RateLimiter, emit_download_progress,
+    )
+
     entry = MODEL_DB.get(category, {}).get(filename)
     if not entry:
         msg = f"Unknown model: {category}/{filename}"
@@ -125,24 +133,38 @@ async def download_model(
     url = entry["url"]
     logger.info("Downloading %s → %s", url, target_path)
 
+    rate = RateLimiter()
+    base = dict(source="curated", model_id=filename, category=category)
+
     # Stream download to avoid loading entire model into memory
     tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
             async with client.stream("GET", url) as resp:
                 resp.raise_for_status()
-                total = int(resp.headers.get("content-length", 0))
+                total = int(resp.headers.get("content-length", 0)) or None
                 downloaded = 0
+
+                await emit_download_progress(DownloadProgress(
+                    **base, status="starting",
+                    current_bytes=0, total_bytes=total, percent=0 if total else None,
+                ))
+
                 with open(tmp_path, "wb") as f:
                     async for chunk in resp.aiter_bytes(chunk_size=65536):
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if total > 0 and downloaded % (5 * 1024 * 1024) < 65536:
-                            pct = downloaded * 100 // total
+                        pct = (downloaded * 100 // total) if total else None
+                        if rate.allow("downloading", pct):
+                            await emit_download_progress(DownloadProgress(
+                                **base, status="downloading",
+                                current_bytes=downloaded, total_bytes=total,
+                                percent=pct,
+                            ))
+                        if total and downloaded % (5 * 1024 * 1024) < 65536:
                             logger.info(
                                 "  %s: %d%% (%d / %d MB)",
-                                filename,
-                                pct,
+                                filename, pct or 0,
                                 downloaded // (1024 * 1024),
                                 total // (1024 * 1024),
                             )
@@ -150,10 +172,18 @@ async def download_model(
         # Atomic rename on success
         tmp_path.rename(target_path)
         logger.info("Download complete: %s", target_path)
+        await emit_download_progress(DownloadProgress(
+            **base, status="complete",
+            current_bytes=downloaded, total_bytes=total, percent=100 if total else None,
+        ))
         return target_path
 
-    except Exception:
+    except Exception as exc:
         # Clean up partial download
         if tmp_path.is_file():
             tmp_path.unlink(missing_ok=True)
+        await emit_download_progress(DownloadProgress(
+            **base, status="error",
+            current_bytes=0, total_bytes=None, percent=None, error=str(exc),
+        ))
         raise

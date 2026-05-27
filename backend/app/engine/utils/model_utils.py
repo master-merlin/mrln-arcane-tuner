@@ -75,21 +75,19 @@ class ModelPathResolver:
         *,
         local_files_only: bool = False,
     ) -> str:
-        """Download from HuggingFace Hub and return the local cache path.
+        """Download from HuggingFace Hub and return the local cache path."""
+        from app.api.events.download_progress import WSProgressTqdm, with_progress
+        from functools import partial
 
-        Tries ``local_files_only=True`` first to avoid filesystem
-        operations (symlink creation) when the model is already cached.
-        Falls back to a normal download if local files are not found
-        — unless *local_files_only* is ``True``, in which case a
-        ``FileNotFoundError`` is raised.
-        """
         clean = path_str.replace("huggingface:", "")
         parts = clean.split(":")
-
         repo_id = parts[0]
         filename = parts[1] if len(parts) > 1 else None
+        # model_id for the WS payload — disambiguate single-file vs snapshot
+        progress_id = f"{repo_id}/{filename}" if filename else repo_id
 
-        # Try local-only first — avoids symlink errors on Windows
+        # Try local-only first — avoids symlink errors on Windows. No
+        # download happens here, so no progress emit is needed.
         try:
             if filename:
                 return hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=True)
@@ -103,13 +101,21 @@ class ModelPathResolver:
                     "the model first.",
                 )
 
+        # Real download — wrap with progress emits.
+        bound_tqdm = partial(
+            WSProgressTqdm,
+            source="hf", model_id=progress_id, category="training",
+        )
         try:
-            if filename:
-                logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
-                return hf_hub_download(repo_id=repo_id, filename=filename)
-            else:
-                logger.info("downloading_snapshot_from_hub", repo=repo_id)
-                return snapshot_download(repo_id=repo_id)
+            with with_progress(model_id=progress_id, category="training"):
+                if filename:
+                    logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
+                    return hf_hub_download(
+                        repo_id=repo_id, filename=filename, tqdm_class=bound_tqdm,
+                    )
+                else:
+                    logger.info("downloading_snapshot_from_hub", repo=repo_id)
+                    return snapshot_download(repo_id=repo_id, tqdm_class=bound_tqdm)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("hf_download_failed", repo=repo_id, file=filename, error=str(e))
             raise

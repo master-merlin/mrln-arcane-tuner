@@ -61,17 +61,31 @@ class Qwen3VLModel(CaptionModel):
         else:
             dtype = torch.float16 if device == "cuda" else torch.float32
 
-        self.model = AutoModelForImageTextToText.from_pretrained(
-            model_id,
-            dtype=dtype,
-            device_map="auto" if device == "cuda" else None,
-            trust_remote_code=True,
-        )
+        from app.api.events.download_progress import WSProgressTqdm, with_progress
+        from functools import partial
 
-        self.processor = AutoProcessor.from_pretrained(
-            model_id,
-            trust_remote_code=True
-        )
+        with with_progress(model_id=model_id, category="caption"):
+            model_tqdm = partial(
+                WSProgressTqdm,
+                source="hf", model_id=f"{model_id}/model", category="caption",
+            )
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                model_id,
+                dtype=dtype,
+                device_map="auto" if device == "cuda" else None,
+                trust_remote_code=True,
+                tqdm_class=model_tqdm,
+            )
+
+            proc_tqdm = partial(
+                WSProgressTqdm,
+                source="hf", model_id=f"{model_id}/processor", category="caption",
+            )
+            self.processor = AutoProcessor.from_pretrained(
+                model_id,
+                trust_remote_code=True,
+                tqdm_class=proc_tqdm,
+            )
 
         self.loaded_variant = variant
         logger.info("qwen3_vl_loaded", variant=variant)

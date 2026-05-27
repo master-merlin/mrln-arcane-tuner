@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
     from app.core.logger import set_logging_loop
     set_logging_loop(loop)
 
+    from app.api.events.download_progress import set_app_loop
+    set_app_loop(loop)
+
     # ── Ensure core working directories exist ────────────────────────
     _backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for _dir in ("datasets", "models", os.path.join("models", "upscale"), "outputs"):

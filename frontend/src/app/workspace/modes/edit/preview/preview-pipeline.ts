@@ -95,6 +95,26 @@ export class PreviewPipeline {
         this.rendering.set(false);
     }
 
+    /**
+     * Average R/G/B of the source ImageData, excluding clipped highlights
+     * and crushed shadows (which carry no useful chromatic information for
+     * gray-world estimation). Subsamples every 4th pixel for speed. Returns
+     * null if no source is attached or every pixel was rejected.
+     */
+    sampleOriginalRGB(): { r: number; g: number; b: number } | null {
+        if (!this.original) return null;
+        const data = this.original.data;
+        let sumR = 0, sumG = 0, sumB = 0, n = 0;
+        for (let i = 0; i < data.length; i += 16) {
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            if (Math.max(r, g, b) > 245) continue;
+            if (Math.min(r, g, b) < 10) continue;
+            sumR += r; sumG += g; sumB += b; n++;
+        }
+        if (n === 0) return null;
+        return { r: sumR / n, g: sumG / n, b: sumB / n };
+    }
+
     private scheduleRender(): void {
         if (this.rafHandle != null || !this.original) return;
         this.rafHandle = requestAnimationFrame(() => {

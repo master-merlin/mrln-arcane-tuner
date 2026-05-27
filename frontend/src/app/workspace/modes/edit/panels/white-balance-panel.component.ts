@@ -1,10 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
+import { PreviewPipeline } from '../preview/preview-pipeline';
+import { estimateAutoWB } from './white-balance.math';
 import { WBParams } from '../operation-defs';
 
 const PRESETS: ReadonlyArray<{ name: string; temp: number; tint: number }> = [
-    { name: 'As Shot',     temp: 5500, tint: 0 },
+    { name: 'As Shot',     temp: 5200, tint: 0 },
     { name: 'Daylight',    temp: 5500, tint: 0 },
     { name: 'Cloudy',      temp: 6500, tint: 0 },
     { name: 'Shade',       temp: 7500, tint: 0 },
@@ -95,6 +97,7 @@ const PRESETS: ReadonlyArray<{ name: string; temp: number; tint: number }> = [
 })
 export class WhiteBalancePanelComponent {
     private state = inject(PipelineEditorState);
+    private preview = inject(PreviewPipeline);
     protected op = computed(() => this.state.whiteBalance());
     protected presets = PRESETS;
 
@@ -111,8 +114,10 @@ export class WhiteBalancePanelComponent {
         this.state.whiteBalance.update(o => ({ ...o, enabled: true, params: { ...o.params, temperature: temp, tint } }));
     }
     autoWB(): void {
-        // Backend may expose an auto-WB endpoint; if not yet wired, nudge to 6500/0.
-        this.applyPreset(6500, 0);
+        const rgb = this.preview.sampleOriginalRGB();
+        if (!rgb) return;
+        const { temperature, tint } = estimateAutoWB(rgb.r, rgb.g, rgb.b);
+        this.applyPreset(temperature, tint);
     }
     formatTint(t: number): string {
         return (t > 0 ? '+' : '') + t.toString();

@@ -104,7 +104,7 @@ export class EditMode {
 
             if (!lastIdentity) {
                 lastIdentity = id;
-                void this.state.hydrate(this.datasetName(), p.media_file);
+                void this.state.hydrate(this.datasetName(), p.media_file, !!p?.metadata?.has_overlay);
                 return;
             }
 
@@ -124,7 +124,7 @@ export class EditMode {
             }
 
             lastIdentity = id;
-            void this.state.hydrate(this.datasetName(), p.media_file);
+            void this.state.hydrate(this.datasetName(), p.media_file, !!p?.metadata?.has_overlay);
         });
     }
 }

@@ -189,24 +189,34 @@ export class PipelineEditorState {
         this.markClean();
     }
 
-    async hydrate(datasetName: string, mediaFile: string): Promise<void> {
+    /**
+     * Load editor state for an image. When `hasOverlay` is false we skip the
+     * overlay-recipe fetch entirely — the recipe endpoint 404s for every
+     * un-edited image, so fetching unconditionally produced a guaranteed 404
+     * (wasted request + confusing error noise) on every image without an
+     * overlay. The `has_overlay` flag is kept in sync by the WS bridge, so it
+     * is the authoritative gate.
+     */
+    async hydrate(datasetName: string, mediaFile: string, hasOverlay: boolean): Promise<void> {
         this.datasetName.set(datasetName);
         this.mediaFile.set(mediaFile);
 
-        await this.overlay.loadFor(datasetName, mediaFile);
-        const id = `${datasetName}/${mediaFile}`;
-        const row = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
-
-        if (!row?.operations || row.operations.length === 0) {
-            this.resetAll();
-            this.markClean();
-            return;
+        if (hasOverlay) {
+            await this.overlay.loadFor(datasetName, mediaFile);
+            const id = `${datasetName}/${mediaFile}`;
+            const row = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
+            if (row?.operations && row.operations.length > 0) {
+                this.resetAll();
+                for (const op of row.operations) {
+                    this.applyRecipeOp(op.type, op.params ?? {}, op.enabled !== false);
+                }
+                this.markClean();
+                return;
+            }
         }
 
+        // No overlay (flag false, or flagged but recipe was empty/missing).
         this.resetAll();
-        for (const op of row.operations) {
-            this.applyRecipeOp(op.type, op.params ?? {}, op.enabled !== false);
-        }
         this.markClean();
     }
 

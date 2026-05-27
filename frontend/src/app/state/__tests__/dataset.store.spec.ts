@@ -100,8 +100,14 @@ describe('DatasetStore', () => {
         const optimistic = store.byId('a')();
         expect(optimistic?.description).toBe('new-desc');
         await p;
-        // API should receive (currentName, newName, description, classifier).
-        expect(api.updateDataset).toHaveBeenCalledWith('alpha', 'alpha', 'new-desc', '');
+        // API receives (currentName, newName, description, classifier, extra),
+        // where `extra` carries the current trigger_word/tags/notes so a
+        // description-only edit doesn't wipe that metadata server-side.
+        expect(api.updateDataset).toHaveBeenCalledWith('alpha', 'alpha', 'new-desc', '', {
+            trigger_word: '',
+            tags: [],
+            notes: '',
+        });
     });
 
     it('updateDataset rolls back on API failure', async () => {

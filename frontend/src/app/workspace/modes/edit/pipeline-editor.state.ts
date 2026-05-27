@@ -282,5 +282,9 @@ export class PipelineEditorState {
             await this.overlay.deleteOverlay(name, file);
         }
         this.resetAll();
+        // The overlay URL the canvas was displaying just became invalid on
+        // disk. Bump sourceRev so the <img> re-fetches even if the new URL
+        // (now the original) happens to match what the browser has cached.
+        this.sourceRev.update(r => r + 1);
     }
 }

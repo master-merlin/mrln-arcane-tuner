@@ -197,14 +197,24 @@ export class EditCanvasComponent {
     protected preview = inject(PreviewPipeline);
 
     /**
+     * Set when an overlay-PNG load fails (e.g., recipe-only state where the
+     * JSON exists but the rendered PNG was deleted from disk). Forces
+     * `sourceUrl` to use the original image — the PreviewPipeline then
+     * replays the saved recipe via `state.blocks()`. Reset on identity change.
+     */
+    private overlayLoadFailed = signal<boolean>(false);
+
+    /**
      * Source URL:
-     *  - if a rendered overlay PNG exists, use it (state 2 in spec — "baked Overlay file")
-     *  - else use the original (state 1, 3, or 4)
-     * `sourceRev` is appended on Bake to bust the browser cache after the original is replaced.
+     *  - if a rendered overlay PNG exists AND the previous attempt didn't 404,
+     *    use it (state 2 in spec — "baked Overlay file")
+     *  - else use the original (state 1, 3, or 4 — recipe-only replay falls here)
+     * `sourceRev` is appended on Bake/Revert to bust the browser cache after
+     * the original is replaced or the overlay is deleted.
      */
     protected sourceUrl = computed<string>(() => {
         const rev = this.state.sourceRev();
-        if (this.hasOverlay()) {
+        if (this.hasOverlay() && !this.overlayLoadFailed()) {
             const id = `${this.datasetName()}/${this.mediaFile()}`;
             const ov = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
             if (ov?.overlay_file) {
@@ -218,12 +228,14 @@ export class EditCanvasComponent {
     });
 
     constructor() {
-        // Identity change → detach so the next (load) re-attaches cleanly.
+        // Identity change → detach + reset overlay-fail flag so the next
+        // image gets a clean slate.
         let lastKey = '';
         effect(() => {
             const key = `${this.datasetName()}/${this.mediaFile()}`;
             if (key === lastKey) return;
             lastKey = key;
+            this.overlayLoadFailed.set(false);
             this.preview.detach();
         });
     }
@@ -236,6 +248,13 @@ export class EditCanvasComponent {
     }
 
     protected onSourceError(): void {
+        // If the overlay PNG failed (recipe-only state with missing file),
+        // flip to the original URL and let the canvas pipeline replay the
+        // recipe. Don't detach yet — the retry will re-attach on success.
+        if (this.hasOverlay() && !this.overlayLoadFailed()) {
+            this.overlayLoadFailed.set(true);
+            return;
+        }
         this.preview.detach();
     }
 

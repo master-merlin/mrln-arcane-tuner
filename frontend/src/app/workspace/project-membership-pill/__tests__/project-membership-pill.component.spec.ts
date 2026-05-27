@@ -100,7 +100,7 @@ describe('ProjectMembershipPillComponent', () => {
         expect(toast.error).toHaveBeenCalled();
     });
 
-    it('remove() calls the service, flips to add, toasts', () => {
+    it('remove() calls the service, flips to add, toasts, refreshes projects', () => {
         getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
@@ -110,6 +110,7 @@ describe('ProjectMembershipPillComponent', () => {
         expect(removeProjectDataset).toHaveBeenCalledWith('p1', 'd1');
         expect(component.state()).toBe('add');
         expect(toast.success).toHaveBeenCalled();
+        expect(loadProjects).toHaveBeenCalled();
     });
 
     it('falls back to dataset name when id is absent', () => {

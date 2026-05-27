@@ -15,6 +15,7 @@ import { DetailCaptionSidebarComponent } from '../../components/dataset/dataset-
 import { OverlayStore } from '../../state/overlay.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { IcoComponent } from '../../icons/ico.component';
+import { CanvasFooterComponent } from '../shared/canvas-footer.component';
 
 /**
  * Details mode — 3-pane layout (mask LEFT 320px / canvas / caption RIGHT
@@ -35,6 +36,7 @@ import { IcoComponent } from '../../icons/ico.component';
         DetailMediaContainerComponent,
         DetailCaptionSidebarComponent,
         IcoComponent,
+        CanvasFooterComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -60,79 +62,26 @@ import { IcoComponent } from '../../icons/ico.component';
                         (nextRequested)="next()"
                         (deleteRequested)="deletePair.emit(pair)"/>
 
-                    <footer class="canvas-footer">
-                        <!-- Zoom controls (visual; real zoom is part of
-                             the editor extraction PR). -->
-                        <div class="zoom-group">
-                            <button type="button" class="icon-btn" title="Zoom out" disabled>
-                                <app-ico name="ZoomOut" [size]="13"/>
-                            </button>
-                            <span class="mono zoom-val">100%</span>
-                            <button type="button" class="icon-btn" title="Zoom in" disabled>
-                                <app-ico name="ZoomIn" [size]="13"/>
-                            </button>
-                            <span class="footer-divider"></span>
-                            <button type="button" class="icon-btn" title="Fullscreen" disabled>
-                                <app-ico name="Maximize" [size]="12"/>
-                            </button>
-                        </div>
-
-                        <div class="meta-strip">
-                            @if (mediaMeta(); as m) {
-                                @if (m.res) {
-                                    <span class="meta-item">
-                                        <app-ico name="Image" [size]="12"/>
-                                        <span class="mono">{{ m.res }}</span>
-                                    </span>
-                                }
-                                @if (m.ar) {
-                                    <span class="meta-item">
-                                        <span class="muted">AR</span>
-                                        <span class="mono">{{ m.ar }}</span>
-                                    </span>
-                                }
-                                @if (m.orientation) {
-                                    <span class="chip solid orientation">{{ m.orientation }}</span>
-                                }
-                                @if (m.size) {
-                                    <span class="meta-item">
-                                        <app-ico name="HardDrive" [size]="12"/>
-                                        <span class="mono">{{ m.size }}</span>
-                                    </span>
-                                }
-                                @if (m.hpsLabel && m.hpsTone) {
-                                    <span [class]="'tag ' + m.hpsTone">{{ m.hpsLabel }}</span>
-                                }
-                                @if (m.hasOverlay) {
-                                    <span class="tag violet" title="Adjustment overlay applied">
-                                        <app-ico name="Layers" [size]="11"/>
-                                        OVR
-                                    </span>
-                                }
-                            }
-                        </div>
-
-                        <div class="action-group">
-                            <button type="button" class="footer-action violet" title="Adjust (open editor)"
-                                    (click)="openEditor()">
-                                <app-ico name="Sliders" [size]="14"/>
-                            </button>
-                            <button type="button" class="footer-action brand" title="Crop"
-                                    (click)="openCrop()">
-                                <app-ico name="Crop" [size]="14"/>
-                            </button>
-                            <button type="button" class="footer-action exclude"
-                                    [class.is-excluded]="isExcluded()"
-                                    [title]="isExcluded() ? 'Excluded — click to re-include' : 'Exclude from training'"
-                                    (click)="onToggleExclusion()">
-                                <app-ico name="TriangleAlert" [size]="14"/>
-                            </button>
-                            <button type="button" class="footer-action danger" title="Delete entry"
-                                    (click)="deletePair.emit(pair)">
-                                <app-ico name="Trash2" [size]="14"/>
-                            </button>
-                        </div>
-                    </footer>
+                    <app-canvas-footer [meta]="mediaMeta()">
+                        <button type="button" class="footer-action violet" title="Adjust (open editor)"
+                                (click)="openEditor()">
+                            <app-ico name="Sliders" [size]="14"/>
+                        </button>
+                        <button type="button" class="footer-action brand" title="Crop"
+                                (click)="openCrop()">
+                            <app-ico name="Crop" [size]="14"/>
+                        </button>
+                        <button type="button" class="footer-action exclude"
+                                [class.is-excluded]="isExcluded()"
+                                [title]="isExcluded() ? 'Excluded — click to re-include' : 'Exclude from training'"
+                                (click)="onToggleExclusion()">
+                            <app-ico name="TriangleAlert" [size]="14"/>
+                        </button>
+                        <button type="button" class="footer-action danger" title="Delete entry"
+                                (click)="deletePair.emit(pair)">
+                            <app-ico name="Trash2" [size]="14"/>
+                        </button>
+                    </app-canvas-footer>
                 </main>
                 <aside class="pane caption">
                     <app-detail-caption-sidebar
@@ -173,62 +122,9 @@ import { IcoComponent } from '../../icons/ico.component';
             font-size: 13px;
         }
 
-        /* Canvas footer — zoom · metadata · actions */
-        .canvas-footer {
-            flex-shrink: 0;
-            height: 52px;
-            padding: 0 18px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: var(--color-surface-low);
-            border-top: 1px solid var(--color-border-subtle);
-        }
-        .zoom-group {
-            display: flex;
-            align-items: center;
-            gap: 2px;
-            padding: 3px 4px;
-            background: var(--color-surface-mid);
-            border: 1px solid var(--color-border-subtle);
-            border-radius: var(--radius-theme-md);
-        }
-        .zoom-group .icon-btn { width: 24px; height: 24px; }
-        .zoom-group .icon-btn:disabled { opacity: 0.45; cursor: default; }
-        .zoom-val { font-size: 11.5px; padding: 0 6px; min-width: 46px; text-align: center; color: var(--color-text-muted); }
-        .footer-divider {
-            width: 1px;
-            height: 16px;
-            background: var(--color-border-subtle);
-            margin: 0 2px;
-        }
-        .meta-strip {
-            flex: 1;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 22px;
-            font-size: 11.5px;
-            color: var(--color-text-muted);
-            flex-wrap: wrap;
-        }
-        .meta-strip .meta-item {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .meta-strip .meta-item .muted { color: var(--color-text-subtle); }
-        .meta-strip .chip.solid.orientation {
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-        .action-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-shrink: 0;
-        }
+        /* Canvas footer action buttons — projected into <app-canvas-footer>
+           via ng-content. The footer chrome (zoom, meta-strip, action-group
+           layout) lives in CanvasFooterComponent's own styles. */
         .footer-action {
             width: 30px;
             height: 30px;

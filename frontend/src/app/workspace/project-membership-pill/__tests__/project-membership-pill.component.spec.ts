@@ -133,6 +133,20 @@ describe('ProjectMembershipPillComponent', () => {
         expect(addProjectDataset).toHaveBeenCalledWith('p1', 'ds-noid');
     });
 
+    it('refetches membership when scope switches to another project', () => {
+        getProjectDatasets.and.callFake((pid: string) =>
+            pid === 'p1' ? of([{ id: 'd1', name: 'ds-1' }]) : of([]));
+        setDataset({ id: 'd1', name: 'ds-1' });
+        projectId.set('p1');
+        fixture.detectChanges();
+        expect(component.state()).toBe('member');
+
+        projectId.set('p2');
+        fixture.detectChanges();
+        expect(getProjectDatasets).toHaveBeenCalledWith('p2');
+        expect(component.state()).toBe('add');
+    });
+
     it('activeProjectName resolves from allProjects', () => {
         projectId.set('p1');
         fixture.detectChanges();

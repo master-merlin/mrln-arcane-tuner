@@ -103,8 +103,15 @@ export class ProjectMembershipPillComponent {
                 return;
             }
             this.projects.getProjectDatasets(pid).subscribe({
-                next: rows => this.projectDatasetIds.set(new Set(rows.map(r => r.id ?? r.name))),
-                error: () => this.projectDatasetIds.set(new Set()),
+                next: rows => {
+                    // Drop a stale response if the scope changed while in flight.
+                    if (this.scope.projectId() !== pid) return;
+                    this.projectDatasetIds.set(new Set(rows.map(r => r.id ?? r.name)));
+                },
+                error: () => {
+                    if (this.scope.projectId() !== pid) return;
+                    this.projectDatasetIds.set(new Set());
+                },
             });
         });
     }
@@ -141,6 +148,7 @@ export class ProjectMembershipPillComponent {
         });
     }
 
+    /** Membership key — falls back to `name` for legacy entries that predate dataset ids. */
     private keyOf(ds: PillDataset): string {
         return ds.id ?? ds.name;
     }

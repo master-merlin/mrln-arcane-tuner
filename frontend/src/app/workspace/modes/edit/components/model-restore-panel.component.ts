@@ -277,7 +277,7 @@ export class ModelRestorePanelComponent {
         this.isDownloading.set(entry.filename);
         try {
             await firstValueFrom(
-                this.datasets.downloadModel(category, entry.filename),
+                this.datasets.downloadModel(category, entry.filename, this.folder()),
             );
             await this.scan();
             const installed = this.models().find(m => m.name === entry.filename);

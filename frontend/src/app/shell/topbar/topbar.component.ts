@@ -12,6 +12,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { filter } from 'rxjs';
 import { ContextSwitcherComponent } from '../context-switcher/context-switcher.component';
 import { IcoComponent } from '../../icons/ico.component';
+import { DownloadIndicatorComponent } from './download-indicator.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ProjectService } from '../../services/project.service';
 import {
@@ -43,7 +44,7 @@ interface FieldOption {
 @Component({
     selector: 'app-topbar',
     standalone: true,
-    imports: [ContextSwitcherComponent, IcoComponent],
+    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './topbar.component.html',
 })

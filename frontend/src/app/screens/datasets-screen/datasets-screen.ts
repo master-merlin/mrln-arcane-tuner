@@ -57,6 +57,9 @@ export class DatasetsScreen {
     /** Dataset ids that belong to the active project, when one is scoped. */
     private projectDatasetIds = signal<Set<string>>(new Set());
 
+    /** True while the fullscreen workspace overlay is mounted over the library. */
+    private workspaceOpen = computed(() => this.overlay.workspace() !== null);
+
     constructor() {
         // Load the global dataset list once on mount. Idempotent: re-runs are
         // harmless because setAll replaces the entity map.
@@ -64,11 +67,17 @@ export class DatasetsScreen {
             // Errors surface as toasts via the entity-store base; nothing to do.
         });
 
-        // Reactively refresh the project-membership filter whenever scope
-        // changes. Switching scope from the context-switcher or sidebar must
-        // update the grid immediately — ngOnInit fired only on mount.
+        // Refresh the project-membership filter whenever scope changes OR when
+        // the user returns from the workspace overlay. Switching scope from the
+        // context-switcher or sidebar must update the grid immediately; and the
+        // workspace "Add to project" pill can change membership WITHOUT changing
+        // scope. Since this screen stays mounted beneath the overlay, closing
+        // the workspace must re-sync membership — otherwise a just-added dataset
+        // stays hidden. The fetch is skipped while the overlay is open (the grid
+        // is hidden and the pre-add snapshot would be stale anyway).
         effect(() => {
             const pid = this.scope.projectId();
+            if (this.workspaceOpen()) return;
             void this.refreshProjectMembership(pid);
         });
     }

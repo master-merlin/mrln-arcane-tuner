@@ -9,13 +9,14 @@ import { SharpenPanelComponent } from '../panels/sharpen-panel.component';
 import { VignettePanelComponent } from '../panels/vignette-panel.component';
 import { LensPanelComponent } from '../panels/lens-panel.component';
 import { LutPanelComponent } from '../panels/lut-panel.component';
+import { ColorMatchPanelComponent } from '../panels/color-match-panel.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
 @Component({
     selector: 'app-edit-left-panel',
     standalone: true,
-    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent, ColorTonePanelComponent, HslPanelWrapperComponent, SharpenPanelComponent, VignettePanelComponent, LensPanelComponent, LutPanelComponent],
+    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent, ColorTonePanelComponent, HslPanelWrapperComponent, SharpenPanelComponent, VignettePanelComponent, LensPanelComponent, LutPanelComponent, ColorMatchPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="tabs">
@@ -87,6 +88,9 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                 }
                 @case ('lut') {
                     <app-lut-panel/>
+                }
+                @case ('color_match') {
+                    <app-color-match-panel/>
                 }
                 @default {
                     <div class="panel-todo">

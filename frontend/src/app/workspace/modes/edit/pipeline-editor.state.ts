@@ -52,9 +52,9 @@ export class PipelineEditorState {
     readonly vignette     = signal<OpEntry<VignetteParams>>(mkOp('vignette') as OpEntry<VignetteParams>);
     readonly lens         = signal<OpEntry<LensParams>>(mkOp('lens') as OpEntry<LensParams>);
     readonly sharpen      = signal<OpEntry<SharpenParams>>(mkOp('sharpen') as OpEntry<SharpenParams>);
-    readonly denoise      = signal(mkOp('denoise'));
-    readonly faceRestore  = signal(mkOp('face_restore'));
-    readonly upscale      = signal(mkOp('upscale'));
+    readonly denoise      = signal<OpEntry<RestoreParams>>(mkOp('denoise') as OpEntry<RestoreParams>);
+    readonly faceRestore  = signal<OpEntry<RestoreParams>>(mkOp('face_restore') as OpEntry<RestoreParams>);
+    readonly upscale      = signal<OpEntry<UpscaleParams>>(mkOp('upscale') as OpEntry<UpscaleParams>);
 
     /** User-mutable pipeline order. Mirrors PIPELINE_ORDER initially. */
     readonly operationOrder = signal<OperationKind[]>([...PIPELINE_ORDER]);

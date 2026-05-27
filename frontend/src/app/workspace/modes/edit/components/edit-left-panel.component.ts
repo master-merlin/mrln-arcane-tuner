@@ -10,13 +10,16 @@ import { VignettePanelComponent } from '../panels/vignette-panel.component';
 import { LensPanelComponent } from '../panels/lens-panel.component';
 import { LutPanelComponent } from '../panels/lut-panel.component';
 import { ColorMatchPanelComponent } from '../panels/color-match-panel.component';
+import { DenoisePanelComponent } from '../panels/denoise-panel.component';
+import { FaceRestorePanelComponent } from '../panels/face-restore-panel.component';
+import { UpscalePanelComponent } from '../panels/upscale-panel.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
 
 @Component({
     selector: 'app-edit-left-panel',
     standalone: true,
-    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent, ColorTonePanelComponent, HslPanelWrapperComponent, SharpenPanelComponent, VignettePanelComponent, LensPanelComponent, LutPanelComponent, ColorMatchPanelComponent],
+    imports: [IcoComponent, CropPanelComponent, WhiteBalancePanelComponent, CurvesPanelComponent, ColorTonePanelComponent, HslPanelWrapperComponent, SharpenPanelComponent, VignettePanelComponent, LensPanelComponent, LutPanelComponent, ColorMatchPanelComponent, DenoisePanelComponent, FaceRestorePanelComponent, UpscalePanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="tabs">
@@ -91,6 +94,15 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                 }
                 @case ('color_match') {
                     <app-color-match-panel/>
+                }
+                @case ('denoise') {
+                    <app-denoise-panel/>
+                }
+                @case ('face_restore') {
+                    <app-face-restore-panel/>
+                }
+                @case ('upscale') {
+                    <app-upscale-panel/>
                 }
                 @default {
                     <div class="panel-todo">

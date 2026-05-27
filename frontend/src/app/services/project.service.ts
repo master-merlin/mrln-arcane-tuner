@@ -50,25 +50,28 @@ export class ProjectService {
 
   // Global App State for Projects
   allProjects = signal<Project[]>([]);
-  activeDatasetProject = signal<string | null>(null);
   activeJobsProject = signal<string | null>(null);
 
   /**
-   * Compat shim — `activeTrainingProject` used to be an independent
-   * writable signal scattered around the old training screens. In the
-   * Hi-Fi overhaul (Phase 8) it became a read-through of `ScopeStore`:
-   * the user's current project scope IS the active training project.
+   * Compat shim — `activeTrainingProject` and `activeDatasetProject` used to
+   * be independent writable signals scattered around the old training /
+   * captioning / masking screens. In the Hi-Fi overhaul (Phase 8) the user's
+   * current project scope ({@link ScopeStore}) became the single source of
+   * truth, so both now read **through** it: switching scope switches the
+   * active project for training, captioning and masking alike.
    *
-   * Exposed as an object with the same `.set()` / call-as-signal surface
-   * the old code expected, so any straggling consumer (none found in the
-   * frontend today, but the search may have missed dynamic references)
-   * continues to work. `.set(null)` switches to Global; `.set(id)`
+   * Exposed as an object with the same `.set()` / call-as-signal surface the
+   * old code expected, so any straggling consumer (the legacy dataset-manager
+   * / viewer-toolbar "Context" selectors, the shared caption/masking-settings
+   * components) continues to work. `.set(null)` switches to Global; `.set(id)`
    * switches to that project.
+   *
+   * `activeDatasetProject` reading through scope is what lets project-scoped
+   * captioning/masking templates appear in the mass-* modals: those modals
+   * resolve their project via `effectiveProjectId() = input ?? activeDatasetProject()`,
+   * and the new shell only ever sets scope — never an explicit input.
    */
-  readonly activeTrainingProject = ((): {
-    (): string | null;
-    set: (value: string | null) => void;
-  } => {
+  private scopeProjectShim(): { (): string | null; set: (value: string | null) => void } {
     const read = computed(() => this.scope.projectId());
     const fn = (() => read()) as { (): string | null; set: (value: string | null) => void };
     fn.set = (value: string | null) => {
@@ -76,7 +79,10 @@ export class ProjectService {
       else this.scope.setProject(value);
     };
     return fn;
-  })();
+  }
+
+  readonly activeTrainingProject = this.scopeProjectShim();
+  readonly activeDatasetProject = this.scopeProjectShim();
 
   loadProjects() {
     this.listProjects().subscribe(projects => this.allProjects.set(projects));

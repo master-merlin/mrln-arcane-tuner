@@ -271,7 +271,9 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     }
 
     private loadModelTemplates(modelId: string) {
-        this.templateService.listMaskingTemplates(modelId, this.projectId()).subscribe(templates => {
+        // Use effectiveProjectId (not the raw input) so project-scoped templates
+        // survive a model switch — matches dataset-caption-settings.
+        this.templateService.listMaskingTemplates(modelId, this.effectiveProjectId()).subscribe(templates => {
             this.currentTemplates.set(templates);
             const defaultTpl = templates.find(t => t.is_default);
             this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));

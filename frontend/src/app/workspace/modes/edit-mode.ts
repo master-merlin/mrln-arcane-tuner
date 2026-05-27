@@ -1,6 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input } from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
-import { DatasetService } from '../../services/dataset';
 import { PipelineEditorState } from './edit/pipeline-editor.state';
 import { PreviewPipeline } from './edit/preview/preview-pipeline';
 import { EditLeftPanelComponent } from './edit/components/edit-left-panel.component';
@@ -71,7 +70,6 @@ export class EditMode {
     datasetName = input.required<string>();
 
     protected overlay = inject(OverlayStore);
-    protected datasets = inject(DatasetService);
     private state = inject(PipelineEditorState);
 
     protected currentPair = computed(() => {

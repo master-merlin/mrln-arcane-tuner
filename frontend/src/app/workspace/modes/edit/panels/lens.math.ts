@@ -81,8 +81,10 @@ export const applyLensCorrection: ApplyFn<LensParams> = (pixels, w, h, params) =
                 const c = perspCoeffs;
                 const denom = c[6] * sx + c[7] * sy + 1;
                 if (Math.abs(denom) > 1e-10) {
-                    sx = (c[0] * sx + c[1] * sy + c[2]) / denom;
-                    sy = (c[3] * sx + c[4] * sy + c[5]) / denom;
+                    const px = (c[0] * sx + c[1] * sy + c[2]) / denom;
+                    const py = (c[3] * sx + c[4] * sy + c[5]) / denom;
+                    sx = px;
+                    sy = py;
                 }
             }
 

@@ -2,10 +2,7 @@
 import { DestroyRef, Injectable, computed, effect, inject, signal } from '@angular/core';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import type { ApplyFn, HistogramData } from './preview-types';
-import type {
-    OperationKind, ColorToneParams, WBParams, CurvesParams,
-    HslParams, VignetteParams, LensParams, SharpenParams, LutParams,
-} from '../operation-defs';
+import type { OperationKind, LutParams } from '../operation-defs';
 import { applyWhiteBalance } from '../panels/white-balance.math';
 import { applyCurves } from '../panels/curves.math';
 import { applyColorTone } from '../panels/color-tone.math';

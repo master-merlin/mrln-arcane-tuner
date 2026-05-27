@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Overlay, OverlayStore } from '../../../state/overlay.store';
-import { DatasetService, PipelineBlock } from '../../../services/dataset';
+import { PipelineBlock } from '../../../services/dataset';
 import {
     OperationKind, PIPELINE_ORDER, BACKEND_TYPE_FOR, DEFAULT_PARAMS,
     WBParams, CurvesParams, LutParams, ColorMatchParams, HslParams,
@@ -39,7 +39,6 @@ function mkOp<K extends keyof typeof DEFAULT_PARAMS>(
 @Injectable()
 export class PipelineEditorState {
     private overlay = inject(OverlayStore);
-    private datasets = inject(DatasetService);
 
     readonly datasetName = signal<string>('');
     readonly mediaFile = signal<string>('');
@@ -272,7 +271,6 @@ export class PipelineEditorState {
         if (!name || !file) return;
         await this.overlay.commitOverlay(name, file);
         this.resetAll();
-        this.markClean();
         this.sourceRev.update(r => r + 1);
     }
 
@@ -284,6 +282,5 @@ export class PipelineEditorState {
             await this.overlay.deleteOverlay(name, file);
         }
         this.resetAll();
-        this.markClean();
     }
 }

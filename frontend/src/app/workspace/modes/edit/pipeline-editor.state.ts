@@ -1,12 +1,13 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Overlay, OverlayStore } from '../../../state/overlay.store';
-import { DatasetService, PipelineBlock } from '../../../services/dataset';
+import { PipelineBlock } from '../../../services/dataset';
 import {
     OperationKind, PIPELINE_ORDER, BACKEND_TYPE_FOR, DEFAULT_PARAMS,
     WBParams, CurvesParams, LutParams, ColorMatchParams, HslParams,
     ColorToneParams, VignetteParams, LensParams, SharpenParams,
     RestoreParams, UpscaleParams,
 } from './operation-defs';
+import type { CubeLut } from './preview/preview-types';
 
 export interface OpEntry<P> {
     kind: OperationKind;
@@ -31,14 +32,13 @@ function mkOp<K extends keyof typeof DEFAULT_PARAMS>(
  * `providers: [PipelineEditorState]` so it dies with the mode. Holds
  * working state for 12 pipeline operations + user-reorderable order.
  *
- * Saved overlays live in OverlayStore (the source of truth for what's
- * on disk). This service is the live in-flight working set, synced via
- * hydrate() on mount and applyAndSave() on commit.
+ * Live preview rendering is owned by `PreviewPipeline` (sibling
+ * service); this store is the source of truth for op state. Backend
+ * round-trips are owned by `applyAndSave()` (Save) and `bake()`.
  */
 @Injectable()
 export class PipelineEditorState {
     private overlay = inject(OverlayStore);
-    private datasets = inject(DatasetService);
 
     readonly datasetName = signal<string>('');
     readonly mediaFile = signal<string>('');
@@ -59,55 +59,19 @@ export class PipelineEditorState {
     /** User-mutable pipeline order. Mirrors PIPELINE_ORDER initially. */
     readonly operationOrder = signal<OperationKind[]>([...PIPELINE_ORDER]);
 
-    /** URL of the most-recent live-preview overlay PNG (from renderPipeline
-     *  with replaceRecipe=false). Null until first render completes. */
-    readonly previewOverlay = signal<{ url: string; hash: string } | null>(null);
-
-    /** True while a render request is in flight (drives a small spinner). */
-    readonly rendering = signal<boolean>(false);
-
-    private pendingRender = false;
+    /**
+     * Transient (per-session) cache of parsed .cube files keyed by
+     * filename. Populated by LutPanel on import. Not persisted — on
+     * reload the user must re-import .cube files for preview, while
+     * backend Save still applies them authoritatively.
+     */
+    readonly parsedCubes = signal<ReadonlyMap<string, CubeLut>>(new Map());
 
     /**
-     * Trigger a render based on current blocks(). Called by the debounced
-     * effect in EditMode whenever blocks() changes with stable image identity.
-     *
-     * `replaceRecipe` defaults false (preview); applyAndSave passes true.
-     * In-flight handling: one slot queue; if a new call arrives mid-flight,
-     * one more render fires after the current finishes (latest wins).
+     * Bumped on Bake-in completion. EditCanvas appends `?r=<rev>` to
+     * sourceUrl so the browser re-fetches the (newly baked) original.
      */
-    async renderNow(replaceRecipe = false): Promise<void> {
-        const name = this.datasetName();
-        const file = this.mediaFile();
-        if (!name || !file) return;
-
-        // Nothing to render — skip the round-trip and clear any stale preview.
-        // `replaceRecipe=true` (Apply & save) still needs to fall through so
-        // an "all disabled" save can wipe the saved overlay's recipe entry.
-        const blocks = this.blocks();
-        if (blocks.length === 0 && !replaceRecipe) {
-            this.previewOverlay.set(null);
-            return;
-        }
-
-        if (this.rendering()) { this.pendingRender = true; return; }
-        this.rendering.set(true);
-        try {
-            const result = await this.overlay.renderPipeline(
-                name, file, blocks, 512, 32, replaceRecipe,
-            );
-            if (result.ok) {
-                const r = result.value;
-                this.previewOverlay.set({ url: r.overlay, hash: r.hash });
-            }
-        } finally {
-            this.rendering.set(false);
-            if (this.pendingRender) {
-                this.pendingRender = false;
-                void this.renderNow(false);
-            }
-        }
-    }
+    readonly sourceRev = signal<number>(0);
 
     /** Snapshot of last-saved state — used to compute `dirty`. */
     private savedSnapshot = signal<string>('');
@@ -155,7 +119,6 @@ export class PipelineEditorState {
     readonly blocks = computed<PipelineBlock[]>(() => {
         const out: PipelineBlock[] = [];
 
-        // Color Match always first (backend applies it first regardless).
         const cm = this.colorMatch();
         if (cm.enabled && cm.params.reference_path) {
             out.push({ type: 'color_match', enabled: true, params: { ...cm.params } });
@@ -166,7 +129,6 @@ export class PipelineEditorState {
             if (!op.enabled) continue;
             const t = BACKEND_TYPE_FOR[kind];
             if (Array.isArray(t)) {
-                // color_tone → hue_saturation + contrast
                 const p = op.params as ColorToneParams;
                 out.push({ type: 'hue_saturation', enabled: true, params: { hue_shift: p.hue_shift, saturation: p.saturation } });
                 out.push({ type: 'contrast', enabled: true, params: { contrast: p.contrast } });
@@ -177,13 +139,20 @@ export class PipelineEditorState {
         return out;
     });
 
-    /** Toggle the enabled flag for a single op. */
+    /** Add or replace a parsed .cube file in the transient cache. */
+    ingestCube(filename: string, cube: CubeLut): void {
+        this.parsedCubes.update(m => {
+            const next = new Map(m);
+            next.set(filename, cube);
+            return next;
+        });
+    }
+
     setEnabled(kind: OperationKind, enabled: boolean): void {
         const s = this.signalFor(kind);
         s.update(o => ({ ...o, enabled }));
     }
 
-    /** Reorder operationOrder by moving item at `from` to position `to`. */
     moveOperation(from: number, to: number): void {
         this.operationOrder.update(arr => {
             if (from < 0 || from >= arr.length) return arr;
@@ -195,17 +164,14 @@ export class PipelineEditorState {
         });
     }
 
-    /** Reset just one panel to defaults. */
     resetPanel(kind: OperationKind): void {
         this.signalFor(kind).set(mkOp(kind as keyof typeof DEFAULT_PARAMS) as any);
     }
 
-    /** Stamp the current state as the saved snapshot. */
     markClean(): void {
         this.savedSnapshot.set(this.liveJson());
     }
 
-    /** Reset everything to defaults + mark clean. Called by hydrate (no overlay). */
     resetAll(): void {
         this.whiteBalance.set(mkOp('white_balance'));
         this.curves.set(mkOp('curves'));
@@ -223,27 +189,20 @@ export class PipelineEditorState {
         this.markClean();
     }
 
-    /**
-     * Hydrate working state from the saved overlay recipe. If no overlay
-     * exists, reset to defaults. Always marks clean (dirty=false) afterwards.
-     */
     async hydrate(datasetName: string, mediaFile: string): Promise<void> {
         this.datasetName.set(datasetName);
         this.mediaFile.set(mediaFile);
 
-        // Load (or refresh) the overlay row in the store.
         await this.overlay.loadFor(datasetName, mediaFile);
         const id = `${datasetName}/${mediaFile}`;
         const row = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
 
-        // No overlay → defaults.
         if (!row?.operations || row.operations.length === 0) {
             this.resetAll();
             this.markClean();
             return;
         }
 
-        // Reset first, then apply each recipe op into the corresponding signal.
         this.resetAll();
         for (const op of row.operations) {
             this.applyRecipeOp(op.type, op.params ?? {}, op.enabled !== false);
@@ -251,11 +210,6 @@ export class PipelineEditorState {
         this.markClean();
     }
 
-    /**
-     * Project a backend-type op (e.g. `hue_saturation`) into the matching
-     * frontend signal. `hue_saturation` + `contrast` both feed `color_tone`.
-     * Unknown types are ignored (forward-compat).
-     */
     private applyRecipeOp(type: string, params: any, enabled: boolean): void {
         switch (type) {
             case 'denoise':
@@ -271,10 +225,7 @@ export class PipelineEditorState {
             case 'color_match':
                 this.colorMatch.update(o => ({ ...o, enabled, params: { ...o.params, ...params } })); return;
             case 'hsl_selective':
-                // HslParams is a per-band dict — replace wholesale (not merge), so removing a band on the server actually removes it here.
                 this.hslSelective.update(o => ({ ...o, enabled, params: { ...params } })); return;
-            // `hue_saturation` and `contrast` are two backend ops that collapse into the single frontend `color_tone` panel.
-            // Use `enabled || o.enabled` so the second op doesn't clobber the first's enable flag.
             case 'hue_saturation':
                 this.colorTone.update(o => ({
                     ...o, enabled: enabled || o.enabled,
@@ -297,17 +248,33 @@ export class PipelineEditorState {
     }
 
     /**
-     * Promote the current preview to the saved recipe (replaceRecipe=true).
-     * Snapshots state so `dirty` clears.
+     * Save: render the authoritative overlay PNG + persist the recipe.
+     * Backend uses replace_recipe=true so it sources from the original
+     * (not from any existing overlay PNG).
      */
     async applyAndSave(): Promise<void> {
-        await this.renderNow(true);
+        const name = this.datasetName();
+        const file = this.mediaFile();
+        if (!name || !file) return;
+        await this.overlay.renderPipeline(name, file, this.blocks(), 512, 32, true);
         this.markClean();
     }
 
     /**
-     * Delete the saved overlay and reset working state to defaults.
+     * Bake: flatten the saved overlay into the original file. Backend
+     * deletes the recipe + PNG and replaces the original on disk.
+     * Requires a saved overlay AND clean state (no in-flight edits).
      */
+    async bake(): Promise<void> {
+        const name = this.datasetName();
+        const file = this.mediaFile();
+        if (!name || !file) return;
+        await this.overlay.commitOverlay(name, file);
+        this.resetAll();
+        this.sourceRev.update(r => r + 1);
+    }
+
+    /** Delete the saved overlay and reset working state to defaults. */
     async revert(): Promise<void> {
         const name = this.datasetName();
         const file = this.mediaFile();
@@ -315,7 +282,9 @@ export class PipelineEditorState {
             await this.overlay.deleteOverlay(name, file);
         }
         this.resetAll();
-        this.previewOverlay.set(null);
-        this.markClean();
+        // The overlay URL the canvas was displaying just became invalid on
+        // disk. Bump sourceRev so the <img> re-fetches even if the new URL
+        // (now the original) happens to match what the browser has cached.
+        this.sourceRev.update(r => r + 1);
     }
 }

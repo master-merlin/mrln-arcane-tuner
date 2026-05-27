@@ -1,7 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input } from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
-import { DatasetService } from '../../services/dataset';
 import { PipelineEditorState } from './edit/pipeline-editor.state';
+import { PreviewPipeline } from './edit/preview/preview-pipeline';
 import { EditLeftPanelComponent } from './edit/components/edit-left-panel.component';
 import { EditCanvasComponent } from './edit/components/edit-canvas.component';
 import { EditRightPanelComponent } from './edit/components/edit-right-panel.component';
@@ -16,7 +16,7 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
     standalone: true,
     imports: [EditLeftPanelComponent, EditCanvasComponent, EditRightPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
-    providers: [PipelineEditorState],
+    providers: [PipelineEditorState, PreviewPipeline],
     template: `
         @if (currentPair(); as pair) {
             <div class="edit-grid">
@@ -70,9 +70,7 @@ export class EditMode {
     datasetName = input.required<string>();
 
     protected overlay = inject(OverlayStore);
-    protected datasets = inject(DatasetService);
     private state = inject(PipelineEditorState);
-    private destroyRef = inject(DestroyRef);
 
     protected currentPair = computed(() => {
         const list = this.pairs();
@@ -90,8 +88,6 @@ export class EditMode {
         if (idx < this.pairs().length - 1) this.overlay.setWorkspaceImage(idx + 1);
     }
 
-    private renderTimer: ReturnType<typeof setTimeout> | null = null;
-
     private identity = computed<string | null>(() => {
         const p = this.currentPair();
         return p?.media_file ? `${this.datasetName()}/${p.media_file}` : null;
@@ -106,24 +102,16 @@ export class EditMode {
             const p = this.currentPair();
             if (!id || id === lastIdentity || !p) return;
 
-            // First time: just hydrate.
             if (!lastIdentity) {
                 lastIdentity = id;
                 void this.state.hydrate(this.datasetName(), p.media_file);
                 return;
             }
 
-            // Already had an image; guard if dirty.
             if (this.state.dirty()) {
                 if (!confirm('Discard unsaved adjustments?')) {
-                    // Roll back the navigation. The workspace owns the index;
-                    // we re-read identity from the old one by resetting via
-                    // OverlayStore.setWorkspaceImage. The identity computed
-                    // will then re-fire with lastIdentity unchanged.
                     pendingIdentity = lastIdentity;
                     queueMicrotask(() => {
-                        // Trick: ask the workspace to restore the previous image.
-                        // We extract the index from the previous identity.
                         const prev = pendingIdentity.split('/').pop();
                         if (prev) {
                             const list = this.pairs();
@@ -136,29 +124,7 @@ export class EditMode {
             }
 
             lastIdentity = id;
-            if (this.renderTimer) { clearTimeout(this.renderTimer); this.renderTimer = null; }
             void this.state.hydrate(this.datasetName(), p.media_file);
-        });
-
-        // Blocks → debounced render (same as Task 9 step 2).
-        let lastBlocksJson = '';
-        effect(() => {
-            const id = this.identity();
-            const blocksJson = JSON.stringify(this.state.blocks());
-            if (!id || blocksJson === lastBlocksJson) return;
-            lastBlocksJson = blocksJson;
-            if (this.renderTimer) clearTimeout(this.renderTimer);
-            this.renderTimer = setTimeout(() => {
-                this.renderTimer = null;
-                void this.state.renderNow(false);
-            }, 250);
-        });
-
-        this.destroyRef.onDestroy(() => {
-            if (this.renderTimer) {
-                clearTimeout(this.renderTimer);
-                this.renderTimer = null;
-            }
         });
     }
 }

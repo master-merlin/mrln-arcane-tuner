@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 import { IcoComponent } from '../../../../icons/ico.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { LutEntry } from '../operation-defs';
+import { parseCubeString } from '../preview/utils/lut';
 
 @Component({
     selector: 'app-lut-panel',
@@ -132,14 +133,25 @@ export class LutPanelComponent {
     addPreset(file: string, _name: string): void {
         this.state.lut.update(o => ({ ...o, enabled: true, params: { ...o.params, luts: [...o.params.luts, { file, strength: 1.0, enabled: true }] } }));
     }
-    onFileChosen(ev: Event): void {
+    async onFileChosen(ev: Event): Promise<void> {
         const input = ev.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
-        // Phase 1: just push the filename. A real impl would upload via a dataset endpoint
-        // and use the server-relative path that endpoint returns. TODO marker: when the
-        // LUT-upload endpoint lands, swap this for the upload flow.
-        this.state.lut.update(o => ({ ...o, enabled: true, params: { ...o.params, luts: [...o.params.luts, { file: file.name, strength: 1.0, enabled: true }] } }));
+        try {
+            const text = await file.text();
+            const cube = parseCubeString(text);
+            if (cube) {
+                // Cache parsed cube for the live preview math module.
+                this.state.ingestCube(file.name, cube);
+            }
+        } catch {
+            // Unreadable file — push the row anyway so the user sees feedback;
+            // preview will skip it (no parsed cube), Save will still try.
+        }
+        this.state.lut.update(o => ({
+            ...o, enabled: true,
+            params: { ...o.params, luts: [...o.params.luts, { file: file.name, strength: 1.0, enabled: true }] },
+        }));
         input.value = '';
     }
     exportStack(): void {

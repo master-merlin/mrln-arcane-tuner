@@ -35,8 +35,10 @@ def test_downloading_passes_on_percent_delta():
 
 
 def test_downloading_allows_null_percent_when_time_elapsed():
+    # Margin is generous (sleep 3x threshold) — Windows timer jitter under
+    # load can otherwise push a 60ms sleep below the 50ms threshold.
     rl = RateLimiter(min_interval_s=0.05, min_delta_pct=5.0)
     assert rl.allow("starting", percent=None)
-    time.sleep(0.06)
+    time.sleep(0.15)
     # Unknown total → percent None; should still pass after time threshold
     assert rl.allow("downloading", percent=None)

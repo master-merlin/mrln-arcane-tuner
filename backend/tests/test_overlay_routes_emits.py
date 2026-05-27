@@ -156,3 +156,46 @@ async def test_commit_overlay_broadcasts_deleted(overlay_dataset):
 
     # Overlay PNG should be gone (flattened into the original).
     assert not (Path(ds.path) / "overlays" / "image.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_render_pipeline_replace_recipe_uses_original_source(overlay_dataset, tmp_path):
+    """When replace_recipe=true, the render must source from the original
+    image — not from an existing overlay PNG. Regression for the
+    dimension-chain bug: a recipe with upscale produces a 2x overlay; a
+    subsequent recipe with only WB (replace_recipe=true) must produce a
+    1x overlay matching the original's dimensions, not a 2x one chained
+    from the previous render.
+    """
+    from PIL import Image
+
+    ds, rel_path = overlay_dataset
+
+    # Replace the fixture's tiny PNG header with a real 100×80 image so PIL
+    # can actually open it during render.
+    src = Path(ds.path) / rel_path
+    Image.new("RGB", (100, 80), color=(128, 64, 32)).save(src, format="PNG")
+
+    # Pre-seed an overlay PNG at 200×160 to simulate a prior upscale chain.
+    overlay = Path(ds.path) / "overlays" / "image.png"
+    Image.new("RGB", (200, 160), color=(64, 32, 16)).save(overlay, format="PNG")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post(
+            f"/api/datasets/{ds.name}/render-pipeline",
+            json={
+                "image_path": rel_path,
+                "blocks": [{"type": "white_balance", "enabled": True, "params": {"temperature": 6500, "tint": 0}}],
+                "tile_size": 512,
+                "tile_pad": 32,
+                "replace_recipe": True,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Original dimensions (100×80), NOT chained from the pre-seeded 200×160 overlay.
+    assert body["dimensions"] == [100, 80], (
+        f"replace_recipe=true should source from original; got dims {body['dimensions']}"
+    )

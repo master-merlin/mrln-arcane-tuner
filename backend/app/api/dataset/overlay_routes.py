@@ -109,7 +109,14 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
         # (e.g. denoise → upscale keeps the denoised result).
         stem = Path(request.image_path).stem
         existing_overlay = _overlays_dir(dataset_root) / f"{stem}.png"
-        source_path = existing_overlay if existing_overlay.exists() else img_path
+        # replace_recipe=true (Save) is authoritative: render must source
+        # from the original. replace_recipe=false (restore/upscale chaining)
+        # keeps its legacy chain-from-overlay behavior.
+        source_path = (
+            img_path
+            if request.replace_recipe
+            else (existing_overlay if existing_overlay.exists() else img_path)
+        )
 
         with Image.open(source_path) as img:
             img_rgb = img.convert("RGB")

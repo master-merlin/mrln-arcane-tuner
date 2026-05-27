@@ -253,8 +253,38 @@ app.include_router(saved_concept_router, prefix="/api")
 
 from app.core.dataset_manager import dataset_manager  # noqa: E402
 
+
+class MediaStaticFiles(StaticFiles):
+    """StaticFiles mount that guarantees a ``Vary: Origin`` header.
+
+    Browsers key the media cache by URL. The global ``CORSMiddleware`` only
+    attaches CORS / ``Vary: Origin`` headers when a request carries an
+    ``Origin`` header — so a plain ``<img>`` (no-cors, no Origin) response is
+    cached WITHOUT ``Vary: Origin`` and WITHOUT ``Access-Control-Allow-Origin``.
+    Chrome may then replay that cached body for a later ``crossorigin`` (cors)
+    request, which fails the CORS check and breaks the image — notably the
+    editor canvas, which needs pixel access via a crossorigin load.
+
+    Emitting ``Vary: Origin`` on the origin-less responses keeps the cors and
+    no-cors variants in separate cache entries so they can never be swapped.
+    When an Origin IS present, ``CORSMiddleware`` already adds the header, so
+    we only fill the gap for origin-less requests.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        has_origin = any(k == b"origin" for k, _ in scope.get("headers", []))
+        if not has_origin:
+            vary = response.headers.get("vary")
+            if not vary:
+                response.headers["vary"] = "Origin"
+            elif "origin" not in vary.lower():
+                response.headers["vary"] = f"{vary}, Origin"
+        return response
+
+
 os.makedirs(dataset_manager.default_root, exist_ok=True)
-app.mount("/media", StaticFiles(directory=dataset_manager.default_root), name="media")
+app.mount("/media", MediaStaticFiles(directory=dataset_manager.default_root), name="media")
 
 
 # ── Root Endpoint ────────────────────────────────────────────────────────

@@ -76,9 +76,22 @@ export class PreviewPipeline {
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
         ctx.drawImage(source, 0, 0, pw, ph);
+
+        // getImageData throws a SecurityError if the canvas is tainted
+        // (CORS not honored despite crossOrigin). Degrade gracefully: clear
+        // the canvas so the plain <img> underneath shows the image, and
+        // skip live preview. The image is never left broken.
+        let original: ImageData;
+        try {
+            original = ctx.getImageData(0, 0, pw, ph);
+        } catch {
+            ctx.clearRect(0, 0, pw, ph);
+            return;
+        }
+
         this.canvas = canvas;
         this.ctx = ctx;
-        this.original = ctx.getImageData(0, 0, pw, ph);
+        this.original = original;
         this.working = new Uint8ClampedArray(this.original.data.length);
         this.scheduleRender();
     }

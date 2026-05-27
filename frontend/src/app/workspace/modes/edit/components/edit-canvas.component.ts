@@ -6,6 +6,18 @@ import { OverlayStore, Overlay } from '../../../../state/overlay.store';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { PreviewPipeline } from '../preview/preview-pipeline';
 
+/**
+ * Appends a dedicated `cors=1` cache key to a media URL. The canvas pixel
+ * pipeline fetches the image in CORS mode (crossOrigin) via this isolated
+ * URL so its cache entry is NEVER shared with the plain (no-cors) `<img>`
+ * loads used by Browse/Details. That isolation is what makes the editor
+ * immune to the "no-cors body replayed for a cors request" cache poisoning
+ * that otherwise breaks `getImageData`.
+ */
+export function withCorsParam(url: string): string {
+    return url + (url.includes('?') ? '&' : '?') + 'cors=1';
+}
+
 @Component({
     selector: 'app-edit-canvas',
     standalone: true,
@@ -28,15 +40,12 @@ import { PreviewPipeline } from '../preview/preview-pipeline';
             <div class="image-stage"
                  [class.compare-on]="compareOn()"
                  [style.--ab-split.%]="splitPercent()">
-                <img #sourceImg
-                     class="layer base"
-                     [src]="sourceUrl()"
+                <img class="layer base"
+                     [src]="displayUrl()"
                      [alt]="mediaFile()"
-                     crossorigin="anonymous"
                      loading="eager"
-                     decoding="sync"
-                     (load)="onSourceLoaded()"
-                     (error)="onSourceError()"/>
+                     decoding="async"
+                     (error)="onDisplayError()"/>
                 <canvas #previewCanvas class="layer overlay" aria-hidden="true"></canvas>
                 @if (compareOn()) {
                     <span class="ab-label left">BEFORE</span>
@@ -189,7 +198,13 @@ export class EditCanvasComponent {
     private dragPointerId: number | null = null;
     private stageRef = viewChild<ElementRef<HTMLElement>>('stage');
     private canvasRef = viewChild<ElementRef<HTMLCanvasElement>>('previewCanvas');
-    private sourceImgRef = viewChild<ElementRef<HTMLImageElement>>('sourceImg');
+
+    /**
+     * Hidden CORS image used ONLY to feed the canvas pixel pipeline. Kept
+     * separate from the visible `<img>` (which is plain/no-cors and always
+     * renders) so display never depends on CORS succeeding.
+     */
+    private corsLoader: HTMLImageElement | null = null;
 
     private overlay = inject(OverlayStore);
     private rtc = inject(RuntimeConfigService);
@@ -199,7 +214,7 @@ export class EditCanvasComponent {
     /**
      * Set when an overlay-PNG load fails (e.g., recipe-only state where the
      * JSON exists but the rendered PNG was deleted from disk). Forces
-     * `sourceUrl` to use the original image — the PreviewPipeline then
+     * `displayUrl` to use the original image — the PreviewPipeline then
      * replays the saved recipe via `state.blocks()`. Reset on identity change.
      */
     private overlayLoadFailed = signal<boolean>(false);
@@ -212,7 +227,7 @@ export class EditCanvasComponent {
      * `sourceRev` is appended on Bake/Revert to bust the browser cache after
      * the original is replaced or the overlay is deleted.
      */
-    protected sourceUrl = computed<string>(() => {
+    protected displayUrl = computed<string>(() => {
         const rev = this.state.sourceRev();
         if (this.hasOverlay() && !this.overlayLoadFailed()) {
             const id = `${this.datasetName()}/${this.mediaFile()}`;
@@ -228,34 +243,70 @@ export class EditCanvasComponent {
     });
 
     constructor() {
-        // Identity change → detach + reset overlay-fail flag so the next
-        // image gets a clean slate.
+        // Reset the overlay-fallback flag whenever the image identity
+        // changes, so the next image starts by trying its overlay (if any).
         let lastKey = '';
         effect(() => {
             const key = `${this.datasetName()}/${this.mediaFile()}`;
-            if (key === lastKey) return;
-            lastKey = key;
-            this.overlayLoadFailed.set(false);
-            this.preview.detach();
+            if (key !== lastKey) {
+                lastKey = key;
+                this.overlayLoadFailed.set(false);
+            }
+        });
+
+        // Drive the canvas pixel pipeline off the resolved display URL.
+        // The visible <img> renders this URL plainly (no CORS); here we load
+        // a SEPARATE crossorigin copy purely to feed getImageData. If that
+        // CORS load fails (or taints), we degrade to the static <img> — the
+        // image is never broken, worst case is "no live preview".
+        effect(() => {
+            const url = this.displayUrl();
+            this.loadCanvasSource(url);
         });
     }
 
-    protected onSourceLoaded(): void {
-        const canvas = this.canvasRef()?.nativeElement;
-        const img = this.sourceImgRef()?.nativeElement;
-        if (!canvas || !img) return;
-        this.preview.attach(canvas, img);
+    /** Start (or restart) the crossorigin pixel load for the canvas. */
+    private loadCanvasSource(url: string): void {
+        this.preview.detach();
+        this.clearCanvas();
+        if (this.corsLoader) {
+            this.corsLoader.onload = null;
+            this.corsLoader.onerror = null;
+        }
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.decoding = 'async';
+        img.onload = () => {
+            const canvas = this.canvasRef()?.nativeElement;
+            if (canvas) this.preview.attach(canvas, img);
+        };
+        img.onerror = () => {
+            // CORS or network failure for the pixel copy. The visible <img>
+            // keeps showing the image; we just have no live preview overlay.
+            this.preview.detach();
+            this.clearCanvas();
+        };
+        img.src = withCorsParam(url);
+        this.corsLoader = img;
     }
 
-    protected onSourceError(): void {
-        // If the overlay PNG failed (recipe-only state with missing file),
-        // flip to the original URL and let the canvas pipeline replay the
-        // recipe. Don't detach yet — the retry will re-attach on success.
+    /** Wipe the overlay canvas so a failed/superseded load leaves no stale pixels. */
+    private clearCanvas(): void {
+        const canvas = this.canvasRef()?.nativeElement;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    protected onDisplayError(): void {
+        // Overlay PNG missing (recipe-only state) — fall back to the original.
+        // displayUrl recomputes, which reloads BOTH the <img> and the canvas
+        // pixel copy from the original path.
         if (this.hasOverlay() && !this.overlayLoadFailed()) {
             this.overlayLoadFailed.set(true);
-            return;
         }
-        this.preview.detach();
+        // If the original itself fails to display there is nothing more we
+        // can do here — the file is genuinely unreachable.
     }
 
     toggleCompare(): void { this.compareOn.update(v => !v); }

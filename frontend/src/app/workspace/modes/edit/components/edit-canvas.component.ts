@@ -1,8 +1,10 @@
-import { ChangeDetectionStrategy, Component, computed, ElementRef, inject, input, output, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
-import { Overlay, OverlayStore } from '../../../../state/overlay.store';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer.component';
+import { OverlayStore, Overlay } from '../../../../state/overlay.store';
+import { PipelineEditorState } from '../pipeline-editor.state';
+import { PreviewPipeline } from '../preview/preview-pipeline';
 
 @Component({
     selector: 'app-edit-canvas',
@@ -11,15 +13,11 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="stage hover-host" #stage>
-            <!-- A/B toggle (top-center) -->
             <button type="button" class="ab-btn"
                     [class.on]="compareOn()"
                     (click)="toggleCompare()"
-                    title="Toggle A/B comparison">
-                A/B
-            </button>
+                    title="Toggle A/B comparison">A/B</button>
 
-            <!-- prev / next (hover-revealed) -->
             <button type="button" class="nav-btn left hover-show" (click)="prev.emit()" title="Previous">
                 <app-ico name="ChevronLeft" [size]="18"/>
             </button>
@@ -30,10 +28,16 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
             <div class="image-stage"
                  [class.compare-on]="compareOn()"
                  [style.--ab-split.%]="splitPercent()">
-                <img class="layer base" [src]="sourceUrl()" [alt]="mediaFile()" loading="eager" decoding="sync"/>
-                @if (overlayUrl(); as url) {
-                    <img class="layer overlay" [src]="url" alt="" aria-hidden="true" loading="eager" decoding="sync"/>
-                }
+                <img #sourceImg
+                     class="layer base"
+                     [src]="sourceUrl()"
+                     [alt]="mediaFile()"
+                     crossorigin="anonymous"
+                     loading="eager"
+                     decoding="sync"
+                     (load)="onSourceLoaded()"
+                     (error)="onSourceError()"/>
+                <canvas #previewCanvas class="layer overlay" aria-hidden="true"></canvas>
                 @if (compareOn()) {
                     <span class="ab-label left">BEFORE</span>
                     <span class="ab-label right">AFTER</span>
@@ -44,6 +48,9 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
                          (pointercancel)="onSplitPointerCancel($event)">
                         <div class="ab-handle">↔</div>
                     </div>
+                }
+                @if (preview.showSpinner()) {
+                    <div class="pipeline-busy" aria-hidden="true">···</div>
                 }
                 <div class="file-label">
                     <app-ico name="Image" [size]="11"/>
@@ -70,14 +77,10 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
             box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.25));
             overflow: hidden;
         }
-        .layer {
-            display: block;
-            max-width: 100%; max-height: 100%;
-            object-fit: contain;
-        }
-        .layer.overlay {
-            position: absolute; inset: 0;
-            pointer-events: none;
+        .layer { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+        .layer.overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+        .image-stage.compare-on .layer.overlay {
+            clip-path: inset(0 0 0 var(--ab-split, 50%));
         }
         .file-label {
             position: absolute; top: 14px; left: 14px;
@@ -91,8 +94,7 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
         }
         .nav-btn {
             position: absolute; top: 50%; transform: translateY(-50%);
-            z-index: 5;
-            width: 40px; height: 40px;
+            z-index: 5; width: 40px; height: 40px;
             border-radius: 999px;
             background: oklch(0.10 0.01 265 / 0.65);
             color: #fff;
@@ -125,9 +127,6 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
             color: #fff;
             border-color: var(--color-brand);
         }
-        .image-stage.compare-on .layer.overlay {
-            clip-path: inset(0 0 0 var(--ab-split, 50%));
-        }
         .ab-label {
             position: absolute; top: 14px;
             font-family: var(--font-mono); font-size: 10px;
@@ -157,6 +156,23 @@ import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer
             box-shadow: 0 2px 12px oklch(0 0 0 / 0.45);
             cursor: ew-resize;
         }
+        .pipeline-busy {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 7;
+            font-size: 28px; font-weight: 700;
+            color: oklch(0.95 0 0 / 0.9);
+            background: oklch(0.10 0.01 265 / 0.55);
+            padding: 6px 16px;
+            border-radius: var(--radius-theme-md);
+            backdrop-filter: blur(8px);
+            letter-spacing: 0.2em;
+            animation: pipeline-pulse 1.2s ease-in-out infinite;
+        }
+        @keyframes pipeline-pulse {
+            0%, 100% { opacity: 0.45; }
+            50%      { opacity: 1.0; }
+        }
     `],
 })
 export class EditCanvasComponent {
@@ -172,18 +188,67 @@ export class EditCanvasComponent {
     private dragging = signal<boolean>(false);
     private dragPointerId: number | null = null;
     private stageRef = viewChild<ElementRef<HTMLElement>>('stage');
+    private canvasRef = viewChild<ElementRef<HTMLCanvasElement>>('previewCanvas');
+    private sourceImgRef = viewChild<ElementRef<HTMLImageElement>>('sourceImg');
+
+    private overlay = inject(OverlayStore);
+    private rtc = inject(RuntimeConfigService);
+    private state = inject(PipelineEditorState);
+    protected preview = inject(PreviewPipeline);
+
+    /**
+     * Source URL:
+     *  - if a rendered overlay PNG exists, use it (state 2 in spec — "baked Overlay file")
+     *  - else use the original (state 1, 3, or 4)
+     * `sourceRev` is appended on Bake to bust the browser cache after the original is replaced.
+     */
+    protected sourceUrl = computed<string>(() => {
+        const rev = this.state.sourceRev();
+        if (this.hasOverlay()) {
+            const id = `${this.datasetName()}/${this.mediaFile()}`;
+            const ov = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
+            if (ov?.overlay_file) {
+                const hash = ov.hash ? `?h=${ov.hash}` : `?h=ov`;
+                const revQ = rev > 0 ? `&r=${rev}` : '';
+                return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(ov.dataset_name)}/${ov.overlay_file}${hash}${revQ}`;
+            }
+        }
+        const revQ = rev > 0 ? `?r=${rev}` : '';
+        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(this.mediaFile())}${revQ}`;
+    });
+
+    constructor() {
+        // Identity change → detach so the next (load) re-attaches cleanly.
+        let lastKey = '';
+        effect(() => {
+            const key = `${this.datasetName()}/${this.mediaFile()}`;
+            if (key === lastKey) return;
+            lastKey = key;
+            this.preview.detach();
+        });
+    }
+
+    protected onSourceLoaded(): void {
+        const canvas = this.canvasRef()?.nativeElement;
+        const img = this.sourceImgRef()?.nativeElement;
+        if (!canvas || !img) return;
+        this.preview.attach(canvas, img);
+    }
+
+    protected onSourceError(): void {
+        this.preview.detach();
+    }
 
     toggleCompare(): void { this.compareOn.update(v => !v); }
 
     onSplitPointerDown(e: PointerEvent): void {
         if (!this.compareOn()) return;
-        if (this.dragging()) return;  // already tracking another pointer
+        if (this.dragging()) return;
         (e.target as Element).setPointerCapture(e.pointerId);
         this.dragPointerId = e.pointerId;
         this.dragging.set(true);
         e.preventDefault();
     }
-
     onSplitPointerMove(e: PointerEvent): void {
         if (!this.dragging() || e.pointerId !== this.dragPointerId) return;
         const stage = this.stageRef()?.nativeElement;
@@ -192,40 +257,19 @@ export class EditCanvasComponent {
         const pct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
         this.splitPercent.set(pct);
     }
-
     onSplitPointerUp(e: PointerEvent): void {
         if (e.pointerId !== this.dragPointerId) return;
         this.endDrag(e);
     }
-
     onSplitPointerCancel(e: PointerEvent): void {
         if (e.pointerId !== this.dragPointerId) return;
         this.endDrag(e);
     }
-
     private endDrag(e: PointerEvent): void {
         this.dragging.set(false);
         this.dragPointerId = null;
         (e.target as Element).releasePointerCapture?.(e.pointerId);
     }
-
-    private overlay = inject(OverlayStore);
-    private rtc = inject(RuntimeConfigService);
-
-    // Source = the dataset's media URL.
-    protected sourceUrl = computed(() =>
-        `${this.rtc.mediaBaseUrl}/${this.datasetName()}/${encodeURIComponent(this.mediaFile())}`,
-    );
-
-    // Overlay URL — falls back to saved overlay until canvas preview lands in Task 16.
-    protected overlayUrl = computed<string | null>(() => {
-        if (!this.hasOverlay()) return null;
-        const id = `${this.datasetName()}/${this.mediaFile()}`;
-        const ov = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
-        if (!ov?.overlay_file) return null;
-        const hash = ov.hash ? `?h=${ov.hash}` : '';
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(ov.dataset_name)}/${ov.overlay_file}${hash}`;
-    });
 
     protected meta = computed<CanvasMeta>(() => ({
         res: null, ar: null, orientation: null, size: null,

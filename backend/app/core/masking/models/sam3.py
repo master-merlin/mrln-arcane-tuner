@@ -34,10 +34,18 @@ def _resolve_bpe_path() -> str:
     import gzip
 
     try:
-        merges_path = hf_hub_download(
-            repo_id="facebook/sam3",
-            filename="merges.txt",
+        from app.api.events.download_progress import WSProgressTqdm, with_progress
+        from functools import partial
+        bound_tqdm = partial(
+            WSProgressTqdm,
+            source="hf", model_id="facebook/sam3/merges.txt", category="mask",
         )
+        with with_progress(model_id="facebook/sam3/merges.txt", category="mask"):
+            merges_path = hf_hub_download(
+                repo_id="facebook/sam3",
+                filename="merges.txt",
+                tqdm_class=bound_tqdm,
+            )
     except Exception as e:
         logger.error("merges_txt_download_failed", error=str(e))
         raise FileNotFoundError(

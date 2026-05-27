@@ -32,6 +32,10 @@ class DownloadProgress(BaseModel):
 class RateLimiter:
     """Per-download throttle for `model.download_progress` emits.
 
+    Intended for single-threaded, per-download-instance use — each
+    in-flight download (curated or HF) instantiates its own RateLimiter,
+    so no shared state crosses downloads.
+
     `starting`, `complete`, `error` are pass-through.
     `downloading` is throttled — passes only on either:
       - ≥ `min_interval_s` seconds since the last permitted emit, or

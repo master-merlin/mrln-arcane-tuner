@@ -61,30 +61,25 @@ class Qwen3VLModel(CaptionModel):
         else:
             dtype = torch.float16 if device == "cuda" else torch.float32
 
-        from app.api.events.download_progress import WSProgressTqdm, with_progress
-        from functools import partial
+        # `with_progress` emits starting / complete (or error) WS events around
+        # the download. We do NOT pass `tqdm_class=` to `from_pretrained` —
+        # in transformers >= 4.50 it leaks straight through `model_kwargs`
+        # into the model class's `__init__` (TypeError: unexpected kwarg
+        # 'tqdm_class'). Per-chunk download bar is sacrificed; the start /
+        # complete events still drive the frontend download indicator.
+        from app.api.events.download_progress import with_progress
 
         with with_progress(model_id=model_id, category="caption"):
-            model_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{model_id}/model", category="caption",
-            )
             self.model = AutoModelForImageTextToText.from_pretrained(
                 model_id,
                 dtype=dtype,
                 device_map="auto" if device == "cuda" else None,
                 trust_remote_code=True,
-                tqdm_class=model_tqdm,
             )
 
-            proc_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{model_id}/processor", category="caption",
-            )
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
                 trust_remote_code=True,
-                tqdm_class=proc_tqdm,
             )
 
         self.loaded_variant = variant

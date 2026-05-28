@@ -53,32 +53,27 @@ class YoutuVLModel(CaptionModel):
         # This avoids KeyError: 'sdpa' and ImportError: FlashAttention2.
         attn_impl = "eager"
 
-        from app.api.events.download_progress import WSProgressTqdm, with_progress
-        from functools import partial
+        # `with_progress` emits starting / complete (or error) WS events around
+        # the download. We do NOT pass `tqdm_class=` to `from_pretrained` —
+        # in transformers >= 4.50 it leaks straight through `model_kwargs`
+        # into the model class's `__init__` (TypeError: unexpected kwarg
+        # 'tqdm_class'). Per-chunk download bar is sacrificed; the start /
+        # complete events still drive the frontend download indicator.
+        from app.api.events.download_progress import with_progress
 
         with with_progress(model_id=model_id, category="caption"):
-            model_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{model_id}/model", category="caption",
-            )
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 torch_dtype=dtype,
                 device_map="auto" if self.device == "cuda" else None,
                 trust_remote_code=True,
                 attn_implementation=attn_impl,
-                tqdm_class=model_tqdm,
             ).eval()
 
-            proc_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{model_id}/processor", category="caption",
-            )
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
                 trust_remote_code=True,
                 use_fast=True,
-                tqdm_class=proc_tqdm,
             )
 
         # Inject our bundled fast image processor if the loaded one is slow.

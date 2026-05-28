@@ -161,33 +161,28 @@ class JoyCaptionModel(CaptionModel):
             logger.debug("joycaption_already_loaded")
             return self.model, self.processor
 
-        from app.api.events.download_progress import WSProgressTqdm, with_progress
-        from functools import partial
+        # `with_progress` emits starting / complete (or error) WS events around
+        # the download. We do NOT pass `tqdm_class=` to `from_pretrained` —
+        # in transformers >= 4.50 it leaks straight through `model_kwargs`
+        # into the model class's `__init__` (TypeError: unexpected kwarg
+        # 'tqdm_class'). Per-chunk download bar is sacrificed; the start /
+        # complete events still drive the frontend download indicator.
+        from app.api.events.download_progress import with_progress
 
         logger.info("loading_joycaption", path=self.MODEL_PATH)
 
         with with_progress(model_id=self.MODEL_PATH, category="caption"):
-            model_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{self.MODEL_PATH}/model", category="caption",
-            )
             self.model = LlavaForConditionalGeneration.from_pretrained(
                 self.MODEL_PATH,
                 torch_dtype=torch.bfloat16,
                 device_map="auto",
                 trust_remote_code=True,
-                tqdm_class=model_tqdm,
             )
 
-            proc_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{self.MODEL_PATH}/processor", category="caption",
-            )
             self.processor = AutoProcessor.from_pretrained(
                 self.MODEL_PATH,
                 trust_remote_code=True,
                 use_fast=False,
-                tqdm_class=proc_tqdm,
             )
 
 

@@ -61,37 +61,32 @@ class Florence2Model(CaptionModel):
             logger.debug("florence2_already_loaded")
             return self.model, self.processor
 
-        from app.api.events.download_progress import WSProgressTqdm, with_progress
-        from functools import partial
+        # `with_progress` emits starting / complete (or error) WS events around
+        # the download. We do NOT pass `tqdm_class=` to `from_pretrained` —
+        # in transformers >= 4.50 it leaks straight through `model_kwargs`
+        # into the model class's `__init__` (TypeError: unexpected kwarg
+        # 'tqdm_class'). Per-chunk download bar is sacrificed; the start /
+        # complete events still drive the frontend download indicator.
+        from app.api.events.download_progress import with_progress
 
         logger.info("loading_florence2", path=self.MODEL_PATH)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if device == "cuda" else torch.float32
 
         with with_progress(model_id=self.MODEL_PATH, category="caption"):
-            model_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{self.MODEL_PATH}/model", category="caption",
-            )
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.MODEL_PATH,
                 trust_remote_code=True,
                 dtype=dtype,
                 attn_implementation="eager",
-                tqdm_class=model_tqdm,
             ).to(device)
 
             # Patch KV-cache null-check bug so we can use use_cache=True
             _patch_florence2_kv_cache(self.model)
 
-            proc_tqdm = partial(
-                WSProgressTqdm,
-                source="hf", model_id=f"{self.MODEL_PATH}/processor", category="caption",
-            )
             self.processor = AutoProcessor.from_pretrained(
                 self.MODEL_PATH,
                 trust_remote_code=True,
-                tqdm_class=proc_tqdm,
             )
         
         logger.info("florence2_loaded")

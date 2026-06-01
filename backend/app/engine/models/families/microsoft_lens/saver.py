@@ -97,16 +97,16 @@ class MicrosoftLensSaver(ModelSaver):
         if metadata:
             save_metadata.update({k: str(v) for k, v in metadata.items()})
 
-        save_prec = str(config.get("save_precision", "bf16")).lower()
-        save_dtype = (
-            torch.float16 if save_prec == "fp16"
-            else torch.bfloat16 if save_prec == "bf16"
-            else torch.float32
-        )
-        for k in final_dict:
-            final_dict[k] = final_dict[k].to(save_dtype)
-
         try:
+            save_prec = str(config.get("save_precision", "bf16")).lower()
+            save_dtype = (
+                torch.float16 if save_prec == "fp16"
+                else torch.bfloat16 if save_prec == "bf16"
+                else torch.float32
+            )
+            for k in final_dict:
+                final_dict[k] = final_dict[k].to(save_dtype)
+
             dir_part = os.path.dirname(str(path))
             if dir_part:
                 os.makedirs(dir_part, exist_ok=True)
@@ -114,5 +114,5 @@ class MicrosoftLensSaver(ModelSaver):
             if os.path.exists(str(path)):
                 size_mb = os.path.getsize(str(path)) / (1024 * 1024)
                 logger.info("lora_saved", path=str(path), size_mb=f"{size_mb:.2f}MB")
-        except OSError as e:
+        except (OSError, ValueError, RuntimeError) as e:
             logger.error("save_failed", path=str(path), error=str(e))

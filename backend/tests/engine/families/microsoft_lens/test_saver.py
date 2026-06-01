@@ -1,5 +1,4 @@
 """microsoft_lens saver: lora_unet_* keys + ss_ metadata."""
-import torch
 from peft import LoraConfig, get_peft_model
 from safetensors.torch import safe_open
 
@@ -45,3 +44,13 @@ def test_saver_writes_lora_unet_keys_and_ss_metadata(tmp_path):
     assert meta.get("ss_network_dim") == "8"
     assert "ss_network_alpha" in meta
     assert meta.get("modelspec.architecture") == "microsoft_lens"
+    down_mods = {k[: -len(".lora_down.weight")] for k in keys if k.endswith(".lora_down.weight")}
+    up_mods = {k[: -len(".lora_up.weight")] for k in keys if k.endswith(".lora_up.weight")}
+    assert down_mods == up_mods and len(down_mods) > 0
+
+
+def test_saver_bails_on_non_peft_model(tmp_path):
+    import torch.nn as nn
+    out = tmp_path / "nope.safetensors"
+    MicrosoftLensSaver().save({"unet": nn.Linear(4, 4)}, out, metadata={})
+    assert not out.exists()

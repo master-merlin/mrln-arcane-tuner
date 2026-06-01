@@ -109,6 +109,8 @@
 .pd-qt-estimate-empty { padding: 12px; font-size: 12px; }
 
 .pd-qt-template-card { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; margin-top: 8px; background: var(--color-surface-mid); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-theme-md); }
+/* host wrapper for the shared <app-template-info-card> in Quick Train */
+.pd-qt-template-card-host { display: block; margin-top: 8px; }
 .pd-qt-template-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
 .pd-qt-template-card .pd-template-name { font-size: 13px; }
 .pd-qt-kv {

@@ -12,3 +12,24 @@
   cursor: default;
   white-space: nowrap;
 }
+
+.ts-segment { display: block; }
+.ts-segment-sub {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 10px;
+  color: var(--color-text-secondary, #9ca3af);
+}
+.ts-segment-status {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 9999px;
+}
+.ts-segment-status[data-status="success"] { color: var(--color-success, #34d399); background: color-mix(in oklch, var(--color-success, #34d399) 12%, transparent); }
+.ts-segment-status[data-status="warning"] { color: var(--color-warning, #fbbf24); background: color-mix(in oklch, var(--color-warning, #fbbf24) 12%, transparent); }
+.ts-segment-status[data-status="idle"]    { color: var(--color-text-subtle, #6b7280); background: color-mix(in oklch, #6b7280 12%, transparent); }

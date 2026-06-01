@@ -1,6 +1,19 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import {
+    afterNextRender,
+    ChangeDetectionStrategy,
+    Component,
+    ElementRef,
+    inject,
+    signal,
+    viewChild,
+} from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { TrainingDynamicConfigComponent } from '../../components/training/training-dynamic-config/training-dynamic-config';
+import type { TrainingSegment } from '../../components/training/training-dynamic-config/training-dynamic-config';
+import { TrainingToc } from '../../components/training/training-toc/training-toc';
+import { TrainingEstimateRail } from '../../components/training/training-estimate-rail/training-estimate-rail';
+import type { VRAMReport } from '../../services/system.service';
+import { DatasetStore } from '../../state/dataset.store';
 import { ScopeStore } from '../../state/scope.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { JobService } from '../../services/job';
@@ -17,30 +30,27 @@ interface ModelDefinition {
  * Training screen — IDE 3-pane layout that wraps the existing
  * `training-dynamic-config` form component.
  *
- *   LEFT (264px)  · Sections TOC (static stub; scroll-spy + status dots come
- *                   in a follow-up — see TODO below).
- *   CENTER        · Page head with model-definition picker, then the dynamic
- *                   config form. The form's own internal sections still
- *                   render top-to-bottom; the TOC will eventually scroll to
- *                   anchors generated from those sections.
- *   RIGHT (320px) · Live Estimate rail — placeholder tiles until the
- *                   `POST /training/estimate` backend endpoint exists.
+ *   LEFT (340px)  · Sections TOC (`app-training-toc`) driven by the dynamic
+ *                   config's `segmentsChanged` output, with scroll-spy +
+ *                   smooth jump-to-section.
+ *   CENTER        · Page head, then the dynamic config form. Model family +
+ *                   definition are chosen inside the form's Model Selection
+ *                   segment, so the shell has no separate model picker. This
+ *                   column is its own scroll container so the TOC can track the
+ *                   active section by viewport position.
+ *   RIGHT (280px) · Live Estimate rail fed by the engine's real VRAM report.
  *
  * Model fetching + schema loading + job queuing all migrate here from the
  * retired `AppComponent` (see git history at 50bde31:frontend/src/app/app.ts).
  * The `pluginId` is hard-coded to `'standard'` to match the old behaviour;
- * once multiple training plugins exist this becomes user-selectable.
- *
- * TODO(frontend): scroll-spy + per-section status dots in the TOC. Requires
- *   either parsing the dynamic schema for groups up here or having
- *   training-dynamic-config emit anchor/health info.
- * TODO(backend): POST /training/estimate — wire the Live Estimate rail to
- *   real wall-time / VRAM / warning data once the endpoint exists.
+ * once multiple training plugins exist this becomes user-selectable. The
+ * training schema is plugin-scoped (identical for every definition), so it is
+ * loaded once after the model list arrives.
  */
 @Component({
     selector: 'app-training-screen',
     standalone: true,
-    imports: [TrainingDynamicConfigComponent],
+    imports: [TrainingDynamicConfigComponent, TrainingToc, TrainingEstimateRail],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './training-screen.html',
     styleUrl: './training-screen.css',
@@ -50,49 +60,84 @@ export class TrainingScreen {
     private rtc = inject(RuntimeConfigService);
     private jobs = inject(JobService);
     private toast = inject(ToastService);
+    private datasetStore = inject(DatasetStore);
     protected scope = inject(ScopeStore);
 
     protected availableModels = signal<ModelDefinition[]>([]);
-    protected selectedDefinitionId = signal<string | null>(null);
     protected currentSchema = signal<unknown>(null);
 
-    /** Static TOC entries — a stub until scroll-spy lands. */
-    protected readonly sections = [
-        { id: 'model', label: 'Model' },
-        { id: 'dataset', label: 'Dataset' },
-        { id: 'hyperparameters', label: 'Hyperparameters' },
-        { id: 'output', label: 'Output' },
-    ];
+    /** Config segments emitted by the dynamic config form (DOM order). */
+    protected segments = signal<TrainingSegment[]>([]);
+    /** Section currently in view (scroll-spy). */
+    protected activeSection = signal<string | null>(null);
+
+    /** Live VRAM report re-broadcast by the dynamic-config engine. */
+    protected vramReport = signal<VRAMReport | null>(null);
+
+    /** The center scroll container — the scroll-spy reference frame. */
+    private formPane = viewChild<ElementRef<HTMLElement>>('formPane');
 
     private readonly pluginId = 'standard';
 
     constructor() {
         this.fetchModels();
+        // Hydrate the global dataset store so the per-dataset "N suppressed"
+        // exclusion badge has excluded_count data when the Training screen is
+        // opened directly (idempotent; other screens seed it too).
+        void this.datasetStore.loadAll();
+        // Highlight an initial section once the form DOM exists.
+        afterNextRender(() => this.onPaneScroll());
+    }
+
+    protected onSegmentsChanged(s: TrainingSegment[]): void {
+        this.segments.set(s);
+    }
+
+    protected onVramReport(r: VRAMReport | null): void {
+        this.vramReport.set(r);
+    }
+
+    /** Scroll-spy: pick the section whose top sits closest above the fold. */
+    protected onPaneScroll(): void {
+        const pane = this.formPane()?.nativeElement;
+        const segs = this.segments();
+        if (!pane || segs.length === 0) return;
+
+        const paneTop = pane.getBoundingClientRect().top;
+        let current: string | null = segs[0]?.id ?? null;
+        for (const seg of segs) {
+            const el = document.getElementById(seg.id);
+            if (el && el.getBoundingClientRect().top - paneTop < 80) current = seg.id;
+        }
+        this.activeSection.set(current);
+    }
+
+    protected onJump(id: string): void {
+        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     protected fetchModels(): void {
         this.http.get<ModelDefinition[]>(`${this.rtc.apiUrl}/models/definitions`).subscribe({
             next: defs => {
                 this.availableModels.set(defs);
-                if (defs.length > 0) this.selectDefinition(defs[0].id);
+                if (defs.length > 0) this.loadSchema();
             },
             error: (err: { message?: string }) =>
                 this.toast.error('Failed to load model definitions: ' + (err?.message ?? 'unknown error')),
         });
     }
 
-    protected selectDefinition(id: string): void {
-        this.selectedDefinitionId.set(id);
+    /**
+     * Load the (plugin-scoped) training schema. The schema is identical for
+     * every definition — the active family/definition is chosen inside the
+     * form's Model Selection segment — so it is fetched once.
+     */
+    protected loadSchema(): void {
         this.http.get(`${this.rtc.apiUrl}/plugins/${this.pluginId}/schema?t=${Date.now()}`).subscribe({
             next: (s: unknown) => this.currentSchema.set(s),
             error: (err: { message?: string }) =>
                 this.toast.error('Failed to load training schema: ' + (err?.message ?? 'unknown error')),
         });
-    }
-
-    protected onModelChange(event: Event): void {
-        const id = (event.target as HTMLSelectElement).value;
-        if (id) this.selectDefinition(id);
     }
 
     protected queueJob(config: unknown): void {

@@ -341,22 +341,10 @@
                                             }
                                         </select>
                                         @if (selectedTemplate(); as t) {
-                                            <div class="pd-qt-template-card">
-                                                <span class="pd-template-dot" [style.background]="templateDomainTone('training')"></span>
-                                                <div class="pd-qt-template-text">
-                                                    <div class="pd-template-name">{{ t.name }}</div>
-                                                    @if (selectedTemplateInfo().length) {
-                                                        <dl class="pd-qt-kv">
-                                                            @for (row of selectedTemplateInfo(); track row.key) {
-                                                                <div class="pd-qt-kv-row">
-                                                                    <dt>{{ row.key }}</dt>
-                                                                    <dd>{{ row.value }}</dd>
-                                                                </div>
-                                                            }
-                                                        </dl>
-                                                    }
-                                                </div>
-                                            </div>
+                                            <app-template-info-card class="pd-qt-template-card-host"
+                                                [name]="t.name"
+                                                [rows]="selectedTemplateInfo()"
+                                                [dotColor]="templateDomainTone('training')"></app-template-info-card>
                                         } @else {
                                             <div class="pd-qt-template-hint muted">Select a template to configure the run.</div>
                                         }

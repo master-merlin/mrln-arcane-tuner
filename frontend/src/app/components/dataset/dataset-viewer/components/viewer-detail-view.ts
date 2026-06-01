@@ -101,10 +101,10 @@ import { MaskingSettingsState } from '../../dataset-masking-settings/dataset-mas
                         <button (click)="onCropClick(pair)" class="bg-brand/10 hover:bg-brand/20 text-brand p-2 rounded-theme-lg transition-all active:scale-95 border border-brand/20" title="Crop image">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"></path><path d="M18 22V8a2 2 0 0 0-2-2H2"></path></svg>
                         </button>
-                        <button (click)="toggleExclusion()" 
-                            [class]="pair.metadata?.enabled === false 
-                                ? 'bg-danger/20 hover:bg-danger/30 text-danger p-2 rounded-theme-lg transition-all active:scale-95 border border-danger/30' 
-                                : 'bg-surface-mid/50 hover:bg-surface-high text-text-muted hover:text-danger p-2 rounded-theme-lg transition-all active:scale-95 border border-surface-high/30'"
+                        <button (click)="toggleExclusion()"
+                            [class]="pair.metadata?.enabled === false
+                                ? 'bg-warning/20 hover:bg-warning/30 text-warning p-2 rounded-theme-lg transition-all active:scale-95 border border-warning/30'
+                                : 'bg-surface-mid/50 hover:bg-surface-high text-text-muted hover:text-warning p-2 rounded-theme-lg transition-all active:scale-95 border border-surface-high/30'"
                             [title]="pair.metadata?.enabled === false ? 'Re-include in training' : 'Exclude from training'">
                             @if (pair.metadata?.enabled === false) {
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>

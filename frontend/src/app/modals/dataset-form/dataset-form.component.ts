@@ -8,59 +8,12 @@ import { IcoComponent } from '../../icons/ico.component';
 import { ProjectService } from '../../services/project.service';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
+import { nextTriggerWord } from '../../shared/trigger-word';
 
 const STANDARD_CLASSIFIERS = ['vehicle', 'person', 'style', 'object', 'landscape'] as const;
 const NAME_FORBIDDEN = /[<>:"/\\|?*]/;
 /** Sentinel select-option value that switches the category control into inline-text-entry mode. */
 const CUSTOM_CLASSIFIER_KEY = '__custom__';
-
-const LEET_LIGHT: Record<string, string> = {
-    a: '4', A: '4', e: '3', E: '3', i: '1', I: '1', o: '0', O: '0',
-};
-const LEET_FULL: Record<string, string> = {
-    ...LEET_LIGHT,
-    s: '5', S: '5', t: '7', T: '7',
-};
-
-function stripSeparators(s: string): string {
-    return s.replace(/[^A-Za-z0-9]+/g, '');
-}
-
-/**
- * Trigger-word generation strategies. Each takes the raw (untrimmed)
- * name and returns a candidate. Empty results mean "not applicable for
- * this input" and the caller should skip to the next strategy.
- *
- * The wand button cycles through these on repeat clicks, giving the
- * user alternative phrasings without forcing them to invent one.
- */
-const TRIGGER_STRATEGIES: ReadonlyArray<(raw: string) => string> = [
-    // 0 — Leet (light): strip seps, first vowel → leet number
-    //     "911 Targa" → "911T4rga"
-    (raw) => {
-        const s = stripSeparators(raw);
-        const m = /[aeioAEIO]/.exec(s);
-        return m ? s.slice(0, m.index) + LEET_LIGHT[m[0]] + s.slice(m.index + 1) : s;
-    },
-    // 1 — Leet (full): strip seps, replace all leet-able letters (a/e/i/o/s/t)
-    //     "911 Targa" → "9174rg4", "My Style" → "My57yl3"
-    (raw) => stripSeparators(raw).replace(/[aeiostAEIOST]/g, (ch) => LEET_FULL[ch] ?? ch),
-    // 2 — Compact: strip seps, preserve case
-    //     "911 Targa" → "911Targa"
-    (raw) => stripSeparators(raw),
-    // 3 — Lowercase compact: strip seps, lowercase
-    //     "911 Targa" → "911targa"
-    (raw) => stripSeparators(raw).toLowerCase(),
-    // 4 — Initials: first letter of each alpha token + whole digit tokens
-    //     "Porsche 911 Targa" → "P911T", "Mercedes Benz 300SL" → "MB300SL"
-    //     Skipped (empty return) when the result would collapse to <2 chars.
-    (raw) => {
-        const tokens = raw.split(/[^A-Za-z0-9]+/).filter(Boolean);
-        if (tokens.length === 0) return '';
-        const out = tokens.map((t) => (/^\d/.test(t) ? t : t.charAt(0).toUpperCase())).join('');
-        return out.length >= 2 ? out : '';
-    },
-];
 
 /** Rejects null/empty/whitespace-only values. `Validators.required` accepts "   " — this does not. */
 function nonEmptyTrimmed(c: AbstractControl): { required: true } | null {
@@ -443,8 +396,8 @@ export class DatasetFormModalComponent {
 
     /**
      * Derive a trigger word from the current name and write it into the
-     * `trigger_word` field. The wand cycles through {@link TRIGGER_STRATEGIES}
-     * on successive clicks — e.g. "911 Targa" yields, in order:
+     * `trigger_word` field. The wand cycles through the shared trigger
+     * strategies on successive clicks — e.g. "911 Targa" yields, in order:
      * "911T4rga" → "9174rg4" → "911Targa" → "911targa" → "911T".
      *
      * The cycle resets to strategy 0 whenever the current field value
@@ -453,31 +406,17 @@ export class DatasetFormModalComponent {
      * gives the canonical "leet-light" result first.
      */
     protected generateTriggerFromName(): void {
-        const raw = (this.form.controls.name.value ?? '').trim();
-        if (!raw) return;
-
         const current = this.form.controls.trigger_word.value ?? '';
         const continuing = current !== '' && current === this.lastGeneratedTrigger();
-        let idx = continuing ? this.nextTriggerStrategy() : 0;
+        const start = continuing ? this.nextTriggerStrategy() : 0;
 
-        // Try strategies starting at `idx`; skip empty / duplicate results
-        // (e.g. initials strategy on a single-word name). Loop at most N times.
-        let trigger = '';
-        const total = TRIGGER_STRATEGIES.length;
-        for (let attempts = 0; attempts < total; attempts++) {
-            const candidate = TRIGGER_STRATEGIES[idx](raw);
-            idx = (idx + 1) % total;
-            if (candidate && candidate !== current) {
-                trigger = candidate;
-                break;
-            }
-        }
-        if (!trigger) return;
+        const result = nextTriggerWord(this.form.controls.name.value ?? '', current, start);
+        if (!result) return;
 
-        this.form.controls.trigger_word.setValue(trigger);
+        this.form.controls.trigger_word.setValue(result.trigger);
         this.form.controls.trigger_word.markAsDirty();
-        this.lastGeneratedTrigger.set(trigger);
-        this.nextTriggerStrategy.set(idx);
+        this.lastGeneratedTrigger.set(result.trigger);
+        this.nextTriggerStrategy.set(result.nextIndex);
     }
 
     // ── Tag chip input ─────────────────────────────────────────────────

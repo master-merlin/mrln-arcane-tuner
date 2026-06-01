@@ -6,26 +6,26 @@ import { ToastService } from '../../../services/toast';
   selector: 'app-advanced-vram-card',
   standalone: true,
   template: `
-    <div class="space-y-6 mb-8" data-testid="advanced-vram-card">
-      <div class="flex items-center justify-between border-b border-surface-mid/30 pb-2 mb-4 cursor-pointer select-none"
+    <div data-testid="advanced-vram-card">
+      <div class="flex items-center justify-between cursor-pointer select-none"
            (click)="toggleCollapsed()">
-        <div class="flex items-center gap-4">
-          <div class="w-1 h-6 rounded-full bg-violet-500"></div>
-          <h3 class="text-sm font-black text-text-subtle uppercase tracking-[0.2em]">Advanced VRAM</h3>
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-[3px] h-3.5 bg-violet-500 rounded-sm shrink-0"></span>
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-text-muted shrink-0">Block Swapping</span>
           @if (!enriched()) {
-            <span class="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">NOT ENRICHED</span>
+            <span class="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full shrink-0">NOT ENRICHED</span>
           } @else if (hasActiveSwaps()) {
-            <span class="text-[10px] font-bold text-violet-400 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-full">BLOCK SWAP ACTIVE</span>
+            <span class="text-[10px] font-bold text-violet-400 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-full shrink-0">ACTIVE</span>
           }
         </div>
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-             class="text-text-disabled transition-transform duration-200" [class.rotate-180]="!isCollapsed()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             class="text-text-muted transition-transform duration-200" [class.rotate-180]="!isCollapsed()">
           <path d="m6 9 6 6 6-6"/>
         </svg>
       </div>
 
       @if (!isCollapsed()) {
-        <div class="animate-in fade-in slide-in-from-top-2 duration-200">
+        <div class="mt-3 animate-in fade-in slide-in-from-top-2 duration-200">
           @if (!definitionId()) {
             <div class="text-[11px] text-text-disabled italic px-1">Select a model to configure block swapping.</div>
           } @else if (loading()) {

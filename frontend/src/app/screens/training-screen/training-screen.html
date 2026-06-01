@@ -1,46 +1,20 @@
 <div class="training-grid">
 
-    <!-- ── LEFT · Sections TOC ────────────────────────────────────── -->
-    <aside class="ts-toc card">
-        <div class="card-head">
-            <div class="card-title">SECTIONS</div>
-        </div>
-        <div class="card-body ts-toc-body">
-            <!-- TODO(frontend): scroll-spy + section status dots -->
-            <ul class="ts-toc-list">
-                @for (s of sections; track s.id) {
-                    <li class="ts-toc-item">
-                        <span class="sdot"></span>
-                        <span>{{ s.label }}</span>
-                    </li>
-                }
-            </ul>
-        </div>
+    <!-- ── LEFT · Sections TOC (bordered bar, not a card — per Hi-Fi) ── -->
+    <aside class="ts-toc">
+        <app-training-toc
+            [segments]="segments()"
+            [activeId]="activeSection()"
+            (jump)="onJump($event)"/>
     </aside>
 
     <!-- ── CENTER · Page head + dynamic config form ───────────────── -->
-    <main class="ts-form-pane">
+    <main class="ts-form-pane" #formPane (scroll)="onPaneScroll()">
         <div class="page-head ts-page-head">
             <div>
                 <div class="eyebrow">CONFIGURE</div>
                 <h1 class="page-title">Training</h1>
                 <p class="page-sub">Set up and queue a training run.</p>
-            </div>
-            <div class="ts-model-picker">
-                <label for="ts-model-select" class="ts-model-label">Model</label>
-                <select
-                    id="ts-model-select"
-                    class="input ts-model-select"
-                    [value]="selectedDefinitionId() ?? ''"
-                    (change)="onModelChange($event)"
-                    [disabled]="availableModels().length === 0">
-                    @if (availableModels().length === 0) {
-                        <option value="">Loading…</option>
-                    }
-                    @for (m of availableModels(); track m.id) {
-                        <option [value]="m.id">{{ m.name || m.id }}</option>
-                    }
-                </select>
             </div>
         </div>
 
@@ -49,37 +23,20 @@
                 [schema]="currentSchema()"
                 [availableModels]="availableModels()"
                 [projectId]="scope.projectId()"
+                (segmentsChanged)="onSegmentsChanged($event)"
+                (vramReportChanged)="onVramReport($event)"
                 (configSubmitted)="queueJob($event)"/>
         } @else if (availableModels().length === 0) {
             <p class="muted ts-empty">Loading available models…</p>
         } @else {
-            <p class="muted ts-empty">Select a model to configure training parameters.</p>
+            <p class="muted ts-empty">Loading training configuration…</p>
         }
     </main>
 
     <!-- ── RIGHT · Live Estimate rail ─────────────────────────────── -->
     <aside class="ts-estimate-rail card">
-        <div class="card-head">
-            <div class="card-title">LIVE ESTIMATE</div>
-        </div>
         <div class="card-body ts-estimate-body">
-            <!-- TODO(backend): POST /training/estimate — populate these tiles -->
-            <div class="kpi compact">
-                <div class="kpi-label">WALL TIME</div>
-                <div class="kpi-value">—</div>
-            </div>
-            <div class="kpi compact">
-                <div class="kpi-label">VRAM</div>
-                <div class="kpi-value">—</div>
-            </div>
-            <div class="kpi compact">
-                <div class="kpi-label">WARNINGS</div>
-                <div class="kpi-value">—</div>
-            </div>
-            <p class="subtle ts-estimate-note">
-                Live estimate requires backend endpoint
-                <code>POST /training/estimate</code> — pending.
-            </p>
+            <app-training-estimate-rail [report]="vramReport()"/>
         </div>
     </aside>
 

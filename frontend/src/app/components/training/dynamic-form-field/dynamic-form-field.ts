@@ -14,10 +14,10 @@ import { ToastService } from '../../../services/toast';
     <div [class.md:col-span-2]="isLongInput()"
          [class.opacity-40]="isDisabled()"
          [class.pointer-events-none]="isDisabled()"
-         class="flex flex-col gap-2 transition-opacity duration-200">
-      
+         class="flex flex-col gap-1 transition-opacity duration-200">
+
       @if (!hideLabel()) {
-        <label [for]="fieldKey()" class="text-sm font-medium text-text-secondary flex items-center gap-1.5">
+        <label [for]="fieldKey()" class="field-label flex items-center gap-1.5">
           {{ schema().title || (fieldKey() | titlecase) }}
           @if (isDisabled()) {
             <span class="text-[10px] text-text-disabled">(disabled)</span>
@@ -37,7 +37,7 @@ import { ToastService } from '../../../services/toast';
                   [attr.min]="schema().min ?? null"
                   [attr.max]="schema().max ?? null"
                   [attr.step]="schema().step ?? null"
-                  class="bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white w-full focus:ring-2 focus:ring-brand outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                  class="input mono disabled:opacity-50 disabled:cursor-not-allowed">
       }
 
        <!-- Boolean (Toggle) -->
@@ -46,8 +46,8 @@ import { ToastService } from '../../../services/toast';
             <input type="checkbox" [formControl]="control()" 
                    [attr.data-testid]="'config-checkbox-' + fieldKey()"
                    class="sr-only peer">
-            <div class="w-11 h-6 bg-surface-high peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
-            <span class="ml-3 text-sm font-medium text-text-muted group-hover:text-text-secondary">Enable</span>
+            <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+            <span class="ml-2 text-[11px] text-text-muted group-hover:text-text-secondary">Enable</span>
           </label>
       }
 
@@ -56,7 +56,7 @@ import { ToastService } from '../../../services/toast';
           @if (schema().enum) {
                <select [formControl]="control()" 
                        [attr.data-testid]="'config-select-' + fieldKey()"
-                       class="bg-surface-high border border-surface-high/50 rounded-theme-lg px-4 py-2 text-white w-full appearance-none focus:ring-2 focus:ring-brand outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+                       class="select disabled:opacity-50 disabled:cursor-not-allowed">
                   @for (opt of getFilteredEnumOptions(); track opt.value) {
                     <option [value]="opt.value" [disabled]="opt.disabled">{{ opt.label }}</option>
                   }
@@ -65,23 +65,23 @@ import { ToastService } from '../../../services/toast';
                <div class="relative">
                  <div class="flex gap-2">
                    <div class="relative flex-1">
-                     <span class="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle">
+                     <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle">
                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                      </span>
                      <input [type]="'text'" [formControl]="control()" 
                             [attr.data-testid]="'config-input-' + fieldKey()"
                             placeholder="Enter path or click Browse..."
-                            class="bg-surface-mid border border-surface-high rounded-theme-lg pl-10 pr-4 py-2 text-white w-full focus:ring-2 focus:ring-brand outline-none transition-all font-mono text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                            class="input pl-9 font-mono disabled:opacity-50 disabled:cursor-not-allowed">
                    </div>
                    <button type="button" (click)="openBrowseDialog()"
-                           class="px-3 py-2 bg-surface-mid hover:bg-surface-high border border-surface-high rounded-theme-lg text-xs font-medium text-brand transition-colors whitespace-nowrap">
+                           class="btn sm whitespace-nowrap">
                      Browse
                    </button>
                        @if (fieldKey() === 'resume_from_checkpoint' && control().value) {
                          <button type="button" (click)="loadCheckpointConfig()"
                                  data-testid="load-checkpoint-config"
                                  title="Load training config from this checkpoint"
-                                 class="px-3 py-2 bg-surface-mid hover:bg-surface-high border border-surface-high rounded-theme-lg text-xs font-medium text-emerald-400 hover:text-emerald-300 transition-colors whitespace-nowrap flex items-center gap-1.5">
+                                 class="btn sm text-emerald-400 hover:text-emerald-300 whitespace-nowrap">
                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                              <path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/>
                            </svg>
@@ -130,11 +130,11 @@ import { ToastService } from '../../../services/toast';
                <div class="flex items-center gap-2">
                  <input [type]="'text'" [formControl]="control()" 
                         [attr.data-testid]="'config-input-' + fieldKey()"
-                        class="bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2 text-white w-full focus:ring-2 focus:ring-brand outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                        class="input disabled:opacity-50 disabled:cursor-not-allowed">
                  @if (fieldKey() === 'caption_prefix') {
-                   <button type="button" (click)="autofillRequested.emit()" 
+                   <button type="button" (click)="autofillRequested.emit()"
                            title="Auto-fill prefix from dataset name"
-                           class="p-2 text-text-subtle hover:text-brand hover:bg-brand/10 rounded-theme-md transition-colors shrink-0">
+                           class="p-1.5 text-text-subtle hover:text-brand rounded-theme-md transition-colors shrink-0">
                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                        <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/>
                        <path d="m14 7 3 3"/>
@@ -156,7 +156,7 @@ import { ToastService } from '../../../services/toast';
       }
       
       @if (schema().description) {
-        <p class="text-xs text-text-subtle italic">{{ schema().description }}</p>
+        <p class="text-[10.5px] text-text-muted">{{ schema().description }}</p>
       }
     </div>
   `

@@ -7,6 +7,7 @@ import { WebSocketService } from '../../../services/websocket.service';
 import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { TrainingChartComponent, ChartDataPoint, SmoothingMode } from '../training-chart/training-chart';
+import { RunSummaryComponent } from '../run-summary/run-summary';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
 import { ModelSourceOverride } from '../../../services/model.service';
@@ -15,7 +16,7 @@ import { RegistryStore } from '../../../state/registry.store';
 @Component({
   selector: 'app-training-job-queue',
   standalone: true,
-  imports: [DatePipe, JsonPipe, DecimalPipe, UpperCasePipe, FormsModule, TrainingChartComponent],
+  imports: [DatePipe, JsonPipe, DecimalPipe, UpperCasePipe, FormsModule, TrainingChartComponent, RunSummaryComponent],
   template: `
     <div class="bg-surface-low/50 rounded-theme-xl border border-surface-mid overflow-hidden shadow-2xl">
       <div class="px-6 py-4 border-b border-surface-mid flex justify-between items-center bg-surface-low/80">
@@ -556,82 +557,10 @@ import { RegistryStore } from '../../../state/registry.store';
                       </div>
                     </div>
 
-                    <!-- Training Summary Card (completed/stopped jobs with metrics) -->
+                    <!-- Training Summary Card (completed/stopped jobs with metrics) — shared with projects Runs tab -->
                     @if ((job.status === JobStatus.COMPLETED || job.status === JobStatus.STOPPED) && job['avg_loss']) {
-                      <div data-testid="training-summary-card"
-                           class="flex justify-between w-full bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20 mt-2">
-                        
-                        <!-- Col 1: Progress (Steps / Epoch) -->
-                        <div class="flex flex-col space-y-1 w-24">
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Steps</span>
-                            <span class="text-xs text-white font-mono font-bold">{{ job['completed_steps'] || '—' }}</span>
-                          </div>
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Epoch</span>
-                            <span class="text-xs text-purple-400 font-mono font-bold">{{ getFinalEpoch(job) }}</span>
-                          </div>
-                        </div>
-
-                        <!-- Col 2: Optimization (Final / Best Loss) -->
-                        <div class="flex flex-col space-y-1 w-28">
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Final Loss</span>
-                            <span class="text-xs text-white font-mono font-bold">{{ job['avg_loss'] | number:'1.4-6' }}</span>
-                          </div>
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Best Loss</span>
-                            <div class="flex items-baseline gap-1">
-                              <span class="text-xs text-green-400 font-mono font-bold">{{ job['min_loss'] | number:'1.4-6' }}</span>
-                              @if (job['min_loss_step']) {
-                                <span class="text-[8px] text-text-muted font-mono">@{{ job['min_loss_step'] }}</span>
-                              }
-                            </div>
-                          </div>
-                        </div>
-
-                        <!-- Col 3: Throughput & Performance (Improvement / Avg Step) -->
-                        <div class="flex flex-col space-y-1 w-28">
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Improvement</span>
-                            @if (job['avg_loss'] && job['min_loss'] && job['avg_loss'] > 0) {
-                              <span class="text-xs font-mono font-bold"
-                                    [class]="job['min_loss'] < job['avg_loss'] * 0.9 ? 'text-green-400' : 'text-amber-400'">
-                                {{ ((1 - job['min_loss'] / job['avg_loss']) * 100) | number:'1.1-1' }}%
-                              </span>
-                            } @else {
-                              <span class="text-xs text-text-muted italic">—</span>
-                            }
-                          </div>
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Avg Step</span>
-                            <span class="text-xs text-white font-mono font-bold">{{ (job['avg_step_time'] || 0) | number:'1.2-2' }}s</span>
-                          </div>
-                        </div>
-
-                        <!-- Col 4: Settings (Optimizer / LR & Batch) -->
-                        <div class="flex flex-col space-y-1 w-32">
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Optimizer</span>
-                            <span class="text-xs text-sky-400 font-mono font-bold tracking-tight">{{ job.config['optimizer_type'] || 'AdamW' }}</span>
-                          </div>
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">LR / Batch</span>
-                            <div class="flex items-baseline gap-1">
-                              <span class="text-xs text-white font-mono font-bold">{{ formatLR(job.config['learning_rate']) }}</span>
-                              <span class="text-[8px] text-text-disabled font-mono">/ BS {{ job.config['train_batch_size'] || 1 }}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <!-- Col 5: Time (Train Time) -->
-                        <div class="flex flex-col space-y-1 w-24 text-right items-end">
-                          <div>
-                            <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Train Time</span>
-                            <span class="text-xs text-white font-mono font-bold">{{ formatTrainingTime(job['training_seconds']) }}</span>
-                          </div>
-                        </div>
-
+                      <div class="bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20 mt-2">
+                        <app-run-summary [job]="job" [showHeader]="false" data-testid="training-summary-card" class="block"/>
                       </div>
                     }
 
@@ -1382,15 +1311,6 @@ export class TrainingJobQueueComponent implements OnInit {
     return gn.toFixed(4);
   }
 
-  /** Format training duration in seconds to human-readable. */
-  formatTrainingTime(seconds: number | null | undefined): string {
-    if (!seconds || seconds <= 0) return '—';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
-  }
-
   startJob(id: string) {
     this.jobService.startJob(id).subscribe(() => this.loadJobs());
   }
@@ -1537,30 +1457,4 @@ export class TrainingJobQueueComponent implements OnInit {
     this.reloadConfig.emit(job.config);
   }
 
-  getFinalEpoch(job: Job): string {
-    const steps = job.completed_steps;
-    const config = job.config;
-    if (!steps || !config) return '—';
-
-    // If active memory object still has the exact metric
-    const metrics = this.getLatestMetrics(job);
-    if (metrics && metrics.epoch !== undefined) {
-      return metrics.epoch.toString();
-    }
-
-    // Use exact value if available via V6 schema logic
-    if (job.completed_epochs !== undefined && job.completed_epochs !== null) {
-      return job.completed_epochs.toFixed(2);
-    }
-    
-    // Legacy fallback
-    return '—';
-  }
-
-  formatLR(lr: any): string {
-    if (lr == null || lr === 0) return '—';
-    const n = Number(lr);
-    if (n < 0.0001) return n.toExponential(1);
-    return n.toString();
-  }
 }

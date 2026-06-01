@@ -303,6 +303,12 @@
                             <app-ico name="Clock" [size]="10"/>
                             {{ lastScanRelative(d) }}
                         </span>
+                        @if (d.excluded_count && d.excluded_count > 0) {
+                            <span class="chip warning ds-card-excluded"
+                                  [title]="d.excluded_count + ' image' + (d.excluded_count === 1 ? '' : 's') + ' currently excluded from training'">
+                                {{ d.excluded_count }} suppressed
+                            </span>
+                        }
                     </div>
                 </div>
 

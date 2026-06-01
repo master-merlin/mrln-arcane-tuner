@@ -1,0 +1,85 @@
+:host {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.ttoc-head {
+    padding: 0 8px 14px 0;
+}
+.ttoc-eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--color-brand-light);
+}
+.ttoc-title {
+    margin-top: 6px;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--color-text-primary);
+}
+
+.ttoc-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-left: 2px solid transparent;
+    border-radius: var(--radius-theme-md);
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-text-secondary);
+}
+.ttoc-item:hover {
+    background: var(--color-surface-mid);
+}
+.ttoc-item.active {
+    background: var(--color-surface-mid);
+    border-left: 2px solid var(--color-brand);
+}
+
+.ttoc-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    margin-top: 5px;
+    border-radius: 50%;
+    background: var(--color-text-subtle);
+}
+.ttoc-dot.success {
+    background: var(--color-success);
+}
+.ttoc-dot.warning {
+    background: var(--color-warning);
+}
+
+.ttoc-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.2;
+}
+.ttoc-label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+}
+.ttoc-item.active .ttoc-label {
+    font-weight: 600;
+    color: var(--color-text-primary);
+}
+.ttoc-sub {
+    display: block;
+    margin-top: 1px;
+    font-size: 10.5px;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

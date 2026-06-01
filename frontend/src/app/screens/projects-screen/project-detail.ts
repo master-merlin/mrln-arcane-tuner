@@ -16,6 +16,7 @@ import { IcoComponent } from '../../icons/ico.component';
 import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
 import { DynamicFormGroupComponent } from '../../components/training/dynamic-form-group/dynamic-form-group';
 import { RunSummaryComponent } from '../../components/training/run-summary/run-summary';
+import { TemplateInfoCardComponent } from '../../ui/template-info-card/template-info-card.component';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
 export type TemplateDomain = 'captioning' | 'masking' | 'training';
@@ -48,7 +49,7 @@ interface TemplateSection {
 @Component({
     selector: 'app-project-detail',
     standalone: true,
-    imports: [RouterLink, ReactiveFormsModule, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent],
+    imports: [RouterLink, ReactiveFormsModule, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent, TemplateInfoCardComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './project-detail.html',
     styleUrl: './project-detail.css',

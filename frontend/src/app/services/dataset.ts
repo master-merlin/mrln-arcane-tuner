@@ -28,6 +28,10 @@ export interface Dataset {
   tags?: string[];
   notes?: string;
   median_quality_score?: number | null;
+  /** Number of images in this dataset with `enabled === false` (currently
+   *  excluded from training). Surfaced by the list endpoint (PR8a); older
+   *  payloads omit it. */
+  excluded_count?: number;
   /** Per-image scan metadata, keyed by relative image path. Populated by
    *  the singular {@link DatasetService.getDataset} endpoint; the list
    *  endpoint omits it for payload-size reasons. */

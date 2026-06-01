@@ -2,53 +2,64 @@ import { Component, input, output, inject, signal, computed, OnInit, effect } fr
 import { FormsModule } from '@angular/forms';
 import { ToastService } from '../../../services/toast';
 import { TemplateService, Template } from '../../../services/template.service';
+import { TemplateInfoCardComponent, TemplateInfoRow } from '../../../ui/template-info-card/template-info-card.component';
 
 @Component({
   selector: 'app-training-template-selector',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, TemplateInfoCardComponent],
   template: `
-    <div class="space-y-6 mb-4">
-      <div class="flex items-center justify-between border-b border-surface-mid/30 pb-2 mb-4">
-          <div class="flex items-center gap-4">
-            <div class="w-1 h-6 bg-brand rounded-full"></div>
-            <h3 class="text-sm font-black text-text-subtle uppercase tracking-[0.2em]">Template Selection</h3>
-          </div>
+    <section class="card mb-3.5">
+      <!-- Header: accent + title + summary + active-template chip -->
+      <div class="card-head">
+        <div class="card-title min-w-0" style="padding:0">
+          <span class="w-[3px] h-3.5 bg-brand rounded-sm shrink-0"></span>
+          <span class="shrink-0">Template Selection</span>
+          <span class="ml-2.5 normal-case tracking-normal text-[12px] font-medium text-text-secondary truncate">apply a saved configuration · {{ filteredTemplates().length }} available</span>
+        </div>
+        @if (activeTemplate(); as tpl) {
+          <span class="chip shrink-0">
+            <span class="dot" style="background:var(--color-brand)"></span>
+            {{ tpl.name }} · {{ (tpl.is_default || tpl.readonly) ? 'default' : 'custom' }}
+          </span>
+        }
       </div>
 
-    <!-- Template Header & Actions -->
-    <div class="bg-surface-high/40 rounded-theme-lg border border-surface-mid/50 overflow-hidden mb-4">
-        <div class="p-3 bg-surface-low/50 border-b border-surface-mid/50 flex items-end gap-2">
-            <div class="flex-1">
-                <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Settings Template</label>
-                <select [ngModel]="activeTemplateId()" (ngModelChange)="applyTemplate($event)"
-                        data-testid="training-template-select"
-                    class="w-full bg-surface-low border border-surface-high text-white text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
-                    @for (tpl of filteredTemplates(); track tpl.id) {
-                        <option [value]="tpl.id">{{ tpl.name }}{{ tpl.is_default ? ' (Default)' : '' }}{{ !tpl.is_default ? getDefinitionLabel(tpl.definition_id) : '' }}</option>
-                    }
-                </select>
-            </div>
-            
-            <!-- Actions -->
-            <button type="button" (click)="saveAsNewTemplate()" 
-                    data-testid="add-training-template-btn"
-                    class="p-1.5 bg-surface-mid hover:bg-surface-high text-brand rounded-theme-md border border-surface-high transition-colors" title="Clone as New Template">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
-            </button>
-            <button type="button" (click)="renameTemplate()" 
-                    data-testid="rename-training-template-btn"
-                    [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-            </button>
-            <button type="button" (click)="deleteTemplate()" 
-                    data-testid="delete-training-template-btn"
-                    [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-            </button>
+      <!-- Body: template picker + actions on one row, meta below -->
+      <div class="card-body">
+        <label class="field-label">Settings template</label>
+        <div class="flex items-center gap-2">
+          <select [ngModel]="activeTemplateId()" (ngModelChange)="applyTemplate($event)"
+                  data-testid="training-template-select" class="select flex-1 min-w-0">
+            @for (tpl of filteredTemplates(); track tpl.id) {
+              <option [value]="tpl.id">{{ tpl.name }}{{ tpl.is_default ? ' (Default)' : '' }}{{ !tpl.is_default ? getDefinitionLabel(tpl.definition_id) : '' }}</option>
+            }
+          </select>
+
+          <!-- Actions -->
+          <button type="button" (click)="saveAsNewTemplate()"
+                  data-testid="add-training-template-btn"
+                  class="icon-btn text-brand shrink-0" title="Clone as New Template">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+          </button>
+          <button type="button" (click)="renameTemplate()"
+                  data-testid="rename-training-template-btn"
+                  [disabled]="isDefaultTemplate()" [class.opacity-40]="isDefaultTemplate()"
+                  class="icon-btn text-warning shrink-0" title="Rename Template">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+          </button>
+          <button type="button" (click)="deleteTemplate()"
+                  data-testid="delete-training-template-btn"
+                  [disabled]="isDefaultTemplate()" [class.opacity-40]="isDefaultTemplate()"
+                  class="icon-btn text-danger shrink-0" title="Delete Template">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+          </button>
         </div>
-    </div>
-    </div>
+        @if (activeTemplate(); as tpl) {
+          <app-template-info-card class="block mt-2.5" [name]="tpl.name" [rows]="activeTemplateInfo()"></app-template-info-card>
+        }
+      </div>
+    </section>
   `
 })
 export class TrainingTemplateSelectorComponent implements OnInit {
@@ -95,6 +106,49 @@ export class TrainingTemplateSelectorComponent implements OnInit {
       if (id === 'default') return true;
       const tpl = this.allTemplates().find(t => t.id === id);
       return tpl ? tpl.is_default || tpl.readonly : false;
+  }
+
+  /** The currently-selected template (for the header chip + meta line). */
+  activeTemplate = computed<Template | undefined>(() =>
+    this.filteredTemplates().find(t => t.id === this.activeTemplateId()));
+
+  /**
+   * Key/value rows for the active template's info card — derived from its saved
+   * config (model name resolved via availableModels, falling back to the raw
+   * definition_id). Only present fields are emitted, so the bare Default
+   * template (no config yet) shows just its name. Mirrors the Projects →
+   * Quick Train `selectedTemplateInfo` builder so the two cards read alike.
+   */
+  activeTemplateInfo = computed<TemplateInfoRow[]>(() => {
+    const tpl = this.activeTemplate();
+    if (!tpl) return [];
+    const cfg = (tpl.config ?? {}) as Record<string, unknown>;
+    const rows: TemplateInfoRow[] = [];
+    const push = (key: string, value: unknown, fmt?: (v: unknown) => string) => {
+      if (value === undefined || value === null || value === '') return;
+      rows.push({ key, value: fmt ? fmt(value) : String(value) });
+    };
+    const defId = (cfg['definition_id'] as string) || tpl.definition_id;
+    const model = this.availableModels().find(m => m.id === defId);
+    push('Base model', model?.name || defId);
+    push('Training steps', cfg['max_train_steps']);
+    push('Epochs', cfg['max_train_epochs']);
+    push('Optimizer', cfg['optimizer_type']);
+    push('Learning rate', cfg['learning_rate'], v => this.formatLr(v));
+    push('Batch size', cfg['train_batch_size']);
+    push('Network rank', cfg['network_rank'] ?? cfg['network_dim'] ?? cfg['lora_rank'] ?? cfg['rank']);
+    push('Network alpha', cfg['network_alpha']);
+    push('Resolution', cfg['resolution']);
+    push('Scheduler', cfg['lr_scheduler']);
+    push('Timestep sampling', cfg['timestep_sampling']);
+    return rows;
+  });
+
+  /** Compact LR rendering: scientific notation for the usual tiny values. */
+  private formatLr(lr: unknown): string {
+    const n = Number(lr);
+    if (Number.isNaN(n) || n === 0) return String(lr);
+    return n < 0.0001 ? n.toExponential(1) : n.toString();
   }
 
   constructor() {

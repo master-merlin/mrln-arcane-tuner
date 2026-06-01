@@ -64,6 +64,8 @@ class MicrosoftLensDriver(IModelDriver):
         sel = arch.get("transformer.selected_layer_index", DEFAULT_SELECTED_LAYERS)
         self.selected_layers = tuple(int(i) for i in sel)
         self.hf_layer_indices = utils.lens_layers_to_hf_indices(self.selected_layers)
+        self._latent_h: int = 0
+        self._latent_w: int = 0
 
     # --- Phase 1 ---
 
@@ -185,6 +187,8 @@ class MicrosoftLensDriver(IModelDriver):
 
     def prepare_latents(self, latents: torch.Tensor) -> torch.Tensor:
         """VAE latent [B,32,h,w] -> patchify -> BN-normalize -> [B, S, 128]."""
+        self._latent_h = latents.shape[-2] // 2
+        self._latent_w = latents.shape[-1] // 2
         seq = utils.patchify_to_seq(latents)
         return utils.bn_normalize_seq(seq, self.vae).to(self.device)
 
@@ -208,24 +212,24 @@ class MicrosoftLensDriver(IModelDriver):
             stacked[:, i, :, :].contiguous() for i in range(stacked.shape[1])
         ]
 
-        latent_h = int(batch.get("latent_h", 0))
-        latent_w = int(batch.get("latent_w", 0))
+        latent_h = int(batch.get("latent_h", 0)) or self._latent_h
+        latent_w = int(batch.get("latent_w", 0)) or self._latent_w
         if latent_h > 0 and latent_w > 0:
-            pass  # use the dims the trainer provided
+            pass  # use stashed/provided dims
         elif latent_h <= 0 and latent_w <= 0:
-            # Emergency fallback: infer a square grid from the sequence length.
+            # Last-resort fallback: infer a square grid from the sequence length.
             side = int(math.isqrt(noisy_input.shape[1]))
             if side * side != noisy_input.shape[1]:
                 raise ValueError(
-                    "batch is missing latent_h/latent_w and "
-                    f"S={noisy_input.shape[1]} is not a perfect square; "
-                    "cannot infer img_shapes — provide latent_h/latent_w."
+                    "latent_h/latent_w unavailable (call prepare_latents first "
+                    "or set them on the batch) and "
+                    f"S={noisy_input.shape[1]} is not a perfect square."
                 )
             latent_h = latent_w = side
         else:
             raise ValueError(
-                "batch provided only one of latent_h/latent_w; both are "
-                f"required (got latent_h={latent_h}, latent_w={latent_w})."
+                "only one of latent_h/latent_w is available; both are required "
+                f"(got latent_h={latent_h}, latent_w={latent_w})."
             )
         img_shapes = [(1, latent_h, latent_w)]
 

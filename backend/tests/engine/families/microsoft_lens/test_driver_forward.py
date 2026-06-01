@@ -116,3 +116,18 @@ def test_forward_pass_requires_both_latent_dims():
     ts = torch.tensor([0.5])
     with pytest.raises(ValueError):
         drv.forward_pass(noisy, ts, (text, mask), {"latent_h": 2})  # latent_w missing
+
+
+def test_forward_pass_uses_stashed_nonsquare_grid():
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    drv.vae = _FakeVAE()
+    drv.transformer = _tiny_dit().eval()
+    # Non-square VAE latent [1,32,4,8] -> patchify grid (2,4) -> S=8.
+    lat = drv.prepare_latents(torch.randn(1, 32, 4, 8))
+    assert lat.shape == (1, 8, 128)
+    assert (drv._latent_h, drv._latent_w) == (2, 4)
+    text = torch.randn(1, 4, 5, 2880)
+    mask = torch.ones(1, 5, dtype=torch.bool)
+    # No latent_h/latent_w in batch -> must use the stashed (2,4), NOT isqrt(8) (which would raise).
+    out = drv.forward_pass(lat, torch.tensor([0.5]), (text, mask), {})
+    assert out.shape[0] == 1 and out.shape[1] == 8

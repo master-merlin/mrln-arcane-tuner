@@ -148,6 +148,12 @@
                                 <app-ico name="Database" [size]="11"/> Datasets in this project · {{ projectDatasets().length }}
                             </div>
                             <div style="display: flex; gap: 6px;">
+                                <button class="btn sm danger-out" type="button"
+                                        (click)="removeAllDatasets()"
+                                        [disabled]="projectDatasets().length === 0 || removingAll()"
+                                        title="Remove all datasets from this project (datasets are kept in the library)">
+                                    <app-ico name="Trash2" [size]="12"/> Remove all
+                                </button>
                                 <button class="btn sm" type="button" (click)="toggleDatasetPicker()"
                                         [disabled]="availableDatasets().length === 0"
                                         [title]="availableDatasets().length === 0 ? 'All library datasets already linked' : 'Link an existing dataset'">
@@ -286,8 +292,12 @@
                                                 <div class="pd-template-row">
                                                     <span class="pd-template-dot" [style.background]="templateDomainTone(s.domain)"></span>
                                                     <div class="pd-template-text">
-                                                        <div class="pd-template-name">{{ t.name }}</div>
-                                                        <div class="pd-template-sub">{{ t.definition_id || t.model_id || '' }}</div>
+                                                        <div class="pd-template-name-row">
+                                                            <span class="pd-template-name">{{ t.name }}</span>
+                                                            @if (t.is_default) { <span class="chip brand">active</span> }
+                                                            @if (t.branched_from) { <span class="chip" title="Branched from a global template">↳ branched</span> }
+                                                        </div>
+                                                        <div class="pd-template-sub">{{ t.definition_id || t.model_id || 'all models' }}</div>
                                                     </div>
                                                     <button class="icon-btn" type="button"
                                                             (click)="deleteProjectTemplate(s.domain, t)"
@@ -324,13 +334,32 @@
                                         </div>
                                     } @else {
                                         <select class="select"
-                                                [value]="selectedTemplateId()"
                                                 (change)="onSelectTrainingTemplate($any($event.target).value)">
-                                            <option value="">Choose a template…</option>
+                                            <option value="" [selected]="!selectedTemplateId()">Choose a template…</option>
                                             @for (t of projectTrainingTemplates(); track trackTemplate($index, t)) {
-                                                <option [value]="t.id">{{ t.name }} — {{ t.definition_id || '' }}</option>
+                                                <option [value]="t.id" [selected]="t.id === selectedTemplateId()">{{ t.name }} — {{ t.definition_id || '' }}</option>
                                             }
                                         </select>
+                                        @if (selectedTemplate(); as t) {
+                                            <div class="pd-qt-template-card">
+                                                <span class="pd-template-dot" [style.background]="templateDomainTone('training')"></span>
+                                                <div class="pd-qt-template-text">
+                                                    <div class="pd-template-name">{{ t.name }}</div>
+                                                    @if (selectedTemplateInfo().length) {
+                                                        <dl class="pd-qt-kv">
+                                                            @for (row of selectedTemplateInfo(); track row.key) {
+                                                                <div class="pd-qt-kv-row">
+                                                                    <dt>{{ row.key }}</dt>
+                                                                    <dd>{{ row.value }}</dd>
+                                                                </div>
+                                                            }
+                                                        </dl>
+                                                    }
+                                                </div>
+                                            </div>
+                                        } @else {
+                                            <div class="pd-qt-template-hint muted">Select a template to configure the run.</div>
+                                        }
                                     }
                                 </div>
 
@@ -403,46 +432,24 @@
                                     </div>
 
                                     <div>
-                                        <div class="pd-qt-rows-head">
-                                            <label class="field-label" style="margin-bottom: 0;">Datasets</label>
-                                            <button class="btn ghost sm" type="button" (click)="addQtRow()"
-                                                    [disabled]="projectDatasets().length === 0"
-                                                    title="Add another dataset row">
-                                                <app-ico name="Plus" [size]="12"/> Add row
-                                            </button>
-                                        </div>
-
                                         @if (projectDatasets().length === 0) {
+                                            <label class="field-label">Datasets</label>
                                             <div class="pd-empty">No datasets linked to this project yet.</div>
-                                        } @else {
-                                            <div class="pd-qt-rows">
-                                                @for (row of qtRows(); track trackQtRow($index, row); let i = $index) {
-                                                    <div class="pd-qt-row">
-                                                        <select class="select pd-qt-row-ds"
-                                                                [value]="row.datasetId"
-                                                                (change)="setQtRowDataset(i, $any($event.target).value)">
-                                                            <option value="">Pick a dataset…</option>
-                                                            @for (d of projectDatasets(); track trackDataset($index, d)) {
-                                                                <option [value]="d.id">{{ d.name }}</option>
-                                                            }
-                                                        </select>
-                                                        <input class="input pd-qt-row-cap" type="text"
-                                                               placeholder="Caption prefix (optional)"
-                                                               [value]="row.captionPrefix"
-                                                               (input)="setQtRowCaptionPrefix(i, $any($event.target).value)"/>
-                                                        <button class="icon-btn" type="button"
-                                                                title="Fill caption prefix from dataset trigger word"
-                                                                (click)="fillCaptionFromDatasetTrigger(i)">
-                                                            <app-ico name="Wand2" [size]="13"/>
-                                                        </button>
-                                                        <button class="icon-btn" type="button"
-                                                                title="Remove this row"
-                                                                (click)="removeQtRow(i)">
-                                                            <app-ico name="X" [size]="13"/>
-                                                        </button>
-                                                    </div>
-                                                }
+                                        } @else if (datasetsSchema()) {
+                                            <!-- Shared schema-driven datasets form (same blocks as the Training screen) -->
+                                            <div class="pd-qt-datasets-form">
+                                                <app-dynamic-form-group
+                                                    [fieldKey]="'datasets'"
+                                                    [schema]="datasetsSchema()"
+                                                    [rootSchema]="trainingSchema()"
+                                                    [parentForm]="launchForm"
+                                                    [datasetNames]="projectDatasetNames()"
+                                                    (arrayItemAdded)="addDatasetItem($event.schemaParam)"
+                                                    (arrayItemRemoved)="removeDatasetItem($event.index)"/>
                                             </div>
+                                        } @else {
+                                            <label class="field-label">Datasets</label>
+                                            <div class="pd-empty">Loading dataset configuration…</div>
                                         }
                                     </div>
                                 }
@@ -466,10 +473,39 @@
                             <div class="card-head">
                                 <div class="card-title">Estimate</div>
                             </div>
-                            <div class="pd-qt-estimate-stub">
-                                TODO(backend): wall-time / VRAM / output-size estimates require the
-                                <span class="mono">POST /training/estimate</span> endpoint (planned for Phase 6).
-                            </div>
+                            @if (!selectedTemplate()) {
+                                <div class="pd-qt-estimate-empty muted">Select a template to estimate.</div>
+                            } @else if (estimate(); as est) {
+                                <div class="pd-qt-estimate">
+                                    <div class="kpi compact">
+                                        <div class="kpi-accent brand"></div>
+                                        <div class="kpi-label">WALL TIME</div>
+                                        <div class="kpi-value">{{ est.wallTime }}</div>
+                                        <div class="kpi-sub">estimated</div>
+                                    </div>
+                                    <div class="kpi compact">
+                                        <div class="kpi-accent" [class.success]="est.vram?.fits" [class.danger]="est.vram && !est.vram.fits"></div>
+                                        <div class="kpi-label">VRAM</div>
+                                        @if (est.vram; as v) {
+                                            <div class="kpi-value">{{ (v.peak_mb / 1024).toFixed(1) }}<span class="unit"> / {{ (v.available_mb / 1024).toFixed(1) }} GB</span></div>
+                                            <div class="kpi-sub" [style.color]="v.fits ? 'var(--color-success)' : 'var(--color-danger)'">
+                                                {{ v.fits ? 'fits · ' + ((v.available_mb - v.peak_mb) / 1024).toFixed(1) + ' GB headroom' : 'exceeds available' }}
+                                            </div>
+                                        } @else {
+                                            <div class="kpi-value">—</div>
+                                            <div class="kpi-sub">unavailable</div>
+                                        }
+                                    </div>
+                                    <div class="kpi compact">
+                                        <div class="kpi-accent teal"></div>
+                                        <div class="kpi-label">OUTPUT</div>
+                                        <div class="kpi-value">{{ est.output }}</div>
+                                        <div class="kpi-sub">.safetensors · estimated</div>
+                                    </div>
+                                </div>
+                            } @else {
+                                <div class="pd-qt-estimate-empty muted">Estimating…</div>
+                            }
                         </div>
                     </div>
                 }
@@ -487,34 +523,21 @@
                         @if (runs().length === 0) {
                             <div class="pd-empty">No runs for this project yet.</div>
                         } @else {
-                            <table class="tbl">
-                                <thead>
-                                    <tr>
-                                        <th>Run</th>
-                                        <th>Status</th>
-                                        <th>Steps</th>
-                                        <th>Best loss</th>
-                                        <th>Duration</th>
-                                        <th>When</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @for (r of runs(); track trackJob($index, r)) {
-                                        <tr>
-                                            <td class="mono" style="font-size: 12px; font-weight: 600;">{{ r.lora_name || r.id }}</td>
-                                            <td>
-                                                @if (jobStatusTone(r.status); as tone) {
-                                                    <span class="chip" [class]="tone">{{ r.status_label || r.status }}</span>
-                                                }
-                                            </td>
-                                            <td class="mono">{{ r.completed_steps ?? '—' }}</td>
-                                            <td class="mono">{{ r.min_loss !== undefined && r.min_loss !== null ? r.min_loss.toFixed(4) : '—' }}</td>
-                                            <td class="mono">{{ r.duration_seconds ? (r.duration_seconds / 60).toFixed(1) + ' min' : '—' }}</td>
-                                            <td class="muted" style="font-size: 11.5px;">{{ formatUpdated(r.created_at) }}</td>
-                                        </tr>
-                                    }
-                                </tbody>
-                            </table>
+                            <div class="pd-run-list">
+                                @for (r of runs(); track trackJob($index, r)) {
+                                    <div class="pd-run-card">
+                                        <div class="pd-run-thumb" [class.pd-ds-thumb-missing]="!runDatasetThumb(r)">
+                                            @if (runDatasetThumb(r); as src) {
+                                                <img [src]="src" [alt]="r.lora_name || r.id" loading="lazy"
+                                                     (error)="onPreviewError($event)"/>
+                                            } @else {
+                                                <app-ico name="ImageOff" [size]="16"/>
+                                            }
+                                        </div>
+                                        <app-run-summary class="pd-run-summary" [job]="r"/>
+                                    </div>
+                                }
+                            </div>
                         }
                     </div>
                 }

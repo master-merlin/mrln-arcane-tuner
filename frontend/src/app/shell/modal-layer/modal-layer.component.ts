@@ -15,6 +15,7 @@ import { ModelSourceModalComponent } from '../../modals/model-source/model-sourc
 import { BrowseFolderModalComponent } from '../../modals/browse-folder/browse-folder.component';
 import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
 import { VersionEditModalComponent } from '../../modals/version-edit/version-edit.component';
+import { TemplatesLibraryModalComponent } from '../../modals/templates-library/templates-library.component';
 
 /**
  * Modal stack renderer.
@@ -51,6 +52,7 @@ import { VersionEditModalComponent } from '../../modals/version-edit/version-edi
         BrowseFolderModalComponent,
         ConfirmModalComponent,
         VersionEditModalComponent,
+        TemplatesLibraryModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -126,6 +128,9 @@ import { VersionEditModalComponent } from '../../modals/version-edit/version-edi
                             }
                             @case ('version-edit') {
                                 @defer { <app-modal-version-edit/> }
+                            }
+                            @case ('templates-library') {
+                                @defer { <app-modal-templates-library/> }
                             }
                             @default {
                                 <div class="modal-head">

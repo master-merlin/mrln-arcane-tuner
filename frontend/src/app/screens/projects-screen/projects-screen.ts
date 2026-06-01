@@ -158,6 +158,38 @@ interface ProjectCard {
             font-size: 11px;
             color: var(--color-text-subtle);
         }
+        /* ── Empty state ─────────────────────────────────────────── */
+        .ps-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 64px 24px;
+            text-align: center;
+        }
+        .ps-empty-icon {
+            width: 64px;
+            height: 64px;
+            border-radius: 16px;
+            background: var(--color-surface-mid);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--color-text-muted);
+            margin-bottom: 4px;
+        }
+        .ps-empty-headline {
+            font-size: 16px;
+            font-weight: 700;
+        }
+        .ps-empty-sub {
+            font-size: 13px;
+            color: var(--color-text-muted);
+            max-width: 360px;
+            line-height: 1.5;
+            margin-bottom: 4px;
+        }
     `],
 })
 export class ProjectsScreen implements OnInit {
@@ -225,6 +257,10 @@ export class ProjectsScreen implements OnInit {
 
     protected newProject(): void {
         this.overlay.openModal('project-dialog', { mode: 'create' });
+    }
+
+    protected openTemplatesLibrary(): void {
+        this.overlay.openModal('templates-library');
     }
 
     protected editProject(p: Project, event: Event): void {

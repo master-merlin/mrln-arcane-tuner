@@ -66,6 +66,7 @@
 .pd-template-row:last-child { border-bottom: 0; }
 .pd-template-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 .pd-template-text { flex: 1; line-height: 1.3; }
+.pd-template-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pd-template-name { font-size: 12.5px; font-weight: 600; }
 .pd-template-sub { font-size: 10.5px; color: var(--color-text-muted); font-family: var(--font-mono); }
 
@@ -104,12 +105,51 @@
     border-top: 1px solid var(--color-border-subtle);
 }
 .pd-qt-foot .right { margin-left: auto; }
-.pd-qt-estimate-stub {
-    padding: 12px;
-    font-size: 11.5px;
-    color: var(--color-text-muted);
-    line-height: 1.5;
+.pd-qt-estimate { display: flex; flex-direction: column; gap: 10px; }
+.pd-qt-estimate-empty { padding: 12px; font-size: 12px; }
+
+.pd-qt-template-card { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; margin-top: 8px; background: var(--color-surface-mid); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-theme-md); }
+.pd-qt-template-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.pd-qt-template-card .pd-template-name { font-size: 13px; }
+.pd-qt-kv {
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px 32px;
 }
+.pd-qt-kv-row { display: flex; align-items: baseline; justify-content: flex-start; gap: 7px; min-width: 0; }
+.pd-qt-kv dt {
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+}
+.pd-qt-kv dd {
+    margin: 0;
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 700;
+    color: var(--color-text-secondary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pd-qt-template-hint { margin-top: 8px; font-size: 11.5px; }
+
+/* Runs list */
+.pd-run-list { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
+.pd-run-card {
+    display: flex; align-items: stretch; gap: 12px;
+    padding: 12px 14px;
+    background: var(--color-surface-mid);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+}
+.pd-run-thumb {
+    width: 56px; height: 56px; border-radius: 6px;
+    overflow: hidden; flex-shrink: 0;
+    background: var(--color-surface-low, var(--color-surface-mid));
+    display: flex; align-items: center; justify-content: center;
+    color: var(--color-text-subtle);
+}
+.pd-run-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pd-run-summary { flex: 1; min-width: 0; }
 
 .pd-ds-thumb {
     width: 48px; height: 32px; border-radius: 4px;
@@ -147,14 +187,3 @@
     color: var(--color-text-subtle);
     font-style: italic;
 }
-
-/* Quick Train multi-row datasets */
-.pd-qt-rows-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.pd-qt-rows { display: flex; flex-direction: column; gap: 6px; }
-.pd-qt-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto auto;
-    gap: 6px;
-    align-items: stretch;
-}
-.pd-qt-row-ds, .pd-qt-row-cap { width: 100%; }

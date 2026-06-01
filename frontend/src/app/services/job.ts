@@ -41,6 +41,13 @@ export interface Job {
   lora_name?: string;
 }
 
+export interface VramEstimate {
+  peak_mb: number;
+  available_mb: number;
+  fits: boolean;
+  warnings?: string[];
+}
+
 export interface TrainingStats {
   total_jobs: number;
   completed: number;
@@ -72,6 +79,10 @@ export class JobService {
 
   createJob(plugin_id: string, config: any): Observable<Job> {
     return this.http.post<Job>(this.apiUrl, { plugin_id, config });
+  }
+
+  estimateVram(definitionId: string, config: any): Observable<VramEstimate> {
+    return this.http.post<VramEstimate>(`${this.apiUrl}/estimate-vram`, { definition_id: definitionId, config });
   }
 
   listJobHistory(projectId: string | null = null, limit: number = 50, offset: number = 0): Observable<Job[]> {

@@ -1,16 +1,21 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { FormArray, FormBuilder, FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ProjectService, type Project } from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { TemplateService, type Template } from '../../services/template.service';
-import { JobService, type Job } from '../../services/job';
+import { JobService, type Job, type VramEstimate } from '../../services/job';
 import { ToastService } from '../../services/toast';
 import { ScopeStore } from '../../state/scope.store';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetStore } from '../../state/dataset.store';
 import { IcoComponent } from '../../icons/ico.component';
 import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
+import { DynamicFormGroupComponent } from '../../components/training/dynamic-form-group/dynamic-form-group';
+import { RunSummaryComponent } from '../../components/training/run-summary/run-summary';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
 export type TemplateDomain = 'captioning' | 'masking' | 'training';
@@ -22,11 +27,6 @@ interface ProjectDatasetRow {
     missing?: boolean;
     trigger_word?: string;
     [key: string]: unknown;
-}
-
-interface QuickTrainDatasetRow {
-    datasetId: string;
-    captionPrefix: string;
 }
 
 interface TemplateSection {
@@ -48,7 +48,7 @@ interface TemplateSection {
 @Component({
     selector: 'app-project-detail',
     standalone: true,
-    imports: [RouterLink, IcoComponent, TabsComponent],
+    imports: [RouterLink, ReactiveFormsModule, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './project-detail.html',
     styleUrl: './project-detail.css',
@@ -63,6 +63,9 @@ export class ProjectDetail implements OnInit {
     private overlay = inject(OverlayStore);
     private rtc = inject(RuntimeConfigService);
     private datasetStore = inject(DatasetStore);
+    private http = inject(HttpClient);
+    private fb = inject(FormBuilder);
+    private destroyRef = inject(DestroyRef);
     protected projects = inject(ProjectService);
 
     protected projectId = signal<string>('');
@@ -98,9 +101,41 @@ export class ProjectDetail implements OnInit {
     protected loraPrefix = signal<string>('');
     protected loraSuffix = signal<string>('');
     protected triggerWord = signal<string>('');
-    /** Per-dataset rows for the training job — at least one is required. */
-    protected qtRows = signal<QuickTrainDatasetRow[]>([{ datasetId: '', captionPrefix: '' }]);
     protected quickTrainSubmitting = signal(false);
+
+    // ── Estimate panel ────────────────────────────────────────────────
+    // VRAM is REAL (POST /jobs/estimate-vram). Wall-time + output size are
+    // coarse CLIENT-SIDE heuristics (no backend estimator exists) — surfaced
+    // with `~` / "estimated" sub-labels so they read as approximations.
+    protected estimate = signal<{
+        vram: VramEstimate | null;
+        wallTime: string;   // e.g. "1h 36m" (heuristic)
+        output: string;     // e.g. "~232 MB" (heuristic)
+    } | null>(null);
+    private estimateTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // ── Schema-driven datasets form (shared with the Training screen) ──
+    // Instead of a hand-rolled datasetId/captionPrefix picker, Quick Train
+    // derives its per-dataset config from the SAME training-plugin schema
+    // block the Training screen renders. The full DatasetItem fields
+    // (num_repeats, caption_dropout_rate, masking_enabled, …) stay in sync
+    // with the Training layout via DynamicFormGroupComponent.
+    protected trainingSchema = signal<any>(null);
+    protected datasetsSchema = signal<any>(null);
+    protected launchForm: FormGroup = this.fb.group({ datasets: this.fb.array([]) });
+    /** FormArray.length is not reactive on its own — mirror it into a signal. */
+    protected datasetCount = signal(0);
+    /**
+     * FormControl VALUES aren't signals, so a computed that reads them won't
+     * recompute on edits. Bump this on every `launchForm.valueChanges` so the
+     * start-gate computed re-evaluates (mirrors the live Training screen).
+     */
+    protected formVersion = signal(0);
+
+    /** Project-scoped dataset names — feeds the dataset_name enum / autocomplete. */
+    protected projectDatasetNames = computed<string[]>(() =>
+        this.projectDatasets().map(d => d.name),
+    );
 
     /** Project-scoped training templates (slice from templateSections). */
     protected projectTrainingTemplates = computed<Template[]>(() =>
@@ -112,6 +147,40 @@ export class ProjectDetail implements OnInit {
         if (!id) return null;
         return this.projectTrainingTemplates().find(t => t.id === id) ?? null;
     });
+
+    /**
+     * Human-readable "Key: Value" rows pulled from the selected template's
+     * config. Only present fields are emitted, so the card stays compact.
+     */
+    protected selectedTemplateInfo = computed<{ key: string; value: string }[]>(() => {
+        const t = this.selectedTemplate();
+        if (!t) return [];
+        const cfg = (t.config ?? {}) as Record<string, unknown>;
+        const rows: { key: string; value: string }[] = [];
+        const push = (key: string, value: unknown, fmt?: (v: unknown) => string) => {
+            if (value === undefined || value === null || value === '') return;
+            rows.push({ key, value: fmt ? fmt(value) : String(value) });
+        };
+        push('Base model', t.definition_id || cfg['definition_id'] || t.model_id);
+        push('Training steps', cfg['max_train_steps']);
+        push('Epochs', cfg['max_train_epochs']);
+        push('Optimizer', cfg['optimizer_type']);
+        push('Learning rate', cfg['learning_rate'], v => this.formatLr(v));
+        push('Batch size', cfg['train_batch_size']);
+        push('Network rank', cfg['network_rank'] ?? cfg['network_dim'] ?? cfg['lora_rank'] ?? cfg['rank']);
+        push('Network alpha', cfg['network_alpha']);
+        push('Resolution', cfg['resolution']);
+        push('Scheduler', cfg['lr_scheduler']);
+        push('Timestep sampling', cfg['timestep_sampling']);
+        return rows;
+    });
+
+    /** Compact LR rendering: scientific notation for the usual tiny values. */
+    private formatLr(lr: unknown): string {
+        const n = Number(lr);
+        if (Number.isNaN(n) || n === 0) return String(lr);
+        return n < 0.0001 ? n.toExponential(1) : n.toString();
+    }
 
     /** Live preview of the LoRA filename with {placeholders} resolved. */
     protected loraNamePreview = computed<string>(() => {
@@ -127,16 +196,22 @@ export class ProjectDetail implements OnInit {
         });
     });
 
-    protected canStartQuickTrain = computed<boolean>(() =>
-        !!this.selectedTemplateId() &&
-        !!this.loraName().trim() &&
-        this.qtRows().some(r => r.datasetId) &&
-        !this.quickTrainSubmitting(),
-    );
+    protected canStartQuickTrain = computed<boolean>(() => {
+        // Track form edits — FormControl values aren't signals on their own.
+        this.formVersion();
+        if (!this.selectedTemplateId()) return false;
+        if (!this.loraName().trim()) return false;
+        if (this.quickTrainSubmitting()) return false;
+        // Need the datasets FormArray to have ≥1 row, and at least one with a name.
+        const fa = this.launchForm.get('datasets') as FormArray;
+        if (!fa || this.datasetCount() < 1) return false;
+        return fa.controls.some(c => !!c.get('dataset_name')?.value);
+    });
 
     // ── Dataset linking ───────────────────────────────────────────────
     protected showDatasetPicker = signal(false);
     protected datasetToLink = signal<string>('');
+    protected removingAll = signal(false);
 
     /** Datasets in the library that are not yet linked to this project. */
     protected availableDatasets = computed<{ id: string; name: string }[]>(() => {
@@ -162,7 +237,29 @@ export class ProjectDetail implements OnInit {
         return this.globalTrainTpls();
     });
 
-    constructor() { /* OnInit handles initial wiring after inputs resolve */ }
+    constructor() {
+        // FormControl values aren't signals — drive the start-gate computed off
+        // form edits by bumping a tracked signal on every value change.
+        // `launchForm` is created at field init, so it exists here.
+        this.launchForm.valueChanges
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe(() => this.formVersion.update(v => v + 1));
+
+        // Recompute the estimate panel whenever the template, datasets, or the
+        // two toggles change. Reading these signals registers them as the
+        // effect's dependencies; scheduleEstimate() debounces so rapid form
+        // edits don't trigger a storm of VRAM requests.
+        effect(() => {
+            this.selectedTemplateId();
+            this.formVersion();
+            this.scheduleEstimate();
+        });
+
+        // Cancel any pending estimate timer on teardown.
+        this.destroyRef.onDestroy(() => {
+            if (this.estimateTimer) clearTimeout(this.estimateTimer);
+        });
+    }
 
     ngOnInit(): void {
         const id = this.route.snapshot.paramMap.get('id') ?? '';
@@ -202,8 +299,9 @@ export class ProjectDetail implements OnInit {
                 void this.loadRuns(id);
                 break;
             case 'quick-train':
-                // Reuses datasets for the picker.
-                void this.loadDatasets(id);
+                // Reuses datasets for the picker, and pulls the training-plugin
+                // schema so the shared datasets form can render.
+                void this.loadDatasets(id).then(() => this.ensureDatasetsSchema());
                 break;
             default:
                 break;
@@ -277,6 +375,28 @@ export class ProjectDetail implements OnInit {
                 ?? (err as { message?: string })?.message ?? 'unknown error';
             this.toast.error(`Failed to link dataset: ${msg}`);
         }
+    }
+
+    protected async removeAllDatasets(): Promise<void> {
+        const projectId = this.projectId();
+        const list = this.projectDatasets();
+        if (!projectId || list.length === 0 || this.removingAll()) return;
+        if (!confirm(`Remove all ${list.length} dataset${list.length === 1 ? '' : 's'} from this project? The datasets themselves are kept in the library.`)) return;
+        this.removingAll.set(true);
+        let ok = 0, failed = 0;
+        for (const d of list) {
+            try {
+                await firstValueFrom(this.projects.removeProjectDataset(projectId, d.id));
+                ok++;
+            } catch {
+                failed++;
+            }
+        }
+        this.removingAll.set(false);
+        if (failed) this.toast.warning(`Removed ${ok} dataset${ok === 1 ? '' : 's'} · ${failed} failed`);
+        else this.toast.success(`Removed ${ok} dataset${ok === 1 ? '' : 's'} from project`);
+        await this.loadDatasets(projectId);
+        this.projects.loadProjects();
     }
 
     protected async removeDatasetFromProject(d: ProjectDatasetRow, event: Event): Promise<void> {
@@ -404,88 +524,165 @@ export class ProjectDetail implements OnInit {
             prefill(this.loraPrefix, 'lora_prefix');
             prefill(this.loraSuffix, 'lora_suffix');
             prefill(this.triggerWord, 'global_triggerword');
+            // Ensure the shared datasets form/schema is ready to render.
+            await this.ensureDatasetsSchema();
         } catch {
             this.toast.error('Failed to load template details.');
         }
     }
 
-    /** Auto-derive prefix/suffix from the first dataset row (legacy parity). */
+    /** Auto-derive prefix/suffix from the first dataset row in the form. */
     protected autofillLora(field: 'prefix' | 'suffix'): void {
-        const firstId = this.qtRows()[0]?.datasetId;
-        const ds = this.projectDatasets().find(d => d.id === firstId);
-        if (!ds) {
+        const fa = this.launchForm.get('datasets') as FormArray;
+        const name = (fa?.at(0)?.get('dataset_name')?.value as string) || '';
+        if (!name) {
             this.toast.warning('Pick a dataset first.');
             return;
         }
-        const cleaned = ds.name.replace(/[-\s]+/g, '_');
+        const cleaned = name.replace(/[-\s]+/g, '_');
         if (field === 'prefix') this.loraPrefix.set(cleaned);
         else this.loraSuffix.set(cleaned);
         this.saveQuickTrainPreferences();
     }
 
-    // ── Quick Train multi-row datasets ────────────────────────────────
+    // ── Schema-driven datasets form ───────────────────────────────────
 
-    protected addQtRow(): void {
-        this.qtRows.update(rows => [...rows, { datasetId: '', captionPrefix: '' }]);
-    }
-
-    protected removeQtRow(index: number): void {
-        this.qtRows.update(rows => {
-            const next = rows.filter((_, i) => i !== index);
-            // Always keep at least one row for input affordance.
-            return next.length ? next : [{ datasetId: '', captionPrefix: '' }];
-        });
-    }
-
-    protected setQtRowDataset(index: number, datasetId: string): void {
-        this.qtRows.update(rows => rows.map((r, i) => i === index ? { ...r, datasetId } : r));
-    }
-
-    protected setQtRowCaptionPrefix(index: number, captionPrefix: string): void {
-        this.qtRows.update(rows => rows.map((r, i) => i === index ? { ...r, captionPrefix } : r));
+    /**
+     * Resolve a (possibly `$ref`) schema node against the root training
+     * schema's `$defs`/`definitions`. Mirrors the legacy/live pattern.
+     */
+    private resolveSchemaRef(schemaOrRef: any): any {
+        if (!schemaOrRef) return {};
+        const root = this.trainingSchema() || {};
+        const defs = root.$defs || root.definitions || {};
+        if (schemaOrRef.$ref) {
+            const refKey = schemaOrRef.$ref.split('/').pop();
+            if (defs[refKey]) return { ...defs[refKey], ...schemaOrRef };
+        }
+        return schemaOrRef;
     }
 
     /**
-     * Read `trigger_word` from the row's selected dataset and drop it into
-     * the row's caption prefix. Magic-wand affordance from the user's request.
+     * Fetch the training-plugin schema (once), extract the `datasets` block,
+     * patch its `dataset_name` enum (and any `$defs` mirror) to the project's
+     * datasets, and seed the FormArray with one row.
      */
-    protected fillCaptionFromDatasetTrigger(index: number): void {
-        const row = this.qtRows()[index];
-        if (!row) return;
-        const ds = this.projectDatasets().find(d => d.id === row.datasetId);
-        const trigger = ds?.trigger_word?.trim();
-        if (!trigger) {
-            this.toast.warning(ds ? `'${ds.name}' has no trigger word set.` : 'Pick a dataset first.');
+    private async ensureDatasetsSchema(): Promise<void> {
+        if (this.datasetsSchema()) {
+            // Schema already loaded — just refresh the enum for current datasets.
+            this.refreshDatasetSchemaEnum();
             return;
         }
-        this.setQtRowCaptionPrefix(index, trigger);
+        try {
+            const schema: any = await firstValueFrom(
+                this.http.get(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`),
+            );
+            this.trainingSchema.set(schema);
+
+            const props = schema?.properties || {};
+            if (!props.datasets) return;
+
+            // Deep-clone so we never mutate the shared schema object.
+            const dsSchema = JSON.parse(JSON.stringify(props.datasets));
+            const names = this.projectDatasetNames();
+            // The real patch site: `datasets.items` is a `$ref` into `$defs`
+            // (DatasetItem), so the dataset_name enum lives in the $defs mirror,
+            // not on dsSchema.items directly. Patch every matching $defs entry.
+            const defs = schema.$defs || schema.definitions || {};
+            for (const defVal of Object.values(defs) as any[]) {
+                if (defVal?.properties?.dataset_name) {
+                    defVal.properties.dataset_name.enum = names;
+                }
+            }
+            this.datasetsSchema.set(dsSchema);
+
+            // Seed with a single row so the user has somewhere to start.
+            const fa = this.launchForm.get('datasets') as FormArray;
+            if (fa.length === 0) {
+                this.addDatasetItem(schema.properties.datasets.items);
+            }
+        } catch {
+            this.toast.error('Failed to load training schema.');
+        }
+    }
+
+    /** Re-patch the datasetsSchema enum with current project dataset names. */
+    private refreshDatasetSchemaEnum(): void {
+        const current = this.datasetsSchema();
+        if (!current) return;
+        const updated = JSON.parse(JSON.stringify(current));
+        const names = this.projectDatasetNames();
+        const root = this.trainingSchema();
+        // The real patch site: `datasets.items` is a `$ref` into `$defs`
+        // (DatasetItem), so the dataset_name enum lives in the $defs mirror.
+        const defs = root?.$defs || root?.definitions || {};
+        for (const defVal of Object.values(defs) as any[]) {
+            if (defVal?.properties?.dataset_name) {
+                defVal.properties.dataset_name.enum = names;
+            }
+        }
+        this.datasetsSchema.set(updated);
     }
 
     /**
-     * Read `trigger_word` from the first row's dataset (or the only dataset
-     * row that has one) into the global trigger word field.
+     * Build a per-dataset FormGroup from the datasets-item schema's
+     * properties and push it onto the `datasets` FormArray. Mirrors the live
+     * `TrainingDynamicConfig.addArrayItem` / legacy `onArrayItemAdded`:
+     * iterate `items.properties`, create one FormControl per field honoring
+     * defaults (and falling back to the first enum value when empty).
+     */
+    protected addDatasetItem(itemSchemaRef: any): void {
+        const itemSchema = this.resolveSchemaRef(itemSchemaRef);
+        const fa = this.launchForm.get('datasets') as FormArray;
+        if (!fa || !itemSchema?.properties) return;
+
+        const group: Record<string, FormControl> = {};
+        for (const pKey in itemSchema.properties) {
+            const pSchema = this.resolveSchemaRef(itemSchema.properties[pKey]);
+            let defaultValue = pSchema.default !== undefined ? pSchema.default : '';
+            if (pSchema.enum?.length && (defaultValue === '' || defaultValue === undefined)) {
+                defaultValue = pSchema.enum[0];
+            }
+            group[pKey] = new FormControl(defaultValue);
+        }
+        fa.push(this.fb.group(group));
+        this.datasetCount.set(fa.length);
+    }
+
+    /** Remove the dataset row at `index` (emitted by DynamicFormGroupComponent). */
+    protected removeDatasetItem(index: number): void {
+        const fa = this.launchForm.get('datasets') as FormArray;
+        if (!fa) return;
+        fa.removeAt(index);
+        this.datasetCount.set(fa.length);
+    }
+
+    /**
+     * Read `trigger_word` from the first dataset row's dataset into the
+     * global trigger word field.
      */
     protected fillTriggerFromDataset(): void {
-        const rows = this.qtRows();
-        // Prefer the first row with a trigger word; fall back to first row with a dataset.
-        for (const r of rows) {
-            const ds = this.projectDatasets().find(d => d.id === r.datasetId);
-            const trigger = ds?.trigger_word?.trim();
-            if (trigger) {
-                this.triggerWord.set(trigger);
-                this.saveQuickTrainPreferences();
-                return;
+        const fa = this.launchForm.get('datasets') as FormArray;
+        if (fa) {
+            for (const c of fa.controls) {
+                const name = c.get('dataset_name')?.value as string;
+                if (!name) continue;
+                const ds = this.projectDatasets().find(d => d.name === name);
+                const trigger = ds?.trigger_word?.trim();
+                if (trigger) {
+                    this.triggerWord.set(trigger);
+                    this.saveQuickTrainPreferences();
+                    return;
+                }
             }
         }
         this.toast.warning('No dataset row has a trigger word set.');
     }
 
-    protected trackQtRow = (index: number, _: QuickTrainDatasetRow) => index;
-
     /**
      * Build a job config from the selected template, apply Quick Train
      * overrides, resolve `{placeholders}` in `lora_name`, and submit to the
-     * standard plugin. Mirrors legacy `startTraining()` behavior.
+     * standard plugin. Dataset config comes from the shared schema-driven form.
      */
     protected async startQuickTrain(): Promise<void> {
         if (!this.canStartQuickTrain()) return;
@@ -493,24 +690,13 @@ export class ProjectDetail implements OnInit {
         const templateId = this.selectedTemplateId();
         if (!projectId || !templateId) return;
 
-        // Resolve dataset rows -> { dataset_name, caption_prefix? } payloads.
-        // Drop rows with no dataset selected; bail if nothing's left.
-        const rows = this.qtRows();
-        const datasetEntries: Array<Record<string, string>> = [];
-        for (const r of rows) {
-            if (!r.datasetId) continue;
-            const ds = this.projectDatasets().find(d => d.id === r.datasetId);
-            if (!ds) {
-                this.toast.error(`A selected dataset is no longer in this project.`);
-                return;
-            }
-            const entry: Record<string, string> = { dataset_name: ds.name };
-            const cp = r.captionPrefix.trim();
-            if (cp) entry['caption_prefix'] = cp;
-            datasetEntries.push(entry);
-        }
+        // Pull the full per-dataset objects from the reactive FormArray;
+        // keep only rows that actually selected a dataset.
+        const fa = this.launchForm.get('datasets') as FormArray;
+        const datasetEntries = (fa?.value as Array<Record<string, unknown>> ?? [])
+            .filter(ds => !!ds['dataset_name']);
         if (datasetEntries.length === 0) {
-            this.toast.error('Add at least one dataset row before starting training.');
+            this.toast.error('Add at least one dataset before starting training.');
             return;
         }
 
@@ -546,6 +732,74 @@ export class ProjectDetail implements OnInit {
             this.toast.error(`Failed to start training: ${msg}`);
         } finally {
             this.quickTrainSubmitting.set(false);
+        }
+    }
+
+    // ── Estimate panel ────────────────────────────────────────────────
+
+    /**
+     * Assemble the same config shape `startQuickTrain` submits, sourced from
+     * the selected template's computed config (no refetch) + the FormArray
+     * datasets + the cache/sample toggles. Returns null if no template is
+     * selected. Used to drive the VRAM estimate request.
+     */
+    private buildEstimateConfig(): { definitionId: string; config: Record<string, unknown> } | null {
+        const tpl = this.selectedTemplate();
+        if (!tpl) return null;
+        const config: Record<string, unknown> = { ...((tpl.config ?? {}) as Record<string, unknown>) };
+        const definitionId = tpl.definition_id || (config['definition_id'] as string) || '';
+        if (!config['definition_id']) config['definition_id'] = definitionId;
+
+        const fa = this.launchForm.get('datasets') as FormArray;
+        const datasetEntries = (fa?.value as Array<Record<string, unknown>> ?? [])
+            .filter(ds => !!ds['dataset_name']);
+        config['datasets'] = datasetEntries;
+
+        return { definitionId, config };
+    }
+
+    /** Debounce estimate recomputes so rapid form edits don't storm the API. */
+    private scheduleEstimate(): void {
+        if (this.estimateTimer) clearTimeout(this.estimateTimer);
+        this.estimateTimer = setTimeout(() => {
+            this.estimateTimer = null;
+            void this.recomputeEstimate();
+        }, 400);
+    }
+
+    /**
+     * Recompute the estimate panel: real VRAM from the backend plus coarse
+     * client-side heuristics for wall-time and output size. The heuristic
+     * constants (1.2 s/step, 14 MB/rank) are deliberately rough — the goal is
+     * a populated, transparently-labelled panel, not precision.
+     */
+    private async recomputeEstimate(): Promise<void> {
+        const built = this.buildEstimateConfig();
+        if (!built) {
+            this.estimate.set(null);
+            return;
+        }
+        const { definitionId, config } = built;
+
+        // Wall-time heuristic: ~1.2 s per training step.
+        const steps = Number(config['max_train_steps'] ?? 1000) || 1000;
+        const totalSec = steps * 1.2;
+        const hours = Math.floor(totalSec / 3600);
+        const minutes = Math.round((totalSec % 3600) / 60);
+        const wallTime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+        // Output-size heuristic: ~14 MB per LoRA rank.
+        const rank = Number(
+            config['network_dim'] ?? config['lora_rank'] ?? config['rank'] ?? config['lora_dim'] ?? 16,
+        ) || 16;
+        const output = `~${Math.round(rank * 14)} MB`;
+
+        try {
+            const vram = await firstValueFrom(this.jobs.estimateVram(definitionId, config));
+            this.estimate.set({ vram, wallTime, output });
+        } catch {
+            // VRAM endpoint failed — still surface the heuristics; VRAM shows "—".
+            this.estimate.set({ vram: null, wallTime, output });
         }
     }
 
@@ -591,11 +845,43 @@ export class ProjectDetail implements OnInit {
      */
     protected previewUrl(d: ProjectDatasetRow): string | null {
         if (!d.preview_image || d.missing) return null;
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(d.name)}/${d.preview_image}`;
+        return this.datasetPreviewUrl(d.name, d.preview_image);
+    }
+
+    private datasetPreviewUrl(name: string, previewImage: string): string {
+        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(name)}/${previewImage}`;
     }
 
     protected onPreviewError(event: Event): void {
         (event.target as HTMLImageElement).style.display = 'none';
+    }
+
+    /**
+     * Thumbnail for the dataset a run trained on. Resolves the run's first
+     * dataset (config.datasets[].dataset_name, or a flat dataset_name) and
+     * builds its preview URL. Prefers the project-linked row, but falls back to
+     * the global dataset store — a run may reference a dataset that has since
+     * been unlinked from this project yet still exists globally. Null when the
+     * dataset can't be matched anywhere or has no preview.
+     */
+    protected runDatasetThumb(job: Job): string | null {
+        const cfg = (job.config ?? {}) as Record<string, unknown>;
+        const datasets = cfg['datasets'];
+        let name: unknown;
+        if (Array.isArray(datasets) && datasets.length) {
+            const first = (datasets[0] ?? {}) as Record<string, unknown>;
+            name = first['dataset_name'] ?? first['name'];
+        }
+        name ??= cfg['dataset_name'] ?? cfg['dataset'];
+        if (typeof name !== 'string' || !name) return null;
+
+        const local = this.projectDatasets().find(d => d.name === name || d.id === name);
+        if (local && !local.missing && local.preview_image) return this.previewUrl(local);
+
+        const global = this.datasetStore.entities().find(d => d.name === name || d.id === name);
+        if (global?.preview_image) return this.datasetPreviewUrl(global.name, global.preview_image);
+
+        return null;
     }
 
     protected initialsOf(name: string | undefined): string {
@@ -606,18 +892,6 @@ export class ProjectDetail implements OnInit {
     protected formatUpdated(ts?: number): string {
         if (!ts) return '—';
         return new Date(ts * 1000).toLocaleString();
-    }
-
-    protected jobStatusTone(s: string | undefined): string {
-        switch (s) {
-            case 'running': return 'success';
-            case 'completed': return 'success';
-            case 'failed': return 'danger';
-            case 'stopped': return 'warning';
-            case 'paused': return 'warning';
-            case 'pending': return 'teal';
-            default: return '';
-        }
     }
 
     protected templateDomainTone(d: 'captioning' | 'masking' | 'training'): string {

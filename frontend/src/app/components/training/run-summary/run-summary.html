@@ -1,0 +1,67 @@
+@if (showHeader()) {
+    <div class="rs-head">
+        <div class="rs-id">
+            <span class="rs-name">{{ loraName() }}</span>
+            <span class="rs-on">on</span>
+            <span class="rs-model">{{ model() }}</span>
+        </div>
+        <div class="rs-head-right">
+            @if (statusTone(); as tone) {
+                <span class="chip" [class]="tone">{{ job().status_label || job().status }}</span>
+            }
+            <span class="rs-when">{{ job().created_at * 1000 | date:'MMM d, HH:mm' }}</span>
+        </div>
+    </div>
+}
+
+<div class="rs-strip" [class.rs-strip-bare]="!showHeader()">
+    @let m = metrics();
+
+    <div class="rs-metric">
+        <span class="rs-key">Steps</span>
+        <span class="rs-val">{{ m.steps ?? '—' }}</span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Epoch</span>
+        <span class="rs-val accent-violet">{{ m.epoch }}</span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Final loss</span>
+        <span class="rs-val">{{ m.finalLoss != null ? (m.finalLoss | number:'1.4-6') : '—' }}</span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Best loss</span>
+        <span class="rs-val accent-success">
+            {{ m.bestLoss != null ? (m.bestLoss | number:'1.4-6') : '—' }}
+            @if (m.bestLossStep) {
+                <span class="rs-sub">&#64;{{ m.bestLossStep }}</span>
+            }
+        </span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Improvement</span>
+        @if (m.improvement != null) {
+            <span class="rs-val" [class.accent-success]="m.improvementGood" [class.accent-warning]="!m.improvementGood">
+                {{ m.improvement | number:'1.1-1' }}%
+            </span>
+        } @else {
+            <span class="rs-val">—</span>
+        }
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Avg step</span>
+        <span class="rs-val">{{ m.avgStep != null ? (m.avgStep | number:'1.2-2') + 's' : '—' }}</span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Optimizer</span>
+        <span class="rs-val accent-sky">{{ m.optimizer }}</span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">LR / Batch</span>
+        <span class="rs-val">{{ m.lr }} <span class="rs-sub">/ BS {{ m.batch }}</span></span>
+    </div>
+    <div class="rs-metric">
+        <span class="rs-key">Train time</span>
+        <span class="rs-val">{{ m.trainTime }}</span>
+    </div>
+</div>

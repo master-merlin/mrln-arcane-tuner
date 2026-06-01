@@ -47,6 +47,8 @@ class StubMediaItems {
     loadForDataset = jasmine.createSpy('loadForDataset').and.returnValue(Promise.resolve());
     mediaRev = signal(0);
     bumpMedia = jasmine.createSpy('bumpMedia');
+    saveCaption = jasmine.createSpy('saveCaption')
+        .and.returnValue(Promise.resolve({ ok: true, value: {} }));
 }
 
 /**
@@ -58,6 +60,9 @@ class StubCaptionCache {
     byDataset = signal<Record<string, Map<string, any>>>({});
     get = (_: string) => new Map<string, any>();
     seed = jasmine.createSpy('seed');
+    setCaption = jasmine.createSpy('setCaption');
+    setRow = jasmine.createSpy('setRow');
+    remove = jasmine.createSpy('remove');
 }
 
 class StubScope { projectId = signal<string | null>(null); }
@@ -348,5 +353,108 @@ describe('DatasetWorkspaceComponent.ensurePatchBump (auto patch bump)', () => {
         const patchCalls = api.bumpVersion.calls.allArgs()
             .filter((args: any[]) => args[1] === 'patch');
         expect(patchCalls.length).toBe(1);
+    });
+});
+
+describe('DatasetWorkspaceComponent.onSaveCaption masked-path routing', () => {
+
+    /**
+     * Build a workspace component + stub wiring tailored for
+     * onSaveCaption tests. The defaults from `bed()` already give us
+     * a dataset named ``alpha`` (id ``d1``) and a non-null workspace
+     * pointing at it. We just need to:
+     *   - replace ``byDataset`` so the seeded MediaItem flows through
+     *     the `pairs` computed (kept for parity with PR2 fixup tests),
+     *   - stub ``api.bumpVersion`` + ``datasets.upsertLocal`` so the
+     *     ``ensurePatchBump`` triggered on the ok-branch doesn't blow
+     *     up the subscribe pipeline.
+     */
+    function setup(mediaItem: any) {
+        const cmp = bed();
+        const mediaItems = TestBed.inject(MediaItemStore) as any;
+        const api = TestBed.inject(DatasetService) as any;
+        const datasets = TestBed.inject(DatasetStore) as any;
+        mediaItems.byDataset = (_: string) => signal([mediaItem]);
+        api.bumpVersion = jasmine.createSpy('bumpVersion')
+            .and.returnValue(of({ version: '1.0.1' }));
+        datasets.upsertLocal = jasmine.createSpy('upsertLocal');
+        return { cmp, mediaItems };
+    }
+
+    it('routes masked save to masked/<stem>.txt', async () => {
+        const { cmp, mediaItems } = setup(
+            { media_file: 'cat.png', caption_file: 'cat.txt', metadata: {} },
+        );
+
+        (cmp as any).onSaveCaption({
+            pair: { media_file: 'cat.png', caption_file: 'cat.txt' },
+            content: 'masked text',
+            isMasked: true,
+        });
+
+        // Drain the microtask queue for the .then() chain.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mediaItems.saveCaption).toHaveBeenCalledWith(
+            'alpha', 'cat.png', 'masked/cat.txt', 'masked text',
+        );
+    });
+
+    it('routes plain save to pair.caption_file when set', async () => {
+        const { cmp, mediaItems } = setup(
+            { media_file: 'cat.png', caption_file: 'cat.txt', metadata: {} },
+        );
+
+        (cmp as any).onSaveCaption({
+            pair: { media_file: 'cat.png', caption_file: 'cat.txt' },
+            content: 'plain text',
+            isMasked: false,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mediaItems.saveCaption).toHaveBeenCalledWith(
+            'alpha', 'cat.png', 'cat.txt', 'plain text',
+        );
+    });
+
+    it('falls back to <stem>.txt when pair.caption_file is missing and not masked', async () => {
+        const { cmp, mediaItems } = setup(
+            { media_file: 'fox.JPG', caption_file: '', metadata: {} },
+        );
+
+        (cmp as any).onSaveCaption({
+            pair: { media_file: 'fox.JPG', caption_file: '' },
+            content: 't',
+            isMasked: false,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mediaItems.saveCaption).toHaveBeenCalledWith(
+            'alpha', 'fox.JPG', 'fox.txt', 't',
+        );
+    });
+
+    it('always derives masked/<stem>.txt for masked, ignoring pair.caption_file', async () => {
+        // Sanity: masked branch must NOT respect pair.caption_file
+        // (which points to the plain file). Legacy saveCurrentCaption
+        // composes the masked path from the stem, not the field.
+        const { cmp, mediaItems } = setup(
+            { media_file: 'dog.png', caption_file: 'dog.txt', metadata: {} },
+        );
+
+        (cmp as any).onSaveCaption({
+            pair: { media_file: 'dog.png', caption_file: 'dog.txt' },
+            content: 'm',
+            isMasked: true,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mediaItems.saveCaption).toHaveBeenCalledWith(
+            'alpha', 'dog.png', 'masked/dog.txt', 'm',
+        );
     });
 });

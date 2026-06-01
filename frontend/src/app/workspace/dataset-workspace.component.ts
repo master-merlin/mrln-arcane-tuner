@@ -430,8 +430,15 @@ export class DatasetWorkspaceComponent {
         const { pair, content, isMasked } = event;
         if (!pair?.media_file) return;
         const mediaFile: string = pair.media_file;
-        const filename = pair.caption_file
-            || mediaFile.substring(0, mediaFile.lastIndexOf('.')) + '.txt';
+        // Masked captions live under ``masked/<stem>.txt`` on disk — legacy
+        // parity with ``dataset-viewer.saveCurrentCaption``. ``pair.caption_file``
+        // always points to the PLAIN caption file even when the masked variant
+        // exists, so the masked branch must compose its path from the media
+        // stem, not the field. Plain branch keeps the existing fallback.
+        const stem = mediaFile.substring(0, mediaFile.lastIndexOf('.'));
+        const filename = isMasked
+            ? `masked/${stem}.txt`
+            : (pair.caption_file || `${stem}.txt`);
 
         // Snapshot + apply via the shared cache (so the grid repaints live).
         // Non-reactive snapshot for optimistic-rollback restore.

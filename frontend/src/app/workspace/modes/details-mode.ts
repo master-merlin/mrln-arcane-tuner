@@ -3,6 +3,7 @@ import {
     Component,
     computed,
     effect,
+    HostListener,
     inject,
     input,
     model,
@@ -96,6 +97,7 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                         [datasetName]="datasetName()"
                         [currentPair]="pair"
                         [isCurrentMediaVideo]="pair?.media_type === 'video'"
+                        [showMasked]="showMasked()"
                         [isDirty]="isDirty()"
                         [(captionText)]="captionText"
                         (saveRequested)="onSaveCaption()"
@@ -242,13 +244,23 @@ export class DetailsMode {
     });
 
     constructor() {
-        // Whenever the active pair's caption_content updates (e.g. the
-        // workspace's optimistic save just stamped it), drop the dirty
-        // flag. Tracks the actual string content so a successful save
+        // Whenever the active pair's caption updates (e.g. the workspace's
+        // optimistic save just stamped it), drop the dirty flag. Tracks
+        // the actual string content so a successful save
         // (text === captionText) clears the save button.
+        //
+        // Reads ``masked_caption_content`` when the workspace's "Masked"
+        // toggle is on (matching the sidebar's textarea source) — otherwise
+        // the workspace's masked-save stamp lands on a field this effect
+        // never reads and the dirty flag stays set forever. Falls back to
+        // ``caption_content`` when the current pair has no masked variant,
+        // mirroring the sidebar's pair-sync effect.
         effect(() => {
             const pair = this.currentPair();
-            const saved = pair?.caption_content ?? '';
+            const masked = this.showMasked();
+            const saved = masked && pair?.masked_caption_content != null
+                ? pair.masked_caption_content
+                : pair?.caption_content ?? '';
             if (saved === this.captionText()) {
                 this.isDirty.set(false);
             }
@@ -353,6 +365,31 @@ export class DetailsMode {
         this.isDirty.set(false);
     }
 
+    /**
+     * Ctrl+Enter saves the caption — same fast-path the legacy
+     * ``dataset-viewer.handleKeyboardEvent`` provided. Bound on
+     * ``document:keydown`` (not ``keydown.control.enter``) so we get the
+     * raw event and can ``preventDefault`` even when focus is in the
+     * textarea (where Enter would otherwise insert a newline before
+     * the modifier check runs).
+     *
+     * Deliberately NOT gated on modal stack — legacy explicitly let
+     * Ctrl+Enter through with modals open, and the filmstrip-scrubber
+     * navigation-key gate (PR2 Task 6) is the wrong pattern for save
+     * shortcuts. Save is a power-user fast-path the user expects to
+     * "just work"; mass-action modals own their own focus.
+     *
+     * The listener auto-detaches when DetailsMode unmounts (mode
+     * switch to Browse / Edit), so no per-frame work in other modes.
+     */
+    @HostListener('document:keydown', ['$event'])
+    protected onDocumentKeydown(event: KeyboardEvent): void {
+        if (event.ctrlKey && event.key === 'Enter') {
+            event.preventDefault();
+            this.onSaveCaption();
+        }
+    }
+
     /** Bubble the caption save intent — workspace handles optimistic + API. */
     protected onSaveCaption(): void {
         const pair = this.currentPair();
@@ -360,8 +397,10 @@ export class DetailsMode {
         this.saveCaption.emit({
             pair,
             content: this.captionText(),
-            // Details mode does not expose masked-caption editing yet.
-            isMasked: false,
+            // Mirror the workspace's "Masked" toggle — when on, the caption
+            // sidebar's textarea is bound to ``masked_caption_content`` and
+            // the workspace will route the save to ``masked/<stem>.txt``.
+            isMasked: this.showMasked(),
         });
     }
 }

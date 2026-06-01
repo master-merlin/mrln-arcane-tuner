@@ -28,12 +28,10 @@ interface MaskPreviewData {
  * Ports the workflow from the orphan
  * [viewer-mask-preview-modal](../../components/dataset/dataset-viewer/components/viewer-mask-preview-modal.ts)
  * and the design shell from `modals-more.jsx → MaskPreviewModal`. The
- * `Bake mask` button emits a `mask-baked` data update on the modal via
- * close, leaving rebake wiring to the caller (e.g. the DetailsMode mask
- * sidebar).
- *
- * TODO(frontend): wire `Bake mask` to the dataset mask-bake endpoint
- * once the new workspace exposes a callback channel for that.
+ * `Bake mask` button calls ``MediaItemStore.applyMask`` directly with the
+ * current opacity as the mix factor — optimistic apply + rollback +
+ * success toast all live in the store. ``canBake`` gates the button on
+ * the presence of a raw mask file; the modal closes itself on success.
  */
 @Component({
     selector: 'app-modal-mask-preview',

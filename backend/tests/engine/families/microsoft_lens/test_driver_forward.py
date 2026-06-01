@@ -60,8 +60,8 @@ def _tiny_dit():
 
 
 class _FakeBN:
-    running_mean = torch.zeros(128)
-    running_var = torch.ones(128)
+    running_mean = torch.full((128,), 2.0)
+    running_var = torch.full((128,), 4.0)
     eps = 1e-5
 
 
@@ -90,3 +90,29 @@ def test_forward_pass_runs_and_matches_seq_shape():
     batch = {"latent_h": 2, "latent_w": 2}
     out = drv.forward_pass(noisy, ts, (text, mask), batch)
     assert out.shape[0] == b and out.shape[1] == s
+
+
+def test_prepare_latents_bn_normalizes_but_noise_does_not():
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    drv.vae = _FakeVAE()
+    x = torch.randn(2, 32, 4, 4)
+    lat = drv.prepare_latents(x)
+    noi = drv.prepare_noise(x)  # same input
+    assert lat.shape == noi.shape == (2, 4, 128)
+    # latents are BN-normalized (mean=2, std=2); noise is raw -> must differ.
+    assert not torch.allclose(lat, noi)
+    # And the noise path equals plain patchify (no BN).
+    from app.engine.models.families.microsoft_lens import utils
+    assert torch.allclose(noi, utils.patchify_to_seq(x))
+
+
+def test_forward_pass_requires_both_latent_dims():
+    import pytest
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    drv.transformer = _tiny_dit().eval()
+    noisy = torch.randn(1, 4, 128)
+    text = torch.randn(1, 4, 5, 2880)
+    mask = torch.ones(1, 5, dtype=torch.bool)
+    ts = torch.tensor([0.5])
+    with pytest.raises(ValueError):
+        drv.forward_pass(noisy, ts, (text, mask), {"latent_h": 2})  # latent_w missing

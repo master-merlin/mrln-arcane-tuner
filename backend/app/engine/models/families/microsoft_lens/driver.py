@@ -210,9 +210,23 @@ class MicrosoftLensDriver(IModelDriver):
 
         latent_h = int(batch.get("latent_h", 0))
         latent_w = int(batch.get("latent_w", 0))
-        if latent_h <= 0 or latent_w <= 0:
+        if latent_h > 0 and latent_w > 0:
+            pass  # use the dims the trainer provided
+        elif latent_h <= 0 and latent_w <= 0:
+            # Emergency fallback: infer a square grid from the sequence length.
             side = int(math.isqrt(noisy_input.shape[1]))
+            if side * side != noisy_input.shape[1]:
+                raise ValueError(
+                    "batch is missing latent_h/latent_w and "
+                    f"S={noisy_input.shape[1]} is not a perfect square; "
+                    "cannot infer img_shapes — provide latent_h/latent_w."
+                )
             latent_h = latent_w = side
+        else:
+            raise ValueError(
+                "batch provided only one of latent_h/latent_w; both are "
+                f"required (got latent_h={latent_h}, latent_w={latent_w})."
+            )
         img_shapes = [(1, latent_h, latent_w)]
 
         out = self.transformer(

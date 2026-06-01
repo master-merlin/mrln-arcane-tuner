@@ -151,6 +151,9 @@ class MicrosoftLensDriver(IModelDriver):
         ``[B, S]``. ``S`` varies per call (the trainer right-pads at batch
         assembly). The 4-layer list expected by the DiT is reconstructed in
         ``forward_pass`` by splitting dim=1.
+
+        The last dimension (2880) is the GPT-OSS hidden size (``enc_hidden_dim``);
+        it is architecture-derived, not a magic number.
         """
         rendered = [utils.render_chat_prompt(c, self.tokenizer) for c in captions]
         encoded = self.tokenizer(
@@ -165,6 +168,11 @@ class MicrosoftLensDriver(IModelDriver):
             input_ids=input_ids, attention_mask=attn,
             output_hidden_states=True, use_cache=False,
         )
+        if out.hidden_states is None:
+            raise RuntimeError(
+                "text_encoder returned no hidden_states; ensure the model "
+                "supports output_hidden_states=True"
+            )
         layers = [out.hidden_states[i] for i in self.hf_layer_indices]
         mask = attn.bool()
         layers, mask = utils.drop_txt_offset(layers, mask, offset=self.txt_offset)

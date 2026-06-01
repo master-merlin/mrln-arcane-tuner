@@ -24,9 +24,6 @@ class _StubGptOss:
     def __init__(self):
         self._device = torch.device("cpu")
 
-    def parameters(self):
-        yield torch.zeros(1)
-
     def __call__(self, input_ids, attention_mask, output_hidden_states, use_cache):
         b, n = input_ids.shape
         hs = tuple(torch.randn(b, n, 2880) for _ in range(25))
@@ -55,3 +52,12 @@ def test_encode_text_returns_4_layers_offset_dropped():
 def test_encode_text_uses_correct_hf_layer_indices():
     drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
     assert drv.hf_layer_indices == [6, 12, 18, 24]
+
+
+def test_encode_text_batch_of_two():
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    drv.tokenizer = _StubTokenizer()
+    drv.text_encoder = _StubGptOss()
+    out = drv.encode_text(["a cat", "a dog"], torch.float32)
+    assert out.embeddings.shape == (2, 4, 23, 2880)
+    assert out.attention_mask.shape == (2, 23)

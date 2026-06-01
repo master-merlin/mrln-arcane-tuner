@@ -6,6 +6,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
@@ -15,6 +16,10 @@ router = APIRouter(prefix="/system", tags=["System"])
 logger = get_logger(__name__)
 
 _LOG_FILE = SERVER_LOG_PATH
+
+# Captured at import (≈ process start). A graceful restart spawns a fresh
+# process that re-imports this module, so uptime resets — which is correct.
+_BOOT_TIME = time.time()
 
 
 async def _restart_server_logic() -> None:
@@ -84,6 +89,33 @@ async def get_logs(lines: int = 100):
 
 
 # ── System & GPU Status ─────────────────────────────────────────────────
+
+
+@router.get("/health")
+async def get_health():
+    """Lightweight health snapshot for the Server screen KPI rail.
+
+    A 200 response inherently means the backend is up, so ``status`` is
+    always ``"healthy"`` here; the client downgrades it to "Offline" off the
+    live WebSocket connection. Also returns process uptime, the number of
+    loaded model definitions, and the count of in-flight (running or paused)
+    training jobs.
+    """
+    from app.core.job import JobStatus
+    from app.core.job_manager import job_manager
+    from app.engine.models.registry import registry
+
+    active_jobs = sum(
+        1
+        for j in job_manager.list_jobs()
+        if j.status in (JobStatus.RUNNING, JobStatus.PAUSED)
+    )
+    return {
+        "status": "healthy",
+        "uptime_seconds": max(0.0, time.time() - _BOOT_TIME),
+        "model_count": len(registry._definitions),
+        "active_jobs": active_jobs,
+    }
 
 
 @router.get("/status")

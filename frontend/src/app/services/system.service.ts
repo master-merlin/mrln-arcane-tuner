@@ -33,6 +33,13 @@ export interface SystemSnapshot {
     system: SystemStatus | null;
 }
 
+export interface HealthSnapshot {
+    status: string;
+    uptime_seconds: number;
+    model_count: number;
+    active_jobs: number;
+}
+
 export interface VRAMReport {
     model_weights_mb: number;
     lora_adapters_mb: number;
@@ -75,6 +82,11 @@ export class SystemService implements OnDestroy {
     /** One-shot GPU-only snapshot (REST). */
     getGPUStatus(): Observable<{ gpus: GPUStatus[] }> {
         return this.http.get<{ gpus: GPUStatus[] }>(`${this.apiUrl}/system/gpu`);
+    }
+
+    /** Backend health snapshot for the Server screen KPI rail. */
+    getHealth(): Observable<HealthSnapshot> {
+        return this.http.get<HealthSnapshot>(`${this.apiUrl}/system/health`);
     }
 
     /** Estimate VRAM for a training configuration. */

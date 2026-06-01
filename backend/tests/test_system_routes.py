@@ -30,6 +30,34 @@ def test_clear_logs(client):
     assert "cleared" in response.json().get("message", "").lower()
 
 
+def test_get_health(client):
+    """Should return a health snapshot with the four KPI-rail fields."""
+    response = client.get("/api/system/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "healthy"
+    assert body["uptime_seconds"] >= 0
+    assert isinstance(body["model_count"], int)
+    assert isinstance(body["active_jobs"], int)
+
+
+def test_health_counts_running_and_paused_jobs(client):
+    """active_jobs counts RUNNING + PAUSED, not terminal jobs."""
+    from app.core.job import JobStatus
+
+    running = MagicMock(status=JobStatus.RUNNING)
+    paused = MagicMock(status=JobStatus.PAUSED)
+    done = MagicMock(status=JobStatus.COMPLETED)
+    failed = MagicMock(status=JobStatus.FAILED)
+    with patch(
+        "app.core.job_manager.job_manager.list_jobs",
+        return_value=[running, paused, done, failed],
+    ):
+        response = client.get("/api/system/health")
+    assert response.status_code == 200
+    assert response.json()["active_jobs"] == 2
+
+
 @patch("app.core.system_monitor.system_monitor")
 def test_get_system_status(mock_mon, client):
     """Should return system snapshot dict."""

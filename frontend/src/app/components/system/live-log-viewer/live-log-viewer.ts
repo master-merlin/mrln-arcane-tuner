@@ -1,142 +1,196 @@
 import { Component, OnInit, ElementRef, viewChild, signal, inject, effect, input, computed, DestroyRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
+import { ToastService } from '../../../services/toast';
 import { of, catchError } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { WebSocketService } from '../../../services/websocket.service';
+import { IcoComponent } from '../../../icons/ico.component';
 
 type LogLevel = 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL' | 'UNKNOWN';
 
+interface LogSegment {
+    text: string;
+    kind: 'bracket' | 'num' | 'text';
+}
+
+interface ParsedLog {
+    raw: string;
+    level: LogLevel;
+    formatted: string;
+    segments: LogSegment[];
+}
+
+const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
+    { key: 'INFO', tone: 'success' },
+    { key: 'WARNING', tone: 'warning' },
+    { key: 'ERROR', tone: 'danger' },
+    { key: 'DEBUG', tone: 'brand' },
+    { key: 'CRITICAL', tone: 'danger' },
+];
+
+/**
+ * Live server-log viewer, redesigned to the Hi-Fi `ServerLogs` card
+ * (audit 09 Theme-F): DS `.card` chrome with a control header (free-text
+ * filter, per-level chips, follow-tail + word-wrap toggles, clear) and a
+ * dark monospace body with per-level row accents + lightweight token
+ * colouring. Streaming / history-fetch / parsing logic is unchanged from
+ * the legacy component; only presentation + the new controls are added.
+ */
 @Component({
     selector: 'app-live-log-viewer',
     standalone: true,
-    imports: [],
+    imports: [IcoComponent],
     template: `
-    <div class="flex flex-col gap-4">
-        <!-- Filter Controls -->
-        <div class="flex flex-wrap gap-2 text-xs font-mono">
-            <button (click)="toggleFilter('INFO')" 
-                class="px-3 py-1.5 rounded border transition-colors flex items-center gap-2"
-                [class.bg-blue-900_30]="filters().INFO" 
-                [class.border-blue-500]="filters().INFO"
-                [class.text-blue-400]="filters().INFO"
-                [class.border-border-default]="!filters().INFO"
-                [class.text-text-subtle]="!filters().INFO">
-                <div class="w-2 h-2 rounded-full" [class.bg-blue-500]="filters().INFO" [class.bg-surface-high]="!filters().INFO"></div>
-                INFO
-            </button>
-            <button (click)="toggleFilter('WARNING')" 
-                class="px-3 py-1.5 rounded border transition-colors flex items-center gap-2"
-                [class.bg-yellow-900_30]="filters().WARNING" 
-                [class.border-yellow-500]="filters().WARNING"
-                [class.text-yellow-400]="filters().WARNING"
-                [class.border-border-default]="!filters().WARNING"
-                [class.text-text-subtle]="!filters().WARNING">
-                <div class="w-2 h-2 rounded-full" [class.bg-yellow-500]="filters().WARNING" [class.bg-surface-high]="!filters().WARNING"></div>
-                WARNING
-            </button>
-            <button (click)="toggleFilter('ERROR')" 
-                class="px-3 py-1.5 rounded border transition-colors flex items-center gap-2"
-                [class.bg-red-900_30]="filters().ERROR" 
-                [class.border-red-500]="filters().ERROR"
-                [class.text-red-400]="filters().ERROR"
-                [class.border-border-default]="!filters().ERROR"
-                [class.text-text-subtle]="!filters().ERROR">
-                <div class="w-2 h-2 rounded-full" [class.bg-red-500]="filters().ERROR" [class.bg-surface-high]="!filters().ERROR"></div>
-                ERROR
-            </button>
-            <button (click)="toggleFilter('DEBUG')" 
-                class="px-3 py-1.5 rounded border transition-colors flex items-center gap-2"
-                [class.bg-brand/30_30]="filters().DEBUG" 
-                [class.border-brand]="filters().DEBUG"
-                [class.text-brand-light]="filters().DEBUG"
-                [class.border-border-default]="!filters().DEBUG"
-                [class.text-text-subtle]="!filters().DEBUG">
-                <div class="w-2 h-2 rounded-full" [class.bg-brand]="filters().DEBUG" [class.bg-surface-high]="!filters().DEBUG"></div>
-                DEBUG
-            </button>
-            <button (click)="toggleFilter('CRITICAL')" 
-                class="px-3 py-1.5 rounded border transition-colors flex items-center gap-2"
-                [class.bg-red-900]="filters().CRITICAL" 
-                [class.border-red-600]="filters().CRITICAL"
-                [class.text-red-100]="filters().CRITICAL"
-                [class.font-bold]="filters().CRITICAL"
-                [class.animate-pulse]="filters().CRITICAL"
-                [class.border-border-default]="!filters().CRITICAL"
-                [class.text-text-subtle]="!filters().CRITICAL">
-                <div class="w-2 h-2 rounded-full" [class.bg-red-600]="filters().CRITICAL" [class.bg-surface-high]="!filters().CRITICAL"></div>
-                CRITICAL
-            </button>
+    <div class="card log-card">
+        <div class="card-head">
+            <div class="card-title">
+                <app-ico name="ScrollText" [size]="11" /> Server logs
+                <span class="log-count">{{ filteredLogs().length }}/{{ parsedLogs().length }}</span>
+            </div>
+            <div class="log-controls">
+                <div class="log-search">
+                    <app-ico name="Search" [size]="11" />
+                    <input class="input mono log-search-input" placeholder="filter…"
+                           [value]="query()" (input)="onQuery($event)" />
+                </div>
+                <div class="log-level-chips">
+                    @for (lv of levels; track lv.key) {
+                        <button type="button" class="chip log-level-chip"
+                                [style.opacity]="filters()[lv.key] ? 1 : 0.4"
+                                (click)="toggleFilter(lv.key)">
+                            <span class="dot" [style.background]="filters()[lv.key] ? toneColor(lv.tone) : 'var(--color-text-disabled)'"></span>
+                            {{ lv.key }}
+                        </button>
+                    }
+                </div>
+                <span class="log-sep"></span>
+                <button type="button" class="btn sm log-follow" [class.on]="follow()"
+                        (click)="follow.set(!follow())"
+                        [title]="follow() ? 'Auto-scrolling on new entries' : 'Click to follow tail'">
+                    <span class="follow-dot" [class.on]="follow()"></span> Follow
+                </button>
+                <button type="button" class="btn sm" (click)="wrap.set(!wrap())"
+                        [title]="wrap() ? 'Disable word wrap' : 'Enable word wrap'">
+                    <app-ico [name]="wrap() ? 'Minus' : 'WrapText'" [size]="12" /> Wrap
+                </button>
+                <button type="button" class="btn sm" (click)="clearLogs()"
+                        [disabled]="clearing()" title="Clear all entries">
+                    <app-ico name="Trash2" [size]="12" />
+                </button>
+            </div>
         </div>
 
-        <!-- Log Container -->
-        <div class="bg-overlay text-brand font-mono p-4 rounded-theme-xl h-96 overflow-y-auto shadow-2xl border border-surface-mid scroll-smooth backdrop-blur-md" 
-            data-testid="log-viewer-container"
-            #terminalContainer>
-        <div class="flex flex-col gap-1">
+        <div class="log-body" [class.nowrap]="!wrap()" data-testid="log-viewer-container" #terminalContainer>
             @for (item of filteredLogs(); track $index) {
-            <div class="flex gap-3 items-start group" data-testid="log-line">
-                <span class="text-text-disabled text-[10px] select-none mt-1 min-w-[20px]">{{ $index + 1 }}</span>
-                <div [class]="getLevelClass(item.level)"
-                    class="whitespace-pre-wrap text-xs leading-relaxed font-medium break-all selection:bg-brand/30">
-                {{ item.formatted }}
-                </div>
-            </div>
-            }
-            @if (filteredLogs().length === 0 && logs().length > 0) {
-                 <div class="flex flex-col items-center justify-center h-full text-text-disabled gap-3">
-                    <div class="italic text-sm tracking-wide">All logs hidden by filters.</div>
+                <div class="log-row" [attr.data-level]="item.level" data-testid="log-line">
+                    <span class="ln">{{ $index + 1 }}</span>
+                    <span class="lvl" [style.color]="toneColor(levelTone(item.level))">{{ levelLabel(item.level) }}</span>
+                    <span class="msg">@for (seg of item.segments; track $index) {<span [class]="'seg-' + seg.kind">{{ seg.text }}</span>}</span>
                 </div>
             }
-            @if (logs().length === 0) {
-            <div class="flex flex-col items-center justify-center h-full text-text-disabled gap-3" data-testid="log-empty">
-                <div class="italic text-sm tracking-wide">Connecting to server logs...</div>
-            </div>
+            @if (filteredLogs().length === 0 && parsedLogs().length > 0) {
+                <div class="log-empty">No log entries match the current filters.</div>
             }
-        </div>
+            @if (parsedLogs().length === 0) {
+                <div class="log-empty" data-testid="log-empty">Connecting to server logs…</div>
+            }
         </div>
     </div>
   `,
-    styles: []
+    styles: [`
+        .log-card { padding: 0; }
+        .log-controls { display: flex; align-items: center; gap: 8px; }
+        .log-search { position: relative; display: flex; align-items: center; }
+        .log-search app-ico { position: absolute; left: 8px; color: var(--color-text-muted); pointer-events: none; display: flex; }
+        .log-search-input { padding-left: 24px; font-size: 11px; height: 26px; width: 150px; }
+        .log-count { font-size: 10px; color: var(--color-text-muted); font-weight: 500; font-family: var(--font-mono); margin-left: 6px; }
+        .log-level-chips { display: flex; align-items: center; gap: 4px; }
+        .log-level-chip { padding: 2px 7px; font-size: 10px; cursor: pointer; user-select: none; }
+        .log-sep { width: 1px; height: 18px; background: var(--color-border-subtle); }
+        .log-follow.on { background: oklch(0.68 0.14 155 / 0.14); color: var(--color-success); border-color: oklch(0.68 0.14 155 / 0.30); }
+        .follow-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--color-text-muted); }
+        .follow-dot.on { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+
+        .log-body {
+            padding: 4px 0 6px;
+            background: oklch(0.04 0.005 265);
+            max-height: 360px;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+            border-bottom-left-radius: var(--radius-lg, 10px);
+            border-bottom-right-radius: var(--radius-lg, 10px);
+        }
+        .log-row {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            padding: 2px 14px;
+            font-family: var(--font-mono);
+            font-size: 11.5px;
+            line-height: 1.55;
+            border-left: 2px solid transparent;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .log-body.nowrap .log-row { white-space: nowrap; }
+        .log-body.nowrap { overflow-x: auto; }
+        .log-row:nth-child(even) { background: oklch(1 0 0 / 0.015); }
+        .log-row[data-level="WARNING"]  { border-left-color: var(--color-warning); }
+        .log-row[data-level="ERROR"]    { border-left-color: var(--color-danger); }
+        .log-row[data-level="CRITICAL"] { border-left-color: var(--color-danger); background: oklch(0.70 0.17 25 / 0.10); }
+        .log-row .ln { flex: 0 0 auto; color: var(--color-text-disabled); font-size: 10px; user-select: none; min-width: 26px; text-align: right; }
+        .log-row .lvl { flex: 0 0 auto; font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; min-width: 62px; white-space: nowrap; }
+        .log-row .msg { flex: 1 1 auto; min-width: 0; color: var(--color-text-secondary); }
+        .seg-bracket { color: var(--color-chart-lr); }
+        .seg-num { color: var(--color-brand); font-weight: 600; }
+
+        .log-empty { padding: 22px 16px; text-align: center; color: var(--color-text-disabled); font-size: 11px; font-family: var(--font-mono); font-style: italic; }
+    `],
 })
 export class LiveLogViewerComponent implements OnInit {
     readonly mode = input<'server' | 'training'>('server');
 
     logs = signal<string[]>([]);
+    readonly levels = LEVEL_CHIPS;
 
     // Filters State
-    filters = signal<{ INFO: boolean, ERROR: boolean, WARNING: boolean, DEBUG: boolean, CRITICAL: boolean }>({
+    filters = signal<{ INFO: boolean; ERROR: boolean; WARNING: boolean; DEBUG: boolean; CRITICAL: boolean }>({
         INFO: true,
         ERROR: true,
         WARNING: true,
-        DEBUG: true,
-        CRITICAL: true
+        DEBUG: false,
+        CRITICAL: true,
     });
+
+    query = signal('');
+    follow = signal(true);
+    wrap = signal(false);
+    clearing = signal(false);
 
     // Processed logs (parsed once for performance)
-    parsedLogs = computed(() => {
-        return this.logs().map(line => {
+    parsedLogs = computed<ParsedLog[]>(() =>
+        this.logs().map(line => {
             const { level, formatted } = this.parseLine(line);
-            return { raw: line, level, formatted };
-        });
-    });
+            return { raw: line, level, formatted, segments: this.tokenize(formatted) };
+        }),
+    );
 
-    // Filtered view
-    filteredLogs = computed(() => {
+    // Filtered view (level chips + free-text query)
+    filteredLogs = computed<ParsedLog[]>(() => {
         const f = this.filters();
+        const q = this.query().trim().toLowerCase();
         return this.parsedLogs().filter(item => {
-            if (item.level === 'INFO') return f.INFO;
-            if (item.level === 'ERROR') return f.ERROR;
-            if (item.level === 'WARNING') return f.WARNING;
-            if (item.level === 'DEBUG') return f.DEBUG;
-            if (item.level === 'CRITICAL') return f.CRITICAL;
-            return true; // Show Unknown by default? or map to INFO
+            if (item.level !== 'UNKNOWN' && !f[item.level]) return false;
+            if (q && !item.formatted.toLowerCase().includes(q)) return false;
+            return true;
         });
     });
 
     private http = inject(HttpClient);
     private wsService = inject(WebSocketService);
     private rtc = inject(RuntimeConfigService);
+    private toast = inject(ToastService);
     private destroyRef = inject(DestroyRef);
 
     terminalContainer = viewChild<ElementRef>('terminalContainer');
@@ -144,7 +198,7 @@ export class LiveLogViewerComponent implements OnInit {
     constructor() {
         effect(() => {
             const logs = this.filteredLogs(); // track filtered logs
-            if (logs.length > 0) {
+            if (logs.length > 0 && this.follow()) {
                 this.scrollToBottom();
             }
         });
@@ -156,7 +210,7 @@ export class LiveLogViewerComponent implements OnInit {
 
         // Subscribe to real-time logs
         this.wsService.on<any>('server_log').pipe(
-            takeUntilDestroyed(this.destroyRef)
+            takeUntilDestroyed(this.destroyRef),
         ).subscribe(payload => {
             // payload.message is the raw JSON string from structlog
             this.handleLogEvent(payload.message);
@@ -172,23 +226,71 @@ export class LiveLogViewerComponent implements OnInit {
             catchError(err => {
                 console.error(err);
                 return of([]);
-            })
+            }),
         );
+    }
+
+    onQuery(e: Event) {
+        this.query.set((e.target as HTMLInputElement).value);
     }
 
     toggleFilter(type: 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL') {
         this.filters.update(f => ({ ...f, [type]: !f[type] }));
     }
 
-    getLevelClass(level: LogLevel): string {
+    clearLogs() {
+        if (!confirm('Are you sure you want to clear the server logs?')) return;
+        this.clearing.set(true);
+        this.http.post<{ message?: string; error?: string }>(`${this.rtc.apiUrl}/system/logs/clear`, {}).subscribe({
+            next: (res) => {
+                this.clearing.set(false);
+                if (res.error) {
+                    this.toast.error(`Error: ${res.error}`);
+                } else {
+                    this.logs.set([]);
+                    this.toast.success(res.message || 'Logs cleared successfully');
+                }
+            },
+            error: (err) => {
+                this.clearing.set(false);
+                this.toast.error('Failed to clear logs');
+                console.error(err);
+            },
+        });
+    }
+
+    toneColor(tone: string): string {
+        return `var(--color-${tone === 'brand' ? 'brand' : tone})`;
+    }
+
+    levelTone(level: LogLevel): string {
         switch (level) {
-            case 'INFO': return 'text-blue-400';
-            case 'ERROR': return 'text-red-400';
-            case 'WARNING': return 'text-yellow-400';
-            case 'DEBUG': return 'text-brand-light';
-            case 'CRITICAL': return 'text-red-500 font-bold bg-red-900/20 px-1 rounded';
-            default: return 'text-text-secondary';
+            case 'INFO': return 'success';
+            case 'WARNING': return 'warning';
+            case 'ERROR':
+            case 'CRITICAL': return 'danger';
+            case 'DEBUG': return 'brand';
+            default: return 'text-muted';
         }
+    }
+
+    levelLabel(level: LogLevel): string {
+        return level === 'UNKNOWN' ? 'LOG' : level;
+    }
+
+    /** Split a formatted line into bracket / number / text segments for colouring. */
+    private tokenize(line: string): LogSegment[] {
+        const out: LogSegment[] = [];
+        const re = /(\[[^\]]+\])|(\b\d[\d.,:/eE+\-]*\b)/g;
+        let last = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(line)) !== null) {
+            if (m.index > last) out.push({ text: line.slice(last, m.index), kind: 'text' });
+            out.push({ text: m[0], kind: m[1] ? 'bracket' : 'num' });
+            last = m.index + m[0].length;
+        }
+        if (last < line.length) out.push({ text: line.slice(last), kind: 'text' });
+        return out.length ? out : [{ text: line, kind: 'text' }];
     }
 
     parseLine(line: string): { level: LogLevel, formatted: string } {
@@ -252,5 +354,4 @@ export class LiveLogViewerComponent implements OnInit {
             }
         }, 100);
     }
-
 }

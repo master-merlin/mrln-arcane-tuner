@@ -414,9 +414,12 @@ export class JobsScreen {
             if (latest === null) return;
             const prev = this._lastSampleCycle.get(j.id);
             this._lastSampleCycle.set(j.id, latest);
-            // First observation just sets the baseline (initial list load is
-            // handled by the effect above); only a *new* cycle triggers a reload.
-            if (prev !== undefined && latest !== prev) {
+            // Reload whenever the latest sampling cycle changes — including the
+            // first one observed. That first cycle is usually the step-0
+            // baseline sample (logged as "step": 0); skipping it as a "baseline"
+            // left it hidden until a manual refresh. A redundant reload when a
+            // job is selected after samples already exist is harmless.
+            if (latest !== prev) {
                 this.loadSamples(j.id);
             }
         });

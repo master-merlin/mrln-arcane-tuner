@@ -27,3 +27,20 @@ def test_loading_dtype_is_bf16():
 def test_init_scheduler_is_none_for_flow_matching():
     drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
     assert drv.init_scheduler() is None
+
+
+def test_arch_params_override_selected_layers_and_offset():
+    defn = ModelDefinition(
+        id="x", family="microsoft_lens", name="x", defaults={},
+        components={},
+        architecture_params={
+            "transformer.selected_layer_index": [2, 4, 6, 8],
+            "te.txt_offset": 50,
+            "te.max_length": 256,
+        },
+    )
+    drv = MicrosoftLensDriver(defn, torch.device("cpu"))
+    assert drv.selected_layers == (2, 4, 6, 8)
+    assert drv.hf_layer_indices == [3, 5, 7, 9]
+    assert drv.txt_offset == 50
+    assert drv.te_max_length == 256

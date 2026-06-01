@@ -1,4 +1,25 @@
-"""Microsoft Lens model driver -- family-specific training behavior."""
+"""Microsoft Lens model driver -- family-specific training behavior.
+
+Implements :class:`IModelDriver` for the Microsoft Lens diffusion family.
+
+Key family characteristics:
+
+*  **Sequence-space latents** ``[B, S, 128]`` where ``S = latent_h * latent_w``
+   (spatial positions after 2x2 patchification) and ``128 = 32 VAE channels *
+   2*2 spatial patch``.  The model reuses the FLUX.2 VAE; latents are
+   BN-normalized with the VAE's running statistics before being fed to the DiT.
+
+*  **Decoupled GPT-OSS text encoder**: stock ``GptOssForCausalLM`` run with
+   ``output_hidden_states=True``.  Four intermediate hidden states are
+   extracted at ``DEFAULT_SELECTED_LAYERS`` (Lens post-layer indices
+   ``(5, 11, 17, 23)`` == HuggingFace hidden-state indices ``(6, 12, 18, 24)``
+   -- i.e. post-layer N is hidden_states[N+1]).  The first ``txt_offset`` = 97
+   tokens are dropped to remove the chat-template prefix; the remainder form
+   the text conditioning for the DiT.
+
+*  **Flow-matching**, velocity prediction target ``(noise - latents)``; all
+   timesteps are in ``[0, 1]``.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +36,8 @@ from app.engine.models.families.microsoft_lens import utils
 
 logger = structlog.get_logger(__name__)
 
+# Driver-level cap on tokenised sequence length; not a shared utils constant
+# because it governs the *driver's* padding budget, not the tokeniser itself.
 DEFAULT_TE_MAX_LENGTH = 512
 DEFAULT_SELECTED_LAYERS = utils.DEFAULT_SELECTED_LAYERS
 DEFAULT_TXT_OFFSET = utils.DEFAULT_TXT_OFFSET
@@ -49,6 +72,12 @@ class MicrosoftLensDriver(IModelDriver):
         self.vae = components["vae"]
         self.text_encoder = components.get("text_encoder")
         self.tokenizer = components.get("tokenizer")
+        self.logger.info(
+            "microsoft_lens_config",
+            te_max_length=self.te_max_length,
+            txt_offset=self.txt_offset,
+            selected_layers=self.selected_layers,
+        )
 
     def get_components(self) -> dict[str, Any]:
         return self._components
@@ -115,19 +144,23 @@ class MicrosoftLensDriver(IModelDriver):
     # --- Phase 2: encode_text (Task 5) ---
 
     def encode_text(self, captions: list[str], dtype: torch.dtype) -> TextEncoderOutput:
+        """Chat-template + GPT-OSS 4-layer extraction + 97-token offset (Task 5)."""
         raise NotImplementedError("Implemented in Task 5")
 
     # --- Phase 5: forward (Task 6) ---
 
     def prepare_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        """VAE latent -> 2x2 patchify -> BN-normalize -> [B, S, 128] (Task 6)."""
         raise NotImplementedError("Implemented in Task 6")
 
     def prepare_noise(self, noise: torch.Tensor) -> torch.Tensor:
+        """Raw noise -> patchify -> [B, S, 128], no BN (Task 6)."""
         raise NotImplementedError("Implemented in Task 6")
 
     def forward_pass(
         self, noisy_input, timesteps, text_embeddings, batch,
     ) -> torch.Tensor:
+        """Run the Lens DiT; flow-matching velocity prediction (Task 6)."""
         raise NotImplementedError("Implemented in Task 6")
 
     # --- Phase 6: saver ---

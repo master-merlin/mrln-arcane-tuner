@@ -52,11 +52,19 @@ def lens_layers_to_hf_indices(selected: Sequence[int]) -> List[int]:
     return [int(k) + 1 for k in selected]
 
 
-def _bn_eps(vae: object) -> float:
+def _bn_eps(vae: torch.nn.Module) -> float:
+    """Return the actual BN layer's eps -- never the YAML config value.
+
+    ``vae.config.batch_norm_eps`` (often 1e-4) is what was passed to the
+    BN constructor, but the running variance was accumulated during VAE
+    training with the live ``self.bn.eps`` attribute.  Reading the
+    attribute directly guarantees train-vs-inference symmetry; the
+    official ``LensPipeline`` hardcodes the matching 1e-5.
+    """
     return float(getattr(vae.bn, "eps", 1e-5))
 
 
-def bn_normalize_seq(seq: Tensor, vae: object) -> Tensor:
+def bn_normalize_seq(seq: Tensor, vae: torch.nn.Module) -> Tensor:
     """Normalize sequence-space latents ``[B, S, 128]`` with VAE BN stats."""
     mean = vae.bn.running_mean.view(1, 1, -1).to(seq.device, seq.dtype)
     std = torch.sqrt(
@@ -65,7 +73,7 @@ def bn_normalize_seq(seq: Tensor, vae: object) -> Tensor:
     return (seq - mean) / std
 
 
-def bn_denormalize_seq(seq: Tensor, vae: object) -> Tensor:
+def bn_denormalize_seq(seq: Tensor, vae: torch.nn.Module) -> Tensor:
     """Inverse of :func:`bn_normalize_seq`."""
     mean = vae.bn.running_mean.view(1, 1, -1).to(seq.device, seq.dtype)
     std = torch.sqrt(
@@ -84,6 +92,7 @@ def drop_txt_offset(
     zero-length features + mask.
     """
     seq_len = features[0].shape[1]
+    # seq_len == offset is intentionally "too short": no content survives (condition is strictly >).
     if seq_len > offset:
         sliced = [f[:, offset:, :].contiguous() for f in features]
         return sliced, mask[:, offset:].contiguous()

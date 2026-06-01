@@ -47,3 +47,33 @@ def test_drop_txt_offset_short_sequence_returns_empty():
     out_feats, out_mask = utils.drop_txt_offset(feats, mask, offset=97)
     assert all(f.shape[1] == 0 for f in out_feats)
     assert out_mask.shape[1] == 0
+
+
+def test_drop_txt_offset_exact_boundary_returns_empty():
+    # seq_len == offset: the strict > condition means no content survives.
+    feats = [torch.randn(1, 97, 4) for _ in range(4)]
+    mask = torch.ones(1, 97, dtype=torch.bool)
+    out_feats, out_mask = utils.drop_txt_offset(feats, mask, offset=97)
+    assert all(f.shape[1] == 0 for f in out_feats)
+    assert out_mask.shape[1] == 0
+
+
+def test_render_chat_prompt_splits_on_return_sentinel():
+    captured = {}
+
+    class _StubTokenizer:
+        def apply_chat_template(self, conversation, **kwargs):
+            captured["conversation"] = conversation
+            return "<sys>PROMPT<|return|>trailing"
+
+    stub = _StubTokenizer()
+    result = utils.render_chat_prompt("PROMPT", stub)
+
+    assert result == "<sys>PROMPT"
+
+    conv = captured["conversation"]
+    roles = [turn["role"] for turn in conv]
+    assert roles == ["system", "user", "assistant"]
+
+    user_turn = next(t for t in conv if t["role"] == "user")
+    assert user_turn["content"] == "PROMPT"

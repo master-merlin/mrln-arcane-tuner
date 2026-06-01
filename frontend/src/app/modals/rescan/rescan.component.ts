@@ -23,14 +23,11 @@ interface ScanProgress {
 }
 
 /**
- * Rescan modal — Safe vs Full mode picker, optional steps, and live
- * progress once the rescan starts.
+ * Rescan modal — Safe vs Full mode picker and live progress once the rescan starts.
  *
  * Ports logic from `viewer-rescan-modal.ts` and `dataset-rescan-options-modal.ts`.
  * When `data.datasetName` is set we call `scanDataset(name, forceFull)`; otherwise
- * `scanAllDatasets(forceFull)`. The optional steps (HPS recompute / dedup) are UI
- * affordances only — the existing backend endpoints don't take per-step flags,
- * so toggling them is a no-op flagged with TODO(backend) below.
+ * `scanAllDatasets(forceFull)`.
  */
 @Component({
     selector: 'app-modal-rescan',
@@ -66,26 +63,6 @@ interface ScanProgress {
                             <div class="rs-mode-desc">Recompute hashes, HPS, and metadata. Cached entries are dropped.</div>
                         </button>
                     </div>
-                </section>
-
-                <section class="rs-section">
-                    <div class="rs-section-head">Optional steps</div>
-                    <label class="rs-option">
-                        <span class="toggle" [class.on]="recomputeHps()"
-                              (click)="recomputeHps.set(!recomputeHps())"></span>
-                        <div class="rs-option-stack">
-                            <div class="rs-option-title">Recompute HPS scores</div>
-                            <div class="rs-option-sub">HumanPreferenceScore — ~0.3s per image</div>
-                        </div>
-                    </label>
-                    <label class="rs-option">
-                        <span class="toggle" [class.on]="detectDuplicates()"
-                              (click)="detectDuplicates.set(!detectDuplicates())"></span>
-                        <div class="rs-option-stack">
-                            <div class="rs-option-title">Detect duplicates</div>
-                            <div class="rs-option-sub">Perceptual hash compare against existing entries</div>
-                        </div>
-                    </label>
                 </section>
 
                 <div class="rs-warn">
@@ -177,17 +154,6 @@ interface ScanProgress {
         }
         .rs-mode-title { font-weight: 700; margin-bottom: 4px; }
         .rs-mode-desc { font-size: 11.5px; color: var(--color-text-muted); line-height: 1.4; }
-        .rs-option {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            cursor: pointer;
-            padding: 8px 0;
-            font-size: 12.5px;
-        }
-        .rs-option-stack { flex: 1; line-height: 1.3; }
-        .rs-option-title { font-weight: 500; }
-        .rs-option-sub { font-size: 10.5px; color: var(--color-text-muted); }
         .rs-warn {
             margin-top: 4px;
             padding: 10px 14px;
@@ -265,8 +231,6 @@ export class RescanModalComponent implements OnInit {
     private destroyRef = inject(DestroyRef);
 
     protected mode = signal<'safe' | 'full'>('safe');
-    protected recomputeHps = signal(true);
-    protected detectDuplicates = signal(true);
     protected phase = signal<RescanPhase>('idle');
 
     protected libraryProgress = signal({ current: 0, total: 0 });
@@ -346,9 +310,6 @@ export class RescanModalComponent implements OnInit {
         const forceFull = this.mode() === 'full';
         this.phase.set('running');
 
-        // TODO(backend): the existing scan endpoints don't accept per-step
-        // toggles for HPS recompute or duplicate detection — the toggles
-        // above are surfaced for the eventual API extension.
         const name = this.data.datasetName;
         const onError = () => {
             // Errors handled via toast in the existing pipeline; reset

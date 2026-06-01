@@ -252,8 +252,14 @@ export class CacheModalComponent implements OnInit {
         if (!confirm(`Purge all ${c.name.toLowerCase()} cache for ${name}? This cannot be undone.`)) return;
         this.purging.set(c.name);
         this.datasetsApi.purgeCache(name, { types: c.types }).subscribe({
-            next: () => {
-                this.toast.success(`${c.name} cache purged.`);
+            next: (res: { deleted?: number; freed_bytes?: number }) => {
+                const freed = res?.freed_bytes ?? 0;
+                const n = res?.deleted ?? 0;
+                this.toast.success(
+                    freed > 0
+                        ? `${c.name} cache purged — freed ${this.formatMB(freed)} MB (${n} item${n === 1 ? '' : 's'}).`
+                        : `${c.name} cache purged.`,
+                );
                 this.purging.set(null);
                 this.load();
             },

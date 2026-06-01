@@ -124,7 +124,7 @@ const THUMB_FALLBACK_DATA_URI =
         </div>
 
         <div class="modal-foot si-foot">
-            <span class="muted si-hint">Deleted files move to dataset trash for 30 days.</span>
+            <span class="muted si-hint">Deletes are permanent — the image, its caption and any masks are removed from disk.</span>
             <button class="btn ghost" type="button" (click)="overlay.closeModal()">Back to analysis</button>
         </div>
     `,

@@ -1,18 +1,32 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
-import { forkJoin } from 'rxjs';
+import { forkJoin, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ToastService } from '../../services/toast';
 import { SegmentedComponent } from '../../ui/segmented/segmented.component';
+import { runCropAll, CropAllItem, CropAllProgress } from './crop-all';
+import { MediaItemStore } from '../../state/media-item.store';
+
+type FileFilter = 'all' | 'low-hps' | 'no-cap' | 'masked' | 'crop' | 'dupes';
+type FileSort = 'idx' | 'hps-desc' | 'hps-asc' | 'name' | 'size';
 
 interface AnalyzeModalData {
     /** Target dataset's HTTP-name (the URL slug). Required for /analysis. */
     datasetName?: string;
     datasetId?: string;
-    /** Persisted tab selection — survives child-modal push/pop. */
+    /** Persisted UI context — survives child-modal push/pop (analyze is
+     *  destroyed by the modal-layer's `@if (last)` when a child opens on
+     *  top, then re-mounted + re-fetched when it closes). Without this the
+     *  user's resolution / filter / sort / search reset on every round-trip. */
     activeTab?: 'distributions' | 'files';
+    bucketRes?: 512 | 768 | 1024 | 1280 | 1536;
+    bucketMode?: 'kohya' | 'multi';
+    filter?: FileFilter;
+    sortBy?: FileSort;
+    searchQuery?: string;
+    similarityThreshold?: number;
 }
 
 interface BucketSample {
@@ -88,13 +102,15 @@ interface FileRow {
     /** True when the per-image scan recorded a target_width/height that
      *  differs from the actual dimensions — i.e., harmonization would crop it. */
     needsCrop: boolean;
+    /** Harmonization crop target from per-image scan metadata. Present
+     *  whenever `needsCrop` is true; used as the authoritative crop target
+     *  for batch Crop-All when the /analysis lookup misses. */
+    targetWidth: number | null;
+    targetHeight: number | null;
     /** Mirror of `metadata.enabled === false` — drives the exclude icon's
      *  toggle state and orange tint. */
     excluded: boolean;
 }
-
-type FileFilter = 'all' | 'low-hps' | 'no-cap' | 'masked' | 'crop' | 'dupes';
-type FileSort = 'idx' | 'hps-desc' | 'hps-asc' | 'name' | 'size';
 
 const CHART_W = 820;
 const CHART_H = 180;
@@ -158,6 +174,18 @@ const THUMB_FALLBACK_DATA_URI =
                     Open a dataset workspace first — analysis is per-dataset.
                 </div>
             } @else {
+                @if (cropAllRunning()) {
+                    <div class="card an-cropall-progress">
+                        <div class="card-head">
+                            <div class="card-title"><app-ico name="Crop" [size]="11"/> Cropping {{ cropAllProgress().current }} / {{ cropAllProgress().total }}</div>
+                            <button class="btn sm danger-out" type="button" (click)="cancelCropAll()">Stop</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="bar lg"><i [style.width.%]="cropAllPercent()"></i></div>
+                            <div class="mono an-cropall-file">{{ cropAllProgress().path }}</div>
+                        </div>
+                    </div>
+                }
                 <!-- Bucketing controls -->
                 <div class="card an-controls">
                     <div class="an-control-group">
@@ -172,7 +200,20 @@ const THUMB_FALLBACK_DATA_URI =
                                        [value]="bucketMode()"
                                        (changed)="onModeChange($event)"/>
                     </div>
+                    <div class="an-control-group">
+                        <span class="eyebrow">SIMILARITY</span>
+                        <input type="range" min="0.80" max="1.00" step="0.01"
+                               class="an-thresh-range"
+                               [value]="similarityThreshold()"
+                               (input)="onThresholdChange($event)"
+                               (change)="onThresholdCommit()"
+                               [attr.aria-label]="'Duplicate similarity threshold ' + similarityThreshold().toFixed(2)"/>
+                        <span class="chip mono">{{ similarityThreshold().toFixed(2) }}</span>
+                    </div>
                     <div class="an-control-spacer"></div>
+                    <button class="btn sm" type="button" (click)="refresh()" [disabled]="loading()" title="Re-run analysis">
+                        <app-ico name="RefreshCw" [size]="12"/> Refresh
+                    </button>
                     <span class="chip teal mono"><app-ico name="Box" [size]="11"/> target {{ bucketRes() }}×{{ bucketRes() }}</span>
                     @if (medianResLabel(); as r) {
                         <span class="chip mono">median res {{ r }}</span>
@@ -398,7 +439,7 @@ const THUMB_FALLBACK_DATA_URI =
                                 @for (f of filterOptions; track f.value) {
                                     <button type="button"
                                             [class.active]="filter() === f.value"
-                                            (click)="filter.set(f.value)">
+                                            (click)="onFilter(f.value)">
                                         {{ f.label }} <span class="mono an-filter-count">{{ f.count() }}</span>
                                     </button>
                                 }
@@ -421,6 +462,20 @@ const THUMB_FALLBACK_DATA_URI =
                                     <option value="name">Name (A–Z)</option>
                                     <option value="size">Size · large→small</option>
                                 </select>
+                            </div>
+                            <div class="an-cropall">
+                                <select class="input mono an-sort-select" [value]="cropAllOrigin()"
+                                        (change)="cropAllOrigin.set($any($event.target).value)"
+                                        [disabled]="cropAllRunning()"
+                                        title="Crop anchor for batch crop">
+                                    @for (o of ORIGINS; track o) { <option [value]="o">{{ o }}</option> }
+                                </select>
+                                <button class="btn sm" type="button"
+                                        (click)="startCropAll()"
+                                        [disabled]="cropAllRunning() || cropAllCandidates().length === 0"
+                                        [title]="cropAllCandidates().length ? 'Crop all needs-crop images to target' : 'No images need cropping'">
+                                    <app-ico name="Crop" [size]="12"/> Crop all ({{ cropAllCandidates().length }})
+                                </button>
                             </div>
                         </div>
 
@@ -508,8 +563,12 @@ const THUMB_FALLBACK_DATA_URI =
 
         <div class="modal-foot">
             @if (data.datasetName && activeTab() === 'files') {
-                <button class="btn primary" type="button" (click)="harmonize()">
-                    <app-ico name="Wand2" [size]="13"/> Harmonize files
+                <button class="btn primary" type="button" (click)="harmonize()" [disabled]="harmonizing()" [class.harmonizing]="harmonizing()">
+                    @if (harmonizing()) {
+                        <app-ico name="Loader2" [size]="13"/> Harmonizing…
+                    } @else {
+                        <app-ico name="Wand2" [size]="13"/> Harmonize files
+                    }
                 </button>
             }
             <button class="btn ghost" type="button" (click)="overlay.closeModal()">Close</button>
@@ -533,6 +592,7 @@ const THUMB_FALLBACK_DATA_URI =
         }
         .an-control-group { display: flex; align-items: center; gap: 8px; }
         .an-control-spacer { flex: 1; }
+        .an-thresh-range { width: 120px; accent-color: var(--color-brand); }
 
         .an-loading { padding: 24px; text-align: center; color: var(--color-text-muted); font-size: 12px; }
 
@@ -756,6 +816,17 @@ const THUMB_FALLBACK_DATA_URI =
             font-size: 10.5px; color: var(--color-text-muted);
         }
         .an-files-foot b { color: var(--color-text-secondary); }
+        /* Spin the Loader2 icon while harmonizing. Gated on a dedicated class
+           (not [disabled]) to mirror the editor's Save-spinner pattern and stay
+           robust if the button ever becomes disabled for other reasons. */
+        .btn.primary.harmonizing app-ico { display: inline-flex; }
+        .btn.primary.harmonizing app-ico ::ng-deep svg { animation: an-harm-spin 0.9s linear infinite; }
+        @keyframes an-harm-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
+        /* Batch crop-all */
+        .an-cropall { display: flex; gap: 6px; align-items: center; }
+        .an-cropall-file { font-size: 10.5px; color: var(--color-text-muted); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .an-cropall-progress { border-color: color-mix(in oklab, var(--color-brand) 40%, transparent); }
     `],
 })
 export class AnalyzeModalComponent implements OnInit {
@@ -763,6 +834,7 @@ export class AnalyzeModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private rtc = inject(RuntimeConfigService);
     private toast = inject(ToastService);
+    private mediaItems = inject(MediaItemStore);
 
     protected readonly chartW = CHART_W;
     protected readonly chartH = CHART_H;
@@ -786,7 +858,9 @@ export class AnalyzeModalComponent implements OnInit {
 
     protected bucketRes = signal<512 | 768 | 1024 | 1280 | 1536>(1024);
     protected bucketMode = signal<'kohya' | 'multi'>('kohya');
+    protected similarityThreshold = signal<number>(0.9);
     protected loading = signal(false);
+    protected harmonizing = signal(false);
     protected analysisData = signal<AnalysisData | null>(null);
     protected pairs = signal<Pair[]>([]);
 
@@ -803,6 +877,12 @@ export class AnalyzeModalComponent implements OnInit {
     protected sortBy = signal<FileSort>('idx');
     protected searchQuery = signal<string>('');
 
+    protected readonly ORIGINS = ['top-left','top','top-right','left','center','right','bottom-left','bottom','bottom-right'] as const;
+    protected cropAllRunning = signal(false);
+    protected cropAllOrigin = signal<string>('center');
+    protected cropAllProgress = signal<CropAllProgress>({ current: 0, total: 0, path: '' });
+    private cropAllCancel = false;
+
     protected data: AnalyzeModalData = (this.overlay.topModal()?.data as AnalyzeModalData) ?? {};
 
     protected readonly filterOptions = [
@@ -815,28 +895,56 @@ export class AnalyzeModalComponent implements OnInit {
     ];
 
     ngOnInit(): void {
-        // Restore the persisted tab — set by us via patchModalData when a
-        // child modal (similar-images, crop-preview) is opened.
-        if (this.data.activeTab) this.activeTab.set(this.data.activeTab);
-        if (this.data.datasetName) this.fetch();
+        // Restore persisted UI context — set by us via patchModalData. Analyze
+        // is destroyed/re-mounted around child modals, so without this the
+        // user's resolution/filter/sort/search reset on every round-trip.
+        const d = this.data;
+        if (d.activeTab) this.activeTab.set(d.activeTab);
+        if (d.bucketRes) this.bucketRes.set(d.bucketRes);
+        if (d.bucketMode) this.bucketMode.set(d.bucketMode);
+        if (d.filter) this.filter.set(d.filter);
+        if (d.sortBy) this.sortBy.set(d.sortBy);
+        if (d.searchQuery) this.searchQuery.set(d.searchQuery);
+        if (d.similarityThreshold != null) this.similarityThreshold.set(d.similarityThreshold);
+        if (d.datasetName) this.fetch();
     }
 
     protected onResChange(v: number): void {
         this.bucketRes.set(v as 512 | 768 | 1024 | 1280 | 1536);
+        this.overlay.patchModalData({ bucketRes: this.bucketRes() });
         this.fetch();
     }
 
     protected onModeChange(v: 'kohya' | 'multi'): void {
         this.bucketMode.set(v);
+        this.overlay.patchModalData({ bucketMode: v });
         this.fetch();
     }
 
     protected onSearch(e: Event): void {
         this.searchQuery.set((e.target as HTMLInputElement).value);
+        this.overlay.patchModalData({ searchQuery: this.searchQuery() });
     }
 
     protected onSort(e: Event): void {
         this.sortBy.set((e.target as HTMLSelectElement).value as FileSort);
+        this.overlay.patchModalData({ sortBy: this.sortBy() });
+    }
+
+    protected onThresholdChange(e: Event): void {
+        // Slider drag only updates the label — analysis re-runs on release
+        // (change) or via Refresh, since server-side similarity is expensive.
+        this.similarityThreshold.set(parseFloat((e.target as HTMLInputElement).value));
+    }
+    protected onThresholdCommit(): void {
+        this.overlay.patchModalData({ similarityThreshold: this.similarityThreshold() });
+        this.fetch();
+    }
+    protected refresh(): void { this.fetch(); }
+
+    protected onFilter(f: FileFilter): void {
+        this.filter.set(f);
+        this.overlay.patchModalData({ filter: f });
     }
 
     private fetch(): void {
@@ -844,7 +952,7 @@ export class AnalyzeModalComponent implements OnInit {
         if (!name) return;
         this.loading.set(true);
         forkJoin({
-            analysis: this.datasetsApi.analyzeDataset(name, 0.9, [this.bucketRes()], this.bucketMode()),
+            analysis: this.datasetsApi.analyzeDataset(name, this.similarityThreshold(), [this.bucketRes()], this.bucketMode()),
             pairs: this.datasetsApi.getDatasetPairs(name),
         }).subscribe({
             next: (res) => {
@@ -911,9 +1019,31 @@ export class AnalyzeModalComponent implements OnInit {
                 thumbUrl: `${this.rtc.apiUrl}/datasets/${encodeURIComponent(dsName)}/thumbnail?image_rel_path=${encodeURIComponent(p.media_file)}`,
                 isDuplicate: dupSet.has(p.media_file),
                 needsCrop,
+                targetWidth: tw ?? null,
+                targetHeight: th ?? null,
                 excluded: meta.enabled === false,
             };
         });
+    });
+
+    /** Needs-crop candidates joined to their analysis target dims. */
+    protected cropAllCandidates = computed<CropAllItem[]>(() => {
+        const imById = new Map(this.allImages().map(im => [im.path, im]));
+        return this.allFiles()
+            .filter(r => r.needsCrop)
+            .map(r => {
+                const im = imById.get(r.path);
+                return {
+                    path: r.path,
+                    targetWidth: im?.target_width ?? r.targetWidth ?? r.width,
+                    targetHeight: im?.target_height ?? r.targetHeight ?? r.height,
+                };
+            });
+    });
+
+    protected cropAllPercent = computed<number>(() => {
+        const p = this.cropAllProgress();
+        return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
     });
 
     /** Filtered + sorted view of `allFiles()` for the table. */
@@ -1248,18 +1378,27 @@ export class AnalyzeModalComponent implements OnInit {
     }
 
     protected openFile(_r: FileRow): void {
-        // TODO(frontend): jump to per-image detail in the dataset workspace.
+        // TODO(#17): deferred to cleanup PR — requires cross-view navigation to
+        // the per-image detail view in the dataset workspace.
         this.toast.info('Open detail — coming soon.');
     }
 
-    protected deleteFile(_r: FileRow): void {
-        // TODO(frontend): wire to confirm modal + per-image delete endpoint.
-        this.toast.info('Delete file — coming soon.');
+    protected deleteFile(r: FileRow): void {
+        if (!this.data.datasetName) return;
+        if (!confirm(`Delete ${r.path}? This permanently removes the image, caption and any masks.`)) return;
+        this.datasetsApi.deletePair(this.data.datasetName, r.path).subscribe({
+            next: () => {
+                this.toast.success(`Deleted ${r.path}`);
+                this.fetch();
+            },
+            error: (err: { error?: { detail?: string }; message?: string }) =>
+                this.toast.error('Delete failed: ' + (err?.error?.detail || err?.message)),
+        });
     }
 
     protected adjustFile(_r: FileRow): void {
-        // TODO(frontend): open the image editor (curves/levels/color) for this image.
-        // Wired once the image-editor extraction lands in the cleanup PR.
+        // TODO(#27): deferred to cleanup PR — requires image-editor extraction
+        // (curves/levels/color) which lands in a later dedicated PR.
         this.toast.info('Adjust — image editor coming soon.');
     }
 
@@ -1288,6 +1427,42 @@ export class AnalyzeModalComponent implements OnInit {
         });
     }
 
+    protected async startCropAll(): Promise<void> {
+        const name = this.data.datasetName;
+        const candidates = this.cropAllCandidates();
+        if (!name || candidates.length === 0 || this.cropAllRunning()) return;
+        if (!confirm(
+            `Crop ${candidates.length} image${candidates.length === 1 ? '' : 's'} to target resolution ` +
+            `from the "${this.cropAllOrigin()}" anchor?\n\nThis rewrites files on disk and cannot be undone.`,
+        )) return;
+
+        this.cropAllCancel = false;
+        this.cropAllRunning.set(true);
+        this.cropAllProgress.set({ current: 0, total: candidates.length, path: '' });
+
+        const result = await runCropAll(candidates, {
+            origin: this.cropAllOrigin(),
+            crop: (item, origin) => firstValueFrom(
+                this.datasetsApi.cropImage(name, item.path, item.targetWidth, item.targetHeight, origin),
+            ).then(() => undefined),
+            onProgress: (p) => this.cropAllProgress.set(p),
+            isCancelled: () => this.cropAllCancel,
+        });
+
+        this.cropAllRunning.set(false);
+        this.mediaItems.bumpMedia();
+        const tail = result.failed ? ` · ${result.failed} failed` : '';
+        const head = result.cancelled
+            ? `Crop-all stopped — ${result.ok} cropped`
+            : `Cropped ${result.ok} image${result.ok === 1 ? '' : 's'}`;
+        if (result.failed) this.toast.warning(head + tail);
+        else if (result.cancelled && result.ok === 0) this.toast.info(head);
+        else this.toast.success(head);
+        this.fetch();
+    }
+
+    protected cancelCropAll(): void { this.cropAllCancel = true; }
+
     protected cropFile(r: FileRow): void {
         // Seed the crop-preview modal with everything it needs to render the
         // image + the analysis-derived target. Without `width/height` the modal
@@ -1306,10 +1481,24 @@ export class AnalyzeModalComponent implements OnInit {
     protected harmonize(): void {
         const name = this.data.datasetName;
         if (!name) return;
+        if (!confirm(
+            `Harmonize "${name}"?\n\nThis converts non-JPG images to JPG and renames ` +
+            `files to a canonical sequence. It rewrites files on disk and cannot be undone.`,
+        )) return;
+        this.harmonizing.set(true);
         this.datasetsApi.harmonizeFiles(name).subscribe({
-            next: () => this.toast.success(`Harmonized "${name}".`),
-            error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Harmonize failed: ' + (err?.error?.detail || err?.message)),
+            next: (res: { processed?: number; converted?: number; renamed?: number }) => {
+                this.harmonizing.set(false);
+                const c = res?.converted ?? 0;
+                const r = res?.renamed ?? 0;
+                const p = res?.processed ?? 0;
+                this.toast.success(`Harmonized "${name}" — ${p} processed, ${c} converted, ${r} renamed.`);
+                this.fetch();
+            },
+            error: (err: { error?: { detail?: string }; message?: string }) => {
+                this.harmonizing.set(false);
+                this.toast.error('Harmonize failed: ' + (err?.error?.detail || err?.message));
+            },
         });
     }
 }

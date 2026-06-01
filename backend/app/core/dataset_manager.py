@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import uuid
 from typing import Any
@@ -22,6 +23,11 @@ from app.core.db.repositories.media_item_repo import MediaItemRepository
 import asyncio
 
 logger = structlog.get_logger(__name__)
+
+# Strict semver ``X.Y.Z`` of non-negative integers. Used by
+# ``set_dataset_version`` to validate manual version-override input
+# from the version-edit modal — no pre-release suffix, no ``v`` prefix.
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 class Dataset(BaseModel):
@@ -243,6 +249,27 @@ class DatasetManager:
             self._persist_dataset(self.datasets[name])
             return self.datasets[name].version
         return None
+
+    def set_dataset_version(self, name: str, version: str) -> str | None:
+        """Manually overwrite the dataset's semantic version.
+
+        Companion to ``bump_dataset_version`` — used by the version-edit
+        modal to recover from an accidental bump. Validates strict semver
+        (``X.Y.Z`` of non-negative integers, no pre-release suffix) and
+        raises ``ValueError`` on invalid input so callers can map it to
+        HTTP 400. Returns ``None`` if the dataset name is unknown so the
+        route can map that to 404, matching ``bump_dataset_version``.
+        """
+        if not isinstance(version, str) or not _SEMVER_RE.match(version):
+            raise ValueError(
+                f"Invalid version '{version}' — expected X.Y.Z with non-negative integers."
+            )
+        if name not in self.datasets:
+            return None
+        ds = self.datasets[name]
+        ds.version = version
+        self._persist_dataset(ds)
+        return ds.version
 
     def create_dataset(
         self,

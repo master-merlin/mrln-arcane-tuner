@@ -302,6 +302,19 @@ export class DatasetService {
     return this.http.post(`${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/bump?type=${type}`, {});
   }
 
+  /**
+   * Manually overwrite a dataset's semantic version. Companion to
+   * ``bumpVersion`` — used by the version-edit modal to recover from
+   * an accidental bump. Backend validates strict ``X.Y.Z`` semver and
+   * returns 400 on invalid input.
+   */
+  setVersion(name: string, version: string): Observable<{ version: string }> {
+    return this.http.post<{ version: string }>(
+      `${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/version`,
+      { version },
+    );
+  }
+
   toggleImageEnabled(datasetName: string, mediaFile: string, enabled: boolean): Observable<any> {
     return this.http.patch(
       `${this.apiUrl}/${encodeURIComponent(datasetName)}/images/${encodeURIComponent(mediaFile)}/enabled`,

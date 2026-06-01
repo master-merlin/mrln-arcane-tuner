@@ -403,6 +403,44 @@ def test_bump_version_not_found(mock_to_thread, mock_manager, client):
     assert response.status_code == 404
 
 
+# ── Set Version (manual edit) ────────────────────────────────────────────
+
+
+@patch("app.api.dataset.analysis_routes.dataset_manager")
+@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
+def test_set_version_success(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_manager.set_dataset_version.return_value = "2.0.0"
+    response = client.post("/api/datasets/myds/version", json={"version": "2.0.0"})
+    assert response.status_code == 200
+    assert response.json()["version"] == "2.0.0"
+
+
+@patch("app.api.dataset.analysis_routes.dataset_manager")
+@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
+def test_set_version_not_found(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_manager.set_dataset_version.return_value = None
+    response = client.post("/api/datasets/ghost/version", json={"version": "2.0.0"})
+    assert response.status_code == 404
+
+
+@patch("app.api.dataset.analysis_routes.dataset_manager")
+@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
+def test_set_version_invalid_semver(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_manager.set_dataset_version.side_effect = ValueError("bad")
+    response = client.post("/api/datasets/myds/version", json={"version": "v1"})
+    assert response.status_code == 400
+    assert "bad" in response.json()["detail"]
+
+
 # ── Harmonize Files ──────────────────────────────────────────────────────
 
 

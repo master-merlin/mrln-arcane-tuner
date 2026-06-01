@@ -24,7 +24,7 @@ export type ModalKind =
     | 'mass-caption' | 'mass-mask' | 'mass-edit'
     | 'dataset-form' | 'rescan' | 'analyze' | 'cache'
     | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
-    | 'model-source' | 'browse-folder' | 'confirm';
+    | 'model-source' | 'browse-folder' | 'confirm' | 'version-edit';
 
 export interface ModalEntry {
     kind: ModalKind;

@@ -11,6 +11,35 @@ import { ToastService } from '../../../../services/toast';
     imports: [DatasetMaskingSettingsComponent, DecimalPipe],
     template: `
         <div class="w-full h-full border-r border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
+             <!-- Masked-view toggle — Browse-mode has this button in its
+                  secondary toolbar; Details has no toolbar, so when the user
+                  flips "Masked" in Browse and clicks into Details there is
+                  otherwise no UI to flip it back off. Mirrors the legacy
+                  viewer-toolbar pattern (success tint when active, disabled
+                  when the dataset has no masked variants at all). Emits a
+                  parent-bubbled intent — workspace owns the signal so Browse
+                  and Details stay synchronized. -->
+             <div class="shrink-0 px-4 pt-4 pb-3 border-b border-surface-mid/40">
+                 <button type="button"
+                     (click)="toggleMaskedRequested.emit()"
+                     [disabled]="!hasMaskedImages()"
+                     class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-theme-sm transition-all border"
+                     [class.opacity-40]="!hasMaskedImages()"
+                     [class.cursor-not-allowed]="!hasMaskedImages()"
+                     [class.bg-success/15]="showMasked() && hasMaskedImages()"
+                     [class.border-success/40]="showMasked() && hasMaskedImages()"
+                     [class.text-success]="showMasked() && hasMaskedImages()"
+                     [class.bg-surface-mid/50]="!showMasked() || !hasMaskedImages()"
+                     [class.border-surface-high/30]="!showMasked() || !hasMaskedImages()"
+                     [class.text-text-muted]="!showMasked() || !hasMaskedImages()"
+                     [title]="hasMaskedImages()
+                         ? (showMasked() ? 'Masked view ON — click to show originals on canvas' : 'Click to show masked variants on canvas')
+                         : 'No masked variants in this dataset'">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                     Masked view
+                 </button>
+             </div>
+
              <!-- Scrollable mask preview area -->
              <div class="flex-1 min-h-[60px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
                 <div class="relative p-4">
@@ -113,11 +142,22 @@ export class DetailMaskingSidebarComponent {
     datasetName = input.required<string>();
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
+    /** Threaded from the workspace — drives the "Masked view" toggle's
+     *  active-state styling so Browse and Details mirror each other. */
+    showMasked = input<boolean>(false);
+    /** Threaded from the workspace — disables the toggle when no pair in
+     *  the dataset has `metadata.has_masked` (toggling is a no-op there). */
+    hasMaskedImages = input<boolean>(false);
 
     showMaskDetails = output<boolean>();
     openMaskPreviewRequested = output<Event>();
     deleteMaskRequested = output<Event>();
     maskGenerated = output<void>();
+    /** User clicked the "Masked view" toggle — workspace flips its
+     *  `showMasked` signal, which is bound back into us as the `showMasked`
+     *  input (and into Browse mode). Keeps the single source of truth
+     *  at the workspace level. */
+    toggleMaskedRequested = output<void>();
 
     internalShowMaskingPanel = signal<boolean>(true);
     isGeneratingMask = signal<boolean>(false);

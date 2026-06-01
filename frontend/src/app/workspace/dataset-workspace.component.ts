@@ -124,6 +124,10 @@ export class DatasetWorkspaceComponent {
     protected visiblePairs = computed<any[]>(() => {
         const list = this.pairs();
         switch (this.filter()) {
+            case 'enabled':
+                return list.filter(p => p?.metadata?.enabled !== false);
+            case 'excluded':
+                return list.filter(p => p?.metadata?.enabled === false);
             case 'captioned':
                 return list.filter(p => !!p?.caption_content?.trim());
             case 'masked':
@@ -133,7 +137,6 @@ export class DatasetWorkspaceComponent {
                     const q = p?.metadata?.quality_score;
                     return typeof q === 'number' && q < 0.24;
                 });
-            case 'all':
             default:
                 return list;
         }
@@ -158,6 +161,15 @@ export class DatasetWorkspaceComponent {
         }));
     });
 
+    /**
+     * Session-scoped flag — the first edit (caption save / crop / mask
+     * apply / editor bake) triggers a single ``bumpVersion('patch')``.
+     * Subsequent edits in the same workspace session no-op. Resets when
+     * the workspace is re-opened (component re-mount). Mirrors legacy
+     * ``hasBumpedPatchInSession`` (dataset-viewer.ts:514).
+     */
+    private hasBumpedPatchInSession = false;
+
     /** Collapsed state for the bottom filmstrip; toggled by the centered arrow. */
     protected filmstripCollapsed = signal<boolean>(false);
     protected toggleFilmstrip(): void {
@@ -174,7 +186,9 @@ export class DatasetWorkspaceComponent {
     /** Browse-mode secondary toolbar state. Local for now — wiring the filter
      *  selection through to the grid is a follow-up; today the tabs are
      *  selectable visuals only. */
-    protected filter = signal<'all' | 'captioned' | 'masked' | 'low_hps'>('all');
+    protected filter = signal<
+        'all' | 'enabled' | 'excluded' | 'captioned' | 'masked' | 'low_hps'
+    >('all');
     protected density = signal<number>(5);
     /** Render masked variants of images + masked_caption_content when true. */
     protected showMasked = signal<boolean>(false);
@@ -201,17 +215,19 @@ export class DatasetWorkspaceComponent {
 
     /** Per-tab counts shown next to the filter chips. */
     protected filterCounts = computed<{
-        all: number; captioned: number; masked: number; lowHps: number;
+        all: number; enabled: number; excluded: number;
+        captioned: number; masked: number; lowHps: number;
     }>(() => {
         const list = this.pairs();
-        let captioned = 0, masked = 0, lowHps = 0;
+        let enabled = 0, excluded = 0, captioned = 0, masked = 0, lowHps = 0;
         for (const p of list) {
+            if (p?.metadata?.enabled === false) excluded++; else enabled++;
             if (p?.caption_content?.trim()) captioned++;
             if (p?.metadata?.has_mask) masked++;
             const q = p?.metadata?.quality_score;
             if (typeof q === 'number' && q < 0.24) lowHps++;
         }
-        return { all: list.length, captioned, masked, lowHps };
+        return { all: list.length, enabled, excluded, captioned, masked, lowHps };
     });
 
     /** HPS range readout — min/max quality_score over the loaded pairs. */
@@ -270,6 +286,21 @@ export class DatasetWorkspaceComponent {
             const d = this.dataset();
             if (!w || !d) return;
             void this.ensurePairsLoaded(d.name);
+        });
+
+        // Patch-bump trigger: any bytes-changing op (crop, mask apply,
+        // editor bake) bumps MediaItemStore.mediaRev. We piggyback on
+        // that — first increment per session counts as "first edit".
+        // Capture the initial value as the baseline so we don't fire on
+        // the constructor-time signal read; only subsequent increments
+        // trigger.
+        let mediaRevBaseline = this.mediaItems.mediaRev();
+        effect(() => {
+            const rev = this.mediaItems.mediaRev();
+            if (rev !== mediaRevBaseline) {
+                mediaRevBaseline = rev;
+                this.ensurePatchBump();
+            }
         });
 
     }
@@ -345,7 +376,7 @@ export class DatasetWorkspaceComponent {
         this.overlay.openModal(kind, { datasetName: d.name });
     }
 
-    protected setFilter(v: 'all' | 'captioned' | 'masked' | 'low_hps'): void {
+    protected setFilter(v: 'all' | 'enabled' | 'excluded' | 'captioned' | 'masked' | 'low_hps'): void {
         this.filter.set(v);
     }
 
@@ -413,6 +444,7 @@ export class DatasetWorkspaceComponent {
             .saveCaption(d.name, mediaFile, filename, content)
             .then(result => {
                 if (result.ok) {
+                    this.ensurePatchBump();
                     this.toast.success('Caption saved.');
                 } else {
                     // Roll back the local text cache too.
@@ -497,6 +529,86 @@ export class DatasetWorkspaceComponent {
         });
         this.captions.clear(d.name);
         void this.ensurePairsLoaded(d.name);
+    }
+
+    /**
+     * Fire the per-session patch bump exactly once. Idempotent: subsequent
+     * calls are no-ops. On HTTP failure the flag clears so the next call
+     * can retry — but failures don't surface as toasts (auto-bump
+     * shouldn't interrupt the user's flow); we just log and let the
+     * next edit trigger the retry.
+     */
+    private ensurePatchBump(): void {
+        if (this.hasBumpedPatchInSession) return;
+        const d = this.dataset();
+        if (!d) return;
+        this.hasBumpedPatchInSession = true;
+        this.datasetsApi.bumpVersion(d.name, 'patch').subscribe({
+            next: (res: any) => {
+                this.datasets.upsertLocal({ ...d, version: res.version });
+            },
+            error: (err: any) => {
+                console.warn('[workspace] auto patch bump failed', err);
+                this.hasBumpedPatchInSession = false;
+            },
+        });
+    }
+
+    /**
+     * Manually bump the dataset to the next MAJOR version. Mirrors the
+     * legacy ``manualBump`` (dataset-viewer.ts:591) — confirm, POST to
+     * /bump?type=major, stamp the new version on the cached dataset row.
+     * Auto-bumps for ordinary edits live in {@link ensurePatchBump};
+     * this is the explicit-intent MAJOR escalation.
+     *
+     * Note: deliberately does NOT set ``hasBumpedPatchInSession``. Legacy
+     * parity — a manual MAJOR bump followed by an edit in the same
+     * session also fires the per-session patch bump, yielding e.g.
+     * 1.0.0 → 2.0.0 → 2.0.1. Two distinct user-meaningful operations,
+     * two bumps. Mirrors {@link ../components/dataset/dataset-viewer/dataset-viewer.ts}
+     * ``manualBump`` which likewise leaves the flag untouched.
+     */
+    protected async bumpMajor(): Promise<void> {
+        const d = this.dataset();
+        if (!d) return;
+        if (!confirm(`Bump "${d.name}" to the next MAJOR version?`)) return;
+        try {
+            const res = await firstValueFrom(
+                this.datasetsApi.bumpVersion(d.name, 'major'),
+            );
+            const newVersion = (res as { version: string }).version;
+            this.datasets.upsertLocal({ ...d, version: newVersion });
+            this.toast.success(`Version bumped to ${newVersion}`);
+        } catch (err: any) {
+            this.toast.error(this.errMsg(err, 'Failed to bump version'));
+        }
+    }
+
+    /**
+     * Open the version-edit modal — companion to {@link bumpMajor} for
+     * cases where an accidental bump pushed the version off. Reuses the
+     * same ``upsertLocal`` reconciliation path so Browse / Details stay
+     * in sync without an extra HTTP fetch. Per legacy parity (and
+     * matching {@link bumpMajor}) does NOT set
+     * ``hasBumpedPatchInSession`` — a manual correction is an
+     * out-of-band edit, not a user-meaningful bump.
+     *
+     * The modal owns the HTTP call + toast so future callers (e.g. a
+     * mass-version-correction tool) can open it without re-wiring the
+     * error path. The workspace just provides the local-cache
+     * reconciliation callback.
+     */
+    protected editVersion(): void {
+        const d = this.dataset();
+        if (!d) return;
+        this.overlay.openModal('version-edit', {
+            datasetName: d.name,
+            currentVersion: d.version,
+            onSaved: (newVersion: string) => {
+                const cur = this.dataset();
+                if (cur) this.datasets.upsertLocal({ ...cur, version: newVersion });
+            },
+        });
     }
 }
 

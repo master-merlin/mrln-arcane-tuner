@@ -5,12 +5,14 @@ import {
     effect,
     ElementRef,
     HostListener,
+    inject,
     input,
     output,
     signal,
     viewChild,
 } from '@angular/core';
 import { aggregateFilmstrip, type StripCell } from './filmstrip-aggregate';
+import { OverlayStore } from '../../state/overlay.store';
 
 interface Img {
     harmonized?: boolean;
@@ -185,6 +187,7 @@ export class FilmstripScrubberComponent {
 
     seek = output<number>();
 
+    private overlay = inject(OverlayStore);
     private host = viewChild.required<ElementRef<HTMLDivElement>>('host');
 
     /** Indices whose thumbnail `<img>` errored — replaces the perpetual
@@ -299,8 +302,12 @@ export class FilmstripScrubberComponent {
 
     @HostListener('document:keydown', ['$event'])
     protected onKey(e: KeyboardEvent): void {
+        // Suppress when an input is focused (existing) OR when any modal is
+        // open above the workspace — arrow keys must not move the underlying
+        // cursor while crop / mask-preview / analyze modals are showing.
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        if (this.overlay.modalStack().length > 0) return;
         const total = this.images().length;
         if (total === 0) return;
         if (e.key === 'ArrowLeft') {

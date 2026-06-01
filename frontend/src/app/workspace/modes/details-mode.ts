@@ -49,10 +49,13 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                         [datasetName]="datasetName()"
                         [mediaBaseUrl]="rtc.mediaBaseUrl"
                         [lastUpdateTime]="mediaItems.mediaRev()"
+                        [showMasked]="showMasked()"
+                        [hasMaskedImages]="hasMaskedImages()"
                         (openMaskPreviewRequested)="openMaskPreview()"
                         (showMaskDetails)="openMaskDetails()"
                         (deleteMaskRequested)="deleteMask.emit(pair)"
-                        (maskGenerated)="maskGenerated.emit()"/>
+                        (maskGenerated)="maskGenerated.emit()"
+                        (toggleMaskedRequested)="toggleMasked.emit()"/>
                 </aside>
                 <main class="pane canvas">
                     <app-detail-media-container
@@ -61,6 +64,8 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                         [mediaBaseUrl]="rtc.mediaBaseUrl"
                         [apiUrl]="rtc.apiUrl"
                         [lastUpdateTime]="mediaItems.mediaRev()"
+                        [showMasked]="showMasked()"
+                        [showOverlay]="showOverlay()"
                         (prevRequested)="prev()"
                         (nextRequested)="next()"
                         (deleteRequested)="deletePair.emit(pair)"/>
@@ -90,6 +95,7 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                     <app-detail-caption-sidebar
                         [datasetName]="datasetName()"
                         [currentPair]="pair"
+                        [isCurrentMediaVideo]="pair?.media_type === 'video'"
                         [isDirty]="isDirty()"
                         [(captionText)]="captionText"
                         (saveRequested)="onSaveCaption()"
@@ -187,6 +193,18 @@ export class DetailsMode {
     pairs = input.required<any[]>();
     /** HTTP-name of the dataset. */
     datasetName = input.required<string>();
+    /** Browse-mode toolbar's "Masked" toggle — threaded down so the
+     *  detail media container picks the masked variant when available.
+     *  Defaults to false so omitting the binding preserves prior behavior. */
+    showMasked = input<boolean>(false);
+    /** Browse-mode toolbar's "Overlay" toggle — threaded down so the
+     *  detail media container shows the editor-baked overlay file.
+     *  Defaults to true (mirrors detail-media-container's own default). */
+    showOverlay = input<boolean>(true);
+    /** Dataset-wide flag — at least one pair has `metadata.has_masked`.
+     *  Drives the mask sidebar's "Masked view" toggle disabled state,
+     *  matching the Browse toolbar's pattern. */
+    hasMaskedImages = input<boolean>(false);
 
     /** Caption save intent — workspace performs optimistic + API. */
     saveCaption = output<{ pair: any; content: string; isMasked: boolean }>();
@@ -199,6 +217,9 @@ export class DetailsMode {
     maskGenerated = output<void>();
     /** Eye-toggle on the canvas footer. */
     toggleExclusion = output<{ media_file: string; enabled: boolean }>();
+    /** Mask sidebar's "Masked view" toggle was clicked — workspace flips
+     *  its `showMasked` signal (the same one the Browse toolbar toggles). */
+    toggleMasked = output<void>();
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);

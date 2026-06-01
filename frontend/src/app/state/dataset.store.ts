@@ -125,6 +125,17 @@ export class DatasetStore extends EntityStore<Dataset> {
     }
 
     /**
+     * Public counterpart to the protected ``upsert`` — used by external
+     * mutation paths (e.g. workspace manual version bump) that already
+     * have the full row in hand and want to reconcile the local cache
+     * without an extra HTTP fetch. The WS broadcast will idempotently
+     * upsert again.
+     */
+    upsertLocal(row: Dataset): void {
+        this.upsert(row);
+    }
+
+    /**
      * Patches dataset metadata. Updates merge into the locally-cached
      * dataset, so callers can pass partial diffs (e.g. `{ description }`).
      *

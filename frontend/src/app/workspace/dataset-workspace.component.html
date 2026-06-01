@@ -14,7 +14,19 @@
                         <app-ico name="Folder" [size]="15" class="muted"/>
                         <span class="ws-name">{{ dataset()?.name ?? w.datasetId }}</span>
                         @if (dataset()?.version; as v) {
-                            <span class="tag">v{{ v }}</span>
+                            <button type="button"
+                                    class="tag ws-version-tag"
+                                    (click)="bumpMajor()"
+                                    title="Click to bump dataset to next MAJOR version">
+                                v{{ v }}
+                            </button>
+                            <button type="button"
+                                    class="icon-btn ws-version-edit"
+                                    (click)="editVersion()"
+                                    title="Edit version (manual override)"
+                                    aria-label="Edit version">
+                                <app-ico name="Pencil" [size]="12"/>
+                            </button>
                         }
                         @if (trainingCounts(); as tc) {
                             @if (tc.total > 0) {
@@ -96,6 +108,8 @@
                 <div class="seg ws-filters">
                     @for (f of [
                         { v: 'all', label: 'All', c: filterCounts().all },
+                        { v: 'enabled', label: 'Enabled', c: filterCounts().enabled },
+                        { v: 'excluded', label: 'Excluded', c: filterCounts().excluded },
                         { v: 'captioned', label: 'Captioned', c: filterCounts().captioned },
                         { v: 'masked', label: 'Masked', c: filterCounts().masked },
                         { v: 'low_hps', label: 'Low HPS', c: filterCounts().lowHps }
@@ -175,11 +189,15 @@
                             [imageIndex]="w.imageIndex"
                             [pairs]="pairs()"
                             [datasetName]="dataset()?.name ?? w.datasetId"
+                            [showMasked]="showMasked()"
+                            [showOverlay]="showOverlay()"
+                            [hasMaskedImages]="hasMaskedImages()"
                             (saveCaption)="onSaveCaption($event)"
                             (toggleExclusion)="onToggleExclusion($event)"
                             (deletePair)="onDeletePairRequested($event)"
                             (deleteMask)="onDeleteMaskRequested($event)"
-                            (maskGenerated)="refreshPairs()"/>
+                            (maskGenerated)="refreshPairs()"
+                            (toggleMasked)="toggleMaskedView()"/>
                     } @loading {
                         <div class="defer-loading">Loading details…</div>
                     }
@@ -206,12 +224,30 @@
                 <app-ico [name]="filmstripCollapsed() ? 'ChevronUp' : 'ChevronDown'" [size]="14"/>
             </button>
             @if (!filmstripCollapsed() && filmstripImages().length > 0) {
+                <!-- TODO(PR10): Theme-F revisit — Hi-Fi screen-dataset.jsx:773 uses a
+                     height:38px bar in 'grid' mode and height:56px in 'single' mode.
+                     Current: fixed 56px always. Consider making height mode-driven. -->
                 <div class="filmstrip-meta">
                     <span class="eyebrow">POSITION</span>
                     <span class="mono">
                         {{ w.imageIndex + 1 }}
                         <span class="muted">/ {{ filmstripImages().length }}</span>
                     </span>
+                    <!-- color-coded readiness legend matching Hi-Fi screen-dataset.jsx:767-771 -->
+                    <div class="filmstrip-legend">
+                        <span class="legend-item">
+                            <span class="legend-swatch masked"></span>masked
+                        </span>
+                        <span class="legend-item">
+                            <span class="legend-swatch captioned"></span>captioned only
+                        </span>
+                        <span class="legend-item">
+                            <span class="legend-swatch missing"></span>missing
+                        </span>
+                    </div>
+                    <!-- TODO(PR10): Theme-F revisit — Hi-Fi screen-dataset.jsx:804-810 shows
+                         5 ruler tick-labels below the scrubber bar (1 / 25% / 50% / 75% / N).
+                         Current: no ruler. Would require extending FilmstripScrubberComponent. -->
                 </div>
                 <app-filmstrip-scrubber
                     [images]="filmstripImages()"

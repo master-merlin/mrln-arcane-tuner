@@ -6,6 +6,7 @@ import asyncio
 from fractions import Fraction
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
@@ -69,6 +70,31 @@ async def bump_version(name: str, type: str = "patch"):
     """Bump the dataset's semantic version."""
     logger.info("bumping_version", dataset_name=name, type=type)
     new_version = await asyncio.to_thread(dataset_manager.bump_dataset_version, name, type)
+    if not new_version:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return {"version": new_version}
+
+
+class SetVersionRequest(BaseModel):
+    """Body for ``POST /datasets/{name}/version``."""
+    version: str
+
+
+@router.post("/datasets/{name}/version")
+async def set_version(name: str, body: SetVersionRequest):
+    """Manually overwrite the dataset's semantic version.
+
+    Companion to ``POST /datasets/{name}/bump`` — used by the
+    version-edit modal to fix an accidentally-bumped version.
+    Returns 400 on invalid semver, 404 on unknown dataset.
+    """
+    logger.info("setting_version", dataset_name=name, version=body.version)
+    try:
+        new_version = await asyncio.to_thread(
+            dataset_manager.set_dataset_version, name, body.version,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not new_version:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return {"version": new_version}

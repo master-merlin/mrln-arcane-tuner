@@ -91,6 +91,30 @@
     letter-spacing: 0;
     font-size: 10.5px;
 }
+.ws-version-tag {
+    appearance: none;
+    border: none;
+    background: transparent;
+    padding: inherit;
+    margin: inherit;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+}
+.ws-version-tag:hover {
+    background: color-mix(in oklab, var(--color-brand) 12%, transparent);
+    border-radius: var(--radius-theme-sm);
+}
+/* Pencil button next to the version tag — keep it visually balanced
+   with the tag's 10.5px font (small + subtle, surfaces on hover). */
+.ws-version-edit {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    color: var(--color-text-muted);
+    opacity: 0.7;
+}
+.ws-version-edit:hover { opacity: 1; color: var(--color-text-primary); }
 
 .ws-info-eyebrow {
     display: flex;
@@ -299,6 +323,33 @@
     color: var(--color-text-muted);
 }
 .filmstrip-meta .muted { color: var(--color-text-muted); }
+
+/* Color-coded readiness legend — right-aligned in the filmstrip header row.
+   Matches Hi-Fi screen-dataset.jsx:767-771. */
+.filmstrip-legend {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 10px;
+    color: var(--color-text-muted);
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.legend-swatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+.legend-swatch.masked    { background: var(--color-success); }
+.legend-swatch.captioned { background: var(--color-warning); }
+.legend-swatch.missing   { background: var(--color-danger); }
+
 .filmstrip-empty {
     padding: 8px 0;
     font-size: 11.5px;

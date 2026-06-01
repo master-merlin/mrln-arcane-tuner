@@ -14,6 +14,7 @@ import { ProjectDialogComponent } from '../../modals/project-dialog/project-dial
 import { ModelSourceModalComponent } from '../../modals/model-source/model-source.component';
 import { BrowseFolderModalComponent } from '../../modals/browse-folder/browse-folder.component';
 import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
+import { VersionEditModalComponent } from '../../modals/version-edit/version-edit.component';
 
 /**
  * Modal stack renderer.
@@ -24,9 +25,10 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
  * modals (similar-images / mask-preview / crop-preview). Phase 5 added
  * `project-dialog`. Phase 8 closes out the final three: `model-source`
  * and `browse-folder` (both backend-blocked stubs) plus the generic
- * typed `confirm` modal. All 14 ModalKind values are covered; the
- * `@default` branch logs a loud console error so missing wiring shows
- * up immediately during development.
+ * typed `confirm` modal. Fixup R added `version-edit`. All 15
+ * ModalKind values are covered; the `@default` branch logs a loud
+ * console error so missing wiring shows up immediately during
+ * development.
  *
  * Each branch uses `@defer` so the modal body bundle loads on demand.
  */
@@ -48,6 +50,7 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
         ModelSourceModalComponent,
         BrowseFolderModalComponent,
         ConfirmModalComponent,
+        VersionEditModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -120,6 +123,9 @@ import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
                             }
                             @case ('confirm') {
                                 @defer { <app-modal-confirm/> }
+                            }
+                            @case ('version-edit') {
+                                @defer { <app-modal-version-edit/> }
                             }
                             @default {
                                 <div class="modal-head">

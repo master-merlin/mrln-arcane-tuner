@@ -334,6 +334,66 @@ class TestVersioning:
         assert result.version == "1.1.0"
 
 
+# ── Manual Version Edit ─────────────────────────────────────────────────
+
+
+class TestSetDatasetVersion:
+    """Tests for ``set_dataset_version`` — manual version override.
+
+    Companion to the bump path: the version-edit modal calls this to
+    recover from an accidental bump. Validates strict semver and
+    returns ``None`` on unknown name so the route can map it to 404.
+    """
+
+    def test_set_version_success(self, manager):
+        """Valid semver overwrites version, persists, returns new value."""
+        manager.create_dataset("pub")
+        manager._persist_dataset = MagicMock()
+        result = manager.set_dataset_version("pub", "2.5.7")
+        assert result == "2.5.7"
+        assert manager.datasets["pub"].version == "2.5.7"
+        manager._persist_dataset.assert_called_once_with(manager.datasets["pub"])
+
+    def test_set_version_not_found(self, manager):
+        """Unknown dataset name returns ``None`` and does not persist."""
+        manager._persist_dataset = MagicMock()
+        result = manager.set_dataset_version("ghost", "1.2.3")
+        assert result is None
+        manager._persist_dataset.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["1.0", "1.0.0.0", "v1.0.0", "1.0.0-beta", "1.0.x", "", "abc"],
+    )
+    def test_set_version_invalid_format_raises(self, manager, bad):
+        """Invalid semver raises ``ValueError`` and leaves dataset unchanged."""
+        manager.create_dataset("pub")
+        original = manager.datasets["pub"].version
+        manager._persist_dataset = MagicMock()
+        with pytest.raises(ValueError):
+            manager.set_dataset_version("pub", bad)
+        assert manager.datasets["pub"].version == original
+        manager._persist_dataset.assert_not_called()
+
+    @pytest.mark.parametrize("version", ["99.99.99", "1000.0.5"])
+    def test_set_version_accepts_large_components(self, manager, version):
+        """Multi-digit components are valid semver."""
+        manager.create_dataset("pub")
+        manager._persist_dataset = MagicMock()
+        result = manager.set_dataset_version("pub", version)
+        assert result == version
+        assert manager.datasets["pub"].version == version
+
+    @pytest.mark.parametrize("version", ["0.0.0", "1.0.0"])
+    def test_set_version_accepts_zero_components(self, manager, version):
+        """Zero components in any position are valid semver."""
+        manager.create_dataset("pub")
+        manager._persist_dataset = MagicMock()
+        result = manager.set_dataset_version("pub", version)
+        assert result == version
+        assert manager.datasets["pub"].version == version
+
+
 # ── Pairs ────────────────────────────────────────────────────────────────
 
 

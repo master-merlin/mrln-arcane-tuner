@@ -9,7 +9,6 @@ caching.
 from __future__ import annotations
 
 import os
-from typing import List, Tuple
 
 import structlog
 import torch
@@ -23,11 +22,13 @@ logger = structlog.get_logger(__name__)
 
 
 def pad_lens_text_batch(
-    entries: List[Tuple[torch.Tensor, torch.Tensor]],
+    entries: list[tuple[torch.Tensor, torch.Tensor]],
     device: torch.device,
     dtype: torch.dtype,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Right-pad cached ``(feat[4,S,D], mask[S])`` entries to ``[B,4,S_max,D]``."""
+    if not entries:
+        raise ValueError("pad_lens_text_batch received no entries (empty batch).")
     n_layers = entries[0][0].shape[0]
     feat_dim = entries[0][0].shape[-1]
     s_max = max(e[0].shape[1] for e in entries)
@@ -62,7 +63,7 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
 
     # --- Text encoding (cached) ---
 
-    def encode_text(self, captions: list[str], dtype: torch.dtype):
+    def encode_text(self, captions: list[str], dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
         if self.config.get("cache_text_embeddings", True):
             return self._get_cached_text_embeddings(captions, dtype)
         out = self.driver.encode_text(captions, dtype)
@@ -71,12 +72,32 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
     def _get_cached_text_embeddings(self, captions: list[str], dtype: torch.dtype):
         uncached = [c for c in captions if c not in self.text_cache]
         if uncached and self.text_encoder is not None:
+            te_device = next(self.text_encoder.parameters()).device
+            te_was_offloaded = te_device != self.device
+            if te_was_offloaded:
+                self.logger.warning(
+                    "te_cache_miss_after_offload",
+                    count=len(uncached),
+                    hint="pre-caching should have covered all captions",
+                )
+                self.text_encoder.to(self.device)
+
             for cap in uncached:
                 out = self.driver.encode_text([cap], dtype)
                 self.text_cache[cap] = (
                     out.embeddings.squeeze(0).cpu(),
                     out.attention_mask.squeeze(0).cpu(),
                 )
+
+            if te_was_offloaded:
+                self.text_encoder.to("cpu")
+                torch.cuda.empty_cache()
+
+            self.logger.debug(
+                "text_embeddings_cached",
+                new=len(uncached),
+                total=len(self.text_cache),
+            )
         elif uncached:
             raise RuntimeError(
                 "Text encoder unloaded but uncached captions encountered: "
@@ -110,6 +131,8 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
 
         caption_hints = self._build_caption_hints()
         dtype = self._resolve_loading_dtype()
+
+        disk_loaded = 0
         need_encode: list[tuple[str, str]] = []
         for caption, hint in caption_hints.items():
             if caption in self.text_cache:
@@ -119,17 +142,30 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
                 mask = TextEmbeddingCache.load(caption, te2_dir, hint)
                 if feat is not None and mask is not None:
                     self.text_cache[caption] = (feat, mask)
+                    disk_loaded += 1
                     continue
             need_encode.append((caption, hint))
+
+        total = len(caption_hints)
+        self.logger.info(
+            "te_disk_cache_status",
+            total=total,
+            from_disk=disk_loaded,
+            need_encode=len(need_encode),
+        )
 
         if not need_encode:
             if getattr(self, "_log_writer", None):
                 self._log_writer.status("TE Cache Loaded from Disk")
+            self.logger.info(
+                "text_embedding_cache_complete",
+                cached=len(self.text_cache), source="disk",
+            )
             return
 
         if getattr(self, "_log_writer", None):
             self._log_writer.status("Caching Text Embeddings (0%)")
-        total = len(need_encode)
+        encode_total = len(need_encode)
         with torch.no_grad():
             for i, (caption, hint) in enumerate(need_encode):
                 out = self.driver.encode_text([caption], dtype)
@@ -140,6 +176,11 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
                     TextEmbeddingCache.save(caption, feat, te1_dir, hint)
                 if te2_dir:
                     TextEmbeddingCache.save(caption, mask, te2_dir, hint)
-                pct = int((i + 1) / total * 100)
-                if (pct % 10 == 0 or (i + 1) == total) and getattr(self, "_log_writer", None):
+                pct = int((i + 1) / encode_total * 100)
+                if (pct % 10 == 0 or (i + 1) == encode_total) and getattr(self, "_log_writer", None):
                     self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
+
+        self.logger.info(
+            "text_embedding_cache_complete",
+            cached=len(self.text_cache), newly_encoded=encode_total,
+        )

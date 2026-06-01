@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import structlog
 import torch
 from accelerate import init_empty_weights
 from safetensors.torch import load_file
@@ -21,8 +20,6 @@ from app.engine.core.pipeline.loader_base import (
     ComponentSpec,
     GenericComponentLoader,
 )
-
-logger = structlog.get_logger(__name__)
 
 
 class MicrosoftLensLoader(GenericComponentLoader):
@@ -62,6 +59,23 @@ class MicrosoftLensLoader(GenericComponentLoader):
         torch_dtype: torch.dtype | None = None,
         initial_device: str | None = None,
     ) -> dict[str, Any]:
+        """Load Lens components and the vendored DiT.
+
+        Loads stock components (tokenizer, text_encoder, vae) via the generic
+        manifest path, then loads the vendored ``LensTransformer2DModel`` directly
+        from safetensors shards using ``init_empty_weights`` + ``load_state_dict``,
+        because the class is not registered in the ``diffusers`` namespace.
+
+        Args:
+            definition: Model definition with component paths/repo IDs.
+            torch_dtype: Dtype for the DiT weights. Defaults to ``bfloat16``.
+            initial_device: Device to place the DiT on after load. ``None``
+                defaults to ``self.device``.
+
+        Returns:
+            Dict of loaded components keyed by name, including ``"unet"`` for
+            the ``LensTransformer2DModel`` instance.
+        """
         # 1. Load stock components via the generic path.
         components = await super().load(definition, torch_dtype, initial_device)
 
@@ -73,6 +87,19 @@ class MicrosoftLensLoader(GenericComponentLoader):
         root = Path(self._root_path)
         transformer_dir = root / "transformer"
         if not transformer_dir.is_dir():
+            # Non-standard layout: only fall back to root if it actually holds a
+            # transformer config. Without this guard, root-level shards from other
+            # components (vae, text_encoder) would be merged into the DiT state dict.
+            if not (root / "config.json").is_file():
+                raise FileNotFoundError(
+                    f"No 'transformer/' subfolder and no config.json at root: {root}. "
+                    "Place the Lens DiT weights in a 'transformer/' subdirectory."
+                )
+            self.logger.warning(
+                "microsoft_lens.transformer_dir_fallback",
+                root=str(root),
+                message="transformer/ subfolder not found; falling back to root.",
+            )
             transformer_dir = root
 
         from app.engine.models.families.microsoft_lens.vendor.transformer import (
@@ -90,7 +117,13 @@ class MicrosoftLensLoader(GenericComponentLoader):
             raise FileNotFoundError(f"No safetensors in {transformer_dir}")
         state_dict: dict[str, torch.Tensor] = {}
         for shard in shard_files:
-            state_dict.update(load_file(str(shard)))
+            try:
+                state_dict.update(load_file(str(shard)))
+            except Exception as e:
+                self.logger.error(
+                    "microsoft_lens.shard_load_failed", shard=shard.name, error=str(e),
+                )
+                raise RuntimeError(f"failed to load shard {shard.name}: {e}") from e
 
         missing, unexpected = model.load_state_dict(
             state_dict, strict=False, assign=True,

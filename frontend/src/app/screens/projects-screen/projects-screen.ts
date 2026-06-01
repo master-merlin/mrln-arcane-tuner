@@ -34,7 +34,12 @@ interface ProjectCard {
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './projects-screen.html',
     styles: [`
-        .ps-screen { padding: 24px 28px 32px; }
+        /* The .ps-screen wrapper generates NO box (display:contents) so
+           .page-head becomes the direct child of the (inline) component host —
+           structurally identical to the Tools/Server screens that align. The
+           shared .content gutter (14 top / 14 left) then sets the page origin,
+           matching the Jobs queue bar (source of truth) — no header jump. */
+        .ps-screen { display: contents; }
         .ps-actions { display: flex; gap: 8px; }
         .ps-kpi-rail {
             display: grid;

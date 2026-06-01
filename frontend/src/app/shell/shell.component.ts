@@ -1,5 +1,7 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject } from '@angular/core';
+import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { filter } from 'rxjs';
 import { SidebarComponent } from './sidebar/sidebar.component';
 import { TopbarComponent } from './topbar/topbar.component';
 import { WorkspaceLayerComponent } from './workspace-layer/workspace-layer.component';
@@ -34,7 +36,7 @@ import { ToastContainerComponent } from '../components/shared/toast-container/to
             <div class="main">
                 <app-topbar />
                 <app-connection-banner />
-                <div class="content">
+                <div class="content" [class.flush]="isFlush()">
                     <router-outlet />
                 </div>
             </div>
@@ -48,6 +50,20 @@ import { ToastContainerComponent } from '../components/shared/toast-container/to
 export class ShellComponent implements OnInit {
     private shortcuts = inject(GlobalShortcutsService);
     private projects = inject(ProjectService);
+    private router = inject(Router);
+
+    private url = toSignal(
+        this.router.events.pipe(filter(e => e instanceof NavigationEnd)),
+        { initialValue: null },
+    );
+
+    // Training & Jobs are full-bleed IDE layouts (flush TOC / queue bars +
+    // independently-scrolling panes), so they drop the 24px content padding.
+    protected isFlush = computed(() => {
+        void this.url();
+        const path = this.router.url.split('?')[0];
+        return path.startsWith('/training') || path.startsWith('/jobs');
+    });
 
     ngOnInit() {
         this.shortcuts.install();

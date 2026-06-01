@@ -15,8 +15,8 @@ import { TrainingSegment } from '../training-dynamic-config/training-dynamic-con
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="ttoc-head">
-            <div class="ttoc-eyebrow">CONFIGURATION</div>
-            <div class="ttoc-title">Sections</div>
+            <div class="eyebrow">CONFIGURATION</div>
+            <div class="page-title">Sections</div>
         </div>
         @for (s of segments(); track s.id) {
             <button

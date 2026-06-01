@@ -4,9 +4,10 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
 import { IcoComponent } from '../../icons/ico.component';
 import { ScopeStore } from '../../state/scope.store';
 import { SystemStore } from '../../state/system.store';
+import { DatasetStore } from '../../state/dataset.store';
+import { JobStore } from '../../state/job.store';
 import { ProjectService } from '../../services/project.service';
-import { DatasetService } from '../../services/dataset';
-import { JobService } from '../../services/job';
+import { JobStatus } from '../../services/job';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 
 /**
@@ -42,8 +43,8 @@ export class SidebarComponent implements OnInit {
     protected scope = inject(ScopeStore);
     protected system = inject(SystemStore);
     protected projects = inject(ProjectService);
-    protected datasets = inject(DatasetService);
-    protected jobs = inject(JobService);
+    private datasetStore = inject(DatasetStore);
+    private jobStore = inject(JobStore);
     private http = inject(HttpClient);
     private rtc = inject(RuntimeConfigService);
 
@@ -57,6 +58,12 @@ export class SidebarComponent implements OnInit {
             next: (r) => this.appVersion.set(r.version),
             error: () => this.appVersion.set('?.?.?'),
         });
+
+        // Hydrate the stores so the nav badge counts are populated on EVERY
+        // screen (not just after visiting Datasets / Jobs). Both are
+        // WS-reconciled, so they stay live afterwards.
+        void this.datasetStore.loadAll();
+        void this.jobStore.loadAll();
     }
 
     protected activeProject = computed(() => {
@@ -83,10 +90,37 @@ export class SidebarComponent implements OnInit {
         return Math.min(100, (w / 600) * 100);
     });
 
-    // TODO: wire when services expose count signals.
-    // DatasetService/JobService only expose Observables today, so the
-    // sidebar shows 0 until those are signalified (or until per-domain
-    // stores are introduced in a later phase).
-    protected datasetCount = computed<number | null>(() => null);
-    protected jobCount = computed<number | null>(() => null);
+    // RAM bar fill percent (used vs total). Guards divide-by-zero.
+    protected ramPct = computed(() => {
+        const s = this.system.sidebar();
+        return s.ramTotalGB > 0 ? Math.min(100, (s.ramUsedGB / s.ramTotalGB) * 100) : 0;
+    });
+
+    // Nav badge counts (null → hidden). Total datasets; total projects;
+    // ACTIVE (running + paused) jobs — the "what's going on" the sidebar surfaces.
+    protected datasetCount = computed<number | null>(() => {
+        const n = this.datasetStore.entities().length;
+        return n > 0 ? n : null;
+    });
+
+    protected projectCount = computed<number | null>(() => {
+        const n = this.projects.allProjects().length;
+        return n > 0 ? n : null;
+    });
+
+    protected jobCount = computed<number | null>(() => {
+        const n = this.jobStore.entities().filter(
+            j => j.status === JobStatus.RUNNING || j.status === JobStatus.PAUSED,
+        ).length;
+        return n > 0 ? n : null;
+    });
+
+    // Jobs status dot: green when something is RUNNING, amber when something is
+    // PENDING (queued), nothing when idle.
+    protected jobIndicator = computed<'running' | 'pending' | null>(() => {
+        const jobs = this.jobStore.entities();
+        if (jobs.some(j => j.status === JobStatus.RUNNING)) return 'running';
+        if (jobs.some(j => j.status === JobStatus.PENDING)) return 'pending';
+        return null;
+    });
 }

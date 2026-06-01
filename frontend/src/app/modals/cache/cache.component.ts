@@ -9,25 +9,39 @@ interface CacheModalData {
     datasetId?: string;
 }
 
-interface CategoryRow {
-    name: 'Latents' | 'Embeddings' | 'Models';
-    bytes: number;
-    tone: 'brand' | 'success' | 'violet';
-    types: string[];
+interface CacheTypeRow {
+    /** Raw cache-type dir name sent to the purge API (`latents`, `te1`, …). */
+    key: string;
+    label: string;
 }
 
+interface CacheVersionRow {
+    version: string;
+    bytes: number;
+    types: CacheTypeRow[];
+}
+
+interface CacheModelRow {
+    name: string;
+    bytes: number;
+    tone: string;
+    versions: CacheVersionRow[];
+}
+
+const TONES = ['brand', 'success', 'violet', 'teal', 'warning'];
+
 /**
- * Cache admin modal — usage breakdown by category + per-category purge.
+ * Cache admin modal — usage breakdown + **per model / version / type**
+ * invalidation, mirroring the on-disk layout
+ * (`.cache/{model}/{version}/{type}/…`).
  *
- * Ports the core flow from `viewer-cache-admin-modal.ts`: list cache via
- * `DatasetService.listCache(name)`, aggregate per-category totals, and
- * trigger `purgeCache` with the chosen type filter when the user clicks
- * one of the per-category purge buttons.
- *
- * Simplified from the orphan modal: we don't expose the per-leaf checkbox
- * tree here — the design spec lists per-category clear buttons as the
- * surface for this modal. Per-leaf selection can be added later if UAT
- * asks for it.
+ * Restores the legacy `viewer-cache-admin-modal` capability the first redesign
+ * port dropped (it could only clear a type aggregated across all models). You
+ * can now clear a specific cache type (latents / text-embeddings te1/te2)
+ * within a specific model version, a whole version, a whole model, or
+ * everything. Drives `purgeCache({models, versions, types})` — the per-model
+ * and per-version filters were the missing dimensions (the `versions` filter
+ * was also added to the backend for this).
  */
 @Component({
     selector: 'app-modal-cache',
@@ -57,25 +71,7 @@ interface CategoryRow {
                     No cached data for this dataset yet.
                 </div>
             } @else {
-                <!-- Totals -->
-                <div class="ca-kpis">
-                    <div class="kpi compact">
-                        <div class="kpi-accent teal"></div>
-                        <div class="kpi-label">TOTAL</div>
-                        <div class="kpi-value">{{ formatMB(totalBytes()) }}<span class="unit">MB</span></div>
-                        <div class="kpi-sub">across {{ categories().length }} categories</div>
-                    </div>
-                    @for (c of categories(); track c.name) {
-                        <div class="kpi compact">
-                            <div class="kpi-accent" [class]="c.tone"></div>
-                            <div class="kpi-label">{{ c.name.toUpperCase() }}</div>
-                            <div class="kpi-value">{{ formatMB(c.bytes) }}<span class="unit">MB</span></div>
-                            <div class="kpi-sub">{{ c.types.length }} type{{ c.types.length === 1 ? '' : 's' }}</div>
-                        </div>
-                    }
-                </div>
-
-                <!-- Breakdown bar -->
+                <!-- Breakdown by model -->
                 <div class="card">
                     <div class="card-head">
                         <div class="card-title">
@@ -85,39 +81,75 @@ interface CategoryRow {
                     </div>
                     <div class="card-body">
                         <div class="ca-stack">
-                            @for (c of categories(); track c.name) {
+                            @for (m of models(); track m.name) {
                                 <div class="ca-stack-seg"
-                                     [style.flex]="c.bytes || 1"
-                                     [style.background]="toneColor(c.tone)"
-                                     [attr.title]="c.name + ' · ' + formatMB(c.bytes) + ' MB'"></div>
+                                     [style.flex]="m.bytes || 1"
+                                     [style.background]="toneColor(m.tone)"
+                                     [attr.title]="m.name + ' · ' + formatMB(m.bytes) + ' MB'"></div>
                             }
                         </div>
                         <div class="ca-legend">
-                            @for (c of categories(); track c.name) {
+                            @for (m of models(); track m.name) {
                                 <span class="ca-legend-row mono">
-                                    <span class="ca-legend-dot" [style.background]="toneColor(c.tone)"></span>
-                                    {{ c.name }} {{ formatMB(c.bytes) }} MB
+                                    <span class="ca-legend-dot" [style.background]="toneColor(m.tone)"></span>
+                                    {{ m.name }} {{ formatMB(m.bytes) }} MB
                                 </span>
                             }
                         </div>
                     </div>
                 </div>
 
-                <!-- Per-category clear actions -->
-                <div class="ca-actions">
-                    @for (c of categories(); track c.name) {
-                        <button class="btn danger-out" type="button"
-                                [disabled]="purging() !== null || c.bytes === 0"
-                                (click)="purgeCategory(c)">
-                            <app-ico name="Trash2" [size]="13"/>
-                            Clear {{ c.name }} ({{ formatMB(c.bytes) }} MB)
-                        </button>
-                    }
-                </div>
+                <!-- Per model → version → type purge -->
+                @for (m of models(); track m.name) {
+                    <div class="card ca-model">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <span class="ca-legend-dot" [style.background]="toneColor(m.tone)"></span>
+                                {{ m.name }}
+                            </div>
+                            <div class="ca-head-right">
+                                <span class="mono ca-sub">{{ formatMB(m.bytes) }} MB</span>
+                                <button class="btn sm danger-out" type="button"
+                                        [disabled]="purging() !== null"
+                                        (click)="purgeModel(m)">Clear all</button>
+                            </div>
+                        </div>
+                        <div class="card-body ca-versions">
+                            @for (v of m.versions; track v.version) {
+                                <div class="ca-version">
+                                    <div class="ca-version-head">
+                                        <span class="ca-ver-tag">v{{ v.version }}</span>
+                                        <span class="mono ca-sub">{{ formatMB(v.bytes) }} MB</span>
+                                        <button class="btn sm danger-out ca-ver-clear" type="button"
+                                                [disabled]="purging() !== null"
+                                                (click)="purgeVersion(m, v)">Clear version</button>
+                                    </div>
+                                    <div class="ca-type-row">
+                                        @for (t of v.types; track t.key) {
+                                            <button class="btn sm" type="button"
+                                                    [disabled]="purging() !== null"
+                                                    (click)="purgeType(m, v, t)">
+                                                <app-ico name="Trash2" [size]="12"/> {{ t.label }}
+                                            </button>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
             }
         </div>
 
         <div class="modal-foot">
+            @if (data.datasetName && totalBytes() > 0) {
+                <button class="btn danger-out" type="button"
+                        style="margin-right: auto;"
+                        [disabled]="purging() !== null"
+                        (click)="purgeAll()">
+                    <app-ico name="Trash2" [size]="13"/> Clear all cache
+                </button>
+            }
             <button class="btn ghost" type="button" (click)="overlay.closeModal()">Close</button>
         </div>
     `,
@@ -132,12 +164,6 @@ interface CategoryRow {
             color: var(--color-text-muted);
             font-size: 13px;
         }
-        .ca-kpis {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 10px;
-            margin-bottom: 14px;
-        }
         .ca-sub { font-size: 11px; }
         .ca-stack {
             display: flex;
@@ -151,19 +177,28 @@ interface CategoryRow {
         .ca-stack-seg { height: 100%; }
         .ca-legend {
             display: flex;
+            flex-wrap: wrap;
             gap: 14px;
             font-size: 10.5px;
             color: var(--color-text-muted);
         }
         .ca-legend-row { display: flex; align-items: center; gap: 5px; }
-        .ca-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-        .ca-actions {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 16px;
-        }
+        .ca-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
         .card { margin-bottom: 14px; }
+        .ca-model .card-title { display: flex; align-items: center; gap: 7px; text-transform: none; letter-spacing: 0; font-family: var(--font-mono); }
+        .ca-head-right { display: flex; align-items: center; gap: 10px; }
+        .ca-versions { display: flex; flex-direction: column; gap: 12px; }
+        .ca-version {
+            border-left: 2px solid var(--color-border-default);
+            padding-left: 12px;
+        }
+        .ca-version-head { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+        .ca-ver-tag {
+            font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--color-brand-light); font-family: var(--font-mono);
+        }
+        .ca-ver-clear { margin-left: auto; }
+        .ca-type-row { display: flex; gap: 8px; flex-wrap: wrap; }
     `],
 })
 export class CacheModalComponent implements OnInit {
@@ -173,8 +208,8 @@ export class CacheModalComponent implements OnInit {
 
     protected loading = signal(false);
     protected purging = signal<string | null>(null);
-    protected categories = signal<CategoryRow[]>([]);
-    protected totalBytes = computed(() => this.categories().reduce((a, c) => a + c.bytes, 0));
+    protected models = signal<CacheModelRow[]>([]);
+    protected totalBytes = computed(() => this.models().reduce((a, m) => a + m.bytes, 0));
 
     protected data: CacheModalData = (this.overlay.topModal()?.data as CacheModalData) ?? {};
 
@@ -186,10 +221,17 @@ export class CacheModalComponent implements OnInit {
         return (bytes / (1024 * 1024)).toFixed(1);
     }
 
-    protected toneColor(t: 'brand' | 'success' | 'violet'): string {
-        return t === 'brand' ? 'var(--color-brand)'
-             : t === 'success' ? 'var(--color-success)'
-             : 'var(--color-violet)';
+    protected toneColor(tone: string): string {
+        return `var(--color-${tone})`;
+    }
+
+    private typeLabel(key: string): string {
+        if (key === 'latents') return 'Latents';
+        if (key === 'te1') return 'Embeddings · te1';
+        if (key === 'te2') return 'Embeddings · te2';
+        if (key.startsWith('te')) return `Embeddings · ${key}`;
+        if (key === 'embeddings') return 'Embeddings';
+        return key.charAt(0).toUpperCase() + key.slice(1);
     }
 
     private load(): void {
@@ -198,44 +240,35 @@ export class CacheModalComponent implements OnInit {
         this.datasetsApi.listCache(name).subscribe({
             next: (res: { cache?: Record<string, Record<string, { size_bytes?: number; types?: Record<string, Record<string, unknown>> }>> }) => {
                 const tree = res.cache ?? {};
-                const byType = new Map<string, { bytes: number; typesSeen: Set<string> }>();
+                const rows: CacheModelRow[] = [];
+                let toneIdx = 0;
 
-                for (const versions of Object.values(tree)) {
-                    for (const verData of Object.values(versions)) {
+                for (const [modelName, versions] of Object.entries(tree)) {
+                    const verRows: CacheVersionRow[] = [];
+                    let modelBytes = 0;
+                    for (const [version, verData] of Object.entries(versions)) {
+                        const bytes = verData.size_bytes ?? 0;
                         const types = verData.types ?? {};
-                        const verBytes = verData.size_bytes ?? 0;
-                        // Apportion the version's bytes roughly by present types
-                        const typeKeys = Object.keys(types).filter(k => Object.keys(types[k] ?? {}).length > 0);
-                        if (typeKeys.length === 0) continue;
-                        const share = verBytes / typeKeys.length;
-                        for (const t of typeKeys) {
-                            const entry = byType.get(t) ?? { bytes: 0, typesSeen: new Set<string>() };
-                            entry.bytes += share;
-                            entry.typesSeen.add(t);
-                            byType.set(t, entry);
-                        }
+                        const typeRows = Object.entries(types)
+                            .filter(([, variants]) => variants && Object.keys(variants).length > 0)
+                            .map(([k]) => ({ key: k, label: this.typeLabel(k) }))
+                            .sort((a, b) => a.key.localeCompare(b.key));
+                        if (typeRows.length === 0 && bytes === 0) continue;
+                        modelBytes += bytes;
+                        verRows.push({ version, bytes, types: typeRows });
                     }
+                    if (verRows.length === 0) continue;
+                    verRows.sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }));
+                    rows.push({
+                        name: modelName,
+                        bytes: modelBytes,
+                        tone: TONES[toneIdx++ % TONES.length],
+                        versions: verRows,
+                    });
                 }
 
-                const rows: CategoryRow[] = [];
-                const knownTones: Record<string, 'brand' | 'success' | 'violet'> = {
-                    latents: 'brand',
-                    embeddings: 'success',
-                };
-                // Latents
-                const lat = byType.get('latents');
-                if (lat) rows.push({ name: 'Latents', bytes: lat.bytes, tone: 'brand', types: ['latents'] });
-                // Embeddings
-                const emb = byType.get('embeddings');
-                if (emb) rows.push({ name: 'Embeddings', bytes: emb.bytes, tone: 'success', types: ['embeddings'] });
-                // Anything else lumps into "Models"
-                const otherTypes = [...byType.entries()].filter(([k]) => !knownTones[k]);
-                if (otherTypes.length) {
-                    const sum = otherTypes.reduce((a, [, v]) => a + v.bytes, 0);
-                    rows.push({ name: 'Models', bytes: sum, tone: 'violet', types: otherTypes.map(([k]) => k) });
-                }
-
-                this.categories.set(rows);
+                rows.sort((a, b) => b.bytes - a.bytes);
+                this.models.set(rows);
                 this.loading.set(false);
             },
             error: (err: { error?: { detail?: string }; message?: string }) => {
@@ -245,20 +278,48 @@ export class CacheModalComponent implements OnInit {
         });
     }
 
-    protected purgeCategory(c: CategoryRow): void {
+    protected purgeType(m: CacheModelRow, v: CacheVersionRow, t: CacheTypeRow): void {
+        this.purge(
+            `${m.name} v${v.version} · ${t.label}`,
+            { models: [m.name], versions: [v.version], types: [t.key] },
+            `${m.name}/${v.version}/${t.key}`,
+        );
+    }
+
+    protected purgeVersion(m: CacheModelRow, v: CacheVersionRow): void {
+        this.purge(
+            `${m.name} v${v.version} (all types)`,
+            { models: [m.name], versions: [v.version] },
+            `${m.name}/${v.version}`,
+        );
+    }
+
+    protected purgeModel(m: CacheModelRow): void {
+        this.purge(`all cache for ${m.name}`, { models: [m.name] }, m.name);
+    }
+
+    protected purgeAll(): void {
+        this.purge('ALL cache for this dataset', {}, '*');
+    }
+
+    private purge(
+        label: string,
+        options: { models?: string[]; versions?: string[]; types?: string[] },
+        token: string,
+    ): void {
         const name = this.data.datasetName;
         if (!name) return;
         // eslint-disable-next-line no-alert
-        if (!confirm(`Purge all ${c.name.toLowerCase()} cache for ${name}? This cannot be undone.`)) return;
-        this.purging.set(c.name);
-        this.datasetsApi.purgeCache(name, { types: c.types }).subscribe({
+        if (!confirm(`Purge ${label}? This cannot be undone.`)) return;
+        this.purging.set(token);
+        this.datasetsApi.purgeCache(name, options).subscribe({
             next: (res: { deleted?: number; freed_bytes?: number }) => {
                 const freed = res?.freed_bytes ?? 0;
                 const n = res?.deleted ?? 0;
                 this.toast.success(
                     freed > 0
-                        ? `${c.name} cache purged — freed ${this.formatMB(freed)} MB (${n} item${n === 1 ? '' : 's'}).`
-                        : `${c.name} cache purged.`,
+                        ? `Purged ${n} item${n === 1 ? '' : 's'} — freed ${this.formatMB(freed)} MB.`
+                        : 'Cache purged.',
                 );
                 this.purging.set(null);
                 this.load();

@@ -173,6 +173,13 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             thumbnails.ensure_thumbnail, dataset.path, request.image_path,
         )
 
+        # Re-apply the overlay recipe to the upscaled pixels (or drop the stale
+        # overlay if it can't be re-rendered) — same reconciliation as crop /
+        # adjust. Run in a thread: the re-render is blocking (GPU) work.
+        await asyncio.to_thread(
+            dataset_manager._reconcile_overlay_after_edit, dataset, request.image_path,
+        )
+
         # Bump patch version for destructive upscale
         await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")
         return {"status": "upscaled", "file": request.image_path, **result}

@@ -1,4 +1,4 @@
-import { Injectable, inject, signal, OnDestroy } from '@angular/core';
+import { Injectable, effect, inject, signal, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, Subscription } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
@@ -74,6 +74,24 @@ export class SystemService implements OnDestroy {
     private metricsActive = false;
     private metricsInterval = 2.0;
 
+    // Reference count of live subscribers (sidebar mini-stats + the Jobs
+    // system-monitor). The WS stream stays up while ANY consumer needs it, so
+    // leaving the Jobs screen no longer blanks the always-on sidebar stats.
+    private subscriberCount = 0;
+
+    constructor() {
+        // Re-send the metrics subscription whenever the socket becomes
+        // connected — including the INITIAL open. A subscriber that registers
+        // during bootstrap (the sidebar) can otherwise lose its first
+        // subscribe to a not-yet-open socket; `reconnected$` only covers
+        // later reconnects, not the first connect.
+        effect(() => {
+            if (this.ws.isConnected() && this.metricsActive) {
+                this.ws.send({ action: 'subscribe_metrics', interval_s: this.metricsInterval });
+            }
+        });
+    }
+
     /** One-shot system snapshot (REST). */
     getSystemStatus(): Observable<SystemSnapshot> {
         return this.http.get<SystemSnapshot>(`${this.apiUrl}/system/status`);
@@ -97,8 +115,9 @@ export class SystemService implements OnDestroy {
         });
     }
 
-    /** Start receiving live system metrics via WebSocket. */
+    /** Start receiving live system metrics via WebSocket. Reference-counted. */
     subscribeMetrics(intervalS: number = 2.0): void {
+        this.subscriberCount++;
         this.metricsActive = true;
         this.metricsInterval = intervalS;
 
@@ -123,8 +142,11 @@ export class SystemService implements OnDestroy {
         }
     }
 
-    /** Stop receiving live system metrics. */
+    /** Release one subscriber. The stream only tears down when the last one leaves. */
     unsubscribeMetrics(): void {
+        if (this.subscriberCount > 0) this.subscriberCount--;
+        if (this.subscriberCount > 0) return; // other consumers still need it
+
         this.metricsActive = false;
         this.ws.send({ action: 'unsubscribe_metrics' });
         this.metricsSub?.unsubscribe();

@@ -1,4 +1,6 @@
-.pd-screen { padding: 20px 28px 32px; }
+/* No top/left re-pad — the shared .content gutter (14/14) sets the page origin
+   so the drill-in aligns with every other screen; only bottom breathing room. */
+.pd-screen { padding: 0 0 32px; }
 .pd-back-row { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .pd-header-card { padding: 18px 22px; margin-bottom: 20px; position: relative; overflow: hidden; }
 .pd-accent { position: absolute; top: 0; left: 0; right: 0; height: 3px; }

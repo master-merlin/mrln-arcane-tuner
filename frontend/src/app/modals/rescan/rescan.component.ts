@@ -4,6 +4,7 @@ import { IcoComponent } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { DatasetStore } from '../../state/dataset.store';
+import { MediaItemStore } from '../../state/media-item.store';
 import { OverlayStore } from '../../state/overlay.store';
 
 interface RescanModalData {
@@ -52,7 +53,7 @@ interface ScanProgress {
                                 class="rs-mode-card"
                                 [class.on]="mode() === 'safe'"
                                 (click)="mode.set('safe')">
-                            <div class="rs-mode-title">Safe Scan</div>
+                            <div class="rs-mode-title">Incremental Scan</div>
                             <div class="rs-mode-desc">Detect new and removed files. Keeps captions, masks, and HPS scores.</div>
                         </button>
                         <button type="button"
@@ -227,6 +228,7 @@ export class RescanModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private datasets = inject(DatasetStore);
+    private mediaItems = inject(MediaItemStore);
     private ws = inject(WebSocketService);
     private destroyRef = inject(DestroyRef);
 
@@ -283,6 +285,17 @@ export class RescanModalComponent implements OnInit {
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe(() => {
                 this.phase.set('complete');
+                // A rescan rebuilds media metadata on the backend but emits only
+                // a dataset-level event, so the MediaItemStore would go stale
+                // until navigation. Re-fetch the affected dataset(s)' media so
+                // the open workspace grid updates live: the targeted dataset, or
+                // every dataset currently loaded in the store for an all-scan.
+                const targets = this.data.datasetName
+                    ? [this.data.datasetName]
+                    : [...new Set(this.mediaItems.entities().map(i => i.dataset_name))];
+                for (const ds of targets) {
+                    void this.mediaItems.loadForDataset(ds).catch(() => undefined);
+                }
                 // Reload the dataset list so the grid + KPIs reflect new counts,
                 // then offer to remove any datasets that the rescan found
                 // missing on disk (legacy parity: one DELETE per missing row;

@@ -152,7 +152,7 @@ export interface TrainingSegment {
                       <input type="checkbox" [formControlName]="prop.key"
                              [attr.data-testid]="'config-checkbox-' + prop.key"
                              class="sr-only peer">
-                      <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+                      <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
                       <span class="ml-3 text-sm font-medium text-text-muted group-hover:text-text-secondary">Enable</span>
                     </label>
                   } @else if (isString(prop.schema) && prop.schema.enum) {
@@ -362,7 +362,7 @@ export interface TrainingSegment {
                                    <input type="checkbox" [formControlName]="ip.key"
                                           [attr.data-testid]="'config-checkbox-' + ip.key"
                                           class="sr-only peer">
-                                   <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+                                   <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
                                  </label>
                                  <span class="text-[11px] font-medium text-text-secondary flex items-center gap-1.5">
                                    {{ ip.schema.title || (ip.key | titlecase) }}

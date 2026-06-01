@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 class PurgeCacheRequest(BaseModel):
     """Request body for cache purge."""
     models: list[str] | None = None
+    versions: list[str] | None = None    # ["1.0.0", ...] — None = all versions
     types: list[str] | None = None       # ["latents", "embeddings"]
     variants: list[str] | None = None    # ["original", "masked"]
 
@@ -118,10 +119,13 @@ def _purge_cache(
     models: list[str] | None,
     types: list[str] | None,
     variants: list[str] | None,
+    versions: list[str] | None = None,
 ) -> dict[str, Any]:
     """Delete selected cache subtrees.
 
-    Returns summary of what was deleted.
+    Filters are ANDed: ``models`` → ``versions`` → ``types`` → ``variants``.
+    A ``None`` filter means "all at that level". Returns a summary of what was
+    deleted.
     """
     if not cache_root.is_dir():
         return {"deleted": 0, "freed_bytes": 0}
@@ -141,6 +145,9 @@ def _purge_cache(
 
         for version_entry in model_dir.iterdir():
             if not version_entry.is_dir():
+                continue
+            # Filter by requested versions (None = all)
+            if versions and version_entry.name not in versions:
                 continue
 
             # Discover types dynamically or filter by request
@@ -306,11 +313,17 @@ async def purge_cache(name: str, request: PurgeCacheRequest):
         "cache_purge_requested",
         dataset=name,
         models=request.models,
+        versions=request.versions,
         types=request.types,
         variants=request.variants,
     )
 
     result = await asyncio.to_thread(
-        _purge_cache, cache_root, request.models, request.types, request.variants,
+        _purge_cache,
+        cache_root,
+        request.models,
+        request.types,
+        request.variants,
+        request.versions,
     )
     return {"dataset": name, **result}

@@ -1,16 +1,20 @@
 <div class="queue-panel flex flex-col h-full overflow-hidden">
 
-  <!-- ── Header: QUEUE eyebrow + auto-queue + filter ───────────────── -->
+  <!-- ── Header: QUEUE eyebrow + auto-queue + title + filter ───────── -->
+  <!-- Same two-line header treatment as every page header / the Training TOC:
+       global .eyebrow (small brand) + .page-title (large white). The auto-queue
+       toggle sits top-right on the eyebrow row. -->
   <div class="px-3.5 pt-3.5 pb-2.5 border-b border-surface-mid/60">
-    <div class="flex items-center justify-between mb-2.5">
+    <div class="flex items-center justify-between">
       <div class="eyebrow">QUEUE</div>
       <label class="flex items-center gap-1.5 text-[11px] cursor-pointer group" title="Auto-start the next pending job when idle">
         <input type="checkbox" [checked]="autoQueue()" (change)="toggleAutoQueue()" data-testid="auto-queue-toggle" class="sr-only peer">
-        <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 rounded-full peer peer-checked:bg-brand peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted peer-checked:after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all relative transition-colors"></div>
+        <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 rounded-full peer peer-checked:bg-brand peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-text-muted peer-checked:after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all relative transition-colors"></div>
         <span class="text-text-muted group-hover:text-text-secondary transition-colors">auto-queue</span>
       </label>
     </div>
-    <div class="flex items-center gap-2 px-2 py-1.5 bg-surface-mid border border-surface-mid rounded-theme-md text-text-muted">
+    <div class="page-title">Job Queue</div>
+    <div class="flex items-center gap-2 px-2 py-1.5 mt-2.5 bg-surface-mid border border-surface-mid rounded-theme-md text-text-muted">
       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
       <input [ngModel]="filterText()" (ngModelChange)="filterText.set($event)"
              data-testid="queue-filter"

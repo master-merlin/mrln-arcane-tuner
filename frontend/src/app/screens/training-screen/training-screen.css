@@ -16,11 +16,12 @@
     display: grid;
     grid-template-columns: 340px 1fr 280px;
     gap: 16px;
-    /* No left padding: the TOC bar (col 1) sits flush to the content edge like
-       an IDE sidebar (per Hi-Fi). The 28px left gutter is carried by the form
-       pane instead (.ts-form-pane padding-left), so the form content keeps its
-       position while the bar panel no longer floats. */
-    padding: 24px 28px 32px 0;
+    /* Fully flush (no grid padding): the TOC bar (col 1) and the estimate rail
+       (col 3) are full-height bars to the content edges, like an IDE — per
+       Hi-Fi. Each pane carries its OWN top/bottom/side padding so the bar
+       backgrounds span the whole height while content stays aligned with the
+       other screens' 24px/28px header gutter. */
+    padding: 0;
     height: 100%;
     min-height: 0;
     overflow: hidden;
@@ -32,17 +33,14 @@
     min-width: 0;
 }
 
-/* ── LEFT · TOC (bordered bar, not a card — per Hi-Fi) ───────────────
-   No top/left padding: the "CONFIGURATION" header must sit at the grid's
-   24px top / 28px left padding so it aligns pixel-for-pixel (x and y) with
-   the page headers on the dataset/project screens — no jumping header when
-   switching screens. */
+/* ── LEFT · TOC (bordered bar, not a card — per Hi-Fi) ─────────────── */
 .ts-toc {
     overflow-y: auto;
     min-height: 0;
-    /* left padding = the screen gutter (28px) so the header text lines up with
-       the dataset/project page headers; the panel bg itself starts flush. */
-    padding: 0 12px 18px 28px;
+    /* top 14 / left 14 = the Jobs queue-bar origin (source of truth) so
+       "CONFIGURATION" lines up pixel-for-pixel with the QUEUE eyebrow and every
+       page header; the panel bg + border span the full height (flush top/bottom). */
+    padding: 14px 12px 18px 14px;
     background: var(--color-surface-low);
     border-right: 1px solid var(--color-border-subtle);
 }
@@ -53,9 +51,10 @@
     flex-direction: column;
     overflow-y: auto;
     min-height: 0;
-    /* carries the left gutter the grid no longer has, so the form content
-       keeps its original x while the TOC bar sits flush-left. */
-    padding-left: 28px;
+    /* top 14 = the shared page-origin top (same as the TOC bar and QUEUE
+       eyebrow) so the center form starts level with the left bar; left 28 is the
+       center-column gutter from the TOC; bottom 32 = breathing room. */
+    padding: 14px 0 32px 28px;
 }
 .ts-page-head {
     align-items: flex-end;
@@ -73,6 +72,8 @@
 .ts-estimate-rail {
     overflow-y: auto;
     min-height: 0;
+    /* top 14 = shared page-origin top; right 28 gutter, bottom 32. */
+    padding: 14px 28px 32px 0;
 }
 .ts-estimate-body {
     display: flex;

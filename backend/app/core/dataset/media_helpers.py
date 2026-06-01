@@ -6,12 +6,58 @@ or persistence logic.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
+    """Delete an image's overlay (rendered PNG + ``overlays.json`` recipe).
+
+    Called after destructive pixel edits (crop, adjustment, upscale): the
+    overlay was rendered against the OLD pixels/dimensions, so it is now stale
+    and would render misaligned. Returns ``True`` if an overlay actually
+    existed (so the caller can emit an ``overlay/deleted`` event and the
+    frontend OverlayStore drops the row).
+
+    Args:
+        dataset_path: Absolute path to the dataset directory.
+        relative_path: Forward-slash-or-OS-sep relative path of the media file
+            (the key used in ``overlays.json``).
+    """
+    rel = relative_path.replace(os.sep, "/")
+    stem = os.path.splitext(os.path.basename(rel))[0]
+    existed = False
+
+    overlay_path = os.path.join(dataset_path, "overlays", f"{stem}.png")
+    if os.path.exists(overlay_path):
+        try:
+            os.remove(overlay_path)
+            existed = True
+            logger.warning("overlay_invalidated_by_edit", stem=stem)
+        except OSError as e:
+            logger.warning("overlay_invalidation_failed", stem=stem, error=str(e))
+
+    # Drop the recipe entry (keyed by the relative image path).
+    overlays_json = os.path.join(dataset_path, "overlays.json")
+    if os.path.exists(overlays_json):
+        try:
+            with open(overlays_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if any(k in data for k in (relative_path, rel)):
+                data.pop(relative_path, None)
+                data.pop(rel, None)
+                existed = True
+                with open(overlays_json, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("overlays_json_update_failed", stem=stem, error=str(e))
+
+    return existed
 
 
 def invalidate_mask_files(dataset_path: str, stem: str, reason: str = "edit") -> None:
@@ -90,6 +136,14 @@ def update_metadata_after_edit(
     entry["has_masked"] = False
     entry["has_masked_caption"] = False
     entry.pop("mask_info", None)
+
+    # Overlay was rendered against the old pixels — drop its metadata too.
+    # (The physical overlay file + recipe are removed by
+    # ``invalidate_overlay_files``, mirroring the mask invalidation split.)
+    entry.pop("has_overlay", None)
+    entry.pop("overlay_hash", None)
+    entry.pop("overlay_score_stale", None)
+    entry.pop("overlay_dimensions", None)
 
     # Update dimensions if they changed (crop)
     if new_dims is not None:

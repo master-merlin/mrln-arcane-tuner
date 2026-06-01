@@ -4,21 +4,11 @@
     gap: 1px;
 }
 
+/* Eyebrow + title use the global .eyebrow / .page-title classes (set in the
+   template) so this bar's two-line header is the exact same size as every page
+   header and the Jobs queue bar — one consistent treatment across all screens. */
 .ttoc-head {
     padding: 0 8px 14px 0;
-}
-.ttoc-eyebrow {
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    font-weight: 600;
-    color: var(--color-brand-light);
-}
-.ttoc-title {
-    margin-top: 6px;
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--color-text-primary);
 }
 
 .ttoc-item {

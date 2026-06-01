@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from app.api.cache_routes import _aggregate_cache_stats
+from app.api.cache_routes import _aggregate_cache_stats, _purge_cache
 from app.core.dataset_manager import Dataset
 
 
@@ -110,3 +110,56 @@ def test_dataset_root_bytes_skips_missing_path(tmp_path):
     assert stats["dataset_root_bytes"] == 0
     assert stats["total_bytes"] == 0
     assert stats["cached_datasets"] == 0
+
+
+# ── _purge_cache: per model / version / type filtering ──────────────────────
+
+def _seed_cache(root: Path) -> None:
+    """Two models, sdxl with two versions, each version with latents + te1."""
+    _write(root / "sdxl" / "1.0.0" / "latents" / "orig" / "1024x1024" / "a.npy", b"L" * 100)
+    _write(root / "sdxl" / "1.0.0" / "te1" / "orig" / "a.npy", b"E" * 50)
+    _write(root / "sdxl" / "2.0.0" / "latents" / "orig" / "1024x1024" / "a.npy", b"L" * 100)
+    _write(root / "sdxl" / "2.0.0" / "te1" / "orig" / "a.npy", b"E" * 50)
+    _write(root / "flux" / "1.0.0" / "latents" / "orig" / "1024x1024" / "a.npy", b"L" * 100)
+
+
+def test_purge_by_model_only(tmp_path):
+    """models=[sdxl] removes both sdxl versions, leaves flux untouched."""
+    root = tmp_path / ".cache"
+    _seed_cache(root)
+    res = _purge_cache(root, models=["sdxl"], types=None, variants=None)
+    assert res["deleted"] > 0
+    assert not (root / "sdxl").exists()
+    assert (root / "flux").exists()
+
+
+def test_purge_by_model_and_version(tmp_path):
+    """versions=[1.0.0] for sdxl removes only that version; 2.0.0 survives."""
+    root = tmp_path / ".cache"
+    _seed_cache(root)
+    _purge_cache(root, models=["sdxl"], types=None, variants=None, versions=["1.0.0"])
+    assert not (root / "sdxl" / "1.0.0").exists()
+    assert (root / "sdxl" / "2.0.0").exists()
+    assert (root / "flux" / "1.0.0").exists()
+
+
+def test_purge_by_model_version_and_type(tmp_path):
+    """models+versions+types removes just that leaf — sibling type + other
+    version + other model all survive."""
+    root = tmp_path / ".cache"
+    _seed_cache(root)
+    _purge_cache(root, models=["sdxl"], types=["te1"], variants=None, versions=["1.0.0"])
+    assert not (root / "sdxl" / "1.0.0" / "te1").exists()
+    assert (root / "sdxl" / "1.0.0" / "latents").exists()  # sibling type kept
+    assert (root / "sdxl" / "2.0.0" / "te1").exists()       # other version kept
+    assert (root / "flux").exists()                          # other model kept
+
+
+def test_purge_version_filter_applies_across_models(tmp_path):
+    """versions filter with no models targets that version in every model."""
+    root = tmp_path / ".cache"
+    _seed_cache(root)
+    _purge_cache(root, models=None, types=None, variants=None, versions=["1.0.0"])
+    assert not (root / "sdxl" / "1.0.0").exists()
+    assert (root / "sdxl" / "2.0.0").exists()
+    assert not (root / "flux" / "1.0.0").exists()

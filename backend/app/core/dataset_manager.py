@@ -14,7 +14,12 @@ from app.core.dataset.geometry import (
     calculate_target_dims as _calc_target_dims,
     ar_to_display as _ar_to_display_fn,
 )
-from app.core.dataset.media_helpers import invalidate_mask_files, update_metadata_after_edit
+from app.core.dataset.media_helpers import (
+    invalidate_mask_files,
+    invalidate_overlay_files,
+    update_metadata_after_edit,
+)
+from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 
 from app.core.events import event_manager
 from app.core.db import DatabaseEngine
@@ -201,6 +206,91 @@ class DatasetManager:
                     ),
                     loop,
                 )
+
+    def _emit_overlay_deleted(self, dataset: "Dataset", rel_path: str) -> None:
+        """Broadcast ``overlay/deleted`` so the FE OverlayStore drops a now-stale
+        overlay after an image deletion (or a failed re-render). Mirrors the id
+        shape used by the overlay routes (``{dataset}/{rel}``)."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        from app.core.events import emit_entity_change
+        lookup_key = rel_path.replace(os.sep, "/")
+        asyncio.run_coroutine_threadsafe(
+            emit_entity_change(
+                event_manager.broadcast,
+                entity="overlay",
+                op="deleted",
+                id=f"{dataset.name}/{lookup_key}",
+            ),
+            loop,
+        )
+
+    def _emit_overlay_updated(
+        self,
+        dataset: "Dataset",
+        rel_path: str,
+        dimensions: tuple[int, int],
+        overlay_hash: str,
+        operations: list[dict],
+    ) -> None:
+        """Broadcast ``overlay/updated`` after re-rendering an overlay from its
+        recipe, mirroring the payload the render-pipeline route emits so the FE
+        OverlayStore refreshes (the new hash busts the cached image)."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        from app.core.events import emit_entity_change
+        lookup_key = rel_path.replace(os.sep, "/")
+        stem = os.path.splitext(os.path.basename(lookup_key))[0]
+        overlay_id = f"{dataset.name}/{lookup_key}"
+        asyncio.run_coroutine_threadsafe(
+            emit_entity_change(
+                event_manager.broadcast,
+                entity="overlay",
+                op="updated",
+                id=overlay_id,
+                payload={
+                    "id": overlay_id,
+                    "dataset_name": dataset.name,
+                    "media_file": lookup_key,
+                    "overlay_file": f"overlays/{stem}.png",
+                    "dimensions": list(dimensions),
+                    "hash": overlay_hash,
+                    "operations": operations,
+                },
+            ),
+            loop,
+        )
+
+    def _reconcile_overlay_after_edit(self, dataset: "Dataset", rel_path: str) -> None:
+        """After a destructive pixel edit, re-apply the image's overlay recipe to
+        the new pixels so the non-destructive edit survives — or, if it can't be
+        re-rendered, drop the now-stale overlay. No-op when the image has no
+        overlay. Assumes ``update_metadata_after_edit`` just cleared the overlay
+        metadata fields; on a successful re-render they're re-set + persisted.
+        """
+        lookup_key = rel_path.replace(os.sep, "/")
+        try:
+            result = rerender_overlay_from_recipe(dataset.path, rel_path)
+        except Exception as e:  # render is GPU/model-heavy — never fail the edit
+            logger.warning("overlay_rerender_failed", file=rel_path, error=str(e))
+            if invalidate_overlay_files(dataset.path, rel_path):
+                self._emit_overlay_deleted(dataset, rel_path)
+            return
+
+        if result is None:
+            return  # no recipe — nothing to reconcile
+
+        dimensions, overlay_hash, operations = result
+        meta = dataset.media_metadata.get(lookup_key)
+        if meta is not None:
+            meta["has_overlay"] = True
+            meta["overlay_hash"] = overlay_hash
+            meta["overlay_dimensions"] = list(dimensions)
+            meta["overlay_score_stale"] = True
+            self._persist_media_item(dataset, rel_path)
+        self._emit_overlay_updated(dataset, rel_path, dimensions, overlay_hash, operations)
 
     # ── Async variants (R-API-07) ───────────────────────────────────────
     # FastAPI route handlers use these; internal DatasetManager callers
@@ -1323,15 +1413,22 @@ class DatasetManager:
         if not dataset:
             raise ValueError(f"Dataset '{name}' not found.")
 
-        count = 0
-        for meta in dataset.media_metadata.values():
+        changed: list[str] = []
+        for key, meta in dataset.media_metadata.items():
             if meta.get("enabled") is not True:
                 meta["enabled"] = True
-                count += 1
+                changed.append(key)
 
+        # Persist the dataset row (excluded_count aggregate changed) AND emit a
+        # per-item event for each flipped image, so the frontend MediaItemStore
+        # reflects the change live without a manual reload (matches the single
+        # toggle_image_enabled path).
         self._persist_dataset(dataset)
-        logger.info("all_images_enabled", dataset=name, reset_count=count)
-        return {"reset_count": count}
+        for key in changed:
+            self._persist_media_item(dataset, key)
+
+        logger.info("all_images_enabled", dataset=name, reset_count=len(changed))
+        return {"reset_count": len(changed)}
 
     def delete_media_pair(self, name: str, media_file: str):
         if name not in self.datasets:
@@ -1416,6 +1513,10 @@ class DatasetManager:
                 except OSError:
                     pass
 
+        # Overlay (rendered PNG + overlays.json recipe) — otherwise the file
+        # and recipe entry orphan after the image is gone.
+        had_overlay = invalidate_overlay_files(dataset.path, media_file)
+
         # Broadcast media_item deletion so the frontend MediaItemStore
         # drops the row. The id mirrors the composite key used by updates
         # so the FE store keys match.
@@ -1431,6 +1532,10 @@ class DatasetManager:
                 ),
                 loop,
             )
+
+        # Drop the overlay row too, if the deleted image had one.
+        if had_overlay:
+            self._emit_overlay_deleted(dataset, media_file)
 
 
     def crop_media(self, name: str, relative_path: str, target_w: int, target_h: int, origin: str = "center", crop_x: int | None = None, crop_y: int | None = None):
@@ -1505,6 +1610,9 @@ class DatasetManager:
             dataset_path=dataset.path,
         )
         self._persist_media_item(dataset, relative_path)
+        # Re-apply the overlay recipe to the cropped pixels (preserving the
+        # non-destructive edit) or drop it if it can't be re-rendered.
+        self._reconcile_overlay_after_edit(dataset, relative_path)
         return True
 
     def apply_adjustments(
@@ -1548,6 +1656,9 @@ class DatasetManager:
         )
 
         self._persist_media_item(dataset, relative_path)
+        # Re-apply the overlay recipe to the adjusted pixels (preserving the
+        # non-destructive edit) or drop it if it can't be re-rendered.
+        self._reconcile_overlay_after_edit(dataset, relative_path)
         return True
 
     def harmonize_files(self, name: str) -> dict:

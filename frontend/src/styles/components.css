@@ -15,6 +15,10 @@
         display: flex; flex-direction: column;
         padding: 18px 12px;
         overflow-y: auto;
+        /* Fill the grid cell so the background + right border span the full
+           viewport height (the cell stretches to 100vh; this makes the inner
+           panel match it instead of being content-height). */
+        height: 100%;
     }
     .side-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px; }
     .side-logo {
@@ -49,6 +53,9 @@
     }
     .side-item .ico { width: 16px; height: 16px; opacity: 0.85; flex-shrink: 0; }
     .side-item .count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--color-text-muted); }
+    .side-dot { width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; background: var(--color-text-muted); }
+    .side-dot.success { background: var(--color-success); box-shadow: 0 0 0 3px oklch(0.68 0.14 155 / 0.18); }
+    .side-dot.warning { background: var(--color-warning); box-shadow: 0 0 0 3px oklch(0.75 0.16 75 / 0.18); }
 
     .side-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--color-border-subtle); }
     .side-system {
@@ -64,6 +71,7 @@
     .side-system .val { font-family: var(--font-mono); font-weight: 500; }
     .side-system .bar { height: 3px; background: var(--color-surface-higher); border-radius: 2px; overflow: hidden; }
     .side-system .bar i { display: block; height: 100%; background: var(--color-brand); border-radius: 2px; }
+    .side-version { margin-top: 10px; padding: 0 8px; font-size: 10px; font-family: var(--font-mono); color: var(--color-text-muted); }
 
     /* Topbar */
     .main { display: flex; flex-direction: column; overflow: hidden; height: 100vh; }
@@ -75,6 +83,7 @@
         flex-shrink: 0;
         height: 56px;
     }
+    .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
     .crumbs { display: flex; align-items: center; gap: 6px; font-size: 13px; }
     .crumbs .sep { color: var(--color-text-subtle); }
     .crumbs .seg { color: var(--color-text-muted); }
@@ -204,7 +213,13 @@
     .icon-btn:hover { background: var(--color-surface-mid); color: var(--color-text-primary); }
     .icon-btn.brand:hover { color: var(--color-brand); }
 
-    .content { flex: 1; overflow: auto; padding: 24px; }
+    /* Single page-origin for EVERY screen = the Jobs queue bar (the Hi-Fi
+       source of truth): its QUEUE eyebrow sits 14px top / 14px left inside the
+       flush content. Non-flush screens reproduce that exact origin here (14 top
+       / 14 left) so their page header never jumps relative to the flush
+       Training/Jobs left bars. Bottom keeps 28px breathing room.
+       Per-screen roots must NOT re-pad on top of this. */
+    .content { flex: 1; overflow: auto; padding: 14px 14px 28px; }
     .content.flush { padding: 0; }
 
     /* page header */

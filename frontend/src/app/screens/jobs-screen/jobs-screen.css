@@ -32,14 +32,17 @@
 }
 
 .detail-pane {
-    padding: 24px 28px 28px;
+    /* top 14 = shared page-origin top (level with the QUEUE eyebrow in the
+       flush queue bar); left 28 = center-column gutter from the queue. */
+    padding: 14px 28px 28px;
     display: flex;
     flex-direction: column;
     gap: 14px;
 }
 
 .system-pane {
-    padding: 18px 16px;
+    /* top 14 = shared page-origin top so the right rail starts level too. */
+    padding: 14px 16px;
     background: var(--color-surface-low);
     border-left: 1px solid var(--color-border-subtle);
 }

@@ -1,7 +1,9 @@
-.ds-screen {
-    padding: 24px 28px 32px;
-}
-
+/* The .ds-screen wrapper generates NO box (display:contents) so .page-head
+   becomes the direct child of the (inline) component host — structurally
+   identical to the Tools/Server screens that align. The shared .content gutter
+   (14 top / 14 left) then sets the page origin, matching the Jobs queue bar
+   (source of truth) and every other screen — no header jump. */
+.ds-screen { display: contents; }
 .ds-actions { display: flex; gap: 8px; }
 
 .ds-kpi-rail {

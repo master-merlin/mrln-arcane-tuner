@@ -346,7 +346,7 @@ export class DatasetService {
     return this.http.get(`${this.apiUrl}/${encodeURIComponent(name)}/cache/list?_t=${Date.now()}`);
   }
 
-  purgeCache(name: string, options: { models?: string[]; types?: string[]; variants?: string[] } = {}): Observable<any> {
+  purgeCache(name: string, options: { models?: string[]; versions?: string[]; types?: string[]; variants?: string[] } = {}): Observable<any> {
     return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/cache/purge`, options);
   }
 

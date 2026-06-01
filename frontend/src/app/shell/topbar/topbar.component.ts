@@ -12,7 +12,6 @@ import { IcoComponent } from '../../icons/ico.component';
 import { DownloadIndicatorComponent } from './download-indicator.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ProjectService } from '../../services/project.service';
-import { SearchStore } from '../../state/search.store';
 
 interface Crumb {
     label: string;
@@ -21,14 +20,12 @@ interface Crumb {
 }
 
 /**
- * Topbar — crumbs, scope switcher (on scope-aware routes), functional
- * search input (wired to {@link SearchStore}), notifications + settings
- * icons.
+ * Topbar — crumbs, scope switcher (on scope-aware routes), download
+ * indicator + notifications/settings icons (right-aligned).
  *
- * On `/datasets` the global search wrapper is hidden — that screen owns
- * its own filter bar (per PR1 Task 9). On other routes the input remains
- * present but its functionality is aspirational until each screen's own
- * parity PR moves the search inline there too.
+ * No global search input: the only screen that searches is `/datasets`,
+ * which owns its own inline filter bar (PR1), so the topbar search was
+ * removed everywhere as dead/aspirational UI.
  */
 @Component({
     selector: 'app-topbar',
@@ -41,7 +38,6 @@ export class TopbarComponent {
     private router = inject(Router);
     protected scope = inject(ScopeStore);
     protected projects = inject(ProjectService);
-    protected search = inject(SearchStore);
 
     private url = toSignal(
         this.router.events.pipe(filter(e => e instanceof NavigationEnd)),
@@ -73,24 +69,4 @@ export class TopbarComponent {
         const path = this.router.url.split('?')[0];
         return ['/datasets', '/projects', '/training', '/jobs'].some(p => path.startsWith(p));
     });
-
-    protected onDatasetsRoute = computed(() => {
-        void this.url();
-        return this.router.url.split('?')[0].startsWith('/datasets');
-    });
-
-    protected searchPlaceholder = computed(() =>
-        this.onDatasetsRoute()
-            ? 'Search datasets…'
-            : 'Search datasets, captions, jobs…',
-    );
-
-    protected onSearchInput(event: Event): void {
-        const value = (event.target as HTMLInputElement).value;
-        this.search.query.set(value);
-    }
-
-    protected clearSearch(): void {
-        this.search.query.set('');
-    }
 }

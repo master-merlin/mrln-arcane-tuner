@@ -12,7 +12,11 @@ export interface SidebarStats {
     vramUsedGB: number;
     vramTotalGB: number;
     powerW: number;
+    /** GPU temperature in °C (not the CPU/system temp). */
     tempC: number;
+    cpuPct: number;
+    ramUsedGB: number;
+    ramTotalGB: number;
 }
 
 const ZERO: SidebarStats = {
@@ -21,6 +25,9 @@ const ZERO: SidebarStats = {
     vramTotalGB: 0,
     powerW: 0,
     tempC: 0,
+    cpuPct: 0,
+    ramUsedGB: 0,
+    ramTotalGB: 0,
 };
 
 /**
@@ -40,12 +47,16 @@ export class SystemStore implements OnDestroy {
         const snap = this.system.metrics();
         if (!snap || !snap.gpus.length) return ZERO;
         const g = snap.gpus[0];
+        const sys = snap.system;
         return {
             gpuPct: g.gpu_utilization,
             vramUsedGB: g.vram_used_mb / 1024,
             vramTotalGB: g.vram_total_mb / 1024,
             powerW: g.power_draw_w,
             tempC: g.temperature_c,
+            cpuPct: sys?.cpu_percent ?? 0,
+            ramUsedGB: (sys?.ram_used_mb ?? 0) / 1024,
+            ramTotalGB: (sys?.ram_total_mb ?? 0) / 1024,
         };
     });
 

@@ -1,0 +1,57 @@
+id: microsoft-lens-base
+family: microsoft_lens
+name: Microsoft Lens (Base 3.8B)
+version: '1.0'
+defaults:
+  resolution: 1024
+  learning_rate: 1e-4
+components:
+  repo:
+    path: huggingface:microsoft/Lens-Base
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  transformer._class_name: LensTransformer2DModel
+  transformer.patch_size: 2
+  transformer.in_channels: 128
+  transformer.out_channels: 32
+  transformer.num_layers: 48
+  transformer.attention_head_dim: 64
+  transformer.num_attention_heads: 24
+  transformer.inner_dim: 1536
+  transformer.enc_hidden_dim: 2880
+  transformer.axes_dims_rope:
+  - 8
+  - 28
+  - 28
+  transformer.gate_mlp: true
+  transformer.rms_norm: true
+  transformer.multi_layer_encoder_feature: true
+  transformer.selected_layer_index:
+  - 5
+  - 11
+  - 17
+  - 23
+  te.max_length: 512
+  te.txt_offset: 97
+  te.model_type: gpt_oss
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  vae._class_name: AutoencoderKLFlux2
+  vae.latent_channels: 32
+model_size_mb:
+  transformer: 7600.0
+  text_encoder: 40000.0
+  vae: 335.0
+lora_targetable_modules:
+- img_qkv
+- txt_qkv
+- to_out.0
+- to_add_out
+- w1
+- w2
+- w3
+block_topology: []

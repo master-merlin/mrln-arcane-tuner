@@ -55,3 +55,12 @@ def test_vendored_transformer_imports_and_constructs_tiny():
     # PeftAdapterMixin present -> LoRA-attachable.
     assert any("Peft" in b.__name__ for b in type(model).__mro__)
     assert model.config.num_attention_heads == 2
+
+
+def test_lens_base_definition_loads():
+    registry = ModelRegistry()
+    registry.initialize()
+    defn = registry.get_definition("microsoft-lens-base")
+    assert defn.family == "microsoft_lens"
+    assert "Lens-Base" in defn.components["repo"].path
+    assert defn.architecture_params["transformer.num_layers"] == 48

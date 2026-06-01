@@ -1,1 +1,198 @@
-<p>job-queue works!</p>
+<div class="queue-panel flex flex-col h-full overflow-hidden">
+
+  <!-- ── Header: QUEUE eyebrow + auto-queue + filter ───────────────── -->
+  <div class="px-3.5 pt-3.5 pb-2.5 border-b border-surface-mid/60">
+    <div class="flex items-center justify-between mb-2.5">
+      <div class="eyebrow">QUEUE</div>
+      <label class="flex items-center gap-1.5 text-[11px] cursor-pointer group" title="Auto-start the next pending job when idle">
+        <input type="checkbox" [checked]="autoQueue()" (change)="toggleAutoQueue()" data-testid="auto-queue-toggle" class="sr-only peer">
+        <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 rounded-full peer peer-checked:bg-brand peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted peer-checked:after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all relative transition-colors"></div>
+        <span class="text-text-muted group-hover:text-text-secondary transition-colors">auto-queue</span>
+      </label>
+    </div>
+    <div class="flex items-center gap-2 px-2 py-1.5 bg-surface-mid border border-surface-mid rounded-theme-md text-text-muted">
+      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input [ngModel]="filterText()" (ngModelChange)="filterText.set($event)"
+             data-testid="queue-filter"
+             placeholder="filter jobs…"
+             class="bg-transparent border-0 outline-none text-[11.5px] text-text-secondary w-full placeholder:text-text-disabled">
+    </div>
+  </div>
+
+  <div class="flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-2">
+
+    <!-- ── RUNNING ──────────────────────────────────────────────────── -->
+    @if (runningJobs().length) {
+      <div class="flex items-center gap-2 px-1 pt-2 pb-1.5">
+        <div class="eyebrow" style="color: var(--color-success);">RUNNING</div>
+        <span class="font-mono text-[10px] text-text-muted">{{ runningJobs().length }}</span>
+      </div>
+      @for (job of runningJobs(); track job.id) {
+        <div [attr.data-testid]="'job-item-' + job.id"
+             (click)="select(job.id)"
+             class="q-card mb-2 p-3 rounded-theme-md bg-surface-mid/70 cursor-pointer transition-colors hover:bg-surface-mid"
+             [class.q-card-selected]="isSelected(job.id)"
+             style="border-left: 2px solid var(--color-success);">
+          <div class="flex items-start justify-between gap-1.5 mb-1.5">
+            <div class="min-w-0 flex-1">
+              <div class="text-[12.5px] font-semibold text-text-primary truncate">{{ job.config['lora_name'] || 'untitled' }}</div>
+              <div class="text-[10.5px] text-text-muted font-mono truncate">{{ job.config['definition_id'] || job.plugin_id }}</div>
+            </div>
+            @if (getLossStatus(job); as s) {
+              <span class="chip head-chip-sm" [class.success]="s.icon === '🟢'" [class.warning]="s.icon === '🟡'" [class.danger]="s.icon === '🔴'" [title]="s.tooltip"><span class="dot"></span>{{ s.text }}</span>
+            } @else {
+              <span class="chip success head-chip-sm"><span class="dot"></span>{{ job.status }}</span>
+            }
+          </div>
+          @if (getLatestMetrics(job); as m) {
+            <div class="bar" style="height: 5px;"><i [style.width.%]="m.progress" style="background: var(--color-success);"></i></div>
+            <div class="flex justify-between mt-1.5 text-[10.5px]">
+              <span class="font-mono text-text-secondary">{{ m.step }}/{{ m.total_steps }}</span>
+              <span class="text-text-muted">{{ formatEta(m.eta) }} left</span>
+            </div>
+          }
+          @if (job.status_label) {
+            <div class="flex items-center gap-1.5 mt-1.5 text-[10px] text-text-muted truncate" [title]="job.status_label">
+              <span class="inline-block w-1.5 h-1.5 rounded-full bg-brand shrink-0 animate-pulse"></span>
+              <span class="truncate">{{ job.status_label }}</span>
+            </div>
+          }
+          <div class="flex items-center gap-1.5 mt-2 pt-2 border-t border-surface-high/50" (click)="$event.stopPropagation()">
+            @if (job.status === JobStatus.PAUSED) {
+              <button (click)="resumeJob(job.id)" class="btn sm flex-1 justify-center" title="Resume">Resume</button>
+            } @else {
+              <button (click)="pauseJob(job.id)" class="btn sm flex-1 justify-center" title="Pause">Pause</button>
+            }
+            <button (click)="softStopJob(job.id)" class="q-icon" title="Save checkpoint">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            </button>
+            <button (click)="openStopModal(job.id)" [attr.data-testid]="'stop-job-' + job.id" class="q-icon q-icon-danger" title="Stop">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+            </button>
+          </div>
+          @if (stopModalJobId() === job.id) {
+            <div class="mt-2 p-2.5 rounded-theme-md bg-surface-high border border-surface-high" (click)="$event.stopPropagation()">
+              <p class="text-[11px] text-text-secondary mb-2">Stop this job?</p>
+              <div class="flex items-center gap-1.5">
+                <button (click)="softStopJob(job.id)" class="btn sm flex-1 justify-center">Soft</button>
+                <button (click)="hardStopJob(job.id)" class="btn sm danger-out flex-1 justify-center">Hard</button>
+                <button (click)="closeStopModal()" class="btn sm ghost">Cancel</button>
+              </div>
+            </div>
+          }
+        </div>
+      }
+    }
+
+    <!-- ── PENDING ──────────────────────────────────────────────────── -->
+    @if (pendingJobs().length) {
+      <div class="flex items-center gap-2 px-1 pt-3 pb-1.5">
+        <div class="eyebrow" style="color: var(--color-warning);">PENDING</div>
+        <span class="font-mono text-[10px] text-text-muted">{{ pendingJobs().length }}</span>
+      </div>
+      @for (job of pendingJobs(); track job.id; let i = $index) {
+        <div [attr.data-testid]="'job-item-' + job.id"
+             (click)="select(job.id)"
+             class="q-card mb-2 p-3 rounded-theme-md cursor-pointer transition-colors hover:bg-surface-mid/60"
+             [class.q-card-selected]="isSelected(job.id)"
+             style="border-left: 2px solid var(--color-warning);">
+          <div class="flex items-start justify-between gap-1.5 mb-1.5">
+            <div class="min-w-0 flex-1">
+              <div class="text-[12.5px] font-medium text-text-primary truncate">{{ job.config['lora_name'] || 'untitled' }}</div>
+              <div class="text-[10.5px] text-text-muted font-mono truncate">{{ job.config['definition_id'] || job.plugin_id }}</div>
+            </div>
+            <span class="font-mono text-[9.5px] text-text-subtle">#{{ i + 1 }}</span>
+          </div>
+          <div class="flex justify-between text-[10.5px] text-text-muted">
+            <span>{{ i === 0 ? 'next up' : '#' + (i + 1) + ' in queue' }}</span>
+          </div>
+          <div class="flex items-center gap-1.5 mt-2 pt-2 border-t border-surface-mid/50" (click)="$event.stopPropagation()">
+            <button (click)="startJob(job.id)" [attr.data-testid]="'start-job-' + job.id" class="btn sm flex-1 justify-center" title="Start now">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start
+            </button>
+            <button (click)="reorder(job.id, 'up')" [disabled]="i === 0" [attr.data-testid]="'move-up-' + job.id" class="q-icon disabled:opacity-30 disabled:cursor-not-allowed" title="Move up (run sooner)">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <button (click)="reorder(job.id, 'down')" [disabled]="i === pendingJobs().length - 1" [attr.data-testid]="'move-down-' + job.id" class="q-icon disabled:opacity-30 disabled:cursor-not-allowed" title="Move down (run later)">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <button (click)="deleteJob(job.id)" [attr.data-testid]="'delete-job-' + job.id" class="q-icon q-icon-danger" title="Delete">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            </button>
+          </div>
+        </div>
+      }
+    }
+
+    <!-- ── RECENT / ARCHIVE ─────────────────────────────────────────── -->
+    @if (!archiveExpanded()) {
+      @if (recentJobs().length) {
+        <div class="flex items-center gap-2 px-1 pt-3 pb-1.5">
+          <div class="eyebrow">RECENT</div>
+          <span class="font-mono text-[10px] text-text-muted">{{ archivedJobs().length }}</span>
+        </div>
+        @for (job of recentJobs(); track job.id) {
+          <ng-container *ngTemplateOutlet="recentRow; context: { $implicit: job }"></ng-container>
+        }
+      }
+      <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
+        class="btn ghost sm w-full justify-center mt-2.5">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+        Archive ({{ archivedJobs().length }})
+      </button>
+    } @else {
+      <div class="flex items-center justify-between gap-2 px-1 pt-3 pb-1.5">
+        <button (click)="toggleArchive()" class="flex items-center gap-2" title="Collapse archive">
+          <div class="eyebrow">ARCHIVE</div>
+          <span class="font-mono text-[10px] text-text-muted">{{ archivedJobs().length }}</span>
+        </button>
+        <select [ngModel]="archiveProjectFilter()" (ngModelChange)="onArchiveScopeChange($event)"
+          data-testid="archive-project-selector"
+          class="bg-surface-high border border-surface-mid text-text-secondary text-[10px] rounded px-1.5 py-0.5 outline-none focus:border-brand uppercase tracking-wider font-semibold">
+          <option [value]="'all'">All</option>
+          @for (p of projectService.allProjects(); track p.id) {
+            <option [value]="p.id">{{ p.name }}</option>
+          }
+        </select>
+      </div>
+      @for (job of archivedJobs(); track job.id) {
+        <ng-container *ngTemplateOutlet="recentRow; context: { $implicit: job }"></ng-container>
+      }
+    }
+
+    @if (!runningJobs().length && !pendingJobs().length && !archivedJobs().length) {
+      <div class="px-2 py-12 text-center text-text-disabled text-[12.5px] italic">No jobs yet.</div>
+    }
+  </div>
+</div>
+
+<!-- ── Reusable recent/archive row ──────────────────────────────────── -->
+<ng-template #recentRow let-job>
+  <div [attr.data-testid]="'job-item-' + job.id"
+       (click)="select(job.id)"
+       class="q-recent flex items-center gap-2.5 px-2.5 py-2 mb-0.5 rounded cursor-pointer transition-colors hover:bg-surface-mid/60"
+       [class.q-card-selected]="isSelected(job.id)"
+       [style.border-left]="'2px solid ' + (job.status === JobStatus.FAILED ? 'var(--color-danger)' : 'var(--color-text-disabled)')">
+    <div class="flex-1 min-w-0">
+      <div class="text-[12px] font-medium text-text-secondary truncate">{{ job.config['lora_name'] || 'untitled' }}</div>
+      <div class="text-[10.5px] text-text-muted">{{ job.created_at * 1000 | date:'MMM d, HH:mm' }} · <span class="font-mono">{{ getDuration(job) }}</span></div>
+    </div>
+    @if (job.status === JobStatus.FAILED) {
+      <span class="tag danger" [title]="job.error || 'Run failed'">{{ job.status }}</span>
+    } @else if (job.status === JobStatus.STOPPED) {
+      <span class="tag warning">{{ job.status }}</span>
+    } @else {
+      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    }
+    <div class="flex items-center gap-0.5" (click)="$event.stopPropagation()">
+      @if (job.status === JobStatus.FAILED || job.status === JobStatus.STOPPED) {
+        <button (click)="restartJob(job.id)" [attr.data-testid]="'restart-job-' + job.id" class="q-icon" title="Restart">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        </button>
+      }
+      <button (click)="deleteJob(job.id)" [attr.data-testid]="'delete-job-' + job.id" class="q-icon q-icon-danger" title="Delete">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+      </button>
+    </div>
+  </div>
+</ng-template>

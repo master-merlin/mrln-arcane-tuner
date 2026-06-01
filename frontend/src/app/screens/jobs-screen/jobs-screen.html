@@ -5,58 +5,150 @@
 
     <main class="detail-pane">
         @if (selectedJob(); as j) {
-            <div class="page-head">
-                <div>
-                    <div class="eyebrow">
+            <!-- ── Detail header ─────────────────────────────────────── -->
+            <div class="detail-head">
+                <div class="detail-head-main">
+                    <div class="eyebrow detail-eyebrow">
                         <span class="sdot" [class.success]="j.status === JobStatus.RUNNING"></span>
-                        RUN · #{{ j.id.slice(0, 8).toUpperCase() }}
+                        {{ j.status | uppercase }} · #{{ j.id.slice(0, 8).toUpperCase() }}
                     </div>
-                    <h1 class="page-title detail-title">
+                    <h1 class="detail-title">
                         {{ j.config?.['definition_id'] || j.plugin_id }}
                         <span class="muted"> · </span>
                         {{ j.config?.['lora_name'] || 'untitled' }}
                     </h1>
-                    <div class="page-sub mono">
-                        @if (j.pid) {
-                            <span>PID {{ j.pid }}</span>
-                            <span> · </span>
+                    <div class="detail-meta mono">
+                        @if (j.pid) { <span>PID {{ j.pid }}</span><span class="dot-sep">·</span> }
+                        <span>{{ elapsed() }} elapsed</span>
+                        @if (j.config?.['project_id']) {
+                            <span class="dot-sep">·</span>
+                            <span>project {{ j.config?.['project_id'] }}</span>
                         }
-                        <span>status {{ j.status }}</span>
                     </div>
                 </div>
                 <div class="detail-actions">
-                    <button class="btn"
-                            (click)="pauseJob()"
-                            [disabled]="j.status !== JobStatus.RUNNING">
-                        Pause
-                    </button>
                     <button class="btn" (click)="viewLogs()">Logs</button>
-                    <!-- TODO(backend): replace soft-stop proxy with a dedicated checkpoint endpoint -->
-                    <button class="btn"
-                            (click)="saveCheckpoint()"
-                            [disabled]="j.status !== JobStatus.RUNNING">
-                        Save checkpoint
-                    </button>
-                    <button class="btn danger-out"
-                            (click)="stopJob()"
-                            [disabled]="j.status !== JobStatus.RUNNING && j.status !== JobStatus.PAUSED">
-                        Stop
-                    </button>
+                    @if (canControl()) {
+                        @if (j.status === JobStatus.PAUSED) {
+                            <button class="btn" (click)="resumeJob()">Resume</button>
+                        } @else {
+                            <button class="btn" (click)="pauseJob()">Pause</button>
+                        }
+                        <button class="btn" (click)="saveCheckpoint()">Checkpoint</button>
+                        <button class="btn danger-out" (click)="stopJob()">Stop</button>
+                    }
+                    @if (isArchived()) {
+                        <button class="btn" (click)="restartJob()" title="Re-queue this run (reuse existing output)">Restart</button>
+                        @if (!diskMissing()) {
+                            <button class="btn danger-out" (click)="restartFresh()" title="Delete output folder and restart from scratch">Restart fresh</button>
+                        }
+                    }
                 </div>
             </div>
 
-            <!-- TRAINING CURVES -->
+            <!-- ── Live phase (status_label) ─────────────────────────── -->
+            @if (showPhase()) {
+                <div class="phase-strip">
+                    <span class="phase-pulse"></span>
+                    <span class="phase-text">{{ phase() }}</span>
+                    @if (phasePct() !== null) {
+                        <div class="phase-bar"><i [style.width.%]="phasePct()"></i></div>
+                        <span class="phase-pct mono">{{ phasePct()!.toFixed(0) }}%</span>
+                    }
+                </div>
+            }
+
+            <!-- ── Failure reason ────────────────────────────────────── -->
+            @if (errorMessage()) {
+                <div class="error-strip">
+                    <div class="error-head">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+                        <span>Run failed</span>
+                    </div>
+                    <p class="error-text mono">{{ errorMessage() }}</p>
+                </div>
+            }
+
+            <!-- ── Diagnostics warnings ──────────────────────────────── -->
+            @if (warnings().length) {
+                <div class="diag-strip">
+                    <div class="diag-head">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                        <span>Diagnostics</span>
+                    </div>
+                    @for (w of warnings(); track w) {
+                        <p class="diag-line">{{ w }}</p>
+                    }
+                </div>
+            }
+
+            @if (diskMissing()) {
+                <p class="disk-note">Output folder no longer on disk — showing persisted metrics (samples unavailable).</p>
+            }
+
+            <!-- ── KPI row ───────────────────────────────────────────── -->
+            @if (metrics(); as m) {
+                <div class="kpi-row">
+                    <app-kpi-tile label="Step" [value]="m.step" [unit]="stepUnit()" [sub]="progressLabel()" accent="brand" [compact]="true">
+                        <div class="kpi-viz"><div class="bar lg"><i [style.width.%]="progressPct()"></i></div></div>
+                    </app-kpi-tile>
+
+                    <app-kpi-tile label="Loss" [value]="lossLabel()" accent="success" [compact]="true">
+                        @if (status(); as st) {
+                            <div class="kpi-status"
+                                 [class.success]="st.tone === 'success'"
+                                 [class.warning]="st.tone === 'warning'"
+                                 [class.danger]="st.tone === 'danger'"
+                                 [title]="st.tooltip">
+                                <span class="dot"></span>{{ st.text }}
+                            </div>
+                        }
+                        <div class="kpi-viz"><app-sparkline [data]="lossSparkData()" color="var(--color-success)" [height]="22"/></div>
+                    </app-kpi-tile>
+
+                    <app-kpi-tile label="Best Loss" [value]="bestLabel()" [sub]="bestSub()" accent="violet" [compact]="true">
+                        <div class="kpi-viz"><app-sparkline [data]="bestSparkData()" color="var(--color-violet)" [height]="22"/></div>
+                    </app-kpi-tile>
+
+                    <app-kpi-tile label="Step Time" [value]="stepTimeLabel()" unit="s" [sub]="throughputSub()" accent="teal" [compact]="true">
+                        <div class="kpi-viz"><app-sparkline [data]="stepTimeSparkData()" color="var(--color-chart-lr)" [height]="22"/></div>
+                    </app-kpi-tile>
+
+                    <app-kpi-tile label="ETA" [value]="etaLabel()" [compact]="true">
+                        @if (finishLabel()) {
+                            <div class="kpi-finish">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                <span>finish <span class="mono">{{ finishLabel() }}</span></span>
+                            </div>
+                        }
+                        <div class="kpi-finish-sub">running <span class="mono">{{ elapsed() }}</span></div>
+                    </app-kpi-tile>
+                </div>
+            }
+
+            <!-- ── TRAINING CURVES ───────────────────────────────────── -->
             <section class="card collapse-card">
                 <div class="card-head curves-head">
                     <button class="card-head-toggle" type="button" (click)="toggle('curves')">
-                        <span class="card-title">TRAINING CURVES</span>
+                        <span class="card-title">Training Curves</span>
+                        @if (j.status === JobStatus.RUNNING) {
+                            <span class="chip success head-chip"><span class="dot"></span> live</span>
+                        }
                     </button>
-                    <div class="card-head-tools" (click)="$event.stopPropagation()">
+                    <div class="card-head-tools curve-tools" (click)="$event.stopPropagation()">
+                        <label class="curve-smooth">
+                            <span>smooth</span>
+                            <input type="range" min="0" max="0.95" step="0.01"
+                                   [value]="smoothing()"
+                                   (input)="smoothing.set(+$any($event.target).value)"/>
+                            <span class="mono curve-smooth-val">{{ smoothing().toFixed(2) }}</span>
+                        </label>
                         <app-segmented
-                            [options]="logScaleOptions"
-                            [value]="logScale()"
-                            (changed)="logScale.set($event)"
+                            [options]="smoothingModeOptions"
+                            [value]="smoothingMode()"
+                            (changed)="smoothingMode.set($event)"
                         />
+                        <button class="btn sm" [class.primary]="showTip()" (click)="showTip.set(!showTip())" title="Show values at the curve tip">tip</button>
                         <button class="card-head-caret" type="button" (click)="toggle('curves')">
                             <span class="caret">{{ expanded().curves ? '−' : '+' }}</span>
                         </button>
@@ -64,70 +156,142 @@
                 </div>
                 @if (expanded().curves) {
                     <div class="card-body">
-                        @if (chartSamples().length > 0) {
-                            <app-loss-chart
-                                [samples]="chartSamples()"
-                                [logScale]="logScale()"
-                            />
+                        @if (lossPoints().length > 1) {
+                            <app-training-chart
+                                [data]="lossPoints()"
+                                [smoothing]="smoothing()"
+                                [smoothingMode]="smoothingMode()"
+                                [showTip]="showTip()"
+                                [totalSteps]="chartTotalSteps()"
+                                [height]="240"/>
                         } @else {
                             <p class="muted">
-                                Waiting for first STEP_LOG entries… curve appears once training emits losses.
+                                Waiting for first STEP_LOG entries… the curve appears once training emits losses.
                             </p>
                         }
                     </div>
                 }
             </section>
 
-            <!-- SAMPLE PREVIEWS -->
+            <!-- ── SAMPLE PREVIEWS ───────────────────────────────────── -->
             <section class="card collapse-card">
-                <button class="card-head" type="button" (click)="toggle('samples')">
-                    <span class="card-title">SAMPLE PREVIEWS</span>
-                    <span class="caret">{{ expanded().samples ? '−' : '+' }}</span>
-                </button>
+                <div class="card-head curves-head">
+                    <button class="card-head-toggle" type="button" (click)="toggle('samples')">
+                        <span class="card-title">Sample Previews</span>
+                    </button>
+                    <div class="card-head-tools" (click)="$event.stopPropagation()">
+                        @if (showSamplingControls()) {
+                            <label class="sampling-cadence">
+                                <span>every</span>
+                                <select class="select sampling-select" (change)="onCadenceChange($event)">
+                                    @if (samplingCadence() && !cadenceOptions.includes(samplingCadence()!)) {
+                                        <option [value]="samplingCadence()" selected>{{ samplingCadence() }}</option>
+                                    }
+                                    @for (c of cadenceOptions; track c) {
+                                        <option [value]="c" [selected]="samplingCadence() === c">{{ c }}</option>
+                                    }
+                                </select>
+                                <span>steps</span>
+                            </label>
+                            <button class="btn sm" [class.warning-out]="samplingPaused()" (click)="toggleSamplingPause()">
+                                {{ samplingPaused() ? 'Resume sampling' : 'Pause sampling' }}
+                            </button>
+                            <button class="q-icon" (click)="refreshSamples()" title="Refresh samples">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                            </button>
+                        }
+                        <button class="card-head-caret" type="button" (click)="toggle('samples')">
+                            <span class="caret">{{ expanded().samples ? '−' : '+' }}</span>
+                        </button>
+                    </div>
+                </div>
                 @if (expanded().samples) {
                     <div class="card-body samples-strip">
                         @if (currentSamples().length > 0) {
                             @for (s of currentSamples(); track s.filename) {
-                                <div class="sample-tile">
-                                    <div class="sample-label mono">
+                                <figure class="sample-tile">
+                                    <button class="sample-btn" type="button" (click)="openSample(s)" [title]="'View ' + s.filename">
+                                        <img class="sample-img"
+                                             [src]="sampleImageUrl(j.id, s.filename)"
+                                             [alt]="'sample ' + (s.step ?? '')"
+                                             loading="lazy"/>
+                                    </button>
+                                    <figcaption class="sample-cap mono">
                                         {{ s.step === 999999 ? 'final' : 'step ' + (s.step ?? '?') }}
-                                    </div>
-                                    <div class="sample-name mono">{{ s.filename }}</div>
-                                </div>
+                                    </figcaption>
+                                </figure>
                             }
                         } @else {
-                            <!-- TODO(backend): expose a thumbnail endpoint so we can show actual images here. -->
                             <p class="muted">No sample previews yet.</p>
                         }
                     </div>
                 }
             </section>
 
-            <!-- RUN CONFIG -->
+            <!-- ── RUN CONFIG ────────────────────────────────────────── -->
             <section class="card collapse-card">
-                <button class="card-head" type="button" (click)="toggle('config')">
-                    <span class="card-title">RUN CONFIG</span>
-                    <span class="caret">{{ expanded().config ? '−' : '+' }}</span>
-                </button>
+                <div class="card-head curves-head">
+                    <button class="card-head-toggle" type="button" (click)="toggle('config')">
+                        <span class="card-title">Run Config</span>
+                    </button>
+                    <div class="card-head-tools" (click)="$event.stopPropagation()">
+                        <app-segmented
+                            [options]="configViewOptions"
+                            [value]="configView()"
+                            (changed)="configView.set($event)"
+                        />
+                        <button class="card-head-caret" type="button" (click)="toggle('config')">
+                            <span class="caret">{{ expanded().config ? '−' : '+' }}</span>
+                        </button>
+                    </div>
+                </div>
                 @if (expanded().config) {
                     <div class="card-body">
-                        <pre class="config-json mono">{{ selectedConfigJson() }}</pre>
+                        @if (configView() === 'json') {
+                            <pre class="config-json mono">{{ selectedConfigJson() }}</pre>
+                        } @else if (configRows().length > 0) {
+                            <div class="config-grid">
+                                @for (row of configRows(); track row.label) {
+                                    <span class="config-key">{{ row.label }}</span>
+                                    <span class="config-val mono" [title]="row.value">{{ row.value }}</span>
+                                }
+                            </div>
+                        } @else {
+                            <p class="muted">No configuration available.</p>
+                        }
+
+                        <!-- Reuse this run's config: load into Training, or store as a template. -->
+                        <div class="config-actions">
+                            <button class="btn sm" (click)="reloadConfig()" title="Load this config into the Training settings (does not create a template)">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                                Reload into Training
+                            </button>
+                            <button class="btn sm" (click)="saveAsTemplate()" title="Save this config as a reusable template">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                Save as Template
+                            </button>
+                        </div>
                     </div>
                 }
             </section>
 
-            <!-- LOG TAIL -->
+            <!-- ── LOG TAIL ──────────────────────────────────────────── -->
             <section class="card collapse-card">
                 <button class="card-head" type="button" (click)="toggle('log')">
-                    <span class="card-title">LOG TAIL</span>
+                    <span class="card-title">Log Tail</span>
                     <span class="caret">{{ expanded().log ? '−' : '+' }}</span>
                 </button>
                 @if (expanded().log) {
                     <div class="card-body">
-                        @if (logTail().length > 0) {
+                        @if (logLines().length > 0) {
                             <div class="log-tail mono">
-                                @for (line of logTail(); track $index) {
-                                    <div class="log-tail-line">{{ line }}</div>
+                                @for (line of logLines(); track $index) {
+                                    <div class="log-tail-line">
+                                        <span class="tag" [class.teal]="line.tone === 'teal'"
+                                              [class.warning]="line.tone === 'warning'"
+                                              [class.danger]="line.tone === 'danger'">{{ line.level }}</span>
+                                        <span class="log-text">{{ line.text }}</span>
+                                    </div>
                                 }
                             </div>
                         } @else {
@@ -142,13 +306,31 @@
     </main>
 
     <aside class="system-pane">
-        <div class="card system-card">
-            <div class="card-head static">
-                <span class="card-title">SYSTEM</span>
-            </div>
-            <div class="card-body">
-                <app-system-monitor/>
-            </div>
-        </div>
+        <app-system-monitor/>
     </aside>
 </div>
+
+<!-- ── Sample lightbox ──────────────────────────────────────────────── -->
+@if (sampleModal(); as modal) {
+    @if (selectedJob(); as j) {
+        <div class="lightbox" (click)="closeSample()">
+            @if (currentSamples().length > 1) {
+                <button class="lightbox-nav left" (click)="navSample(-1); $event.stopPropagation()" title="Previous">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <button class="lightbox-nav right" (click)="navSample(1); $event.stopPropagation()" title="Next">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+            }
+            <div class="lightbox-inner" (click)="$event.stopPropagation()">
+                <div class="lightbox-bar">
+                    <span class="mono">{{ modal.step === 999999 ? 'final' : 'step ' + (modal.step ?? '?') }}</span>
+                    <button class="q-icon" (click)="closeSample()" title="Close">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                </div>
+                <img class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" [alt]="'sample ' + (modal.step ?? '')"/>
+            </div>
+        </div>
+    }
+}

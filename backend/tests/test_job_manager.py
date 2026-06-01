@@ -406,6 +406,66 @@ class TestRestartJob:
         mock_start.assert_called_once_with(job.id)
 
     @patch.object(JobManager, "start_job")
+    def test_restart_queues_when_another_job_running(self, mock_start):
+        """Restarting from the archive while a job is running must queue (not
+        launch concurrently — the GPU runs one job at a time)."""
+        mgr = JobManager()
+        running = mgr.create_job("flux/dev", _make_config(lora_name="busy"))
+        running.status = JobStatus.RUNNING
+        archived = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        archived.status = JobStatus.COMPLETED
+
+        with patch.object(mgr, "_reset_job_log_state"), patch.object(mgr, "_persist_status"):
+            mgr.restart_job(archived.id)
+
+        assert archived.status == JobStatus.PENDING
+        mock_start.assert_not_called()
+
+    @patch.object(JobManager, "start_job")
+    def test_restart_queues_when_another_job_paused(self, mock_start):
+        """A paused job still holds the GPU, so a restart must queue behind it."""
+        mgr = JobManager()
+        paused = mgr.create_job("flux/dev", _make_config(lora_name="paused"))
+        paused.status = JobStatus.PAUSED
+        archived = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        archived.status = JobStatus.STOPPED
+
+        with patch.object(mgr, "_reset_job_log_state"), patch.object(mgr, "_persist_status"):
+            mgr.restart_job(archived.id)
+
+        assert archived.status == JobStatus.PENDING
+        mock_start.assert_not_called()
+
+    @patch.object(JobManager, "start_job")
+    def test_restart_starts_immediately_when_idle(self, mock_start):
+        """With nothing running, a restart launches right away."""
+        mgr = JobManager()
+        archived = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        archived.status = JobStatus.STOPPED
+
+        with patch.object(mgr, "_reset_job_log_state"), patch.object(mgr, "_persist_status"):
+            mgr.restart_job(archived.id)
+
+        mock_start.assert_called_once_with(archived.id)
+
+    @patch.object(JobManager, "start_job")
+    def test_restart_queued_appends_behind_pending(self, mock_start):
+        """A queued restart gets a priority after existing pending jobs."""
+        mgr = JobManager()
+        running = mgr.create_job("flux/dev", _make_config(lora_name="busy"))
+        running.status = JobStatus.RUNNING
+        p1 = mgr.create_job("flux/dev", _make_config(lora_name="p1"))
+        p1.status = JobStatus.PENDING
+        p1.priority = 0
+        archived = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        archived.status = JobStatus.COMPLETED
+
+        with patch.object(mgr, "_reset_job_log_state"), patch.object(mgr, "_persist_status"):
+            mgr.restart_job(archived.id)
+
+        assert archived.priority > p1.priority
+
+    @patch.object(JobManager, "start_job")
     def test_restart_rotates_log_and_drops_offset(self, mock_start, tmp_path):
         """Regression: restart must clear stale log + offset so the new
         tailer can't re-dispatch the previous run's exit message.
@@ -619,4 +679,188 @@ class TestLoadFromDB:
         mgr.load_from_db()  # Should not raise
 
         assert mgr.list_jobs() == []
+
+
+class TestFreshRestart:
+    """restart_job(fresh=True) deletes the run's output folder first."""
+
+    def test_delete_job_output_dir_removes_run_folder(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="run1"))
+        run_dir = tmp_path / "run1_dev"
+        run_dir.mkdir()
+        (run_dir / "loss_history.json").write_text("[]", encoding="utf-8")
+
+        mgr._delete_job_output_dir(job)
+        assert not run_dir.exists()
+
+    def test_delete_job_output_dir_absent_is_noop(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="ghost"))
+        mgr._delete_job_output_dir(job)  # folder never created -> must not raise
+
+    def test_restart_fresh_deletes_then_relaunches(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="run2"))
+        job.status = JobStatus.COMPLETED
+        run_dir = tmp_path / "run2_dev"
+        run_dir.mkdir()
+        (run_dir / "x.txt").write_text("data", encoding="utf-8")
+
+        with patch.object(mgr, "start_job") as mock_start, \
+                patch.object(mgr, "_stop_tailer"), \
+                patch.object(mgr, "_reset_job_log_state"), \
+                patch.object(mgr, "_persist_status"):
+            mgr.restart_job(job.id, fresh=True)
+
+        assert not run_dir.exists()
+        mock_start.assert_called_once_with(job.id)
+
+    def test_restart_without_fresh_keeps_output(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="run3"))
+        job.status = JobStatus.FAILED
+        run_dir = tmp_path / "run3_dev"
+        run_dir.mkdir()
+        (run_dir / "x.txt").write_text("data", encoding="utf-8")
+
+        with patch.object(mgr, "start_job"), \
+                patch.object(mgr, "_stop_tailer"), \
+                patch.object(mgr, "_reset_job_log_state"), \
+                patch.object(mgr, "_persist_status"):
+            mgr.restart_job(job.id, fresh=False)
+
+        assert run_dir.exists()
+
+
+class TestReorderPending:
+    """reorder_pending swaps pending run order via in-memory priority."""
+
+    def _mk_pending(self, mgr, n):
+        jobs = []
+        for i in range(n):
+            j = mgr.create_job("flux/dev", _make_config(lora_name=f"j{i}"))
+            j.created_at = 1000.0 + i  # ascending FIFO
+            jobs.append(j)
+        return jobs
+
+    def _order(self, jobs):
+        return [j.id for j in sorted(jobs, key=lambda j: (j.priority, j.created_at))]
+
+    def test_move_up_runs_sooner(self):
+        mgr = JobManager()
+        a, b, c = self._mk_pending(mgr, 3)
+        mgr.reorder_pending(c.id, "up")  # a, b, c -> a, c, b
+        assert self._order([a, b, c]) == [a.id, c.id, b.id]
+
+    def test_move_down_runs_later(self):
+        mgr = JobManager()
+        a, b, c = self._mk_pending(mgr, 3)
+        mgr.reorder_pending(a.id, "down")  # a, b, c -> b, a, c
+        assert self._order([a, b, c]) == [b.id, a.id, c.id]
+
+    def test_move_up_at_top_is_noop(self):
+        mgr = JobManager()
+        a, b = self._mk_pending(mgr, 2)
+        mgr.reorder_pending(a.id, "up")
+        assert self._order([a, b]) == [a.id, b.id]
+
+    def test_invalid_direction_raises(self):
+        mgr = JobManager()
+        (a,) = self._mk_pending(mgr, 1)
+        with pytest.raises(ValueError):
+            mgr.reorder_pending(a.id, "sideways")
+
+    def test_unknown_job_raises(self):
+        mgr = JobManager()
+        self._mk_pending(mgr, 1)
+        with pytest.raises(ValueError):
+            mgr.reorder_pending("ghost", "up")
+
+
+class TestStartJobClearsStaleSignal:
+    """Regression: a fresh launch must not inherit a leftover pause signal.
+
+    Output dirs are keyed by lora_name + definition_id, so a new job can reuse
+    a directory whose previous occupant left an unconsumed pause/soft_stop
+    signal. Without clearing it, the new trainer reads the stale signal on its
+    first check and blocks in the pause loop (status "Training", no GPU load,
+    no steps) — the exact idle-training bug observed in the field.
+    """
+
+    def _mock_plugin(self):
+        plugin = MagicMock()
+        # A process object with no `.pid` attr makes start_job skip the
+        # LogTailer + PID watchdog, keeping the test free of background threads.
+        plugin.start_training.return_value = MagicMock(spec=[])
+        return plugin
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_start_job_removes_stale_signal(self, mock_pm, tmp_path):
+        mock_pm.get_plugin.return_value = self._mock_plugin()
+        mgr = JobManager()
+        job = mgr.create_job("standard", _make_config(output_dir=str(tmp_path), lora_name="reuse"))
+        out_dir = mgr._get_job_output_dir(job)
+        os.makedirs(out_dir, exist_ok=True)
+        sig = os.path.join(out_dir, "signal.json")
+        with open(sig, "w", encoding="utf-8") as f:
+            f.write('{"action": "pause"}')
+
+        mgr.start_job(job.id)
+
+        assert not os.path.exists(sig), "stale pause signal must be cleared on launch"
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_start_job_preserves_signal_when_disabled(self, mock_pm, tmp_path):
+        """relaunch_paused passes clear_stale_signal=False to keep its
+        intentional pause-before-launch signal."""
+        mock_pm.get_plugin.return_value = self._mock_plugin()
+        mgr = JobManager()
+        job = mgr.create_job("standard", _make_config(output_dir=str(tmp_path), lora_name="recover"))
+        out_dir = mgr._get_job_output_dir(job)
+        os.makedirs(out_dir, exist_ok=True)
+        sig = os.path.join(out_dir, "signal.json")
+        with open(sig, "w", encoding="utf-8") as f:
+            f.write('{"action": "pause"}')
+
+        mgr.start_job(job.id, clear_stale_signal=False)
+
+        assert os.path.exists(sig), "intentional pause signal must survive recovery launch"
+
+
+class TestSignalPauseReconcile:
+    """Trainer-side pause/resume log events must drive the live job status, so
+    a signal-paused run shows PAUSED (and offers Resume) regardless of how the
+    pause arose."""
+
+    def test_paused_event_sets_status_paused(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        mgr._reconcile_signal_pause(job.id, '{"event": "training_paused_by_signal"}')
+        assert job.status == JobStatus.PAUSED
+        assert job.paused_at is not None
+
+    def test_resumed_event_sets_status_running(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.PAUSED
+        job.paused_at = 123.0
+        mgr._reconcile_signal_pause(job.id, '{"event": "training_resumed_by_signal"}')
+        assert job.status == JobStatus.RUNNING
+        assert job.paused_at is None
+
+    def test_does_not_override_terminal_state(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.STOPPED
+        mgr._reconcile_signal_pause(job.id, '{"event": "training_paused_by_signal"}')
+        assert job.status == JobStatus.STOPPED
+
+    def test_unrelated_log_is_noop(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        mgr._reconcile_signal_pause(job.id, '{"event": "sampling_complete"}')
+        assert job.status == JobStatus.RUNNING
 

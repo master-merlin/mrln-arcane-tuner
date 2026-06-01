@@ -1,187 +1,244 @@
-import { Component, inject, OnInit, OnDestroy } from '@angular/core';
+import { Component, computed, effect, inject, OnInit, OnDestroy, signal } from '@angular/core';
 import { SystemService } from '../../../services/system.service';
-import { DecimalPipe } from '@angular/common';
+import { JobStore } from '../../../state/job.store';
+import { Job, JobStatus } from '../../../services/job';
+import { SparklineComponent } from '../../../ui/sparkline/sparkline.component';
 
+interface RailRow {
+    key: string;
+    label: string;
+    valueText: string;
+    pct: number;
+    barColor: string;
+    spark: number[];
+    sparkColor: string;
+}
+
+interface HeatCell {
+    color: string;
+    title: string;
+    dim: boolean;
+}
+
+const HISTORY_CAP = 40;
+
+/**
+ * System rail (Jobs screen, right pane) — per Hi-Fi `screen-jobs.jsx`.
+ *
+ * CPU / RAM / GPU / VRAM / Power rows each show a live value, a rolling
+ * sparkline, and a utilization bar; a GPU temp chip + temp-trend mini-chart
+ * and a recent-runs heatmap close out the rail.
+ */
 @Component({
     selector: 'app-system-monitor',
     standalone: true,
-    host: { class: 'block' },
-    imports: [DecimalPipe],
+    host: { class: 'sys-rail' },
+    imports: [SparklineComponent],
     template: `
-    <div class="bg-surface-low/30 border border-border-default rounded-theme-xl p-6 hover:border-border-default transition-all">
-        <h3 class="text-lg font-medium text-white mb-5 flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
-                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round" class="text-emerald-400">
-                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-            </svg>
-            System Monitor
-        </h3>
-
         @if (svc.metrics(); as snap) {
-            <div class="space-y-5">
-
-                <!-- System (CPU + RAM) -->
-                <div class="grid grid-cols-2 gap-4">
-
-                    <!-- CPU -->
-                    <div class="space-y-2">
-                        <div class="flex items-center justify-between">
-                            <span class="text-[11px] uppercase tracking-wider text-text-subtle font-semibold">CPU</span>
-                            <span class="text-xs font-mono"
-                                  [class]="snap.system?.cpu_percent! > 90 ? 'text-red-400' :
-                                           snap.system?.cpu_percent! > 70 ? 'text-yellow-400' : 'text-emerald-400'">
-                                {{ snap.system?.cpu_percent | number:'1.0-0' }}%
-                            </span>
-                        </div>
-                        <div class="h-1.5 bg-surface-mid rounded-full overflow-hidden">
-                            <div class="h-full rounded-full transition-all duration-700 ease-out"
-                                 [style.width.%]="snap.system?.cpu_percent || 0"
-                                 [class]="snap.system?.cpu_percent! > 90 ? 'bg-red-500' :
-                                          snap.system?.cpu_percent! > 70 ? 'bg-yellow-500' : 'bg-blue-500'">
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- RAM -->
-                    <div class="space-y-2">
-                        <div class="flex items-center justify-between">
-                            <span class="text-[11px] uppercase tracking-wider text-text-subtle font-semibold">RAM</span>
-                            <span class="text-xs font-mono text-text-muted">
-                                {{ formatMB(snap.system?.ram_used_mb || 0) }} / {{ formatMB(snap.system?.ram_total_mb || 0) }}
-                            </span>
-                        </div>
-                        <div class="h-1.5 bg-surface-mid rounded-full overflow-hidden">
-                            <div class="h-full rounded-full transition-all duration-700 ease-out"
-                                 [style.width.%]="snap.system?.ram_percent || 0"
-                                 [class]="snap.system?.ram_percent! > 90 ? 'bg-red-500' :
-                                          snap.system?.ram_percent! > 70 ? 'bg-yellow-500' : 'bg-brand'">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- GPU Cards -->
-                @for (gpu of snap.gpus; track gpu.index) {
-                    <div class="border-t border-border-default pt-4 space-y-3">
-
-                        <!-- GPU Name + Temp -->
-                        <div class="flex items-center justify-between">
-                            <div class="flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
-                                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" class="text-emerald-400">
-                                    <rect x="2" y="6" width="20" height="12" rx="2"/>
-                                    <path d="M22 10h-2"/><path d="M22 14h-2"/>
-                                    <path d="M6 10h4"/><path d="M6 14h4"/>
-                                </svg>
-                                <span class="text-sm font-medium text-white">{{ gpu.name }}</span>
-                                @if (snap.gpus.length > 1) {
-                                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-mid text-text-subtle font-mono">{{ gpu.index }}</span>
-                                }
-                            </div>
-                            <span class="text-xs font-mono px-2 py-0.5 rounded"
-                                  [class]="gpu.temperature_c > 85 ? 'text-red-400 bg-red-500/10' :
-                                           gpu.temperature_c > 70 ? 'text-yellow-400 bg-yellow-500/10' : 'text-text-muted bg-surface-mid'">
-                                {{ gpu.temperature_c }}°C
-                            </span>
-                        </div>
-
-                        <!-- GPU Metrics — 4-column consistent grid -->
-                        <div class="grid grid-cols-4 gap-4">
-
-                            <!-- Load -->
-                            <div class="space-y-2">
-                                <div class="flex items-center justify-between">
-                                    <span class="text-[11px] uppercase tracking-wider text-text-subtle font-semibold">Load</span>
-                                    <span class="text-xs font-mono"
-                                          [class]="gpu.gpu_utilization > 90 ? 'text-red-400' :
-                                                   gpu.gpu_utilization > 50 ? 'text-yellow-400' : 'text-emerald-400'">
-                                        {{ gpu.gpu_utilization }}%
-                                    </span>
-                                </div>
-                                <div class="h-1.5 bg-surface-mid rounded-full overflow-hidden">
-                                    <div class="h-full rounded-full transition-all duration-700 ease-out"
-                                         [style.width.%]="gpu.gpu_utilization"
-                                         [class]="gpu.gpu_utilization > 90 ? 'bg-red-500' :
-                                                  gpu.gpu_utilization > 50 ? 'bg-yellow-500' : 'bg-emerald-500'">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- VRAM -->
-                            <div class="space-y-2">
-                                <div class="flex items-center justify-between">
-                                    <span class="text-[11px] uppercase tracking-wider text-text-subtle font-semibold">VRAM</span>
-                                    <span class="text-xs font-mono text-text-muted">
-                                        {{ formatMB(gpu.vram_used_mb) }}/{{ formatMB(gpu.vram_total_mb) }}
-                                    </span>
-                                </div>
-                                <div class="h-1.5 bg-surface-mid rounded-full overflow-hidden">
-                                    <div class="h-full rounded-full transition-all duration-700 ease-out"
-                                         [style.width.%]="gpu.vram_percent"
-                                         [class]="gpu.vram_percent > 90 ? 'bg-red-500' :
-                                                  gpu.vram_percent > 70 ? 'bg-yellow-500' : 'bg-emerald-500'">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Power -->
-                            <div class="space-y-2">
-                                <div class="flex items-center justify-between">
-                                    <span class="text-[11px] uppercase tracking-wider text-text-subtle font-semibold">Power</span>
-                                    <span class="text-xs font-mono text-text-muted">
-                                        {{ gpu.power_draw_w | number:'1.0-0' }}W / {{ gpu.power_limit_w | number:'1.0-0' }}W
-                                    </span>
-                                </div>
-                                <div class="h-1.5 bg-surface-mid rounded-full overflow-hidden">
-                                    <div class="h-full rounded-full transition-all duration-700 ease-out bg-amber-500"
-                                         [style.width.%]="gpu.power_limit_w > 0 ? (gpu.power_draw_w / gpu.power_limit_w * 100) : 0">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Clock -->
-                            <div class="space-y-2">
-                                <div class="flex items-center justify-between">
-                                    <span class="text-[11px] uppercase tracking-wider text-text-subtle font-semibold">Clock</span>
-                                    <span class="text-xs font-mono text-text-muted">{{ gpu.clock_graphics_mhz }} MHz</span>
-                                </div>
-                                <div class="flex items-center justify-between mt-1">
-                                    <span class="text-[11px] uppercase tracking-wider text-text-disabled font-semibold">Mem</span>
-                                    <span class="text-xs font-mono text-text-subtle">{{ gpu.clock_memory_mhz }} MHz</span>
-                                </div>
-                            </div>
-
-                        </div>
-                    </div>
+            <div class="sys-head">
+                <div class="eyebrow">SYSTEM</div>
+                @if (primaryGpu(); as g) {
+                    <span class="chip danger temp-chip">{{ g.temperature_c }}°C</span>
                 }
+            </div>
+            @if (primaryGpu(); as g) {
+                <div class="sys-gpu-name">{{ g.name }}</div>
+            }
 
-            </div>
+            @for (row of rows(); track row.key) {
+                <div class="sys-row">
+                    <div class="sys-row-head">
+                        <span class="sys-row-label">{{ row.label }}</span>
+                        <span class="sys-row-val mono">{{ row.valueText }}</span>
+                    </div>
+                    <div class="sys-spark">
+                        <app-sparkline [data]="row.spark" [color]="row.sparkColor" [height]="22"/>
+                    </div>
+                    <div class="bar"><i [style.width.%]="row.pct" [style.background]="row.barColor"></i></div>
+                </div>
+            }
+
+            <!-- Temp trend -->
+            @if (tempHist().length > 1) {
+                <div class="sys-divider"></div>
+                <div class="card-title sys-subtitle">Temp trend</div>
+                <div class="sys-temp-trend">
+                    <app-sparkline [data]="tempHist()" color="var(--color-danger)" [height]="48"/>
+                </div>
+            }
+
+            <!-- Recent runs heatmap -->
+            @if (recentRuns().length > 0) {
+                <div class="sys-divider"></div>
+                <div class="card-title sys-subtitle">Recent runs · {{ recentRuns().length }}</div>
+                <div class="sys-heat">
+                    @for (cell of recentRuns(); track $index) {
+                        <div class="sys-heat-cell"
+                             [style.background]="cell.color"
+                             [style.opacity]="cell.dim ? 0.6 : 1"
+                             [title]="cell.title"></div>
+                    }
+                </div>
+                <div class="sys-heat-axis mono">
+                    <span>older</span><span>now</span>
+                </div>
+            }
         } @else {
-            <!-- Loading -->
-            <div class="py-6 text-center">
-                <div class="animate-pulse text-text-subtle text-sm">Connecting to system monitor…</div>
-            </div>
+            <div class="sys-loading">Connecting to system monitor…</div>
         }
-    </div>
-    `
+    `,
+    styleUrl: './system-monitor.css',
 })
 export class SystemMonitorComponent implements OnInit, OnDestroy {
     svc = inject(SystemService);
+    private jobStore = inject(JobStore);
+
+    /** Rolling per-metric history keyed by row key (+ 'temp'). */
+    private readonly hist = signal<Record<string, number[]>>({});
+
+    protected readonly primaryGpu = computed(() => this.svc.metrics()?.gpus?.[0] ?? null);
+    protected readonly tempHist = computed<number[]>(() => this.hist()['temp'] ?? []);
+
+    constructor() {
+        // Accumulate a rolling buffer each time the metrics snapshot changes.
+        // (Writing signals inside effects is an established pattern here.)
+        effect(() => {
+            const snap = this.svc.metrics();
+            if (!snap) return;
+            const g = snap.gpus?.[0];
+            const push = (rec: Record<string, number[]>, key: string, v: number | undefined) => {
+                if (v == null || !Number.isFinite(v)) return;
+                const arr = [...(rec[key] ?? []), v];
+                rec[key] = arr.length > HISTORY_CAP ? arr.slice(-HISTORY_CAP) : arr;
+            };
+            this.hist.update((prev) => {
+                const next = { ...prev };
+                push(next, 'cpu', snap.system?.cpu_percent);
+                push(next, 'ram', snap.system?.ram_percent);
+                if (g) {
+                    push(next, 'gpu', g.gpu_utilization);
+                    push(next, 'vram', g.vram_percent);
+                    push(next, 'power', g.power_limit_w > 0 ? (g.power_draw_w / g.power_limit_w) * 100 : 0);
+                    push(next, 'temp', g.temperature_c);
+                }
+                return next;
+            });
+        });
+    }
+
+    private tone(pct: number): string {
+        if (pct > 90) return 'var(--color-danger)';
+        if (pct > 70) return 'var(--color-warning)';
+        return 'var(--color-success)';
+    }
+
+    protected readonly rows = computed<RailRow[]>(() => {
+        const snap = this.svc.metrics();
+        if (!snap) return [];
+        const h = this.hist();
+        const g = snap.gpus?.[0];
+        const out: RailRow[] = [];
+
+        const cpu = snap.system?.cpu_percent ?? 0;
+        out.push({
+            key: 'cpu',
+            label: 'CPU',
+            valueText: `${cpu.toFixed(0)}%`,
+            pct: cpu,
+            barColor: this.tone(cpu),
+            spark: h['cpu'] ?? [],
+            sparkColor: 'var(--color-chart-lr)',
+        });
+
+        const ramPct = snap.system?.ram_percent ?? 0;
+        out.push({
+            key: 'ram',
+            label: 'RAM',
+            valueText: `${this.fmtGb(snap.system?.ram_used_mb ?? 0)} / ${this.fmtGb(snap.system?.ram_total_mb ?? 0)}`,
+            pct: ramPct,
+            barColor: this.tone(ramPct),
+            spark: h['ram'] ?? [],
+            sparkColor: 'var(--color-brand)',
+        });
+
+        if (g) {
+            out.push({
+                key: 'gpu',
+                label: 'GPU',
+                valueText: `${g.gpu_utilization}%`,
+                pct: g.gpu_utilization,
+                barColor: this.tone(g.gpu_utilization),
+                spark: h['gpu'] ?? [],
+                sparkColor: 'var(--color-warning)',
+            });
+            out.push({
+                key: 'vram',
+                label: 'VRAM',
+                valueText: `${this.fmtGb(g.vram_used_mb)} / ${this.fmtGb(g.vram_total_mb)}`,
+                pct: g.vram_percent,
+                barColor: this.tone(g.vram_percent),
+                spark: h['vram'] ?? [],
+                sparkColor: 'var(--color-warning)',
+            });
+            const powerPct = g.power_limit_w > 0 ? (g.power_draw_w / g.power_limit_w) * 100 : 0;
+            out.push({
+                key: 'power',
+                label: 'Power',
+                valueText: `${g.power_draw_w.toFixed(0)} W`,
+                pct: powerPct,
+                barColor: this.tone(powerPct),
+                spark: h['power'] ?? [],
+                sparkColor: 'var(--color-warning)',
+            });
+        }
+        return out;
+    });
+
+    /** Last 24 jobs (oldest→newest) as a status heatmap. */
+    protected readonly recentRuns = computed<HeatCell[]>(() => {
+        const jobs = [...this.jobStore.entities()].sort((a, b) => a.created_at - b.created_at);
+        const last = jobs.slice(-24);
+        return last.map((j) => ({
+            color: this.statusColor(j.status),
+            title: this.heatTitle(j),
+            dim: j.status === JobStatus.COMPLETED,
+        }));
+    });
+
+    private statusColor(status: JobStatus): string {
+        switch (status) {
+            case JobStatus.RUNNING:
+                return 'var(--color-success)';
+            case JobStatus.PENDING:
+            case JobStatus.PAUSED:
+                return 'var(--color-warning)';
+            case JobStatus.FAILED:
+                return 'var(--color-danger)';
+            case JobStatus.STOPPED:
+                return 'var(--color-text-disabled)';
+            default:
+                return 'oklch(0.40 0.06 155)';
+        }
+    }
+
+    private heatTitle(j: Job): string {
+        const name = j.config?.['lora_name'] || j.id.slice(0, 8);
+        return `${name} · ${j.status}`;
+    }
 
     ngOnInit() {
         this.svc.subscribeMetrics(2.0);
+        // Seed history for the recent-runs heatmap.
+        void this.jobStore.loadHistory();
     }
 
     ngOnDestroy() {
         this.svc.unsubscribeMetrics();
     }
 
-    formatMB(mb: number): string {
-        if (mb >= 1024) {
-            return (mb / 1024).toFixed(1) + ' GB';
-        }
-        return mb + ' MB';
+    private fmtGb(mb: number): string {
+        if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+        return `${mb.toFixed(0)} MB`;
     }
 }

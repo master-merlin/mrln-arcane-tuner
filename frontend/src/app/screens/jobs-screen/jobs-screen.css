@@ -21,31 +21,65 @@
     overflow-x: hidden;
 }
 
+/* The queue is a flush bordered bar (like the Training screen's TOC and the
+   system rail opposite), not a floating card. The panel's own header/list
+   carry the inner padding, so the bar itself sits flush and pins its header. */
 .queue-pane {
-    padding: 12px;
+    padding: 0;
+    overflow: hidden;
+    background: var(--color-surface-low);
+    border-right: 1px solid var(--color-border-subtle);
 }
 
 .detail-pane {
-    padding: 16px 20px;
+    padding: 24px 28px 28px;
     display: flex;
     flex-direction: column;
     gap: 14px;
 }
 
 .system-pane {
-    padding: 12px;
+    padding: 18px 16px;
+    background: var(--color-surface-low);
+    border-left: 1px solid var(--color-border-subtle);
 }
 
+/* ── Detail header ──────────────────────────────────────────────── */
+.detail-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+}
+.detail-head-main {
+    min-width: 0;
+    flex: 1;
+}
+.detail-eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 .detail-title {
     margin: 6px 0 4px;
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 700;
     letter-spacing: -0.015em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
+.detail-meta {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+}
+.detail-meta .dot-sep {
+    color: var(--color-text-disabled);
+}
 .detail-actions {
     display: flex;
     gap: 6px;
@@ -57,6 +91,67 @@
     text-align: center;
 }
 
+/* ── KPI row ────────────────────────────────────────────────────── */
+.kpi-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+}
+.kpi-viz {
+    margin-top: 8px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+}
+/* The bar/sparkline must fill the tile width (flex children would collapse). */
+.kpi-viz > .bar,
+.kpi-viz > app-sparkline {
+    flex: 1 1 auto;
+    width: 100%;
+}
+
+/* Loss convergence status (legacy coloring). */
+.kpi-status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+.kpi-status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.kpi-status.success {
+    color: var(--color-success);
+}
+.kpi-status.warning {
+    color: var(--color-warning);
+}
+.kpi-status.danger {
+    color: var(--color-danger);
+}
+
+/* ETA tile: finish time + running time (no progress bar). */
+.kpi-finish {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+}
+.kpi-finish-sub {
+    margin-top: 3px;
+    font-size: 10.5px;
+    color: var(--color-text-subtle);
+}
+
+/* ── Collapsible section cards ──────────────────────────────────── */
 .collapse-card .card-head {
     width: 100%;
     display: flex;
@@ -81,6 +176,33 @@
     font-family: var(--font-mono);
     min-width: 12px;
     text-align: center;
+}
+
+.head-chip {
+    margin-left: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+}
+
+/* Training-curve controls in the card head. */
+.curve-tools {
+    gap: 10px;
+}
+.curve-smooth {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    color: var(--color-text-muted);
+}
+.curve-smooth input[type='range'] {
+    width: 84px;
+    accent-color: var(--color-brand);
+    cursor: pointer;
+}
+.curve-smooth-val {
+    min-width: 30px;
+    color: var(--color-text-secondary);
 }
 
 /*
@@ -131,6 +253,26 @@
     font: inherit;
 }
 
+/* ── Run config key:value grid ──────────────────────────────────── */
+.config-grid {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr;
+    gap: 6px 16px;
+    align-items: baseline;
+}
+.config-key {
+    font-size: 11.5px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+}
+.config-val {
+    font-size: 11.5px;
+    color: var(--color-text-primary);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .config-json {
     margin: 0;
     padding: 10px 14px;
@@ -139,12 +281,13 @@
     border-radius: var(--radius-theme-md);
     font-size: 11px;
     line-height: 1.5;
-    max-height: 320px;
+    max-height: 360px;
     overflow: auto;
     color: var(--color-text-secondary);
     white-space: pre;
 }
 
+/* ── Log tail ───────────────────────────────────────────────────── */
 .log-tail {
     margin: 0;
     padding: 10px 14px;
@@ -159,63 +302,301 @@
 }
 
 .log-tail-line {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+.log-tail-line .tag {
+    min-width: 46px;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.log-text {
+    flex: 1;
     white-space: pre-wrap;
     word-break: break-all;
 }
 
+/* ── Sample previews (wrapping grid + vertical scroll — legacy parity) ─ */
 .samples-strip {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
     gap: 10px;
-    overflow-x: auto;
-    overflow-y: hidden;
     padding: 14px;
+    max-height: 460px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+/* Empty/placeholder text spans the full row rather than sitting in one cell. */
+.samples-strip > .muted {
+    grid-column: 1 / -1;
 }
 
 .sample-tile {
-    flex-shrink: 0;
-    width: 180px;
-    aspect-ratio: 1.4;
-    border: 1px dashed var(--color-border-default);
+    margin: 0;
+    min-width: 0;
+}
+.sample-img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
     border-radius: var(--radius-theme-md);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 8px;
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-high);
+    display: block;
+}
+.sample-cap {
+    margin-top: 5px;
+    font-size: 10.5px;
     color: var(--color-text-muted);
-    font-size: 11px;
-    gap: 6px;
-}
-
-.sample-label {
-    font-size: 11px;
-    color: var(--color-text-secondary);
-}
-
-.sample-name {
-    font-size: 10px;
-    color: var(--color-text-subtle);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-}
-
-.system-card {
-    height: 100%;
+    text-align: center;
 }
 
 .sdot {
     display: inline-block;
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--color-text-muted);
-    margin-right: 6px;
     vertical-align: middle;
 }
 
 .sdot.success {
     background: var(--color-success);
-    box-shadow: 0 0 6px var(--color-success);
+    box-shadow: 0 0 0 3px oklch(0.68 0.14 155 / 0.18);
+}
+
+.disk-note {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+/* ── Live phase strip (status_label) ────────────────────────────── */
+.phase-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--color-surface-mid);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-lg);
+}
+.phase-pulse {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--color-brand);
+    box-shadow: 0 0 0 0 oklch(0.7 0.16 280 / 0.5);
+    animation: phase-pulse 1.6s ease-out infinite;
+}
+@keyframes phase-pulse {
+    0% {
+        box-shadow: 0 0 0 0 oklch(0.7 0.16 280 / 0.5);
+    }
+    70% {
+        box-shadow: 0 0 0 7px oklch(0.7 0.16 280 / 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 oklch(0.7 0.16 280 / 0);
+    }
+}
+.phase-text {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+}
+.phase-bar {
+    position: relative;
+    flex: 1 1 auto;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--color-surface-high);
+    overflow: hidden;
+}
+.phase-bar > i {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--color-brand);
+    border-radius: 3px;
+    transition: width 240ms ease;
+}
+.phase-pct {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    min-width: 32px;
+    text-align: right;
+}
+
+/* ── Failure reason strip ───────────────────────────────────────── */
+.error-strip {
+    background: oklch(0.62 0.21 25 / 0.08);
+    border: 1px solid oklch(0.62 0.21 25 / 0.3);
+    border-radius: var(--radius-theme-lg);
+    padding: 10px 14px;
+}
+.error-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--color-danger);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+}
+.error-text {
+    margin: 2px 0 0;
+    padding-left: 20px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ── Run-config reuse actions ───────────────────────────────────── */
+.config-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--color-border-subtle);
+}
+
+/* ── Diagnostics warnings strip ─────────────────────────────────── */
+.diag-strip {
+    background: oklch(0.75 0.16 75 / 0.08);
+    border: 1px solid oklch(0.75 0.16 75 / 0.3);
+    border-radius: var(--radius-theme-lg);
+    padding: 10px 14px;
+}
+.diag-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--color-warning);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+}
+.diag-line {
+    margin: 2px 0 0;
+    padding-left: 20px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+}
+
+/* ── Sampling controls (Sample Previews head) ───────────────────── */
+.sampling-cadence {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    color: var(--color-text-muted);
+}
+.sampling-select {
+    height: auto;
+    padding: 2px 6px;
+    font-size: 10.5px;
+    font-family: var(--font-mono);
+    width: auto;
+}
+
+/* ── Generic compact icon button (close / refresh) ──────────────── */
+.q-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: var(--radius-theme-md);
+    background: transparent;
+    color: var(--color-text-subtle);
+    cursor: pointer;
+    transition:
+        background 120ms,
+        color 120ms;
+}
+.q-icon:hover {
+    background: var(--color-surface-high);
+    color: var(--color-text-primary);
+}
+
+/* ── Sample thumbnail button (resets native button chrome) ──────── */
+.sample-btn {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+/* ── Sample lightbox ────────────────────────────────────────────── */
+.lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: oklch(0.05 0.01 265 / 0.82);
+    backdrop-filter: blur(3px);
+}
+.lightbox-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--color-surface-mid);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+}
+.lightbox-nav:hover {
+    color: var(--color-text-primary);
+    background: var(--color-surface-high);
+}
+.lightbox-nav.left {
+    left: 24px;
+}
+.lightbox-nav.right {
+    right: 24px;
+}
+.lightbox-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 88vw;
+    max-height: 88vh;
+}
+.lightbox-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+}
+.lightbox-img {
+    max-width: 88vw;
+    max-height: 80vh;
+    object-fit: contain;
+    border-radius: var(--radius-theme-lg);
+    border: 1px solid var(--color-border-subtle);
 }

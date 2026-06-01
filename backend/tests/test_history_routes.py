@@ -67,6 +67,60 @@ def test_get_job_metrics(MockRepo, client):
 
 
 @patch(_JOB_REPO)
+def test_get_job_replay_not_found(MockRepo, client):
+    MockRepo.return_value.get_by_id.return_value = None
+    response = client.get("/api/jobs/history/ghost/replay")
+    assert response.status_code == 404
+
+
+@patch(_JOB_REPO)
+def test_get_job_replay_from_disk(MockRepo, client, tmp_path):
+    import json
+
+    history = [{"step": 1, "loss": 0.9, "lr": 1e-4}, {"step": 2, "loss": 0.8, "lr": 1e-4}]
+    (tmp_path / "loss_history.json").write_text(json.dumps(history), encoding="utf-8")
+    MockRepo.return_value.get_by_id.return_value = {"id": "job-1", "output_dir": str(tmp_path)}
+
+    response = client.get("/api/jobs/history/job-1/replay")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["source"] == "disk"
+    assert body["loss"] == history
+
+
+@patch(_METRICS_REPO)
+@patch(_JOB_REPO)
+def test_get_job_replay_db_fallback(MockJobRepo, MockMetricsRepo, client, tmp_path):
+    # Output dir exists but has no loss_history.json -> fall back to DB curve.
+    MockJobRepo.return_value.get_by_id.return_value = {"id": "job-1", "output_dir": str(tmp_path)}
+    curve = [{"step": 1, "loss": 0.5, "lr": 1e-4}]
+    MockMetricsRepo.return_value.get_loss_curve.return_value = curve
+
+    response = client.get("/api/jobs/history/job-1/replay")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["source"] == "db"
+    assert body["loss"] == curve
+
+
+@patch(_METRICS_REPO)
+@patch(_JOB_REPO)
+def test_get_job_replay_no_data(MockJobRepo, MockMetricsRepo, client):
+    # Missing output dir + empty DB curve -> available False, source none.
+    MockJobRepo.return_value.get_by_id.return_value = {"id": "job-1", "output_dir": None}
+    MockMetricsRepo.return_value.get_loss_curve.return_value = []
+
+    response = client.get("/api/jobs/history/job-1/replay")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is False
+    assert body["source"] == "none"
+    assert body["loss"] == []
+
+
+@patch(_JOB_REPO)
 def test_get_rerun_config_found(MockRepo, client):
     MockRepo.return_value.get_config_for_rerun.return_value = {"lr": 1e-4}
     response = client.get("/api/jobs/history/job-1/rerun-config")

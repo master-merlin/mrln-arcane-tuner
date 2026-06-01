@@ -22,6 +22,8 @@ export interface Job {
   started_at?: number;
   finished_at?: number;
   paused_at?: number;
+  /** In-memory run-queue priority for pending jobs (lower = sooner). */
+  priority?: number;
   pid?: number;
   error?: string;
   logs?: string[];
@@ -97,6 +99,24 @@ export class JobService {
     return this.http.get<TrainingStats>(`${this.apiUrl}/history/stats`);
   }
 
+  /**
+   * Replay an archived run's loss history (disk loss_history.json first, then
+   * the persisted step-metrics curve) + whether its output folder still exists.
+   */
+  getJobReplay(jobId: string): Observable<{
+    available: boolean;
+    source: 'disk' | 'db' | 'none';
+    output_dir: string | null;
+    loss: Array<{ step: number; loss: number; lr?: number; grad_norm?: number; epoch?: number }>;
+  }> {
+    return this.http.get<{
+      available: boolean;
+      source: 'disk' | 'db' | 'none';
+      output_dir: string | null;
+      loss: Array<{ step: number; loss: number; lr?: number; grad_norm?: number; epoch?: number }>;
+    }>(`${this.apiUrl}/history/${jobId}/replay`);
+  }
+
   listJobs(): Observable<Job[]> {
     return this.http.get<Job[]>(this.apiUrl);
   }
@@ -121,8 +141,14 @@ export class JobService {
     return this.http.post(`${this.apiUrl}/${jobId}/soft-stop`, {});
   }
 
-  restartJob(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/restart`, {});
+  restartJob(jobId: string, fresh = false): Observable<any> {
+    const q = fresh ? '?fresh=true' : '';
+    return this.http.post(`${this.apiUrl}/${jobId}/restart${q}`, {});
+  }
+
+  /** Move a pending job up/down in the run queue (priority reorder). */
+  reorderJob(jobId: string, direction: 'up' | 'down'): Observable<any> {
+    return this.http.post(`${this.apiUrl}/${jobId}/reorder?direction=${direction}`, {});
   }
 
   deleteJob(jobId: string): Observable<any> {

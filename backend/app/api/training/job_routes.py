@@ -97,17 +97,30 @@ async def soft_stop_job(job_id: str):
 
 
 @router.post("/jobs/{job_id}/restart")
-async def restart_job(job_id: str):
-    """Reset a finished/failed job and re-launch it."""
+async def restart_job(job_id: str, fresh: bool = False):
+    """Reset a finished/failed job and re-launch it.
+
+    ``fresh=true`` deletes the run's output folder first (clean restart).
+    """
     try:
-        logger.info("restarting_job", job_id=job_id)
-        await asyncio.to_thread(job_manager.restart_job, job_id)
-        return {"status": "restarted", "job_id": job_id}
+        logger.info("restarting_job", job_id=job_id, fresh=fresh)
+        await asyncio.to_thread(job_manager.restart_job, job_id, fresh)
+        return {"status": "restarted", "job_id": job_id, "fresh": fresh}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (OSError, RuntimeError) as e:
         logger.error("job_restart_failed", job_id=job_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/jobs/{job_id}/reorder")
+async def reorder_job(job_id: str, direction: str = "up"):
+    """Move a pending job up/down in the run queue (priority reorder)."""
+    try:
+        await asyncio.to_thread(job_manager.reorder_pending, job_id, direction)
+        return {"status": "reordered", "job_id": job_id, "direction": direction}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/jobs/{job_id}/logs", response_model=list[str])

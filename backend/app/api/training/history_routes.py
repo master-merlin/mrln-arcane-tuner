@@ -184,6 +184,57 @@ async def get_job_metrics(job_id: str):
     }
 
 
+@router.get("/jobs/history/{job_id}/replay")
+async def get_job_replay(job_id: str):
+    """Replay an archived run's loss history for the Jobs detail pane.
+
+    Prefers the on-disk ``{output_dir}/loss_history.json`` written by the
+    trainer (the user-facing source of truth); falls back to the persisted
+    ``step_metrics`` DB curve so replay still works if the output folder was
+    removed. Also reports whether the output folder still exists on disk so the
+    UI can offer "restart fresh" / flag missing artifacts.
+    """
+    from app.core.db.repositories.job_repo import JobHistoryRepository
+
+    job = await asyncio.to_thread(JobHistoryRepository().get_by_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    def _load():
+        import json
+        from pathlib import Path
+
+        from app.core.db.repositories.metrics_repo import MetricsRepository
+
+        output_dir = job.get("output_dir")
+        disk_available = bool(output_dir) and Path(output_dir).is_dir()
+
+        loss: list = []
+        source = "none"
+        if output_dir:
+            history_file = Path(output_dir) / "loss_history.json"
+            if history_file.is_file():
+                try:
+                    data = json.loads(history_file.read_text(encoding="utf-8"))
+                    if isinstance(data, list) and data:
+                        loss, source = data, "disk"
+                except (OSError, ValueError):
+                    pass
+        if not loss:
+            curve = MetricsRepository().get_loss_curve(job_id)
+            if curve:
+                loss, source = curve, "db"
+
+        return {
+            "available": disk_available,
+            "source": source,
+            "output_dir": output_dir,
+            "loss": loss,
+        }
+
+    return await asyncio.to_thread(_load)
+
+
 @router.get("/jobs/history/{job_id}/rerun-config")
 async def get_rerun_config(job_id: str):
     """Extract config from a past job for re-submission."""

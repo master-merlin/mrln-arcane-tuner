@@ -1,670 +1,24 @@
-import { Component, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
+﻿import { Component, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { DatePipe, JsonPipe, DecimalPipe, UpperCasePipe } from '@angular/common';
+import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { JobService, Job, JobStatus } from '../../../services/job';
 import { JobStore } from '../../../state/job.store';
 import { WebSocketService } from '../../../services/websocket.service';
 import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
-import { TrainingChartComponent, ChartDataPoint, SmoothingMode } from '../training-chart/training-chart';
-import { RunSummaryComponent } from '../run-summary/run-summary';
+import { type ChartDataPoint, type SmoothingMode } from '../training-chart/training-chart';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
+import { JobsViewState } from '../../../state/jobs-view.state';
 
 @Component({
   selector: 'app-training-job-queue',
   standalone: true,
-  imports: [DatePipe, JsonPipe, DecimalPipe, UpperCasePipe, FormsModule, TrainingChartComponent, RunSummaryComponent],
-  template: `
-    <div class="bg-surface-low/50 rounded-theme-xl border border-surface-mid overflow-hidden shadow-2xl">
-      <div class="px-6 py-4 border-b border-surface-mid flex justify-between items-center bg-surface-low/80">
-        <div class="flex items-center gap-2">
-          <div class="w-2 h-2 bg-brand rounded-full animate-pulse"></div>
-          <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wider">Active Workspace Queue</h3>
-        </div>
-        <div class="flex items-center gap-2">
-          <button (click)="refreshAll()" 
-            data-testid="refresh-jobs-btn"
-            class="text-xs font-medium text-brand hover:text-brand/80 transition-colors flex items-center gap-1 group">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-180 transition-transform duration-500"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
-            Refresh
-          </button>
-          <div class="h-4 w-px bg-surface-mid mx-1"></div>
-          <label class="relative inline-flex items-center cursor-pointer group" title="When enabled, pending jobs will start automatically when no other job is running">
-              <input type="checkbox" [checked]="autoQueue()" (change)="toggleAutoQueue()" class="sr-only peer">
-              <div class="w-9 h-5 bg-surface-high border border-surface-mid/50 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/50 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand peer-checked:after:bg-white transition-colors"></div>
-              <span class="ml-2 text-xs font-medium text-text-muted group-hover:text-text-secondary transition-colors">Auto Queue</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="divide-y divide-surface-mid/50">
-        @for (job of activeJobs(); track job.id) {
-          <div [attr.data-testid]="'job-item-' + job.id"
-               class="px-6 py-5 hover:bg-surface-mid/30 transition-all group border-l-2 border-transparent" [class.border-l-brand]="job.status === JobStatus.RUNNING">
-            <div class="flex flex-col gap-3">
-              <!-- Top Row: ID and Status -->
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-3">
-                  <div class="flex flex-col">
-                    <span class="text-white font-bold text-sm tracking-tight flex items-center gap-2">
-                       <span class="text-brand-light">{{ job.config['lora_name'] || 'UNNAMED' }}</span>
-                       <span class="text-text-subtle font-normal">on</span>
-                       {{ job.config['definition_id'] || job.plugin_id | uppercase }}
-                    </span>
-                    <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono flex-wrap">
-                      <span class="text-text-disabled">#{{ job.id.slice(0, 8) }}</span>
-                      <span>&bull;</span>
-                      <span>PID: {{ job.pid || 'N/A' }}</span>
-                      <span>&bull;</span>
-                      <span>{{ job.created_at * 1000 | date:'MMM d, HH:mm' }}</span>
-                      @if (job.config['project_id']) {
-                        <span>&bull;</span>
-                        <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-brand/15 text-brand-light border border-brand/30 cursor-default">{{ getProjectName(job.config['project_id']) }}</span>
-                      }
-                      @if (getModelSource(job); as src) {
-                        @if (src.source_type !== 'hf_hub') {
-                          <span>&bull;</span>
-                          <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full cursor-default"
-                                [title]="src.local_path || ''"
-                                [class]="src.source_type === 'local_diffusers'
-                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'">
-                            {{ src.source_type === 'local_diffusers' ? 'LOCAL' : 'SAFETENSORS' }}
-                          </span>
-                        } @else if (src.skip_update) {
-                          <span>&bull;</span>
-                          <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/30 cursor-default">
-                            OFFLINE
-                          </span>
-                        }
-                      }
-                    </div>
-                  </div>
-                </div>
-                
-                <div class="flex items-center gap-3">
-                  <span [class]="getStatusClass(job.status)" 
-                    [attr.data-testid]="'job-status-' + job.id"
-                    class="text-[10px] px-2.5 py-1 rounded-full uppercase font-black tracking-widest shadow-sm">
-                    {{ job.status }}
-                  </span>
-                  @if (job.status_label && (job.status === JobStatus.RUNNING || job.status === JobStatus.PAUSED)) {
-                    <span class="text-[10px] text-text-muted font-medium tracking-wide">· {{ job.status_label }}</span>
-                  }
-                  
-                  <div class="flex items-center gap-1 opacity-100 transition-opacity">
-                    <!-- Samples Toggle -->
-                    @if (job.config['sample_every_n_steps'] > 0) {
-                      <button (click)="toggleSamples(job.id)" 
-                        [attr.data-testid]="'toggle-job-samples-' + job.id"
-                        class="p-1.5 rounded-theme-lg transition-colors" 
-                        [class]="!jobsWithSamples().has(job.id) ? 'text-text-disabled cursor-not-allowed opacity-30' : samplesExpandedJobs().has(job.id) ? 'text-brand hover:text-brand/80' : 'text-text-subtle hover:text-brand'"
-                        [disabled]="!jobsWithSamples().has(job.id)"
-                        [title]="!jobsWithSamples().has(job.id) ? 'No samples yet' : samplesExpandedJobs().has(job.id) ? 'Hide Samples' : 'Show Samples'">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                      </button>
-                    }
-                    <!-- Chart Toggle -->
-                    <button (click)="toggleChart(job.id)" 
-                      [attr.data-testid]="'toggle-job-chart-' + job.id"
-                      [disabled]="!getChartData(job)"
-                      class="p-1.5 text-text-subtle hover:text-brand rounded-theme-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-text-subtle" [title]="chartExpandedJobs().has(job.id) ? 'Hide Chart' : 'Show Chart'">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
-                    </button>
-
-                    <button (click)="toggleConfig(job.id)" 
-                      [attr.data-testid]="'toggle-job-config-' + job.id"
-                      class="p-1.5 text-text-subtle hover:text-white rounded-theme-lg transition-colors" [title]="configExpandedJobs().has(job.id) ? 'Collapse Config' : 'View Config'">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" [class.rotate-180]="configExpandedJobs().has(job.id)" class="transition-transform"><path d="m6 9 6 6 6-6"/></svg>
-                    </button>
-                    @if (job.status === JobStatus.PENDING) {
-                       <button (click)="startJob(job.id)" 
-                        [attr.data-testid]="'start-job-' + job.id"
-                        class="p-1.5 text-success hover:bg-success/10 rounded-theme-lg transition-colors" title="Start Job">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                      </button>
-                    }
-                    @if (job.status === JobStatus.RUNNING) {
-                      <button (click)="pauseJob(job.id)" 
-                        class="p-1.5 text-amber-400 hover:bg-amber-400/10 rounded-theme-lg transition-colors" title="Pause Training">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-                      </button>
-                    }
-                    @if (job.status === JobStatus.PAUSED) {
-                      <button (click)="resumeJob(job.id)" 
-                        class="p-1.5 text-success hover:bg-success/10 rounded-theme-lg transition-colors" title="Resume Training">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                      </button>
-                    }
-                    @if (job.status === JobStatus.RUNNING || job.status === JobStatus.PAUSED) {
-                      <button (click)="openStopModal(job.id)" 
-                        [attr.data-testid]="'stop-job-' + job.id"
-                        class="p-1.5 text-warning hover:bg-warning/10 rounded-theme-lg transition-colors" title="Stop Job">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
-                      </button>
-                    }
-                    @if (job.status === JobStatus.FAILED || job.status === JobStatus.STOPPED) {
-                      <button (click)="restartJob(job.id)" 
-                        [attr.data-testid]="'restart-job-' + job.id"
-                        class="p-1.5 text-blue-400 hover:bg-blue-400/10 rounded-theme-lg transition-colors" title="Restart Job">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
-                      </button>
-                    }
-                    <button (click)="deleteJob(job.id)" 
-                      [attr.data-testid]="'delete-job-' + job.id"
-                      class="p-1.5 text-text-subtle hover:text-danger hover:bg-danger/10 rounded-theme-lg transition-colors" title="Delete Job">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Stop Modal -->
-              @if (stopModalJobId() === job.id) {
-                <div class="bg-surface-mid/95 backdrop-blur-sm p-4 rounded-theme-xl border border-surface-high animate-in fade-in slide-in-from-top-2 duration-200">
-                  <p class="text-sm text-text-secondary mb-3 font-medium">How would you like to stop this job?</p>
-                  <div class="flex items-center gap-2">
-                    <button (click)="softStopJob(job.id)" 
-                      class="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-brand/20 hover:bg-brand/30 text-brand border border-brand/30 rounded-theme-lg text-sm font-semibold transition-colors">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                      Soft Stop
-                    </button>
-                    <button (click)="hardStopJob(job.id)" 
-                      class="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-danger/20 hover:bg-danger/30 text-danger border border-danger/30 rounded-theme-lg text-sm font-semibold transition-colors">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
-                      Hard Stop
-                    </button>
-                    <button (click)="closeStopModal()" 
-                      class="px-3 py-2 text-text-muted hover:text-white hover:bg-surface-high rounded-theme-lg text-sm transition-colors">
-                      Cancel
-                    </button>
-                  </div>
-                  <p class="text-[10px] text-text-subtle mt-2"><strong>Soft Stop</strong> saves a checkpoint before stopping. <strong>Hard Stop</strong> kills immediately.</p>
-                </div>
-              }
-
-              <!-- Samples Grid Expander -->
-              @if (samplesExpandedJobs().has(job.id)) {
-                <div class="bg-base/25 border border-surface-mid/20 rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
-                  <div class="flex justify-between items-center mb-3">
-                    <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Sample Previews</h4>
-                    <div class="flex items-center gap-2">
-                      <!-- Cadence Selector -->
-                      <div class="flex items-center gap-1">
-                        <span class="text-[10px] text-text-subtle font-medium">Every</span>
-                        @if (!customCadenceMode().has(job.id)) {
-                          <select [value]="samplingCadence().get(job.id) ?? job.config['sample_every_n_steps'] ?? 0"
-                            (change)="onCadenceChange(job.id, $event)"
-                            data-testid="sampling-cadence-select"
-                            class="text-[10px] font-mono font-bold bg-surface-high border border-surface-mid/50 text-text-secondary rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand/50 appearance-none cursor-pointer">
-                            @if (job.config['sample_every_n_steps'] && ![50,100,150,200,250].includes(+job.config['sample_every_n_steps'])) {
-                              <option [value]="job.config['sample_every_n_steps']">{{ job.config['sample_every_n_steps'] }}</option>
-                            }
-                            <option [value]="50">50</option>
-                            <option [value]="100">100</option>
-                            <option [value]="150">150</option>
-                            <option [value]="200">200</option>
-                            <option [value]="250">250</option>
-                            <option value="custom">Custom…</option>
-                          </select>
-                        } @else {
-                          <input type="number" min="1" step="1"
-                            [value]="samplingCadence().get(job.id) ?? job.config['sample_every_n_steps'] ?? 50"
-                            (keydown.enter)="applyCustomCadence(job.id, $event)"
-                            (blur)="applyCustomCadence(job.id, $event)"
-                            data-testid="sampling-cadence-input"
-                            class="w-14 text-[10px] font-mono font-bold bg-surface-high border border-brand/50 text-text-secondary rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand/50"
-                            placeholder="#">
-                        }
-                        <span class="text-[10px] text-text-subtle font-medium">steps</span>
-                      </div>
-                      <div class="w-px h-3 bg-surface-mid"></div>
-                      <label class="relative inline-flex items-center cursor-pointer group" title="Pause sampling during training">
-                        <input type="checkbox" [checked]="samplingPausedJobs().has(job.id)" (change)="toggleSamplingPause(job.id)" class="sr-only peer">
-                        <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 peer-checked:after:bg-white transition-colors"></div>
-                        <span class="ml-1 text-[10px] font-medium transition-colors" [class]="samplingPausedJobs().has(job.id) ? 'text-amber-400' : 'text-text-subtle'">Pause</span>
-                      </label>
-                      <button (click)="loadSamples(job.id)" 
-                        class="p-1 text-brand hover:text-brand/80 transition-colors group" title="Refresh samples">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-180 transition-transform duration-500"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
-                      </button>
-                    </div>
-                  </div>
-                  @if (jobSamples().get(job.id); as samples) {
-                    @if (samples.length > 0) {
-                      <div class="grid grid-cols-6 gap-2 max-h-[33rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
-                        @for (sample of samples; track sample.filename) {
-                          <button (click)="openSampleModal(job.id, sample)" class="relative group rounded-theme-lg overflow-hidden border border-surface-mid hover:border-brand/50 transition-all hover:shadow-lg hover:shadow-brand/10 aspect-square bg-surface-high">
-                            <img [src]="getSampleImageUrl(job.id, sample.filename)" 
-                                 [alt]="'Step ' + sample.step"
-                                 class="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy">
-                            <div class="absolute bottom-0 left-0 right-0 bg-base/80 px-2 py-1">
-                              <span class="text-[10px] text-white font-mono font-bold">{{ sample.step === 999999 ? 'Final' : 'Step ' + sample.step }}</span>
-                            </div>
-                          </button>
-                        }
-                      </div>
-                    } @else {
-                      <div class="text-center text-xs text-text-subtle py-8 italic">No samples yet — waiting for first sampling step...</div>
-                    }
-                  } @else {
-                    <div class="text-center text-xs text-text-subtle py-8 italic">Loading samples...</div>
-                  }
-                </div>
-              }
-
-              <!-- Chart Expander (above metrics) -->
-              @if (chartExpandedJobs().has(job.id)) {
-                <div class="bg-base/25 border border-surface-mid/20 rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
-                    <div class="flex justify-between items-center mb-4">
-                        <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Training Curves</h4>
-                        <div class="flex items-center gap-3">
-                             <button (click)="smoothingMode.set(smoothingMode() === 'ema' ? 'sma' : 'ema')"
-                                     data-testid="smoothing-mode-toggle"
-                                     class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border transition-colors"
-                                     [class]="smoothingMode() === 'ema'
-                                       ? 'border-brand/40 bg-brand/10 text-brand-light'
-                                       : 'border-sky-500/40 bg-sky-500/10 text-sky-400'">
-                               {{ smoothingMode() === 'ema' ? 'EMA' : 'SMA' }}
-                             </button>
-                             <span class="text-[10px] text-text-subtle uppercase font-bold">Smoothing: {{ smoothingFactor() }}</span>
-                            <input type="range" min="0" max="0.99" step="0.01" 
-                                   [ngModel]="smoothingFactor()" (ngModelChange)="smoothingFactor.set($event)"
-                                   class="w-24 h-1 bg-surface-high rounded-lg appearance-none cursor-pointer accent-brand">
-                        </div>
-                    </div>
-                    
-                    @if(getChartData(job); as chart) {
-                        @if (chart.length > 1) {
-                            <app-training-chart [data]="chart" [smoothing]="smoothingFactor()" [smoothingMode]="smoothingMode()" [height]="180"
-                                [totalSteps]="getLatestMetrics(job)?.total_steps || 0"
-                                (plateauDetected)="onPlateauDetected(job, $event)"></app-training-chart>
-                        } @else {
-                             <div class="text-center text-xs text-text-subtle py-8 italic">Collecting data (wait for step 5)...</div>
-                        }
-                    }
-                </div>
-              }
-
-              <!-- Diagnostics Warnings -->
-              @if (job.warnings?.length) {
-                <div class="bg-amber-950/40 border border-amber-500/40 rounded-theme-xl p-3 mt-2 animate-in slide-in-from-top-1">
-                  <div class="flex items-center gap-2 mb-1">
-                    <svg class="w-4 h-4 text-amber-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
-                    </svg>
-                    <span class="text-amber-400 text-[10px] font-bold uppercase tracking-wider">Diagnostics</span>
-                  </div>
-                  @for (warning of job.warnings; track warning) {
-                    <p class="text-amber-200/80 text-xs leading-relaxed pl-6">{{ warning }}</p>
-                  }
-                </div>
-              }
-
-              <!-- Metrics Row (if running or has logs) -->
-              @if (getLatestMetrics(job); as metrics) {
-                <div [attr.data-testid]="'job-metrics-' + job.id"
-                     class="space-y-2">
-                  <!-- Progress Bar Card -->
-                  <div class="bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20 w-full">
-                    <div class="flex items-center gap-3">
-                      <div class="flex-1 h-1.5 bg-surface-high rounded-full overflow-hidden">
-                        <div class="h-full bg-brand transition-all duration-1000 shadow-[0_0_10px_rgba(var(--color-brand-rgb),0.5)]"
-                             [style.width.%]="metrics.progress">
-                        </div>
-                      </div>
-                      <span class="text-xl font-black text-white italic w-[3.5rem] text-right">{{ metrics.progress }}%</span>
-                    </div>
-                  </div>
-
-                  <!-- Unified Metrics Grid Card -->
-                  <div class="flex justify-between w-full bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20">
-                    <!-- Col 1: Progress (Step / Epoch) -->
-                    <div class="flex flex-col space-y-1 w-24">
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Step</span>
-                        <span class="text-xs text-brand font-mono font-bold">{{ metrics.step }}/{{ metrics.total_steps || '?' }}</span>
-                      </div>
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Epoch</span>
-                        <span class="text-xs text-purple-400 font-mono font-bold">{{ metrics.epoch || '—' }}</span>
-                      </div>
-                    </div>
-                    
-                    <!-- Col 2: Optimization (Loss / Status) -->
-                    <div class="flex flex-col space-y-1 w-28">
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Loss</span>
-                        <span class="text-xs text-brand-light font-mono font-bold">{{ metrics.loss | number:'1.4-6' }}</span>
-                      </div>
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Status</span>
-                        @if (getLossStatus(job); as status) {
-                          <span class="text-xs font-bold uppercase tracking-wider tooltip-trigger"
-                                [class.text-emerald-400]="status.icon === '🟢'"
-                                [class.text-amber-400]="status.icon === '🟡'"
-                                [class.text-danger]="status.icon === '🔴'"
-                                [title]="status.tooltip">
-                            {{ status.text }}
-                          </span>
-                        } @else {
-                          <span class="text-xs text-text-muted italic">—</span>
-                        }
-                      </div>
-                    </div>
-
-                    <!-- Col 3: Throughput (Step Time / Samples/s) -->
-                    <div class="flex flex-col space-y-1 w-28">
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Step Time</span>
-                        <span class="text-xs text-brand font-mono font-bold">{{ metrics.step_time }}s</span>
-                      </div>
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Samples/s</span>
-                        <span class="text-xs text-sky-400 font-mono font-bold">{{ metrics.samples_per_sec || '—' }}</span>
-                      </div>
-                    </div>
-
-                    <!-- Col 4: Hardware & Optimization (VRAM+Res / Grad Norm) -->
-                    <div class="flex flex-col space-y-1 w-32">
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">VRAM <span class="lowercase text-[8px] opacity-70">/ res</span></span>
-                        <span class="text-xs text-emerald-400 font-mono font-bold">
-                          @if (metrics.vram_reserved_mb || metrics.vram_allocated_mb) {
-                            {{ ((metrics.vram_reserved_mb || metrics.vram_allocated_mb) / 1024) | number:'1.1-1' }} GB
-                          } @else {
-                            —
-                          }
-                        </span>
-                        @if (metrics.resolution) {
-                          <span class="text-[9px] text-teal-400 font-mono ml-1">[{{ metrics.resolution }}]</span>
-                        }
-                      </div>
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Grad Norm</span>
-                        <span class="text-xs text-text-secondary font-mono font-bold">{{ metrics.grad_norm != null ? formatGradNorm(metrics.grad_norm) : '—' }}</span>
-                      </div>
-                    </div>
-
-                    <!-- Col 5: Time (Elapsed / ETC) -->
-                    <div class="flex flex-col space-y-1 w-24 text-right">
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">Elapsed</span>
-                        <span class="text-xs text-text-secondary font-mono font-bold">{{ getDuration(job) }}</span>
-                      </div>
-                      <div>
-                        <span class="text-[9px] text-text-subtle uppercase font-bold tracking-widest block mb-0.5">ETC</span>
-                        <span class="text-xs text-blue-300 font-mono font-bold">{{ formatEta(metrics.eta) }}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Anomaly / Secondary Warnings Card -->
-                  @if (metrics.nan_count) {
-                    <div class="bg-red-500/5 p-2 rounded-theme-xl border border-red-500/30 w-full animate-pulse">
-                      <div class="flex items-center gap-3 px-1">
-                          <span class="text-[10px] font-black uppercase tracking-wider text-red-400"
-                                title="NaN losses detected — consider reducing learning rate">
-                            ⚠ {{ metrics.nan_count }} NaN
-                          </span>
-                      </div>
-                    </div>
-                  }
-                </div>
-
-              }
-
-              <!-- Config Area (Collapsible) -->
-              @if (configExpandedJobs().has(job.id)) {
-                <div class="bg-base/70 p-4 rounded-theme-xl border border-surface-mid animate-in slide-in-from-top-2 duration-300">
-                  <div class="flex items-center justify-between mb-2">
-                    <span class="text-[10px] text-text-subtle uppercase font-black tracking-widest">Job Configuration</span>
-                    <div class="flex items-center gap-1">
-                      <button (click)="onSaveAsTemplate(job)" type="button"
-                        class="p-1.5 text-text-subtle hover:text-brand hover:bg-brand/10 rounded-theme-lg transition-colors" title="Save as Template">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
-                      </button>
-                      <button (click)="onReloadConfig(job)" type="button"
-                        class="p-1.5 text-text-subtle hover:text-green-400 hover:bg-green-400/10 rounded-theme-lg transition-colors" title="Reload into Settings">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-                      </button>
-                    </div>
-                  </div>
-                  <pre class="text-[10px] text-brand/80 font-mono overflow-auto max-h-40 scrollbar-thin scrollbar-thumb-surface-high"
-                       [attr.data-testid]="'job-config-json-' + job.id">{{ job.config | json }}</pre>
-                </div>
-              }
-
-              @if (job.error) {
-                <div [attr.data-testid]="'job-error-' + job.id"
-                     class="text-xs text-danger mt-1 flex items-start gap-2 bg-danger/10 p-2 rounded-theme-lg border border-danger/30">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                  <span class="break-words">{{ job.error }}</span>
-                </div>
-              }
-            </div>
-          </div>
-        } @empty {
-          <div class="px-6 py-12 text-center animate-pulse">
-            <div class="text-text-disabled text-sm italic">Waiting for new training directives...</div>
-          </div>
-        }
-      </div>
-
-      <!-- Archive Section (always visible) -->
-        <div class="mt-4 bg-surface-low/50 rounded-theme-xl border border-surface-mid overflow-hidden shadow-lg">
-          <div class="px-6 py-3 flex justify-between items-center bg-surface-low/80 hover:bg-surface-mid/30 transition-colors border-b border-surface-mid/50">
-            <button (click)="toggleArchive()" data-testid="toggle-archive-btn" class="flex-1 flex items-center gap-2 cursor-pointer text-left">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-text-muted">
-                <rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>
-              </svg>
-              <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Archive</span>
-              <span class="text-[10px] font-bold text-text-disabled bg-surface-high px-2 py-0.5 rounded-full">{{ archivedJobs().length }}</span>
-            </button>
-            <div class="flex items-center gap-4 pl-4 border-l border-surface-mid/50">
-               <select [ngModel]="archiveProjectFilter()" (ngModelChange)="onArchiveScopeChange($event)"
-                   data-testid="archive-project-selector"
-                   class="bg-surface-high border border-surface-mid text-white text-[10px] rounded-theme-md px-2 py-1 outline-none focus:border-brand uppercase tracking-wider font-semibold">
-                   <option [value]="'all'">All Projects</option>
-                   @for (p of projectService.allProjects(); track p.id) {
-                       <option [value]="p.id">{{ p.name }}</option>
-                   }
-               </select>
-               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                class="text-text-muted transition-transform cursor-pointer" [class.rotate-180]="archiveExpanded()" (click)="toggleArchive()">
-                <path d="m6 9 6 6 6-6"/>
-               </svg>
-            </div>
-          </div>
-          @if (archiveExpanded()) {
-            <div class="divide-y divide-surface-mid/50">
-              @for (job of archivedJobs(); track job.id) {
-                <div [attr.data-testid]="'job-item-' + job.id"
-                     class="px-6 py-5 hover:bg-surface-mid/30 transition-all group border-l-2 border-transparent opacity-80">
-                  <div class="flex flex-col gap-3">
-                    <div class="flex items-center justify-between">
-                      <div class="flex items-center gap-3">
-                        <div class="flex flex-col">
-                          <span class="text-white font-bold text-sm tracking-tight flex items-center gap-2">
-                             <span class="text-brand-light">{{ job.config['lora_name'] || 'UNNAMED' }}</span>
-                             <span class="text-text-subtle font-normal">on</span>
-                             {{ job.config['definition_id'] || job.plugin_id | uppercase }}
-                          </span>
-                          <div class="text-[10px] text-text-muted flex items-center gap-2 mt-0.5 font-mono flex-wrap">
-                            <span class="text-text-disabled">#{{ job.id.slice(0, 8) }}</span>
-                            <span>&bull;</span>
-                            <span>{{ job.created_at * 1000 | date:'MMM d, HH:mm' }}</span>
-                            @if (job.finished_at) {
-                              <span>&bull;</span>
-                              <span>{{ getDuration(job) }}</span>
-                            }
-                            @if (job.config['project_id']) {
-                              <span>&bull;</span>
-                              <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-brand/15 text-brand-light border border-brand/30 cursor-default">{{ getProjectName(job.config['project_id']) }}</span>
-                            }
-                            @if (getModelSource(job); as src) {
-                              @if (src.source_type !== 'hf_hub') {
-                                <span>&bull;</span>
-                                <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full cursor-default"
-                                      [title]="src.local_path || ''"
-                                      [class]="src.source_type === 'local_diffusers'
-                                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'">
-                                  {{ src.source_type === 'local_diffusers' ? 'LOCAL' : 'SAFETENSORS' }}
-                                </span>
-                              } @else if (src.skip_update) {
-                                <span>&bull;</span>
-                                <span class="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/30 cursor-default">
-                                  OFFLINE
-                                </span>
-                              }
-                            }
-                          </div>
-                        </div>
-                      </div>
-                      <div class="flex items-center gap-3">
-                        <span [class]="getStatusClass(job.status)"
-                          class="text-[10px] px-2.5 py-1 rounded-full uppercase font-black tracking-widest shadow-sm">
-                          {{ job.status }}
-                        </span>
-                        <div class="flex items-center gap-1">
-                          <!-- Samples Toggle -->
-                          <button (click)="toggleSamples(job.id)"
-                            class="p-1.5 rounded-theme-lg transition-colors"
-                            [class]="!jobsWithSamples().has(job.id) ? 'text-text-disabled cursor-not-allowed opacity-30' : samplesExpandedJobs().has(job.id) ? 'text-brand hover:text-brand/80' : 'text-text-subtle hover:text-brand'"
-                            [disabled]="!jobsWithSamples().has(job.id)"
-                            [title]="!jobsWithSamples().has(job.id) ? 'No samples available' : samplesExpandedJobs().has(job.id) ? 'Hide Samples' : 'Show Samples'">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                          </button>
-                          <button (click)="toggleConfig(job.id)"
-                            class="p-1.5 text-text-subtle hover:text-white rounded-theme-lg transition-colors" [title]="configExpandedJobs().has(job.id) ? 'Collapse Config' : 'View Config'">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" [class.rotate-180]="configExpandedJobs().has(job.id)" class="transition-transform"><path d="m6 9 6 6 6-6"/></svg>
-                          </button>
-                          @if (job.status === JobStatus.FAILED || job.status === JobStatus.STOPPED) {
-                            <button (click)="restartJob(job.id)"
-                              class="p-1.5 text-blue-400 hover:bg-blue-400/10 rounded-theme-lg transition-colors" title="Restart Job">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
-                            </button>
-                          }
-                          <button (click)="deleteJob(job.id)"
-                            class="p-1.5 text-text-subtle hover:text-danger hover:bg-danger/10 rounded-theme-lg transition-colors" title="Delete Job">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- Training Summary Card (completed/stopped jobs with metrics) — shared with projects Runs tab -->
-                    @if ((job.status === JobStatus.COMPLETED || job.status === JobStatus.STOPPED) && job['avg_loss']) {
-                      <div class="bg-base/25 p-3 rounded-theme-xl border border-surface-mid/20 mt-2">
-                        <app-run-summary [job]="job" [showHeader]="false" data-testid="training-summary-card" class="block"/>
-                      </div>
-                    }
-
-                    <!-- Samples Grid (Archive) -->
-                    @if (samplesExpandedJobs().has(job.id)) {
-                      <div class="bg-base/25 border border-surface-mid/20 rounded-theme-xl p-4 mt-2 mb-2 shadow-inner animate-in slide-in-from-top-2">
-                        <div class="flex justify-between items-center mb-3">
-                          <h4 class="text-xs font-bold text-text-muted uppercase tracking-wider">Sample Previews</h4>
-                          <button (click)="loadSamples(job.id)" class="p-1 text-brand hover:text-brand/80 transition-colors group" title="Refresh samples">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-180 transition-transform duration-500"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
-                          </button>
-                        </div>
-                        @if (jobSamples().get(job.id); as samples) {
-                          @if (samples.length > 0) {
-                            <div class="grid grid-cols-6 gap-2 max-h-[33rem] overflow-y-auto scrollbar-thin scrollbar-thumb-surface-high pr-1">
-                              @for (sample of samples; track sample.filename) {
-                                <button (click)="openSampleModal(job.id, sample)" class="relative group rounded-theme-lg overflow-hidden border border-surface-mid hover:border-brand/50 transition-all hover:shadow-lg hover:shadow-brand/10 aspect-square bg-surface-high">
-                                  <img [src]="getSampleImageUrl(job.id, sample.filename)" [alt]="'Step ' + sample.step" class="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy">
-                                  <div class="absolute bottom-0 left-0 right-0 bg-base/80 px-2 py-1">
-                                    <span class="text-[10px] text-white font-mono font-bold">{{ sample.step === 999999 ? 'Final' : 'Step ' + sample.step }}</span>
-                                  </div>
-                                </button>
-                              }
-                            </div>
-                          } @else {
-                            <div class="text-center text-xs text-text-subtle py-8 italic">No samples found on disk.</div>
-                          }
-                        } @else {
-                          <div class="text-center text-xs text-text-subtle py-8 italic">Loading samples...</div>
-                        }
-                      </div>
-                    }
-                    @if (configExpandedJobs().has(job.id)) {
-                      <div class="bg-base/70 p-4 rounded-theme-xl border border-surface-mid animate-in slide-in-from-top-2 duration-300">
-                        <div class="flex items-center justify-between mb-2">
-                          <span class="text-[10px] text-text-subtle uppercase font-black tracking-widest">Job Configuration</span>
-                          <div class="flex items-center gap-1">
-                            <button (click)="onSaveAsTemplate(job)" type="button"
-                              class="p-1.5 text-text-subtle hover:text-brand hover:bg-brand/10 rounded-theme-lg transition-colors" title="Save as Template">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
-                            </button>
-                            <button (click)="onReloadConfig(job)" type="button"
-                              class="p-1.5 text-text-subtle hover:text-green-400 hover:bg-green-400/10 rounded-theme-lg transition-colors" title="Reload into Settings">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-                            </button>
-                          </div>
-                        </div>
-                        <pre class="text-[10px] text-brand/80 font-mono overflow-auto max-h-40 scrollbar-thin scrollbar-thumb-surface-high">{{ job.config | json }}</pre>
-                      </div>
-                    }
-                    @if (job.error) {
-                      <div class="text-xs text-danger mt-1 flex items-start gap-2 bg-danger/10 p-2 rounded-theme-lg border border-danger/30">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                        <span class="break-words">{{ job.error }}</span>
-                      </div>
-                    }
-                  </div>
-                </div>
-              }
-            </div>
-          }
-        </div>
-    </div>
-
-    <!-- Sample Preview Modal -->
-    @if (sampleModalData(); as modal) {
-      <div class="fixed inset-0 z-50 flex items-center justify-center bg-overlay backdrop-blur-sm animate-in fade-in duration-200"
-           (click)="closeSampleModal()">
-
-        <!-- Previous Arrow -->
-        @if (hasPrevSample()) {
-          <button (click)="navigateSample(-1); $event.stopPropagation()"
-            data-testid="sample-modal-prev"
-            class="absolute left-4 z-10 p-3 text-white/60 hover:text-white bg-base/50 hover:bg-base/80 rounded-full transition-all hover:scale-110 backdrop-blur-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-          </button>
-        }
-
-        <!-- Next Arrow -->
-        @if (hasNextSample()) {
-          <button (click)="navigateSample(1); $event.stopPropagation()"
-            data-testid="sample-modal-next"
-            class="absolute right-4 z-10 p-3 text-white/60 hover:text-white bg-base/50 hover:bg-base/80 rounded-full transition-all hover:scale-110 backdrop-blur-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-          </button>
-        }
-
-        <div class="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center gap-3" (click)="$event.stopPropagation()">
-          <div class="flex items-center gap-3">
-            <span class="text-sm text-white font-mono font-bold bg-base/70 px-3 py-1.5 rounded-full">{{ modal.sample.step === 999999 ? 'Final' : 'Step ' + modal.sample.step }}</span>
-            <button (click)="closeSampleModal()" 
-              class="p-2 text-text-muted hover:text-white bg-base/70 hover:bg-overlay rounded-full transition-colors" title="Close">
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-            </button>
-          </div>
-          <img [src]="getSampleImageUrl(modal.jobId, modal.sample.filename)" 
-               [alt]="'Step ' + modal.sample.step"
-               class="max-w-full max-h-[80vh] rounded-theme-xl shadow-2xl border border-surface-mid/50 object-contain">
-        </div>
-      </div>
-    }
-  `,
-
-  styles: []
+  imports: [DatePipe, NgTemplateOutlet, FormsModule],
+  templateUrl: './training-job-queue.html',
+  styleUrl: './training-job-queue.css'
 })
 export class TrainingJobQueueComponent implements OnInit {
   jobService = inject(JobService);
@@ -674,14 +28,37 @@ export class TrainingJobQueueComponent implements OnInit {
   historicalJobs = signal<Job[]>([]);
   JobStatus = JobStatus;
 
+  // IDs we've optimistically retired into the archive (user stop, or a
+  // terminal WS update) ahead of the authoritative history fetch. Acts as a
+  // guard so the JobStore reconcile effect / 30s listJobs poll can't briefly
+  // resurrect a just-finished job back into the RUNNING group.
+  private locallyArchived = signal<Set<string>>(new Set<string>());
+
   // Derived views: active queue vs archive
   private readonly ACTIVE_STATUSES = new Set([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.PAUSED]);
-  activeJobs = computed(() => this.jobs().filter(j => this.ACTIVE_STATUSES.has(j.status)));
+  activeJobs = computed(() => {
+    const arch = this.locallyArchived();
+    return this.jobs().filter(j => this.ACTIVE_STATUSES.has(j.status) && !arch.has(j.id));
+  });
 
   archivedJobs = computed(() => this.historicalJobs());
   archiveExpanded = signal<boolean>(false);
   archiveProjectScope = signal<boolean>(true);
   archiveProjectFilter = signal<string>('all');
+
+  // ── Compact Hi-Fi queue: groupings + text filter ──────────────────
+  filterText = signal<string>('');
+  runningJobs = computed(() =>
+    this.activeJobs().filter(
+      j => (j.status === JobStatus.RUNNING || j.status === JobStatus.PAUSED) && this.matchesFilter(j),
+    ),
+  );
+  pendingJobs = computed(() =>
+    this.activeJobs()
+      .filter(j => j.status === JobStatus.PENDING && this.matchesFilter(j))
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.created_at - b.created_at),
+  );
+  recentJobs = computed(() => this.historicalJobs().filter(j => this.matchesFilter(j)).slice(0, 6));
 
   // Output events for config actions
   saveAsTemplate = output<any>();
@@ -704,7 +81,7 @@ export class TrainingJobQueueComponent implements OnInit {
   autoQueue = signal<boolean>(false);
   stopModalJobId = signal<string | null>(null);
 
-  // Model source overrides cache (definition_id → source info)
+  // Model source overrides cache (definition_id â†’ source info)
   jobModelSources = signal<Map<string, ModelSourceOverride>>(new Map());
 
   // Track if we just triggered a start to prevent double-firing before refresh updates status
@@ -714,6 +91,7 @@ export class TrainingJobQueueComponent implements OnInit {
   private destroyRef = inject(DestroyRef);
   private jobStore = inject(JobStore);
   private registryStore = inject(RegistryStore);
+  private viewState = inject(JobsViewState);
 
   // Tracks whether the JobStore has been seeded at least once. Until then,
   // the existing loadJobs/loadHistory subscribers are authoritative for first
@@ -729,7 +107,7 @@ export class TrainingJobQueueComponent implements OnInit {
     // lists, WS-driven status) that the store doesn't track. So we:
     //   1. PRUNE local rows the store no longer knows about (e.g. successful
     //      optimistic delete).
-    //   2. ADD store rows missing from local, partitioned by status — this
+    //   2. ADD store rows missing from local, partitioned by status â€” this
     //      restores rows when an optimistic delete rolls back on HTTP failure.
     // We never overwrite a local row that's already present: WS job_update
     // events carry richer state we'd lose by full-mirroring from the store.
@@ -740,18 +118,21 @@ export class TrainingJobQueueComponent implements OnInit {
 
       const storeIds = new Set(all.map(j => j.id));
 
-      // ── Prune: drop local rows the store no longer knows about ────────
+      // â”€â”€ Prune: drop local rows the store no longer knows about â”€â”€â”€â”€â”€â”€â”€â”€
       this.jobs.update(rows => rows.filter(j => storeIds.has(j.id)));
       this.historicalJobs.update(rows => rows.filter(j => storeIds.has(j.id)));
 
-      // ── Add: re-introduce store rows missing from local, partitioned ──
+      // â”€â”€ Add: re-introduce store rows missing from local, partitioned â”€â”€
+      const arch = this.locallyArchived();
       const localActiveIds = new Set(this.jobs().map(j => j.id));
       const localArchiveIds = new Set(this.historicalJobs().map(j => j.id));
       const missingActive: Job[] = [];
       const missingArchive: Job[] = [];
       for (const j of all) {
         const isActive = this.ACTIVE_STATUSES.has(j.status);
-        if (isActive && !localActiveIds.has(j.id)) {
+        // Don't re-add a locally-retired job to the active queue while the
+        // store still lags on its old (running) status.
+        if (isActive && !localActiveIds.has(j.id) && !arch.has(j.id)) {
           missingActive.push(j);
         } else if (!isActive && !localArchiveIds.has(j.id)) {
           missingArchive.push(j);
@@ -763,11 +144,21 @@ export class TrainingJobQueueComponent implements OnInit {
       if (missingArchive.length > 0) {
         this.historicalJobs.update(rows => [...rows, ...missingArchive]);
       }
+
+      // Drop the optimistic guard once the store agrees the job is no longer
+      // active (it has caught up to the terminal status, or the job is gone).
+      if (arch.size) {
+        const storeActiveIds = new Set(
+          all.filter(j => this.ACTIVE_STATUSES.has(j.status)).map(j => j.id),
+        );
+        const next = new Set([...arch].filter(id => storeActiveIds.has(id)));
+        if (next.size !== arch.size) this.locallyArchived.set(next);
+      }
     });
 
     // Mirror RegistryStore rows we've already seeded into the local
     // `jobModelSources` cache (template reads from the cache). Only
-    // patches keys the cache already knows about — never adds new ones
+    // patches keys the cache already knows about â€” never adds new ones
     // (the loadModelSources path remains the seed). This makes
     // cross-tab updates (entity.changed:registry_model) reflect in the
     // queue header badges without a refresh.
@@ -784,6 +175,16 @@ export class TrainingJobQueueComponent implements OnInit {
         }
       }
       if (mutated) this.jobModelSources.set(next);
+    });
+
+    // Publish live lists to the shared Jobs-screen bus so the sibling detail
+    // pane can render the LIVE selected job (streaming logs) without owning
+    // the WS machinery. Mirrors local signals; never reads back from the bus.
+    effect(() => {
+      this.viewState.activeJobs.set(this.activeJobs());
+    });
+    effect(() => {
+      this.viewState.archivedJobs.set(this.historicalJobs());
     });
   }
 
@@ -809,7 +210,7 @@ export class TrainingJobQueueComponent implements OnInit {
 
     // Refresh jobs immediately when server restarts (clears stale data)
     this.wsService.serverRestarted$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
-      console.log('[JobQueue] Server restarted — refreshing jobs');
+      console.log('[JobQueue] Server restarted â€” refreshing jobs');
       this.loadJobs();
     });
   }
@@ -817,6 +218,37 @@ export class TrainingJobQueueComponent implements OnInit {
   handleWsEvent(event: any) {
     if (event.type === 'job_update') {
       const updatedJob = event.payload as Job;
+      const isTerminal =
+        updatedJob.status === JobStatus.COMPLETED ||
+        updatedJob.status === JobStatus.FAILED ||
+        updatedJob.status === JobStatus.STOPPED;
+
+      if (isTerminal) {
+        // A finished run belongs in the archive — move it there now (carrying
+        // forward any logs we accumulated) instead of leaving it stranded in
+        // `jobs` until the 30s history poll. loadHistory() (inside
+        // archiveLocally) then backfills the authoritative DB summary row.
+        const existing = this.jobs().find(j => j.id === updatedJob.id);
+        const merged: Job = { ...updatedJob, logs: updatedJob.logs || existing?.logs || [] };
+        this.archiveLocally(merged, updatedJob.status);
+        // A natural completion/failure frees the GPU; let the next job start.
+        if (updatedJob.status !== JobStatus.STOPPED) {
+          this.processAutoQueue(this.jobs());
+        }
+        return;
+      }
+
+      // An authoritative active (pending/running/paused) update wins over a
+      // stale local archive entry — e.g. a job just restarted out of the
+      // Archive. Un-archive it so it surfaces in the queue and isn't held back
+      // by the optimistic-archive guard or left duplicated under RECENT.
+      if (this.locallyArchived().has(updatedJob.id)) {
+        this.locallyArchived.update(s => { const n = new Set(s); n.delete(updatedJob.id); return n; });
+      }
+      this.historicalJobs.update(rows =>
+        rows.some(j => j.id === updatedJob.id) ? rows.filter(j => j.id !== updatedJob.id) : rows,
+      );
+
       this.jobs.update(current => {
         const index = current.findIndex(j => j.id === updatedJob.id);
         if (index !== -1) {
@@ -830,10 +262,6 @@ export class TrainingJobQueueComponent implements OnInit {
           return [updatedJob, ...current];
         }
       });
-      // Check auto queue on status changes
-      if (updatedJob.status === JobStatus.COMPLETED || updatedJob.status === JobStatus.FAILED) {
-        this.processAutoQueue(this.jobs());
-      }
     } else if (event.type === 'job_log') {
       const { job_id, message, timestamp } = event.payload;
       this.jobs.update(current => {
@@ -1058,6 +486,30 @@ export class TrainingJobQueueComponent implements OnInit {
     }
   }
 
+  /**
+   * Optimistically retire a job into the archive view. Used both when the user
+   * stops a job and when a terminal `job_update` arrives over WS, so a finished
+   * run appears under RECENT/ARCHIVE immediately rather than after the 30s
+   * history poll. We then pull the authoritative history row (with DB summary
+   * fields) via loadHistory(); loadHistory keeps this optimistic row until the
+   * server has actually persisted it.
+   */
+  private archiveLocally(job: Job, status: JobStatus) {
+    this.locallyArchived.update(s => { const n = new Set(s); n.add(job.id); return n; });
+    const archived: Job = {
+      ...job,
+      status,
+      finished_at: job.finished_at ?? Math.floor(Date.now() / 1000),
+    };
+    this.jobs.update(rows => rows.filter(j => j.id !== job.id));
+    this.historicalJobs.update(rows =>
+      rows.some(j => j.id === job.id)
+        ? rows.map(j => (j.id === job.id ? { ...j, ...archived } : j))
+        : [archived, ...rows],
+    );
+    this.loadHistory();
+  }
+
   refreshAll() {
     this.loadJobs();
     this.loadHistory();
@@ -1067,11 +519,18 @@ export class TrainingJobQueueComponent implements OnInit {
     const filter = this.archiveProjectFilter();
     const projectId = (filter && filter !== 'all') ? filter : null;
     this.jobService.listJobHistory(projectId).subscribe(jobs => {
-      this.historicalJobs.set(jobs);
+      // Keep optimistic archive rows the server hasn't persisted yet, so a
+      // just-stopped job doesn't blink out between the optimistic move and the
+      // history DB write landing.
+      const serverIds = new Set(jobs.map(j => j.id));
+      const pendingLocal = this.historicalJobs().filter(
+        j => this.locallyArchived().has(j.id) && !serverIds.has(j.id),
+      );
+      this.historicalJobs.set(pendingLocal.length ? [...pendingLocal, ...jobs] : jobs);
     });
     // Also seed the JobStore so optimistic deleteJob() can prune archived
     // rows. JobStore.loadHistory() currently ignores the project filter
-    // (no-arg listJobHistory) — acceptable temporary duplication until the
+    // (no-arg listJobHistory) â€” acceptable temporary duplication until the
     // store fully owns the archive view (Phase 5+).
     void this.jobStore.loadHistory();
   }
@@ -1124,9 +583,9 @@ export class TrainingJobQueueComponent implements OnInit {
     }
 
     // 2. If nothing running, find next pending
-    // Sort by created_at (Oldest First - FIFO)
+    // Honor explicit queue priority first, then created_at (FIFO).
     const pendingJobs = jobs.filter(j => j.status === JobStatus.PENDING)
-      .sort((a, b) => a.created_at - b.created_at);
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.created_at - b.created_at);
 
     if (pendingJobs.length > 0) {
       const nextJob = pendingJobs[0];
@@ -1154,7 +613,7 @@ export class TrainingJobQueueComponent implements OnInit {
     }
   }
 
-  /** Throttled fields emitted every N steps — carry forward last known value. */
+  /** Throttled fields emitted every N steps â€” carry forward last known value. */
   private static readonly CARRY_FORWARD_KEYS = [
     'vram_allocated_mb', 'vram_reserved_mb', 'amp_scale', 'resolution',
   ];
@@ -1228,7 +687,7 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   onPlateauDetected(job: Job, event: { step: number; loss: number }) {
-    const warning = `⚠️ Loss appears to have plateaued at ~${event.loss} since step ${event.step}. This may indicate a model loading or configuration issue.`;
+    const warning = `âš ï¸ Loss appears to have plateaued at ~${event.loss} since step ${event.step}. This may indicate a model loading or configuration issue.`;
     this.jobs.update(current => {
       const target = current.find(j => j.id === job.id);
       if (target) {
@@ -1282,15 +741,15 @@ export class TrainingJobQueueComponent implements OnInit {
     const earlier = losses.slice(0, window).reduce((a, b) => a + b, 0) / window;
     const delta = (recent - earlier) / Math.max(earlier, 1e-8);
     
-    let icon = '🟡';
+    let icon = 'ðŸŸ¡';
     let text = 'Plateau';
     let colorClass = 'text-amber-400 bg-amber-500/10 border-amber-500/30';
     if (delta < -0.01) {
-      icon = '🟢';
+      icon = 'ðŸŸ¢';
       text = 'Converging';
       colorClass = 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
     } else if (delta > 0.02) {
-      icon = '🔴';
+      icon = 'ðŸ”´';
       text = 'Diverging';
       colorClass = 'text-danger bg-danger/10 border-danger/30';
     }
@@ -1316,7 +775,11 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   stopJob(id: string) {
-    this.jobService.stopJob(id).subscribe(() => this.loadJobs());
+    this.jobService.stopJob(id).subscribe(() => {
+      const job = this.jobs().find(j => j.id === id);
+      if (job) this.archiveLocally(job, JobStatus.STOPPED);
+      this.loadJobs();
+    });
   }
 
   restartJob(id: string) {
@@ -1332,6 +795,29 @@ export class TrainingJobQueueComponent implements OnInit {
     // prunes our local jobs/historicalJobs signals so the template
     // re-renders immediately. JobStore handles rollback + toast on failure.
     void this.jobStore.deleteJob(id);
+  }
+
+  /** Case-insensitive match against lora name / model / id for the filter box. */
+  private matchesFilter(j: Job): boolean {
+    const q = this.filterText().trim().toLowerCase();
+    if (!q) return true;
+    const name = String(j.config?.['lora_name'] ?? '').toLowerCase();
+    const model = String(j.config?.['definition_id'] ?? j.plugin_id ?? '').toLowerCase();
+    return name.includes(q) || model.includes(q) || j.id.toLowerCase().includes(q);
+  }
+
+  /** Drive the shared selection bus so the center detail pane follows clicks. */
+  select(id: string): void {
+    this.viewState.select(id);
+  }
+
+  isSelected(id: string): boolean {
+    return this.viewState.selectedId() === id;
+  }
+
+  /** Move a pending job up/down in the run queue. */
+  reorder(id: string, direction: 'up' | 'down') {
+    this.jobService.reorderJob(id, direction).subscribe({ next: () => this.loadJobs() });
   }
 
   getStatusClass(status: JobStatus): string {
@@ -1388,7 +874,7 @@ export class TrainingJobQueueComponent implements OnInit {
       if (!cached.has(defId)) {
         // Route through the store so cross-tab updates land in jobModelSources
         // (the reconcile effect below mirrors store rows into the local cache).
-        // On 404 (no override exists), loadFor rejects silently — we just
+        // On 404 (no override exists), loadFor rejects silently â€” we just
         // skip the cache write, matching the prior HTTP error branch.
         void this.registryStore.loadFor(defId).then(() => {
           const src = this.registryStore.byId(defId)();
@@ -1444,7 +930,11 @@ export class TrainingJobQueueComponent implements OnInit {
 
   hardStopJob(id: string) {
     this.closeStopModal();
-    this.jobService.stopJob(id).subscribe(() => this.loadJobs());
+    this.jobService.stopJob(id).subscribe(() => {
+      const job = this.jobs().find(j => j.id === id);
+      if (job) this.archiveLocally(job, JobStatus.STOPPED);
+      this.loadJobs();
+    });
   }
 
   onSaveAsTemplate(job: Job) {

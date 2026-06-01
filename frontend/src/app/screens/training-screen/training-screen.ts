@@ -2,6 +2,7 @@ import {
     afterNextRender,
     ChangeDetectionStrategy,
     Component,
+    effect,
     ElementRef,
     inject,
     signal,
@@ -9,6 +10,7 @@ import {
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { TrainingDynamicConfigComponent } from '../../components/training/training-dynamic-config/training-dynamic-config';
+import { TrainingHandoffService } from '../../state/training-handoff.service';
 import type { TrainingSegment } from '../../components/training/training-dynamic-config/training-dynamic-config';
 import { TrainingToc } from '../../components/training/training-toc/training-toc';
 import { TrainingEstimateRail } from '../../components/training/training-estimate-rail/training-estimate-rail';
@@ -61,7 +63,11 @@ export class TrainingScreen {
     private jobs = inject(JobService);
     private toast = inject(ToastService);
     private datasetStore = inject(DatasetStore);
+    private handoff = inject(TrainingHandoffService);
     protected scope = inject(ScopeStore);
+
+    /** The config form, so a job's config handed off from Jobs can be applied. */
+    private configEditor = viewChild(TrainingDynamicConfigComponent);
 
     protected availableModels = signal<ModelDefinition[]>([]);
     protected currentSchema = signal<unknown>(null);
@@ -87,6 +93,27 @@ export class TrainingScreen {
         void this.datasetStore.loadAll();
         // Highlight an initial section once the form DOM exists.
         afterNextRender(() => this.onPaneScroll());
+
+        // Apply a config handed off from the Jobs screen ("Reload" / "Save
+        // template") once the config form component is live. Mirrors the legacy
+        // app-shell pendingConfig effect; loadExternalConfig suppresses
+        // auto-template so reloading doesn't spawn a phantom template.
+        effect(() => {
+            const editor = this.configEditor();
+            const pending = this.handoff.pending();
+            if (!editor || !pending) return;
+            const h = this.handoff.consume();
+            if (!h) return;
+            // Defer so the reactive form has finished building from the schema.
+            setTimeout(() => {
+                if (h.mode === 'reload') {
+                    editor.loadExternalConfig(h.config);
+                    this.toast.success('Configuration loaded into Training settings.');
+                } else if (h.templateName && h.definitionId) {
+                    editor.importTemplate(h.templateName, h.config, h.definitionId);
+                }
+            }, 200);
+        });
     }
 
     protected onSegmentsChanged(s: TrainingSegment[]): void {

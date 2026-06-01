@@ -41,6 +41,9 @@ class Job(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     status_label: str | None = None
     paused_at: float | None = None
+    # In-memory queue priority for pending jobs (lower = runs sooner). Not
+    # persisted: resets to FIFO-by-created_at on a server restart.
+    priority: int = 0
 
     @classmethod
     def create(cls, plugin_id: str, config: dict[str, Any]) -> Job:

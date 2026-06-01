@@ -1,0 +1,42 @@
+:host {
+    display: block;
+    height: 100%;
+}
+
+/* Compact icon button used by queue card quick-actions. */
+.q-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: var(--radius-theme-md);
+    background: transparent;
+    color: var(--color-text-subtle);
+    cursor: pointer;
+    transition:
+        background 120ms,
+        color 120ms;
+}
+.q-icon:hover {
+    background: var(--color-surface-high);
+    color: var(--color-text-primary);
+}
+.q-icon-danger:hover {
+    background: oklch(0.7 0.17 25 / 0.12);
+    color: var(--color-danger);
+}
+
+/* Selected queue card / recent row — inset brand ring. */
+.q-card-selected {
+    box-shadow: inset 0 0 0 1px var(--color-brand-light);
+}
+
+/* Small status chip on running cards. */
+.head-chip-sm {
+    padding: 1px 6px;
+    font-size: 9.5px;
+    flex-shrink: 0;
+}

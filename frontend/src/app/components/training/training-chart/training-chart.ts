@@ -53,6 +53,10 @@ export interface ChartDataPoint {
       min-width: 55px; /* Stable width for numeric values */
       text-align: left;
     }
+    /* Hide the x-series (Step) legend row — the KPI Rail already surfaces the
+       current step prominently, so it's redundant clutter here. nth-child
+       counts hidden siblings, so the metric-width rules below stay correct. */
+    .u-legend .u-series:first-child { display: none; }
     /* Metric-specific widths for stability */
     .u-legend .u-series:nth-child(4) .u-value { min-width: 110px; } /* Best Loss: "0.0231 @ 4558" */
     .u-legend .u-series:nth-child(5) .u-value { min-width: 65px; }  /* LR: "1.000e-4" */
@@ -66,6 +70,8 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     readonly smoothingMode = input<SmoothingMode>('ema');
     readonly height = input<number>(220); // Increased height for better visibility
     readonly totalSteps = input<number>(0);
+    /** When true, draw a value callout at the curve tip (current point). */
+    readonly showTip = input<boolean>(false);
 
     readonly plateauDetected = output<{ step: number; loss: number }>();
 
@@ -78,10 +84,12 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
 
     constructor() {
         effect(() => {
-            // Track signal reads — triggers when data or smoothing change
+            // Track signal reads — triggers when data, smoothing, or the
+            // tip toggle change (toggling redraws so the callout appears).
             this.data();
             this.smoothing();
             this.smoothingMode();
+            this.showTip();
             if (this.plot) {
                 this.updateChart();
             }
@@ -243,9 +251,14 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         const cLoss = this.themeColor('--color-success');
         const cLR = this.themeColor('--color-chart-lr');
         const cBrand = this.themeColor('--color-brand');
+        // Best Loss is keyed to the KPI Rail's "Best Loss" tile (violet) so the
+        // two surfaces read as the same metric.
+        const cBest = this.themeColor('--color-violet');
         const cAxisDim = this.themeColor('--color-text-subtle');
         const cAxis = this.themeColor('--color-text-muted');
-        const cGrid = this.themeColor('--color-border-subtle');
+        // Stronger than --color-border-subtle so the scientific grid actually
+        // reads on the dark canvas.
+        const cGrid = this.themeColor('--color-border-default');
         const cTick = this.themeColor('--color-surface-high');
 
         // Base series: steps, loss (smoothed), loss (raw)
@@ -278,7 +291,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
             },
             {
                 label: 'Best Loss',
-                stroke: 'rgba(34, 197, 94, 0.8)', // Emerald green box in legend
+                stroke: cBest, // Violet — matches the KPI Rail "Best Loss" tile
                 width: 0, // Do not draw line
                 scale: 'y',
                 value: () => this._bestLossVal != null ? `${this._bestLossVal.toFixed(4)} @ ${this._bestLossStep}` : '—',
@@ -361,7 +374,11 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
             series,
             hooks: {
                 draw: [
-                    // ── Best loss horizontal marker ──
+                    // ── Best loss marker: dashed reference line + dot ──
+                    // Violet, keyed to the KPI Rail "Best Loss" tile. Violet is
+                    // far less luminous than the old green on the dark canvas,
+                    // so a faint line alone reads as invisible — pair a stronger
+                    // dashed line with a solid dot at the best-loss point.
                     (u: uPlot) => {
                         if (this._bestLossVal == null) return;
                         const ctx = u.ctx;
@@ -370,13 +387,31 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                         const left = u.bbox.left;
                         const right = left + u.bbox.width;
                         ctx.save();
-                        ctx.strokeStyle = 'rgba(34,197,94,0.4)';
-                        ctx.lineWidth = 1;
-                        ctx.setLineDash([4, 4]);
+                        // Dashed horizontal reference line at the lowest loss.
+                        ctx.strokeStyle = cBest;
+                        ctx.globalAlpha = 0.6;
+                        ctx.lineWidth = 1.2;
+                        ctx.setLineDash([5, 4]);
                         ctx.beginPath();
                         ctx.moveTo(left, y);
                         ctx.lineTo(right, y);
                         ctx.stroke();
+                        // Solid dot (+ halo) at the best-loss point itself.
+                        if (this._bestLossStep != null) {
+                            const x = u.valToPos(this._bestLossStep, 'x', true);
+                            if (!isNaN(x)) {
+                                ctx.setLineDash([]);
+                                ctx.globalAlpha = 0.3;
+                                ctx.fillStyle = cBest;
+                                ctx.beginPath();
+                                ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+                                ctx.fill();
+                                ctx.globalAlpha = 1;
+                                ctx.beginPath();
+                                ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
                         ctx.restore();
                     },
                     // ── Loss divergence band (fill between smoothed & raw) ──
@@ -412,6 +447,62 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                         }
                         ctx.closePath();
                         ctx.fill();
+                        ctx.restore();
+                    },
+                    // ── Current-point tip: green dot + toggleable value callout ──
+                    (u: uPlot) => {
+                        const smoothed = u.data[1];
+                        const steps = u.data[0];
+                        if (!smoothed || smoothed.length === 0) return;
+                        let i = smoothed.length - 1;
+                        while (i >= 0 && smoothed[i] == null) i--;
+                        if (i < 0) return;
+                        const x = u.valToPos(steps[i] as number, 'x', true);
+                        const y = u.valToPos(smoothed[i] as number, 'y', true);
+                        if (isNaN(x) || isNaN(y)) return;
+                        const ctx = u.ctx;
+                        ctx.save();
+                        // Halo + dot at the curve tip (always shown).
+                        ctx.strokeStyle = 'rgba(34,197,94,0.4)';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.arc(x, y, 7, 0, Math.PI * 2);
+                        ctx.stroke();
+                        ctx.fillStyle = cLoss;
+                        ctx.beginPath();
+                        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        if (this.showTip()) {
+                            const stepTxt = `step ${steps[i]}`;
+                            const valTxt = (smoothed[i] as number).toFixed(4);
+                            ctx.font = '10px Inter, sans-serif';
+                            const w = Math.max(ctx.measureText(stepTxt).width, ctx.measureText(valTxt).width) + 16;
+                            const h = 30;
+                            const right = u.bbox.left + u.bbox.width;
+                            let bx = x + 12;
+                            let by = y - h - 8;
+                            if (bx + w > right) bx = x - w - 12;
+                            if (by < u.bbox.top) by = y + 12;
+                            const r = 4;
+                            ctx.beginPath();
+                            ctx.moveTo(bx + r, by);
+                            ctx.arcTo(bx + w, by, bx + w, by + h, r);
+                            ctx.arcTo(bx + w, by + h, bx, by + h, r);
+                            ctx.arcTo(bx, by + h, bx, by, r);
+                            ctx.arcTo(bx, by, bx + w, by, r);
+                            ctx.closePath();
+                            ctx.fillStyle = 'rgba(10,12,16,0.9)';
+                            ctx.fill();
+                            ctx.strokeStyle = cLoss;
+                            ctx.lineWidth = 0.6;
+                            ctx.stroke();
+                            ctx.fillStyle = cAxisDim;
+                            ctx.fillText(stepTxt, bx + 8, by + 12);
+                            ctx.font = '600 11px Inter, sans-serif';
+                            ctx.fillStyle = cLoss;
+                            ctx.fillText(valTxt, bx + 8, by + 25);
+                        }
                         ctx.restore();
                     },
                 ],

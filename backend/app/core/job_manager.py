@@ -155,7 +155,10 @@ class JobManager:
                     TrainingSignalManager.send_signal(output_dir, "pause")
 
                     logger.info("relaunching_paused_job", job_id=job_id)
-                    self.start_job(job_id)
+                    # Keep the pause signal we just wrote — don't let start_job
+                    # clear it, that's how the trainer knows to pause after
+                    # loading the latest checkpoint.
+                    self.start_job(job_id, clear_stale_signal=False)
 
                     # After start_job the status is RUNNING; set it to PAUSED
                     # because the trainer will block on the pause signal.
@@ -258,6 +261,30 @@ class JobManager:
         with self._lock:
             return sorted(list(self._jobs.values()), key=lambda x: x.created_at, reverse=True)
 
+    def reorder_pending(self, job_id: str, direction: str) -> None:
+        """Move a pending job up/down in the run queue.
+
+        Reassigns the in-memory ``priority`` of all pending jobs to reflect the
+        new order (lower priority = runs sooner). Edge moves are no-ops. Not
+        persisted — order reverts to FIFO-by-created_at on a server restart.
+        """
+        if direction not in ("up", "down"):
+            raise ValueError(f"Invalid direction: {direction}")
+        with self._lock:
+            pending = sorted(
+                (j for j in self._jobs.values() if j.status == JobStatus.PENDING),
+                key=lambda j: (j.priority, j.created_at),
+            )
+            idx = next((i for i, j in enumerate(pending) if j.id == job_id), -1)
+            if idx == -1:
+                raise ValueError("Pending job not found")
+            swap = idx - 1 if direction == "up" else idx + 1
+            if swap < 0 or swap >= len(pending):
+                return  # already at an edge
+            pending[idx], pending[swap] = pending[swap], pending[idx]
+            for order, j in enumerate(pending):
+                j.priority = order
+
     def get_job(self, job_id: str) -> Job | None:
         """Look up a job by ID."""
         with self._lock:
@@ -338,6 +365,12 @@ class JobManager:
                 job.logs.append(str(data))
                 if len(job.logs) > 1000:
                     job.logs.pop(0)
+            # Reflect a trainer-side signal pause/resume in the live job status.
+            # The trainer pauses itself whenever it reads a pause signal — which
+            # may NOT have come from an explicit pause_job() (e.g. a leftover
+            # signal). Without this, the job would sit as RUNNING/"Training"
+            # with no GPU load and the user would have no way to resume it.
+            self._reconcile_signal_pause(job_id, str(data))
             asyncio.run_coroutine_threadsafe(
                 event_manager.broadcast("job_log", {
                     "job_id": job_id,
@@ -381,8 +414,46 @@ class JobManager:
         elif msg_type == "cache_ready":
             self._handle_cache_ready(data, loop)
 
+        # (pause/resume reconciliation handled inside the "log" branch above)
+
         elif msg_type == "exit":
             self._handle_exit_message(job_id, data)
+
+    def _reconcile_signal_pause(self, job_id: str, message: str) -> None:
+        """Sync job status with trainer-side pause/resume signal log events.
+
+        The trainer logs ``training_paused_by_signal`` when it blocks on a pause
+        signal and ``training_resumed_by_signal`` when it continues. We mirror
+        that into ``job.status`` so the live status is authoritative regardless
+        of how the pause arose (explicit pause_job, crash-recovery, or a stale
+        leftover signal) — and so the user can always Resume a paused run.
+
+        Only flips between RUNNING and PAUSED; never overrides a terminal state
+        (stopped/completed/failed) that may have raced in.
+        """
+        if "training_paused_by_signal" in message:
+            target = JobStatus.PAUSED
+        elif "training_resumed_by_signal" in message:
+            target = JobStatus.RUNNING
+        else:
+            return
+
+        job = self.get_job(job_id)
+        if not job:
+            return
+        with self._lock:
+            if job.status == target or job.status not in (JobStatus.RUNNING, JobStatus.PAUSED):
+                return
+            job.status = target
+            job.paused_at = time.time() if target == JobStatus.PAUSED else None
+
+        self._persist_status(job_id, "paused" if target == JobStatus.PAUSED else "running")
+        loop = self._loop
+        if loop:
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_update", job.model_dump()),
+                loop,
+            )
 
     def _handle_cache_ready(self, ds_names: Any, loop: asyncio.AbstractEventLoop) -> None:
         """Mark datasets as cache-bearing after trainer reports readiness."""
@@ -515,8 +586,22 @@ class JobManager:
 
     # ── Job Control ──────────────────────────────────────────────────
 
-    def start_job(self, job_id: str) -> None:
-        """Launch the training subprocess for a job."""
+    def start_job(self, job_id: str, clear_stale_signal: bool = True) -> None:
+        """Launch the training subprocess for a job.
+
+        Args:
+            job_id: The job to launch.
+            clear_stale_signal: When true (the default), remove any leftover
+                ``signal.json`` from the job's output directory before
+                launching. Output dirs are keyed by ``lora_name`` +
+                ``definition_id``, so a new job can reuse a directory whose
+                previous occupant left an unconsumed pause/soft_stop signal —
+                the fresh trainer would then read it on its first check and
+                block in the pause loop (status "Training", no GPU load, no
+                steps). The crash-recovery ``relaunch_paused`` path passes
+                ``False`` because it *intentionally* writes a pause signal
+                immediately before calling start_job.
+        """
         job = self.get_job(job_id)
         if not job:
             raise ValueError("Job not found")
@@ -527,6 +612,10 @@ class JobManager:
         plugin = plugin_manager.get_plugin(job.plugin_id)
         if not plugin:
             raise ValueError(f"Plugin {job.plugin_id} not found")
+
+        if clear_stale_signal:
+            from app.engine.components.signal_manager import TrainingSignalManager
+            TrainingSignalManager(self._get_job_output_dir(job)).clear_signal()
 
         try:
             process = plugin.start_training(job.config)
@@ -597,6 +686,15 @@ class JobManager:
         run_name = f"{lora_name}_{model_part}"
         return os.path.join(output_dir, run_name)
 
+    def _delete_job_output_dir(self, job: Job) -> None:
+        """Delete a run's output folder (for a fresh restart). No-op if absent."""
+        import shutil
+
+        output_dir = self._get_job_output_dir(job)
+        if output_dir and os.path.isdir(output_dir):
+            shutil.rmtree(output_dir, ignore_errors=True)
+            logger.info("deleted_job_output_dir", job_id=job.id, output_dir=output_dir)
+
     def pause_job(self, job_id: str) -> None:
         """Send pause signal to a running training job."""
         from app.engine.components.signal_manager import TrainingSignalManager
@@ -655,8 +753,13 @@ class JobManager:
         TrainingSignalManager.send_signal(output_dir, "soft_stop")
         # Don't change status yet — the process will exit and the exit handler will update
 
-    def restart_job(self, job_id: str) -> None:
-        """Reset a finished/failed job and re-launch it."""
+    def restart_job(self, job_id: str, fresh: bool = False) -> None:
+        """Reset a finished/failed job and re-launch it.
+
+        When ``fresh`` is true, the run's output folder is deleted first so the
+        restart starts from a clean slate (no prior checkpoints/samples/logs);
+        otherwise the existing output is reused.
+        """
         job = self.get_job(job_id)
         if not job:
             raise ValueError("Job not found")
@@ -664,7 +767,10 @@ class JobManager:
         if job.status in [JobStatus.RUNNING, JobStatus.PENDING]:
             raise ValueError(f"Cannot restart job in state {job.status}")
 
-        logger.info("restarting_job", job_id=job_id)
+        logger.info("restarting_job", job_id=job_id, fresh=fresh)
+
+        if fresh:
+            self._delete_job_output_dir(job)
 
         self._stop_tailer(job_id)
         self._reset_job_log_state(job)
@@ -679,7 +785,34 @@ class JobManager:
             job.warnings = []
             job.status_label = None
             job.paused_at = None
+            # Append behind any jobs already pending — the restart shouldn't
+            # jump the queue just because its created_at is from the original
+            # run (priority sorts ahead of created_at).
+            max_priority = max(
+                (j.priority for j in self._jobs.values()
+                 if j.status == JobStatus.PENDING and j.id != job_id),
+                default=-1,
+            )
+            job.priority = max_priority + 1
+            # The GPU runs one job at a time. If another job is already
+            # training (or paused, holding VRAM), leave this restart queued.
+            gpu_busy = any(
+                j.status in (JobStatus.RUNNING, JobStatus.PAUSED)
+                for j in self._jobs.values()
+            )
         self._persist_status(job_id, "pending", error=None)
+
+        if gpu_busy:
+            # Stay queued; auto-queue (or a manual Start) launches it when the
+            # GPU frees up. Broadcast so the UI moves it from Archive into the
+            # pending queue rather than (wrongly) starting it concurrently.
+            logger.info("restart_queued_behind_active_job", job_id=job_id)
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    event_manager.broadcast("job_update", job.model_dump()),
+                    self._loop,
+                )
+            return
 
         self.start_job(job_id)
 

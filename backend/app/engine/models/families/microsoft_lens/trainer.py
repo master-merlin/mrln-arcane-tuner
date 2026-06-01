@@ -54,7 +54,53 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
         self.config.setdefault("flux_shift_patchify_factor", 2)
 
     def _create_sampler(self):
-        return None  # no in-training sampling in v1
+        interval = int(self.config.get("sample_every_n_steps", 0))
+        if interval <= 0:
+            return None
+        # Ensure the driver owns the live TE reference (restored above if a
+        # re-assignment dropped it), then release our capture alias so the
+        # driver remains the single owner.
+        self._restore_sampling_text_encoder()
+        self._sampling_text_encoder = None
+        self._sampling_tokenizer = None
+        from .sampler import MicrosoftLensSampler
+        return MicrosoftLensSampler(self)
+
+    # --- Text-encoder retention for in-training sampling ---
+
+    def _offload_text_encoders(self) -> None:
+        """Offload TEs after caching, retaining a ref for sampling.
+
+        In-training sampling encodes *new* prompts, so it needs the text
+        encoder after the caching phase. The generic flow re-runs
+        ``_assign_components`` during TE-quantization setup; because offload
+        pops the TE from ``self.components``, that re-assignment drops the
+        driver's reference and ``gc`` frees the module. When sampling is
+        enabled and the TE is merely offloaded (not unloaded), keep a strong
+        reference so it survives; :meth:`_assign_components` restores it.
+        """
+        super()._offload_text_encoders()
+        if (
+            int(self.config.get("sample_every_n_steps", 0)) > 0
+            and not self.config.get("unload_text_encoder", False)
+        ):
+            self._sampling_text_encoder = self.driver.text_encoder
+            self._sampling_tokenizer = self.driver.tokenizer
+
+    def _assign_components(self) -> None:
+        super()._assign_components()
+        # Restore the sampling TE/tokenizer if a re-assignment dropped them
+        # (the offloaded TE is no longer in the components dict).
+        self._restore_sampling_text_encoder()
+
+    def _restore_sampling_text_encoder(self) -> None:
+        """Re-attach the captured TE/tokenizer onto the driver if dropped."""
+        te = getattr(self, "_sampling_text_encoder", None)
+        if te is not None and self.driver.text_encoder is None:
+            self.driver.text_encoder = te
+            self.driver.tokenizer = self._sampling_tokenizer
+            self.text_encoder = te
+            self.tokenizer = self._sampling_tokenizer
 
     def _update_primary_model(self, new_model: torch.nn.Module) -> None:
         self.transformer = new_model

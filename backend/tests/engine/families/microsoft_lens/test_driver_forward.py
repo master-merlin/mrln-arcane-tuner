@@ -44,3 +44,49 @@ def test_arch_params_override_selected_layers_and_offset():
     assert drv.hf_layer_indices == [3, 5, 7, 9]
     assert drv.txt_offset == 50
     assert drv.te_max_length == 256
+
+
+def _tiny_dit():
+    from app.engine.models.families.microsoft_lens.vendor.transformer import (
+        LensTransformer2DModel,
+    )
+    return LensTransformer2DModel(
+        patch_size=2, in_channels=128, out_channels=32, num_layers=1,
+        attention_head_dim=8, num_attention_heads=2, inner_dim=16,
+        enc_hidden_dim=2880, axes_dims_rope=(2, 2, 4),
+        gate_mlp=True, rms_norm=True, multi_layer_encoder_feature=True,
+        selected_layer_index=(5, 11, 17, 23),
+    )
+
+
+class _FakeBN:
+    running_mean = torch.zeros(128)
+    running_var = torch.ones(128)
+    eps = 1e-5
+
+
+class _FakeVAE:
+    bn = _FakeBN()
+
+
+def test_prepare_latents_and_noise_shapes():
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    drv.vae = _FakeVAE()
+    vae_latent = torch.randn(2, 32, 4, 4)        # h=w=4 -> S=(2)(2)=4
+    seq = drv.prepare_latents(vae_latent)
+    assert seq.shape == (2, 4, 128)
+    noise_seq = drv.prepare_noise(torch.randn(2, 32, 4, 4))
+    assert noise_seq.shape == (2, 4, 128)
+
+
+def test_forward_pass_runs_and_matches_seq_shape():
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    drv.transformer = _tiny_dit().eval()
+    b, s = 1, 4  # latent_h = latent_w = 2 -> S = 4
+    noisy = torch.randn(b, s, 128)
+    text = torch.randn(b, 4, 5, 2880)            # 4 layers, S_txt=5
+    mask = torch.ones(b, 5, dtype=torch.bool)
+    ts = torch.tensor([0.5])
+    batch = {"latent_h": 2, "latent_w": 2}
+    out = drv.forward_pass(noisy, ts, (text, mask), batch)
+    assert out.shape[0] == b and out.shape[1] == s

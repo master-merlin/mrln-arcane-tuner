@@ -23,7 +23,8 @@ Key family characteristics:
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, List
 
 import structlog
 import torch
@@ -183,18 +184,45 @@ class MicrosoftLensDriver(IModelDriver):
     # --- Phase 5: forward (Task 6) ---
 
     def prepare_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """VAE latent -> 2x2 patchify -> BN-normalize -> [B, S, 128] (Task 6)."""
-        raise NotImplementedError("Implemented in Task 6")
+        """VAE latent [B,32,h,w] -> patchify -> BN-normalize -> [B, S, 128]."""
+        seq = utils.patchify_to_seq(latents)
+        return utils.bn_normalize_seq(seq, self.vae).to(self.device)
 
     def prepare_noise(self, noise: torch.Tensor) -> torch.Tensor:
-        """Raw noise -> patchify -> [B, S, 128], no BN (Task 6)."""
-        raise NotImplementedError("Implemented in Task 6")
+        """Raw noise [B,32,h,w] -> patchify -> [B, S, 128] (no BN)."""
+        return utils.patchify_to_seq(noise).to(self.device)
 
     def forward_pass(
         self, noisy_input, timesteps, text_embeddings, batch,
     ) -> torch.Tensor:
-        """Run the Lens DiT; flow-matching velocity prediction (Task 6)."""
-        raise NotImplementedError("Implemented in Task 6")
+        """Run the Lens DiT. ``timesteps`` are flow-matching ``[0, 1]``."""
+        if isinstance(text_embeddings, tuple):
+            stacked, mask = text_embeddings
+        else:
+            stacked = text_embeddings
+            mask = torch.ones(
+                stacked.shape[0], stacked.shape[2],
+                dtype=torch.bool, device=stacked.device,
+            )
+        feature_list: List[torch.Tensor] = [
+            stacked[:, i, :, :].contiguous() for i in range(stacked.shape[1])
+        ]
+
+        latent_h = int(batch.get("latent_h", 0))
+        latent_w = int(batch.get("latent_w", 0))
+        if latent_h <= 0 or latent_w <= 0:
+            side = int(math.isqrt(noisy_input.shape[1]))
+            latent_h = latent_w = side
+        img_shapes = [(1, latent_h, latent_w)]
+
+        out = self.transformer(
+            hidden_states=noisy_input,
+            encoder_hidden_states=feature_list,
+            encoder_hidden_states_mask=mask.to(noisy_input.device),
+            timestep=timesteps.to(noisy_input.device),
+            img_shapes=img_shapes,
+        )
+        return out
 
     # --- Phase 6: saver ---
 

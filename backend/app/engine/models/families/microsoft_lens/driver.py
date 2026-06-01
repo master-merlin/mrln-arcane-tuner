@@ -143,9 +143,34 @@ class MicrosoftLensDriver(IModelDriver):
 
     # --- Phase 2: encode_text (Task 5) ---
 
+    @torch.no_grad()
     def encode_text(self, captions: list[str], dtype: torch.dtype) -> TextEncoderOutput:
-        """Chat-template + GPT-OSS 4-layer extraction + 97-token offset (Task 5)."""
-        raise NotImplementedError("Implemented in Task 5")
+        """Chat-template -> GPT-OSS -> 4 selected layers -> drop 97-token offset.
+
+        Returns embeddings stacked as ``[B, 4, S, 2880]`` and a bool mask
+        ``[B, S]``. ``S`` varies per call (the trainer right-pads at batch
+        assembly). The 4-layer list expected by the DiT is reconstructed in
+        ``forward_pass`` by splitting dim=1.
+        """
+        rendered = [utils.render_chat_prompt(c, self.tokenizer) for c in captions]
+        encoded = self.tokenizer(
+            rendered, padding=True, truncation=True,
+            max_length=self.te_max_length, return_tensors="pt",
+            add_special_tokens=True,
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        attn = encoded["attention_mask"].to(self.device)
+
+        out = self.text_encoder(
+            input_ids=input_ids, attention_mask=attn,
+            output_hidden_states=True, use_cache=False,
+        )
+        layers = [out.hidden_states[i] for i in self.hf_layer_indices]
+        mask = attn.bool()
+        layers, mask = utils.drop_txt_offset(layers, mask, offset=self.txt_offset)
+
+        stacked = torch.stack([f.to(dtype=dtype) for f in layers], dim=1)
+        return TextEncoderOutput(embeddings=stacked, attention_mask=mask)
 
     # --- Phase 5: forward (Task 6) ---
 

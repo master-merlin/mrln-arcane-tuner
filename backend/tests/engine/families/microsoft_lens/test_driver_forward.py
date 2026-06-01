@@ -118,6 +118,33 @@ def test_forward_pass_requires_both_latent_dims():
         drv.forward_pass(noisy, ts, (text, mask), {"latent_h": 2})  # latent_w missing
 
 
+def test_gradient_checkpointing_enable_and_backward():
+    """enable_gradient_checkpointing must not raise and the checkpointed
+    forward must run under grad and produce gradients."""
+    dit = _tiny_dit().train()
+    assert dit.gradient_checkpointing is False
+    dit.enable_gradient_checkpointing()  # diffusers ModelMixin -> _set_gradient_checkpointing
+    assert dit.gradient_checkpointing is True
+
+    noisy = torch.randn(1, 4, 128, requires_grad=True)  # latent_h=latent_w=2 -> S=4
+    text = [torch.randn(1, 5, 2880) for _ in range(4)]
+    mask = torch.ones(1, 5, dtype=torch.bool)
+    out = dit(
+        hidden_states=noisy,
+        encoder_hidden_states=text,
+        encoder_hidden_states_mask=mask,
+        timestep=torch.tensor([0.5]),
+        img_shapes=[(1, 2, 2)],
+    )
+    assert out.shape == (1, 4, 128)
+    out.sum().backward()
+    assert noisy.grad is not None
+    # A LoRA-targetable block weight must receive a gradient through the
+    # checkpointed path.
+    qkv = dit.transformer_blocks[0].attn.img_qkv.weight
+    assert qkv.grad is not None
+
+
 def test_forward_pass_uses_stashed_nonsquare_grid():
     drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
     drv.vae = _FakeVAE()

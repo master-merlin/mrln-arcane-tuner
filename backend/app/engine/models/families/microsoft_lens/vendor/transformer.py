@@ -437,6 +437,10 @@ class LensTransformer2DModel(
         )
         self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=True)
 
+        # Flipped to True by diffusers' _set_gradient_checkpointing (via
+        # enable_gradient_checkpointing); the forward block loop honors it.
+        self.gradient_checkpointing = False
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -522,13 +526,23 @@ class LensTransformer2DModel(
         )
 
         for block in self.transformer_blocks:
-            encoder_hidden_states, hidden_states = block(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                temb=temb,
-                image_rotary_emb=image_rotary_emb,
-                attention_mask=attention_mask,
-            )
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
+                    block,
+                    hidden_states,
+                    encoder_hidden_states,
+                    temb,
+                    image_rotary_emb,
+                    attention_mask,
+                )
+            else:
+                encoder_hidden_states, hidden_states = block(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    temb=temb,
+                    image_rotary_emb=image_rotary_emb,
+                    attention_mask=attention_mask,
+                )
 
         hidden_states = self.norm_out(hidden_states, temb)
         return self.proj_out(hidden_states)

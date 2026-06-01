@@ -13,6 +13,8 @@ import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
+import { MediaItemStore } from '../../state/media-item.store';
+import { CaptionCacheStore } from '../../state/caption-cache.store';
 import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
@@ -240,6 +242,8 @@ export class MassCaptionModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
+    private mediaItems = inject(MediaItemStore);
+    private captions = inject(CaptionCacheStore);
 
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
@@ -320,6 +324,8 @@ export class MassCaptionModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Mass captioning complete — ${queue.length} images processed.`);
+                // Authoritative metadata reconcile (server-computed flags etc.).
+                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
             }
             return;
         }
@@ -345,10 +351,15 @@ export class MassCaptionModalComponent implements OnInit {
                     this.datasetsApi.saveCaption(name, fname, res.caption).subscribe(() => {
                         pair.caption_file = fname;
                         pair.caption_content = res.caption;
+                        // Publish to the shared stores so the workspace grid repaints live.
+                        this.captions.setCaption(name, pair.media_file, res.caption, false);
+                        this.mediaItems.stampCaption(name, pair.media_file, fname);
                         setTimeout(() => this.processQueue(queue, idx + 1), 100);
                     });
                 } else {
                     // Backend auto-saves masked-target captions to masked_captions/.
+                    this.captions.setCaption(name, pair.media_file, res.caption, true);
+                    this.mediaItems.markMaskedCaptioned(name, pair.media_file);
                     setTimeout(() => this.processQueue(queue, idx + 1), 100);
                 }
             },

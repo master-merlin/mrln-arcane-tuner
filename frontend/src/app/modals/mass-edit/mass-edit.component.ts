@@ -13,6 +13,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService, type PipelineBlock } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
+import { MediaItemStore } from '../../state/media-item.store';
 
 interface MassEditModalData {
     datasetId?: string;
@@ -323,6 +324,7 @@ export class MassEditModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
+    private mediaItems = inject(MediaItemStore);
 
     protected data: MassEditModalData = (this.overlay.topModal()?.data as MassEditModalData) ?? {};
 
@@ -467,6 +469,7 @@ export class MassEditModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Pipeline applied to ${queue.length} images.`);
+                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
             }
             return;
         }
@@ -477,6 +480,9 @@ export class MassEditModalComponent implements OnInit {
         void this.overlay.renderPipeline(name, target, blocks).then((result: any) => {
             if (!result.ok) {
                 this.toast.error(`Failed: ${target}`);
+            } else {
+                // Overlay bytes changed under the same URL — bust the grid cache.
+                this.mediaItems.bumpMedia();
             }
             this.progress.update(p => ({ ...p, current: idx + 1 }));
             setTimeout(() => this.processQueue(queue, blocks, idx + 1), 50);

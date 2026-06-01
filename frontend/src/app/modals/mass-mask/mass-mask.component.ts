@@ -13,6 +13,7 @@ import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
+import { MediaItemStore } from '../../state/media-item.store';
 import {
     DatasetMaskingSettingsComponent,
     MaskingSettingsState,
@@ -21,6 +22,7 @@ import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
 } from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
+import { CaptionCacheStore } from '../../state/caption-cache.store';
 
 interface MassMaskModalData {
     datasetId?: string;
@@ -425,6 +427,8 @@ export class MassMaskModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
+    private mediaItems = inject(MediaItemStore);
+    private captions = inject(CaptionCacheStore);
 
     protected data: MassMaskModalData = (this.overlay.topModal()?.data as MassMaskModalData) ?? {};
 
@@ -557,6 +561,7 @@ export class MassMaskModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Mass masking complete — ${queue.length} images processed.`);
+                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
             }
             return;
         }
@@ -566,7 +571,10 @@ export class MassMaskModalComponent implements OnInit {
         this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
 
         this.datasetsApi.generateMask(name, pair.media_file, settings.modelId, settings.params).subscribe({
-            next: () => setTimeout(() => this.processMaskQueue(queue, idx + 1), 100),
+            next: () => {
+                this.mediaItems.markMaskGenerated(name, pair.media_file);
+                setTimeout(() => this.processMaskQueue(queue, idx + 1), 100);
+            },
             error: () => this.processMaskQueue(queue, idx + 1),
         });
     }
@@ -593,6 +601,8 @@ export class MassMaskModalComponent implements OnInit {
                 const applied = res?.applied ?? maskCount;
                 const skipped = res?.skipped ?? 0;
                 this.toast.success(`Applied masks to ${applied} images (${skipped} skipped).`);
+                this.mediaItems.bumpMedia();
+                void this.mediaItems.loadForDataset(name);
             },
             error: (err: any) => {
                 this.running.set(false);
@@ -626,6 +636,7 @@ export class MassMaskModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Masked captioning complete — ${queue.length} processed.`);
+                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
             }
             return;
         }
@@ -639,7 +650,11 @@ export class MassMaskModalComponent implements OnInit {
             settings.resolvedModelId, settings.params,
             settings.systemPrompt, 'masked',
         ).subscribe({
-            next: () => setTimeout(() => this.processCaptionQueue(queue, idx + 1), 100),
+            next: (res: any) => {
+                this.captions.setCaption(name, pair.media_file, res.caption, true);
+                this.mediaItems.markMaskedCaptioned(name, pair.media_file);
+                setTimeout(() => this.processCaptionQueue(queue, idx + 1), 100);
+            },
             error: () => this.processCaptionQueue(queue, idx + 1),
         });
     }

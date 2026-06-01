@@ -10,6 +10,7 @@ import { firstValueFrom } from 'rxjs';
 import { OverlayStore, type WorkspaceMode } from '../state/overlay.store';
 import { DatasetStore } from '../state/dataset.store';
 import { MediaItemStore, MediaItem } from '../state/media-item.store';
+import { CaptionCacheStore, CaptionRow } from '../state/caption-cache.store';
 import { DatasetService, Dataset } from '../services/dataset';
 import { ScopeStore } from '../state/scope.store';
 import { ToastService } from '../services/toast';
@@ -23,13 +24,6 @@ import { FilmstripScrubberComponent } from './filmstrip-scrubber/filmstrip-scrub
 import { BrowseMode } from './modes/browse-mode';
 import { DetailsMode } from './modes/details-mode';
 import { EditMode } from './modes/edit-mode';
-
-/** Heavy per-image caption text — intentionally NOT in MediaItemStore
- *  (large, not broadcast over WS). Kept here as a thin local cache. */
-interface CaptionRow {
-    caption_content?: string;
-    masked_caption_content?: string;
-}
 
 /**
  * Fullscreen dataset workspace overlay.
@@ -50,7 +44,7 @@ interface CaptionRow {
  *
  *   Caption TEXT (`caption_content`, `masked_caption_content`) is
  *   too large to push through the WS bus, so it stays in
- *   {@link captionsByDataset} — a per-dataset Map keyed by
+ *   {@link CaptionCacheStore} — a per-dataset Map keyed by
  *   `media_file`. The workspace's {@link pairs} computed merges the
  *   two sources back into the legacy pair shape that the orphan-tree
  *   grid + detail components still expect.
@@ -82,11 +76,10 @@ export class DatasetWorkspaceComponent {
     private datasets = inject(DatasetStore);
     private datasetsApi = inject(DatasetService);
     private mediaItems = inject(MediaItemStore);
+    private captions = inject(CaptionCacheStore);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
 
-    /** Per-dataset caption text cache. `media_file` → {caption_content, ...}. */
-    private captionsByDataset = signal<Record<string, Map<string, CaptionRow>>>({});
     /** Datasets whose `/pairs` we've fetched at least once (acts as the
      *  load-state marker; the actual rows now live in MediaItemStore). */
     private loadedDatasets = signal<Set<string>>(new Set());
@@ -118,7 +111,7 @@ export class DatasetWorkspaceComponent {
         const d = this.dataset();
         if (!d) return [];
         const items = this.mediaItems.byDataset(d.name)();
-        const captions = this.captionsByDataset()[d.name] ?? new Map();
+        const captions = this.captions.byDataset()[d.name] ?? new Map();
         return items.map(item => projectPair(item, captions.get(item.media_file)));
     });
 
@@ -323,11 +316,11 @@ export class DatasetWorkspaceComponent {
                     masked_caption_content: p.masked_caption_content,
                 });
             }
-            this.captionsByDataset.update(m => ({ ...m, [name]: captions }));
+            this.captions.seed(name, captions);
         } catch {
             // Leave `loadedDatasets` flipped — the user can manually
             // refresh; further auto-retries would just spam the API.
-            this.captionsByDataset.update(m => ({ ...m, [name]: new Map() }));
+            this.captions.seed(name, new Map());
         }
     }
 
@@ -409,17 +402,12 @@ export class DatasetWorkspaceComponent {
         const filename = pair.caption_file
             || mediaFile.substring(0, mediaFile.lastIndexOf('.')) + '.txt';
 
-        // Snapshot + apply locally.
-        const previous = this.captionsByDataset()[d.name] ?? new Map();
-        const prevRow = previous.get(mediaFile) ?? {};
-        const nextRow: CaptionRow = isMasked
-            ? { ...prevRow, masked_caption_content: content }
-            : { ...prevRow, caption_content: content };
-        this.captionsByDataset.update(m => {
-            const map = new Map(m[d.name] ?? []);
-            map.set(mediaFile, nextRow);
-            return { ...m, [d.name]: map };
-        });
+        // Snapshot + apply via the shared cache (so the grid repaints live).
+        // Non-reactive snapshot for optimistic-rollback restore.
+        const existingRow = this.captions.get(d.name).get(mediaFile);
+        const hadRow = existingRow !== undefined;
+        const prevRow = existingRow ?? {};
+        this.captions.setCaption(d.name, mediaFile, content, isMasked);
 
         void this.mediaItems
             .saveCaption(d.name, mediaFile, filename, content)
@@ -428,11 +416,8 @@ export class DatasetWorkspaceComponent {
                     this.toast.success('Caption saved.');
                 } else {
                     // Roll back the local text cache too.
-                    this.captionsByDataset.update(m => {
-                        const map = new Map(m[d.name] ?? []);
-                        map.set(mediaFile, prevRow);
-                        return { ...m, [d.name]: map };
-                    });
+                    if (hadRow) this.captions.setRow(d.name, mediaFile, prevRow);
+                    else this.captions.remove(d.name, mediaFile);
                 }
             });
     }
@@ -453,16 +438,12 @@ export class DatasetWorkspaceComponent {
         // Snapshot caption + cursor before the optimistic apply.
         const w = this.ws();
         const prevIdx = w?.imageIndex ?? 0;
-        const prevCaptions = this.captionsByDataset()[d.name] ?? new Map();
-        const prevRow = prevCaptions.get(mediaFile);
+        // Non-reactive snapshot for optimistic-rollback restore.
+        const prevRow = this.captions.get(d.name).get(mediaFile);
 
         // Drop the caption row locally; MediaItemStore.deletePair will
         // remove the metadata row optimistically and roll back on error.
-        this.captionsByDataset.update(m => {
-            const map = new Map(m[d.name] ?? []);
-            map.delete(mediaFile);
-            return { ...m, [d.name]: map };
-        });
+        this.captions.remove(d.name, mediaFile);
 
         void this.mediaItems.deletePair(d.name, mediaFile).then(result => {
             if (result.ok) {
@@ -476,11 +457,7 @@ export class DatasetWorkspaceComponent {
                 this.toast.success('Entry deleted.');
             } else {
                 // Restore caption row + cursor; store rolled itself back.
-                this.captionsByDataset.update(m => {
-                    const map = new Map(m[d.name] ?? []);
-                    if (prevRow) map.set(mediaFile, prevRow);
-                    return { ...m, [d.name]: map };
-                });
+                if (prevRow) this.captions.setRow(d.name, mediaFile, prevRow);
                 if (w) this.overlay.setWorkspaceImage(prevIdx);
             }
         });
@@ -518,11 +495,7 @@ export class DatasetWorkspaceComponent {
             n.delete(d.name);
             return n;
         });
-        this.captionsByDataset.update(m => {
-            const next = { ...m };
-            delete next[d.name];
-            return next;
-        });
+        this.captions.clear(d.name);
         void this.ensurePairsLoaded(d.name);
     }
 }

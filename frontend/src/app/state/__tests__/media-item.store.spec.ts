@@ -121,4 +121,45 @@ describe('MediaItemStore', () => {
         TestBed.tick();
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.enabled).toBe(false);
     });
+
+    it('stampCaption flips has_caption + caption_file for a loaded item', async () => {
+        await store.loadForDataset('ds1');
+        store.stampCaption('ds1', 'a.png', 'a.txt');
+        const item = store.byId(mediaKey('ds1', 'a.png'))();
+        expect(item?.has_caption).toBe(true);
+        expect(item?.caption_file).toBe('a.txt');
+    });
+
+    it('stampCaption is a no-op for an item not in the store', () => {
+        store.stampCaption('ds1', 'ghost.png', 'ghost.txt');
+        expect(store.byId(mediaKey('ds1', 'ghost.png'))()).toBeUndefined();
+    });
+
+    it('markMaskGenerated flips has_mask for a loaded item', async () => {
+        await store.loadForDataset('ds1');
+        store.markMaskGenerated('ds1', 'a.png');
+        expect(store.byId(mediaKey('ds1', 'a.png'))()?.has_mask).toBe(true);
+    });
+
+    it('markMaskGenerated is a no-op when has_mask is already true', async () => {
+        await store.loadForDataset('ds1');
+        store.markMaskGenerated('ds1', 'a.png');
+        const ref = store.byId(mediaKey('ds1', 'a.png'))();
+        store.markMaskGenerated('ds1', 'a.png');
+        // No second upsert ⇒ the store hands back the same object reference.
+        expect(store.byId(mediaKey('ds1', 'a.png'))()).toBe(ref);
+        expect(ref?.has_mask).toBe(true);
+    });
+
+    it('markMaskedCaptioned flips has_masked_caption for a loaded item', async () => {
+        await store.loadForDataset('ds1');
+        store.markMaskedCaptioned('ds1', 'a.png');
+        expect(store.byId(mediaKey('ds1', 'a.png'))()?.has_masked_caption).toBe(true);
+    });
+
+    it('bumpMedia increments mediaRev', () => {
+        const before = store.mediaRev();
+        store.bumpMedia();
+        expect(store.mediaRev()).toBe(before + 1);
+    });
 });

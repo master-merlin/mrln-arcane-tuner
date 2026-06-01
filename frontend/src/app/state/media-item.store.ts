@@ -384,4 +384,53 @@ export class MediaItemStore extends EntityStore<MediaItem> {
             errorMessage: `Couldn't save caption — reverted.`,
         });
     }
+
+    /**
+     * Stamp caption metadata after a caption was saved out-of-band (e.g. by a
+     * mass-caption run that writes the text into CaptionCacheStore). No HTTP —
+     * the save already happened; this only reconciles the store flags so the
+     * grid shows the filename + captioned state live. No-op if the item isn't
+     * loaded into the store.
+     */
+    stampCaption(datasetName: string, mediaFile: string, captionFile: string): void {
+        const key = mediaKey(datasetName, mediaFile);
+        const current = this.byId(key)();
+        if (!current) return;
+        if (current.has_caption === true && current.caption_file === captionFile) return;
+        this.upsert({ ...current, caption_file: captionFile, has_caption: true });
+    }
+
+    /**
+     * Flag that a mask now exists for an image (mass-mask Generate). No HTTP —
+     * optimistic; the authoritative reconcile is a follow-up loadForDataset.
+     * No-op if the item isn't loaded or already flagged.
+     */
+    markMaskGenerated(datasetName: string, mediaFile: string): void {
+        const key = mediaKey(datasetName, mediaFile);
+        const current = this.byId(key)();
+        if (!current || current.has_mask === true) return;
+        this.upsert({ ...current, has_mask: true });
+    }
+
+    /**
+     * Flag that a masked-target caption now exists for an image (mass-caption
+     * masked target / mass-mask Caption tab). No HTTP — optimistic; the
+     * authoritative reconcile is a follow-up loadForDataset. No-op if the item
+     * isn't loaded or already flagged.
+     */
+    markMaskedCaptioned(datasetName: string, mediaFile: string): void {
+        const key = mediaKey(datasetName, mediaFile);
+        const current = this.byId(key)();
+        if (!current || current.has_masked_caption === true) return;
+        this.upsert({ ...current, has_masked_caption: true });
+    }
+
+    /**
+     * Force a cache-bust across grid/detail/filmstrip `<img>` URLs after ops
+     * that rewrite image bytes under the same URL (mask apply, overlay render).
+     * Consumers append `mediaRev()` to their URLs.
+     */
+    bumpMedia(): void {
+        this.mediaRev.update(r => r + 1);
+    }
 }

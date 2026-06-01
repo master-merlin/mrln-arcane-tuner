@@ -50,7 +50,13 @@ describe('DatasetsScreen — project membership refresh', () => {
                         entities: signal([{ id: 'd1', name: 'ds-1' }]),
                     },
                 },
-                { provide: DatasetService, useValue: {} },
+                {
+                    provide: DatasetService,
+                    useValue: {
+                        getCacheStats: () => of(null),
+                        getMpxDistribution: () => of(null),
+                    },
+                },
                 { provide: ProjectService, useValue: { getProjectDatasets } },
                 { provide: RuntimeConfigService, useValue: { mediaBaseUrl: '' } },
                 { provide: ToastService, useValue: { success: () => {}, error: () => {} } },

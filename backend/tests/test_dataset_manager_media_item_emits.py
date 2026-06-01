@@ -143,6 +143,113 @@ async def test_save_caption_broadcasts_via_persist(media_item_manager, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_save_caption_increments_caption_count_and_emits_dataset_event(
+    media_item_manager,
+):
+    """save_caption: false→true transition increments dataset.caption_count
+    and broadcasts entity.changed for the dataset; a repeat save on the
+    same image is a no-op for both the counter and the dataset broadcast.
+
+    Regression for the stale-Library-counter bug: previously
+    ``save_caption`` only updated the media_item row + emitted a
+    ``media_item`` event, so ``dataset.caption_count`` (the aggregate
+    field used by DatasetStore in the library view) only refreshed on
+    the next full scan.
+    """
+    mgr, ds, rel_path = media_item_manager
+    assert ds.caption_count == 0
+    assert ds.media_metadata[rel_path].get("has_caption") is False
+
+    caption_file = os.path.splitext(rel_path)[0] + ".txt"
+    full_caption = os.path.join(ds.path, caption_file)
+    os.makedirs(os.path.dirname(full_caption), exist_ok=True)
+
+    mock_broadcast = AsyncMock()
+    with patch("app.core.dataset_manager.event_manager.broadcast", mock_broadcast):
+        # First save: has_caption flips False → True.
+        mgr.save_caption(ds.name, caption_file, "a fluffy cat")
+        await asyncio.sleep(0.05)
+
+        # Second save: has_caption stays True → True (overwrite).
+        mgr.save_caption(ds.name, caption_file, "a fluffier cat")
+        await asyncio.sleep(0.05)
+
+    # ── caption_count must have moved by exactly 1, not 2. ──────────────
+    assert ds.caption_count == 1, (
+        f"caption_count should increment exactly once for first save, "
+        f"then stay put on overwrite; got {ds.caption_count}"
+    )
+    assert ds.media_metadata[rel_path]["has_caption"] is True
+
+    # ── Exactly one dataset-level entity.changed across both saves. ─────
+    entity_calls = [
+        c for c in mock_broadcast.await_args_list
+        if c.args and c.args[0] == "entity.changed"
+    ]
+    dataset_updates = [
+        c for c in entity_calls
+        if c.args[1]["entity"] == "dataset" and c.args[1]["op"] == "updated"
+    ]
+    assert len(dataset_updates) == 1, (
+        f"expected exactly one dataset 'updated' event across two saves, "
+        f"got {len(dataset_updates)} from {entity_calls}"
+    )
+    env = dataset_updates[0].args[1]
+    assert env["id"] == ds.id
+    # Payload must carry the fresh caption_count so the frontend's
+    # EntityStore can reconcile without a full refetch.
+    assert env["payload"]["caption_count"] == 1
+    assert env["payload"]["id"] == ds.id
+    assert env["payload"]["name"] == ds.name
+    # Payload must be the FULL dataset row, not a 3-field stub —
+    # the frontend EntityStore upserts (replaces) on `updated`, so
+    # a partial payload would wipe multimedia_count / preview_image
+    # etc. on every caption save. Spot-check a few non-summary
+    # fields that any subscriber would read.
+    assert env["payload"]["multimedia_count"] == 1
+    assert "media_metadata" in env["payload"]
+    assert env["payload"]["path"] == ds.path
+
+    # ── DB row reflects the new caption_count too (survives restart). ──
+    row = mgr._dataset_repo.get_by_id(ds.id)
+    assert row is not None
+    assert row["caption_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_save_caption_recounts_when_media_metadata_lacks_has_caption(
+    media_item_manager,
+):
+    """Legacy media_metadata entries written before build_media_entry started
+    seeding ``has_caption`` lack the key entirely. The save path used to call
+    ``meta.get("has_caption")`` (truthy=False) on every save and increment
+    every time, so a single image with two saves would land at caption_count=2
+    instead of 1. Counting truthy ``has_caption`` flags after each save makes
+    the path idempotent across schema vintage.
+    """
+    mgr, ds, rel_path = media_item_manager
+    # Mimic a legacy entry: pop has_caption entirely.
+    ds.media_metadata[rel_path].pop("has_caption", None)
+    ds.caption_count = 0
+
+    caption_file = os.path.splitext(rel_path)[0] + ".txt"
+    full_caption = os.path.join(ds.path, caption_file)
+    os.makedirs(os.path.dirname(full_caption), exist_ok=True)
+
+    mock_broadcast = AsyncMock()
+    with patch("app.core.dataset_manager.event_manager.broadcast", mock_broadcast):
+        mgr.save_caption(ds.name, caption_file, "first")
+        await asyncio.sleep(0.05)
+        mgr.save_caption(ds.name, caption_file, "second")
+        await asyncio.sleep(0.05)
+
+    assert ds.caption_count == 1, (
+        f"two saves on a single image must yield caption_count=1, "
+        f"got {ds.caption_count}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_media_pair_broadcasts_deleted(media_item_manager):
     """delete_media_pair emits entity.changed:deleted with payload=None."""
     mgr, ds, rel_path = media_item_manager

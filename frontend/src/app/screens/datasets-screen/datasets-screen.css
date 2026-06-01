@@ -27,24 +27,80 @@
     margin-top: 6px;
 }
 
+/* Corner indicator anchored to the lower-right of a KPI tile. Used by the
+   DATASETS tile to surface the total on-disk size without competing with
+   the sub-line. The tile itself supplies `position: relative` (kpi-tile
+   component styles). Capped to (100% − 24px) so a long size string can't
+   overlap the tile's left content. */
+.kpi-corner {
+    position: absolute;
+    bottom: 10px;
+    right: 12px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+    pointer-events: none;
+    max-width: calc(100% - 24px);
+    text-align: right;
+}
+.kpi-corner .mono {
+    color: var(--color-text-primary);
+    font-weight: 600;
+}
+/* Shown while cacheStats is in flight. The dir-size walk takes a few
+   seconds on big disks — we DON'T fall back to totalSizeBytes() (the
+   image-bytes sum) because it's ~3× smaller and the corner would lie
+   for a moment, then jump. The italic "calculating" + pulsing ellipsis
+   tells the user the value is being computed. */
+.kpi-corner-loading {
+    font-style: italic;
+    color: var(--color-text-muted);
+    opacity: 0.85;
+}
+.kpi-corner-ellipsis {
+    display: inline-block;
+    margin-left: 1px;
+    animation: kpi-corner-ellipsis-pulse 1.2s ease-in-out infinite;
+}
+@keyframes kpi-corner-ellipsis-pulse {
+    0%, 100% { opacity: 0.3; }
+    50%      { opacity: 1;   }
+}
+@media (prefers-reduced-motion: reduce) {
+    .kpi-corner-ellipsis { animation: none; opacity: 1; }
+}
+
+/* Mini-histo bars default to the HPS tile's warning (orange) tone. Containers
+   can override per-tile by setting `--mini-histo-tone` on the wrapper — e.g.
+   `.ds-mini-histo.tone-teal` paints the IMAGES tile's bars in its teal accent
+   (`--color-chart-lr`) to match the tile header chip. Untoned consumers stay
+   orange — keeps the HPS tile and any future un-classed mini-histo unchanged. */
 .ds-mini-histo-bar {
     flex: 1;
-    background: var(--color-warning);
+    background: var(--mini-histo-tone, var(--color-warning));
     border-radius: 1px;
     min-height: 1px;
 }
+.ds-mini-histo.tone-teal { --mini-histo-tone: var(--color-chart-lr); }
 
+/* `overflow: visible` so the per-card project picker (which pops upward and
+   would otherwise be clipped on short cards) can escape the card bounds.
+   Children that paint to the card edges below carry their own border-radius
+   to preserve the rounded-corner look that `overflow: hidden` used to enforce. */
 .ds-card {
     padding: 0;
-    overflow: hidden;
+    overflow: visible;
     cursor: pointer;
     display: flex;
     flex-direction: column;
+    position: relative;
 }
 
 .ds-card-img {
     aspect-ratio: 16 / 10;
-    border-radius: 0;
+    /* Top corners follow the card's rounded shape; bottom corners are square
+       because the card body sits immediately below. */
+    border-radius: var(--radius-theme-xl) var(--radius-theme-xl) 0 0;
     flex-shrink: 0;
     position: relative;
     background: var(--color-surface-low);
@@ -83,6 +139,27 @@
     position: absolute;
     top: 8px;
     left: 8px;
+}
+
+/* Total-size pill in the lower-right of the preview image, mirroring the
+   HPS pill's top-left placement. Restores a parity element from the
+   Hi-Fi/legacy design. The meta-row size in `.ds-card-meta` stays
+   alongside this pill — both are intentional (glance vs. inline). */
+.ds-card-size {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    background: oklch(0.10 0.01 265 / 0.75);
+    color: var(--color-text-primary);
+    border: 1px solid oklch(1 0 0 / 0.15);
+    backdrop-filter: blur(6px);
+    padding: 2px 8px;
+    border-radius: var(--radius-theme-sm);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
 }
 
 .ds-card-project {
@@ -125,14 +202,38 @@
 }
 
 .ds-card-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
     font-weight: 700;
     font-size: 15px;
     letter-spacing: -0.02em;
     line-height: 1.15;
+    color: var(--color-text-primary);
+}
+
+/* The name text gets the truncation rules so the sibling MISSING badge
+   (when present) is not subject to ellipsis clipping on long names. */
+.ds-card-name-text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--color-text-primary);
+    min-width: 0;
+}
+
+/* Optional description row between the name and the meta. Two-line clamp
+   keeps long descriptions from blowing up card height in the grid. */
+.ds-card-description {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 1.4;
+    margin-top: 2px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .ds-card-meta {
@@ -181,6 +282,9 @@
     padding: 8px 10px;
     border-top: 1px solid var(--color-border-subtle);
     background: var(--color-surface-low);
+    /* Bottom corners match the card's rounded shape (card itself uses
+       `overflow: visible` so the per-card project picker can escape upward). */
+    border-radius: 0 0 var(--radius-theme-xl) var(--radius-theme-xl);
 }
 
 .ds-action {
@@ -201,3 +305,330 @@
 .ds-action-danger:hover:not([disabled]) {
     color: var(--color-danger);
 }
+
+/* Red pill rendered as a flex sibling of the dataset name text when the
+   row's on-disk folder is gone (`dataset.missing`). Restores legacy
+   parity (audit gap #6) — the redesign greys the preview but offers no
+   name-row indicator. Rendered as a sibling (not nested inside the
+   truncating name span) so a long name ellipsis-clips the text only,
+   never the badge. `flex-shrink: 0` reserves the pill's intrinsic width
+   even when the name run wants to consume the row. */
+.ds-missing-badge {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    background: color-mix(in oklab, var(--color-danger) 18%, transparent);
+    color: var(--color-danger);
+    border: 1px solid color-mix(in oklab, var(--color-danger) 35%, transparent);
+    border-radius: var(--radius-theme-sm);
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.4;
+}
+
+.ds-upload-input {
+    display: none;
+}
+
+.ds-card-dragover {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+}
+.ds-drop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: color-mix(in oklab, var(--color-brand) 12%, transparent);
+    backdrop-filter: blur(4px);
+    color: var(--color-brand);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    pointer-events: none;
+    /* Mirror the card's rounded corners since the card itself uses
+       `overflow: visible` (so the per-card project picker can escape upward). */
+    border-radius: var(--radius-theme-xl);
+}
+
+/* Per-card "Add to project" picker (Task 6).
+   The trigger button lives in the card-actions row; the dropdown panel is
+   absolutely positioned relative to this wrap so it floats above adjacent
+   cards. Right-anchored (`right: 0`) so it never spills off-screen when the
+   card sits near the viewport's right edge. */
+.ds-add-project-wrap {
+    position: relative;
+    display: inline-flex;
+}
+.ds-action-accent {
+    color: var(--color-success);
+}
+.ds-action-accent:hover:not([disabled]) {
+    color: var(--color-success);
+    background: color-mix(in oklab, var(--color-success) 18%, transparent);
+}
+.ds-project-picker {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    right: 0;
+    z-index: 40;
+    min-width: 180px;
+    max-height: 240px;
+    overflow-y: auto;
+    background: var(--color-surface-high);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+}
+/* When the trigger is in the LEFT half of the viewport (close to the
+   sidebar), toggleProjectPicker flips alignment so the panel extends
+   RIGHTWARD instead. Without this rule the [class.align-left] binding
+   in the template was a no-op and the panel kept disappearing under
+   the opaque sidebar. */
+.ds-project-picker.align-left {
+    right: auto;
+    left: 0;
+}
+.ds-project-picker-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--color-text-primary);
+    padding: 6px 10px;
+    border-radius: var(--radius-theme-sm);
+    font-size: 12px;
+    cursor: pointer;
+}
+.ds-project-picker-item:hover {
+    background: color-mix(in oklab, var(--color-brand) 18%, transparent);
+}
+.ds-project-picker-empty {
+    padding: 10px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    text-align: center;
+}
+
+/* ── Filter card (Hi-Fi parity) ────────────────────────────────────
+   Wraps the search input, smart-filter chips, the "+ Filter" picker
+   button, and the sort dropdown in a single .card row. Layout mirrors
+   screen-library.jsx:159 (the Hi-Fi reference). */
+.ds-filter-card {
+    padding: 10px 14px;
+    margin: 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* Framed surface-mid container that hosts the leading Search icon and
+   the borderless input. Flexes to fill the row but won't shrink below
+   240px — matches the Hi-Fi's flex:1 1 280px / min-width:240. */
+.ds-filter-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 280px;
+    min-width: 240px;
+    padding: 6px 10px;
+    background: var(--color-surface-mid);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+    color: var(--color-text-muted);
+}
+.ds-filter-search:focus-within {
+    border-color: var(--color-brand);
+    color: var(--color-text-primary);
+}
+.ds-filter-search input {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    height: auto;
+    color: var(--color-text-primary);
+    font-size: 13px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.ds-filter-search input:focus { outline: none; }
+
+/* Chip row sits between the search box and the sort dropdown. Active
+   dynamic chips (cat:/tag:) come first, then the "+ Filter" trigger,
+   then the three smart-filter chips with live counts. */
+.ds-filter-chip-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Reuse the global .chip / .chip.brand styles. These additions only
+   layer toggle behavior + the X-button + count badges on top. */
+.ds-filter-card .chip {
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.ds-filter-card .chip:hover {
+    border-color: var(--color-brand);
+    color: var(--color-text-primary);
+}
+.ds-filter-card .chip.is-active {
+    background: oklch(0.68 0.13 55 / 0.18);
+    border-color: oklch(0.68 0.13 55 / 0.45);
+    color: var(--color-brand-light);
+}
+
+/* Active dynamic filter chip (X-removable). `.chip.brand` from the
+   global theme already paints the brand-tinted bg/border/text; we only
+   override the dot color and inline the X-button styling here. */
+.ds-filter-active-chip { padding-right: 4px; }
+.ds-filter-active-chip .dot {
+    background: var(--color-brand);
+}
+.ds-filter-chip-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 0;
+    padding: 2px;
+    margin-left: 2px;
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+    border-radius: 999px;
+}
+.ds-filter-chip-x:hover {
+    opacity: 1;
+    background: oklch(1 0 0 / 0.10);
+}
+
+/* Live-count badge baked into each smart-filter chip. */
+.ds-filter-chip-count {
+    opacity: 0.6;
+    font-size: 10.5px;
+    margin-left: 2px;
+}
+
+/* "+ Filter" button wrap + popover. Mirrors the structural pattern of
+   `.ds-add-project-wrap` / `.ds-project-picker` but anchors the panel
+   BELOW the trigger (top: 100% + 4px) rather than above, since this
+   trigger lives in a row near the top of the screen. */
+.ds-filter-add-wrap {
+    position: relative;
+    display: inline-flex;
+}
+.ds-filter-add-btn {
+    color: var(--color-text-muted);
+}
+.ds-filter-picker {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 40;
+    min-width: 200px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--color-surface-high);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.ds-filter-picker-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--color-text-primary);
+    padding: 6px 10px;
+    border-radius: var(--radius-theme-sm);
+    font-size: 12px;
+    cursor: pointer;
+}
+.ds-filter-picker-item:hover {
+    background: color-mix(in oklab, var(--color-brand) 18%, transparent);
+}
+.ds-filter-picker-item.is-active {
+    color: var(--color-brand-light);
+}
+.ds-filter-picker-count {
+    color: var(--color-text-muted);
+    font-size: 11px;
+}
+.ds-filter-picker-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    padding: 4px 8px;
+    border-radius: var(--radius-theme-sm);
+    font-size: 11px;
+    cursor: pointer;
+    align-self: flex-start;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.ds-filter-picker-back:hover { color: var(--color-text-primary); }
+.ds-filter-picker-empty {
+    padding: 10px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    text-align: center;
+}
+
+/* Sort cluster lives at the right end of the filter card. Native <select>
+   for the sort type + a small adjacent button for the direction so each
+   axis is independently togglable (reverted from the unified .btn.sm +
+   popover because the split control is easier to operate). */
+.ds-sort {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.ds-sort-label {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.ds-sort-select {
+    background: var(--color-surface-mid);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-sm);
+    padding: 4px 6px;
+    font-size: 12px;
+}
+.ds-sort-dir {
+    background: transparent;
+    border: 1px solid var(--color-border-subtle);
+    color: var(--color-text-primary);
+    border-radius: var(--radius-theme-sm);
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+}
+.ds-sort-dir:hover { border-color: var(--color-brand); }

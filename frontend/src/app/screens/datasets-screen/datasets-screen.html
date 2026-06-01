@@ -28,11 +28,39 @@
     </div>
 
     <div class="ds-kpi-rail">
-        <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="brand" sub="in scope"/>
-        <app-kpi-tile label="IMAGES" [value]="kpis().images" accent="teal" sub="across datasets"/>
-        <app-kpi-tile label="CAPTIONED" [value]="kpis().captioned" accent="success" sub="ready for training"/>
-        <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="danger" sub="with overlays"/>
-        <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="violet" sub="latents on disk"/>
+        <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="brand" [sub]="datasetsSub()">
+            @if (kpis().datasets > 0) {
+                <span class="kpi-corner" title="Total size on disk (full dataset folders)">
+                    Total size on disk:
+                    @if (cacheStats(); as s) {
+                        <span class="mono">{{ formatBytes(s.dataset_root_bytes) }}</span>
+                    } @else {
+                        <!-- Avoid showing the image-bytes sum (totalSizeBytes()) as
+                             a stand-in: it's ~3× smaller than the real folder size
+                             and would jump on arrival, which reads as misleading.
+                             Show an explicit calculating state instead. -->
+                        <span class="kpi-corner-loading" aria-live="polite">calculating<span class="kpi-corner-ellipsis">…</span></span>
+                    }
+                </span>
+            }
+        </app-kpi-tile>
+        <app-kpi-tile label="IMAGES" [value]="kpis().images" accent="teal" [sub]="imagesSub()">
+            @if (mpxStats(); as m) {
+                @if (m.buckets.length > 0) {
+                    <div class="ds-mini-histo tone-teal" [title]="'Median ' + m.median_megapixels.toFixed(1) + ' MP'">
+                        @for (b of m.buckets; track $index) {
+                            <div class="ds-mini-histo-bar"
+                                 [style.height.%]="(b.count / mpxHistoMax()) * 100"
+                                 [style.opacity]="0.5 + (b.count / mpxHistoMax()) * 0.5"
+                                 [title]="b.range_mp_min.toFixed(1) + '–' + b.range_mp_max.toFixed(1) + ' MP: ' + b.count + ' images'"></div>
+                        }
+                    </div>
+                }
+            }
+        </app-kpi-tile>
+        <app-kpi-tile label="CAPTIONED" [value]="kpis().captioned" accent="success" [sub]="captionedSub()"/>
+        <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="danger" [sub]="maskedSub()"/>
+        <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="violet" [sub]="cachedSub()"/>
         <app-kpi-tile label="HPS — MEDIAN" [value]="hpsMedianLabel()" accent="warning" [sub]="hpsRangeLabel()">
             <div class="ds-mini-histo">
                 @for (b of hpsStats().buckets; track $index) {
@@ -44,9 +72,167 @@
         </app-kpi-tile>
     </div>
 
+    <div class="card ds-filter-card">
+        <div class="ds-filter-search">
+            <app-ico name="Search" [size]="13"/>
+            <input type="text"
+                   data-testid="datasets-screen-search"
+                   placeholder="Search by name, category or path…"
+                   [value]="search.query()"
+                   (input)="search.query.set($any($event.target).value)"
+                   aria-label="Search datasets">
+        </div>
+
+        <div class="ds-filter-chip-row" role="group" aria-label="Filters">
+            @for (af of activeDynamicFilters(); track af.key) {
+                <span class="chip brand ds-filter-active-chip">
+                    <span class="dot"></span>
+                    {{ af.label }}
+                    <button type="button" class="ds-filter-chip-x"
+                            (click)="removeFilter(af.key)"
+                            [attr.aria-label]="'Remove filter ' + af.label">
+                        <app-ico name="X" [size]="11"/>
+                    </button>
+                </span>
+            }
+
+            <div class="ds-filter-add-wrap">
+                <button class="chip ds-filter-add-btn" type="button"
+                        data-testid="btn-add-filter"
+                        (click)="toggleFilterPicker($event)"
+                        aria-haspopup="menu"
+                        [attr.aria-expanded]="filterPickerOpen()">
+                    <app-ico name="Plus" [size]="11"/> Filter
+                </button>
+                @if (filterPickerOpen()) {
+                    <div class="ds-filter-picker"
+                         role="menu"
+                         data-testid="filter-picker-panel"
+                         (click)="$event.stopPropagation()">
+                        @if (filterPickerTier() === 'dimensions') {
+                            @if (categories().length > 0) {
+                                <button class="ds-filter-picker-item" type="button"
+                                        (click)="filterPickerTier.set('category')">
+                                    <span>Category</span>
+                                    <span class="ds-filter-picker-count mono">{{ categories().length }}</span>
+                                </button>
+                            }
+                            @if (availableTags().length > 0) {
+                                <button class="ds-filter-picker-item" type="button"
+                                        (click)="filterPickerTier.set('tags')">
+                                    <span>Tags</span>
+                                    <span class="ds-filter-picker-count mono">{{ availableTags().length }}</span>
+                                </button>
+                            }
+                            @if (categories().length === 0 && availableTags().length === 0) {
+                                <div class="ds-filter-picker-empty">No dimensions available.</div>
+                            }
+                        } @else if (filterPickerTier() === 'category') {
+                            <button class="ds-filter-picker-back" type="button"
+                                    (click)="filterPickerTier.set('dimensions')">
+                                <app-ico name="ChevronLeft" [size]="11"/> Back
+                            </button>
+                            @for (cat of categories(); track cat) {
+                                <button class="ds-filter-picker-item" type="button"
+                                        [class.is-active]="isFilterActive(catKey(cat))"
+                                        (click)="addFilter(catKey(cat))">
+                                    <span>{{ cat }}</span>
+                                    @if (isFilterActive(catKey(cat))) {
+                                        <app-ico name="Check" [size]="11"/>
+                                    }
+                                </button>
+                            }
+                        } @else {
+                            <button class="ds-filter-picker-back" type="button"
+                                    (click)="filterPickerTier.set('dimensions')">
+                                <app-ico name="ChevronLeft" [size]="11"/> Back
+                            </button>
+                            @for (tag of availableTags(); track tag) {
+                                <button class="ds-filter-picker-item" type="button"
+                                        [class.is-active]="isFilterActive(tagKey(tag))"
+                                        (click)="addFilter(tagKey(tag))">
+                                    <span>{{ tag }}</span>
+                                    @if (isFilterActive(tagKey(tag))) {
+                                        <app-ico name="Check" [size]="11"/>
+                                    }
+                                </button>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+
+            <!-- Smart-filter chips only render when their population is non-zero.
+                 Counts come from the scope+search baseline (searchedDatasets),
+                 not the filtered visible list, so activating a chip cannot by
+                 itself drive its own count to 0 — a hidden chip means there's
+                 genuinely nothing to filter for in the current scope. Order
+                 mirrors the prep workflow: caption → mask → quality → missing. -->
+            @if (smartFilterCounts().needsCaptioning > 0) {
+                <button class="chip ds-filter-smart-chip" type="button"
+                        [class.is-active]="isFilterActive('needs-captioning')"
+                        (click)="toggleFilter('needs-captioning')">
+                    Needs captioning
+                    <span class="ds-filter-chip-count mono">{{ smartFilterCounts().needsCaptioning }}</span>
+                </button>
+            }
+            @if (smartFilterCounts().needsMasking > 0) {
+                <button class="chip ds-filter-smart-chip" type="button"
+                        [class.is-active]="isFilterActive('needs-masking')"
+                        (click)="toggleFilter('needs-masking')">
+                    Needs masking
+                    <span class="ds-filter-chip-count mono">{{ smartFilterCounts().needsMasking }}</span>
+                </button>
+            }
+            @if (smartFilterCounts().lowHps > 0) {
+                <button class="chip ds-filter-smart-chip" type="button"
+                        [class.is-active]="isFilterActive('low-hps')"
+                        (click)="toggleFilter('low-hps')">
+                    Low HPS
+                    <span class="ds-filter-chip-count mono">{{ smartFilterCounts().lowHps }}</span>
+                </button>
+            }
+            @if (smartFilterCounts().missing > 0) {
+                <button class="chip ds-filter-smart-chip" type="button"
+                        [class.is-active]="isFilterActive('missing')"
+                        (click)="toggleFilter('missing')">
+                    Missing
+                    <span class="ds-filter-chip-count mono">{{ smartFilterCounts().missing }}</span>
+                </button>
+            }
+        </div>
+
+        <div class="ds-sort">
+            <label class="ds-sort-label" for="ds-sort-select">Sort</label>
+            <select id="ds-sort-select"
+                    class="ds-sort-select"
+                    data-testid="select-sort"
+                    [value]="sortKey()"
+                    (change)="setSort($any($event.target).value)"
+                    aria-label="Sort datasets by">
+                <option value="name">Name</option>
+                <option value="created">Created</option>
+                <option value="images">Images</option>
+                <option value="hps">HPS</option>
+            </select>
+            <button class="ds-sort-dir" type="button"
+                    data-testid="btn-sort-dir"
+                    (click)="setSort(sortKey())"
+                    [attr.aria-label]="sortDir() === 'asc' ? 'Sort ascending' : 'Sort descending'"
+                    [title]="sortDir() === 'asc' ? 'Ascending' : 'Descending'">
+                {{ sortDir() === 'asc' ? '↑' : '↓' }}
+            </button>
+        </div>
+    </div>
+
     <div class="ds-grid">
         @for (d of visibleDatasets(); track trackById($index, d)) {
-            <div class="card lift hover-host ds-card" (click)="openCard(d)">
+            <div class="card lift hover-host ds-card"
+                 [class.ds-card-dragover]="isDragOver(d.name)"
+                 (click)="openCard(d)"
+                 (dragover)="onCardDragOver(d.name, $event)"
+                 (dragleave)="onCardDragLeave(d.name, $event)"
+                 (drop)="onCardDrop(d.name, $event)">
                 <div class="ds-card-img" [class.ds-card-img-missing]="!previewUrl(d)">
                     @if (previewUrl(d); as src) {
                         <img class="ds-card-img-el"
@@ -71,18 +257,36 @@
                             <span class="dot" [style.background]="pb.color"></span>{{ pb.name }}
                         </span>
                     }
+                    @if (d.total_size_bytes && d.total_size_bytes > 0) {
+                        <span class="ds-card-size" title="Total size on disk">
+                            {{ formatBytes(d.total_size_bytes) }}
+                        </span>
+                    }
                     <span class="ds-card-pills state-pills-pad">
                         <app-state-pills [state]="stateOf(d)"/>
                     </span>
                 </div>
 
+                @if (isDragOver(d.name)) {
+                    <div class="ds-drop-overlay" aria-hidden="true">
+                        <app-ico name="Upload" [size]="28"/>
+                        <span>Drop to upload</span>
+                    </div>
+                }
+
                 <div class="ds-card-body">
                     <div class="ds-card-title-row">
                         <div class="ds-card-title-stack">
-                            <div class="ds-card-name">{{ d.name }}</div>
+                            <div class="ds-card-name">
+                                <span class="ds-card-name-text">{{ d.name }}</span>
+                                @if (d.missing) {
+                                    <span class="ds-missing-badge" data-testid="ds-missing-badge">MISSING</span>
+                                }
+                            </div>
+                            @if (d.description) {
+                                <div class="ds-card-description" [title]="d.description">{{ d.description }}</div>
+                            }
                             <div class="ds-card-meta">
-                                <span class="mono">{{ sizeLabel(d.total_size_bytes) }}</span>
-                                <span class="ds-card-sep">·</span>
                                 <span class="mono">v{{ d.version }}</span>
                             </div>
                         </div>
@@ -107,6 +311,33 @@
                             (click)="openCard(d)" title="Open workspace">
                         <app-ico name="Eye" [size]="14"/>
                     </button>
+                    @if (availableProjects().length > 0) {
+                        <div class="ds-add-project-wrap">
+                            <button class="icon-btn ds-action ds-action-accent" type="button"
+                                    data-testid="btn-open-project-picker"
+                                    (click)="toggleProjectPicker(d.name, $event)"
+                                    title="Add to a project">
+                                <app-ico name="FolderPlus" [size]="14"/>
+                            </button>
+                            @if (projectPickerOpenFor() === d.name) {
+                                <div class="ds-project-picker"
+                                     [class.align-left]="pickerAlignFor(d.name) === 'left'"
+                                     role="menu"
+                                     data-testid="project-picker-panel"
+                                     (click)="$event.stopPropagation()">
+                                    @for (p of availableProjects(); track p.id) {
+                                        <button class="ds-project-picker-item" type="button"
+                                                role="menuitem"
+                                                (click)="addDatasetToProject(d, p.id, p.name)">
+                                            {{ p.name }}
+                                        </button>
+                                    } @empty {
+                                        <div class="ds-project-picker-empty">No projects available.</div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
                     <button class="icon-btn ds-action" type="button"
                             (click)="editDataset(d, $event)" title="Edit metadata">
                         <app-ico name="Pencil" [size]="14"/>
@@ -129,6 +360,18 @@
                             (click)="downloadDataset(d, $event)" title="Download as zip">
                         <app-ico name="Download" [size]="14"/>
                     </button>
+                    <input type="file" multiple
+                           class="ds-upload-input"
+                           (change)="onUploadFiles(d.name, $any($event.target).files); $any($event.target).value = ''"
+                           (click)="$event.stopPropagation()"
+                           #uploadInput
+                           [attr.aria-label]="'Upload files to ' + d.name">
+                    <button class="icon-btn ds-action" type="button"
+                            data-testid="btn-upload-files"
+                            (click)="uploadInput.click(); $event.stopPropagation()"
+                            title="Upload images to this dataset">
+                        <app-ico name="Upload" [size]="14"/>
+                    </button>
                     <button class="icon-btn ds-action ds-action-danger" type="button"
                             (click)="deleteDataset(d, $event)"
                             [title]="scope.projectId() ? 'Remove from project' : 'Delete from library'">
@@ -141,6 +384,11 @@
                 <p class="muted ds-empty">
                     No datasets match "{{ search.query() }}".
                     <button type="button" class="search-filter-reset" (click)="clearSearch()">Clear search</button>
+                </p>
+            } @else if (activeFilters().size > 0) {
+                <p class="muted ds-empty">
+                    No datasets match the active filters.
+                    <button type="button" class="search-filter-reset" (click)="clearFilters()">Clear filters</button>
                 </p>
             } @else {
                 <p class="muted ds-empty">No datasets in this scope yet.</p>

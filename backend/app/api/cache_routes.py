@@ -225,15 +225,28 @@ def _purge_cache(
 
 
 def _aggregate_cache_stats() -> dict[str, Any]:
-    """Scan all datasets and aggregate cache sizes by type."""
+    """Scan all datasets and aggregate cache sizes by type.
+
+    Returns the existing per-`.cache/` totals (`total_bytes`, `latent_bytes`,
+    `embedding_bytes`, `cached_datasets`) PLUS `dataset_root_bytes` — the full
+    on-disk size of every `<dataset>/` folder (images + captions + masks +
+    `.cache/` + anything else). The dataset-root walk overlaps with the
+    per-cache iteration (two passes), but the redundancy is intentional: the
+    DATASETS KPI corner needs the "what does this actually take on my disk"
+    answer, not just the cache subset.
+    """
     all_datasets = dataset_manager.list_datasets()
     total_bytes = 0
     latent_bytes = 0
     embedding_bytes = 0
     cached_datasets = 0
+    dataset_root_bytes = 0   # full folder size including images, masks, etc.
 
     for ds in all_datasets:
-        cache_root = Path(ds.path) / ".cache"
+        ds_path = Path(ds.path)
+        if ds_path.is_dir():
+            dataset_root_bytes += _dir_size(ds_path)
+        cache_root = ds_path / ".cache"
         if not cache_root.is_dir():
             continue
         cached_datasets += 1
@@ -258,6 +271,7 @@ def _aggregate_cache_stats() -> dict[str, Any]:
         "latent_bytes": latent_bytes,
         "embedding_bytes": embedding_bytes,
         "cached_datasets": cached_datasets,
+        "dataset_root_bytes": dataset_root_bytes,
     }
 
 

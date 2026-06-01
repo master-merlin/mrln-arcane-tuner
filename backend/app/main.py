@@ -255,7 +255,8 @@ from app.core.dataset_manager import dataset_manager  # noqa: E402
 
 
 class MediaStaticFiles(StaticFiles):
-    """StaticFiles mount that guarantees a ``Vary: Origin`` header.
+    """StaticFiles mount that guarantees a ``Vary: Origin`` header and forces
+    revalidation on every fetch.
 
     Browsers key the media cache by URL. The global ``CORSMiddleware`` only
     attaches CORS / ``Vary: Origin`` headers when a request carries an
@@ -269,6 +270,15 @@ class MediaStaticFiles(StaticFiles):
     no-cors variants in separate cache entries so they can never be swapped.
     When an Origin IS present, ``CORSMiddleware`` already adds the header, so
     we only fill the gap for origin-less requests.
+
+    We also stamp ``Cache-Control: no-cache, must-revalidate`` so the browser
+    must round-trip back to the server (with the file's ETag) on every load.
+    Combined with the frontend's ``?t=lastUpdateTime`` cache-bust, this makes
+    post-crop / post-adjust image refresh deterministic: the URL changes when
+    the view bumps its timestamp, and even if a stale URL is requested the
+    server returns the on-disk bytes after a 304 revalidation — never a
+    cached pre-crop body. StaticFiles still sets ``Last-Modified`` / ``ETag``
+    from the file mtime, so revalidation is cheap (a 304 when unchanged).
     """
 
     async def get_response(self, path, scope):
@@ -280,6 +290,12 @@ class MediaStaticFiles(StaticFiles):
                 response.headers["vary"] = "Origin"
             elif "origin" not in vary.lower():
                 response.headers["vary"] = f"{vary}, Origin"
+        # Defeat browser HTTP-cache heuristics for media. StaticFiles emits
+        # ``Last-Modified`` + ``ETag`` from the file mtime, so revalidation
+        # is cheap (304 most of the time). The post-crop bug was browsers
+        # serving the pre-crop image from their HTTP cache because the
+        # original response had no explicit freshness directive.
+        response.headers["cache-control"] = "no-cache, must-revalidate"
         return response
 
 

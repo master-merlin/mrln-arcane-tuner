@@ -3,6 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { IcoComponent } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
+import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 
 interface RescanModalData {
@@ -258,7 +259,8 @@ interface ScanProgress {
 })
 export class RescanModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
-    private datasets = inject(DatasetService);
+    private datasetsApi = inject(DatasetService);
+    private datasets = inject(DatasetStore);
     private ws = inject(WebSocketService);
     private destroyRef = inject(DestroyRef);
 
@@ -303,13 +305,41 @@ export class RescanModalComponent implements OnInit {
 
         this.ws.on<{ dataset: string; current: number; total: number; file: string; status: string }>('scan_progress')
             .pipe(takeUntilDestroyed(this.destroyRef))
-            .subscribe(p => this.datasetProgress.set({
-                name: p.dataset, current: p.current, total: p.total, file: p.file, status: p.status,
-            }));
+            .subscribe(p => {
+                // When the modal is targeted at a single dataset, ignore
+                // progress events from other datasets (a concurrent
+                // library-wide scan would otherwise overwrite our bar).
+                if (this.data.datasetName && p.dataset !== this.data.datasetName) return;
+                this.datasetProgress.set({
+                    name: p.dataset, current: p.current, total: p.total, file: p.file, status: p.status,
+                });
+            });
 
         this.ws.on<unknown>('rescan_complete')
             .pipe(takeUntilDestroyed(this.destroyRef))
-            .subscribe(() => this.phase.set('complete'));
+            .subscribe(() => {
+                this.phase.set('complete');
+                // Reload the dataset list so the grid + KPIs reflect new counts,
+                // then offer to remove any datasets that the rescan found
+                // missing on disk (legacy parity: one DELETE per missing row;
+                // no bulk endpoint exists).
+                void this.datasets.loadAll()
+                    .then(() => {
+                        const missing = this.datasets.entities().filter(d => d.missing);
+                        if (missing.length === 0) return;
+                        const names = missing.map(d => d.name).join(', ');
+                        if (!confirm(
+                            `The following dataset${missing.length === 1 ? ' is' : 's are'} ` +
+                            `missing on disk: ${names}.\n\n` +
+                            `Remove ${missing.length === 1 ? 'it' : 'them'} from your library? ` +
+                            `(Files were not on disk anyway.)`
+                        )) return;
+                        for (const d of missing) {
+                            void this.datasets.deleteDataset(d.id, false).catch(() => undefined);
+                        }
+                    })
+                    .catch(() => undefined);
+            });
     }
 
     start(): void {
@@ -326,9 +356,9 @@ export class RescanModalComponent implements OnInit {
             this.phase.set('idle');
         };
         if (name) {
-            this.datasets.scanDataset(name, forceFull).subscribe({ error: onError });
+            this.datasetsApi.scanDataset(name, forceFull).subscribe({ error: onError });
         } else {
-            this.datasets.scanAllDatasets(forceFull).subscribe({ error: onError });
+            this.datasetsApi.scanAllDatasets(forceFull).subscribe({ error: onError });
         }
     }
 }

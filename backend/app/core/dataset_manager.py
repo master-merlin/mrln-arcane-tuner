@@ -1179,17 +1179,32 @@ class DatasetManager:
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
-        
+
         # Ensure we don't save outside dataset
         path = os.path.join(dataset.path, filename)
         # simplistic check
         if not os.path.abspath(path).startswith(os.path.abspath(dataset.path)):
              raise ValueError("Security violation: path traversal")
-             
+
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
 
-        # Update has_caption flag for the parent media item
+        # Update has_caption flag for the parent media item, then
+        # reconcile ``dataset.caption_count`` by counting media entries
+        # with ``has_caption=True``. We *don't* increment from the
+        # per-item flip because that path silently misses two failure
+        # modes:
+        #   1. Image dropped but not yet rescanned → no media_metadata
+        #      entry → the for-loop below never matches → counter stays
+        #      stale at 33 while disk has 34 .txt files.
+        #   2. Per-item ``has_caption`` flag was missing from a legacy
+        #      ``build_media_entry`` (before this commit) → first save
+        #      would correctly increment, but later writes against the
+        #      same image would also bump (False→True) and drift up.
+        # Counting truthy ``has_caption`` flags is the same invariant
+        # ``_compute_scan_statistics`` enforces via ``caption_stems``
+        # set length, so a fresh save and a full rescan agree on the
+        # value without disk-walking on every caption write.
         stem = os.path.splitext(filename)[0]
         for key, meta in dataset.media_metadata.items():
             media_stem = os.path.splitext(key)[0]
@@ -1197,6 +1212,36 @@ class DatasetManager:
                 meta["has_caption"] = True
                 self._persist_media_item(dataset, key)
                 break
+
+        new_caption_count = sum(
+            1 for m in dataset.media_metadata.values() if m.get("has_caption")
+        )
+        if new_caption_count != dataset.caption_count:
+            dataset.caption_count = new_caption_count
+            # Persist the dataset row so the recomputed caption_count
+            # survives a restart. _persist_media_item only writes the
+            # media_items row, not the dataset row.
+            self._persist_dataset(dataset)
+
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                from app.core.events import emit_entity_change
+                # Broadcast the FULL dataset payload — the frontend
+                # EntityStore replaces (does not merge) the row on
+                # ``entity.changed:updated``, so a partial payload
+                # would stub out multimedia_count / preview_image /
+                # etc. on every caption save. ``model_dump`` matches
+                # what rename_dataset already does.
+                asyncio.run_coroutine_threadsafe(
+                    emit_entity_change(
+                        event_manager.broadcast,
+                        entity="dataset",
+                        op="updated",
+                        id=dataset.id,
+                        payload=dataset.model_dump(),
+                    ),
+                    loop,
+                )
 
         return content
 

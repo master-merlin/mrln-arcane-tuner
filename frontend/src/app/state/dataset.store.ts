@@ -23,6 +23,63 @@ export class DatasetStore extends EntityStore<Dataset> {
 
     constructor(ws: WebSocketService, toast: ToastService) {
         super(ws, toast);
+
+        // Live WS bridge: training subprocesses signal `[CACHE_READY:...]`
+        // and the backend broadcasts `dataset_cache_ready` with the names of
+        // datasets whose cache became available. We flip `has_cache: true`
+        // in-place so the CACHED KPI tile and the per-card "Cache" button
+        // unlock without requiring a manual reload.
+        //
+        // Payload is `{ datasets: string[] }` of dataset NAMES (not IDs).
+        // Long-lived store ⇒ no explicit teardown required (matches the
+        // app-lifetime pattern used elsewhere; `takeUntilDestroyed` requires
+        // an injection context not available from a base-class constructor).
+        ws.on<{ datasets: string[] }>('dataset_cache_ready').subscribe(({ datasets }) => {
+            this.patchHasCacheByName(datasets);
+        });
+    }
+
+    /**
+     * Optimistically flips `has_cache: true` on each row whose `name` is in
+     * `names`. No HTTP — the backend already persisted the cache; this is
+     * a local reconciliation triggered by the `dataset_cache_ready` WS event.
+     * Rows that aren't loaded yet are silently skipped (loaded later via
+     * a normal `loadAll()` will reflect the server-side flag). Rows that
+     * already have `has_cache: true` are NOT re-upserted (object identity
+     * is preserved so downstream `computed` consumers don't churn).
+     */
+    patchHasCacheByName(names: string[]): void {
+        if (names.length === 0) return;
+        const wanted = new Set(names);
+        for (const ds of this.entities()) {
+            if (wanted.has(ds.name) && !ds.has_cache) {
+                this.upsert({ ...ds, has_cache: true });
+            }
+        }
+    }
+
+    /**
+     * Optimistically bumps `multimedia_count` + `file_count` on the named
+     * dataset row by `delta`. Used by the upload-drop path so the card
+     * surfaces the new image immediately rather than waiting for the
+     * post-upload rescan (which can take seconds: hashing, thumbnailing,
+     * HPS scoring). The follow-up `loadAll()` once scan completes resets
+     * both counters to backend-authoritative values, including
+     * deduplication if the dropped file shared a stem with an existing
+     * media item. No-op if the dataset isn't loaded into the store.
+     */
+    bumpFileCounts(name: string, delta: number): void {
+        if (delta === 0) return;
+        for (const ds of this.entities()) {
+            if (ds.name === name) {
+                this.upsert({
+                    ...ds,
+                    multimedia_count: (ds.multimedia_count ?? 0) + delta,
+                    file_count: (ds.file_count ?? 0) + delta,
+                });
+                return;
+            }
+        }
     }
 
     public override async loadAll(): Promise<void> {

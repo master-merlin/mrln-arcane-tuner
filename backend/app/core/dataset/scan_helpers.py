@@ -88,6 +88,16 @@ def build_media_entry(
     overlay_rel_path = f"overlays/{stem}.png"
     has_overlay = os.path.exists(os.path.join(dataset_path, overlay_rel_path))
 
+    # Check for sibling caption (.txt or .caption) — disk is source of truth.
+    # Without this, the per-image `has_caption` flag is never seeded by the
+    # scan, and `dataset_manager.save_caption`'s false→true increment fails
+    # to fire (or fires when it shouldn't), causing `caption_count` to drift
+    # out of sync with the on-disk reality.
+    has_caption = (
+        os.path.exists(os.path.join(dataset_path, f"{stem}.txt"))
+        or os.path.exists(os.path.join(dataset_path, f"{stem}.caption"))
+    )
+
     entry: dict[str, Any] = {
         "width": width,
         "height": height,
@@ -98,6 +108,7 @@ def build_media_entry(
         "has_masked": has_masked_img,
         "has_masked_caption": has_masked_cap,
         "has_overlay": has_overlay,
+        "has_caption": has_caption,
         "enabled": existing_meta.get("enabled", True),
     }
 

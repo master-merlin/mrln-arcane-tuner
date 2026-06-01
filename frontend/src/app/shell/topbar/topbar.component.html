@@ -12,58 +12,27 @@
         </div>
     }
 
-    <div class="search" style="margin-left: auto;">
-        <app-ico name="Search" [size]="13" />
-        <input
-            class="search-input"
-            type="search"
-            [placeholder]="searchPlaceholder()"
-            [value]="search.query()"
-            (input)="onSearchInput($event)"
-        />
-        @if (search.query()) {
-            <button class="search-clear-btn"
-                    type="button"
-                    (click)="clearSearch()"
-                    title="Clear search"
-                    aria-label="Clear search">
-                <app-ico name="X" [size]="12" />
-            </button>
-        }
-        @if (onDatasetsRoute()) {
-            <div class="search-filter-anchor">
-                <button class="chip solid search-filter-btn"
+    @if (!onDatasetsRoute()) {
+        <div class="search" style="margin-left: auto;">
+            <app-ico name="Search" [size]="13" />
+            <input
+                class="search-input"
+                type="search"
+                [placeholder]="searchPlaceholder()"
+                [value]="search.query()"
+                (input)="onSearchInput($event)"
+            />
+            @if (search.query()) {
+                <button class="search-clear-btn"
                         type="button"
-                        (click)="toggleFieldMenu()"
-                        [class.active]="fieldMenuOpen()"
-                        [attr.aria-expanded]="fieldMenuOpen()"
-                        [title]="fieldButtonTitle()">
-                    <app-ico name="SlidersHorizontal" [size]="11" />
-                    <span class="mono">{{ search.fields().size }}/{{ totalFields }}</span>
-                    <app-ico name="ChevronDown" [size]="10" />
+                        (click)="clearSearch()"
+                        title="Clear search"
+                        aria-label="Clear search">
+                    <app-ico name="X" [size]="12" />
                 </button>
-                @if (fieldMenuOpen()) {
-                    <div class="popover search-filter-popover">
-                        <div class="search-filter-head">
-                            <span class="popover-section" style="padding: 0;">Search in</span>
-                            <button type="button" class="search-filter-reset"
-                                    (click)="search.resetFields()">Reset</button>
-                        </div>
-                        <div class="popover-divider"></div>
-                        @for (f of allFields; track f.key) {
-                            <label class="popover-item search-filter-row">
-                                <input type="checkbox"
-                                       class="search-filter-check"
-                                       [checked]="search.fields().has(f.key)"
-                                       (change)="onFieldToggle(f.key, $event)" />
-                                <span>{{ f.label }}</span>
-                            </label>
-                        }
-                    </div>
-                }
-            </div>
-        }
-    </div>
+            }
+        </div>
+    }
     <app-download-indicator />
     <button class="icon-btn" type="button">
         <app-ico name="Bell" [size]="15" />

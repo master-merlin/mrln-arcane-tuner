@@ -205,8 +205,8 @@ export class DatasetStatsComponent implements OnInit {
     datasets = input.required<Dataset[]>();
     private datasetService = inject(DatasetService);
 
-    cacheStats = signal<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number }>({
-        total_bytes: 0, latent_bytes: 0, embedding_bytes: 0, cached_datasets: 0
+    cacheStats = signal<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }>({
+        total_bytes: 0, latent_bytes: 0, embedding_bytes: 0, cached_datasets: 0, dataset_root_bytes: 0
     });
     cacheLoading = signal<boolean>(true);
 

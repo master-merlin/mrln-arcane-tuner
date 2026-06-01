@@ -1,11 +1,8 @@
 import {
     ChangeDetectionStrategy,
     Component,
-    ElementRef,
-    HostListener,
     computed,
     inject,
-    signal,
 } from '@angular/core';
 import { NavigationEnd, Router } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
@@ -15,11 +12,7 @@ import { IcoComponent } from '../../icons/ico.component';
 import { DownloadIndicatorComponent } from './download-indicator.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ProjectService } from '../../services/project.service';
-import {
-    ALL_DATASET_SEARCH_FIELDS,
-    SearchStore,
-    type DatasetSearchField,
-} from '../../state/search.store';
+import { SearchStore } from '../../state/search.store';
 
 interface Crumb {
     label: string;
@@ -27,19 +20,15 @@ interface Crumb {
     last?: boolean;
 }
 
-interface FieldOption {
-    key: DatasetSearchField;
-    label: string;
-}
-
 /**
  * Topbar — crumbs, scope switcher (on scope-aware routes), functional
  * search input (wired to {@link SearchStore}), notifications + settings
  * icons.
  *
- * The field-selector popover only renders on `/datasets`; on other
- * routes the input is still present but unused (placeholder reflects
- * the aspirational cross-route search).
+ * On `/datasets` the global search wrapper is hidden — that screen owns
+ * its own filter bar (per PR1 Task 9). On other routes the input remains
+ * present but its functionality is aspirational until each screen's own
+ * parity PR moves the search inline there too.
  */
 @Component({
     selector: 'app-topbar',
@@ -53,20 +42,6 @@ export class TopbarComponent {
     protected scope = inject(ScopeStore);
     protected projects = inject(ProjectService);
     protected search = inject(SearchStore);
-    private host = inject(ElementRef<HTMLElement>);
-
-    protected fieldMenuOpen = signal(false);
-
-    protected readonly allFields: readonly FieldOption[] = [
-        { key: 'name', label: 'Name' },
-        { key: 'classifier', label: 'Classifier' },
-        { key: 'tags', label: 'Tags' },
-        { key: 'description', label: 'Description' },
-        { key: 'trigger_word', label: 'Trigger word' },
-        { key: 'notes', label: 'Notes' },
-    ];
-
-    protected readonly totalFields = ALL_DATASET_SEARCH_FIELDS.length;
 
     private url = toSignal(
         this.router.events.pipe(filter(e => e instanceof NavigationEnd)),
@@ -110,15 +85,6 @@ export class TopbarComponent {
             : 'Search datasets, captions, jobs…',
     );
 
-    protected fieldButtonTitle = computed(() => {
-        const labels = this.allFields
-            .filter(f => this.search.fields().has(f.key))
-            .map(f => f.label);
-        return labels.length
-            ? `Searching in: ${labels.join(', ')}`
-            : 'No fields selected (falls back to Name)';
-    });
-
     protected onSearchInput(event: Event): void {
         const value = (event.target as HTMLInputElement).value;
         this.search.query.set(value);
@@ -126,27 +92,5 @@ export class TopbarComponent {
 
     protected clearSearch(): void {
         this.search.query.set('');
-    }
-
-    protected onFieldToggle(key: DatasetSearchField, event: Event): void {
-        const checked = (event.target as HTMLInputElement).checked;
-        this.search.setField(key, checked);
-    }
-
-    protected toggleFieldMenu(): void {
-        this.fieldMenuOpen.update(v => !v);
-    }
-
-    @HostListener('document:mousedown', ['$event'])
-    protected onOutsidePointer(event: MouseEvent): void {
-        if (!this.fieldMenuOpen()) return;
-        if (!this.host.nativeElement.contains(event.target as Node)) {
-            this.fieldMenuOpen.set(false);
-        }
-    }
-
-    @HostListener('document:keydown.escape')
-    protected onEsc(): void {
-        if (this.fieldMenuOpen()) this.fieldMenuOpen.set(false);
     }
 }

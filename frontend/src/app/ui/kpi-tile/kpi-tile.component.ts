@@ -13,7 +13,9 @@ export type KpiAccent = 'brand' | 'success' | 'warning' | 'danger' | 'teal' | 'v
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     host: { style: 'display: block; height: 100%;' },
-    styles: [`.kpi { height: 100%; }`],
+    // `position: relative` lets projected <ng-content/> children
+    // (e.g. corner indicators) absolute-position against the tile.
+    styles: [`.kpi { height: 100%; position: relative; }`],
     template: `
         <div class="kpi" [class.compact]="compact()">
             @if (accent(); as a) {

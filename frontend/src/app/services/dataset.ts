@@ -171,8 +171,18 @@ export class DatasetService {
     return this.http.post<Dataset[]>(`${this.apiUrl}/scan-all?force_full=${forceFull}`, {});
   }
 
-  getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number }> {
-    return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number }>(`${this.apiUrl}/cache/stats`);
+  getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }> {
+    return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }>(`${this.apiUrl}/cache/stats`);
+  }
+
+  /**
+   * Cross-dataset MPx histogram + mean image-size aggregate. Backed by
+   * `GET /datasets/stats/mpx-distribution`, which computes a 10-bucket
+   * equal-width histogram (capped at 32 MP) over every loaded dataset's
+   * `media_metadata`. Used by the Datasets screen's IMAGES KPI tile.
+   */
+  getMpxDistribution(): Observable<MpxDistribution> {
+    return this.http.get<MpxDistribution>(`${this.apiUrl}/stats/mpx-distribution`);
   }
 
   uploadFile(name: string, file: File): Observable<any> {
@@ -433,4 +443,23 @@ export interface PipelineBlock {
   type: string;
   enabled: boolean;
   params: Record<string, any>;
+}
+
+/** One bin of the cross-dataset megapixel histogram. */
+export interface MpxBucket {
+  range_mp_min: number;
+  range_mp_max: number;
+  count: number;
+}
+
+/** Aggregate megapixel + mean image-size payload returned by
+ *  `GET /datasets/stats/mpx-distribution`. Buckets are ordered, 10
+ *  equal-width bins from 0 to min(observed_max, 32) MP — empty array
+ *  when `total_images === 0`. */
+export interface MpxDistribution {
+  total_images: number;
+  avg_size_bytes: number;
+  avg_megapixels: number;
+  median_megapixels: number;
+  buckets: MpxBucket[];
 }

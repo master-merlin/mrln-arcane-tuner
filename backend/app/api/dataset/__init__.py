@@ -8,8 +8,13 @@ from app.api.dataset.crop_routes import router as crop_router
 from app.api.dataset.analysis_routes import router as analysis_router
 from app.api.dataset.upscale_routes import router as upscale_router
 from app.api.dataset.overlay_routes import router as overlay_router
+from app.api.dataset.stats_routes import router as stats_router
 
 router = APIRouter()
+# Stats router is mounted FIRST so its concrete prefix
+# (``/datasets/stats/...``) matches before crud_router's
+# ``/datasets/{name}`` catch-all could shadow it.
+router.include_router(stats_router)
 router.include_router(crud_router)
 router.include_router(adjustment_router)
 router.include_router(crop_router)

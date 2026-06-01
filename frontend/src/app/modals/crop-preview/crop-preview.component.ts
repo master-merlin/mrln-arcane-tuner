@@ -16,6 +16,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
+import { MediaItemStore } from '../../state/media-item.store';
 
 interface CropPreviewData {
     datasetId?: string;
@@ -437,6 +438,7 @@ export class CropPreviewModalComponent implements OnInit, OnDestroy {
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
     private destroyRef = inject(DestroyRef);
+    private mediaItems = inject(MediaItemStore);
 
     private imageEl = viewChild<ElementRef<HTMLImageElement>>('imageEl');
 
@@ -775,6 +777,17 @@ export class CropPreviewModalComponent implements OnInit, OnDestroy {
             .subscribe({
                 next: () => {
                     this.isCropping.set(false);
+                    // Bump the global media-cache rev so every <img> that
+                    // points at the cropped file (details / browse grid /
+                    // filmstrip) appends a fresh ``?t=`` and forces the
+                    // browser to re-fetch. Without this the URL is
+                    // unchanged, the browser doesn't even issue a
+                    // revalidation request, and the user keeps seeing
+                    // the pre-crop bytes — meanwhile the backend has
+                    // already overwritten the source on disk, so each
+                    // subsequent crop silently destroys more of the
+                    // original.
+                    this.mediaItems.bumpMedia();
                     this.toast.success(`Cropped ${this.data.path}`);
                     this.overlay.closeModal();
                 },

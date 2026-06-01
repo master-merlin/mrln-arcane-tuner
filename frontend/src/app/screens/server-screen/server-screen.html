@@ -45,10 +45,19 @@
 </div>
 
 @if (isRestarting()) {
-    <div class="modal-backdrop">
-        <div class="modal" style="max-width:480px;">
-            <div class="modal-head"><div>Restarting backend</div></div>
-            <div class="modal-body">The backend is performing a graceful restart…</div>
+    <!-- Legacy-parity graceful-restart overlay (audit gap: restart UX).
+         Full-screen blurred backdrop + title + description + three bouncing
+         dots (no spinning circle — replaced per user verdict 2026-05-28). -->
+    <div class="server-restart-overlay" role="alertdialog" aria-live="polite" aria-busy="true">
+        <h2 class="server-restart-title">Server Restarting</h2>
+        <p class="server-restart-desc">
+            The backend is performing a graceful restart. The connection will be
+            restored automatically in a few seconds.
+        </p>
+        <div class="server-restart-dots" aria-hidden="true">
+            <span class="server-restart-dot"></span>
+            <span class="server-restart-dot"></span>
+            <span class="server-restart-dot"></span>
         </div>
     </div>
 }

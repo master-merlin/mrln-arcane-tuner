@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
-import { of, throwError } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 import { DatasetStore } from '../dataset.store';
 import { Dataset, DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
@@ -36,7 +36,9 @@ describe('DatasetStore', () => {
     let wsMock: {
         entityChanged: WritableSignal<EntityChangedMessage | null>,
         reconnected: WritableSignal<number>,
+        on: jasmine.Spy,
     };
+    let cacheReady$: Subject<{ datasets: string[] }>;
     let toastMock: { error: jasmine.Spy };
 
     beforeEach(() => {
@@ -55,7 +57,15 @@ describe('DatasetStore', () => {
                     of({ ...makeDataset('a', newName), description: desc, classifier: cls }),
             ),
         };
-        wsMock = { entityChanged: signal(null), reconnected: signal(0) };
+        cacheReady$ = new Subject<{ datasets: string[] }>();
+        wsMock = {
+            entityChanged: signal(null),
+            reconnected: signal(0),
+            on: jasmine.createSpy('on').and.callFake((event: string) => {
+                if (event === 'dataset_cache_ready') return cacheReady$.asObservable();
+                return new Subject().asObservable();
+            }),
+        };
         toastMock = { error: jasmine.createSpy('error') };
 
         TestBed.configureTestingModule({
@@ -116,5 +126,30 @@ describe('DatasetStore', () => {
         await store.updateDataset('a', { description: 'doomed' });
         expect(store.byId('a')()?.description).toBe('');
         expect(toastMock.error).toHaveBeenCalledWith(`Couldn't update dataset — reverted.`);
+    });
+
+    it('subscribes to dataset_cache_ready on construction', () => {
+        // Store was constructed in beforeEach via TestBed.inject; on() must
+        // have been called for the cache-ready channel by now.
+        const calls = (wsMock.on as jasmine.Spy).calls.allArgs().map(a => a[0]);
+        expect(calls).toContain('dataset_cache_ready');
+    });
+
+    it('flips has_cache: true on rows whose name appears in the event payload', async () => {
+        await store.loadAll();
+        // Both seeded rows start with has_cache undefined (falsy) per makeDataset.
+        cacheReady$.next({ datasets: ['alpha'] });
+        const rows = store.entities();
+        expect(rows.find(d => d.name === 'alpha')?.has_cache).toBe(true);
+        expect(rows.find(d => d.name === 'beta')?.has_cache).toBeFalsy();
+    });
+
+    it('does not re-upsert when has_cache is already true (idempotent)', async () => {
+        await store.loadAll();
+        cacheReady$.next({ datasets: ['alpha'] });
+        const ref = store.entities().find(d => d.name === 'alpha');
+        cacheReady$.next({ datasets: ['alpha'] });
+        // Same object reference ⇒ no second upsert.
+        expect(store.entities().find(d => d.name === 'alpha')).toBe(ref);
     });
 });

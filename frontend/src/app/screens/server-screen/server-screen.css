@@ -29,3 +29,75 @@
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+/* ── Graceful-restart overlay (legacy parity) ─────────────────────────
+   Full-screen blurred backdrop shown while the backend is restarting
+   and we're polling /models/definitions for it to come back. Replaces
+   the prior plain modal with the legacy app-shell visual — title,
+   description, and three bouncing dots (no spinning circle: dropped
+   per user verdict 2026-05-28). Lives in this screen's stylesheet
+   rather than the global topbar because the overlay only ever fires
+   from the server-screen's restart handler today; a future shell-
+   global lift (PR10) can promote it to a shared component. */
+.server-restart-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    text-align: center;
+    background: color-mix(in oklab, var(--color-base) 70%, transparent);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    animation: server-restart-fade-in 0.5s ease;
+}
+.server-restart-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--color-text-primary);
+    margin: 0 0 8px;
+    letter-spacing: 0.01em;
+}
+.server-restart-desc {
+    color: var(--color-text-muted);
+    max-width: 28rem;
+    margin: 0 0 32px;
+    line-height: 1.5;
+    font-size: 14px;
+}
+.server-restart-dots {
+    display: flex;
+    gap: 8px;
+}
+.server-restart-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-brand);
+    animation: server-restart-bounce 1s infinite ease-in-out;
+}
+/* Staggered delays mirror the legacy `[animation-delay:-0.3s|-0.15s|0s]`
+   trio so the three dots travel a phase apart rather than in lockstep. */
+.server-restart-dot:nth-child(1) { animation-delay: -0.3s; }
+.server-restart-dot:nth-child(2) { animation-delay: -0.15s; }
+.server-restart-dot:nth-child(3) { animation-delay: 0s; }
+
+@keyframes server-restart-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+@keyframes server-restart-bounce {
+    0%, 100% { transform: translateY(0);    opacity: 0.55; }
+    50%      { transform: translateY(-8px); opacity: 1;    }
+}
+
+/* Respect users who've asked for reduced motion: hold the dots at the
+   bottom of their travel with full opacity rather than bouncing them.
+   The overlay still appears, just statically. */
+@media (prefers-reduced-motion: reduce) {
+    .server-restart-overlay { animation: none; }
+    .server-restart-dot     { animation: none; opacity: 1; }
+}

@@ -183,6 +183,23 @@ export class PipelineEditorState {
     }
 
     resetAll(): void {
+        this.resetAllForUser();
+        this.markClean();
+    }
+
+    /**
+     * User-initiated Reset All. Zeros every panel back to its default
+     * params (same as `resetAll`) but does NOT mark the state clean —
+     * the user just wiped a saved recipe and needs to either Save (to
+     * commit the empty/no-op overlay) or Revert (to delete the overlay
+     * entirely). Leaving dirty=true is what makes the Save button
+     * enable so they can choose.
+     *
+     * `resetAll()` (which DOES markClean) stays untouched — it's the
+     * "fresh-state" reset used by `hydrate()` and `bake()` and must
+     * not leak a dirty=true immediately after an un-edited load.
+     */
+    resetAllForUser(): void {
         this.whiteBalance.set(mkOp('white_balance'));
         this.curves.set(mkOp('curves'));
         this.lut.set(mkOp('lut'));
@@ -196,7 +213,7 @@ export class PipelineEditorState {
         this.faceRestore.set(mkOp('face_restore'));
         this.upscale.set(mkOp('upscale'));
         this.operationOrder.set([...PIPELINE_ORDER]);
-        this.markClean();
+        // NOTE: intentionally no markClean() — see method docstring.
     }
 
     /**

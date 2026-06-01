@@ -18,6 +18,7 @@ import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { IcoComponent } from '../../icons/ico.component';
 import { CanvasFooterComponent } from '../shared/canvas-footer.component';
+import { buildCanvasMeta } from '../shared/media-meta';
 
 /**
  * Details mode — 3-pane layout (mask LEFT 320px / canvas / caption RIGHT
@@ -285,22 +286,10 @@ export class DetailsMode {
     } | null>(() => {
         const p = this.currentPair();
         if (!p) return null;
-        const m = p.metadata ?? {};
-        const w = typeof m.width === 'number' ? m.width : null;
-        const h = typeof m.height === 'number' ? m.height : null;
-        const res = w && h ? `${w}×${h}` : null;
-        const ar = typeof m.aspect_ratio === 'number'
-            ? m.aspect_ratio.toFixed(3)
-            : (w && h ? (w / h).toFixed(3) : null);
-        const orientation = typeof m.orientation === 'string' ? m.orientation : null;
-        const size = typeof m.size_bytes === 'number' ? formatBytes(m.size_bytes) : null;
-        const q = m.quality_score;
-        const hpsLabel = typeof q === 'number' ? `HPS ${q.toFixed(4)}` : null;
-        const hpsTone = typeof q === 'number'
-            ? (q >= 0.27 ? 'success' : q >= 0.24 ? 'warning' : 'danger')
-            : null;
-        const hasOverlay = !!m.has_overlay;
-        return { res, ar, orientation, size, hpsLabel, hpsTone, hasOverlay };
+        return {
+            ...buildCanvasMeta(p.metadata ?? null),
+            hasOverlay: !!p.metadata?.has_overlay,
+        };
     });
 
     /** Switch to Edit mode for the current image. */
@@ -409,13 +398,4 @@ export class DetailsMode {
             isMasked: this.showMasked(),
         });
     }
-}
-
-function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    const kb = bytes / 1024;
-    if (kb < 1024) return `${kb.toFixed(1)} KB`;
-    const mb = kb / 1024;
-    if (mb < 1024) return `${mb.toFixed(2)} MB`;
-    return `${(mb / 1024).toFixed(2)} GB`;
 }

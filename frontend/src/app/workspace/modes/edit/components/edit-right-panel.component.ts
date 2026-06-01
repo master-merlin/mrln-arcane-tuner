@@ -38,11 +38,17 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
 
         <footer class="actions">
             <div class="row">
-                <button type="button" class="btn sm" (click)="onRevert()">
+                <button type="button" class="btn sm" (click)="onRevert()" [title]="revertTitle">
                     <app-ico name="History" [size]="12"/> Revert
                 </button>
-                <button type="button" class="btn sm" (click)="onCopy()">
-                    <app-ico name="Copy" [size]="12"/> Copy
+                <button type="button" class="btn sm"
+                        (click)="onResetAll()"
+                        [disabled]="!anyOpEnabled()"
+                        [title]="resetAllTitle()">
+                    <app-ico name="RotateCcw" [size]="12"/> Reset all
+                </button>
+                <button type="button" class="btn sm icon-only" (click)="onCopy()" title="Copy recipe as JSON">
+                    <app-ico name="Copy" [size]="12"/>
                 </button>
             </div>
             <div class="row">
@@ -154,6 +160,36 @@ export class EditRightPanelComponent {
         if (!this.state.dirty()) return 'No changes to save';
         return 'Save overlay';
     });
+
+    /**
+     * Reset All is meaningful only if at least one panel is enabled
+     * (otherwise it's already a no-op). Reads `state.blocks()` which
+     * already filters to enabled-only.
+     *
+     * Known limitation: `blocks()` only emits a `color_match` entry
+     * when both `cm.enabled` AND `cm.params.reference_path` are set,
+     * so a color_match panel that the user toggled on but hasn't
+     * picked a reference for yet is invisible here. The button
+     * appears greyed out in that single edge case. Acceptable
+     * trade-off — the alternative would require exposing the
+     * private `allOps()` from `PipelineEditorState`.
+     */
+    protected anyOpEnabled = computed<boolean>(() => this.state.blocks().length > 0);
+
+    protected resetAllTitle = computed<string>(() =>
+        this.anyOpEnabled()
+            ? 'Reset every panel to defaults (Save afterwards to commit an empty overlay)'
+            : 'Nothing to reset',
+    );
+
+    /** Static — no signal reads, so a plain field beats a computed. */
+    protected readonly revertTitle =
+        'Delete the saved overlay PNG + recipe and restore the original';
+
+    protected onResetAll(): void {
+        if (!confirm('Reset every panel to defaults? Save afterwards to commit the empty overlay, or Revert to delete it entirely.')) return;
+        this.state.resetAllForUser();
+    }
 
     protected onRevert(): void {
         if (!confirm('Revert all edits and delete the saved overlay?')) return;

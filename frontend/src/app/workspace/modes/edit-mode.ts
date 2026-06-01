@@ -31,7 +31,8 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
                     <app-edit-canvas
                         [datasetName]="datasetName()"
                         [mediaFile]="pair.media_file"
-                        [hasOverlay]="!!pair?.metadata?.has_overlay"
+                        [hasOverlay]="!!pair.metadata?.has_overlay"
+                        [metadata]="pair.metadata ?? null"
                         (prev)="onPrev()"
                         (next)="onNext()"/>
                 </main>

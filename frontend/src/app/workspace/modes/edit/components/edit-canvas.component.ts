@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, injec
 import { IcoComponent } from '../../../../icons/ico.component';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer.component';
+import { buildCanvasMeta } from '../../../shared/media-meta';
 import { OverlayStore, Overlay } from '../../../../state/overlay.store';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { PreviewPipeline } from '../preview/preview-pipeline';
@@ -128,7 +129,16 @@ export function buildPixelSourceUrl(
             </div>
         </div>
 
-        <app-canvas-footer [meta]="meta()"/>
+        <app-canvas-footer [meta]="meta()">
+            @if (state.dirty()) {
+                <span class="chip warning dirty-chip"
+                      role="status"
+                      aria-label="Unsaved adjustments — modified"
+                      title="You have unsaved adjustments — Save to commit or Revert to discard">
+                    <app-ico name="Edit3" [size]="10"/> Modified
+                </span>
+            }
+        </app-canvas-footer>
     `,
     styles: [`
         :host { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
@@ -242,12 +252,21 @@ export function buildPixelSourceUrl(
             0%, 100% { opacity: 0.45; }
             50%      { opacity: 1.0; }
         }
+        /* Smaller-than-default chip proportions + uppercase tracking to
+           read as a transient status badge rather than a content tag.
+           Color/background/border come from the global \`.chip.warning\`. */
+        .dirty-chip {
+            padding: 2px 8px;
+            font-size: 10px; font-weight: 600;
+            letter-spacing: 0.04em; text-transform: uppercase;
+        }
     `],
 })
 export class EditCanvasComponent {
     datasetName = input.required<string>();
     mediaFile = input.required<string>();
     hasOverlay = input<boolean>(false);
+    metadata = input<Record<string, unknown> | null>(null);
 
     prev = output<void>();
     next = output<void>();
@@ -268,7 +287,7 @@ export class EditCanvasComponent {
 
     private overlay = inject(OverlayStore);
     private rtc = inject(RuntimeConfigService);
-    private state = inject(PipelineEditorState);
+    protected state = inject(PipelineEditorState);
     protected preview = inject(PreviewPipeline);
 
     /**
@@ -423,8 +442,14 @@ export class EditCanvasComponent {
         (e.target as Element).releasePointerCapture?.(e.pointerId);
     }
 
+    /**
+     * Footer metadata strip. Same shape Details mode shows — resolution,
+     * AR, orientation, file size — so the two surfaces stay in sync via
+     * the shared `buildCanvasMeta` helper. `hasOverlay` comes from the
+     * input (already-resolved by the parent mode), not the metadata blob.
+     */
     protected meta = computed<CanvasMeta>(() => ({
-        res: null, ar: null, orientation: null, size: null,
-        hpsLabel: null, hpsTone: null, hasOverlay: this.hasOverlay(),
+        ...buildCanvasMeta(this.metadata()),
+        hasOverlay: this.hasOverlay(),
     }));
 }

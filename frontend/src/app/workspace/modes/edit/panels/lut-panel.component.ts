@@ -3,6 +3,8 @@ import { IcoComponent } from '../../../../icons/ico.component';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { LutEntry } from '../operation-defs';
 import { parseCubeString } from '../preview/utils/lut';
+import { DatasetService } from '../../../../services/dataset';
+import { ToastService } from '../../../../services/toast';
 
 @Component({
     selector: 'app-lut-panel',
@@ -109,6 +111,8 @@ import { parseCubeString } from '../preview/utils/lut';
 })
 export class LutPanelComponent {
     private state = inject(PipelineEditorState);
+    private datasetSvc = inject(DatasetService);
+    private toast = inject(ToastService);
     protected op = computed(() => this.state.lut());
 
     protected presets = [
@@ -154,12 +158,35 @@ export class LutPanelComponent {
         }));
         input.value = '';
     }
+    /**
+     * Build a `CurvesConfig` from the current curves panel and POST it to
+     * `/datasets/{name}/export-cube`. Backend renders a 33³ identity-baked
+     * .cube file; we download it as `exported_curves.cube` via a transient
+     * <a> click — same pattern as the legacy `image-editor-modal.ts:2605-2622`.
+     * Toasts success/failure either way so the click is never silent.
+     */
     exportStack(): void {
-        // Calls DatasetService.exportCube — wire to your existing service method.
-        // Leaving as a TODO: actual call goes here once you confirm the service signature
-        // by reading frontend/src/app/services/dataset.ts. The method is `exportCube`
-        // per [legacy/.../image-editor-modal.ts:344].
-        console.warn('LUT export — wire DatasetService.exportCube here');
+        const name = this.state.datasetName();
+        if (!name) {
+            this.toast.error('Open an image before exporting a LUT');
+            return;
+        }
+        const curves = this.state.curves().params;
+        this.datasetSvc.exportCube(name, curves).subscribe({
+            next: (blob) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'exported_curves.cube';
+                a.click();
+                URL.revokeObjectURL(url);
+                this.toast.success('CUBE file exported');
+            },
+            error: (err) => {
+                console.error('exportCube failed', err);
+                this.toast.error('Failed to export CUBE file');
+            },
+        });
     }
     private patchLut(i: number, fn: (l: LutEntry) => LutEntry): void {
         this.state.lut.update(o => {

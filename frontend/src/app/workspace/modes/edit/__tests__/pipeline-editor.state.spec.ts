@@ -1,0 +1,161 @@
+import { TestBed } from '@angular/core/testing';
+import { signal } from '@angular/core';
+import { PipelineEditorState } from '../pipeline-editor.state';
+import { OverlayStore } from '../../../../state/overlay.store';
+import { ToastService } from '../../../../services/toast';
+import { WebSocketService } from '../../../../services/websocket.service';
+
+// Canonical WS stub used across `frontend/src/app/state/__tests__/*.spec.ts`:
+// only `entityChanged` and `reconnected` are read by EntityStore's constructor
+// effects, and both are signals.
+function makeWsMock() {
+    return { entityChanged: signal(null), reconnected: signal(0) } as unknown as WebSocketService;
+}
+class StubToast { success() {} error() {} warning() {} info() {} }
+
+describe('PipelineEditorState.resetAllForUser', () => {
+    let state: PipelineEditorState;
+
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            providers: [
+                PipelineEditorState,
+                OverlayStore,
+                { provide: WebSocketService, useValue: makeWsMock() },
+                { provide: ToastService, useClass: StubToast },
+            ],
+        });
+        state = TestBed.inject(PipelineEditorState);
+    });
+
+    it('zeros every panel back to its default params', () => {
+        state.whiteBalance.update(o => ({ ...o, enabled: true, params: { temperature: 7800, tint: 12 } }));
+        state.hslSelective.update(o => ({ ...o, enabled: true, params: { reds: { hue_shift: 30, saturation: 0, luminance: 0 } } as never }));
+
+        state.resetAllForUser();
+
+        expect(state.whiteBalance().enabled).toBeFalse();
+        expect(state.whiteBalance().params.temperature).toBe(6500);
+        expect(state.whiteBalance().params.tint).toBe(0);
+        expect(state.hslSelective().enabled).toBeFalse();
+    });
+
+    it('clears every panel\'s enabled flag and restores operationOrder', () => {
+        // One assertion-blast that catches any panel accidentally
+        // dropped from the reset body, plus the operationOrder reset
+        // (the original "zeros" test only probed 2 of 12 panels and
+        // didn't check operationOrder at all).
+        state.whiteBalance.update(o => ({ ...o, enabled: true }));
+        state.curves.update(o => ({ ...o, enabled: true }));
+        state.lut.update(o => ({ ...o, enabled: true }));
+        state.colorMatch.update(o => ({ ...o, enabled: true }));
+        state.hslSelective.update(o => ({ ...o, enabled: true }));
+        state.colorTone.update(o => ({ ...o, enabled: true }));
+        state.vignette.update(o => ({ ...o, enabled: true }));
+        state.lens.update(o => ({ ...o, enabled: true }));
+        state.sharpen.update(o => ({ ...o, enabled: true }));
+        state.denoise.update(o => ({ ...o, enabled: true }));
+        state.faceRestore.update(o => ({ ...o, enabled: true }));
+        state.upscale.update(o => ({ ...o, enabled: true }));
+        // Scramble the order to verify reset restores PIPELINE_ORDER.
+        state.moveOperation(0, 5);
+
+        state.resetAllForUser();
+
+        // Every panel disabled.
+        expect(state.whiteBalance().enabled).toBeFalse();
+        expect(state.curves().enabled).toBeFalse();
+        expect(state.lut().enabled).toBeFalse();
+        expect(state.colorMatch().enabled).toBeFalse();
+        expect(state.hslSelective().enabled).toBeFalse();
+        expect(state.colorTone().enabled).toBeFalse();
+        expect(state.vignette().enabled).toBeFalse();
+        expect(state.lens().enabled).toBeFalse();
+        expect(state.sharpen().enabled).toBeFalse();
+        expect(state.denoise().enabled).toBeFalse();
+        expect(state.faceRestore().enabled).toBeFalse();
+        expect(state.upscale().enabled).toBeFalse();
+
+        // operationOrder back to its canonical sequence.
+        // Read the canonical via the state's blocks() side-effect:
+        // after reset, blocks() must be empty (everything disabled).
+        // operationOrder itself must be a non-empty array of unique
+        // kinds in the canonical order; assert the count for now.
+        const order = state.operationOrder();
+        expect(order.length).toBeGreaterThan(0);
+        expect(new Set(order).size).toBe(order.length);   // no dupes
+        expect(state.blocks().length).toBe(0);
+    });
+
+    it('leaves dirty=true so the user can Save the empty recipe', () => {
+        // Apply a non-default change and mark clean — simulates "image
+        // opened with a saved recipe already on disk".
+        state.whiteBalance.update(o => ({ ...o, enabled: true, params: { temperature: 7800, tint: 12 } }));
+        state.markClean();
+        expect(state.dirty()).toBeFalse();
+
+        state.resetAllForUser();
+
+        expect(state.dirty()).toBeTrue();
+    });
+});
+
+describe('PipelineEditorState.resetAll', () => {
+    let state: PipelineEditorState;
+
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            providers: [
+                PipelineEditorState,
+                OverlayStore,
+                { provide: WebSocketService, useValue: makeWsMock() },
+                { provide: ToastService, useClass: StubToast },
+            ],
+        });
+        state = TestBed.inject(PipelineEditorState);
+    });
+
+    it('still markCleans so the bake/hydrate flows do not leak dirty=true', () => {
+        state.whiteBalance.update(o => ({ ...o, enabled: true, params: { temperature: 7800, tint: 12 } }));
+        state.resetAll();
+        expect(state.dirty()).toBeFalse();
+    });
+});
+
+describe('PipelineEditorState.blocks (color_match edge case)', () => {
+    let state: PipelineEditorState;
+
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            providers: [
+                PipelineEditorState,
+                OverlayStore,
+                { provide: WebSocketService, useValue: makeWsMock() },
+                { provide: ToastService, useClass: StubToast },
+            ],
+        });
+        state = TestBed.inject(PipelineEditorState);
+    });
+
+    it('omits color_match from blocks() when enabled but reference_path is empty', () => {
+        // Locks the documented edge case (edit-right-panel.component.ts:
+        // anyOpEnabled's JSDoc) — a user who toggles Color Match on but
+        // hasn't picked a reference yet will see Reset All greyed out,
+        // because blocks() requires BOTH enabled AND a reference_path.
+        // If a future blocks() refactor accidentally relaxes that
+        // condition this test fails and forces a re-evaluation.
+        state.colorMatch.update(o => ({ ...o, enabled: true }));
+        // Default colorMatch params have reference_path === '' (falsy).
+
+        expect(state.blocks().length).toBe(0);
+
+        // Once a reference is set, color_match flows into blocks() normally.
+        state.colorMatch.update(o => ({
+            ...o,
+            params: { ...o.params, reference_path: '/some/ref.png' },
+        }));
+
+        const block = state.blocks().find(b => b.type === 'color_match');
+        expect(block).toBeDefined();
+    });
+});

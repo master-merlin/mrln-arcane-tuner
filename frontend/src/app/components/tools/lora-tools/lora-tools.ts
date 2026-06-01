@@ -1,54 +1,29 @@
-import { Component, inject, signal, OnDestroy } from '@angular/core';
+import { Component, inject, input, signal, OnDestroy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import uPlot from 'uplot';
+
+export type ToolTab = 'inspect' | 'resize';
 
 @Component({
     selector: 'app-lora-tools',
     standalone: true,
     imports: [FormsModule],
     template: `
-    <div class="space-y-8 animate-in fade-in duration-500">
-
-        <!-- Header -->
-        <div class="bg-surface-low/50 border border-border-default rounded-theme-xl p-8 shadow-xl">
-            <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
-                LoRA Tools
-            </h2>
-            <p class="text-text-muted">Inspect and manipulate LoRA safetensors files.</p>
-
-            <!-- Sub-tabs -->
-            <nav class="flex gap-1 bg-surface-mid/50 p-1 rounded-theme-md mt-4 w-fit">
-                <button (click)="activeTab.set('inspect')"
-                    [class.bg-nav-active]="activeTab() === 'inspect'"
-                    [class.text-white]="activeTab() === 'inspect'"
-                    class="px-4 py-1.5 rounded-theme-sm text-sm font-medium text-text-muted hover:text-white transition-all flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    Inspect
-                </button>
-                <button (click)="activeTab.set('resize')"
-                    [class.bg-nav-active]="activeTab() === 'resize'"
-                    [class.text-white]="activeTab() === 'resize'"
-                    class="px-4 py-1.5 rounded-theme-sm text-sm font-medium text-text-muted hover:text-white transition-all flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
-                    Resize
-                </button>
-            </nav>
-        </div>
+    <div class="space-y-4 animate-in fade-in duration-300">
 
         <!-- ═══════════════ INSPECT TAB ═══════════════ -->
-        @if (activeTab() === 'inspect') {
-            <div class="bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl p-6 animate-in fade-in duration-200">
+        @if (tab() === 'inspect') {
+            <div class="card animate-in fade-in duration-200" style="padding: 14px;">
 
                 <!-- File Path Input -->
-                <div class="flex gap-3 mb-4">
+                <div class="flex gap-2" [class.mb-4]="inspectResult() || inspectError()">
                     <input type="text" [(ngModel)]="inspectPath"
-                        placeholder="Path to .safetensors file..."
-                        class="flex-1 bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2.5 text-sm text-white placeholder-text-subtle focus:outline-none focus:border-brand transition-colors font-mono" />
+                        placeholder="Path to .safetensors file…"
+                        class="input mono" style="flex: 1;" />
                     <button (click)="inspectLora()" [disabled]="isInspecting() || !inspectPath"
-                        class="px-5 py-2.5 rounded-theme-md bg-brand hover:bg-brand disabled:bg-nav-active disabled:text-text-subtle text-white font-medium text-sm transition-all">
+                        class="btn primary">
                         @if (isInspecting()) {
                             <span class="flex items-center gap-2">
                                 <span class="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -71,9 +46,9 @@ import uPlot from 'uplot';
                         <!-- Quick Stats Row -->
                         <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
                             @for (stat of quickStats(); track stat.label) {
-                                <div class="bg-base/50 border border-border-default rounded-theme-md p-3 text-center">
-                                    <div class="text-[10px] text-text-subtle font-bold uppercase tracking-widest mb-1">{{ stat.label }}</div>
-                                    <div class="text-sm font-bold text-white">{{ stat.value }}</div>
+                                <div class="kpi compact">
+                                    <div class="kpi-label">{{ stat.label }}</div>
+                                    <div class="kpi-value">{{ stat.value }}</div>
                                 </div>
                             }
                         </div>
@@ -289,37 +264,37 @@ import uPlot from 'uplot';
         }
 
         <!-- ═══════════════ RESIZE TAB ═══════════════ -->
-        @if (activeTab() === 'resize') {
-            <div class="bg-surface-low border border-surface-mid rounded-theme-xl shadow-2xl p-6 animate-in fade-in duration-200">
+        @if (tab() === 'resize') {
+            <div class="card animate-in fade-in duration-200" style="padding: 14px;">
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                     <div>
-                        <label class="block text-[10px] text-text-subtle font-bold uppercase tracking-widest mb-1">Input Path</label>
+                        <label class="field-label">Input Path</label>
                         <input type="text" [(ngModel)]="resizeInputPath"
-                            placeholder="Path to source .safetensors..."
-                            class="w-full bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2.5 text-sm text-white placeholder-text-subtle focus:outline-none focus:border-brand transition-colors font-mono" />
+                            placeholder="Path to source .safetensors…"
+                            class="input mono" />
                     </div>
                     <div>
-                        <label class="block text-[10px] text-text-subtle font-bold uppercase tracking-widest mb-1">Output Path</label>
+                        <label class="field-label">Output Path</label>
                         <input type="text" [(ngModel)]="resizeOutputPath"
-                            placeholder="Path for resized output..."
-                            class="w-full bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2.5 text-sm text-white placeholder-text-subtle focus:outline-none focus:border-brand transition-colors font-mono" />
+                            placeholder="Path for resized output…"
+                            class="input mono" />
                     </div>
                     <div>
-                        <label class="block text-[10px] text-text-subtle font-bold uppercase tracking-widest mb-1">New Rank</label>
+                        <label class="field-label">New Rank</label>
                         <input type="number" [(ngModel)]="resizeNewRank" [min]="1" [max]="256"
-                            class="w-full bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-brand transition-colors" />
+                            class="input mono" />
                     </div>
                     <div>
-                        <label class="block text-[10px] text-text-subtle font-bold uppercase tracking-widest mb-1">New Alpha <span class="text-text-disabled">(optional)</span></label>
+                        <label class="field-label">New Alpha <span class="text-text-disabled">(optional)</span></label>
                         <input type="number" [(ngModel)]="resizeNewAlpha" step="0.1"
                             placeholder="Auto-scaled if empty"
-                            class="w-full bg-surface-mid border border-surface-high rounded-theme-lg px-4 py-2.5 text-sm text-white placeholder-text-subtle focus:outline-none focus:border-brand transition-colors" />
+                            class="input mono" />
                     </div>
                     <div>
-                        <label class="block text-[10px] text-text-subtle font-bold uppercase tracking-widest mb-1">Save Dtype <span class="text-text-disabled">(optional)</span></label>
+                        <label class="field-label">Save Dtype <span class="text-text-disabled">(optional)</span></label>
                         <select [(ngModel)]="resizeDtype"
-                            class="w-full bg-surface-high border border-surface-high/50 rounded-theme-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-brand transition-colors">
+                            class="select">
                             <option value="">Preserve Original</option>
                             <option value="fp16">FP16</option>
                             <option value="bf16">BF16</option>
@@ -330,7 +305,7 @@ import uPlot from 'uplot';
 
                 <div class="flex items-center gap-4">
                     <button (click)="resizeLora()" [disabled]="isResizing() || !resizeInputPath || !resizeOutputPath || !resizeNewRank"
-                        class="px-5 py-2.5 rounded-theme-md bg-amber-600 hover:bg-amber-500 disabled:bg-nav-active disabled:text-text-subtle text-white font-medium text-sm transition-all">
+                        class="btn primary">
                         @if (isResizing()) {
                             <span class="flex items-center gap-2">
                                 <span class="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -378,7 +353,8 @@ export class LoraToolsComponent implements OnDestroy {
     private http = inject(HttpClient);
     private rtc = inject(RuntimeConfigService);
 
-    activeTab = signal<'inspect' | 'resize'>('inspect');
+    /** Which flow to show — driven by the Tools screen's outer tabs. */
+    readonly tab = input<ToolTab>('inspect');
 
     // ── Inspect State ──
     inspectPath = '';

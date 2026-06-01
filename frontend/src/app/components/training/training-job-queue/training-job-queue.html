@@ -33,16 +33,16 @@
              class="q-card mb-2 p-3 rounded-theme-md bg-surface-mid/70 cursor-pointer transition-colors hover:bg-surface-mid"
              [class.q-card-selected]="isSelected(job.id)"
              style="border-left: 2px solid var(--color-success);">
-          <div class="flex items-start justify-between gap-1.5 mb-1.5">
-            <div class="min-w-0 flex-1">
-              <div class="text-[12.5px] font-semibold text-text-primary truncate">{{ job.config['lora_name'] || 'untitled' }}</div>
-              <div class="text-[10.5px] text-text-muted font-mono truncate">{{ job.config['definition_id'] || job.plugin_id }}</div>
+          <div class="mb-1.5">
+            <div class="text-[12.5px] font-semibold text-text-primary truncate">{{ job.config['lora_name'] || 'untitled' }}</div>
+            <div class="flex items-center justify-between gap-1.5 mt-0.5">
+              <div class="text-[10.5px] text-text-muted font-mono truncate min-w-0">{{ job.config['definition_id'] || job.plugin_id }}</div>
+              @if (getLossStatus(job); as s) {
+                <span class="chip head-chip-sm shrink-0" [class.success]="s.tone === 'success'" [class.warning]="s.tone === 'warning'" [class.danger]="s.tone === 'danger'" [title]="s.tooltip"><span class="dot"></span>{{ s.text }}</span>
+              } @else {
+                <span class="chip success head-chip-sm shrink-0"><span class="dot"></span>{{ job.status }}</span>
+              }
             </div>
-            @if (getLossStatus(job); as s) {
-              <span class="chip head-chip-sm" [class.success]="s.icon === '🟢'" [class.warning]="s.icon === '🟡'" [class.danger]="s.icon === '🔴'" [title]="s.tooltip"><span class="dot"></span>{{ s.text }}</span>
-            } @else {
-              <span class="chip success head-chip-sm"><span class="dot"></span>{{ job.status }}</span>
-            }
           </div>
           @if (getLatestMetrics(job); as m) {
             <div class="bar" style="height: 5px;"><i [style.width.%]="m.progress" style="background: var(--color-success);"></i></div>

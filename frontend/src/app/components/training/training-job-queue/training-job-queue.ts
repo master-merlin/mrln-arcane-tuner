@@ -7,6 +7,7 @@ import { WebSocketService } from '../../../services/websocket.service';
 import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { type ChartDataPoint, type SmoothingMode } from '../training-chart/training-chart';
+import { lossStatus, CONVERGENCE_WINDOW, type LossStatus } from '../../../shared/job-metrics';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
 import { ModelSourceOverride } from '../../../services/model.service';
@@ -727,39 +728,13 @@ export class TrainingJobQueueComponent implements OnInit {
     return `${m}m ${s}s`;
   }
 
-  /** Loss velocity status: compares recent vs earlier loss average. Uses a larger window (50 steps) for stability. */
-  getLossStatus(job: Job): { icon: string, text: string, colorClass: string, tooltip: string } | null {
-    if (!job.logs || job.logs.length < 50) return null;
-    const window = 50;
-    const losses: number[] = [];
-    for (let i = job.logs.length - 1; i >= 0 && losses.length < window * 2; i--) {
-      const m = this.parseLogLine(job.logs[i]);
-      if (m?.loss != null) losses.unshift(m.loss);
-    }
-    if (losses.length < window) return null;
-    const recent = losses.slice(-window).reduce((a, b) => a + b, 0) / window;
-    const earlier = losses.slice(0, window).reduce((a, b) => a + b, 0) / window;
-    const delta = (recent - earlier) / Math.max(earlier, 1e-8);
-    
-    let icon = 'ðŸŸ¡';
-    let text = 'Plateau';
-    let colorClass = 'text-amber-400 bg-amber-500/10 border-amber-500/30';
-    if (delta < -0.01) {
-      icon = 'ðŸŸ¢';
-      text = 'Converging';
-      colorClass = 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
-    } else if (delta > 0.02) {
-      icon = 'ðŸ”´';
-      text = 'Diverging';
-      colorClass = 'text-danger bg-danger/10 border-danger/30';
-    }
-
-    return {
-      icon,
-      text,
-      colorClass,
-      tooltip: `Evaluating over last ${window} steps.\nRecent avg: ${recent.toFixed(5)}\nEarlier avg: ${earlier.toFixed(5)}`
-    };
+  /**
+   * Loss convergence verdict for the running mini-card. Delegates to the shared
+   * `lossStatus` over the shared CONVERGENCE_WINDOW so the chip here matches the
+   * center detail pane exactly (same logic, same window, same job.logs).
+   */
+  getLossStatus(job: Job): LossStatus | null {
+    return lossStatus(job.logs, CONVERGENCE_WINDOW);
   }
 
   /** Format grad norm: use scientific notation for very large values. */

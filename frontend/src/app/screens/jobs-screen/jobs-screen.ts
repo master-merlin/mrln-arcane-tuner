@@ -40,6 +40,7 @@ import {
     lossSeries,
     lossSpark,
     lossStatus,
+    CONVERGENCE_WINDOW,
     metricSpark,
     type LogLine,
     type LossPoint,
@@ -190,11 +191,12 @@ export class JobsScreen {
 
     protected readonly best = computed(() => bestLoss(this.lossPoints()));
     /**
-     * Convergence verdict over a 125-step window (~half a sample cycle for
-     * most runs) — wide enough to smooth the heavy step-to-step jitter so the
-     * status doesn't flip between converging/plateau/diverging every tick.
+     * Convergence verdict over the shared CONVERGENCE_WINDOW — identical to the
+     * queue mini-card's status so the two surfaces never disagree for a job.
      */
-    protected readonly status = computed<LossStatus | null>(() => lossStatus(this.selectedJob()?.logs, 125));
+    protected readonly status = computed<LossStatus | null>(() =>
+        lossStatus(this.selectedJob()?.logs, CONVERGENCE_WINDOW),
+    );
 
     // ── KPI helpers ─────────────────────────────────────────────────────
     protected readonly progressPct = computed<number>(() => {

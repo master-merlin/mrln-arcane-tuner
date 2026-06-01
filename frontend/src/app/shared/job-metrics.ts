@@ -204,7 +204,18 @@ export function logTail(logs: ReadonlyArray<string> | undefined, n = 12): LogLin
  * Convergence verdict by comparing the recent vs. earlier loss average over a
  * `window`-sized tail. Needs ≥ `window` parsed losses to report.
  */
-export function lossStatus(logs: ReadonlyArray<string> | undefined, window = 50): LossStatus | null {
+/**
+ * Convergence/plateau/divergence sliding window (steps). ~half a sample cycle
+ * for most runs — wide enough to smooth heavy step-to-step jitter. Shared so
+ * the queue mini-cards and the center detail pane render the SAME verdict for a
+ * job (they were drifting at 50 vs 125 before).
+ */
+export const CONVERGENCE_WINDOW = 125;
+
+export function lossStatus(
+    logs: ReadonlyArray<string> | undefined,
+    window = CONVERGENCE_WINDOW,
+): LossStatus | null {
     if (!logs || logs.length < window) return null;
     const losses: number[] = [];
     for (let i = logs.length - 1; i >= 0 && losses.length < window * 2; i--) {

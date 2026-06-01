@@ -8,15 +8,6 @@
 
 <app-tabs [tabs]="tabs" [active]="tab()" (changed)="tab.set($event)"/>
 
-<div style="padding-top: 14px;">
-    @switch (tab()) {
-        @case ('inspect') { <app-lora-tools/> }
-        @case ('resize') { <app-lora-tools/> }
-        @case ('merge') {
-            <p class="muted">TODO(frontend): Merge tab — design + implementation deferred.</p>
-        }
-        @case ('speed') {
-            <p class="muted">TODO(frontend): Speed Train tab — design + implementation deferred.</p>
-        }
-    }
+<div style="padding-top: 18px;">
+    <app-lora-tools [tab]="tab()"/>
 </div>

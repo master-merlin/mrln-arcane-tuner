@@ -67,7 +67,9 @@ class HiDreamO1Driver(IModelDriver):
     def get_lora_targets(self) -> list[str]:
         """HiDream-O1 LoRA targets — all linear/attention modules."""
         definition_targets = getattr(
-            self.definition, "lora_targetable_modules", None,
+            self.definition,
+            "lora_targetable_modules",
+            None,
         )
         if definition_targets and len(definition_targets) > 0:
             self.logger.info(
@@ -78,9 +80,15 @@ class HiDreamO1Driver(IModelDriver):
 
         self.logger.info("lora_targets_pattern_defaults")
         return [
-            "to_q", "to_k", "to_v", "to_out",
-            "q_proj", "k_proj", "v_proj",
-            "fc1", "fc2",
+            "to_q",
+            "to_k",
+            "to_v",
+            "to_out",
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "fc1",
+            "fc2",
         ]
 
     def init_scheduler(self) -> Any:
@@ -136,5 +144,12 @@ class HiDreamO1Driver(IModelDriver):
         # discovery path.
         from .saver import HiDreamO1Saver
 
-        save_dtype = getattr(self.definition, "save_dtype", None) or "bf16"
-        return HiDreamO1Saver(save_dtype=save_dtype)
+        # Precision is resolved per-call inside ``HiDreamO1Saver.save`` from
+        # ``config["save_precision"]`` (fp16/bf16/fp32) — the same pattern the
+        # other families follow (sdxl/flux2/qwen_image construct their savers
+        # with no args and read save_precision in ``save``). The constructor
+        # default (``bf16``) is the fallback used only when the training config
+        # omits ``save_precision``; bf16 is correct because HiDream-O1 weights
+        # are bf16-native (``detected_precision: {unet: bf16}``) and forcing
+        # fp16 by default would risk losing dynamic range.
+        return HiDreamO1Saver()

@@ -39,19 +39,37 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "vae": 0.08,
     },
     "flux2": {
-        "transformer": 32.0,       # FLUX.2-dev default
-        "text_encoder": 24.0,      # Mistral3 (dev)
+        "transformer": 32.0,  # FLUX.2-dev default
+        "text_encoder": 24.0,  # Mistral3 (dev)
         "vae": 0.17,
     },
     "zimage": {
         "transformer": 6.2,
-        "text_encoder": 4.0,        # Qwen3
+        "text_encoder": 4.0,  # Qwen3
         "vae": 0.08,
     },
     "qwen_image": {
         "transformer": 20.4,
-        "text_encoder": 8.3,        # Qwen2.5-VL
+        "text_encoder": 8.3,  # Qwen2.5-VL
         "vae": 0.17,
+    },
+    "hidream_o1": {
+        # Pixel-space UNIFIED transformer (visual blocks + language_model in a
+        # single model): NO VAE and NO external text encoder. The explicit 0.0
+        # entries override the generic fallbacks in _get_te_params/_get_vae_params
+        # (which would otherwise invent a ~0.35B TE + ~0.08B VAE that don't exist).
+        "transformer": 17.0,  # ~17B unified backbone (HiDream-O1-Image)
+        "text_encoder": 0.0,  # none — text is handled inside the transformer
+        "vae": 0.0,  # none — operates directly in pixel space
+    },
+    "ernie_image": {
+        # ERNIE-Image-Base-8B. The definition ships concrete model_size_mb
+        # (transformer 16000 MB, TE 6000 MB, VAE 335 MB) which the estimator
+        # prefers; these are fallbacks calibrated to those on-disk sizes
+        # (size_mb / 2 bytes-per-param for bf16).
+        "transformer": 8.0,  # ~8B DiT (≈16 GB bf16)
+        "text_encoder": 3.0,  # Mistral3/Ministral-3B + Pixtral vision (≈6 GB bf16)
+        "vae": 0.17,  # AutoencoderKLFlux2 (≈335 MB)
     },
 }
 
@@ -84,6 +102,7 @@ _QUANT_BITS: dict[str, float] = {
 # Result data-class
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class VRAMReport:
     """Structured VRAM estimation result."""
@@ -94,15 +113,17 @@ class VRAMReport:
     optimizer_states_mb: float = 0.0
     gradients_mb: float = 0.0
     activations_mb: float = 0.0
-    overhead_mb: float = 1024.0      # CUDA context + kernels (~1 GB)
+    overhead_mb: float = 1024.0  # CUDA context + kernels (~1 GB)
 
     # --- Phase peaks ---
-    caching_peak_mb: float = 0.0     # TE caching phase
-    training_peak_mb: float = 0.0    # training phase (model + adapters + optim + grads + acts)
+    caching_peak_mb: float = 0.0  # TE caching phase
+    training_peak_mb: float = (
+        0.0  # training phase (model + adapters + optim + grads + acts)
+    )
 
     # --- Summary ---
-    peak_mb: float = 0.0             # max(caching, training)
-    available_mb: float = 0.0        # from GPU query
+    peak_mb: float = 0.0  # max(caching, training)
+    available_mb: float = 0.0  # from GPU query
     fits: bool = True
     warnings: list[str] = field(default_factory=list)
 
@@ -126,6 +147,7 @@ class VRAMReport:
 # ---------------------------------------------------------------------------
 # Estimator
 # ---------------------------------------------------------------------------
+
 
 class VRAMEstimator:
     """Estimate peak VRAM for a model + config before loading weights.
@@ -200,7 +222,9 @@ class VRAMEstimator:
             # 2 moments × fp32 (4 bytes) = 8 bytes per trainable param
             # 8-bit optimizers halve this
             moment_bytes = 4 if "8bit" not in optimizer else 2
-            report.optimizer_states_mb = (trainable_params * 2 * moment_bytes) / (1024 * 1024)
+            report.optimizer_states_mb = (trainable_params * 2 * moment_bytes) / (
+                1024 * 1024
+            )
         elif optimizer in ("prodigy", "prodigyopt"):
             # Prodigy stores ~3× fp32 states per param
             report.optimizer_states_mb = (trainable_params * 12) / (1024 * 1024)
@@ -270,6 +294,7 @@ class VRAMEstimator:
         # ── 9. GPU availability ──────────────────────────────────────────
         try:
             from app.core.system_monitor import system_monitor
+
             snap = system_monitor.snapshot()
             if snap.gpus:
                 report.available_mb = snap.gpus[0].vram_total_mb
@@ -317,6 +342,7 @@ class VRAMEstimator:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_component_disk_mb(size_mb: dict, key: str) -> float:
     """Look up on-disk component size in MB from model_size_mb dict.
 
@@ -346,13 +372,18 @@ def _get_primary_params(family: str, arch: dict, key: str = "unet") -> float:
 
 
 def _get_te_params(family: str) -> float:
-    """Get total text encoder param count in billions (fallback only)."""
+    """Get total text encoder param count in billions (fallback only).
+
+    A *known* family that declares one or more ``text_encoder*`` keys is
+    authoritative — including the case where they sum to 0.0 (e.g. unified
+    pixel-space models like HiDream-O1 that have no external text encoder).
+    Only fall back to the generic ~350M default for families we don't know.
+    """
     family_data = _FAMILY_PARAMS.get(family, {})
-    total = 0.0
-    for k, v in family_data.items():
-        if "text_encoder" in k:
-            total += v
-    return total or 0.35  # default ~350M
+    te_keys = [v for k, v in family_data.items() if "text_encoder" in k]
+    if te_keys:
+        return sum(te_keys)
+    return 0.35  # default ~350M for unknown families
 
 
 def _get_vae_params(family: str) -> float:
@@ -365,13 +396,16 @@ def _bytes_per_param(dtype_str: str) -> int:
     return _DTYPE_BYTES.get(dtype_str, 2)  # default bf16
 
 
-def _check_quant_compat(scheme: str, label: str, report: VRAMReport, config: dict[str, Any]) -> None:
+def _check_quant_compat(
+    scheme: str, label: str, report: VRAMReport, config: dict[str, Any]
+) -> None:
     """Add a warning to *report* if *scheme* isn't supported on this GPU."""
     if scheme in ("none", "bf16"):
         return
 
     try:
         import torch
+
         if not torch.cuda.is_available():
             return
         cap = torch.cuda.get_device_capability()
@@ -383,8 +417,11 @@ def _check_quant_compat(scheme: str, label: str, report: VRAMReport, config: dic
     # NVFP4 requires SM >= 100
     if scheme == "nvfp4" and sm < 100:
         from app.engine.factories.quantization import QuantizationFactory
+
         backend_name = config.get("te_quantization_backend", "auto")
-        fallback, scheme = QuantizationFactory.validate_and_fallback(scheme, backend_name)
+        fallback, scheme = QuantizationFactory.validate_and_fallback(
+            scheme, backend_name
+        )
         report.warnings.append(
             f"{label} '{scheme}' requires Blackwell (SM ≥ 100) but {gpu_name} has SM {sm}. "
             f"Will fall back to '{fallback}' at runtime."
@@ -393,8 +430,11 @@ def _check_quant_compat(scheme: str, label: str, report: VRAMReport, config: dic
     # FP8 requires SM >= 89
     elif scheme == "fp8" and sm < 89:
         from app.engine.factories.quantization import QuantizationFactory
+
         backend_name = config.get("quantization_backend", "auto")
-        fallback, scheme = QuantizationFactory.validate_and_fallback(scheme, backend_name)
+        fallback, scheme = QuantizationFactory.validate_and_fallback(
+            scheme, backend_name
+        )
         report.warnings.append(
             f"{label} '{scheme}' requires Ada/Hopper/Blackwell (SM ≥ 89) but {gpu_name} has SM {sm}. "
             f"Will fall back to '{fallback}' at runtime."

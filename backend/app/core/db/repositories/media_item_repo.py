@@ -27,7 +27,7 @@ class MediaItemRepository:
         "target_width", "target_height", "has_mask", "has_masked",
         "has_masked_caption", "mask_info", "has_caption",
         "is_video", "frame_count", "tags", "notes", "quality_score",
-        "added_at", "has_overlay",
+        "added_at", "has_overlay", "enabled",
     ]
 
     # ── Reads ────────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ class MediaItemRepository:
             # Convert int booleans back
             for key in ("is_majority_ar", "has_caption", "is_video",
                         "has_mask", "has_masked", "has_masked_caption",
-                        "has_overlay"):
+                        "has_overlay", "enabled"):
                 if key in item:
                     item[key] = bool(item[key])
             # Parse JSON fields
@@ -229,7 +229,7 @@ class MediaItemRepository:
         # Booleans → int
         for key in ("is_majority_ar", "has_caption", "is_video",
                     "has_mask", "has_masked", "has_masked_caption",
-                    "has_overlay"):
+                    "has_overlay", "enabled"):
             if key in data:
                 data[key] = int(bool(data[key]))
         # Dicts/lists → JSON strings

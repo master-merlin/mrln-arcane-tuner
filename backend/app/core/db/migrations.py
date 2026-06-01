@@ -39,6 +39,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v5,
         _migrate_v6,
         _migrate_v7,
+        _migrate_v8,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -724,4 +725,22 @@ def _migrate_v7(conn) -> None:
             conn.execute(ddl)
         except Exception:
             pass  # Column already exists
+
+
+# ── V8: Per-image enabled flag (exclude-from-training) ─────────────
+
+def _migrate_v8(conn) -> None:
+    """Add ``enabled`` boolean column to ``media_items``.
+
+    Persists the per-image "exclude from training" toggle. Existing rows
+    backfill to ``1`` (enabled) via the column DEFAULT, matching the scan
+    default (``build_media_entry`` seeds ``enabled=True``), so legacy data
+    is unaffected and only an explicit toggle marks an image disabled.
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE media_items ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"
+        )
+    except Exception:
+        pass  # Column already exists
 

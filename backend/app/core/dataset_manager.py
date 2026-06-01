@@ -69,6 +69,20 @@ class Dataset(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def excluded_count(self) -> int:
+        """Number of images suppressed from training (``enabled == False``).
+
+        Derived from the already-loaded ``media_metadata`` — no extra I/O.
+        An entry missing the ``enabled`` key is treated as enabled (legacy
+        rows default to enabled), so only an explicit ``False`` counts.
+        Datasets with no metadata report 0.
+        """
+        return sum(
+            1 for m in self.media_metadata.values() if m.get("enabled") is False
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def median_quality_score(self) -> float | None:
         """Median of per-image quality scores, or *None* when no scores exist."""
         scores = [

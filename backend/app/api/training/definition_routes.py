@@ -49,7 +49,9 @@ async def create_definition(request: CreateDefinitionRequest):
     import yaml
 
     if registry.get_definition(request.id):
-        raise HTTPException(status_code=409, detail=f"Definition '{request.id}' already exists.")
+        raise HTTPException(
+            status_code=409, detail=f"Definition '{request.id}' already exists."
+        )
 
     families_dir = (
         Path(__file__).resolve().parents[2] / "engine" / "models" / "families"
@@ -78,7 +80,9 @@ async def update_definition(definition_id: str, request: UpdateDefinitionRequest
 
     defn = registry.get_definition(definition_id)
     if not defn:
-        raise HTTPException(status_code=404, detail=f"Definition '{definition_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Definition '{definition_id}' not found."
+        )
 
     changes = request.model_dump(exclude_none=True)
     if not changes:
@@ -86,7 +90,9 @@ async def update_definition(definition_id: str, request: UpdateDefinitionRequest
 
     registry.update_definition(definition_id, changes)
     await asyncio.to_thread(registry.save_definition, definition_id)
-    logger.info("definition_updated", id=definition_id, changed_fields=list(changes.keys()))
+    logger.info(
+        "definition_updated", id=definition_id, changed_fields=list(changes.keys())
+    )
     return registry.get_definition(definition_id).model_dump()
 
 
@@ -97,7 +103,9 @@ async def delete_definition(definition_id: str):
 
     defn = registry.get_definition(definition_id)
     if not defn:
-        raise HTTPException(status_code=404, detail=f"Definition '{definition_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Definition '{definition_id}' not found."
+        )
 
     yaml_path = registry._paths.get(definition_id)
     if yaml_path:
@@ -130,7 +138,9 @@ async def estimate_vram(request: VRAMEstimateRequest):
 
     defn = registry._definitions.get(request.definition_id)
     if not defn:
-        raise HTTPException(status_code=404, detail=f"Definition '{request.definition_id}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Definition '{request.definition_id}' not found"
+        )
 
     report = VRAMEstimator.estimate(defn, request.config)
     return report.to_dict()
@@ -141,8 +151,10 @@ async def estimate_vram(request: VRAMEstimateRequest):
 
 @router.get("/models/capabilities/{definition_id}")
 async def get_model_capabilities(definition_id: str):
-    """Return block topology and trainable layer names for a model definition."""
+    """Return block topology, trainable layer names, and archetype capability
+    descriptor for a model definition."""
     from app.engine.models.registry import registry
+    from app.engine.core.archetypes import resolve_capabilities
 
     defn = registry.get_definition(definition_id)
     if not defn:
@@ -152,12 +164,14 @@ async def get_model_capabilities(definition_id: str):
         )
 
     has_topology = bool(defn.block_topology)
-    return {
+    response = {
         "enriched": has_topology,
         "block_topology": defn.block_topology,
         "lora_targetable_modules": defn.lora_targetable_modules,
         "trainable_layers": [],
     }
+    response.update(resolve_capabilities(defn))
+    return response
 
 
 @router.post("/models/definitions/{definition_id}/enrich")
@@ -184,7 +198,10 @@ async def enrich_definition(definition_id: str):
     root_path = repo_comp.path if repo_comp else None
 
     await asyncio.to_thread(
-        registry.enrich_definition, definition_id, components, root_path,
+        registry.enrich_definition,
+        definition_id,
+        components,
+        root_path,
     )
 
     updated = registry.get_definition(definition_id)
@@ -349,9 +366,15 @@ async def validate_model_path(
         if p.is_dir():
             has_model_index = (p / "model_index.json").is_file()
             known_subdirs = [
-                "transformer", "unet", "vae", "text_encoder",
-                "text_encoder_2", "tokenizer", "tokenizer_2",
-                "scheduler", "ae",
+                "transformer",
+                "unet",
+                "vae",
+                "text_encoder",
+                "text_encoder_2",
+                "tokenizer",
+                "tokenizer_2",
+                "scheduler",
+                "ae",
             ]
             found = [d for d in known_subdirs if (p / d).is_dir()]
 

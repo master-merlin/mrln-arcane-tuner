@@ -534,3 +534,57 @@ class TestThumbnailEndpoint:
 
         dataset_manager.delete_dataset("ep_trav", delete_files=True)
 
+
+# ── Aggregate excluded_count ─────────────────────────────────────────────
+
+
+def test_excluded_count_zero_when_no_metadata():
+    """A dataset with no media_metadata reports excluded_count == 0."""
+    ds = _make_dataset(name="empty")
+    assert ds.excluded_count == 0
+
+
+def test_excluded_count_zero_when_all_enabled():
+    """All images enabled (or missing the flag) → excluded_count == 0."""
+    ds = _make_dataset(
+        name="all_on",
+        media_metadata={
+            "a.png": {"enabled": True},
+            "b.png": {"enabled": True},
+            "c.png": {},  # legacy entry, no flag → treated as enabled
+        },
+    )
+    assert ds.excluded_count == 0
+
+
+def test_excluded_count_counts_disabled():
+    """Only entries with enabled is False count as excluded."""
+    ds = _make_dataset(
+        name="mixed",
+        media_metadata={
+            "a.png": {"enabled": True},
+            "b.png": {"enabled": False},
+            "c.png": {"enabled": False},
+            "d.png": {},  # legacy → enabled
+        },
+    )
+    assert ds.excluded_count == 2
+
+
+@patch("app.api.dataset.crud_routes.dataset_manager")
+def test_excluded_count_reaches_list_response(mock_manager, client):
+    """The LIST endpoint payload exposes excluded_count per row."""
+    ds = _make_dataset(
+        name="listed",
+        media_metadata={
+            "a.png": {"enabled": True},
+            "b.png": {"enabled": False},
+        },
+    )
+    mock_manager.list_datasets.return_value = [ds]
+    response = client.get("/api/datasets")
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["excluded_count"] == 1
+

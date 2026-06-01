@@ -13,6 +13,7 @@ class ErnieImageFamily(ModelFamily):
     """Baidu ERNIE-Image implementation of the ModelFamily logic provider."""
 
     family_name = "ernie_image"
+    archetype = "latent_diffusion"
 
     def get_trainer_class(self):
         return ErnieImageTrainer

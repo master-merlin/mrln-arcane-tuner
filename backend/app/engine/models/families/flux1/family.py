@@ -8,6 +8,7 @@ class Flux1Family(ModelFamily):
     """FLUX.1 (Dev / Schnell) implementation of the ModelFamily logic provider."""
 
     family_name = "flux1"
+    archetype = "latent_diffusion"
 
     def get_trainer_class(self):
         return Flux1Trainer

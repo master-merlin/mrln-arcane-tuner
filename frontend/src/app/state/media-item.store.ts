@@ -119,12 +119,16 @@ export class MediaItemStore extends EntityStore<MediaItem> {
             const msg = ws.entityChanged();
             if (!msg || msg.entity !== 'overlay') return;
             if (msg.op === 'bulk_deleted') return;
-            if (msg.op === 'deleted') {
-                // Bake-in rewrites the original bytes at the same URL.
-                // Revert also fires this branch — the resulting refetch
-                // is harmless since the bytes are unchanged.
-                this.mediaRev.update(r => r + 1);
-            }
+            // ANY single-overlay event (created/updated/deleted) means
+            // bytes at a URL the grid/detail render changed:
+            //   - `deleted` (bake-in / revert) rewrites the original at
+            //     /media/<dataset>/<file>.
+            //   - `created`/`updated` writes the overlay PNG at
+            //     /api/datasets/<dataset>/overlay/<file>.
+            // Both URLs carry ``?t=mediaRev`` so a bump cache-busts the
+            // visible <img>. Previously only ``deleted`` bumped, so a
+            // re-save left the grid serving stale cached bytes.
+            this.mediaRev.update(r => r + 1);
             const current = this.byId(msg.id)();
             if (!current) return;
             const hasOverlay = msg.op !== 'deleted';

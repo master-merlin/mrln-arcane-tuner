@@ -71,7 +71,10 @@ import { CanvasFooterComponent } from '../shared/canvas-footer.component';
                         (nextRequested)="next()"
                         (deleteRequested)="deletePair.emit(pair)"/>
 
-                    <app-canvas-footer [meta]="mediaMeta()">
+                    <app-canvas-footer
+                            [meta]="mediaMeta()"
+                            [showOverlay]="showOverlay()"
+                            (toggleOverlay)="toggleOverlay.emit()">
                         <button type="button" class="footer-action violet" title="Adjust (open editor)"
                                 (click)="openEditor()">
                             <app-ico name="Sliders" [size]="14"/>
@@ -222,6 +225,9 @@ export class DetailsMode {
     /** Mask sidebar's "Masked view" toggle was clicked — workspace flips
      *  its `showMasked` signal (the same one the Browse toolbar toggles). */
     toggleMasked = output<void>();
+    /** Canvas-footer OVR pill was clicked — workspace flips its
+     *  ``showOverlay`` signal (the same one Browse toolbar toggles). */
+    toggleOverlay = output<void>();
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);

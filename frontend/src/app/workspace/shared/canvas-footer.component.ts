@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
 import { IcoComponent } from '../../icons/ico.component';
 
 export interface CanvasMeta {
@@ -64,10 +64,21 @@ export interface CanvasMeta {
                         <span [class]="'tag ' + m.hpsTone">{{ m.hpsLabel }}</span>
                     }
                     @if (m.hasOverlay) {
-                        <span class="tag violet" title="Adjustment overlay applied">
-                            <app-ico name="Layers" [size]="11"/>
-                            OVR
-                        </span>
+                        @if (showOverlay() === null) {
+                            <span class="tag violet" title="Adjustment overlay applied">
+                                <app-ico name="Layers" [size]="11"/>
+                                OVR
+                            </span>
+                        } @else {
+                            <button type="button"
+                                    class="tag violet ovr-toggle"
+                                    [class.active]="showOverlay()"
+                                    (click)="toggleOverlay.emit()"
+                                    [title]="showOverlay() ? 'Hide overlay (showing edited version) — click to show original' : 'Show overlay (showing original) — click to show edited version'">
+                                <app-ico name="Layers" [size]="11"/>
+                                OVR
+                            </button>
+                        }
                     }
                 }
             </div>
@@ -114,8 +125,25 @@ export interface CanvasMeta {
         .action-group {
             display: flex; align-items: center; gap: 6px; flex-shrink: 0;
         }
+        .ovr-toggle {
+            cursor: pointer;
+            border: none;
+            font: inherit;
+            opacity: 0.55;
+            transition: opacity 120ms;
+        }
+        .ovr-toggle:hover { opacity: 0.85; }
+        .ovr-toggle.active { opacity: 1; }
     `],
 })
 export class CanvasFooterComponent {
     meta = input<CanvasMeta | null>(null);
+    /** When non-null, the OVR pill renders as a clickable toggle reflecting
+     *  this state (active when true). When null (default), it renders as
+     *  the existing static indicator — Edit mode uses that variant since
+     *  it IS the overlay editor. */
+    showOverlay = input<boolean | null>(null);
+    /** Fired when the user clicks the OVR toggle. Parent wires this to
+     *  whatever owns the showOverlay signal (workspace's toggleOverlayView). */
+    toggleOverlay = output<void>();
 }

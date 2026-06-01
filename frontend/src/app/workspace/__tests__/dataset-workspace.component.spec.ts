@@ -458,3 +458,51 @@ describe('DatasetWorkspaceComponent.onSaveCaption masked-path routing', () => {
         );
     });
 });
+
+describe('DatasetWorkspaceComponent.openMass — completion callback', () => {
+    it('passes an onCompleted callback in the modal data', () => {
+        const cmp = bed();
+        const overlay = TestBed.inject(OverlayStore) as any;
+
+        (cmp as any).openMass('mass-caption');
+
+        expect(overlay.openModal).toHaveBeenCalled();
+        const [kind, data] = overlay.openModal.calls.mostRecent().args;
+        expect(kind).toBe('mass-caption');
+        expect(typeof data.onCompleted).toBe('function');
+        expect(data.datasetName).toBe('alpha');
+    });
+
+    it('invoking onCompleted fires the workspace patch bump exactly once per session', () => {
+        const cmp = bed();
+        const overlay = TestBed.inject(OverlayStore) as any;
+        const api = TestBed.inject(DatasetService) as any;
+        const datasets = TestBed.inject(DatasetStore) as any;
+
+        api.bumpVersion = jasmine.createSpy('bumpVersion').and.returnValue(of({ version: '1.0.1' }));
+        datasets.upsertLocal = jasmine.createSpy('upsertLocal');
+
+        (cmp as any).openMass('mass-mask');
+        const [, data] = overlay.openModal.calls.mostRecent().args;
+
+        data.onCompleted();
+        data.onCompleted();    // idempotent — second call should NOT bump again
+
+        const patchCalls = api.bumpVersion.calls.allArgs()
+            .filter((args: any[]) => args[1] === 'patch');
+        expect(patchCalls.length).toBe(1);
+        expect(patchCalls[0]).toEqual(['alpha', 'patch']);
+    });
+
+    it('passes the same shape of onCompleted for all three mass kinds', () => {
+        const cmp = bed();
+        const overlay = TestBed.inject(OverlayStore) as any;
+
+        for (const kind of ['mass-caption', 'mass-mask', 'mass-edit'] as const) {
+            (cmp as any).openMass(kind);
+            const [openedKind, data] = overlay.openModal.calls.mostRecent().args;
+            expect(openedKind).toBe(kind);
+            expect(typeof data.onCompleted).toBe('function');
+        }
+    });
+});

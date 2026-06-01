@@ -25,6 +25,11 @@ interface MassCaptionModalData {
     datasetName?: string;
     /** Optional initial target — 'masked' captions go to masked_captions/. */
     initialTarget?: 'original' | 'masked';
+    /** Workspace-provided callback fired exactly once when the queue
+     *  drains successfully (after the authoritative `loadForDataset`
+     *  reconcile). Wired to `ensurePatchBump` so mass runs count as
+     *  session-meaningful edits for the per-session version bump. */
+    onCompleted?: () => void;
 }
 
 type CaptionStrategy = 'keep' | 'overwrite';
@@ -326,6 +331,8 @@ export class MassCaptionModalComponent implements OnInit {
                 this.toast.success(`Mass captioning complete — ${queue.length} images processed.`);
                 // Authoritative metadata reconcile (server-computed flags etc.).
                 if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                // Workspace-side reconcile (e.g. per-session patch bump).
+                this.data.onCompleted?.();
             }
             return;
         }

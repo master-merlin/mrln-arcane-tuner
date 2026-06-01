@@ -197,7 +197,8 @@
                             (deletePair)="onDeletePairRequested($event)"
                             (deleteMask)="onDeleteMaskRequested($event)"
                             (maskGenerated)="refreshPairs()"
-                            (toggleMasked)="toggleMaskedView()"/>
+                            (toggleMasked)="toggleMaskedView()"
+                            (toggleOverlay)="toggleOverlayView()"/>
                     } @loading {
                         <div class="defer-loading">Loading details…</div>
                     }

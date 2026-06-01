@@ -18,6 +18,9 @@ import { MediaItemStore } from '../../state/media-item.store';
 interface MassEditModalData {
     datasetId?: string;
     datasetName?: string;
+    /** Workspace-provided callback fired when the queue drains. Wired to
+     *  `ensurePatchBump` for per-session bump. */
+    onCompleted?: () => void;
 }
 
 interface SourceImage {
@@ -148,6 +151,10 @@ interface SourceImage {
                                     (click)="toggleTarget(p.media_file)"
                                     [title]="p.media_file">
                                 <img class="me-thumb" [src]="thumbUrl(p)" alt="" loading="lazy" decoding="async"/>
+                                @if (p.metadata?.has_overlay) {
+                                    <span class="ovr-badge"
+                                          title="This image already has an overlay — Apply will overwrite it">OVR</span>
+                                }
                                 @if (on) {
                                     <span class="me-check small"><app-ico name="Check" [size]="8"/></span>
                                 }
@@ -245,6 +252,22 @@ interface SourceImage {
             box-shadow: var(--shadow-md);
         }
         .me-check.small { width: 14px; height: 14px; top: 3px; right: 3px; }
+        .me-tile .ovr-badge {
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            font-family: var(--font-mono);
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            padding: 1px 5px;
+            border-radius: var(--radius-theme-sm);
+            background: oklch(0.65 0.18 295 / 0.85);
+            color: white;
+            line-height: 1.4;
+            pointer-events: none;
+            z-index: 2;
+        }
 
         .me-recipe {
             background: var(--color-surface-mid);
@@ -470,6 +493,11 @@ export class MassEditModalComponent implements OnInit {
             if (idx >= queue.length) {
                 this.toast.success(`Pipeline applied to ${queue.length} images.`);
                 if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                this.data.onCompleted?.();
+                // Close on success — legacy finalizeMassProcess closed
+                // the modal implicitly; redesign was leaving it open
+                // with the CTA still labeled "Apply to N image(s)".
+                this.overlay.closeModal();
             }
             return;
         }
@@ -479,7 +507,14 @@ export class MassEditModalComponent implements OnInit {
 
         void this.overlay.renderPipeline(name, target, blocks).then((result: any) => {
             if (!result.ok) {
-                this.toast.error(`Failed: ${target}`);
+                // Surface the server's reason — "GPU out of memory" vs
+                // "permission denied" matters to the user. Falls back
+                // through HttpErrorResponse-shape candidates.
+                const detail =
+                    result?.error?.error?.detail
+                    || result?.error?.message
+                    || 'unknown error';
+                this.toast.error(`Failed: ${target} — ${detail}`);
             } else {
                 // Overlay bytes changed under the same URL — bust the grid cache.
                 this.mediaItems.bumpMedia();

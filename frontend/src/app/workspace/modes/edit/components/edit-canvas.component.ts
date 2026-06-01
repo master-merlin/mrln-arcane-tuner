@@ -18,6 +18,66 @@ export function withCorsParam(url: string): string {
     return url + (url.includes('?') ? '&' : '?') + 'cors=1';
 }
 
+/** Subset of `Overlay` this module needs. Inlined to keep the helpers pure. */
+interface OverlayUrlInfo {
+    dataset_name: string;
+    overlay_file: string;
+    hash?: string;
+}
+
+/**
+ * Build the URL the visible `<img class="layer base">` shows beneath the
+ * canvas. Prefers the rendered overlay PNG when present (so an unattached
+ * editor still displays the saved result), and falls back to the original
+ * otherwise. The hash query (`?h=<sha>`) busts the browser cache when the
+ * backend rewrites the overlay file under the same path; `&r=<rev>` covers
+ * Bake/Revert, which replaces the original on disk.
+ */
+export function buildDisplayUrl(
+    mediaBaseUrl: string,
+    datasetName: string,
+    mediaFile: string,
+    overlay: OverlayUrlInfo | null,
+    sourceRev: number,
+): string {
+    if (overlay?.overlay_file) {
+        const hash = overlay.hash ? `?h=${overlay.hash}` : `?h=ov`;
+        const revQ = sourceRev > 0 ? `&r=${sourceRev}` : '';
+        return `${mediaBaseUrl}/${encodeURIComponent(overlay.dataset_name)}/${overlay.overlay_file}${hash}${revQ}`;
+    }
+    const revQ = sourceRev > 0 ? `?r=${sourceRev}` : '';
+    return `${mediaBaseUrl}/${encodeURIComponent(datasetName)}/${encodeURIComponent(mediaFile)}${revQ}`;
+}
+
+/**
+ * Build the URL the canvas pixel pipeline reads. Always points at the
+ * ORIGINAL image, even when a saved overlay PNG exists.
+ *
+ * Why not source the overlay PNG when it's available? The PreviewPipeline
+ * applies the recipe held in the sliders on top of whatever pixels it
+ * loads. The overlay PNG already has that recipe baked in, so sourcing it
+ * would apply the recipe twice — once on disk, once live — producing the
+ * user-reported "save → reload → values applied again" double-application
+ * (e.g. HSL orange-on-top-of-orange after Save). Sourcing the original
+ * keeps the editor canvas equivalent to what the backend's Save would
+ * produce: `original + recipe`. Browse and Details consume the saved
+ * overlay PNG, which is just the baked output of that same pipeline — so
+ * the canvas and the PNG always agree at Save time.
+ *
+ * `sourceRev` is bumped on Bake/Revert (which rewrites or deletes the
+ * original on disk), so the canvas re-fetches even if the URL would
+ * otherwise be cache-stable.
+ */
+export function buildPixelSourceUrl(
+    mediaBaseUrl: string,
+    datasetName: string,
+    mediaFile: string,
+    sourceRev: number,
+): string {
+    const revQ = sourceRev > 0 ? `?r=${sourceRev}` : '';
+    return `${mediaBaseUrl}/${encodeURIComponent(datasetName)}/${encodeURIComponent(mediaFile)}${revQ}`;
+}
+
 @Component({
     selector: 'app-edit-canvas',
     standalone: true,
@@ -220,27 +280,39 @@ export class EditCanvasComponent {
     private overlayLoadFailed = signal<boolean>(false);
 
     /**
-     * Source URL:
-     *  - if a rendered overlay PNG exists AND the previous attempt didn't 404,
-     *    use it (state 2 in spec — "baked Overlay file")
-     *  - else use the original (state 1, 3, or 4 — recipe-only replay falls here)
-     * `sourceRev` is appended on Bake/Revert to bust the browser cache after
-     * the original is replaced or the overlay is deleted.
+     * URL for the visible `<img class="layer base">`. Prefers the rendered
+     * overlay PNG when one is on disk (so an unattached editor — e.g. a
+     * frame where the canvas pixel pipeline hasn't drawn yet — still shows
+     * the saved result). Falls back to the original if the overlay PNG
+     * 404s (`overlayLoadFailed`) or no overlay exists.
+     *
+     * IMPORTANT: This is the BASE-LAYER URL only. The canvas pixel pipeline
+     * reads `pixelSourceUrl` (the original), not this URL, so the live
+     * preview is `original + recipe`, never `overlay + recipe` (which would
+     * double-apply). See `buildPixelSourceUrl` for the rationale.
      */
     protected displayUrl = computed<string>(() => {
         const rev = this.state.sourceRev();
+        let overlayInfo: OverlayUrlInfo | null = null;
         if (this.hasOverlay() && !this.overlayLoadFailed()) {
             const id = `${this.datasetName()}/${this.mediaFile()}`;
             const ov = (this.overlay.entities() ?? []).find((o: Overlay) => o.id === id);
             if (ov?.overlay_file) {
-                const hash = ov.hash ? `?h=${ov.hash}` : `?h=ov`;
-                const revQ = rev > 0 ? `&r=${rev}` : '';
-                return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(ov.dataset_name)}/${ov.overlay_file}${hash}${revQ}`;
+                overlayInfo = { dataset_name: ov.dataset_name, overlay_file: ov.overlay_file, hash: ov.hash };
             }
         }
-        const revQ = rev > 0 ? `?r=${rev}` : '';
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(this.mediaFile())}${revQ}`;
+        return buildDisplayUrl(this.rtc.mediaBaseUrl, this.datasetName(), this.mediaFile(), overlayInfo, rev);
     });
+
+    /**
+     * URL for the canvas pixel pipeline — always the original. The
+     * PreviewPipeline applies the slider recipe on top of these pixels;
+     * sourcing the overlay PNG (already recipe-baked) would double-apply.
+     * See `buildPixelSourceUrl` for the full explanation.
+     */
+    protected pixelSourceUrl = computed<string>(() =>
+        buildPixelSourceUrl(this.rtc.mediaBaseUrl, this.datasetName(), this.mediaFile(), this.state.sourceRev()),
+    );
 
     constructor() {
         // Reset the overlay-fallback flag whenever the image identity
@@ -254,13 +326,20 @@ export class EditCanvasComponent {
             }
         });
 
-        // Drive the canvas pixel pipeline off the resolved display URL.
-        // The visible <img> renders this URL plainly (no CORS); here we load
-        // a SEPARATE crossorigin copy purely to feed getImageData. If that
-        // CORS load fails (or taints), we degrade to the static <img> — the
-        // image is never broken, worst case is "no live preview".
+        // Drive the canvas pixel pipeline off the ORIGINAL image, never the
+        // overlay PNG. The PreviewPipeline applies the slider recipe on top
+        // of these pixels; if we sourced the overlay PNG (already
+        // recipe-baked) instead, every edit would apply the recipe twice
+        // (user-reported "save → reload → values applied again"). The
+        // visible <img class="layer base"> still uses `displayUrl` so an
+        // unattached editor renders the saved overlay PNG plainly — the
+        // canvas overlay (this load) drives the live preview on top.
+        //
+        // We load a SEPARATE crossorigin copy purely to feed getImageData;
+        // if the CORS load fails (or taints), we degrade to the static
+        // <img> — the image is never broken, worst case is "no live preview".
         effect(() => {
-            const url = this.displayUrl();
+            const url = this.pixelSourceUrl();
             this.loadCanvasSource(url);
         });
     }
@@ -299,9 +378,12 @@ export class EditCanvasComponent {
     }
 
     protected onDisplayError(): void {
-        // Overlay PNG missing (recipe-only state) — fall back to the original.
-        // displayUrl recomputes, which reloads BOTH the <img> and the canvas
-        // pixel copy from the original path.
+        // Overlay PNG missing (recipe-only state) — flip the visible <img>
+        // to the original. `displayUrl` recomputes; the canvas pixel
+        // pipeline does NOT change here (it has always been sourced from
+        // the original, see `pixelSourceUrl`), so the live preview keeps
+        // rendering `original + recipe` regardless of whether the saved
+        // PNG is reachable.
         if (this.hasOverlay() && !this.overlayLoadFailed()) {
             this.overlayLoadFailed.set(true);
         }

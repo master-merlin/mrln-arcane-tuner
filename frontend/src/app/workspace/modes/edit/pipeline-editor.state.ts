@@ -1,5 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Overlay, OverlayStore } from '../../../state/overlay.store';
+import { ToastService } from '../../../services/toast';
 import { PipelineBlock } from '../../../services/dataset';
 import {
     OperationKind, PIPELINE_ORDER, BACKEND_TYPE_FOR, DEFAULT_PARAMS,
@@ -39,9 +40,18 @@ function mkOp<K extends keyof typeof DEFAULT_PARAMS>(
 @Injectable()
 export class PipelineEditorState {
     private overlay = inject(OverlayStore);
+    private toast = inject(ToastService);
 
     readonly datasetName = signal<string>('');
     readonly mediaFile = signal<string>('');
+
+    /**
+     * True while a Save round-trip is in flight. The right panel uses this
+     * to swap the Save button label/icon and keep the button disabled so
+     * the user can't double-submit. The OverlayStore already toasts on
+     * failure; this state is purely UI feedback.
+     */
+    readonly saving = signal<boolean>(false);
 
     readonly whiteBalance = signal(mkOp('white_balance'));
     readonly curves       = signal(mkOp('curves'));
@@ -261,13 +271,31 @@ export class PipelineEditorState {
      * Save: render the authoritative overlay PNG + persist the recipe.
      * Backend uses replace_recipe=true so it sources from the original
      * (not from any existing overlay PNG).
+     *
+     * Toasts on success with the rendered dimensions so the user gets
+     * confirmation that the click actually did something. Failure is
+     * already toasted by the OverlayStore's optimistic-rollback path.
+     * The `saving` signal is set for the duration of the round-trip so
+     * the right panel can show "Saving…" and disable the button.
      */
     async applyAndSave(): Promise<void> {
         const name = this.datasetName();
         const file = this.mediaFile();
         if (!name || !file) return;
-        await this.overlay.renderPipeline(name, file, this.blocks(), 512, 32, true);
-        this.markClean();
+        this.saving.set(true);
+        try {
+            const result = await this.overlay.renderPipeline(name, file, this.blocks(), 512, 32, true);
+            if (result.ok) {
+                const dims = result.value.dimensions;
+                const w = dims?.[0];
+                const h = dims?.[1];
+                this.toast.success(w && h ? `Overlay saved (${w}×${h})` : 'Overlay saved');
+                this.markClean();
+            }
+            // result.ok === false → OverlayStore already toasted + rolled back.
+        } finally {
+            this.saving.set(false);
+        }
     }
 
     /**

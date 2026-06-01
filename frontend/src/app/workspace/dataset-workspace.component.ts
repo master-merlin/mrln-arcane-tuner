@@ -365,6 +365,11 @@ export class DatasetWorkspaceComponent {
         this.overlay.openModal(kind, {
             datasetId: this.ws()?.datasetId,
             datasetName: d?.name,
+            // Workspace owns the per-session patch-bump flag; mass ops
+            // are session-meaningful edits and should count toward it.
+            // Idempotent — `ensurePatchBump` itself short-circuits on
+            // subsequent calls, so back-to-back mass runs only bump once.
+            onCompleted: () => this.ensurePatchBump(),
         });
     }
 

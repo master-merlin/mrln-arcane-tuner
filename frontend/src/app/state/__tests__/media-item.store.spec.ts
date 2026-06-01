@@ -162,4 +162,59 @@ describe('MediaItemStore', () => {
         store.bumpMedia();
         expect(store.mediaRev()).toBe(before + 1);
     });
+
+    describe('overlay WS event → mediaRev bump', () => {
+        // User report: edit a single image, save, switch to Browse — the
+        // overlay didn't show because the URL (which carries `?t=mediaRev`)
+        // was unchanged. The WS bridge only bumped on `deleted` (bake-in);
+        // `created`/`updated` left the counter stale and the browser served
+        // the cached pre-overlay bytes.
+        it('bumps mediaRev on op:updated for overlay entity', () => {
+            const before = store.mediaRev();
+            wsMock.entityChanged.set({
+                entity: 'overlay',
+                op: 'updated',
+                id: mediaKey('ds1', 'a.png'),
+                payload: null,
+            });
+            TestBed.tick();
+            expect(store.mediaRev()).toBe(before + 1);
+        });
+
+        it('bumps mediaRev on op:created for overlay entity', () => {
+            const before = store.mediaRev();
+            wsMock.entityChanged.set({
+                entity: 'overlay',
+                op: 'created',
+                id: mediaKey('ds1', 'a.png'),
+                payload: null,
+            });
+            TestBed.tick();
+            expect(store.mediaRev()).toBe(before + 1);
+        });
+
+        it('bumps mediaRev on op:deleted for overlay entity (regression guard)', () => {
+            const before = store.mediaRev();
+            wsMock.entityChanged.set({
+                entity: 'overlay',
+                op: 'deleted',
+                id: mediaKey('ds1', 'a.png'),
+                payload: null,
+            });
+            TestBed.tick();
+            expect(store.mediaRev()).toBe(before + 1);
+        });
+
+        it('does NOT bump mediaRev on op:bulk_deleted', () => {
+            const before = store.mediaRev();
+            wsMock.entityChanged.set({
+                entity: 'overlay',
+                op: 'bulk_deleted',
+                id: 'ds1',
+                payload: null,
+            });
+            TestBed.tick();
+            expect(store.mediaRev()).toBe(before);
+        });
+    });
 });

@@ -27,6 +27,9 @@ import { CaptionCacheStore } from '../../state/caption-cache.store';
 interface MassMaskModalData {
     datasetId?: string;
     datasetName?: string;
+    /** Workspace-provided callback fired once when any tab's queue drains
+     *  successfully. Wired to `ensurePatchBump` for per-session bump. */
+    onCompleted?: () => void;
 }
 
 type Tab = 'generate' | 'apply' | 'caption';
@@ -562,6 +565,7 @@ export class MassMaskModalComponent implements OnInit {
             if (idx >= queue.length) {
                 this.toast.success(`Mass masking complete — ${queue.length} images processed.`);
                 if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                this.data.onCompleted?.();
             }
             return;
         }
@@ -603,6 +607,7 @@ export class MassMaskModalComponent implements OnInit {
                 this.toast.success(`Applied masks to ${applied} images (${skipped} skipped).`);
                 this.mediaItems.bumpMedia();
                 void this.mediaItems.loadForDataset(name);
+                this.data.onCompleted?.();
             },
             error: (err: any) => {
                 this.running.set(false);
@@ -637,6 +642,7 @@ export class MassMaskModalComponent implements OnInit {
             if (idx >= queue.length) {
                 this.toast.success(`Masked captioning complete — ${queue.length} processed.`);
                 if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                this.data.onCompleted?.();
             }
             return;
         }

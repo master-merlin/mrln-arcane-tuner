@@ -126,10 +126,20 @@ def _handle_cube_lut(img: Image.Image, params: dict) -> Image.Image:
 
 
 def _handle_hsl_selective(img: Image.Image, params: dict) -> Image.Image:
-    hsl = params.get("hsl_config")
-    if hsl:
-        return apply_hsl_selective(img, hsl)
-    return img
+    # Backwards-compat: the legacy ``apply_all`` interface wraps the
+    # band dict in an ``hsl_config`` key (see ``apply_all`` below at
+    # the ``PipelineBlock(type="hsl_selective", ...)`` site). The new
+    # frontend's ``pipeline-editor.state.blocks`` sends the bands
+    # FLAT under ``params`` (matching the shape of every other handler
+    # in this file — white_balance, hue_saturation, etc.). Read the
+    # wrapper if present, otherwise treat ``params`` itself as the
+    # band map. The underlying ``apply_hsl_selective`` worker has
+    # its own all-zeros short-circuit, so an empty band dict is a
+    # cheap no-op there too.
+    hsl = params.get("hsl_config", params)
+    if not hsl:
+        return img
+    return apply_hsl_selective(img, hsl)
 
 
 def _handle_hue_saturation(img: Image.Image, params: dict) -> Image.Image:

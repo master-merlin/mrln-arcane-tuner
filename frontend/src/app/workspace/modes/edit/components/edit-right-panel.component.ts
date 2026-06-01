@@ -46,8 +46,16 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
                 </button>
             </div>
             <div class="row">
-                <button type="button" class="btn primary save" (click)="onSave()" [disabled]="!state.dirty()">
-                    <app-ico name="Check" [size]="13"/> Save
+                <button type="button" class="btn primary save"
+                        [class.is-saving]="state.saving()"
+                        [attr.title]="saveTitle()"
+                        (click)="onSave()"
+                        [disabled]="!state.dirty() || state.saving()">
+                    @if (state.saving()) {
+                        <app-ico name="Loader2" [size]="13"/> Saving…
+                    } @else {
+                        <app-ico name="Check" [size]="13"/> Save
+                    }
                 </button>
                 <button type="button" class="btn warn bake" (click)="onBake()" [disabled]="!canBake()">
                     <app-ico name="Flame" [size]="13"/> Bake in
@@ -84,6 +92,41 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
             border-color: color-mix(in oklab, var(--color-danger, oklch(0.6 0.18 30)) 40%, transparent);
         }
         .btn.warn:disabled { opacity: 0.45; cursor: not-allowed; }
+        /* Global \`.btn\` has no \`:disabled\` rule, so without this the Save
+           button looks identical whether enabled or unchanged-and-disabled
+           (user-reported: clicked Save with no changes and nothing happened
+           because the click was actually blocked by the disabled attribute).
+           Dim + lock the cursor + suppress hover. */
+        .row .btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        /* Cancel the primary-variant hover swap when the Save button is
+           disabled — otherwise the global \`.btn.primary:hover\` rule still
+           fires, flashing the brand-hover color and undercutting the
+           dimmed cue. */
+        .btn.primary.save:disabled:hover {
+            background: var(--color-brand);
+        }
+        /* Same for the warn-variant Bake button — keep the warn-tinted
+           background even when disabled+hovered. */
+        .btn.warn.bake:disabled:hover {
+            background: color-mix(in oklab, var(--color-danger, oklch(0.6 0.18 30)) 16%, transparent);
+        }
+        /* Tactile click feedback — the global .btn has no :active style,
+           so without this a Save click was visually silent. */
+        .row .btn:not(:disabled):active { transform: translateY(1px); filter: brightness(0.92); }
+        /* Spin the Loader2 icon while saving so the "Saving…" state reads
+           as in-progress rather than just disabled. Gated by .is-saving so
+           the Check icon doesn't spin in the "nothing-to-save" disabled
+           state. */
+        .btn.primary.save app-ico { display: inline-flex; }
+        .btn.primary.save.is-saving app-ico ::ng-deep svg { animation: edit-save-spin 0.9s linear infinite; }
+        @keyframes edit-save-spin {
+            from { transform: rotate(0deg); }
+            to   { transform: rotate(360deg); }
+        }
     `],
 })
 export class EditRightPanelComponent {
@@ -99,6 +142,17 @@ export class EditRightPanelComponent {
         const id = `${this.datasetName()}/${this.mediaFile()}`;
         const ov = (this.overlayStore.entities() ?? []).find((o: Overlay) => o.id === id);
         return !!ov?.overlay_file;
+    });
+
+    /**
+     * Native `title` tooltip for the Save button. Explains why it's
+     * disabled in the two states that block it, so the user doesn't
+     * click into a no-op and wonder what happened.
+     */
+    protected saveTitle = computed<string>(() => {
+        if (this.state.saving()) return 'Saving…';
+        if (!this.state.dirty()) return 'No changes to save';
+        return 'Save overlay';
     });
 
     protected onRevert(): void {

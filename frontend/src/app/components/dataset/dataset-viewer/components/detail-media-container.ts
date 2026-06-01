@@ -1,4 +1,4 @@
-import { Component, input, output, signal } from '@angular/core';
+import { Component, effect, input, output, signal } from '@angular/core';
 
 @Component({
     selector: 'app-detail-media-container',
@@ -45,11 +45,24 @@ export class DetailMediaContainerComponent {
     /**
      * `media_file` keys whose overlay URL returned an error. Once a
      * pair lands here, `getDisplayUrl` skips the overlay path and
-     * falls back to the parent media URL — covers stale
-     * `has_overlay: true` flags where the overlay file was deleted
-     * or never produced.
+     * falls back to the parent media URL.
+     *
+     * Cleared on every ``lastUpdateTime`` (mediaRev) bump — a re-save
+     * or bake might have produced a now-valid overlay PNG for a key
+     * that was previously 404'ing, so the set is dropped to allow
+     * a fresh fetch attempt. If the URL still 404s, ``onOverlayError``
+     * will add it back.
      */
     protected failedOverlays = signal<Set<string>>(new Set());
+
+    constructor() {
+        // Drop previously-failed overlays whenever the cache-bust counter
+        // bumps — those URLs may now be valid (overlay re-rendered).
+        effect(() => {
+            this.lastUpdateTime();    // track the signal
+            this.failedOverlays.set(new Set());
+        });
+    }
 
     protected onOverlayError(pair: any): void {
         const mf = pair?.media_file;

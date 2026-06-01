@@ -4,6 +4,8 @@ import { SidebarComponent } from './sidebar/sidebar.component';
 import { TopbarComponent } from './topbar/topbar.component';
 import { WorkspaceLayerComponent } from './workspace-layer/workspace-layer.component';
 import { ModalLayerComponent } from './modal-layer/modal-layer.component';
+import { ConnectionBannerComponent } from './connection-banner/connection-banner.component';
+import { RestartOverlayComponent } from './restart-overlay/restart-overlay.component';
 import { GlobalShortcutsService } from '../shared/shortcuts.service';
 import { ProjectService } from '../services/project.service';
 import { ToastContainerComponent } from '../components/shared/toast-container/toast-container';
@@ -21,6 +23,8 @@ import { ToastContainerComponent } from '../components/shared/toast-container/to
         TopbarComponent,
         WorkspaceLayerComponent,
         ModalLayerComponent,
+        ConnectionBannerComponent,
+        RestartOverlayComponent,
         ToastContainerComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
@@ -29,6 +33,7 @@ import { ToastContainerComponent } from '../components/shared/toast-container/to
             <app-sidebar />
             <div class="main">
                 <app-topbar />
+                <app-connection-banner />
                 <div class="content">
                     <router-outlet />
                 </div>
@@ -36,6 +41,7 @@ import { ToastContainerComponent } from '../components/shared/toast-container/to
         </div>
         <app-workspace-layer />
         <app-modal-layer />
+        <app-restart-overlay />
         <app-toast-container />
     `,
 })

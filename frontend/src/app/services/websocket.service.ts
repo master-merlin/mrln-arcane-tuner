@@ -1,6 +1,6 @@
 
 import { Injectable, inject, OnDestroy, signal, WritableSignal } from '@angular/core';
-import { Subject, Observable, timer } from 'rxjs';
+import { Subject, Observable, Subscription, timer } from 'rxjs';
 import { takeUntil, filter, map } from 'rxjs/operators';
 import { RuntimeConfigService } from './runtime-config.service';
 import type { EntityChangedMessage } from '../state/entity-events';
@@ -44,9 +44,24 @@ export class WebSocketService implements OnDestroy {
     private serverInstanceId: string | null = null;
     private hasConnectedBefore = false;
 
+    // Pending auto-reconnect timer; cancelled when a manual reconnect pre-empts it.
+    private reconnectSub?: Subscription;
+
     private rtc = inject(RuntimeConfigService);
 
     constructor() {
+        this.connect();
+    }
+
+    /**
+     * Force an immediate reconnect attempt, pre-empting the scheduled
+     * 1s auto-retry. Used by the global connection banner's Retry button.
+     * No-op if a socket is already open or mid-connect.
+     */
+    public forceReconnect(): void {
+        this.reconnectSub?.unsubscribe();
+        const state = this.socket?.readyState;
+        if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
         this.connect();
     }
 
@@ -112,7 +127,7 @@ export class WebSocketService implements OnDestroy {
         if (this.destroy$.closed) return;
 
         // Fast reconnect — 1s delay (server restarts are typically quick)
-        timer(1000).pipe(takeUntil(this.destroy$)).subscribe(() => {
+        this.reconnectSub = timer(1000).pipe(takeUntil(this.destroy$)).subscribe(() => {
             console.log('[WebSocket] Attempting reconnect...');
             this.connect();
         });

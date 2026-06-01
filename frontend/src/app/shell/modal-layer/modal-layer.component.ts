@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import {
+    ChangeDetectionStrategy,
+    Component,
+    ElementRef,
+    HostListener,
+    computed,
+    effect,
+    inject,
+} from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetFormModalComponent } from '../../modals/dataset-form/dataset-form.component';
 import { RescanModalComponent } from '../../modals/rescan/rescan.component';
@@ -60,6 +68,9 @@ import { TemplatesLibraryModalComponent } from '../../modals/templates-library/t
             @if (last) {
                 <div class="modal-backdrop" (click)="overlay.closeModal()">
                     <div class="modal"
+                         role="dialog"
+                         aria-modal="true"
+                         tabindex="-1"
                          [class.modal-wide]="m.kind === 'analyze'"
                          [class.modal-xl]="m.kind === 'crop-preview'"
                          (click)="$event.stopPropagation()">
@@ -152,7 +163,84 @@ import { TemplatesLibraryModalComponent } from '../../modals/templates-library/t
 })
 export class ModalLayerComponent {
     protected overlay = inject(OverlayStore);
+    private host = inject(ElementRef<HTMLElement>);
     protected stack = computed(() => this.overlay.modalStack());
+
+    /**
+     * Triggers to restore focus to, one per open modal depth (audit gap #13).
+     * Pushed when a modal opens; popped + re-focused when it closes so the
+     * user lands back on the element that launched the modal.
+     */
+    private triggerStack: HTMLElement[] = [];
+    private prevDepth = 0;
+
+    constructor() {
+        // Move focus into a newly-opened modal, and restore it to the launching
+        // element when a modal closes. Runs after the stack signal settles; the
+        // microtask defers focusing until the modal element is in the DOM.
+        effect(() => {
+            const depth = this.stack().length;
+            const prev = this.prevDepth;
+            this.prevDepth = depth;
+            if (depth > prev) {
+                this.triggerStack.push(document.activeElement as HTMLElement);
+                queueMicrotask(() => this.focusFirst());
+            } else if (depth < prev) {
+                const trigger = this.triggerStack.pop();
+                queueMicrotask(() => trigger?.focus?.());
+            }
+        });
+    }
+
+    /**
+     * Keep Tab focus cycling inside the open modal (audit gap #13). Listens on
+     * the document so it catches Tab even if focus has already escaped the
+     * modal subtree; no-ops when no modal is open.
+     */
+    @HostListener('document:keydown', ['$event'])
+    protected onKeydown(e: KeyboardEvent): void {
+        if (e.key !== 'Tab' || this.stack().length === 0) return;
+        const modal = this.modalEl();
+        if (!modal) return;
+        const focusables = this.focusable(modal);
+        if (focusables.length === 0) {
+            e.preventDefault();
+            modal.focus();
+            return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        const inside = !!active && modal.contains(active);
+        if (e.shiftKey) {
+            if (!inside || active === first) {
+                e.preventDefault();
+                last.focus();
+            }
+        } else if (!inside || active === last) {
+            e.preventDefault();
+            first.focus();
+        }
+    }
+
+    private modalEl(): HTMLElement | null {
+        return this.host.nativeElement.querySelector('.modal');
+    }
+
+    private focusFirst(): void {
+        const modal = this.modalEl();
+        if (!modal) return;
+        (this.focusable(modal)[0] ?? modal).focus();
+    }
+
+    private focusable(root: HTMLElement): HTMLElement[] {
+        const sel =
+            'a[href], button:not([disabled]), textarea:not([disabled]), ' +
+            'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+        return Array.from(root.querySelectorAll<HTMLElement>(sel)).filter(
+            el => el.offsetParent !== null || el === document.activeElement,
+        );
+    }
 
     /**
      * Fallback handler for ModalKind values without a `@case` branch.

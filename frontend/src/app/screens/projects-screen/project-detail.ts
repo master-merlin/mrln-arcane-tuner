@@ -17,6 +17,7 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
 import { DynamicFormGroupComponent } from '../../components/training/dynamic-form-group/dynamic-form-group';
 import { RunSummaryComponent } from '../../components/training/run-summary/run-summary';
 import { TemplateInfoCardComponent } from '../../ui/template-info-card/template-info-card.component';
+import { nextTriggerWord } from '../../shared/trigger-word';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
 export type TemplateDomain = 'captioning' | 'masking' | 'training';
@@ -103,6 +104,11 @@ export class ProjectDetail implements OnInit {
     protected loraSuffix = signal<string>('');
     protected triggerWord = signal<string>('');
     protected quickTrainSubmitting = signal(false);
+
+    // Wand suggestion cycle state (used only when no linked dataset has a
+    // saved trigger word — mirrors the dataset-form modal's wand).
+    private nextTriggerStrategy = signal(0);
+    private lastGeneratedTrigger = signal('');
 
     // ── Estimate panel ────────────────────────────────────────────────
     // VRAM is REAL (POST /jobs/estimate-vram). Wall-time + output size are
@@ -659,25 +665,59 @@ export class ProjectDetail implements OnInit {
     }
 
     /**
-     * Read `trigger_word` from the first dataset row's dataset into the
-     * global trigger word field.
+     * Wand action for the Quick Train trigger-word field.
+     *
+     * Precedence:
+     *  1. Adopt a saved `trigger_word` from the first linked dataset row that
+     *     has one (the "mapped from dataset" case).
+     *  2. If no row has a saved trigger word, fall back to the shared
+     *     name-based suggestion cycle — the same mechanics as the dataset-form
+     *     edit modal's wand: derive a candidate from the first selected
+     *     dataset's name and cycle phrasings on repeat clicks (the cycle resets
+     *     to strategy 0 after a manual edit).
+     *  3. Only warn when there's no dataset row / name to work from at all.
      */
     protected fillTriggerFromDataset(): void {
         const fa = this.launchForm.get('datasets') as FormArray;
-        if (fa) {
-            for (const c of fa.controls) {
-                const name = c.get('dataset_name')?.value as string;
-                if (!name) continue;
-                const ds = this.projectDatasets().find(d => d.name === name);
-                const trigger = ds?.trigger_word?.trim();
-                if (trigger) {
-                    this.triggerWord.set(trigger);
-                    this.saveQuickTrainPreferences();
-                    return;
-                }
+        const rows = fa ? fa.controls : [];
+
+        // 1 — prefer an explicitly-set trigger word on a linked dataset.
+        for (const c of rows) {
+            const name = c.get('dataset_name')?.value as string;
+            if (!name) continue;
+            const ds = this.projectDatasets().find(d => d.name === name);
+            const trigger = ds?.trigger_word?.trim();
+            if (trigger) {
+                this.triggerWord.set(trigger);
+                // Reset the suggestion cycle so a later wand click (after the
+                // user clears the field) starts fresh from strategy 0.
+                this.lastGeneratedTrigger.set('');
+                this.nextTriggerStrategy.set(0);
+                this.saveQuickTrainPreferences();
+                return;
             }
         }
-        this.toast.warning('No dataset row has a trigger word set.');
+
+        // 2 — no saved trigger word: suggest one from the first dataset's name.
+        const firstName = rows
+            .map(c => ((c.get('dataset_name')?.value as string) ?? '').trim())
+            .find(n => n.length > 0);
+        if (firstName) {
+            const current = this.triggerWord();
+            const continuing = current !== '' && current === this.lastGeneratedTrigger();
+            const start = continuing ? this.nextTriggerStrategy() : 0;
+            const result = nextTriggerWord(firstName, current, start);
+            if (result) {
+                this.triggerWord.set(result.trigger);
+                this.lastGeneratedTrigger.set(result.trigger);
+                this.nextTriggerStrategy.set(result.nextIndex);
+                this.saveQuickTrainPreferences();
+                return;
+            }
+        }
+
+        // 3 — nothing to work from.
+        this.toast.warning('Add a dataset row first to suggest a trigger word.');
     }
 
     /**

@@ -157,6 +157,15 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
 
         Returns a BN-denormalised, unpatchified latent ``[1, 32, H, W]`` ready
         for :meth:`decode_latents`.
+
+        The DiT forward runs under the **same autocast as training**
+        (``pipeline.autocast_dtype``/``use_amp``) and the CFG combine + Euler
+        step run in fp32. This matters once the LoRA is non-trivial: the model
+        learns its velocities under autocast, so sampling the trained adapter
+        in a different precision regime (or accumulating Euler steps in bf16)
+        diverges into noise — even though the near-zero step-0 adapter and the
+        robust base tolerate it, and the same saved weights render correctly in
+        ComfyUI (which runs the model in a consistent dtype).
         """
         device = self.device
         driver = self.pipeline.driver
@@ -164,6 +173,10 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
         vae = self.pipeline.vae
         dtype = next(transformer.parameters()).dtype
         scheduler = self._get_scheduler()
+
+        # Mirror the training forward's precision regime exactly.
+        amp_dtype = getattr(self.pipeline, "autocast_dtype", dtype)
+        use_amp = getattr(self.pipeline, "use_amp", device.type == "cuda")
 
         cond_stacked, cond_mask = prompt_embedding["cond"]
         uncond_stacked, uncond_mask = prompt_embedding["uncond"]
@@ -190,18 +203,29 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
                 # DiT consumes [0, 1] timesteps; scheduler emits [0, 1000].
                 ts = t.expand(latents.shape[0]).to(device=device, dtype=dtype) / 1000.0
 
-                cond_pred = driver.forward_pass(
-                    latents, ts, (cond_stacked, cond_mask), batch,
-                )
-                if do_cfg:
-                    uncond_pred = driver.forward_pass(
-                        latents, ts, (uncond_stacked, uncond_mask), batch,
+                with torch.autocast(
+                    device_type="cuda", dtype=amp_dtype, enabled=use_amp,
+                ):
+                    cond_pred = driver.forward_pass(
+                        latents, ts, (cond_stacked, cond_mask), batch,
                     )
-                    pred = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
-                else:
-                    pred = cond_pred
+                    if do_cfg:
+                        uncond_pred = driver.forward_pass(
+                            latents, ts, (uncond_stacked, uncond_mask), batch,
+                        )
 
-                latents = scheduler.step(pred, t, latents, return_dict=False)[0]
+                # CFG combine + Euler step in fp32 (outside autocast) for
+                # numerical stability across the denoising trajectory.
+                if do_cfg:
+                    pred = uncond_pred.float() + guidance_scale * (
+                        cond_pred.float() - uncond_pred.float()
+                    )
+                else:
+                    pred = cond_pred.float()
+
+                latents = scheduler.step(
+                    pred, t, latents.float(), return_dict=False,
+                )[0].to(dtype)
 
         latents = utils.bn_denormalize_seq(latents, vae)
         return utils.unpatchify_from_seq(latents, self._latent_h, self._latent_w)

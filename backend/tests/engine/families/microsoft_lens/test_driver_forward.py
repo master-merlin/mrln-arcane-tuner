@@ -92,6 +92,31 @@ def test_forward_pass_runs_and_matches_seq_shape():
     assert out.shape[0] == b and out.shape[1] == s
 
 
+def test_forward_pass_converts_timesteps_to_unit_range():
+    """The trainer/scheduler convention is [0,1000]; the Lens DiT expects the
+    flow-matching value in [0,1]. forward_pass must divide by 1000 so the model
+    is told the same noise fraction its input was mixed at."""
+    class _CaptureTS(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seen = None
+
+        def forward(self, *, hidden_states, encoder_hidden_states,
+                    encoder_hidden_states_mask, timestep, img_shapes):
+            self.seen = timestep.detach().clone()
+            return torch.zeros_like(hidden_states)
+
+    drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
+    cap = _CaptureTS()
+    drv.transformer = cap
+    noisy = torch.randn(1, 4, 128)
+    text = torch.randn(1, 4, 5, 2880)
+    mask = torch.ones(1, 5, dtype=torch.bool)
+    drv.forward_pass(noisy, torch.tensor([500.0]), (text, mask),
+                     {"latent_h": 2, "latent_w": 2})
+    assert torch.allclose(cap.seen, torch.tensor([0.5]))  # 500 / 1000
+
+
 def test_prepare_latents_bn_normalizes_but_noise_does_not():
     drv = MicrosoftLensDriver(_defn(), torch.device("cpu"))
     drv.vae = _FakeVAE()

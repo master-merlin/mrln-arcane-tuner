@@ -196,10 +196,25 @@ class MicrosoftLensDriver(IModelDriver):
         """Raw noise [B,32,h,w] -> patchify -> [B, S, 128] (no BN)."""
         return utils.patchify_to_seq(noise).to(self.device)
 
+    # Trainer/scheduler timestep convention. `sample_timesteps` and the
+    # noise-interpolation lerp use [0, num_train_timesteps]; the Lens DiT
+    # (time_proj scale=1000) consumes the continuous flow-matching value in
+    # [0, 1], which equals the noise fraction t / NUM_TRAIN_TIMESTEPS.
+    NUM_TRAIN_TIMESTEPS = 1000.0
+
     def forward_pass(
         self, noisy_input, timesteps, text_embeddings, batch,
     ) -> torch.Tensor:
-        """Run the Lens DiT. ``timesteps`` are flow-matching ``[0, 1]``."""
+        """Run the Lens DiT.
+
+        ``timesteps`` arrive in the shared trainer/scheduler ``[0, 1000]``
+        convention (matching ``NoiseInterpolation`` and the sampler's scheduler
+        timesteps). The DiT expects the flow-matching value in ``[0, 1]`` — the
+        same noise fraction the noisy input was mixed at — so we divide by
+        ``NUM_TRAIN_TIMESTEPS`` here. Feeding the raw ``[0, 1000]`` value told
+        the model a noise level 1000x too high and mis-calibrated the LoRA per
+        timestep (worst at the low-noise final steps).
+        """
         if isinstance(text_embeddings, tuple):
             stacked, mask = text_embeddings
         else:
@@ -233,11 +248,12 @@ class MicrosoftLensDriver(IModelDriver):
             )
         img_shapes = [(1, latent_h, latent_w)]
 
+        model_timesteps = timesteps.to(noisy_input.device) / self.NUM_TRAIN_TIMESTEPS
         out = self.transformer(
             hidden_states=noisy_input,
             encoder_hidden_states=feature_list,
             encoder_hidden_states_mask=mask.to(noisy_input.device),
-            timestep=timesteps.to(noisy_input.device),
+            timestep=model_timesteps,
             img_shapes=img_shapes,
         )
         return out

@@ -200,8 +200,9 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
             for i, t in enumerate(timesteps, 1):
                 if getattr(self, "_log_writer", None):
                     self._log_writer.status(f"Sampling {i}/{total}")
-                # DiT consumes [0, 1] timesteps; scheduler emits [0, 1000].
-                ts = t.expand(latents.shape[0]).to(device=device, dtype=dtype) / 1000.0
+                # Pass the scheduler's [0, 1000] timestep in the shared trainer
+                # convention; driver.forward_pass divides to the DiT's [0, 1].
+                ts = t.expand(latents.shape[0]).to(device=device, dtype=dtype)
 
                 with torch.autocast(
                     device_type="cuda", dtype=amp_dtype, enabled=use_amp,

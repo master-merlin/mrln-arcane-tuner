@@ -1,4 +1,5 @@
-import { Component, input, output, inject, signal, OnInit } from '@angular/core';
+import { Component, input, output, inject, signal, OnInit, DestroyRef } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { TitleCasePipe } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
@@ -30,14 +31,34 @@ import { ToastService } from '../../../services/toast';
       
       <!-- Integer/Number -->
       @if (isNumber()) {
-           <input [id]="fieldKey()" 
-                  [type]="'number'" 
-                  [formControl]="control()"
-                  [attr.data-testid]="'config-input-' + fieldKey()"
-                  [attr.min]="schema().min ?? null"
-                  [attr.max]="schema().max ?? null"
-                  [attr.step]="schema().step ?? null"
-                  class="input mono disabled:opacity-50 disabled:cursor-not-allowed">
+           @if (isScientific()) {
+             <!-- Scientific-notation hint overlay (e.g. learning rate 0.0001 → faint "1e-4"
+                  right-aligned inside the field). Spin buttons hidden so the hint owns the
+                  right edge; pr-16 reserves space so typed digits never slide under it. -->
+             <div class="relative">
+               <input [id]="fieldKey()"
+                      [type]="'number'"
+                      [formControl]="control()"
+                      [attr.data-testid]="'config-input-' + fieldKey()"
+                      [attr.min]="schema().min ?? null"
+                      [attr.max]="schema().max ?? null"
+                      [attr.step]="schema().step ?? null"
+                      class="input mono pr-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none disabled:opacity-50 disabled:cursor-not-allowed">
+               @if (sciHint(sciValue()); as hint) {
+                 <span class="pointer-events-none select-none absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm text-brand/60"
+                       [attr.data-testid]="'config-sci-hint-' + fieldKey()">{{ hint }}</span>
+               }
+             </div>
+           } @else {
+             <input [id]="fieldKey()"
+                    [type]="'number'"
+                    [formControl]="control()"
+                    [attr.data-testid]="'config-input-' + fieldKey()"
+                    [attr.min]="schema().min ?? null"
+                    [attr.max]="schema().max ?? null"
+                    [attr.step]="schema().step ?? null"
+                    class="input mono disabled:opacity-50 disabled:cursor-not-allowed">
+           }
       }
 
        <!-- Boolean (Toggle) -->
@@ -161,7 +182,7 @@ import { ToastService } from '../../../services/toast';
     </div>
   `
 })
-export class DynamicFormFieldComponent {
+export class DynamicFormFieldComponent implements OnInit {
   control = input.required<FormControl>();
   schema = input.required<any>();
   fieldKey = input.required<string>();
@@ -179,6 +200,14 @@ export class DynamicFormFieldComponent {
   private http = inject(HttpClient);
   private toast = inject(ToastService);
   private rtc = inject(RuntimeConfigService);
+  private destroyRef = inject(DestroyRef);
+
+  /**
+   * Live mirror of the control's value, driving the scientific-notation hint.
+   * Seeded in ngOnInit and kept in sync via valueChanges so the hint reflects
+   * both typing and programmatic sets (archetype defaults, "Load config").
+   */
+  sciValue = signal<unknown>(null);
 
   // Browse Dialog State
   browseActive = signal<boolean>(false);
@@ -186,8 +215,38 @@ export class DynamicFormFieldComponent {
   browseParent = signal<string>('');
   browseEntries = signal<{ name: string, path: string, type: string }[]>([]);
 
+  ngOnInit(): void {
+    if (this.isScientific()) {
+      this.sciValue.set(this.control().value);
+      this.control().valueChanges
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe((v) => this.sciValue.set(v));
+    }
+  }
+
   isDisabled(): boolean {
     return this.schema().readOnly === true;
+  }
+
+  /** Field opts into the scientific-notation hint overlay (set on LR-type fields). */
+  isScientific(): boolean {
+    return this.schema().display === 'scientific';
+  }
+
+  /**
+   * Compact scientific-notation hint for a numeric value, or '' to hide the
+   * overlay. Empty / non-finite / zero → hidden. Values whose exponent is 0
+   * (magnitude in [1, 10), e.g. Prodigy's 1.0) are suppressed since scientific
+   * notation adds no clarity there. Otherwise: 0.0001 → "1e-4", 0.00015 → "1.5e-4".
+   */
+  sciHint(value: unknown): string {
+    if (value === null || value === undefined || value === '') return '';
+    const n = typeof value === 'number' ? value : parseFloat(String(value));
+    if (!Number.isFinite(n) || n === 0) return '';
+    const exp = n.toExponential();
+    const m = /e([+-]?\d+)$/.exec(exp);
+    if (!m || parseInt(m[1], 10) === 0) return '';
+    return exp;
   }
 
   isLongInput(): boolean {

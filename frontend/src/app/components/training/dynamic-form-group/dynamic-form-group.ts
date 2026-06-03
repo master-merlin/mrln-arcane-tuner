@@ -144,7 +144,7 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
                                                [attr.data-testid]="'config-nested-checkbox-' + fieldKey() + '-' + ip.key"
                                                (change)="onNestedToggleChange(dsIdx, ip.key)"
                                                class="sr-only peer">
-                                        <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+                                        <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
                                       </label>
                                       <span class="text-[11px] text-text-muted">{{ ip.schema.title || (ip.key | titlecase) }}</span>
                                     </div>
@@ -274,7 +274,7 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
                                 <input type="checkbox" formControlName="ignore_filter"
                                        [attr.data-testid]="'config-ignore-filter-' + dsIdx"
                                        class="sr-only peer">
-                                <div class="w-9 h-5 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-[16px] after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-warning group-hover:bg-surface-mid transition-all"></div>
+                                <div class="w-9 h-5 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-[16px] after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-warning group-hover:bg-surface-mid transition-all relative"></div>
                               </label>
                               <div class="flex flex-col gap-0.5">
                                 <span class="text-[11px] font-bold text-text-secondary">Use suppressed images this run</span>

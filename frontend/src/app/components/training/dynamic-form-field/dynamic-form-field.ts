@@ -67,7 +67,7 @@ import { ToastService } from '../../../services/toast';
             <input type="checkbox" [formControl]="control()" 
                    [attr.data-testid]="'config-checkbox-' + fieldKey()"
                    class="sr-only peer">
-            <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+            <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
             <span class="ml-2 text-[11px] text-text-muted group-hover:text-text-secondary">Enable</span>
           </label>
       }

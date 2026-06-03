@@ -69,8 +69,9 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   currentFormConfig = input<any>({});
   projectId = input<string | null>(null);
 
-  // Outputs to Main Orchestrator
-  templateApplied = output<{ config: any, isDefault: boolean, definitionId?: string }>();
+  // Outputs to Main Orchestrator. `auto` flags the one-time apply fired on
+  // load (vs a user dropdown selection) so the parent can yield to a handoff.
+  templateApplied = output<{ config: any, isDefault: boolean, definitionId?: string, auto?: boolean }>();
 
   private templateService = inject(TemplateService);
   private toast = inject(ToastService);
@@ -80,6 +81,11 @@ export class TrainingTemplateSelectorComponent implements OnInit {
 
   // Internal flag to prevent recursive auto-saving when applying a template
   suppressAutoSave = signal<boolean>(false);
+
+  // Project context for which the initial template has already been auto-applied
+  // (`undefined` = never). Dedupes the duplicate load calls on startup and
+  // re-arms the one-time apply when the project changes.
+  private _autoAppliedForProject: string | null | undefined = undefined;
 
   filteredTemplates = computed(() => {
     const all = this.allTemplates();
@@ -168,9 +174,30 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     this.templateService.listTrainingTemplates(undefined, this.projectId()).subscribe({
       next: (templates) => {
         this.allTemplates.set(templates);
+        this._maybeAutoApply();
       },
       error: (err: any) => console.error('[Templates] Failed to load training templates', err)
     });
+  }
+
+  /**
+   * Apply the initially-active template ONCE per project, on load. The Training
+   * screen drives its estimate wall from the live form, so without this the
+   * wall reflects bare defaults until the user manually re-picks a template.
+   * Resolves the active id to a real, selectable option (the hardcoded
+   * `'default'` may not match when a real default template exists) and routes
+   * through the same `applyTemplate` path a manual selection uses, tagged
+   * `auto` so the parent can defer to a Jobs-screen handoff.
+   */
+  private _maybeAutoApply(): void {
+    const pid = this.projectId();
+    if (this._autoAppliedForProject === pid) return;
+    const templates = this.filteredTemplates();
+    if (templates.length === 0) return;
+    this._autoAppliedForProject = pid;
+    const current = this.activeTemplateId();
+    const resolvedId = templates.some(t => t.id === current) ? current : templates[0].id;
+    this.applyTemplate(resolvedId, true);
   }
 
   getDefinitionLabel(definitionId?: string): string {
@@ -179,7 +206,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     return model ? ` · ${model.name}` : '';
   }
 
-  applyTemplate(tplId: string) {
+  applyTemplate(tplId: string, auto = false) {
     this.suppressAutoSave.set(true);
     this.activeTemplateId.set(tplId);
 
@@ -189,7 +216,8 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     this.templateApplied.emit({
       config: tpl.config,
       isDefault: !!tpl.is_default,
-      definitionId: tpl.definition_id
+      definitionId: tpl.definition_id,
+      auto
     });
   }
 

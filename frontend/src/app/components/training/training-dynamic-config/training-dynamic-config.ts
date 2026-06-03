@@ -696,6 +696,9 @@ export class TrainingDynamicConfigComponent {
   // Model change → target layers modal
   showModelChangeModal = signal(false);
   private _isTemplateApplying = false;
+  // Set once a Jobs-screen handoff (Reload / Save template) has been applied,
+  // so the selector's one-time `auto` template apply yields to it.
+  private _externalConfigApplied = false;
   private _pendingDefinitionId: string | null = null;
   private _previousModelFamily: string | null = null;
   private _previousDefinitionId: string | null = null;
@@ -1024,7 +1027,13 @@ export class TrainingDynamicConfigComponent {
 
   // --- Template Logic ---
 
-  onTemplateApplied(event: { config: any, isDefault: boolean, definitionId?: string }) {
+  onTemplateApplied(event: { config: any, isDefault: boolean, definitionId?: string, auto?: boolean }) {
+    // The selector fires a one-time `auto` apply on load so the estimate wall
+    // reflects the active template. A Jobs-screen handoff (Reload / Save
+    // template) takes precedence — if one already landed, ignore the auto apply
+    // so it can't clobber the handed-off config (either ordering is safe: a
+    // handoff after this still wins, as it isn't gated).
+    if (event.auto && this._externalConfigApplied) return;
     this._isTemplateApplying = true;
     if (event.isDefault) {
       this.resetFormToDefaults();
@@ -1127,6 +1136,7 @@ export class TrainingDynamicConfigComponent {
   // --- External Config Import (from Job Queue) ---
 
   importTemplate(name: string, config: any, definitionId: string) {
+    this._externalConfigApplied = true;
     if (this.templateSelector) {
       this.templateSelector.importExternalTemplate(name, config, definitionId);
     }
@@ -1141,6 +1151,7 @@ export class TrainingDynamicConfigComponent {
 
   loadExternalConfig(config: any) {
     // Suppress auto-save so patching the form doesn't create a new template
+    this._externalConfigApplied = true;
     this._isTemplateApplying = true;
     if (this.templateSelector) {
       this.templateSelector.suppressAutoSave.set(true);

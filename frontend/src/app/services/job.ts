@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from './runtime-config.service';
 import { Observable } from 'rxjs';
+import type { VRAMReport } from './system.service';
 
 export enum JobStatus {
   PENDING = "pending",
@@ -45,9 +46,49 @@ export interface Job {
 
 export interface VramEstimate {
   peak_mb: number;
+  /** FREE VRAM (total − used by all processes) — what the fit check uses. */
   available_mb: number;
+  /** Total card capacity. */
+  total_mb?: number;
+  /** VRAM already held by other processes (ComfyUI, browser, other runs). */
+  used_mb?: number;
   fits: boolean;
   warnings?: string[];
+  caching_peak_mb?: number;
+  training_peak_mb?: number;
+  calibrated?: boolean;
+  calibrated_components?: string[];
+}
+
+/** One calibrated metric in a TrainingEstimate. */
+export interface EstimateMetric {
+  display: string;
+  /** Number of local runs that contributed to this metric (0 = default). */
+  samples: number;
+  /** True when learned from local history, false when using default coeff. */
+  calibrated: boolean;
+}
+
+export interface TrainingEstimate {
+  definition_id: string;
+  /** True when this definition has ≥1 completed local run to calibrate from. */
+  stats_available: boolean;
+  /** Total completed runs recorded for this definition. */
+  samples: number;
+  updated_at: number | null;
+  wall_time: EstimateMetric & { seconds: number };
+  output_size: EstimateMetric & { bytes: number };
+  throughput: EstimateMetric & { steps_per_sec: number };
+  disk_footprint: EstimateMetric & { bytes: number };
+  vram: VRAMReport | null;
+}
+
+export interface DefinitionStats {
+  definition_id: string;
+  stats_available: boolean;
+  run_count: number;
+  stats: Record<string, { value: number; samples: number }>;
+  updated_at: number | null;
 }
 
 export interface TrainingStats {
@@ -85,6 +126,21 @@ export class JobService {
 
   estimateVram(definitionId: string, config: any): Observable<VramEstimate> {
     return this.http.post<VramEstimate>(`${this.apiUrl}/estimate-vram`, { definition_id: definitionId, config });
+  }
+
+  /** Full data-calibrated training estimate (wall time, output, throughput, disk, VRAM). */
+  estimate(definitionId: string, config: any): Observable<TrainingEstimate> {
+    return this.http.post<TrainingEstimate>(`${this.apiUrl}/estimate`, { definition_id: definitionId, config });
+  }
+
+  /** Raw calibration stats + freshness for one definition. */
+  getDefinitionStats(definitionId: string): Observable<DefinitionStats> {
+    return this.http.get<DefinitionStats>(`${this.apiUrl}/stats/${definitionId}`);
+  }
+
+  /** Backfill run costs from disk + rebuild per-definition coefficients. */
+  recomputeStats(): Observable<{ completed_runs: number; rows_updated: number; fields_recovered: number; definitions: Record<string, number> }> {
+    return this.http.post<{ completed_runs: number; rows_updated: number; fields_recovered: number; definitions: Record<string, number> }>(`${this.apiUrl}/stats/recompute`, {});
   }
 
   listJobHistory(projectId: string | null = null, limit: number = 50, offset: number = 0): Observable<Job[]> {

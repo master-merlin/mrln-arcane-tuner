@@ -44,6 +44,9 @@ class PipelineOptimizationMixin:
         """
         self.logger.info("preparing_for_training")
 
+        # Reset measured-VRAM snapshots for this run (estimation-wall calibration).
+        self._vram_snapshots = {}
+
         # 1-2. Freeze ALL components before quantization
         self._freeze_all()
 
@@ -53,6 +56,10 @@ class PipelineOptimizationMixin:
 
         # 4. Move (now quantized / FP8) primary model to GPU
         self._move_component_to_gpu("unet")
+
+        # Snapshot resident VRAM after the base model lands on GPU but before
+        # adapters/optimizer — isolates "model weights" for the measured wall.
+        self._snapshot_vram("model")
 
         # 4. Gradient checkpointing (MUST be before PEFT — PeftModel lacks
         #    gradient_checkpointing_enable; only the raw model exposes it)
@@ -64,6 +71,9 @@ class PipelineOptimizationMixin:
 
         # 5b. PEFT / LoRA (inject adapters into Float8Linear modules)
         self._apply_peft()
+
+        # Snapshot after adapters inject — delta vs "model" = LoRA adapter VRAM.
+        self._snapshot_vram("adapters")
 
         # 6. torch.compile (AFTER PEFT so compile sees full Float8Linear + LoRA graph)
         self._compile_if_quantized()

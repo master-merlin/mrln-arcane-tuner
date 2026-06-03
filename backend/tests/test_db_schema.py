@@ -225,12 +225,12 @@ class TestV2Migration:
         with db_engine.write() as conn:
             _migrate_v2(conn)
 
-    def test_run_migrations_reaches_v2(self, db_engine):
-        """Full run_migrations should bring schema to v2."""
+    def test_run_migrations_reaches_latest(self, db_engine):
+        """Full run_migrations should bring schema to the latest version."""
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 8
+            assert row["version"] == 9
 
 
 # ── Media Item Repository ────────────────────────────────────────────────

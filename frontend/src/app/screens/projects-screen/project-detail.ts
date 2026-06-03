@@ -7,7 +7,7 @@ import { firstValueFrom } from 'rxjs';
 import { ProjectService, type Project } from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { TemplateService, type Template } from '../../services/template.service';
-import { JobService, type Job, type VramEstimate } from '../../services/job';
+import { JobService, type Job, type TrainingEstimate } from '../../services/job';
 import { ToastService } from '../../services/toast';
 import { ScopeStore } from '../../state/scope.store';
 import { OverlayStore } from '../../state/overlay.store';
@@ -17,6 +17,7 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
 import { DynamicFormGroupComponent } from '../../components/training/dynamic-form-group/dynamic-form-group';
 import { RunSummaryComponent } from '../../components/training/run-summary/run-summary';
 import { TemplateInfoCardComponent } from '../../ui/template-info-card/template-info-card.component';
+import { EstimateWallComponent } from '../../components/training/estimate-wall/estimate-wall';
 import { nextTriggerWord } from '../../shared/trigger-word';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
@@ -50,7 +51,7 @@ interface TemplateSection {
 @Component({
     selector: 'app-project-detail',
     standalone: true,
-    imports: [RouterLink, ReactiveFormsModule, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent, TemplateInfoCardComponent],
+    imports: [RouterLink, ReactiveFormsModule, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent, TemplateInfoCardComponent, EstimateWallComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './project-detail.html',
     styleUrl: './project-detail.css',
@@ -114,11 +115,13 @@ export class ProjectDetail implements OnInit {
     // VRAM is REAL (POST /jobs/estimate-vram). Wall-time + output size are
     // coarse CLIENT-SIDE heuristics (no backend estimator exists) — surfaced
     // with `~` / "estimated" sub-labels so they read as approximations.
-    protected estimate = signal<{
-        vram: VramEstimate | null;
-        wallTime: string;   // e.g. "1h 36m" (heuristic)
-        output: string;     // e.g. "~232 MB" (heuristic)
-    } | null>(null);
+    // Full data-calibrated estimate from the backend. When a definition has no
+    // local run history, the backend still returns values (default coeffs that
+    // match the legacy heuristics) with `stats_available=false` + `calibrated`
+    // flags, so the UI can label them "estimated · defaults" and offer backfill.
+    protected estimate = signal<TrainingEstimate | null>(null);
+    /** True while "Update stats from history" backfill is running. */
+    protected recomputingStats = signal(false);
     private estimateTimer: ReturnType<typeof setTimeout> | null = null;
 
     // ── Schema-driven datasets form (shared with the Training screen) ──
@@ -809,10 +812,11 @@ export class ProjectDetail implements OnInit {
     }
 
     /**
-     * Recompute the estimate panel: real VRAM from the backend plus coarse
-     * client-side heuristics for wall-time and output size. The heuristic
-     * constants (1.2 s/step, 14 MB/rank) are deliberately rough — the goal is
-     * a populated, transparently-labelled panel, not precision.
+     * Recompute the estimate panel from the backend's data-calibrated estimator
+     * (`POST /jobs/estimate`): wall time, output size, throughput, disk footprint
+     * and VRAM, each tagged with how many local runs calibrated it. With no local
+     * history the backend returns default-coefficient values (≈ the legacy
+     * heuristics) flagged `stats_available=false` so the wall can offer backfill.
      */
     private async recomputeEstimate(): Promise<void> {
         const built = this.buildEstimateConfig();
@@ -821,26 +825,30 @@ export class ProjectDetail implements OnInit {
             return;
         }
         const { definitionId, config } = built;
-
-        // Wall-time heuristic: ~1.2 s per training step.
-        const steps = Number(config['max_train_steps'] ?? 1000) || 1000;
-        const totalSec = steps * 1.2;
-        const hours = Math.floor(totalSec / 3600);
-        const minutes = Math.round((totalSec % 3600) / 60);
-        const wallTime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-
-        // Output-size heuristic: ~14 MB per LoRA rank.
-        const rank = Number(
-            config['network_dim'] ?? config['lora_rank'] ?? config['rank'] ?? config['lora_dim'] ?? 16,
-        ) || 16;
-        const output = `~${Math.round(rank * 14)} MB`;
-
         try {
-            const vram = await firstValueFrom(this.jobs.estimateVram(definitionId, config));
-            this.estimate.set({ vram, wallTime, output });
+            const est = await firstValueFrom(this.jobs.estimate(definitionId, config));
+            this.estimate.set(est);
         } catch {
-            // VRAM endpoint failed — still surface the heuristics; VRAM shows "—".
-            this.estimate.set({ vram: null, wallTime, output });
+            // Estimator failed — clear the panel rather than show stale values.
+            this.estimate.set(null);
+        }
+    }
+
+    /**
+     * "Update stats from history": backfill run costs from disk + rebuild the
+     * per-definition calibration coefficients, then refresh the live estimate so
+     * the wall reflects the freshly-learned values.
+     */
+    protected async updateStatsFromHistory(): Promise<void> {
+        if (this.recomputingStats()) return;
+        this.recomputingStats.set(true);
+        try {
+            await firstValueFrom(this.jobs.recomputeStats());
+            await this.recomputeEstimate();
+        } catch {
+            // Swallow — the wall keeps showing default-coefficient values.
+        } finally {
+            this.recomputingStats.set(false);
         }
     }
 

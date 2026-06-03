@@ -107,8 +107,6 @@
     border-top: 1px solid var(--color-border-subtle);
 }
 .pd-qt-foot .right { margin-left: auto; }
-.pd-qt-estimate { display: flex; flex-direction: column; gap: 10px; }
-.pd-qt-estimate-empty { padding: 12px; font-size: 12px; }
 
 .pd-qt-template-card { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; margin-top: 8px; background: var(--color-surface-mid); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-theme-md); }
 /* host wrapper for the shared <app-template-info-card> in Quick Train */

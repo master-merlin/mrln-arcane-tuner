@@ -7,6 +7,7 @@ import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
+import { JobService, type TrainingEstimate } from '../../../services/job';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
@@ -532,6 +533,7 @@ export class TrainingDynamicConfigComponent {
   private http = inject(HttpClient);
   private toast = inject(ToastService);
   private systemService = inject(SystemService);
+  private jobService = inject(JobService);
   private modelService = inject(ModelService);
   private registryStore = inject(RegistryStore);
   private modelCapabilitiesService = inject(ModelCapabilitiesService);
@@ -545,6 +547,8 @@ export class TrainingDynamicConfigComponent {
 
   // VRAM estimation
   vramReport = signal<VRAMReport | null>(null);
+  // Full data-calibrated estimate (wall time, throughput, output, disk + VRAM).
+  estimate = signal<TrainingEstimate | null>(null);
   private vramEstimate$ = new Subject<void>();
   Math = Math; // expose to template
 
@@ -904,13 +908,25 @@ export class TrainingDynamicConfigComponent {
     if (!defId) return;
 
     const config = this.form.getRawValue();
-    this.systemService.estimateVRAM(defId, config).subscribe({
-      next: (report) => this.vramReport.set(report),
+    // One call to the full estimator: it returns the calibrated VRAM report
+    // (feeding the in-form budget card + the shell's VRAM detail rail) PLUS
+    // wall time / throughput / output / disk for the shared estimate wall.
+    this.jobService.estimate(defId, config).subscribe({
+      next: (est) => {
+        this.estimate.set(est);
+        this.vramReport.set(est?.vram ?? null);
+      },
       error: (err) => {
-        console.warn('[VRAM] Estimation failed', err);
+        console.warn('[Estimate] Estimation failed', err);
+        this.estimate.set(null);
         this.vramReport.set(null);
       }
     });
+  }
+
+  /** Force a re-estimate (e.g. after the shell backfills calibration stats). */
+  refreshEstimate(): void {
+    this.vramEstimate$.next();
   }
 
   // --- Config Help System ---
@@ -1673,6 +1689,13 @@ export class TrainingDynamicConfigComponent {
 
   private _vramEmitEffect = effect(() => {
     this.vramReportChanged.emit(this.vramReport());
+  });
+
+  /** Re-broadcasts the full calibrated estimate for the shell's estimate wall. */
+  estimateChanged = output<TrainingEstimate | null>();
+
+  private _estimateEmitEffect = effect(() => {
+    this.estimateChanged.emit(this.estimate());
   });
 
   resolveSchema(schema: any): any {

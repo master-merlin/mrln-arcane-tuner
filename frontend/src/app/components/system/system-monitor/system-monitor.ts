@@ -8,6 +8,7 @@ interface RailRow {
     key: string;
     label: string;
     valueText: string;
+    sub?: string;
     pct: number;
     barColor: string;
     spark: number[];
@@ -20,7 +21,7 @@ interface HeatCell {
     dim: boolean;
 }
 
-const HISTORY_CAP = 40;
+const HISTORY_CAP = 80;
 
 /**
  * System rail (Jobs screen, right pane) — per Hi-Fi `screen-jobs.jsx`.
@@ -37,51 +38,78 @@ const HISTORY_CAP = 40;
     template: `
         @if (svc.metrics(); as snap) {
             <div class="sys-head">
-                <div class="eyebrow">SYSTEM</div>
+                <div class="eyebrow sys-eyebrow"><span class="sys-live"></span>SYSTEM</div>
                 @if (primaryGpu(); as g) {
-                    <span class="chip danger temp-chip">{{ g.temperature_c }}°C</span>
+                    <span class="chip danger temp-chip mono">{{ g.temperature_c }}°C</span>
                 }
             </div>
             @if (primaryGpu(); as g) {
-                <div class="sys-gpu-name">{{ g.name }}</div>
+                <div class="sys-gpu-name mono">{{ g.name }}</div>
             }
 
-            @for (row of rows(); track row.key) {
-                <div class="sys-row">
-                    <div class="sys-row-head">
-                        <span class="sys-row-label">{{ row.label }}</span>
-                        <span class="sys-row-val mono">{{ row.valueText }}</span>
+            <div class="sys-metrics">
+                @for (row of rows(); track row.key) {
+                    <div class="sys-metric" [style.--tone]="row.sparkColor">
+                        <div class="sys-metric-head">
+                            <span class="sys-metric-label">{{ row.label }}</span>
+                            <span class="sys-metric-val mono"
+                                  [style.color]="row.pct >= 85 ? row.barColor : null">{{ row.valueText }}</span>
+                        </div>
+                        @if (row.sub) {
+                            <div class="sys-metric-sub mono">{{ row.sub }}</div>
+                        }
+                        <div class="sys-spark">
+                            <app-sparkline [data]="row.spark" [color]="row.sparkColor" [height]="26"/>
+                        </div>
+                        <div class="sys-meter"><i [style.width.%]="row.pct" [style.background]="row.barColor"></i></div>
                     </div>
-                    <div class="sys-spark">
-                        <app-sparkline [data]="row.spark" [color]="row.sparkColor" [height]="22"/>
+                }
+            </div>
+
+            <!-- VRAM by process (who's holding the card) -->
+            @if (gpuProcesses().length > 0) {
+                <div class="sys-section">
+                    <div class="sys-subtitle">VRAM by process</div>
+                    <div class="sys-procs">
+                        @for (p of gpuProcesses(); track p.pid) {
+                            <div class="sys-proc" [title]="p.name + ' (pid ' + p.pid + ')'">
+                                <div class="sys-proc-head">
+                                    <span class="sys-proc-name">{{ p.name }}</span>
+                                    <span class="sys-proc-val mono">{{ fmtGb(p.used_mb) }}</span>
+                                </div>
+                                <div class="sys-proc-bar"><i [style.width.%]="procPct(p.used_mb)"></i></div>
+                            </div>
+                        }
                     </div>
-                    <div class="bar"><i [style.width.%]="row.pct" [style.background]="row.barColor"></i></div>
                 </div>
             }
 
             <!-- Temp trend -->
             @if (tempHist().length > 1) {
-                <div class="sys-divider"></div>
-                <div class="card-title sys-subtitle">Temp trend</div>
-                <div class="sys-temp-trend">
-                    <app-sparkline [data]="tempHist()" color="var(--color-danger)" [height]="48"/>
+                <div class="sys-section">
+                    <div class="sys-subtitle">Temp trend</div>
+                    <div class="sys-temp-trend">
+                        <app-sparkline [data]="tempHist()" color="var(--color-danger)" [height]="52"/>
+                        <span class="sys-temp-peak mono">{{ maxTemp() }}° peak</span>
+                    </div>
                 </div>
             }
 
             <!-- Recent runs heatmap -->
             @if (recentRuns().length > 0) {
-                <div class="sys-divider"></div>
-                <div class="card-title sys-subtitle">Recent runs · {{ recentRuns().length }}</div>
-                <div class="sys-heat">
-                    @for (cell of recentRuns(); track $index) {
-                        <div class="sys-heat-cell"
-                             [style.background]="cell.color"
-                             [style.opacity]="cell.dim ? 0.6 : 1"
-                             [title]="cell.title"></div>
-                    }
-                </div>
-                <div class="sys-heat-axis mono">
-                    <span>older</span><span>now</span>
+                <div class="sys-section">
+                    <div class="sys-subtitle">Recent runs · {{ recentRuns().length }}</div>
+                    <div class="sys-heat">
+                        @for (cell of recentRuns(); track $index) {
+                            <div class="sys-heat-cell"
+                                 [style.background]="cell.color"
+                                 [style.opacity]="cell.dim ? 0.6 : 1"
+                                 [title]="cell.title"></div>
+                        }
+                    </div>
+                    <div class="sys-heat-axis mono">
+                        <span>older</span><span>now</span>
+                    </div>
                 </div>
             }
         } @else {
@@ -99,6 +127,19 @@ export class SystemMonitorComponent implements OnInit, OnDestroy {
 
     protected readonly primaryGpu = computed(() => this.svc.metrics()?.gpus?.[0] ?? null);
     protected readonly tempHist = computed<number[]>(() => this.hist()['temp'] ?? []);
+    /** Peak temperature across the rolling history window. */
+    protected readonly maxTemp = computed<number>(() => {
+        const h = this.tempHist();
+        return h.length ? Math.round(Math.max(...h)) : 0;
+    });
+    /** Top VRAM-holding processes on the primary GPU (ComfyUI, browser, …). */
+    protected readonly gpuProcesses = computed(() => this.primaryGpu()?.processes ?? []);
+
+    /** A process's share of total card VRAM, as a percentage (for its bar). */
+    protected procPct(usedMb: number): number {
+        const total = this.primaryGpu()?.vram_total_mb ?? 0;
+        return total > 0 ? Math.min(100, (usedMb / total) * 100) : 0;
+    }
 
     constructor() {
         // Accumulate a rolling buffer each time the metrics snapshot changes.
@@ -172,15 +213,6 @@ export class SystemMonitorComponent implements OnInit, OnDestroy {
                 spark: h['gpu'] ?? [],
                 sparkColor: 'var(--color-warning)',
             });
-            out.push({
-                key: 'vram',
-                label: 'VRAM',
-                valueText: `${this.fmtGb(g.vram_used_mb)} / ${this.fmtGb(g.vram_total_mb)}`,
-                pct: g.vram_percent,
-                barColor: this.tone(g.vram_percent),
-                spark: h['vram'] ?? [],
-                sparkColor: 'var(--color-warning)',
-            });
             const powerPct = g.power_limit_w > 0 ? (g.power_draw_w / g.power_limit_w) * 100 : 0;
             out.push({
                 key: 'power',
@@ -189,7 +221,18 @@ export class SystemMonitorComponent implements OnInit, OnDestroy {
                 pct: powerPct,
                 barColor: this.tone(powerPct),
                 spark: h['power'] ?? [],
-                sparkColor: 'var(--color-warning)',
+                sparkColor: 'var(--color-success)',
+            });
+            const vramFree = g.vram_free_mb ?? Math.max(g.vram_total_mb - g.vram_used_mb, 0);
+            out.push({
+                key: 'vram',
+                label: 'VRAM',
+                valueText: `${this.fmtGb(g.vram_used_mb)} / ${this.fmtGb(g.vram_total_mb)}`,
+                sub: `${this.fmtGb(vramFree)} free`,
+                pct: g.vram_percent,
+                barColor: this.tone(g.vram_percent),
+                spark: h['vram'] ?? [],
+                sparkColor: 'var(--color-violet)',
             });
         }
         return out;
@@ -237,7 +280,7 @@ export class SystemMonitorComponent implements OnInit, OnDestroy {
         this.svc.unsubscribeMetrics();
     }
 
-    private fmtGb(mb: number): string {
+    protected fmtGb(mb: number): string {
         if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
         return `${mb.toFixed(0)} MB`;
     }

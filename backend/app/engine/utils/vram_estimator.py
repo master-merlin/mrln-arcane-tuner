@@ -123,7 +123,9 @@ class VRAMReport:
 
     # --- Summary ---
     peak_mb: float = 0.0  # max(caching, training)
-    available_mb: float = 0.0  # from GPU query
+    available_mb: float = 0.0  # FREE VRAM (total − used by all processes)
+    total_mb: float = 0.0  # total card VRAM
+    used_mb: float = 0.0  # already in use by other processes (ComfyUI, browser, …)
     fits: bool = True
     warnings: list[str] = field(default_factory=list)
 
@@ -139,6 +141,8 @@ class VRAMReport:
             "training_peak_mb": round(self.training_peak_mb),
             "peak_mb": round(self.peak_mb),
             "available_mb": round(self.available_mb),
+            "total_mb": round(self.total_mb),
+            "used_mb": round(self.used_mb),
             "fits": self.fits,
             "warnings": self.warnings,
         }
@@ -162,6 +166,7 @@ class VRAMEstimator:
     def estimate(
         definition: Any,
         config: dict[str, Any],
+        calibration: dict[str, float] | None = None,
     ) -> VRAMReport:
         """Build a VRAM report for the given model + training config.
 
@@ -169,6 +174,10 @@ class VRAMEstimator:
             definition: ``ModelDefinition`` instance (or dict-like with
                         ``family``, ``detected_precision``, ``architecture_params``).
             config:     Training config dict.
+            calibration: Optional per-definition multipliers learned from
+                        measured peaks, e.g. ``{"train": 0.9, "cache": 1.1}``.
+                        When present, the analytic ``training_peak_mb`` /
+                        ``caching_peak_mb`` are scaled toward observed reality.
 
         Returns:
             ``VRAMReport`` with per-category breakdown and fit assessment.
@@ -288,33 +297,75 @@ class VRAMEstimator:
             vae_mb = (_get_vae_params(family) * 1e9 * 2) / (1024 * 1024)
         report.caching_peak_mb = te_mb + vae_mb + report.overhead_mb
 
+        # ── 7b. Calibration (measured ÷ analytic, learned from local runs) ──
+        # Per-component multipliers refine each analytic row toward measured
+        # reality; the training peak is re-summed from the calibrated parts.
+        # ``caching_peak_mb`` scales the (single-number) caching-phase peak.
+        if calibration:
+            for field in (
+                "model_weights_mb", "lora_adapters_mb", "optimizer_states_mb",
+                "gradients_mb", "activations_mb", "overhead_mb",
+            ):
+                k = calibration.get(field)
+                if k and k > 0:
+                    setattr(report, field, getattr(report, field) * k)
+            report.training_peak_mb = (
+                report.model_weights_mb
+                + report.lora_adapters_mb
+                + report.optimizer_states_mb
+                + report.gradients_mb
+                + report.activations_mb
+                + report.overhead_mb
+            )
+            cache_k = calibration.get("caching_peak_mb")
+            if cache_k and cache_k > 0:
+                report.caching_peak_mb *= cache_k
+
         # ── 8. Overall peak ──────────────────────────────────────────────
         report.peak_mb = max(report.training_peak_mb, report.caching_peak_mb)
 
         # ── 9. GPU availability ──────────────────────────────────────────
+        # Fit against ACTUALLY FREE VRAM (total − used). NVML's ``used`` is
+        # device-wide, so VRAM held by other processes (ComfyUI, the browser,
+        # another training run) is already accounted for — our analytic peak
+        # only models our own consumption, so the headroom must come from the
+        # live device free figure, not the card's total capacity.
         try:
             from app.core.system_monitor import system_monitor
 
             snap = system_monitor.snapshot()
             if snap.gpus:
-                report.available_mb = snap.gpus[0].vram_total_mb
+                gpu = snap.gpus[0]
+                report.total_mb = gpu.vram_total_mb
+                report.used_mb = gpu.vram_used_mb
+                report.available_mb = max(gpu.vram_total_mb - gpu.vram_used_mb, 0)
                 report.fits = report.peak_mb < report.available_mb * 0.95  # 5% headroom
         except Exception:
             report.warnings.append("Could not query GPU — fit check skipped")
 
         # ── 10. Warnings ─────────────────────────────────────────────────
+        # Flag significant VRAM already held by other apps (>1 GB) so a tight
+        # fit is explainable ("would fit on an empty card, but ComfyUI…").
+        if report.used_mb > 1024:
+            report.warnings.append(
+                f"{round(report.used_mb / 1024, 1)} GB VRAM is already in use by "
+                f"other processes — only {round(report.available_mb / 1024, 1)} GB "
+                f"of {round(report.total_mb / 1024, 1)} GB is free. Close other GPU "
+                f"apps (e.g. ComfyUI) to reclaim it."
+            )
+
         if report.peak_mb > 0 and report.available_mb > 0:
             ratio = report.peak_mb / report.available_mb
             if ratio > 1.0:
                 overshoot_mb = round(report.peak_mb - report.available_mb)
                 report.warnings.append(
                     f"Estimated peak VRAM ({round(report.peak_mb)} MB) exceeds "
-                    f"available ({round(report.available_mb)} MB) by {overshoot_mb} MB. "
+                    f"free ({round(report.available_mb)} MB) by {overshoot_mb} MB. "
                     f"Consider quantization, lower resolution, or smaller batch size."
                 )
             elif ratio > 0.85:
                 report.warnings.append(
-                    f"Estimated VRAM usage is {round(ratio * 100)}% of available — "
+                    f"Estimated VRAM usage is {round(ratio * 100)}% of free VRAM — "
                     f"tight fit. May OOM under activation spikes."
                 )
 

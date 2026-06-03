@@ -118,6 +118,30 @@ async def get_job_stats():
     return await asyncio.to_thread(_compute)
 
 
+# ── Estimation-wall statistics ──────────────────────────────────────────
+
+
+@router.post("/jobs/stats/recompute")
+async def recompute_definition_stats():
+    """Backfill run costs from disk + rebuild per-definition coefficients.
+
+    Powers the wall's "Update stats from history" action: reconciles missing
+    cost fields from each run's output directory, then recomputes the
+    calibration coefficients used by ``POST /jobs/estimate``.
+    """
+    from app.core.stats.backfill import run_backfill
+
+    return await asyncio.to_thread(run_backfill)
+
+
+@router.get("/jobs/stats/{definition_id}")
+async def get_definition_stats(definition_id: str):
+    """Raw calibration stats + freshness for a single definition."""
+    from app.core.stats import definition_stats_service
+
+    return await asyncio.to_thread(definition_stats_service.get, definition_id)
+
+
 @router.get("/jobs/history")
 async def list_job_history(
     limit: int = 50,

@@ -40,6 +40,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v6,
         _migrate_v7,
         _migrate_v8,
+        _migrate_v9,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -743,4 +744,37 @@ def _migrate_v8(conn) -> None:
         )
     except Exception:
         pass  # Column already exists
+
+
+# ── V9: Per-definition training statistics (estimation wall) ───────
+
+def _migrate_v9(conn) -> None:
+    """Create ``definition_stats`` + add measured-cost columns to ``job_history``.
+
+    Powers the data-calibrated estimation wall: ``definition_stats`` is a
+    local, fully-recomputable cache of per-``definition_id`` calibration
+    coefficients (median ``actual / cost_model`` over completed runs). The
+    new ``job_history`` columns persist measured run costs (recovered from
+    ``step_metrics`` + on-disk manifests during backfill) so estimates and
+    VRAM predictions calibrate against reality, not just the analytic model.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS definition_stats (
+            definition_id  TEXT PRIMARY KEY,
+            run_count      INTEGER NOT NULL DEFAULT 0,
+            stats          TEXT NOT NULL DEFAULT '{}',
+            updated_at     REAL,
+            source_version INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+
+    for ddl in (
+        "ALTER TABLE job_history ADD COLUMN peak_vram_train_mb REAL",
+        "ALTER TABLE job_history ADD COLUMN peak_vram_cache_mb REAL",
+        "ALTER TABLE job_history ADD COLUMN total_run_bytes INTEGER",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass  # Column already exists
 

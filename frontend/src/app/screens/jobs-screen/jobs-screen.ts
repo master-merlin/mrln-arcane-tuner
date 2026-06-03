@@ -114,10 +114,21 @@ export class JobsScreen {
      * so we surface it prominently even before the first STEP_LOG arrives.
      */
     protected readonly phase = computed<string>(() => this.selectedJob()?.status_label?.trim() ?? '');
-    /** Percentage parsed from a phase like "Caching Latents (42%)" — null if none. */
+    /**
+     * Percentage for the phase progress bar. Caching phases report a percent
+     * ("Caching Latents (42%)"); sampling reports a fraction ("Sampling 3/10"),
+     * which we convert to a percent so it gets the same bar. Null when neither.
+     */
     protected readonly phasePct = computed<number | null>(() => {
-        const m = /\((\d+(?:\.\d+)?)\s*%\)/.exec(this.phase());
-        return m ? Math.min(100, Math.max(0, parseFloat(m[1]))) : null;
+        const text = this.phase();
+        const pct = /\((\d+(?:\.\d+)?)\s*%\)/.exec(text);
+        if (pct) return Math.min(100, Math.max(0, parseFloat(pct[1])));
+        const frac = /(\d+)\s*\/\s*(\d+)/.exec(text);
+        if (frac) {
+            const total = parseFloat(frac[2]);
+            if (total > 0) return Math.min(100, Math.max(0, (parseFloat(frac[1]) / total) * 100));
+        }
+        return null;
     });
     /** Whether to show the phase strip (active jobs with a known phase). */
     protected readonly showPhase = computed<boolean>(() => {

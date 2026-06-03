@@ -550,14 +550,31 @@ class LensTransformer2DModel(
     @staticmethod
     def _build_joint_attention_mask(
         text_mask: torch.Tensor, img_len: int
-    ) -> torch.Tensor:
+    ) -> Optional[torch.Tensor]:
         """Additive joint mask of shape ``[B, 1, 1, img_len + S_txt]``.
 
         Image tokens are always valid; text positions follow ``text_mask``.
         Padded positions hold ``-inf`` so SDPA's softmax masks them out.
+
+        Returns ``None`` when nothing is padded (every text position valid).
+        This is the common case — always true at batch size 1, and whenever a
+        batch's captions are equal length. Passing an explicit ``attn_mask`` to
+        ``scaled_dot_product_attention`` *disables FlashAttention* (it accepts
+        no mask), forcing the fallback math backend, which materialises the full
+        ``[B, heads, S, S]`` score matrix for every layer. Under training (grad
+        enabled) that O(S^2) tensor is retained for backward across all blocks
+        and is the dominant VRAM cost — ~90 GB at 1024px even at batch 1. When
+        there's no padding the mask is a no-op (all-zero additive), so returning
+        ``None`` is numerically identical and lets FlashAttention run in O(S)
+        memory. Only ragged (padded) batches pay the math-backend price.
         """
         if text_mask.dtype != torch.bool:
             text_mask = text_mask.bool()
+        # img tokens are always valid, so the joint mask is all-valid iff every
+        # text position is valid. .all() is one reduction per forward (not per
+        # block); cheap relative to the 48-block step.
+        if bool(text_mask.all()):
+            return None
         bsz = text_mask.shape[0]
         img_ones = torch.ones(
             (bsz, img_len), dtype=torch.bool, device=text_mask.device

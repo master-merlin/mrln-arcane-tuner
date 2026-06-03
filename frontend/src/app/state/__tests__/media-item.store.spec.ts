@@ -210,8 +210,7 @@ describe('MediaItemStore', () => {
             wsMock.entityChanged.set({
                 entity: 'overlay',
                 op: 'bulk_deleted',
-                id: 'ds1',
-                payload: null,
+                payload: { ids: ['ds1'] },
             });
             TestBed.tick();
             expect(store.mediaRev()).toBe(before);

@@ -143,12 +143,15 @@
                                    (input)="smoothing.set(+$any($event.target).value)"/>
                             <span class="mono curve-smooth-val">{{ smoothing().toFixed(2) }}</span>
                         </label>
-                        <app-segmented
-                            [options]="smoothingModeOptions"
-                            [value]="smoothingMode()"
-                            (changed)="smoothingMode.set($event)"
-                        />
-                        <button class="btn sm" [class.primary]="showTip()" (click)="showTip.set(!showTip())" title="Show values at the curve tip">tip</button>
+                        @if (emaEnabled()) {
+                            <button class="btn sm" [class.primary]="smoothingMode() === 'ema'"
+                                    (click)="toggleSmoothingMode()"
+                                    title="Toggle EMA / SMA smoothing">{{ smoothingMode().toUpperCase() }}</button>
+                        } @else {
+                            <button class="btn sm" disabled
+                                    title="This run did not enable EMA — curve uses SMA smoothing">SMA</button>
+                        }
+                        <button class="btn sm" [class.primary]="showTip()" (click)="showTip.set(!showTip())" title="Show values at the curve tip">TIP</button>
                         <button class="card-head-caret" type="button" (click)="toggle('curves')">
                             <span class="caret">{{ expanded().curves ? '−' : '+' }}</span>
                         </button>
@@ -160,7 +163,7 @@
                             <app-training-chart
                                 [data]="lossPoints()"
                                 [smoothing]="smoothing()"
-                                [smoothingMode]="smoothingMode()"
+                                [smoothingMode]="effectiveSmoothingMode()"
                                 [showTip]="showTip()"
                                 [totalSteps]="chartTotalSteps()"
                                 [height]="240"/>
@@ -223,6 +226,54 @@
                             }
                         } @else {
                             <p class="muted">No sample previews yet.</p>
+                        }
+                    </div>
+                }
+            </section>
+
+            <!-- ── CHECKPOINTS ──────────────────────────────────────── -->
+            <section class="card collapse-card">
+                <div class="card-head curves-head">
+                    <button class="card-head-toggle" type="button" (click)="toggle('checkpoints')">
+                        <span class="card-title">Checkpoints</span>
+                        @if (currentCheckpoints().length > 0) {
+                            <span class="chip head-chip">{{ currentCheckpoints().length }}</span>
+                        }
+                    </button>
+                    <div class="card-head-tools" (click)="$event.stopPropagation()">
+                        <button class="q-icon" (click)="refreshCheckpoints()" title="Refresh checkpoints">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                        </button>
+                        <button class="card-head-caret" type="button" (click)="toggle('checkpoints')">
+                            <span class="caret">{{ expanded().checkpoints ? '−' : '+' }}</span>
+                        </button>
+                    </div>
+                </div>
+                @if (expanded().checkpoints) {
+                    <div class="card-body">
+                        @if (currentCheckpoints().length > 0) {
+                            <div class="ckpt-list">
+                                @for (c of currentCheckpoints(); track c.filename) {
+                                    <div class="ckpt-row">
+                                        <span class="ckpt-step" [class.final]="c.is_final">
+                                            {{ c.is_final ? 'Final' : 'Step ' + c.step }}
+                                        </span>
+                                        <div class="ckpt-info">
+                                            <span class="ckpt-name mono" [title]="c.filename">{{ c.filename }}</span>
+                                            <span class="ckpt-meta mono">{{ formatBytes(c.size_bytes) }} · {{ checkpointDate(c.created_at) }}</span>
+                                        </div>
+                                        <a class="btn sm ckpt-dl"
+                                           [href]="checkpointDownloadUrl(j.id, c.filename)"
+                                           [attr.download]="c.filename"
+                                           title="Download LoRA .safetensors">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                            .safetensors
+                                        </a>
+                                    </div>
+                                }
+                            </div>
+                        } @else {
+                            <p class="muted">No checkpoints saved yet — they appear as the run hits its save interval.</p>
                         }
                     </div>
                 }

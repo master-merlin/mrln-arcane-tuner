@@ -16,7 +16,7 @@ import { interval } from 'rxjs';
 
 import { SystemMonitorComponent } from '../../components/system/system-monitor/system-monitor';
 import { TrainingJobQueueComponent } from '../../components/training/training-job-queue/training-job-queue';
-import { JobService, type Job, JobStatus } from '../../services/job';
+import { JobService, type Job, JobStatus, type JobCheckpointMeta } from '../../services/job';
 import { JobStore } from '../../state/job.store';
 import { JobsViewState } from '../../state/jobs-view.state';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
@@ -51,7 +51,7 @@ import {
     type StepMetrics,
 } from '../../shared/job-metrics';
 
-type SectionKey = 'curves' | 'samples' | 'config' | 'log';
+type SectionKey = 'curves' | 'samples' | 'checkpoints' | 'config' | 'log';
 
 interface JobSampleMeta {
     filename: string;
@@ -157,6 +157,8 @@ export class JobsScreen {
     private _samplingLoadedFor: string | null = null;
     /** Last sampling-cycle step seen per job, to auto-refresh the strip once. */
     private readonly _lastSampleCycle = new Map<string, number>();
+    /** Last status seen per job, to refresh checkpoints on status transitions. */
+    private readonly _lastJobStatus = new Map<string, JobStatus>();
 
     protected readonly showSamplingControls = computed<boolean>(() => {
         const j = this.selectedJob();
@@ -326,7 +328,7 @@ export class JobsScreen {
     /** Run-config view: curated high-level grid vs. full JSON (legacy parity). */
     protected readonly configView = signal<'info' | 'json'>('info');
     protected readonly configViewOptions: ReadonlyArray<{ value: 'info' | 'json'; label: string }> = [
-        { value: 'info', label: 'info' },
+        { value: 'info', label: 'Info' },
         { value: 'json', label: 'JSON' },
     ];
     protected readonly selectedConfigJson = computed<string>(() => {
@@ -421,9 +423,19 @@ export class JobsScreen {
         return this.samplesByJob().get(j.id) ?? [];
     });
 
+    /** LoRA `.safetensors` artifacts (checkpoints) discovered per job. */
+    protected readonly checkpointsByJob = signal<Map<string, JobCheckpointMeta[]>>(new Map());
+
+    protected readonly currentCheckpoints = computed<JobCheckpointMeta[]>(() => {
+        const j = this.selectedJob();
+        if (!j) return [];
+        return this.checkpointsByJob().get(j.id) ?? [];
+    });
+
     protected readonly expanded = signal<Record<SectionKey, boolean>>({
         curves: true,
         samples: true,
+        checkpoints: true,
         config: false,
         log: false,
     });
@@ -432,12 +444,21 @@ export class JobsScreen {
     /** EMA debias factor / SMA window driver (0 = raw, →1 = heavy smoothing). */
     protected readonly smoothing = signal<number>(0.9);
     protected readonly smoothingMode = signal<SmoothingMode>('ema');
-    protected readonly smoothingModeOptions: ReadonlyArray<{ value: SmoothingMode; label: string }> = [
-        { value: 'ema', label: 'EMA' },
-        { value: 'sma', label: 'SMA' },
-    ];
-    /** Toggle the value callout at the curve tip (current point). */
-    protected readonly showTip = signal<boolean>(false);
+    /** Toggle the smoothing curve between EMA and SMA (single toggle button). */
+    protected toggleSmoothingMode(): void {
+        this.smoothingMode.update(m => (m === 'ema' ? 'sma' : 'ema'));
+    }
+    /** Whether this run enabled EMA in its training config. EMA-smoothed curve
+     *  display only makes sense when the run actually maintained EMA weights;
+     *  otherwise the chart is locked to SMA and the toggle is hidden. */
+    protected readonly emaEnabled = computed<boolean>(
+        () => !!this.selectedJob()?.config?.['ema']);
+    /** Smoothing mode actually fed to the chart — forced to SMA when the run
+     *  didn't enable EMA, regardless of the (possibly stale) toggle state. */
+    protected readonly effectiveSmoothingMode = computed<SmoothingMode>(
+        () => (this.emaEnabled() ? this.smoothingMode() : 'sma'));
+    /** Toggle the value callout at the curve tip (current point). On by default. */
+    protected readonly showTip = signal<boolean>(true);
 
     /** total_steps as a number for the chart's plateau guard (0 = unknown). */
     protected readonly chartTotalSteps = computed<number>(() => {
@@ -460,11 +481,14 @@ export class JobsScreen {
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe(() => this.now.set(Date.now()));
 
-        // When the selected job changes, lazy-load its sample list once.
+        // When the selected job changes, lazy-load its sample + checkpoint lists once.
         effect(() => {
             const j = this.selectedJob();
             if (j && !this.samplesByJob().has(j.id)) {
                 this.loadSamples(j.id);
+            }
+            if (j && !this.checkpointsByJob().has(j.id)) {
+                this.loadCheckpoints(j.id);
             }
         });
 
@@ -497,6 +521,22 @@ export class JobsScreen {
             // job is selected after samples already exist is harmless.
             if (latest !== prev) {
                 this.loadSamples(j.id);
+                // A sampling cycle implies training has progressed past prior
+                // checkpoint saves; refresh the (cheap) checkpoint list too so
+                // new LoRA artifacts surface without a manual refresh.
+                this.loadCheckpoints(j.id);
+            }
+        });
+
+        // Reload checkpoints whenever the selected job's status changes — most
+        // importantly running → completed, when the final LoRA is written.
+        effect(() => {
+            const j = this.selectedJob();
+            if (!j) return;
+            const prev = this._lastJobStatus.get(j.id);
+            this._lastJobStatus.set(j.id, j.status);
+            if (prev !== undefined && prev !== j.status) {
+                this.loadCheckpoints(j.id);
             }
         });
 
@@ -675,6 +715,50 @@ export class JobsScreen {
     protected refreshSamples(): void {
         const j = this.selectedJob();
         if (j) this.loadSamples(j.id);
+    }
+
+    private loadCheckpoints(jobId: string): void {
+        this.jobService.getJobCheckpoints(jobId).subscribe({
+            next: (checkpoints) => {
+                this.checkpointsByJob.update((m) => {
+                    const next = new Map(m);
+                    next.set(jobId, checkpoints ?? []);
+                    return next;
+                });
+            },
+            error: () => {
+                this.checkpointsByJob.update((m) => {
+                    const next = new Map(m);
+                    next.set(jobId, []);
+                    return next;
+                });
+            },
+        });
+    }
+
+    protected refreshCheckpoints(): void {
+        const j = this.selectedJob();
+        if (j) this.loadCheckpoints(j.id);
+    }
+
+    /** Absolute download URL for a checkpoint's LoRA `.safetensors`. */
+    protected checkpointDownloadUrl(jobId: string, filename: string): string {
+        return this.jobService.checkpointDownloadUrl(jobId, filename);
+    }
+
+    /** Human-readable file size — "1.5 GB", "149.6 MB", "0 B". */
+    protected formatBytes(n: number): string {
+        if (!Number.isFinite(n) || n <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${n.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+    }
+
+    /** Compact local date-time for a checkpoint's mtime (unix seconds). */
+    protected checkpointDate(unixSeconds: number): string {
+        if (!unixSeconds) return '';
+        return new Date(unixSeconds * 1000).toLocaleString();
     }
 
     // ── Lifecycle actions (active jobs) ─────────────────────────────────

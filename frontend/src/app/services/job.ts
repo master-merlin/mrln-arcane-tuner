@@ -115,6 +115,17 @@ export interface TrainingStats {
   last_job: { lora_name: string; definition_id: string; status: string; created_at: number } | null;
 }
 
+/** A LoRA `.safetensors` artifact a job saved at a checkpoint. */
+export interface JobCheckpointMeta {
+  filename: string;
+  /** Training step the checkpoint was saved at; `999999` denotes the final. */
+  step: number;
+  is_final: boolean;
+  size_bytes: number;
+  /** Unix seconds (file mtime). */
+  created_at: number;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -224,6 +235,16 @@ export class JobService {
 
   getJobSamples(jobId: string): Observable<any[]> {
     return this.http.get<any[]>(`${this.apiUrl}/${jobId}/samples`);
+  }
+
+  /** LoRA `.safetensors` artifacts saved by a job (one per checkpoint). */
+  getJobCheckpoints(jobId: string): Observable<JobCheckpointMeta[]> {
+    return this.http.get<JobCheckpointMeta[]>(`${this.apiUrl}/${jobId}/checkpoints`);
+  }
+
+  /** Absolute download URL for a job's LoRA checkpoint file. */
+  checkpointDownloadUrl(jobId: string, filename: string): string {
+    return `${this.apiUrl}/${jobId}/checkpoints/${encodeURIComponent(filename)}`;
   }
 
   pauseSampling(jobId: string): Observable<any> {

@@ -376,6 +376,60 @@
     text-align: center;
 }
 
+/* ── Checkpoints list ──────────────────────────────────────────────── */
+.ckpt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.ckpt-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    background: var(--color-surface-mid);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+}
+.ckpt-step {
+    flex: 0 0 auto;
+    min-width: 74px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+}
+.ckpt-step.final {
+    color: var(--color-success);
+}
+.ckpt-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.ckpt-name {
+    font-size: 11.5px;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ckpt-meta {
+    font-size: 10px;
+    color: var(--color-text-muted);
+}
+.ckpt-dl {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    text-decoration: none;
+}
+
 .sdot {
     display: inline-block;
     width: 8px;

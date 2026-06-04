@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 
@@ -322,3 +323,79 @@ async def get_sample_image(job_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Sample not found")
 
     return FileResponse(str(fpath), media_type="image/png")
+
+
+def _resolve_run_dir(job: Job) -> Path:
+    """Resolve a job's run output directory (parent of ``samples/``).
+
+    Holds the LoRA ``.safetensors`` files written at each checkpoint
+    (``{name}_{step:06d}.safetensors`` / ``{name}_final.safetensors``) plus
+    the ``checkpoint-NNNNNN/`` training-state folders.
+    """
+    return _resolve_sample_dir(job).parent
+
+
+@router.get("/jobs/{job_id}/checkpoints")
+async def list_job_checkpoints(job_id: str):
+    """List the LoRA ``.safetensors`` artifacts a job has saved.
+
+    Each entry corresponds to one saved checkpoint and is directly
+    downloadable via ``GET /jobs/{job_id}/checkpoints/{filename}``.
+
+    Returns:
+        List of dicts: filename, step, is_final, size_bytes, created_at.
+    """
+    job = await asyncio.to_thread(job_manager.get_job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    run_dir = _resolve_run_dir(job)
+    if not run_dir.is_dir():
+        return []
+
+    def _scan() -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for fpath in run_dir.iterdir():
+            if not fpath.is_file() or fpath.suffix.lower() != ".safetensors":
+                continue
+            stem = fpath.stem
+            is_final = stem.endswith("_final") or stem == "final"
+            step = 0
+            m = re.search(r"_(\d{3,})$", stem)
+            if m:
+                step = int(m.group(1))
+            stat = fpath.stat()
+            items.append({
+                "filename": fpath.name,
+                "step": 999999 if is_final else step,
+                "is_final": is_final,
+                "size_bytes": stat.st_size,
+                "created_at": stat.st_mtime,
+            })
+        return items
+
+    checkpoints = await asyncio.to_thread(_scan)
+    checkpoints.sort(key=lambda c: c["step"], reverse=True)
+    return checkpoints
+
+
+@router.get("/jobs/{job_id}/checkpoints/{filename}")
+async def download_job_checkpoint(job_id: str, filename: str):
+    """Download a job's LoRA ``.safetensors`` checkpoint file."""
+    job = await asyncio.to_thread(job_manager.get_job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    run_dir = _resolve_run_dir(job)
+    fpath = validate_path_within(run_dir / filename, run_dir)
+
+    if not fpath.is_file() or fpath.suffix.lower() != ".safetensors":
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    # `filename=` sets Content-Disposition: attachment so the browser downloads
+    # the file (works cross-origin, independent of the <a download> attribute).
+    return FileResponse(
+        str(fpath),
+        media_type="application/octet-stream",
+        filename=fpath.name,
+    )

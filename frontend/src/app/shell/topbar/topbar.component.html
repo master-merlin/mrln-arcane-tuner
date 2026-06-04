@@ -1,7 +1,7 @@
 <div class="topbar">
     <div class="crumbs">
         @for (c of crumbs(); track $index; let i = $index) {
-            @if (i > 0) { <span class="sep">/</span> }
+            @if (i > 0) { <span class="sep" aria-hidden="true">›</span> }
             <span class="seg" [class.last]="c.last">{{ c.label }}</span>
         }
     </div>

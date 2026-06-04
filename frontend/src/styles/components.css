@@ -84,10 +84,29 @@
         height: 56px;
     }
     .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-    .crumbs { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-    .crumbs .sep { color: var(--color-text-subtle); }
-    .crumbs .seg { color: var(--color-text-muted); }
-    .crumbs .seg.last { color: var(--color-text-primary); font-weight: 600; }
+    .crumbs { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+    .crumbs .sep {
+        color: var(--color-text-subtle);
+        font-size: 15px; line-height: 1; opacity: 0.55;
+        transform: translateY(-0.5px);
+    }
+    /* Own the full box — the segmented-control `.seg` rule below would
+       otherwise leak its cramped `padding: 2px` onto the crumb pills. */
+    .crumbs .seg {
+        display: inline-flex; align-items: center;
+        color: var(--color-text-muted);
+        letter-spacing: 0.005em;
+        background: color-mix(in oklab, var(--color-surface-mid) 55%, transparent);
+        border: 1px solid transparent;
+        border-radius: var(--radius-theme-lg);
+        padding: 6px 14px;
+        transition: color 0.15s ease;
+    }
+    /* Same pill box as the parent — bold + primary text is the only
+       "current page" indicator, so both crumbs share an identical height. */
+    .crumbs .seg.last {
+        color: var(--color-text-primary); font-weight: 600;
+    }
     .search {
         position: relative;
         margin-left: auto;

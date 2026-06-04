@@ -433,6 +433,61 @@ class DatasetManager:
 
         return dataset
 
+    def register_imported_dataset(
+        self, name: str, manifest: dict, path: str | None = None
+    ) -> Dataset:
+        """Create a dataset from an import manifest and persist it atomically.
+
+        The archive's files are assumed to already be extracted into *path*.
+        This is **manifest-authoritative**: every dataset/media field comes
+        from the manifest verbatim — no ``scan_dataset`` call, so HPS scores
+        and other expensive metadata are never recomputed. Thumbnails
+        regenerate lazily on first view; ``.cache`` rebuilds at train time.
+
+        A fresh ``id`` is always generated to avoid primary-key collisions
+        on the target instance.
+        """
+        if path is None:
+            safe_name = "".join(
+                c for c in name if c.isalnum() or c in (" ", "-", "_")
+            ).strip() or f"dataset_{int(time.time())}"
+            path = os.path.join(self.default_root, safe_name)
+        os.makedirs(path, exist_ok=True)
+
+        ds_meta = dict(manifest.get("dataset", {}))
+        # Drop fields we set explicitly or must never inherit from the source.
+        for field in ("id", "name", "path", "media_metadata", "updated_at", "missing"):
+            ds_meta.pop(field, None)
+        # Keep only fields the model actually declares (defends against
+        # future manifest additions or stale exports).
+        ds_meta = {k: v for k, v in ds_meta.items() if k in Dataset.model_fields}
+
+        dataset = Dataset(
+            id=str(uuid.uuid4()),
+            name=name,
+            path=path,
+            created_at=ds_meta.pop("created_at", time.time()),
+            media_metadata=manifest.get("media", {}) or {},
+            **ds_meta,
+        )
+        self.datasets[name] = dataset
+        self._persist_dataset(dataset)  # dataset row + all media items, one txn
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="created",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+        return dataset
+
     def scan_dataset(self, name: str, force_full: bool = False) -> Dataset:
         """Scan a dataset — staged pipeline.
 

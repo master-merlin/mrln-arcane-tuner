@@ -16,7 +16,7 @@
             <span class="ico"><app-ico [name]="item.ico" [size]="16" /></span>
             <span>{{ item.label }}</span>
             @if (item.id === 'datasets' && datasetCount() !== null) {
-                <span class="count">{{ datasetCount() }}</span>
+                <span class="count">@if (scopedDatasetCount() !== null) {({{ scopedDatasetCount() }}) }{{ datasetCount() }}</span>
             }
             @if (item.id === 'projects' && projectCount() !== null) {
                 <span class="count">{{ projectCount() }}</span>

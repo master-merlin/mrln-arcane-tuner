@@ -103,6 +103,17 @@ export class SidebarComponent implements OnInit {
         return n > 0 ? n : null;
     });
 
+    /**
+     * Datasets in the active project scope — surfaced in parentheses next to
+     * the total on the Datasets nav badge so switching context shows both the
+     * library total and how many belong to the scoped project. `null` in
+     * Global scope (no parenthetical shown).
+     */
+    protected scopedDatasetCount = computed<number | null>(() => {
+        const p = this.activeProject();
+        return p ? p.stats?.datasets ?? 0 : null;
+    });
+
     protected projectCount = computed<number | null>(() => {
         const n = this.projects.allProjects().length;
         return n > 0 ? n : null;

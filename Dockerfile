@@ -27,10 +27,10 @@ WORKDIR /app/backend
 
 # Install PyTorch (CUDA 13.0) first, then the rest — mirrors backend/install.sh.
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --break-system-packages \
+RUN python -m pip install --break-system-packages \
         torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
         --index-url https://download.pytorch.org/whl/cu130 \
-    && pip install --break-system-packages -r requirements.txt
+    && python -m pip install --break-system-packages -r requirements.txt
 
 # Backend source.
 COPY backend/ /app/backend/

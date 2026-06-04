@@ -99,7 +99,11 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
     </div>
   `,
     styles: [`
-        .log-card { padding: 0; }
+        /* Fill the host slot so the body can grow to all available height.
+           Falls back gracefully (min-height on the body) if ever dropped into
+           a container without a definite height. */
+        :host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+        .log-card { padding: 0; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
         .log-controls { display: flex; align-items: center; gap: 8px; }
         .log-search { position: relative; display: flex; align-items: center; }
         .log-search app-ico { position: absolute; left: 8px; color: var(--color-text-muted); pointer-events: none; display: flex; }
@@ -115,7 +119,10 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
         .log-body {
             padding: 4px 0 6px;
             background: var(--color-terminal-bg);
-            max-height: 360px;
+            /* Grow to fill the card; min-height is a floor for the case where
+               an ancestor provides no definite height. */
+            flex: 1 1 auto;
+            min-height: 240px;
             overflow-y: auto;
             scroll-behavior: smooth;
             border-bottom-left-radius: var(--radius-lg, 10px);

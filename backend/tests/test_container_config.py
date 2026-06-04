@@ -47,6 +47,7 @@ def test_frontend_dist_dir_explicit_missing(monkeypatch, tmp_path):
 
 def test_frontend_dist_dir_default_present(monkeypatch, tmp_path):
     monkeypatch.delenv("MRLN_FRONTEND_DIST", raising=False)
+    monkeypatch.setenv("MRLN_CONTAINER", "1")
     browser = tmp_path / "frontend" / "dist" / "frontend" / "browser"
     browser.mkdir(parents=True)
     monkeypatch.setattr(cc, "_PROJECT_ROOT", str(tmp_path))
@@ -55,5 +56,15 @@ def test_frontend_dist_dir_default_present(monkeypatch, tmp_path):
 
 def test_frontend_dist_dir_default_absent(monkeypatch, tmp_path):
     monkeypatch.delenv("MRLN_FRONTEND_DIST", raising=False)
+    monkeypatch.setenv("MRLN_CONTAINER", "1")
+    monkeypatch.setattr(cc, "_PROJECT_ROOT", str(tmp_path))
+    assert cc.frontend_dist_dir() is None
+
+
+def test_frontend_dist_dir_default_ignored_outside_container(monkeypatch, tmp_path):
+    monkeypatch.delenv("MRLN_FRONTEND_DIST", raising=False)
+    monkeypatch.delenv("MRLN_CONTAINER", raising=False)
+    browser = tmp_path / "frontend" / "dist" / "frontend" / "browser"
+    browser.mkdir(parents=True)
     monkeypatch.setattr(cc, "_PROJECT_ROOT", str(tmp_path))
     assert cc.frontend_dist_dir() is None

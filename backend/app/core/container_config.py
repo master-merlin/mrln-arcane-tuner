@@ -47,14 +47,18 @@ def auth_token() -> str:
 def frontend_dist_dir() -> str | None:
     """Directory holding the built Angular SPA, or ``None`` if absent.
 
-    ``MRLN_FRONTEND_DIST`` overrides; otherwise the default build output
-    ``frontend/dist/frontend/browser`` is used when it exists.
+    ``MRLN_FRONTEND_DIST`` overrides and is honored in any mode. Otherwise
+    the default build output ``frontend/dist/frontend/browser`` is used only
+    in container mode — so a stale local ``ng build`` output never changes
+    the dev server's behavior.
     """
     explicit = os.environ.get("MRLN_FRONTEND_DIST")
     if explicit:
         if os.path.isdir(explicit):
             return explicit
         logger.warning("frontend_dist_missing", path=explicit)
+        return None
+    if not is_container():
         return None
     candidate = os.path.join(
         _PROJECT_ROOT, "frontend", "dist", "frontend", "browser"

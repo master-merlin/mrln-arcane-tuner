@@ -27,6 +27,7 @@ import { TemplatesLibraryModalComponent } from '../../modals/templates-library/t
 import { TemplateEditModalComponent } from '../../modals/template-edit/template-edit.component';
 import { TemplateJsonEditModalComponent } from '../../modals/template-json/template-json.component';
 import { JobConfigModalComponent } from '../../modals/job-config/job-config.component';
+import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-dataset.component';
 
 /**
  * Modal stack renderer.
@@ -67,6 +68,7 @@ import { JobConfigModalComponent } from '../../modals/job-config/job-config.comp
         TemplateEditModalComponent,
         TemplateJsonEditModalComponent,
         JobConfigModalComponent,
+        ImportDatasetModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -159,6 +161,9 @@ import { JobConfigModalComponent } from '../../modals/job-config/job-config.comp
                             }
                             @case ('job-config') {
                                 @defer (on immediate) { <app-modal-job-config/> }
+                            }
+                            @case ('import-dataset') {
+                                @defer { <app-modal-import-dataset/> }
                             }
                             @default {
                                 <div class="modal-head">

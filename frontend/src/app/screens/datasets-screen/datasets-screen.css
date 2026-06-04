@@ -152,7 +152,10 @@
     bottom: 8px;
     left: 8px;
     background: oklch(0.10 0.01 265 / 0.75);
-    color: var(--color-text-primary);
+    /* Fixed near-white: the glass background is theme-independent (always dark),
+       so the text must be too — `--color-text-primary` flips to near-black in
+       light theme and becomes unreadable on the dark pill. */
+    color: oklch(0.98 0.01 265);
     border: 1px solid oklch(1 0 0 / 0.15);
     backdrop-filter: blur(6px);
     padding: 2px 8px;

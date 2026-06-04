@@ -111,21 +111,21 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                              
                              <!-- Action Buttons (top-right): adjust + crop + eye toggle + delete — matches detail view order -->
                               <div [class]="'absolute top-2 right-2 flex gap-1 bg-transparent z-10 transition-all ' + (pair.metadata?.enabled === false ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')">
-                                 <button (click)="onEditClick(pair, $event, i)" class="bg-surface-low/60 hover:bg-purple-500/80 text-text-muted hover:text-white p-1.5 rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Adjust image">
+                                 <button (click)="onEditClick(pair, $event, i)" class="tile-action bg-surface-low/60 hover:bg-purple-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Adjust image">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
                                  </button>
                                  @if (pair.metadata?.target_width && (pair.metadata.target_width !== pair.metadata.width || pair.metadata.target_height !== pair.metadata.height)) {
-                                     <button (click)="onCropClick(pair, $event)" class="bg-surface-low/60 hover:bg-orange-500/80 text-text-muted hover:text-white p-1.5 rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Crop image (aspect ratio mismatch)">
+                                     <button (click)="onCropClick(pair, $event)" class="tile-action bg-surface-low/60 hover:bg-orange-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Crop image (aspect ratio mismatch)">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"></path><path d="M18 22V8a2 2 0 0 0-2-2H2"></path></svg>
                                      </button>
                                  }
                                  <button (click)="toggleExclusion(pair, $event)"
-                                         class="tile-exclude p-1.5 rounded-theme-md shadow-lg backdrop-blur-sm transition-colors"
+                                         class="tile-action tile-exclude rounded-theme-md shadow-lg backdrop-blur-sm transition-colors"
                                          [class.is-excluded]="pair.metadata?.enabled === false"
                                          [title]="pair.metadata?.enabled === false ? 'Excluded — click to re-include' : 'Exclude from training'">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.7311 18L13.7311 4C13.5562 3.69392 13.3034 3.43961 12.9985 3.26283C12.6935 3.08605 12.3474 2.99298 11.995 2.99298C11.6427 2.99298 11.2965 3.08605 10.9916 3.26283C10.6867 3.43961 10.4339 3.69392 10.2591 4L2.25906 18C2.08488 18.3036 1.99352 18.6477 1.9943 18.9978C1.99508 19.348 2.08797 19.6916 2.26349 19.9945C2.43902 20.2973 2.69107 20.5488 2.99435 20.7234C3.29762 20.898 3.64158 20.9897 3.99155 20.9893H19.9916C20.3406 20.989 20.6833 20.8967 20.9853 20.7218C21.2873 20.547 21.5379 20.2955 21.7124 19.9929C21.8869 19.6903 21.9791 19.3471 21.9797 18.9978C21.9803 18.6485 21.8893 18.305 21.7159 18.0019L21.7311 18Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                                  </button>
-                                 <button (click)="deletePair(pair, $event)" class="bg-danger/80 hover:bg-danger text-white p-1.5 rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Delete entry">
+                                 <button (click)="deletePair(pair, $event)" class="tile-action bg-danger/80 hover:bg-danger text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Delete entry">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                                  </button>
                               </div>
@@ -151,25 +151,34 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
             border-color: var(--color-brand) !important;
             box-shadow: 0 0 0 2px oklch(0.68 0.13 55 / 0.25), 0 8px 24px oklch(0 0 0 / 0.45);
         }
-        /* Exclude toggle — matches the Analyze modal's pattern: muted by
-           default, warning-tinted on hover, warning + tinted background
-           when actually excluded. Single button (no eye/eye-off flip). */
+        /* Exclude toggle — muted by default, warning-tinted on hover, warning +
+           tinted background when actually excluded. The rest background matches
+           the adjust/crop buttons (surface-low/60) so all three overlay
+           actions share one consistent, theme-aware glass at rest instead of a
+           hardcoded dark fill (which read as dark-theme in light mode). */
         .tile-exclude {
-            background: oklch(0.13 0.01 265 / 0.72);
+            background: color-mix(in oklab, var(--color-surface-low) 60%, transparent);
             color: var(--color-text-muted);
         }
         .tile-exclude:hover {
-            background: color-mix(in oklab, var(--color-warning) 18%, oklch(0.13 0.01 265 / 0.72));
-            color: var(--color-warning);
+            background: color-mix(in oklab, var(--color-warning) 80%, transparent);
+            color: white;
         }
         .tile-exclude.is-excluded {
             color: var(--color-warning);
-            background: color-mix(in oklab, var(--color-warning) 22%, oklch(0.13 0.01 265 / 0.72));
+            background: color-mix(in oklab, var(--color-warning) 22%, color-mix(in oklab, var(--color-surface-low) 60%, transparent));
             border: 1px solid color-mix(in oklab, var(--color-warning) 55%, transparent);
         }
         .tile-exclude.is-excluded:hover {
-            background: color-mix(in oklab, var(--color-warning) 32%, oklch(0.13 0.01 265 / 0.72));
+            background: color-mix(in oklab, var(--color-warning) 80%, transparent);
+            color: white;
         }
+
+        /* Shared footprint for the tile overlay actions (adjust / crop /
+           exclude / delete) — one consistent, slightly compact size so the
+           cluster reads uniform. Overrides the SVGs' 14px presentation attrs. */
+        .tile-action { padding: 5px; line-height: 0; }
+        .tile-action svg { width: 13px; height: 13px; }
 
         /* Three bouncing dots shown while a thumbnail is being generated
            server-side (or the full image is still streaming). Sits behind

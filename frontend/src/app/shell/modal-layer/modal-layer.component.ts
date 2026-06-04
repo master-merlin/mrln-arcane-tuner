@@ -26,6 +26,7 @@ import { VersionEditModalComponent } from '../../modals/version-edit/version-edi
 import { TemplatesLibraryModalComponent } from '../../modals/templates-library/templates-library.component';
 import { TemplateEditModalComponent } from '../../modals/template-edit/template-edit.component';
 import { TemplateJsonEditModalComponent } from '../../modals/template-json/template-json.component';
+import { JobConfigModalComponent } from '../../modals/job-config/job-config.component';
 
 /**
  * Modal stack renderer.
@@ -65,6 +66,7 @@ import { TemplateJsonEditModalComponent } from '../../modals/template-json/templ
         TemplatesLibraryModalComponent,
         TemplateEditModalComponent,
         TemplateJsonEditModalComponent,
+        JobConfigModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -78,7 +80,7 @@ import { TemplateJsonEditModalComponent } from '../../modals/template-json/templ
                          [class.modal-wide]="m.kind === 'analyze'"
                          [class.modal-xl]="m.kind === 'crop-preview'"
                          [class.modal-compact]="m.kind === 'template-edit'"
-                         [class.modal-md]="m.kind === 'template-json'"
+                         [class.modal-md]="m.kind === 'template-json' || m.kind === 'job-config'"
                          (click)="$event.stopPropagation()">
                         @switch (m.kind) {
                             @case ('dataset-form') {
@@ -154,6 +156,9 @@ import { TemplateJsonEditModalComponent } from '../../modals/template-json/templ
                             }
                             @case ('template-json') {
                                 @defer (on immediate) { <app-modal-template-json/> }
+                            }
+                            @case ('job-config') {
+                                @defer (on immediate) { <app-modal-job-config/> }
                             }
                             @default {
                                 <div class="modal-head">

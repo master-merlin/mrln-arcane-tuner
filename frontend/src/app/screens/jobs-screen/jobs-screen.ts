@@ -7,6 +7,7 @@ import {
     HostListener,
     inject,
     signal,
+    untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { UpperCasePipe } from '@angular/common';
@@ -28,6 +29,7 @@ import {
     type SmoothingMode,
 } from '../../components/training/training-chart/training-chart';
 import { SegmentedComponent } from '../../ui/segmented/segmented.component';
+import { JsonEditorComponent } from '../../ui/json-editor/json-editor.component';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { SparklineComponent } from '../../ui/sparkline/sparkline.component';
 import {
@@ -74,6 +76,7 @@ interface ConfigRow {
         SystemMonitorComponent,
         TrainingChartComponent,
         SegmentedComponent,
+        JsonEditorComponent,
         KpiTileComponent,
         SparklineComponent,
         UpperCasePipe,
@@ -335,6 +338,66 @@ export class JobsScreen {
             return String(j.config);
         }
     });
+
+    // ── Inline Run-Config editing (pending + terminal jobs) ──────────────
+    /** Config JSON may be edited for pending (changes what runs) or terminal
+     *  jobs; running/paused are locked — matches the backend gate. */
+    protected readonly canEditSelectedConfig = computed<boolean>(() => {
+        const s = this.selectedJob()?.status;
+        return s === JobStatus.PENDING || s === JobStatus.COMPLETED
+            || s === JobStatus.FAILED || s === JobStatus.STOPPED;
+    });
+    /** Live editor content + the last loaded/saved baseline (drives "dirty"). */
+    protected readonly jobConfigText = signal<string>('');
+    private readonly jobConfigBaseline = signal<string>('');
+    protected readonly jobConfigValid = signal<boolean>(true);
+    protected readonly savingJobConfig = signal<boolean>(false);
+    /** Save button shows only when the JSON differs from the loaded baseline. */
+    protected readonly jobConfigDirty = computed<boolean>(
+        () => this.jobConfigText() !== this.jobConfigBaseline());
+
+    /** Re-seed the editor whenever the SELECTED JOB changes (by id) — not on
+     *  every config recompute, so a background refresh can't clobber edits. */
+    private readonly _seedConfigEditor = effect(() => {
+        this.selectedJob()?.id;                 // dependency: re-seed on selection change
+        const json = untracked(() => this.selectedConfigJson());
+        this.jobConfigText.set(json);
+        this.jobConfigBaseline.set(json);
+        this.jobConfigValid.set(true);
+    });
+
+    protected resetJobConfig(): void {
+        this.jobConfigText.set(this.jobConfigBaseline());
+        this.jobConfigValid.set(true);
+    }
+
+    protected saveJobConfig(): void {
+        const j = this.selectedJob();
+        if (!j || !this.jobConfigDirty()) return;
+        let parsed: Record<string, unknown>;
+        try {
+            parsed = JSON.parse(this.jobConfigText());
+        } catch {
+            this.toast.error('Invalid JSON — cannot save.');
+            return;
+        }
+        this.savingJobConfig.set(true);
+        this.jobService.updateJobConfig(j.id, parsed).subscribe({
+            next: () => {
+                this.savingJobConfig.set(false);
+                // Baseline now matches what we persisted → dirty clears without
+                // depending on the queue list refreshing this row.
+                this.jobConfigBaseline.set(this.jobConfigText());
+                this.toast.success('Job config saved.');
+                void this.jobStore.loadAll();
+                void this.jobStore.loadHistory();
+            },
+            error: (err: { error?: { detail?: string }; message?: string }) => {
+                this.savingJobConfig.set(false);
+                this.toast.error('Save failed: ' + (err?.error?.detail || err?.message));
+            },
+        });
+    }
 
     /** Classified, human-readable log tail — live logs, else replayed steps. */
     protected readonly logLines = computed<LogLine[]>(() => {

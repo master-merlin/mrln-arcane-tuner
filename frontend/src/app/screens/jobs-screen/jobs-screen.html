@@ -248,7 +248,27 @@
                 @if (expanded().config) {
                     <div class="card-body">
                         @if (configView() === 'json') {
-                            <pre class="config-json mono">{{ selectedConfigJson() }}</pre>
+                            @if (canEditSelectedConfig()) {
+                                <div class="config-json-editor">
+                                    <app-json-editor
+                                        [value]="jobConfigText()"
+                                        (valueChange)="jobConfigText.set($event)"
+                                        (validChange)="jobConfigValid.set($event)"/>
+                                </div>
+                                @if (jobConfigDirty()) {
+                                    <div class="config-edit-foot">
+                                        @if (!jobConfigValid()) {
+                                            <span class="cfg-invalid">⚠ Invalid JSON</span>
+                                        }
+                                        <button class="btn sm ghost" (click)="resetJobConfig()">Discard</button>
+                                        <button class="btn sm cta" [disabled]="!jobConfigValid() || savingJobConfig()" (click)="saveJobConfig()">
+                                            {{ savingJobConfig() ? 'Saving…' : 'Save config' }}
+                                        </button>
+                                    </div>
+                                }
+                            } @else {
+                                <pre class="config-json mono">{{ selectedConfigJson() }}</pre>
+                            }
                         } @else if (configRows().length > 0) {
                             <div class="config-grid">
                                 @for (row of configRows(); track row.label) {

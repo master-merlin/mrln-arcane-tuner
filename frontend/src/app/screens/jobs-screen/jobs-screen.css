@@ -290,6 +290,27 @@
     white-space: pre;
 }
 
+/* Inline Run-Config editor (pending + terminal jobs). */
+.config-json-editor {
+    height: 360px;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+    overflow: hidden;
+}
+.config-edit-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+}
+.config-edit-foot .cfg-invalid {
+    margin-right: auto;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--color-danger);
+}
+
 /* ── Log tail ───────────────────────────────────────────────────── */
 .log-tail {
     margin: 0;

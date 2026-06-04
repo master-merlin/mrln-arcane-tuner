@@ -13,6 +13,8 @@ import { ProjectService } from '../../../services/project.service';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 import { JobsViewState } from '../../../state/jobs-view.state';
+import { OverlayStore } from '../../../state/overlay.store';
+import type { JobConfigData } from '../../../modals/job-config/job-config.component';
 
 @Component({
   selector: 'app-training-job-queue',
@@ -90,6 +92,27 @@ export class TrainingJobQueueComponent implements OnInit {
   private jobStore = inject(JobStore);
   private registryStore = inject(RegistryStore);
   private viewState = inject(JobsViewState);
+  private overlay = inject(OverlayStore);
+
+  /** States whose config may be edited — pending (changes what runs) or any
+   *  terminal state (edits the record). Running/paused stay locked, matching
+   *  the backend gate. */
+  private static readonly CONFIG_EDITABLE = new Set<JobStatus>([
+    JobStatus.PENDING, JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.STOPPED,
+  ]);
+
+  canEditConfig(job: Job): boolean {
+    return TrainingJobQueueComponent.CONFIG_EDITABLE.has(job.status);
+  }
+
+  /** Open the raw-JSON job-config editor (a second route to the Run Config
+   *  panel's inline editor); persists straight to the job on Save. */
+  openConfigEdit(job: Job): void {
+    this.overlay.openModal('job-config', {
+      job,
+      onSaved: () => this.refreshAll(),
+    } satisfies JobConfigData);
+  }
 
   // Tracks whether the JobStore has been seeded at least once. Until then,
   // the existing loadJobs/loadHistory subscribers are authoritative for first

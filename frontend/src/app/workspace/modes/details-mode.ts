@@ -3,12 +3,14 @@ import {
     Component,
     computed,
     effect,
+    ElementRef,
     HostListener,
     inject,
     input,
     model,
     output,
     signal,
+    viewChild,
 } from '@angular/core';
 import { DetailMaskingSidebarComponent } from '../../components/dataset/dataset-viewer/components/detail-masking-sidebar';
 import { DetailMediaContainerComponent } from '../../components/dataset/dataset-viewer/components/detail-media-container';
@@ -59,7 +61,7 @@ import { buildCanvasMeta } from '../shared/media-meta';
                         (maskGenerated)="maskGenerated.emit()"
                         (toggleMaskedRequested)="toggleMasked.emit()"/>
                 </aside>
-                <main class="pane canvas">
+                <main class="pane canvas" #canvasPane>
                     <app-detail-media-container
                         [currentPair]="pair"
                         [datasetName]="datasetName()"
@@ -68,6 +70,8 @@ import { buildCanvasMeta } from '../shared/media-meta';
                         [lastUpdateTime]="mediaItems.mediaRev()"
                         [showMasked]="showMasked()"
                         [showOverlay]="showOverlay()"
+                        [zoom]="zoom()"
+                        (zoomChange)="zoom.set($event)"
                         (prevRequested)="prev()"
                         (nextRequested)="next()"
                         (deleteRequested)="deletePair.emit(pair)"/>
@@ -75,6 +79,10 @@ import { buildCanvasMeta } from '../shared/media-meta';
                     <app-canvas-footer
                             [meta]="mediaMeta()"
                             [showOverlay]="showOverlay()"
+                            [zoom]="zoom()"
+                            (zoomChange)="zoom.set($event)"
+                            [fullscreen]="isFullscreen()"
+                            (toggleFullscreen)="toggleFullscreen()"
                             (toggleOverlay)="toggleOverlay.emit()">
                         <button type="button" class="footer-action violet" title="Adjust (open editor)"
                                 (click)="openEditor()">
@@ -240,6 +248,29 @@ export class DetailsMode {
     protected captionText = model<string>('');
     protected isDirty = signal<boolean>(false);
 
+    /** Canvas zoom factor (1 = 100%), driven by the footer's zoom controls
+     *  and applied to the media in the detail container. Reset on navigation. */
+    protected zoom = signal<number>(1);
+
+    /** The canvas pane element — fullscreen target (image + footer). */
+    private canvasPane = viewChild<ElementRef<HTMLElement>>('canvasPane');
+    protected isFullscreen = signal<boolean>(false);
+
+    protected toggleFullscreen(): void {
+        const el = this.canvasPane()?.nativeElement;
+        if (!el) return;
+        if (document.fullscreenElement) {
+            document.exitFullscreen?.();
+        } else {
+            el.requestFullscreen?.().catch(() => {});
+        }
+    }
+
+    @HostListener('document:fullscreenchange')
+    protected onFullscreenChange(): void {
+        this.isFullscreen.set(document.fullscreenElement === this.canvasPane()?.nativeElement);
+    }
+
     protected currentPair = computed(() => {
         const list = this.pairs();
         const idx = this.imageIndex();
@@ -272,10 +303,18 @@ export class DetailsMode {
                 this.isDirty.set(false);
             }
         });
+
+        // Reset zoom whenever the displayed image changes (prev/next), so a
+        // zoomed-in inspection doesn't carry over to the next image.
+        effect(() => {
+            this.imageIndex();
+            this.zoom.set(1);
+        });
     }
 
-    /** Footer metadata strip — resolution, AR, orientation, file size, HPS, OVR. */
+    /** Footer metadata strip — filename, resolution, AR, orientation, size, HPS, OVR. */
     protected mediaMeta = computed<{
+        file: string | null;
         res: string | null;
         ar: string | null;
         orientation: string | null;
@@ -288,6 +327,7 @@ export class DetailsMode {
         if (!p) return null;
         return {
             ...buildCanvasMeta(p.metadata ?? null),
+            file: p.media_file ?? null,
             hasOverlay: !!p.metadata?.has_overlay,
         };
     });

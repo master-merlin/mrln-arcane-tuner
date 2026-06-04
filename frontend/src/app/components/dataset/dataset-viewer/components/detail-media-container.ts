@@ -1,19 +1,22 @@
 import { Component, effect, input, output, signal } from '@angular/core';
+import { PanZoomDirective } from '../../../../workspace/shared/pan-zoom.directive';
 
 @Component({
     selector: 'app-detail-media-container',
     host: { class: 'flex-1 flex flex-col overflow-hidden bg-base' },
-    imports: [],
+    imports: [PanZoomDirective],
     template: `
     <div class="w-full h-full flex flex-col relative min-h-0 items-center justify-center">
         @if (currentPair(); as pair) {
-            <div class="relative max-w-full flex-1 min-h-0 p-4 flex items-center justify-center">
+            <div class="relative w-full flex-1 min-h-0 p-4 flex items-center justify-center overflow-hidden"
+                 appPanZoom [zoom]="zoom()" (zoomChange)="zoomChange.emit($event)">
                 @if (pair.media_type === 'video') {
-                    <video [src]="getMediaUrl(pair.media_file)" controls class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl"></video>
+                    <video [src]="getMediaUrl(pair.media_file)" controls
+                           class="max-w-full max-h-full object-contain rounded-theme-lg"></video>
                 } @else {
                     <img [src]="getDisplayUrl(pair)"
                          (error)="onOverlayError(pair)"
-                         class="max-w-full max-h-full object-contain rounded-theme-lg shadow-2xl"
+                         class="max-w-full max-h-full object-contain rounded-theme-lg"
                          alt="Dataset Image">
                 }
             </div>
@@ -37,10 +40,15 @@ export class DetailMediaContainerComponent {
     showMasked = input<boolean>(false);
     showOverlay = input<boolean>(true);
     apiUrl = input<string>('');
+    /** Zoom factor (1 = 100%) applied to the media via a CSS scale transform. */
+    zoom = input<number>(1);
 
     prevRequested = output<void>();
     nextRequested = output<void>();
     deleteRequested = output<void>();
+    /** Wheel-zoom (from the pan/zoom directive) bubbled up so the host keeps
+     *  the footer's zoom readout + controls in sync. */
+    zoomChange = output<number>();
 
     /**
      * `media_file` keys whose overlay URL returned an error. Once a

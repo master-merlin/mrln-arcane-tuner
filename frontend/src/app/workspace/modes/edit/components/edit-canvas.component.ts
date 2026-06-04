@@ -1,7 +1,8 @@
-import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, HostListener, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { CanvasFooterComponent, CanvasMeta } from '../../../shared/canvas-footer.component';
+import { PanZoomDirective } from '../../../shared/pan-zoom.directive';
 import { buildCanvasMeta } from '../../../shared/media-meta';
 import { OverlayStore, Overlay } from '../../../../state/overlay.store';
 import { PipelineEditorState } from '../pipeline-editor.state';
@@ -82,10 +83,12 @@ export function buildPixelSourceUrl(
 @Component({
     selector: 'app-edit-canvas',
     standalone: true,
-    imports: [IcoComponent, CanvasFooterComponent],
+    imports: [IcoComponent, CanvasFooterComponent, PanZoomDirective],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
-        <div class="stage hover-host" #stage>
+        <div class="stage hover-host" #stage
+             appPanZoom [appPanZoomTarget]="imageStage"
+             [zoom]="zoom()" (zoomChange)="zoom.set($event)">
             <button type="button" class="ab-btn"
                     [class.on]="compareOn()"
                     (click)="toggleCompare()"
@@ -98,7 +101,7 @@ export function buildPixelSourceUrl(
                 <app-ico name="ChevronRight" [size]="18"/>
             </button>
 
-            <div class="image-stage"
+            <div class="image-stage" #imageStage
                  [class.compare-on]="compareOn()"
                  [style.--ab-split.%]="splitPercent()">
                 <img class="layer base"
@@ -122,14 +125,11 @@ export function buildPixelSourceUrl(
                 @if (preview.showSpinner()) {
                     <div class="pipeline-busy" aria-hidden="true">···</div>
                 }
-                <div class="file-label">
-                    <app-ico name="Image" [size]="11"/>
-                    <span class="mono">{{ mediaFile() }}</span>
-                </div>
             </div>
         </div>
 
-        <app-canvas-footer [meta]="meta()">
+        <app-canvas-footer [meta]="meta()" [zoom]="zoom()" (zoomChange)="zoom.set($event)"
+                           [fullscreen]="isFullscreen()" (toggleFullscreen)="toggleFullscreen()">
             @if (state.dirty()) {
                 <span class="chip warning dirty-chip"
                       role="status"
@@ -147,29 +147,22 @@ export function buildPixelSourceUrl(
             display: flex; align-items: center; justify-content: center;
             padding: 14px 16px; min-height: 0;
             background: var(--color-base);
+            /* Clip the zoomed/panned image-stage at the stage edges so it reads
+               as the image filling the canvas — not a rounded card with a drop
+               shadow scaling up (and never spilling onto the footer). */
+            overflow: hidden;
         }
         .image-stage {
             position: relative;
             max-width: 100%; max-height: 100%;
             display: inline-flex;
             border-radius: var(--radius-theme-lg);
-            box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.25));
             overflow: hidden;
         }
         .layer { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
         .layer.overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
         .image-stage.compare-on .layer.overlay {
             clip-path: inset(0 0 0 var(--ab-split, 50%));
-        }
-        .file-label {
-            position: absolute; top: 14px; left: 14px;
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 3px 8px;
-            font-family: var(--font-mono); font-size: 11px;
-            background: oklch(0.10 0.01 265 / 0.7);
-            color: var(--color-text-secondary);
-            border-radius: 4px;
-            backdrop-filter: blur(6px);
         }
         .nav-btn {
             position: absolute; top: 50%; transform: translateY(-50%);
@@ -273,6 +266,8 @@ export class EditCanvasComponent {
 
     protected compareOn = signal<boolean>(false);
     protected splitPercent = signal<number>(50);
+    /** Canvas zoom factor (1 = 100%), driven by the footer's zoom controls. */
+    protected zoom = signal<number>(1);
     private dragging = signal<boolean>(false);
     private dragPointerId: number | null = null;
     private stageRef = viewChild<ElementRef<HTMLElement>>('stage');
@@ -287,8 +282,25 @@ export class EditCanvasComponent {
 
     private overlay = inject(OverlayStore);
     private rtc = inject(RuntimeConfigService);
+    private host = inject(ElementRef<HTMLElement>);
     protected state = inject(PipelineEditorState);
     protected preview = inject(PreviewPipeline);
+
+    /** Fullscreen state for the canvas (host element = stage + footer). */
+    protected isFullscreen = signal<boolean>(false);
+
+    protected toggleFullscreen(): void {
+        if (document.fullscreenElement) {
+            document.exitFullscreen?.();
+        } else {
+            this.host.nativeElement.requestFullscreen?.().catch(() => {});
+        }
+    }
+
+    @HostListener('document:fullscreenchange')
+    protected onFullscreenChange(): void {
+        this.isFullscreen.set(document.fullscreenElement === this.host.nativeElement);
+    }
 
     /**
      * Set when an overlay-PNG load fails (e.g., recipe-only state where the
@@ -342,6 +354,7 @@ export class EditCanvasComponent {
             if (key !== lastKey) {
                 lastKey = key;
                 this.overlayLoadFailed.set(false);
+                this.zoom.set(1);   // reset zoom when the image changes
             }
         });
 
@@ -450,6 +463,7 @@ export class EditCanvasComponent {
      */
     protected meta = computed<CanvasMeta>(() => ({
         ...buildCanvasMeta(this.metadata()),
+        file: this.mediaFile(),
         hasOverlay: this.hasOverlay(),
     }));
 }

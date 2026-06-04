@@ -12,6 +12,8 @@ too.
 """
 from __future__ import annotations
 
+import hmac
+
 from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse
 
@@ -61,7 +63,8 @@ class TokenAuthMiddleware:
             return
 
         conn = HTTPConnection(scope)
-        if supplied_token(conn) == self.token:
+        supplied = supplied_token(conn)
+        if supplied and hmac.compare_digest(supplied, self.token):
             await self.app(scope, receive, send)
             return
 

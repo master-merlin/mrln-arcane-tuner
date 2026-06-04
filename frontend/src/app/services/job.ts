@@ -126,6 +126,11 @@ export class JobService {
     return this.http.post<Job>(this.apiUrl, { plugin_id, config });
   }
 
+  /** Edit a pending or terminal job's stored config (running/paused rejected). */
+  updateJobConfig(jobId: string, config: any): Observable<Job> {
+    return this.http.put<Job>(`${this.apiUrl}/${jobId}/config`, { config });
+  }
+
   estimateVram(definitionId: string, config: any): Observable<VramEstimate> {
     return this.http.post<VramEstimate>(`${this.apiUrl}/estimate-vram`, { definition_id: definitionId, config });
   }

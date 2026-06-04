@@ -167,6 +167,17 @@ class JobHistoryRepository:
         """Persist a pending job's run-queue priority (no status change)."""
         self._update(job_id, {"priority": int(priority)})
 
+    def update_config(self, job_id: str, config: dict[str, Any]) -> None:
+        """Replace a job's stored config and refresh the config-derived display
+        columns (lora_name / definition_id / project_id) so the queue + history
+        labels stay consistent with the edited config. Run-result columns
+        (loss, vram, step times, …) are left untouched."""
+        updates: dict[str, Any] = {"config": config}
+        for col in ("lora_name", "definition_id", "project_id"):
+            if col in config:
+                updates[col] = config[col]
+        self._update(job_id, updates)
+
     def get_config_for_rerun(self, job_id: str) -> dict[str, Any] | None:
         """Extract config dict from a job for re-submission."""
         job = self.get_by_id(job_id)

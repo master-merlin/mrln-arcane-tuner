@@ -15,6 +15,7 @@ from app.core.job_manager import job_manager
 from app.core.logger import get_logger
 from app.api.schemas.job_schemas import (
     CreateJobRequest,
+    UpdateJobConfigRequest,
     SetSamplingCadenceRequest,
     SetAutoQueueRequest,
 )
@@ -33,6 +34,16 @@ async def create_job(request: CreateJobRequest):
     try:
         logger.info("creating_job", plugin_id=request.plugin_id)
         return await asyncio.to_thread(job_manager.create_job, request.plugin_id, request.config)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/jobs/{job_id}/config")
+async def update_job_config(job_id: str, request: UpdateJobConfigRequest):
+    """Edit a pending or terminal job's stored config (running/paused locked)."""
+    try:
+        logger.info("updating_job_config", job_id=job_id)
+        return await asyncio.to_thread(job_manager.update_job_config, job_id, request.config)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -303,6 +303,58 @@ class JobManager:
         with self._lock:
             return self._jobs.get(job_id)
 
+    # States whose config may be edited: pending (the edit changes what the job
+    # will run) or any terminal state (edits the historical record). Running and
+    # paused jobs are locked — their config is in flight.
+    _CONFIG_EDITABLE_STATES = {"pending", "completed", "failed", "stopped"}
+
+    def update_job_config(self, job_id: str, new_config: dict[str, Any]) -> dict[str, Any]:
+        """Edit a job's stored training config.
+
+        For a pending job the in-memory copy is updated too, so the upcoming
+        run (``start_job`` reads ``job.config``) uses the edited values. Running
+        and paused jobs are rejected. Returns the refreshed DB row.
+        """
+        from app.core.db.repositories.job_repo import JobHistoryRepository
+        repo = JobHistoryRepository()
+
+        job = self.get_job(job_id)
+        if job is not None:
+            status = job.status.value if hasattr(job.status, "value") else str(job.status)
+        else:
+            row = repo.get_by_id(job_id)
+            if not row:
+                raise ValueError("Job not found")
+            status = str(row.get("status"))
+
+        if status not in self._CONFIG_EDITABLE_STATES:
+            raise ValueError(f"Cannot edit the config of a {status} job")
+
+        # Keep the self-reference the rest of the pipeline relies on.
+        new_config = dict(new_config)
+        new_config["job_id"] = job_id
+
+        if job is not None:
+            with self._lock:
+                job.config = new_config
+
+        repo.update_config(job_id, new_config)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="job",
+                    op="updated",
+                    id=job_id,
+                ),
+                loop,
+            )
+
+        return repo.get_by_id(job_id) or {}
+
     # ── DB persistence helpers ───────────────────────────────────────
 
     def _persist_status(self, job_id: str, status: str, **kwargs) -> None:

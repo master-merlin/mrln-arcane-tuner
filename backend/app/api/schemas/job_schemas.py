@@ -13,6 +13,11 @@ class CreateJobRequest(BaseModel):
     config: dict[str, Any]
 
 
+class UpdateJobConfigRequest(BaseModel):
+    """Request body for editing a job's stored training config."""
+    config: dict[str, Any]
+
+
 class SetSamplingCadenceRequest(BaseModel):
     """Request body for changing the sampling cadence at runtime."""
     interval: int

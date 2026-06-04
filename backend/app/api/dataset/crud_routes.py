@@ -345,10 +345,14 @@ def _resolve_import_name(name: str, on_conflict: str | None, new_name: str | Non
         dataset_manager.delete_dataset(name, delete_files=True)
         return name
     if on_conflict == "rename":
-        candidate = (new_name or "").strip() or f"{name} (imported)"
+        # Suffix from the resolved base (the user's new_name when given, else
+        # "<name> (imported)") — NOT the original name, or a colliding custom
+        # rename would be silently discarded.
+        base = (new_name or "").strip() or f"{name} (imported)"
+        candidate = base
         i = 2
         while dataset_manager.get_dataset(candidate) is not None:
-            candidate = f"{name} ({i})"
+            candidate = f"{base} ({i})"
             i += 1
         return candidate
     # No directive -> tell the client to prompt.

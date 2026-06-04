@@ -188,6 +188,29 @@ def test_import_conflict_rename_creates_suffixed_dataset(client, tmp_path):
     assert ok.json()["name"] == "Solo (imported)"
 
 
+def test_import_rename_with_colliding_custom_name_suffixes_from_base(client, tmp_path):
+    # A user-supplied new_name that ALSO collides must suffix from that name,
+    # not silently fall back to the original dataset name.
+    import io
+    dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "Orig")
+    export = client.get("/api/datasets/Orig/export").content
+    # Create a dataset already occupying the desired new name "Target".
+    os.makedirs(os.path.join(tmp_path, "Target"), exist_ok=True)
+    dm.register_imported_dataset(
+        "Target", {"format_version": 1, "dataset": {}, "media": {}},
+        path=os.path.join(tmp_path, "Target"),
+    )
+
+    ok = client.post(
+        "/api/datasets/import",
+        files={"file": ("Orig.zip", io.BytesIO(export), "application/zip")},
+        data={"on_conflict": "rename", "new_name": "Target"},
+    )
+    assert ok.status_code == 200
+    # Suffix derives from the custom base "Target", NOT from "Orig".
+    assert ok.json()["name"] == "Target (2)"
+
+
 def test_import_path_roundtrip(client, tmp_path):
     dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "ByPath")
     export = client.get("/api/datasets/ByPath/export").content

@@ -71,3 +71,60 @@ def test_register_imported_dataset_persists_metadata_without_scan(real_repo_mana
     assert rows["a.jpg"]["enabled"] is True
     assert rows["b.jpg"]["enabled"] is False
     assert rows["b.jpg"]["has_mask"] is True
+
+
+def _seed_dataset_on_disk_and_db(tmp_root, name="Roundtrip"):
+    """Create a real dataset folder + DB rows via the app's singleton manager.
+
+    Returns the dataset_manager and the dataset's on-disk root.
+    """
+    from app.core.dataset_manager import dataset_manager
+    from PIL import Image
+
+    dataset_manager.default_root = str(tmp_root)
+    dataset_manager.datasets = {}  # start clean for the test
+
+    root = os.path.join(tmp_root, name)
+    os.makedirs(os.path.join(root, "masks"), exist_ok=True)
+    os.makedirs(os.path.join(root, ".thumbnails"), exist_ok=True)
+    Image.new("RGB", (16, 16), "red").save(os.path.join(root, "a.jpg"))
+    with open(os.path.join(root, "a.txt"), "w", encoding="utf-8") as f:
+        f.write("a caption")
+    Image.new("RGB", (16, 16), "black").save(os.path.join(root, "masks", "a.png"))
+    with open(os.path.join(root, ".thumbnails", "a.webp"), "wb") as f:
+        f.write(b"thumb")  # must be excluded from export
+
+    ds = dataset_manager.register_imported_dataset(
+        name,
+        {
+            "format_version": 1,
+            "dataset": {"version": "1.5.0", "trigger_word": "rt",
+                        "tags": ["t1"], "harmonization_score": 0.6},
+            "media": {"a.jpg": {"width": 16, "height": 16, "quality_score": 0.5,
+                                "enabled": True, "has_caption": True,
+                                "has_mask": True}},
+        },
+        path=root,
+    )
+    return dataset_manager, root, ds
+
+
+def test_export_endpoint_returns_zip_with_manifest(client, tmp_path):
+    import io
+    import json
+    import zipfile
+
+    _seed_dataset_on_disk_and_db(tmp_path, "Roundtrip")
+
+    resp = client.get("/api/datasets/Roundtrip/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        names = set(zf.namelist())
+        assert "manifest.json" in names
+        assert "a.jpg" in names and "a.txt" in names and "masks/a.png" in names
+        assert not any(n.startswith(".thumbnails/") for n in names)
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["dataset"]["trigger_word"] == "rt"
+        assert manifest["media"]["a.jpg"]["quality_score"] == 0.5

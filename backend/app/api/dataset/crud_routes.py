@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from app.api._path_guard import sanitize_filename, validate_path_within
 from app.core.dataset_manager import dataset_manager, Dataset
 from app.core.logger import get_logger
+from app import __version__ as APP_VERSION
+from app.core.dataset import portable
 from app.api.schemas.dataset_schemas import (
     CreateDatasetRequest,
     UpdateDatasetRequest,
@@ -288,6 +290,32 @@ async def download_dataset(name: str):
         return buf
 
     buf = await asyncio.to_thread(_build_zip)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
+
+
+@router.get("/datasets/{name}/export")
+async def export_dataset(name: str):
+    """Export a dataset as a portable zip (files + manifest.json metadata)."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    dataset_root = Path(dataset.path)
+    if not dataset_root.is_dir():
+        raise HTTPException(status_code=404, detail="Dataset directory not found on disk")
+
+    zip_filename = f"{dataset.name}_{dataset.version}.zip"
+    logger.info("exporting_dataset", dataset_name=name, zip_filename=zip_filename)
+
+    def _build() -> io.BytesIO:
+        manifest = portable.build_manifest(dataset, app_version=APP_VERSION)
+        return portable.write_export_zip(dataset_root, manifest)
+
+    buf = await asyncio.to_thread(_build)
     return StreamingResponse(
         buf,
         media_type="application/zip",

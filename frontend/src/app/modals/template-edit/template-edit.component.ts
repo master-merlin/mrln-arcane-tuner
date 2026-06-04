@@ -86,6 +86,7 @@ export class TemplateEditModalComponent {
             ? {
                 config: (s as CaptionSettingsState).params,
                 system_prompt: (s as CaptionSettingsState).systemPrompt,
+                wildcard: (s as CaptionSettingsState).wildcard,
                 model_id: (s as CaptionSettingsState).modelId,
             }
             : {

@@ -42,6 +42,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v8,
         _migrate_v9,
         _migrate_v10,
+        _migrate_v11,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -793,6 +794,23 @@ def _migrate_v10(conn) -> None:
     try:
         conn.execute(
             "ALTER TABLE job_history ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"
+        )
+    except Exception:
+        pass  # Column already exists
+
+
+def _migrate_v11(conn) -> None:
+    """Add ``wildcard`` to ``captioning_templates``.
+
+    The wildcard is a per-template runtime value substituted into every
+    ``{wildcard}`` token of the system prompt before captioning, so a prompt
+    that reuses a name in several places can be kept clean (the name lives in
+    one field, not duplicated through the prompt text).
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE captioning_templates "
+            "ADD COLUMN wildcard TEXT NOT NULL DEFAULT ''"
         )
     except Exception:
         pass  # Column already exists

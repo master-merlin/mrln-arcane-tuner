@@ -348,7 +348,7 @@ export class MassCaptionModalComponent implements OnInit {
             pair.media_file,
             settings.resolvedModelId,
             settings.params,
-            settings.systemPrompt,
+            settings.resolvedSystemPrompt,
             target,
         ).subscribe({
             next: (res: any) => {

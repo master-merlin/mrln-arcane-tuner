@@ -13,7 +13,14 @@ export interface CaptionSettingsState {
     modelId: string;
     resolvedModelId: string;
     variant?: string;
+    /** Raw prompt as authored — may contain {wildcard} tokens. Persisted to
+     *  the template verbatim so the stored prompt stays clean. */
     systemPrompt: string;
+    /** Prompt with every {wildcard} token replaced by `wildcard`. This is what
+     *  callers send to the captioning model. */
+    resolvedSystemPrompt: string;
+    /** The wildcard substitution value (per-template). */
+    wildcard: string;
     params: Record<string, any>;
 }
 
@@ -91,19 +98,46 @@ export interface CaptionSettingsState {
 
                     <!-- Params Content -->
                     <div class="p-3 space-y-3">
-                    <!-- System Prompt -->
+                    <!-- Wildcard -->
+                    <div>
+                        <label class="text-[10px] text-text-subtle mb-1 block flex items-center gap-1.5"
+                            title="Replaces every {wildcard} token in the System Prompt with this value before captioning. Lets you reuse a name (or any term) in several places while keeping the stored prompt itself clean.">
+                            Wildcard
+                            <span class="text-text-disabled font-normal normal-case">— fills <span class="font-mono text-brand-light">{{ '{wildcard}' }}</span></span>
+                        </label>
+                        <input type="text" [value]="captionWildcard()"
+                            (input)="onWildcardChange($any($event.target).value)"
+                            data-testid="caption-wildcard"
+                            title="Replaces every {wildcard} token in the System Prompt before captioning."
+                            class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors placeholder-gray-600"
+                            placeholder="e.g. a name to inject">
+                    </div>
+
+                    <!-- System Prompt — grows when Detailed Settings is collapsed -->
                     <div>
                         <label class="text-[10px] text-text-subtle mb-1 block">System Prompt</label>
-                        <textarea [value]="captionSystemPrompt()" 
+                        <textarea [value]="captionSystemPrompt()"
                             (input)="onSystemPromptChange($any($event.target).value)"
                             data-testid="caption-system-prompt"
-                            rows="3"
+                            [attr.rows]="showDetailedSettings() ? 3 : 8"
                             class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors resize-none placeholder-gray-600"
                             placeholder="System Prompt..."></textarea>
                     </div>
 
-                        <!-- Dynamic Params -->
+                        <!-- Detailed Settings (collapsible) — all model params live here -->
                     @if (activeModelConfig(); as config) {
+                        <div class="border-t border-surface-mid/50 pt-2">
+                            <h5 class="text-[10px] text-text-subtle uppercase tracking-wider font-bold mb-2 flex items-center justify-between cursor-pointer hover:text-brand transition-colors"
+                                data-testid="caption-detailed-toggle"
+                                (click)="showDetailedSettings.set(!showDetailedSettings())">
+                                <span class="flex items-center gap-1.5">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
+                                    Detailed Settings
+                                </span>
+                                <svg class="w-3 h-3 transition-transform" [class.rotate-180]="showDetailedSettings()" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </h5>
+                        @if (showDetailedSettings()) {
+                        <div class="space-y-3 animate-fadeIn">
                         <div class="space-y-2">
                             @for (param of getCoreParams(config); track param.key) {
                                 @if (!param.videoOnly || isVideo()) {
@@ -188,6 +222,9 @@ export interface CaptionSettingsState {
                                 }
                             </div>
                         }
+                        </div>
+                        }
+                        </div>
                     }
                     </div>
             </div>
@@ -311,8 +348,13 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     currentTemplates = signal<Template[]>([]);
     activeTemplateId = signal<string | null>(null);
     captionSystemPrompt = signal<string>('Describe this image in detail.');
+    /** Wildcard value substituted into {wildcard} tokens of the system prompt. */
+    captionWildcard = signal<string>('');
     captionModelParams = signal<Record<string, any>>({});
     showExtraOptions = false;
+    /** Collapsible holding all model-detail params. Collapsed by default so the
+     *  top items (System Prompt) get the room; expanding shrinks the prompt. */
+    showDetailedSettings = signal<boolean>(false);
 
     private preferences: ProjectPreferences | null = null;
     private settingsUpdate$ = new Subject<void>();
@@ -418,7 +460,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
 
         if (tpl) {
             this.captionSystemPrompt.set(tpl.system_prompt || '');
-            
+            this.captionWildcard.set(tpl.wildcard || '');
+
             const modelConfig = this.captionModels.find(m => m.id === this.selectedCaptionModel());
             const codeDefaults: Record<string, any> = {};
             modelConfig?.params.forEach((p: any) => { codeDefaults[p.key] = p.default; });
@@ -479,7 +522,25 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         this.updateActiveTemplate({ system_prompt: prompt });
     }
 
-    private updateActiveTemplate(changes: { config?: Record<string, any>; system_prompt?: string }) {
+    /** Wildcard edits persist with the template (per the chosen design); in
+     *  edit-modal mode (autoSave off) they stay local until the host's Save. */
+    onWildcardChange(wildcard: string) {
+        if (!this.autoSave()) {
+            this.captionWildcard.set(wildcard);
+            this.emitChanges();
+            return;
+        }
+        this.updateActiveTemplate({ wildcard });
+    }
+
+    /** Replace every {wildcard} token in `prompt` with the current wildcard
+     *  value. Empty wildcard removes the token rather than sending literal
+     *  braces to the model. */
+    private resolveWildcard(prompt: string): string {
+        return prompt.replace(/\{wildcard\}/g, this.captionWildcard());
+    }
+
+    private updateActiveTemplate(changes: { config?: Record<string, any>; system_prompt?: string; wildcard?: string }) {
         const activeId = this.activeTemplateId();
         if (!activeId) return;
 
@@ -490,13 +551,15 @@ export class DatasetCaptionSettingsComponent implements OnInit {
 
         if (activeTpl.readonly) {
             const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
+            const wildcard = changes.wildcard ?? activeTpl.wildcard ?? '';
             const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
-            
+
             this.templateService.createCaptioningTemplate({
                 model_id: this.selectedCaptionModel(),
                 name: 'Custom Settings',
                 project_id: this.effectiveProjectId(),
                 system_prompt: systemPrompt,
+                wildcard: wildcard,
                 config: config
             }).subscribe(newTpl => {
                 this.currentTemplates.update(ts => [...ts, newTpl]);
@@ -506,17 +569,18 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             });
         } else {
             const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
+            const wildcard = changes.wildcard ?? activeTpl.wildcard ?? '';
             const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
-            
+
             this.currentTemplates.update(ts => ts.map(t => {
                 if (t.id === activeId) {
-                    return { ...t, system_prompt: systemPrompt, config: config };
+                    return { ...t, system_prompt: systemPrompt, wildcard: wildcard, config: config };
                 }
                 return t;
             }));
             this.applyActiveTemplate();
 
-            this.pendingSaves.set(activeId, { system_prompt: systemPrompt, config });
+            this.pendingSaves.set(activeId, { system_prompt: systemPrompt, wildcard, config });
             
             setTimeout(() => {
                 const pending = this.pendingSaves.get(activeId);
@@ -537,6 +601,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             name,
             project_id: this.effectiveProjectId(),
             system_prompt: this.captionSystemPrompt(),
+            wildcard: this.captionWildcard(),
             config: this.captionModelParams()
         }).subscribe(newTpl => {
             this.currentTemplates.update(ts => [...ts, newTpl]);
@@ -579,11 +644,14 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         const variant = this.selectedQwen3Variant();
         const resolvedModelId = modelId === 'qwen3-vl' ? `qwen3-vl-${variant}` : modelId;
 
+        const rawPrompt = this.captionSystemPrompt();
         this.settingsChanged.emit({
             modelId: modelId,
             resolvedModelId: resolvedModelId,
             variant: modelId === 'qwen3-vl' ? variant : undefined,
-            systemPrompt: this.captionSystemPrompt(),
+            systemPrompt: rawPrompt,
+            resolvedSystemPrompt: this.resolveWildcard(rawPrompt),
+            wildcard: this.captionWildcard(),
             params: this.captionModelParams()
         });
     }

@@ -196,8 +196,10 @@ type Strategy = 'keep' | 'overwrite';
 
                     <div class="mm-info">
                         <app-ico name="Info" [size]="13"/>
-                        Applies the saved mask to each image as a new file. Original images are not modified.
-                        <b class="mono">{{ maskedCount() }} / {{ pairs().length }}</b> images currently have a mask.
+                        <span>
+                            Applies the saved mask to each image as a new file. Original images are not modified.
+                            <b class="mono">{{ maskedCount() }} / {{ pairs().length }}</b> images currently have a mask.
+                        </span>
                     </div>
                 } @else if (tab() === 'caption') {
                     <section class="mm-section">
@@ -654,7 +656,7 @@ export class MassMaskModalComponent implements OnInit {
         this.datasetsApi.generateCaption(
             name, pair.media_file,
             settings.resolvedModelId, settings.params,
-            settings.systemPrompt, 'masked',
+            settings.resolvedSystemPrompt, 'masked',
         ).subscribe({
             next: (res: any) => {
                 this.captions.setCaption(name, pair.media_file, res.caption, true);

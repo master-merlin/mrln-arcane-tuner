@@ -19,6 +19,9 @@ export interface Template {
   
   // Captioning specifics
   system_prompt?: string;
+  /** Per-template value substituted into every {wildcard} token of the
+   *  system prompt before captioning (keeps the stored prompt clean). */
+  wildcard?: string;
   model_id?: string;
 
   // Training specifics
@@ -46,7 +49,7 @@ export class TemplateService {
     return this.http.get<Template[]>(`${this.apiUrl}/captioning`, { params });
   }
 
-  createCaptioningTemplate(data: { model_id: string; name: string; project_id?: string | null; system_prompt?: string; config?: any }): Observable<Template> {
+  createCaptioningTemplate(data: { model_id: string; name: string; project_id?: string | null; system_prompt?: string; wildcard?: string; config?: any }): Observable<Template> {
     return this.http.post<Template>(`${this.apiUrl}/captioning`, data);
   }
 

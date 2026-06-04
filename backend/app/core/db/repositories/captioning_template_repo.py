@@ -95,6 +95,7 @@ class CaptioningTemplateRepository:
         data.setdefault("is_default", False)
         data.setdefault("readonly", False)
         data.setdefault("system_prompt", "Describe this image in detail.")
+        data.setdefault("wildcard", "")
 
         data = self._prepare(data)
         cols = list(data.keys())
@@ -164,6 +165,7 @@ class CaptioningTemplateRepository:
             "project_id": target_project_id,
             "name": new_name or f"{source['name']} (Project)",
             "system_prompt": source.get("system_prompt", ""),
+            "wildcard": source.get("wildcard", ""),
             "config": source.get("config", {}),
             "branched_from": template_id,
         }

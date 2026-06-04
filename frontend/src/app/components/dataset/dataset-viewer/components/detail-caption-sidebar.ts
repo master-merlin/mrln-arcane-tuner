@@ -208,7 +208,7 @@ export class DetailCaptionSidebarComponent {
             pair.media_file,
             this.currentSettings.resolvedModelId,
             this.currentSettings.params,
-            this.currentSettings.systemPrompt
+            this.currentSettings.resolvedSystemPrompt
         ).subscribe({
             next: (res: any) => {
                 this.suggestedCaption.set(res.caption);

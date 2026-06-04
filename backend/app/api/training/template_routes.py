@@ -23,6 +23,7 @@ class CreateCaptioningTemplateRequest(BaseModel):
     name: str
     project_id: str | None = None
     system_prompt: str = "Describe this image in detail."
+    wildcard: str = ""
     config: dict[str, Any] = {}
 
 
@@ -43,6 +44,7 @@ class CreateTrainingTemplateRequest(BaseModel):
 class UpdateTemplateRequest(BaseModel):
     name: str | None = None
     system_prompt: str | None = None
+    wildcard: str | None = None
     config: dict[str, Any] | None = None
     project_id: str | None = None
     definition_id: str | None = None

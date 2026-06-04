@@ -373,10 +373,6 @@
                             (click)="downloadDataset(d, $event)" title="Download as zip">
                         <app-ico name="Download" [size]="14"/>
                     </button>
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="exportDataset(d, $event)" title="Export (portable zip + metadata)">
-                        <app-ico name="Share2" [size]="14"/>
-                    </button>
                     <input type="file" multiple
                            class="ds-upload-input"
                            (change)="onUploadFiles(d.name, $any($event.target).files); $any($event.target).value = ''"
@@ -388,6 +384,10 @@
                             (click)="uploadInput.click(); $event.stopPropagation()"
                             title="Upload images to this dataset">
                         <app-ico name="Upload" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="exportDataset(d, $event)" title="Export (portable zip + metadata)">
+                        <app-ico name="Share2" [size]="14"/>
                     </button>
                     <button class="icon-btn ds-action ds-action-danger" type="button"
                             (click)="deleteDataset(d, $event)"

@@ -22,6 +22,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
+from app.core import container_config
+from app.core.auth import COOKIE_NAME, LOGIN_HTML, TokenAuthMiddleware
 from app.core.logger import setup_logging, get_logger
 from app.core.plugin_manager import plugin_manager
 from app.core.settings_manager import get_settings_manager
@@ -32,7 +34,9 @@ settings_manager = get_settings_manager()
 _app_settings = settings_manager.get_module_settings("application")
 
 LOG_LEVEL: str = _app_settings.get("log_level", "INFO")
-BACKEND_PORT: int = _app_settings.get("backend_port", 8000)
+BACKEND_PORT: int = container_config.resolve_port(
+    _app_settings.get("backend_port", 8000)
+)
 FRONTEND_PORT: int = _app_settings.get("frontend_port", 4200)
 
 setup_logging(LOG_LEVEL)
@@ -105,6 +109,10 @@ def _maybe_start_frontend() -> None:
     - This is NOT a restart (``MRLN_RESTART`` env var absent).
     - ``npm`` is available on PATH.
     """
+    if container_config.is_container():
+        logger.info("frontend_autostart_skipped_container")
+        return
+
     global _frontend_process  # noqa: PLW0603
 
     is_restart = os.environ.get("MRLN_RESTART") == "1"
@@ -225,6 +233,39 @@ app.add_middleware(
 )
 
 
+# ── Auth Gate (no-op when no token configured) ───────────────────────────
+
+app.add_middleware(TokenAuthMiddleware, token=container_config.auth_token())
+
+
+from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402
+
+
+@app.get("/login")
+async def login(token: str = ""):
+    """Validate the access token, set the auth cookie, then redirect home.
+
+    No-op pass-through when auth is disabled (no token configured).
+    """
+    configured = container_config.auth_token()
+    if not configured or token == configured:
+        resp = RedirectResponse("/", status_code=302)
+        if configured:
+            # Secure flag follows deployment intent: in the container the app
+            # is always reached over HTTPS at the proxy edge (the backend
+            # itself sees plain http), so mark Secure there; keep it off for
+            # local-dev http so the cookie is still accepted.
+            resp.set_cookie(
+                COOKIE_NAME,
+                token,
+                httponly=True,
+                samesite="lax",
+                secure=container_config.is_container(),
+            )
+        return resp
+    return HTMLResponse(LOGIN_HTML, status_code=401)
+
+
 # ── Routers ──────────────────────────────────────────────────────────────
 
 from app.api.websocket import router as ws_router          # noqa: E402
@@ -308,12 +349,44 @@ os.makedirs(dataset_manager.default_root, exist_ok=True)
 app.mount("/media", MediaStaticFiles(directory=dataset_manager.default_root), name="media")
 
 
-# ── Root Endpoint ────────────────────────────────────────────────────────
+# ── Frontend SPA (container / production) ────────────────────────────────
+# When a built Angular bundle is present, serve it at "/" with SPA fallback
+# (unknown non-/api, non-/media paths return index.html for client-side
+# routing). All API/WS/media routes are registered earlier, so they win.
+_frontend_dist = container_config.frontend_dist_dir()
 
-@app.get("/")
-async def root():
-    """Health-check / landing endpoint (frontend served via dev server)."""
-    return {
-        "message": f"MRLN Arcane Tuner API is running. Access frontend via port {FRONTEND_PORT}.",
-        "version": __version__,
-    }
+if _frontend_dist:
+    from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
+
+    class SpaStaticFiles(StaticFiles):
+        """StaticFiles that falls back to index.html for client-side routes.
+
+        In HTML mode Starlette's ``StaticFiles`` *raises* ``HTTPException(404)``
+        for a missing path rather than returning a 404 response, so we catch it
+        and serve ``index.html`` to let the Angular router handle the route.
+        """
+
+        async def get_response(self, path, scope):
+            try:
+                response = await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404:
+                    return await super().get_response("index.html", scope)
+                raise
+            if response.status_code == 404:
+                return await super().get_response("index.html", scope)
+            return response
+
+    app.mount(
+        "/", SpaStaticFiles(directory=_frontend_dist, html=True), name="spa"
+    )
+    logger.info("frontend_spa_mounted", path=_frontend_dist)
+else:
+    @app.get("/")
+    async def root():
+        """Health-check / landing endpoint (frontend served via dev server)."""
+        return {
+            "message": f"MRLN Arcane Tuner API is running. "
+                       f"Access frontend via port {FRONTEND_PORT}.",
+            "version": __version__,
+        }

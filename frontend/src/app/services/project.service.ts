@@ -88,6 +88,19 @@ export class ProjectService {
     this.listProjects().subscribe(projects => this.allProjects.set(projects));
   }
 
+  /**
+   * Optimistically adjust a project's dataset count in `allProjects` so the
+   * scope switcher and sidebar reflect an add/remove immediately, instead of
+   * waiting for (and depending on) the next `listProjects()` round-trip.
+   */
+  bumpDatasetStat(projectId: string, delta: number) {
+    this.allProjects.update(list => list.map(p =>
+      (p.id === projectId && p.stats)
+        ? { ...p, stats: { ...p.stats, datasets: Math.max(0, p.stats.datasets + delta) } }
+        : p,
+    ));
+  }
+
   private get apiUrl() {
     return `${this.rtc.apiUrl}/projects`;
   }

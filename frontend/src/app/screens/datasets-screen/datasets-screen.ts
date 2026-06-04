@@ -974,6 +974,9 @@ export class DatasetsScreen {
                     this.toast.success(`Removed "${d.name}" from project.`);
                     // Refresh the scope filter and the global library list.
                     void this.refreshAfterDelete(projectId);
+                    // Keep the scope-switcher / sidebar count in sync.
+                    this.projects.bumpDatasetStat(projectId, -1);
+                    this.projects.loadProjects();
                 },
                 error: (err: { error?: { detail?: string }; message?: string }) =>
                     this.toast.error('Failed to remove from project: ' + (err?.error?.detail || err?.message)),
@@ -1070,6 +1073,10 @@ export class DatasetsScreen {
                 if (this.scope.projectId() === projectId) {
                     this.projectDatasetIds.update(s => new Set([...s, d.id ?? d.name]));
                 }
+                // Refresh the scope-switcher / sidebar dataset count: optimistic
+                // bump now, authoritative reload to reconcile.
+                this.projects.bumpDatasetStat(projectId, 1);
+                this.projects.loadProjects();
             },
             error: (err: { error?: { detail?: string }; message?: string }) =>
                 this.toast.error(

@@ -317,7 +317,11 @@
                             (click)="openCard(d)" title="Open workspace">
                         <app-ico name="Eye" [size]="14"/>
                     </button>
-                    @if (availableProjects().length > 0) {
+                    <!-- Add-to-project is a Global-scope action only. In a project
+                         scope the grid already shows just that project's datasets,
+                         so the membership action there is Remove (the danger button
+                         below, which becomes FolderMinus in project scope). -->
+                    @if (scopeIsGlobal && availableProjects().length > 0) {
                         <div class="ds-add-project-wrap">
                             <button class="icon-btn ds-action ds-action-accent" type="button"
                                     data-testid="btn-open-project-picker"

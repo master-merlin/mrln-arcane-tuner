@@ -1,0 +1,26 @@
+# Build context excludes — keep the image small and reproducible.
+.git/
+.agent/
+.vscode/
+.claude/
+docs/
+documentation/
+**/__pycache__/
+**/*.pyc
+
+# Backend: never ship the host venv, local data, DBs, or logs.
+backend/venv/
+backend/datasets/
+backend/outputs/
+backend/models/
+backend/settings.json
+backend/server.log
+backend/tests/tests.log
+*.db
+*.db-shm
+*.db-wal
+
+# Frontend: build happens inside the image; don't copy host artifacts.
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/

@@ -15,8 +15,14 @@
     <div class="topbar-actions">
         <app-download-indicator />
         <app-notification-panel />
-        <button class="icon-btn" type="button">
-            <app-ico name="Settings" [size]="15" />
+        <button
+            class="icon-btn"
+            type="button"
+            [title]="themeLabel()"
+            [attr.aria-label]="themeLabel()"
+            (click)="theme.toggle()"
+        >
+            <app-ico [name]="themeIcon()" [size]="15" />
         </button>
     </div>
 </div>

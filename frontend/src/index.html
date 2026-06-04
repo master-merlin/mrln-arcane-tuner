@@ -9,6 +9,22 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script>
+    // Apply the persisted theme before first paint so a returning light-mode
+    // user never sees a flash of the dark theme. Mirrors ThemeStore's key.
+    (function () {
+      try {
+        if (localStorage.getItem('mrln.theme') === 'light') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      } catch (e) { /* storage unavailable — fall through to dark default */ }
+    })();
+  </script>
+  <style>
+    /* Keep the pre-bootstrap loading splash in sync with a saved light theme
+       (its inline style hardcodes a black background). */
+    html[data-theme="light"] #app-loading { background: #ffffff !important; color: #0e0f13 !important; }
+  </style>
 </head>
 <body>
   <app-root>

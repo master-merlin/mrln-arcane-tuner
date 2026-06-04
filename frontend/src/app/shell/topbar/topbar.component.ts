@@ -12,6 +12,7 @@ import { IcoComponent } from '../../icons/ico.component';
 import { DownloadIndicatorComponent } from './download-indicator.component';
 import { NotificationPanelComponent } from './notification-panel.component';
 import { ScopeStore } from '../../state/scope.store';
+import { ThemeStore } from '../../state/theme.store';
 import { ProjectService } from '../../services/project.service';
 
 interface Crumb {
@@ -38,7 +39,14 @@ interface Crumb {
 export class TopbarComponent {
     private router = inject(Router);
     protected scope = inject(ScopeStore);
+    protected theme = inject(ThemeStore);
     protected projects = inject(ProjectService);
+
+    /** Icon shows the theme you'll switch TO: Sun in dark, Moon in light. */
+    protected themeIcon = computed(() => (this.theme.theme() === 'dark' ? 'Sun' : 'Moon'));
+    protected themeLabel = computed(() =>
+        this.theme.theme() === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+    );
 
     private url = toSignal(
         this.router.events.pipe(filter(e => e instanceof NavigationEnd)),

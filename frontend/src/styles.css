@@ -54,6 +54,16 @@
     --color-violet: oklch(0.65 0.18 295);
     --color-violet-soft: oklch(0.40 0.12 295);
 
+    /* ── Terminal / log console (inset, darker than surfaces) ── */
+    --color-terminal-bg: oklch(0.04 0.005 265);
+    --color-terminal-row-alt: oklch(1 0 0 / 0.015);
+
+    /* ── Media tile backdrop ── intentionally dark in BOTH themes (NOT
+       overridden in the light block). Thumbnails render at <100% opacity
+       at rest and full opacity on hover; a dark backdrop makes that read
+       as a "dim → reveal" in light mode too, not a wash-out. ── */
+    --color-media-backdrop: oklch(0.10 0.01 265);
+
     /* ── Radii (px to match design source) ── */
     --radius-theme-sm: 4px;
     --radius-theme-md: 6px;
@@ -222,4 +232,59 @@ input[type="checkbox"]:not(.sr-only):not(.peer) {
     left: 0;
     color: var(--color-brand);
     font-weight: bold;
+}
+
+/* ================================================================
+   LIGHT THEME – token overrides, toggled via <html data-theme="light">
+   (set by ThemeStore / the inline guard in index.html).
+
+   Only surfaces, text, borders, nav, overlay, the glass utilities, and
+   shadow depths are re-mapped. Brand, semantic status (success/warning/
+   danger), and chart colors are intentionally shared with the dark theme —
+   they read acceptably on a light background.
+
+   `html[data-theme="light"]` (specificity 0,1,1) deliberately outranks the
+   `@theme`-generated `:root`/`:host` block (0,1,0), so these win regardless
+   of source order.
+   ================================================================ */
+html[data-theme="light"] {
+    /* Surfaces – inverted lightness ramp (page is the lightest layer) */
+    --color-base: oklch(0.98 0.005 265);
+    --color-surface-low: oklch(0.96 0.006 265);
+    --color-surface-mid: oklch(0.93 0.008 265);
+    --color-surface-high: oklch(0.88 0.01 265);
+    --color-surface-higher: oklch(0.82 0.01 265);
+    --color-overlay: oklch(0 0 0 / 0.4);
+
+    /* Text – dark ink on light surfaces */
+    --color-text-primary: oklch(0.22 0.01 265);
+    --color-text-secondary: oklch(0.34 0.01 265);
+    --color-text-muted: oklch(0.48 0.01 265);
+    --color-text-subtle: oklch(0.58 0.01 265);
+    --color-text-disabled: oklch(0.70 0.01 265);
+
+    /* Borders */
+    --color-border-default: oklch(0.85 0.01 265);
+    --color-border-subtle: oklch(0.91 0.008 265);
+    --color-border-bright: oklch(0.78 0.01 265);
+
+    /* Navigation / interactive */
+    --color-nav-active: oklch(0.90 0.01 265);
+    --color-nav-hover: oklch(0.93 0.008 265);
+
+    /* Terminal / log console – soft inset off-white, with a dark row tint */
+    --color-terminal-bg: oklch(0.96 0.005 265);
+    --color-terminal-row-alt: oklch(0 0 0 / 0.025);
+
+    /* Softer shadows – the dark theme's near-opaque black is too heavy on white */
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.08);
+    --shadow-md: 0 4px 12px rgb(0 0 0 / 0.10);
+    --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.14);
+}
+
+/* The glass utilities bake in dark oklch literals (not tokens) – re-map them */
+html[data-theme="light"] .glass,
+html[data-theme="light"] .glass-card {
+    background-color: oklch(0.97 0.006 265 / 0.65);
+    border-color: oklch(0.85 0.01 265 / 0.6);
 }

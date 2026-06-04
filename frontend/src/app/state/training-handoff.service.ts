@@ -6,10 +6,19 @@ export interface TrainingHandoff {
     /**
      * `reload` patches the form via loadExternalConfig (auto-template
      * suppressed — matches legacy "Reload into Settings"); `template`
-     * imports a named template via importTemplate.
+     * selects/edits an existing template (`templateId`) and patches the form
+     * with `config`, recreating the template only if it was deleted. A bare
+     * `templateName` (no id) falls back to the legacy create path.
      */
     mode: 'reload' | 'template';
     templateName?: string;
+    /**
+     * The existing template this handoff edits/reloads. Present for the
+     * Projects "Edit" action (Bug A) and for a job whose stored config recorded
+     * the template it was built from (Bug B). When set, the Training screen
+     * selects this exact template as the save-target instead of cloning a copy.
+     */
+    templateId?: string;
     definitionId?: string;
 }
 

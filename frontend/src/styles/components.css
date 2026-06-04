@@ -641,6 +641,10 @@
     .modal.modal-wide { max-width: 960px; }
     /* XL variant for modals that need a large image canvas (Crop Preview). */
     .modal.modal-xl   { max-width: min(1280px, 92vw); max-height: 92vh; }
+    /* Compact variant — modal hugs its content (template settings edit). */
+    .modal.modal-compact { max-width: 560px; }
+    /* Medium variant — narrower than default; code/JSON editor hugs its content. */
+    .modal.modal-md   { max-width: min(600px, 92vw); }
     @keyframes modal-pop {
         from { opacity: 0; transform: translateY(8px) scale(0.98); }
         to   { opacity: 1; transform: translateY(0) scale(1); }

@@ -24,6 +24,8 @@ import { BrowseFolderModalComponent } from '../../modals/browse-folder/browse-fo
 import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
 import { VersionEditModalComponent } from '../../modals/version-edit/version-edit.component';
 import { TemplatesLibraryModalComponent } from '../../modals/templates-library/templates-library.component';
+import { TemplateEditModalComponent } from '../../modals/template-edit/template-edit.component';
+import { TemplateJsonEditModalComponent } from '../../modals/template-json/template-json.component';
 
 /**
  * Modal stack renderer.
@@ -61,6 +63,8 @@ import { TemplatesLibraryModalComponent } from '../../modals/templates-library/t
         ConfirmModalComponent,
         VersionEditModalComponent,
         TemplatesLibraryModalComponent,
+        TemplateEditModalComponent,
+        TemplateJsonEditModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -73,6 +77,8 @@ import { TemplatesLibraryModalComponent } from '../../modals/templates-library/t
                          tabindex="-1"
                          [class.modal-wide]="m.kind === 'analyze'"
                          [class.modal-xl]="m.kind === 'crop-preview'"
+                         [class.modal-compact]="m.kind === 'template-edit'"
+                         [class.modal-md]="m.kind === 'template-json'"
                          (click)="$event.stopPropagation()">
                         @switch (m.kind) {
                             @case ('dataset-form') {
@@ -142,6 +148,12 @@ import { TemplatesLibraryModalComponent } from '../../modals/templates-library/t
                             }
                             @case ('templates-library') {
                                 @defer { <app-modal-templates-library/> }
+                            }
+                            @case ('template-edit') {
+                                @defer (on immediate) { <app-modal-template-edit/> }
+                            }
+                            @case ('template-json') {
+                                @defer (on immediate) { <app-modal-template-json/> }
                             }
                             @default {
                                 <div class="modal-head">

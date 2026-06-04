@@ -3,6 +3,8 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
 
+export type TemplateDomain = 'captioning' | 'masking' | 'training';
+
 export interface Template {
   id: string;
   name: string;
@@ -87,7 +89,7 @@ export class TemplateService {
     return this.http.get<Template>(`${this.apiUrl}/${domain}/${templateId}`);
   }
 
-  updateTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string, updates: Partial<Template>): Observable<Template> {
+  updateTemplate(domain: TemplateDomain, templateId: string, updates: Partial<Template>): Observable<Template> {
     return this.http.put<Template>(`${this.apiUrl}/${domain}/${templateId}`, updates);
   }
 

@@ -1,5 +1,5 @@
 
-import { Component, OnInit, inject, signal, computed, output, input, effect } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, output, input, effect, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
@@ -38,6 +38,7 @@ export interface MaskingSettingsState {
             <!-- Template Card -->
             <div class="bg-surface-high/40 rounded-theme-lg border border-surface-mid/50 overflow-hidden">
                 <!-- Template Header & Actions -->
+                @if (!hideTemplateBar()) {
                 <div class="p-3 bg-surface-low/50 border-b border-surface-mid/50 flex items-end gap-2">
                     <div class="flex-1">
                         <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Settings Template</label>
@@ -49,23 +50,24 @@ export interface MaskingSettingsState {
                             }
                         </select>
                     </div>
-                    
-                    <button (click)="addTemplate()" 
+
+                    <button (click)="addTemplate()"
                         data-testid="add-masking-template-btn"
                         class="p-1.5 bg-surface-mid hover:bg-surface-high text-brand rounded-theme-md border border-surface-high transition-colors" title="Clone as New Template">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
                     </button>
-                    <button (click)="renameTemplate()" 
+                    <button (click)="renameTemplate()"
                         data-testid="rename-masking-template-btn"
                         [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-surface-high text-yellow-500 rounded-theme-md border border-surface-high transition-colors" title="Rename Template">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                     </button>
-                    <button (click)="deleteTemplate()" 
+                    <button (click)="deleteTemplate()"
                         data-testid="delete-masking-template-btn"
                         [disabled]="isDefaultTemplate()" [class.opacity-50]="isDefaultTemplate()" class="p-1.5 bg-surface-mid hover:bg-danger/20 text-danger rounded-theme-md border border-surface-high transition-colors" title="Delete Template">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                     </button>
                 </div>
+                }
 
                 <!-- Params Content -->
                 <div class="p-3 space-y-3">
@@ -160,6 +162,12 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     effectiveProjectId = computed(() => this.projectId() ?? this.projectService.activeDatasetProject());
     settingsChanged = output<MaskingSettingsState>();
 
+    /** Edit-modal support (defaults preserve mass-modal behavior). See
+     *  dataset-caption-settings for the rationale. */
+    hideTemplateBar = input(false);
+    autoSave = input(true);
+    presetTemplate = input<Template | null>(null);
+
     maskingModels: any[] = [
         {
             id: 'sam3',
@@ -218,9 +226,25 @@ export class DatasetMaskingSettingsComponent implements OnInit {
 
     constructor() {
         effect(() => {
+            const preset = this.presetTemplate();
+            // Apply the preset OUTSIDE tracking — see dataset-caption-settings for the
+            // full rationale. applyPreset → applyActiveTemplate → emitChanges() reads
+            // maskingParams synchronously; without untracked() each edit would re-run
+            // this effect and wipe the change before Save reads it.
+            if (preset) { untracked(() => this.applyPreset(preset)); return; }
             const pid = this.effectiveProjectId();
             this.loadPreferencesAndTemplates();
         });
+    }
+
+    /** Edit-modal: load a single template into the UI, bypassing preferences. */
+    private applyPreset(tpl: Template) {
+        if (tpl.model_id && this.maskingModels.some(m => m.id === tpl.model_id)) {
+            this.selectedMaskModel.set(tpl.model_id);
+        }
+        this.currentTemplates.set([tpl]);
+        this.activeTemplateId.set(tpl.id);
+        this.applyActiveTemplate();
     }
 
     ngOnInit() {
@@ -299,6 +323,14 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     onModelChange(modelId: string) {
         if (modelId === this.selectedMaskModel()) return;
         this.selectedMaskModel.set(modelId);
+        if (!this.autoSave()) {
+            const cfg = this.maskingModels.find(m => m.id === modelId);
+            const defaults: Record<string, any> = {};
+            cfg?.params.forEach((p: any) => { defaults[p.key] = p.default; });
+            this.maskingParams.set(defaults);
+            this.emitChanges();
+            return;
+        }
         this.loadModelTemplates(modelId);
         this.emitChanges();
     }
@@ -310,6 +342,11 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     }
 
     updateParam(key: string, value: any) {
+        if (!this.autoSave()) {
+            this.maskingParams.update(p => ({ ...p, [key]: value }));
+            this.emitChanges();
+            return;
+        }
         const newParams = { ...this.maskingParams(), [key]: value };
         this.updateActiveTemplate({ config: newParams });
     }

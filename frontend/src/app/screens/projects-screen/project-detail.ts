@@ -11,6 +11,7 @@ import { JobService, type Job, type TrainingEstimate } from '../../services/job'
 import { ToastService } from '../../services/toast';
 import { ScopeStore } from '../../state/scope.store';
 import { OverlayStore } from '../../state/overlay.store';
+import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { DatasetStore } from '../../state/dataset.store';
 import { IcoComponent } from '../../icons/ico.component';
 import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
@@ -64,6 +65,7 @@ export class ProjectDetail implements OnInit {
     private toast = inject(ToastService);
     private scope = inject(ScopeStore);
     private overlay = inject(OverlayStore);
+    private handoff = inject(TrainingHandoffService);
     private rtc = inject(RuntimeConfigService);
     private datasetStore = inject(DatasetStore);
     private http = inject(HttpClient);
@@ -349,6 +351,56 @@ export class ProjectDetail implements OnInit {
             this.globalMaskTpls.set([]);
             this.globalTrainTpls.set([]);
         }
+    }
+
+    /**
+     * Domain "Edit" action. Captioning/masking open the settings modal locked
+     * to this template (Save-based); training hands the config to the Training
+     * screen. We fetch the full template first so `config`/`system_prompt` are
+     * present even if the list rows are lightweight.
+     */
+    protected editTemplate(domain: TemplateDomain, t: Template): void {
+        this.templates.getTemplate(domain, t.id).subscribe({
+            next: (full) => {
+                if (domain === 'training') { this.openTrainingTemplate(full); return; }
+                this.overlay.openModal('template-edit', {
+                    domain,
+                    template: full,
+                    onSaved: () => void this.loadTemplates(this.projectId()),
+                });
+            },
+            error: (err: { error?: { detail?: string }; message?: string }) =>
+                this.toast.error('Could not load template: ' + (err?.error?.detail || err?.message)),
+        });
+    }
+
+    /** Raw-JSON "Edit JSON" action — works for all three domains. */
+    protected editTemplateJson(domain: TemplateDomain, t: Template): void {
+        this.templates.getTemplate(domain, t.id).subscribe({
+            next: (full) => this.overlay.openModal('template-json', {
+                domain,
+                template: full,
+                onSaved: () => void this.loadTemplates(this.projectId()),
+            }),
+            error: (err: { error?: { detail?: string }; message?: string }) =>
+                this.toast.error('Could not load template: ' + (err?.error?.detail || err?.message)),
+        });
+    }
+
+    /**
+     * Switch scope to the template's project (so a save in the Training screen
+     * lands there) and hand the config off to /training, which auto-applies it.
+     */
+    private openTrainingTemplate(t: Template): void {
+        if (t.project_id) this.scope.setProject(t.project_id); else this.scope.setGlobal();
+        this.handoff.set({
+            config: (t.config ?? {}) as Record<string, unknown>,
+            mode: 'template',
+            templateId: t.id,
+            templateName: t.name,
+            definitionId: t.definition_id,
+        });
+        void this.router.navigate(['/training']);
     }
 
     private async loadRuns(projectId: string): Promise<void> {

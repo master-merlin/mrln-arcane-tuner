@@ -25,7 +25,7 @@ export type ModalKind =
     | 'dataset-form' | 'rescan' | 'analyze' | 'cache'
     | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
     | 'model-source' | 'browse-folder' | 'confirm' | 'version-edit'
-    | 'templates-library';
+    | 'templates-library' | 'template-edit' | 'template-json';
 
 export interface ModalEntry {
     kind: ModalKind;

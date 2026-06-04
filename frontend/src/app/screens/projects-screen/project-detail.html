@@ -300,6 +300,16 @@
                                                         <div class="pd-template-sub">{{ t.definition_id || t.model_id || 'all models' }}</div>
                                                     </div>
                                                     <button class="icon-btn" type="button"
+                                                            (click)="editTemplate(s.domain, t)"
+                                                            [title]="s.domain === 'training' ? 'Open in Training screen' : 'Edit template settings'">
+                                                        <app-ico name="Pencil" [size]="13"/>
+                                                    </button>
+                                                    <button class="icon-btn" type="button"
+                                                            (click)="editTemplateJson(s.domain, t)"
+                                                            title="Edit raw JSON">
+                                                        <app-ico name="Braces" [size]="13"/>
+                                                    </button>
+                                                    <button class="icon-btn" type="button"
                                                             (click)="deleteProjectTemplate(s.domain, t)"
                                                             title="Delete this project template">
                                                         <app-ico name="Trash2" [size]="13"/>

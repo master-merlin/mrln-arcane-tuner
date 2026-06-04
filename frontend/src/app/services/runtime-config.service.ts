@@ -22,15 +22,16 @@ export class RuntimeConfigService {
     private config: RuntimeConfig = DEFAULT_CONFIG;
 
     get apiUrl(): string {
-        return `http://127.0.0.1:${this.config.backendPort}/api`;
+        return '/api';
     }
 
     get wsUrl(): string {
-        return `ws://127.0.0.1:${this.config.backendPort}/api/ws`;
+        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        return `${proto}://${window.location.host}/api/ws`;
     }
 
     get mediaBaseUrl(): string {
-        return `http://127.0.0.1:${this.config.backendPort}/media`;
+        return '/media';
     }
 
     get backendPort(): number {

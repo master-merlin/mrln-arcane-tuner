@@ -108,6 +108,76 @@ The frontend runs on `http://localhost:4200` by default. Both ports are configur
 
 ---
 
+## Run as a container on RunPod
+
+The app ships as a single Docker image that serves the API, the WebSocket log
+stream, media, and the Angular UI **from one port over HTTPS**. RunPod is the
+example provider here, but the same image works on any host with an HTTPS
+ingress proxy.
+
+### How it works
+
+- One `uvicorn` process serves everything at one origin: `/` (UI), `/api`,
+  `/api/ws`, `/media`. The frontend uses **same-origin** URLs, so it works
+  behind RunPod's per-port proxy with zero config.
+- **HTTPS is handled by RunPod's proxy** (Cloudflare terminates TLS). The
+  container itself only serves plain HTTP on `0.0.0.0` — no certificates to
+  manage.
+- Persistent data (SQLite DB, datasets, models, outputs) lives on a mounted
+  volume so it survives pod restarts.
+
+### 1. Build & push the image
+
+```bash
+docker build -t <your-registry>/mrln-arcane-tuner:latest .
+docker push <your-registry>/mrln-arcane-tuner:latest
+```
+
+### 2. Create the pod on RunPod
+
+- **GPU:** any NVIDIA Ampere+ GPU. The image is built for **CUDA 13.0**
+  (PyTorch 2.10).
+- **Container image:** `<your-registry>/mrln-arcane-tuner:latest`
+- **Volume (strongly recommended):** attach a **network volume mounted at
+  `/workspace`**. The DB, `datasets/`, `models/`, and `outputs/` are stored
+  there, so models download only once and your work survives restarts.
+  *Without a volume the container runs but all data is lost when the pod
+  stops.*
+- **Expose HTTP port:** add `8000` to the pod's **Expose HTTP Ports** field.
+- **Environment variables:**
+
+  | Variable | Purpose | Default |
+  |---|---|---|
+  | `MRLN_AUTH_TOKEN` | Require this token to access the app (recommended — the proxy URL is public). | _unset = open_ |
+  | `PORT` | Internal port (match the exposed HTTP port). | `8000` |
+  | `MRLN_DATA_DIR` | Persistence root. | `/workspace` |
+
+### 3. Open the app
+
+RunPod exposes the port at:
+
+```
+https://[POD_ID]-8000.proxy.runpod.net
+```
+
+Open it; if `MRLN_AUTH_TOKEN` is set you'll get a sign-in page — enter the
+token once and a cookie keeps you signed in.
+
+### Notes & caveats
+
+- **Proxy timeout:** RunPod's Cloudflare proxy closes any single request that
+  takes longer than ~100 seconds. The log WebSocket and normal API calls are
+  fine; training runs server-side and is unaffected. Very large single uploads
+  through the proxy can hit this limit — for big datasets, place them on the
+  `/workspace` volume directly.
+- **GPU selection:** the app auto-detects the GPU. To pin one on a multi-GPU
+  pod, set `CUDA_VISIBLE_DEVICES`.
+- **Other providers:** any platform that exposes a container HTTP port over
+  HTTPS works — point its ingress at port `8000` and (optionally) set
+  `MRLN_AUTH_TOKEN`.
+
+---
+
 ## Architecture
 
 MRLN Arcane Tuner is a full-stack application with a FastAPI backend and an Angular frontend connected via REST API and WebSocket.

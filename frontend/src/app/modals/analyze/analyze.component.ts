@@ -740,7 +740,7 @@ const THUMB_FALLBACK_DATA_URI =
         .an-files-head,
         .an-files-row {
             display: grid;
-            grid-template-columns: 48px 1fr 80px 92px 72px 80px 180px;
+            grid-template-columns: 64px 1fr 80px 92px 72px 80px 180px;
             align-items: center; gap: 10px;
             padding: 8px 12px;
         }
@@ -761,7 +761,7 @@ const THUMB_FALLBACK_DATA_URI =
         }
         .an-files-row:last-child { border-bottom: none; }
         .an-files-thumb {
-            width: 42px; height: 30px;
+            width: 56px; height: 40px;
             object-fit: cover;
             border-radius: 4px;
             background: var(--color-surface-mid);
@@ -1012,7 +1012,9 @@ export class AnalyzeModalComponent implements OnInit {
                 height: h,
                 sizeBytes: meta.size_bytes ?? p.size_bytes ?? 0,
                 flags: {
-                    H: meta.is_majority_ar === true,
+                    // Harmonized only when it matches the majority AR *and* needs no
+                    // crop — so "Needs Crop" rows show a grey (un-fulfilled) H pill.
+                    H: meta.is_majority_ar === true && !needsCrop,
                     C: !!p.caption_file && cap.trim().length > 0,
                     M: meta.has_mask === true,
                 },

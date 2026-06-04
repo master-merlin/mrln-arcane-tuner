@@ -430,16 +430,26 @@ export class ViewerGridViewComponent {
     pairState(pair: any): StatePillsState {
         const captioned = !!(pair?.caption_content && String(pair.caption_content).trim().length > 0);
         const masked = !!pair?.metadata?.has_mask;
-        // Harmonization = aspect-ratio crop majority (per-image flag set by
-        // backend `compute_harmonization_score`). NOT the same as overlay —
-        // overlay has its own OVR badge.
-        const harmonized = !!pair?.metadata?.is_majority_ar;
+        // Harmonization (file level) = matches the dataset majority aspect ratio
+        // AND is already cropped to its target (no outstanding crop). A file that
+        // still needs a crop reads as un-harmonized so the H pill stays grey —
+        // mirrors the analyze screen's "Needs Crop" filter. NOT the same as
+        // overlay — overlay has its own OVR badge.
+        const meta = pair?.metadata ?? {};
+        const tw = meta.target_width;
+        const th = meta.target_height;
+        const needsCrop = tw != null && th != null && (tw !== meta.width || th !== meta.height);
+        const harmonized = meta.is_majority_ar === true && !needsCrop;
         return {
             harmonized,
             captioned,
             masked,
             titles: {
-                harmonized: harmonized ? 'Matches dataset majority aspect ratio' : 'Off-ratio — crop suggested',
+                harmonized: harmonized
+                    ? 'Harmonized — cropped to majority aspect ratio'
+                    : needsCrop
+                      ? 'Needs crop to majority aspect ratio'
+                      : 'Off-ratio — crop suggested',
                 captioned: captioned ? 'Caption present' : 'No caption',
                 masked: masked ? 'Mask available' : 'No mask',
             },

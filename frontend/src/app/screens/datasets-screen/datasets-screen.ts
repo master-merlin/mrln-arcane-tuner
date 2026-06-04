@@ -14,7 +14,7 @@ import {
 import { IcoComponent } from '../../icons/ico.component';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { ChipTagComponent } from '../../ui/chip-tag/chip-tag.component';
-import { StatePillsComponent } from '../../ui/state-pills/state-pills.component';
+import { StatePillsComponent, StatePillsState, datasetStatePills } from '../../ui/state-pills/state-pills.component';
 
 interface ProjectBadge {
     id: string;
@@ -676,39 +676,20 @@ export class DatasetsScreen {
     }
 
     /**
-     * Readiness flags + per-pill coverage tooltips fed into <app-state-pills/>.
-     *
-     * Denominator is `multimedia_count` (images) since the H/C/M conditions
-     * apply per image. Harmonized count is approximated as
-     * `round(harmonization_score × images)` because the backend exposes only
-     * the aggregate ratio, not a per-file harmonized boolean in the list endpoint.
+     * Dataset-level H/C/M pills: colored by % completeness (full ≥90% green,
+     * mid ≥50% amber, low >0% red, none grey) via the shared
+     * {@link datasetStatePills} builder, with per-pill coverage tooltips.
+     * Denominator is `multimedia_count` (images) since the conditions apply per
+     * image; harmonized count is `round(harmonization_score × images)` because the
+     * list endpoint exposes only the aggregate ratio, not a per-file boolean.
      */
-    protected stateOf(d: Dataset): {
-        harmonized: boolean;
-        captioned: boolean;
-        masked: boolean;
-        titles: { harmonized: string; captioned: string; masked: string };
-    } {
-        const total = d.multimedia_count ?? 0;
-        const captioned = d.caption_count ?? 0;
-        const masked = d.mask_count ?? 0;
-        const harmonScore = d.harmonization_score ?? 0;
-        const harmonized = Math.round(harmonScore * total);
-        const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
-        const fmt = (label: string, n: number, percent: number) =>
-            total > 0
-                ? `${label} ${n}/${total} files (${percent}%)`
-                : `${label}: no images yet`;
-        return {
-            harmonized: harmonScore > 0,
-            captioned: !!d.caption_coverage,
-            masked: masked > 0,
-            titles: {
-                harmonized: fmt('Harmonized', harmonized, Math.round(harmonScore * 100)),
-                captioned: fmt('Captioned', captioned, pct(captioned)),
-                masked: fmt('Masked', masked, pct(masked)),
-            },
-        };
+    protected stateOf(d: Dataset): StatePillsState {
+        return datasetStatePills({
+            total: d.multimedia_count ?? 0,
+            captioned: d.caption_count ?? 0,
+            masked: d.mask_count ?? 0,
+            harmonizationScore: d.harmonization_score ?? 0,
+        });
     }
 
     /**

@@ -4,7 +4,7 @@ import { ReactiveFormsModule, FormArray, FormGroup, FormControl } from '@angular
 import { DatasetService, Dataset } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
-import { StatePillsComponent, StatePillsState } from '../../../ui/state-pills/state-pills.component';
+import { StatePillsComponent, StatePillsState, datasetStatePills } from '../../../ui/state-pills/state-pills.component';
 import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-field';
 
 @Component({
@@ -470,24 +470,12 @@ export class DynamicFormGroupComponent {
   datasetStateFor(index: number): StatePillsState {
     const d = this.datasetFor(index);
     if (!d) return { harmonized: false, captioned: false, masked: false };
-    const total = d.multimedia_count ?? 0;
-    const captioned = d.caption_count ?? 0;
-    const masked = d.mask_count ?? 0;
-    const harmonScore = d.harmonization_score ?? 0;
-    const harmonized = Math.round(harmonScore * total);
-    const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
-    const fmt = (label: string, n: number, percent: number) =>
-      total > 0 ? `${label} ${n}/${total} files (${percent}%)` : `${label}: no images yet`;
-    return {
-      harmonized: harmonScore > 0,
-      captioned: !!d.caption_coverage,
-      masked: masked > 0,
-      titles: {
-        harmonized: fmt('Harmonized', harmonized, Math.round(harmonScore * 100)),
-        captioned: fmt('Captioned', captioned, pct(captioned)),
-        masked: fmt('Masked', masked, pct(masked)),
-      },
-    };
+    return datasetStatePills({
+      total: d.multimedia_count ?? 0,
+      captioned: d.caption_count ?? 0,
+      masked: d.mask_count ?? 0,
+      harmonizationScore: d.harmonization_score ?? 0,
+    });
   }
 
   autofillCaptionPrefix(index: number): void {

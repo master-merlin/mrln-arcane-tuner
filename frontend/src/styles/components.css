@@ -413,6 +413,15 @@
     .state-pill.on.C { background: oklch(0.68 0.14 155 / 0.18); color: var(--color-success); }
     .state-pill.on.M { background: oklch(0.65 0.20 25 / 0.18); color: var(--color-danger); }
 
+    /* Coverage-tier coloring (dataset Library / training-form rows): the pill hue
+       reflects % completeness — full ≥90% green, mid ≥50% amber, low >0% red —
+       rather than the per-letter hue above. Equal specificity to `.on.<letter>`,
+       so these win by source order whenever both apply. File-level surfaces
+       (Grid, analyze) omit the tier classes and keep the binary letter colors. */
+    .state-pill.on.lvl-full { background: oklch(0.68 0.14 155 / 0.18); color: var(--color-success); }
+    .state-pill.on.lvl-mid  { background: oklch(0.75 0.16 75 / 0.18);  color: var(--color-warning); }
+    .state-pill.on.lvl-low  { background: oklch(0.65 0.20 25 / 0.18);  color: var(--color-danger); }
+
     /* HPS pill — dark-glass quality-score badge. Used on every image
        overlay surface (dataset library card, workspace tile, future canvas
        overlays). Layout uses absolute positioning at the call site; the

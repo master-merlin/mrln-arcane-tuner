@@ -924,6 +924,17 @@ export class DatasetsScreen {
         window.open(url, '_blank');
     }
 
+    /** Triggers a browser download of the portable export zip (+ metadata). */
+    protected exportDataset(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        window.open(this.datasetsApi.getExportUrl(d.name), '_blank');
+    }
+
+    /** Opens the import-dataset modal to upload a portable export zip. */
+    protected openImportDataset(): void {
+        this.overlay.openModal('import-dataset');
+    }
+
     /** Per-dataset edit-metadata — opens the dataset-form modal in edit mode. */
     protected editDataset(d: Dataset, event: Event): void {
         event.stopPropagation();

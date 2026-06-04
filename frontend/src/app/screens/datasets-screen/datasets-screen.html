@@ -24,6 +24,9 @@
             <button class="btn primary" type="button" (click)="openNewDataset()">
                 <app-ico name="Plus" [size]="14"/> New Dataset
             </button>
+            <button class="btn" type="button" (click)="openImportDataset()">
+                <app-ico name="Upload" [size]="14"/> Import Dataset
+            </button>
         </div>
     </div>
 
@@ -369,6 +372,10 @@
                     <button class="icon-btn ds-action" type="button"
                             (click)="downloadDataset(d, $event)" title="Download as zip">
                         <app-ico name="Download" [size]="14"/>
+                    </button>
+                    <button class="icon-btn ds-action" type="button"
+                            (click)="exportDataset(d, $event)" title="Export (portable zip + metadata)">
+                        <app-ico name="Share2" [size]="14"/>
                     </button>
                     <input type="file" multiple
                            class="ds-upload-input"

@@ -6,13 +6,14 @@ and the application lifespan (startup / shutdown).
 
 from __future__ import annotations
 
+import asyncio
+import hmac
 import os
 import shutil
 import subprocess
 import traceback
 import uuid
 import webbrowser
-import asyncio
 from contextlib import asynccontextmanager
 
 import structlog
@@ -248,7 +249,7 @@ async def login(token: str = ""):
     No-op pass-through when auth is disabled (no token configured).
     """
     configured = container_config.auth_token()
-    if not configured or token == configured:
+    if not configured or hmac.compare_digest(token, configured):
         resp = RedirectResponse("/", status_code=302)
         if configured:
             # Secure flag follows deployment intent: in the container the app

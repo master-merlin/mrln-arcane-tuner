@@ -32,10 +32,14 @@ class DatabaseEngine:
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            root = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
-            db_path = os.path.join(root, "arcane_tuner.db")
+            env_path = os.environ.get("MRLN_DB_PATH")
+            if env_path:
+                db_path = env_path
+            else:
+                root = os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+                db_path = os.path.join(root, "arcane_tuner.db")
 
         self.db_path = db_path
         self._local = threading.local()

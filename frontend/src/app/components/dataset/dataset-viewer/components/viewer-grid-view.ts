@@ -45,10 +45,10 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                          [class.tile-active]="pair.media_file === activeMediaFile()"
                          class="tile bg-surface-mid/50 border border-surface-mid rounded-theme-xl overflow-hidden flex flex-col group hover:border-brand/50 transition-all hover:shadow-xl hover:shadow-brand/10 h-[480px]">
                         <!-- Media Thumbnail -->
-                         <div class="h-80 bg-base relative cursor-pointer overflow-hidden flex-shrink-0" (click)="detailRequested.emit(i)">
+                         <div class="h-80 bg-media-backdrop relative cursor-pointer overflow-hidden flex-shrink-0" (click)="detailRequested.emit(i)">
                              <!-- Filename Overlay (top-center) -->
                              <div class="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none z-[5] max-w-[58%]">
-                                 <div class="bg-surface-low/80 backdrop-blur-sm text-white text-[10px] px-2 py-0.5 rounded-theme-md border border-white/10 font-mono truncate text-center">
+                                 <div class="bg-surface-low/80 backdrop-blur-sm text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate text-center">
                                      {{ pair.media_file }}
                                  </div>
                              </div>
@@ -70,7 +70,7 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                                        (loadeddata)="onTileLoaded($event, pair)"
                                        class="w-full h-full object-cover transition-opacity relative z-[1]"
                                        [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"></video>
-                                <div class="absolute bottom-2 right-2 bg-surface-low/60 text-white p-1 rounded-theme-sm z-10">
+                                <div class="absolute bottom-2 right-2 bg-surface-low/60 text-text-primary p-1 rounded-theme-sm z-10">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
                                 </div>
                              } @else {
@@ -84,7 +84,7 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                              
                              <!-- Edit Overlay -->
                              <div class="absolute inset-0 bg-base/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                                 <span class="bg-surface-low/70 text-white text-xs px-2 py-1 rounded-theme-md">Open Detail</span>
+                                 <span class="bg-surface-low/70 text-text-primary text-xs px-2 py-1 rounded-theme-md">Open Detail</span>
                              </div>
                              
                              <!-- HPS pill (top-left) — shared .hps-pill from components.css -->

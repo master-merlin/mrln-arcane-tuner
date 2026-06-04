@@ -55,7 +55,7 @@ interface HSLRange {
             <input type="range" min="-30" max="30" step="1"
                 [value]="getAdj('hue_shift')"
                 (input)="onSlider('hue_shift', $event)"
-                class="w-full accent-brand h-1 cursor-pointer" data-testid="hsl-hue-slider">
+                class="w-full accent-brand cursor-pointer" data-testid="hsl-hue-slider">
         </div>
 
         <!-- Saturation -->
@@ -67,7 +67,7 @@ interface HSLRange {
             <input type="range" min="-100" max="100" step="1"
                 [value]="getAdj('saturation')"
                 (input)="onSlider('saturation', $event)"
-                class="w-full accent-brand h-1 cursor-pointer" data-testid="hsl-sat-slider">
+                class="w-full accent-brand cursor-pointer" data-testid="hsl-sat-slider">
         </div>
 
         <!-- Luminance -->
@@ -79,7 +79,7 @@ interface HSLRange {
             <input type="range" min="-100" max="100" step="1"
                 [value]="getAdj('luminance')"
                 (input)="onSlider('luminance', $event)"
-                class="w-full accent-brand h-1 cursor-pointer" data-testid="hsl-lum-slider">
+                class="w-full accent-brand cursor-pointer" data-testid="hsl-lum-slider">
         </div>
     </div>
     `,

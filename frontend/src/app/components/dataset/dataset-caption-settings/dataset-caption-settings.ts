@@ -30,7 +30,7 @@ export interface CaptionSettingsState {
                             <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Model</label>
                             <select [ngModel]="selectedCaptionModel()" (ngModelChange)="onModelChange($event)"
                                    data-testid="caption-model-select"
-                            class="w-full bg-surface-low border border-surface-mid text-white text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
+                            class="w-full bg-surface-low border border-surface-mid text-text-primary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
                             @for (model of captionModels; track model.id) {
                                 <option [value]="model.id">{{ model.name }}</option>
                             }
@@ -41,7 +41,7 @@ export interface CaptionSettingsState {
                             <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Variant</label>
                             <select [ngModel]="selectedQwen3Variant()" (ngModelChange)="onVariantChange($event)"
                                    data-testid="qwen3-variant-select"
-                                class="w-full bg-surface-low border border-surface-mid text-white text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
+                                class="w-full bg-surface-low border border-surface-mid text-text-primary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
                                 @for (variant of qwen3Variants; track variant) {
                                     <option [value]="variant">{{ variant }}</option>
                                 }
@@ -62,7 +62,7 @@ export interface CaptionSettingsState {
                             <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Settings Template</label>
                             <select [ngModel]="activeTemplateId()" (ngModelChange)="onTemplateChange($event)"
                                    data-testid="caption-template-select"
-                                class="w-full bg-surface-low border border-surface-high text-white text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
+                                class="w-full bg-surface-low border border-surface-high text-text-primary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
                                 @for (tpl of currentTemplates(); track tpl.id) {
                                     <option [value]="tpl.id">{{ tpl.name }} {{tpl.is_default ? '(Default)' : ''}}</option>
                                 }

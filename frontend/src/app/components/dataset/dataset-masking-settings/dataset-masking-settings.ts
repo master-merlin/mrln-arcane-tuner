@@ -24,7 +24,7 @@ export interface MaskingSettingsState {
                     <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Method</label>
                     <select [ngModel]="selectedMaskModel()" (ngModelChange)="onModelChange($event)"
                         data-testid="masking-model-select"
-                        class="w-full bg-surface-low border border-surface-mid text-white text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
+                        class="w-full bg-surface-low border border-surface-mid text-text-primary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
                         @for (model of maskingModels; track model.id) {
                             <option [value]="model.id">{{ model.name }}</option>
                         }
@@ -43,7 +43,7 @@ export interface MaskingSettingsState {
                         <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Settings Template</label>
                         <select [ngModel]="activeTemplateId()" (ngModelChange)="onTemplateChange($event)"
                             data-testid="masking-template-select"
-                            class="w-full bg-surface-low border border-surface-high text-white text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
+                            class="w-full bg-surface-low border border-surface-high text-text-primary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
                             @for (tpl of currentTemplates(); track tpl.id) {
                                 <option [value]="tpl.id">{{ tpl.name }} {{tpl.is_default ? '(Default)' : ''}}</option>
                             }
@@ -100,7 +100,7 @@ export interface MaskingSettingsState {
                                                         (ngModelChange)="onCustomInputChange(param, $event)"
                                                         data-testid="masking-custom-input"
                                                         placeholder="Enter custom concept..."
-                                                        class="w-full bg-surface-low border border-brand/50 text-white text-xs rounded-theme-md px-2 py-1 outline-none focus:border-brand transition-colors"
+                                                        class="w-full bg-surface-low border border-brand/50 text-text-primary text-xs rounded-theme-md px-2 py-1 outline-none focus:border-brand transition-colors"
                                                         autofocus
                                                     >
                                                 </div>

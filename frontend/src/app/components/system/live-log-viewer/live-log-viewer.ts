@@ -114,7 +114,7 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
 
         .log-body {
             padding: 4px 0 6px;
-            background: oklch(0.04 0.005 265);
+            background: var(--color-terminal-bg);
             max-height: 360px;
             overflow-y: auto;
             scroll-behavior: smooth;
@@ -135,7 +135,7 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
         }
         .log-body.nowrap .log-row { white-space: nowrap; }
         .log-body.nowrap { overflow-x: auto; }
-        .log-row:nth-child(even) { background: oklch(1 0 0 / 0.015); }
+        .log-row:nth-child(even) { background: var(--color-terminal-row-alt); }
         .log-row[data-level="WARNING"]  { border-left-color: var(--color-warning); }
         .log-row[data-level="ERROR"]    { border-left-color: var(--color-danger); }
         .log-row[data-level="CRITICAL"] { border-left-color: var(--color-danger); background: oklch(0.70 0.17 25 / 0.10); }

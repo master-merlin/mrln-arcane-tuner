@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import time
 import zipfile
 from pathlib import Path
@@ -117,5 +118,6 @@ def safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
         if not target.is_relative_to(dest):
             raise ManifestError(f"Unsafe path in archive: {name!r}")
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Stream member → disk so a large video doesn't load fully into RAM.
         with zf.open(member) as src, open(target, "wb") as out:
-            out.write(src.read())
+            shutil.copyfileobj(src, out)

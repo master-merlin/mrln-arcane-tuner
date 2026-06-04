@@ -33,8 +33,6 @@ import { oneDark } from '@codemirror/theme-one-dark';
     styles: [`
         :host { display: block; height: 100%; }
         .je-host { height: 100%; }
-        .je-host .cm-editor { height: 100%; border-radius: var(--radius-theme-md); overflow: hidden; }
-        .je-host .cm-scroller { font-family: var(--font-mono); font-size: 12.5px; }
     `],
 })
 export class JsonEditorComponent implements OnDestroy {
@@ -82,6 +80,23 @@ export class JsonEditorComponent implements OnDestroy {
                 lintGutter(),
                 keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
                 oneDark,
+                // Wrap long lines so a single long value never forces horizontal
+                // scrolling — the line-number gutter still marks each logical line.
+                EditorView.lineWrapping,
+                // Height + scrolling MUST be set via the CM theme, not component
+                // CSS: CodeMirror builds .cm-editor/.cm-scroller dynamically, so
+                // Angular's emulated-encapsulation attribute never lands on them
+                // and scoped `.cm-*` rules silently don't apply. The editor fills
+                // its host (a fixed-height container) and the scroller handles
+                // vertical overflow.
+                EditorView.theme({
+                    '&': { height: '100%', borderRadius: 'var(--radius-theme-md)' },
+                    '.cm-scroller': {
+                        overflow: 'auto',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '12.5px',
+                    },
+                }),
                 EditorView.editable.of(!this.readOnly()),
                 listener,
             ],

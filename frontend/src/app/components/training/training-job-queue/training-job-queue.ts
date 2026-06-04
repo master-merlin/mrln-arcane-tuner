@@ -85,9 +85,6 @@ export class TrainingJobQueueComponent implements OnInit {
   // Model source overrides cache (definition_id â†’ source info)
   jobModelSources = signal<Map<string, ModelSourceOverride>>(new Map());
 
-  // Track if we just triggered a start to prevent double-firing before refresh updates status
-  private startingJobId: string | null = null;
-
   wsService = inject(WebSocketService);
   private destroyRef = inject(DestroyRef);
   private jobStore = inject(JobStore);
@@ -190,9 +187,22 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   ngOnInit() {
-    // Restore preference
-    const saved = localStorage.getItem('autoQueueEnabled');
-    if (saved) this.autoQueue.set(saved === 'true');
+    // Auto-queue is a SERVER-side setting now: the backend advances the queue
+    // unattended (it no longer depends on this component being mounted). Load
+    // the persisted value; one-time migrate any legacy browser-local pref so
+    // existing users keep their choice.
+    const legacy = localStorage.getItem('autoQueueEnabled');
+    if (legacy !== null) {
+      const val = legacy === 'true';
+      this.autoQueue.set(val);
+      this.jobService.setAutoQueue(val).subscribe({ error: () => {} });
+      localStorage.removeItem('autoQueueEnabled');
+    } else {
+      this.jobService.getAutoQueue().subscribe({
+        next: (r) => this.autoQueue.set(r.auto_queue),
+        error: () => {},
+      });
+    }
 
     // Restore archive scope preference
     const savedScope = localStorage.getItem('archiveProjectScope');
@@ -232,10 +242,8 @@ export class TrainingJobQueueComponent implements OnInit {
         const existing = this.jobs().find(j => j.id === updatedJob.id);
         const merged: Job = { ...updatedJob, logs: updatedJob.logs || existing?.logs || [] };
         this.archiveLocally(merged, updatedJob.status);
-        // A natural completion/failure frees the GPU; let the next job start.
-        if (updatedJob.status !== JobStatus.STOPPED) {
-          this.processAutoQueue(this.jobs());
-        }
+        // The backend now starts the next pending job on completion/failure —
+        // no client-side advancement needed (and it works with no browser open).
         return;
       }
 
@@ -543,7 +551,6 @@ export class TrainingJobQueueComponent implements OnInit {
     this.jobService.listJobs().subscribe({
       next: (jobs) => {
         this.jobs.set(jobs);
-        this.processAutoQueue(jobs);
         this.loadModelSources(jobs);
         // Pre-check sample availability for jobs with sampling configured
         for (const job of jobs) {
@@ -563,40 +570,13 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   toggleAutoQueue() {
-    this.autoQueue.update(v => !v);
-    localStorage.setItem('autoQueueEnabled', String(this.autoQueue()));
-    // Trigger check immediately
-    this.processAutoQueue(this.jobs());
-  }
-
-  private processAutoQueue(jobs: Job[]) {
-    if (!this.autoQueue()) return;
-
-    // 1. Check if anything is running
-    const runningJob = jobs.find(j => j.status === JobStatus.RUNNING);
-
-    if (runningJob) {
-      // Reset our internal tracker if the job we started is now officially running
-      if (this.startingJobId === runningJob.id) {
-        this.startingJobId = null;
-      }
-      return;
-    }
-
-    // 2. If nothing running, find next pending
-    // Honor explicit queue priority first, then created_at (FIFO).
-    const pendingJobs = jobs.filter(j => j.status === JobStatus.PENDING)
-      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.created_at - b.created_at);
-
-    if (pendingJobs.length > 0) {
-      const nextJob = pendingJobs[0];
-
-      // Prevent spamming the start command for the same job
-      if (this.startingJobId !== nextJob.id) {
-        this.startingJobId = nextJob.id;
-        this.startJob(nextJob.id);
-      }
-    }
+    const enabled = !this.autoQueue();
+    this.autoQueue.set(enabled);
+    // Persist server-side. The BACKEND owns queue advancement now (and drains
+    // any backlog immediately when this is switched on), so there is no
+    // client-side start here — that's what made unattended queues stall when
+    // no browser was open.
+    this.jobService.setAutoQueue(enabled).subscribe({ error: () => {} });
   }
 
   private parseLogLine(line: string): any | null {

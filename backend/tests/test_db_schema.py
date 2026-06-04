@@ -230,7 +230,43 @@ class TestV2Migration:
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 9
+            assert row["version"] == 10
+
+
+# ── V10 Migration: persisted pending-queue priority ──────────────────────
+
+
+class TestV10Migration:
+    """V10 adds a persisted ``priority`` column to ``job_history`` so a manual
+    pending-queue reorder survives a backend restart."""
+
+    def test_v10_adds_priority_column(self, db_engine):
+        run_migrations(db_engine)
+        with db_engine.write() as conn:
+            conn.execute(
+                "INSERT INTO job_history (id, definition_id, status, created_at, priority) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("job-pri", "flux/dev", "pending", time.time(), 3),
+            )
+        with db_engine.connection() as conn:
+            row = conn.execute(
+                "SELECT priority FROM job_history WHERE id = ?", ("job-pri",)
+            ).fetchone()
+            assert row["priority"] == 3
+
+    def test_v10_priority_defaults_zero(self, db_engine):
+        run_migrations(db_engine)
+        with db_engine.write() as conn:
+            conn.execute(
+                "INSERT INTO job_history (id, definition_id, status, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("job-nopri", "flux/dev", "pending", time.time()),
+            )
+        with db_engine.connection() as conn:
+            row = conn.execute(
+                "SELECT priority FROM job_history WHERE id = ?", ("job-nopri",)
+            ).fetchone()
+            assert row["priority"] == 0
 
 
 # ── Media Item Repository ────────────────────────────────────────────────

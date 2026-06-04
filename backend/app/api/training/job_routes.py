@@ -13,7 +13,12 @@ from app.api._path_guard import validate_path_within
 from app.core.job import Job
 from app.core.job_manager import job_manager
 from app.core.logger import get_logger
-from app.api.schemas.job_schemas import CreateJobRequest, SetSamplingCadenceRequest
+from app.api.schemas.job_schemas import (
+    CreateJobRequest,
+    SetSamplingCadenceRequest,
+    SetAutoQueueRequest,
+)
+from app.core.settings_manager import get_settings_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -36,6 +41,33 @@ async def create_job(request: CreateJobRequest):
 async def list_jobs():
     """List all training jobs."""
     return await asyncio.to_thread(job_manager.list_jobs)
+
+
+@router.get("/jobs/settings/auto-queue")
+async def get_auto_queue():
+    """Return the persisted backend auto-queue preference."""
+    sm = get_settings_manager()
+    mod = await asyncio.to_thread(sm.get_module_settings, "jobs")
+    return {"auto_queue": bool(mod.get("auto_queue", False))}
+
+
+@router.put("/jobs/settings/auto-queue")
+async def set_auto_queue(request: SetAutoQueueRequest):
+    """Persist the auto-queue preference server-side.
+
+    Stored server-side (not browser localStorage) so the backend advances the
+    queue unattended. Turning it on immediately drains a backlog if the GPU is
+    idle.
+    """
+    sm = get_settings_manager()
+    await asyncio.to_thread(
+        sm.update_module_settings, "jobs", {"auto_queue": request.enabled}
+    )
+    logger.info("auto_queue_setting_changed", enabled=request.enabled)
+    if request.enabled:
+        # Idle GPU + pending jobs → start draining now (off-thread, non-blocking).
+        job_manager.schedule_advance_queue()
+    return {"auto_queue": request.enabled}
 
 
 @router.post("/jobs/{job_id}/start")

@@ -16,3 +16,8 @@ class CreateJobRequest(BaseModel):
 class SetSamplingCadenceRequest(BaseModel):
     """Request body for changing the sampling cadence at runtime."""
     interval: int
+
+
+class SetAutoQueueRequest(BaseModel):
+    """Request body for toggling backend-owned auto-queue advancement."""
+    enabled: bool

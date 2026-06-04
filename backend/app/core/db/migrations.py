@@ -41,6 +41,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v7,
         _migrate_v8,
         _migrate_v9,
+        _migrate_v10,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -777,4 +778,22 @@ def _migrate_v9(conn) -> None:
             conn.execute(ddl)
         except Exception:
             pass  # Column already exists
+
+
+# ── V10: Persisted pending-queue priority ──────────────────────────
+
+def _migrate_v10(conn) -> None:
+    """Add ``priority`` to ``job_history`` so a manual pending-queue reorder
+    survives a backend restart.
+
+    Priority is the primary run-order key (lower = sooner); ``created_at`` is
+    only the FIFO tiebreaker. Without persistence a restart reloads every job
+    at the column DEFAULT of 0, silently reverting the queue to creation order.
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE job_history ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"
+        )
+    except Exception:
+        pass  # Column already exists
 

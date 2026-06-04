@@ -79,6 +79,11 @@ async def lifespan(app: FastAPI):
     # Recover jobs whose subprocess died during backend downtime
     job_manager.recover_jobs()
 
+    # If auto-queue is on and the GPU is idle with pending jobs (e.g. a run
+    # finished while the backend was down), start draining now — unattended
+    # queue progress must not wait for a browser to open the Jobs tab.
+    job_manager.schedule_advance_queue()
+
     # ── Auto-start frontend (first cold start only) ──────────────────
     _maybe_start_frontend()
 

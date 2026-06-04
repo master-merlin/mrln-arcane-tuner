@@ -828,6 +828,221 @@ class TestStartJobClearsStaleSignal:
         assert os.path.exists(sig), "intentional pause signal must survive recovery launch"
 
 
+class TestAutoQueue:
+    """Backend-owned queue advancement.
+
+    The queue must drain unattended (no browser open), so advancing to the
+    next pending job is the backend's job — triggered on every terminal
+    transition, at startup, and when the auto-queue toggle is switched on.
+    Gated by a persisted ``jobs.auto_queue`` setting and the single-GPU rule
+    (never run two jobs at once).
+    """
+
+    def _pending(self, mgr, lora, priority, created_at):
+        j = mgr.create_job("flux/dev", _make_config(lora_name=lora))
+        j.status = JobStatus.PENDING
+        j.priority = priority
+        j.created_at = created_at
+        return j
+
+    def test_advance_starts_next_pending_when_idle(self):
+        mgr = JobManager()
+        j = self._pending(mgr, "a", 0, 1.0)
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_called_once_with(j.id)
+
+    def test_advance_noop_when_auto_queue_disabled(self):
+        mgr = JobManager()
+        self._pending(mgr, "a", 0, 1.0)
+        with patch.object(mgr, "_auto_queue_enabled", return_value=False), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_not_called()
+
+    def test_advance_noop_when_a_job_is_running(self):
+        mgr = JobManager()
+        running = mgr.create_job("flux/dev", _make_config(lora_name="busy"))
+        running.status = JobStatus.RUNNING
+        self._pending(mgr, "next", 0, 2.0)
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_not_called()
+
+    def test_advance_noop_when_a_job_is_paused(self):
+        """A paused job still holds the GPU/VRAM — don't start another."""
+        mgr = JobManager()
+        paused = mgr.create_job("flux/dev", _make_config(lora_name="paused"))
+        paused.status = JobStatus.PAUSED
+        self._pending(mgr, "next", 0, 2.0)
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_not_called()
+
+    def test_advance_picks_priority_then_fifo(self):
+        mgr = JobManager()
+        # created earliest but higher priority number => should NOT run first
+        self._pending(mgr, "late", 5, 1.0)
+        winner = self._pending(mgr, "winner", 0, 3.0)
+        self._pending(mgr, "mid", 0, 4.0)  # same priority, later created
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_called_once_with(winner.id)
+
+    def test_advance_noop_when_no_pending(self):
+        mgr = JobManager()
+        done = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        done.status = JobStatus.COMPLETED
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_not_called()
+
+    def test_advance_noop_when_launch_already_in_flight(self):
+        """The in-flight guard prevents two terminal events from each
+        launching a job in the window before status flips to RUNNING."""
+        mgr = JobManager()
+        self._pending(mgr, "a", 0, 1.0)
+        mgr._starting = True
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        ms.assert_not_called()
+
+    def test_advance_skips_failed_start_and_tries_next(self):
+        """If launching the next job fails, the queue must not stall — skip it
+        and try the following pending job."""
+        mgr = JobManager()
+        j1 = self._pending(mgr, "bad", 0, 1.0)
+        j2 = self._pending(mgr, "good", 1, 2.0)
+        started: list[str] = []
+
+        def fake_start(job_id, **kw):
+            job = mgr.get_job(job_id)
+            if job_id == j1.id:
+                job.status = JobStatus.FAILED  # mimic start_job's failure path
+                raise ValueError("boom")
+            job.status = JobStatus.RUNNING
+            started.append(job_id)
+
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "start_job", side_effect=fake_start):
+            mgr.advance_queue()
+        assert started == [j2.id]
+
+    def test_exit_completed_schedules_advance(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        with patch.object(mgr, "schedule_advance_queue") as ms, \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            mgr._handle_exit_message(job.id, {"code": 0})
+        assert job.status == JobStatus.COMPLETED
+        ms.assert_called_once()
+
+    def test_exit_failed_schedules_advance(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        with patch.object(mgr, "schedule_advance_queue") as ms, \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            mgr._handle_exit_message(job.id, {"code": 1, "error": "kaboom"})
+        assert job.status == JobStatus.FAILED
+        ms.assert_called_once()
+
+    def test_exit_user_stopped_does_not_advance(self):
+        """A user hard-stop (status already STOPPED) is an intentional
+        intervention — do NOT auto-start the next job."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.STOPPED  # set by stop_job before the process exits
+        with patch.object(mgr, "schedule_advance_queue") as ms, \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            mgr._handle_exit_message(job.id, {"code": 143})
+        assert job.status == JobStatus.STOPPED
+        ms.assert_not_called()
+
+
+class TestPriorityPersistence:
+    """Manual pending-queue order (priority) must survive a backend restart.
+
+    Priority is the primary run-order key; without persistence a restart resets
+    everything to 0 and the queue reverts to FIFO-by-created_at, silently losing
+    the user's arrangement.
+    """
+
+    def _pending(self, mgr, lora, created_at):
+        j = mgr.create_job("flux/dev", _make_config(lora_name=lora))
+        j.status = JobStatus.PENDING
+        j.created_at = created_at
+        return j
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_reorder_persists_every_pending_priority(self, MockRepo):
+        mgr = JobManager()
+        a = self._pending(mgr, "a", 1.0)
+        b = self._pending(mgr, "b", 2.0)
+        c = self._pending(mgr, "c", 3.0)
+        MockRepo.return_value.set_priority.reset_mock()
+
+        mgr.reorder_pending(c.id, "up")  # a,b,c -> a,c,b
+
+        # In-memory order reflects the move
+        assert a.priority == 0 and c.priority == 1 and b.priority == 2
+        # …and each new priority was persisted (id -> priority)
+        persisted = {
+            call.args[0]: call.args[1]
+            for call in MockRepo.return_value.set_priority.call_args_list
+        }
+        assert persisted == {a.id: 0, c.id: 1, b.id: 2}
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_load_from_db_hydrates_priority(self, MockRepo):
+        MockRepo.return_value.list_recent.return_value = [
+            {
+                "id": "j-pri", "definition_id": "flux/dev", "config": {},
+                "status": "pending", "created_at": 1.0, "started_at": None,
+                "finished_at": None, "error": None, "priority": 7,
+            },
+        ]
+        mgr = JobManager()
+        mgr.load_from_db()
+        assert mgr.get_job("j-pri").priority == 7
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_load_from_db_priority_defaults_zero(self, MockRepo):
+        MockRepo.return_value.list_recent.return_value = [
+            {
+                "id": "j-nopri", "definition_id": "flux/dev", "config": {},
+                "status": "pending", "created_at": 1.0, "started_at": None,
+                "finished_at": None, "error": None,  # no priority key
+            },
+        ]
+        mgr = JobManager()
+        mgr.load_from_db()
+        assert mgr.get_job("j-nopri").priority == 0
+
+    @patch.object(JobManager, "start_job")
+    def test_restart_queued_persists_priority(self, mock_start):
+        mgr = JobManager()
+        running = mgr.create_job("flux/dev", _make_config(lora_name="busy"))
+        running.status = JobStatus.RUNNING
+        archived = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        archived.status = JobStatus.COMPLETED
+
+        with patch.object(mgr, "_reset_job_log_state"), \
+                patch.object(mgr, "_persist_status") as mp:
+            mgr.restart_job(archived.id)
+
+        pending_persist = [c for c in mp.call_args_list if c.args[1:2] == ("pending",)]
+        assert pending_persist, "restart must persist the pending status"
+        assert pending_persist[0].kwargs.get("priority") == archived.priority
+
+
 class TestSignalPauseReconcile:
     """Trainer-side pause/resume log events must drive the live job status, so
     a signal-paused run shows PAUSED (and offers Resume) regardless of how the

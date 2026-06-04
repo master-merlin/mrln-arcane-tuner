@@ -163,6 +163,10 @@ class JobHistoryRepository:
         updates.update(kwargs)
         self._update(job_id, updates)
 
+    def set_priority(self, job_id: str, priority: int) -> None:
+        """Persist a pending job's run-queue priority (no status change)."""
+        self._update(job_id, {"priority": int(priority)})
+
     def get_config_for_rerun(self, job_id: str) -> dict[str, Any] | None:
         """Extract config dict from a job for re-submission."""
         job = self.get_by_id(job_id)

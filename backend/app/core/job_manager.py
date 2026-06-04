@@ -38,6 +38,9 @@ class JobManager:
         self._recovery_jobs: list[dict] = []
         # Active log tailers keyed by job_id
         self._tailers: dict[str, LogTailer] = {}
+        # Guard: a queue-advance launch is in flight (status hasn't flipped to
+        # RUNNING yet). Prevents two terminal events from each starting a job.
+        self._starting: bool = False
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Store the main event loop for cross-thread broadcasts."""
@@ -119,6 +122,7 @@ class JobManager:
                         finished_at=row.get("finished_at"),
                         error=row.get("error"),
                         pid=stored_pid,
+                        priority=row.get("priority") or 0,
                     )
                     loaded += 1
 
@@ -222,6 +226,7 @@ class JobManager:
                 "status": "pending",
                 "config": job.config,
                 "created_at": job.created_at,
+                "priority": job.priority,
             }
             
             datasets = config.get("datasets", [])
@@ -264,12 +269,14 @@ class JobManager:
     def reorder_pending(self, job_id: str, direction: str) -> None:
         """Move a pending job up/down in the run queue.
 
-        Reassigns the in-memory ``priority`` of all pending jobs to reflect the
-        new order (lower priority = runs sooner). Edge moves are no-ops. Not
-        persisted — order reverts to FIFO-by-created_at on a server restart.
+        Reassigns the ``priority`` of all pending jobs to reflect the new order
+        (lower priority = runs sooner) and persists it, so the arrangement
+        survives a backend restart (priority is the primary run-order key;
+        ``created_at`` is only the FIFO tiebreaker). Edge moves are no-ops.
         """
         if direction not in ("up", "down"):
             raise ValueError(f"Invalid direction: {direction}")
+        new_priorities: list[tuple[str, int]] = []
         with self._lock:
             pending = sorted(
                 (j for j in self._jobs.values() if j.status == JobStatus.PENDING),
@@ -284,6 +291,12 @@ class JobManager:
             pending[idx], pending[swap] = pending[swap], pending[idx]
             for order, j in enumerate(pending):
                 j.priority = order
+                new_priorities.append((j.id, order))
+
+        # Persist outside the lock (disk I/O) so the manual order survives a
+        # restart instead of reverting to FIFO-by-created_at.
+        for jid, priority in new_priorities:
+            self._persist_priority(jid, priority)
 
     def get_job(self, job_id: str) -> Job | None:
         """Look up a job by ID."""
@@ -299,6 +312,14 @@ class JobManager:
             JobHistoryRepository().update_status(job_id, status=status, **kwargs)
         except Exception as e:
             logger.warning("persist_status_failed", job_id=job_id, error=str(e))
+
+    def _persist_priority(self, job_id: str, priority: int) -> None:
+        """Sync a pending job's run-queue priority to the database."""
+        try:
+            from app.core.db.repositories.job_repo import JobHistoryRepository
+            JobHistoryRepository().set_priority(job_id, priority)
+        except Exception as e:
+            logger.warning("persist_priority_failed", job_id=job_id, error=str(e))
 
     def _persist_delete(self, job_id: str) -> None:
         """Remove a job record from the database."""
@@ -524,6 +545,12 @@ class JobManager:
                 self._loop,
             )
 
+        # A run that ended on its own (completed or failed) frees the GPU —
+        # advance the queue. A user hard-stop leaves status STOPPED here and is
+        # intentionally skipped: stopping is a deliberate intervention.
+        if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+            self.schedule_advance_queue()
+
     # ── PID Watchdog ─────────────────────────────────────────────────
 
     def _start_pid_watchdog(self, job_id: str, pid: int) -> None:
@@ -567,6 +594,10 @@ class JobManager:
                                     event_manager.broadcast("job_update", job.model_dump()),
                                     self._loop,
                                 )
+                            # An unexpected death still frees the GPU — don't
+                            # let one crashed run stall the whole overnight
+                            # queue.
+                            self.schedule_advance_queue()
                     break
 
         thread = threading.Thread(
@@ -651,6 +682,94 @@ class JobManager:
             job.error = str(e)
             self._persist_status(job_id, "failed", error=job.error)
             raise
+
+    # ── Auto-Queue (backend-owned queue advancement) ─────────────────
+
+    @staticmethod
+    def _auto_queue_enabled() -> bool:
+        """Read the persisted ``jobs.auto_queue`` preference (default off).
+
+        Server-side so the queue advances unattended — independent of whether
+        any browser/Jobs tab is open. Cheap: settings are cached in-memory by
+        the settings manager.
+        """
+        try:
+            from app.core.settings_manager import get_settings_manager
+            mod = get_settings_manager().get_module_settings("jobs")
+            return bool(mod.get("auto_queue", False))
+        except Exception as e:
+            logger.warning("auto_queue_setting_read_failed", error=str(e))
+            return False
+
+    def _claim_next_pending(self) -> str | None:
+        """Atomically pick the next pending job to launch, or None.
+
+        Returns None (taking no action) when a launch is already in flight, a
+        job is already RUNNING/PAUSED (single-GPU rule — PAUSED still holds
+        VRAM), or there are no pending jobs. On success, sets the in-flight
+        guard so a concurrent caller can't also launch.
+        """
+        with self._lock:
+            if self._starting:
+                return None
+            if any(
+                j.status in (JobStatus.RUNNING, JobStatus.PAUSED)
+                for j in self._jobs.values()
+            ):
+                return None
+            pending = sorted(
+                (j for j in self._jobs.values() if j.status == JobStatus.PENDING),
+                key=lambda j: (j.priority, j.created_at),
+            )
+            if not pending:
+                return None
+            self._starting = True
+            return pending[0].id
+
+    def advance_queue(self) -> None:
+        """Start the next pending job if auto-queue is on and the GPU is idle.
+
+        The single source of truth for queue advancement. Called on every
+        terminal transition (job exit, watchdog death), at startup after
+        recovery, and when the auto-queue toggle is switched on. Safe to call
+        from any thread. A no-op when auto-queue is disabled, a job is already
+        RUNNING/PAUSED, a launch is in flight, or no pending jobs remain.
+
+        If launching a job fails, the queue does not stall: the failed job is
+        skipped (``start_job`` marks it FAILED) and the next pending job is
+        tried.
+        """
+        if not self._auto_queue_enabled():
+            return
+        while True:
+            next_id = self._claim_next_pending()
+            if next_id is None:
+                return
+            try:
+                logger.info("auto_queue_advancing", job_id=next_id)
+                self.start_job(next_id)
+                return  # one job is now launching/running — done
+            except Exception as e:
+                # start_job already marked the job FAILED; drop the guard and
+                # try the next pending job on the loop's next pass.
+                logger.error("auto_queue_start_failed", job_id=next_id, error=str(e))
+            finally:
+                with self._lock:
+                    self._starting = False
+
+    def schedule_advance_queue(self) -> None:
+        """Run ``advance_queue`` on a short-lived daemon thread.
+
+        Terminal-transition callers run on the log-tailer or watchdog threads;
+        launching the next job there would block them on a multi-second model
+        load. Offloading keeps those threads responsive. The in-flight guard +
+        single-GPU check make concurrent invocations safe.
+        """
+        threading.Thread(
+            target=self.advance_queue,
+            daemon=True,
+            name="advance_queue",
+        ).start()
 
     def stop_job(self, job_id: str) -> None:
         """Send SIGTERM to the training subprocess."""
@@ -800,7 +919,10 @@ class JobManager:
                 j.status in (JobStatus.RUNNING, JobStatus.PAUSED)
                 for j in self._jobs.values()
             )
-        self._persist_status(job_id, "pending", error=None)
+        # Persist the new pending status AND the recomputed priority so a
+        # restart-queued run keeps its place behind existing pending jobs even
+        # across a backend restart.
+        self._persist_status(job_id, "pending", error=None, priority=job.priority)
 
         if gpu_busy:
             # Stay queued; auto-queue (or a manual Start) launches it when the

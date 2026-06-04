@@ -238,4 +238,14 @@ export class JobService {
   getSamplingCadence(jobId: string): Observable<{ job_id: string; interval: number; default_interval: number }> {
     return this.http.get<{ job_id: string; interval: number; default_interval: number }>(`${this.apiUrl}/${jobId}/sampling-cadence`);
   }
+
+  /** Read the server-side auto-queue preference (backend drains the queue unattended). */
+  getAutoQueue(): Observable<{ auto_queue: boolean }> {
+    return this.http.get<{ auto_queue: boolean }>(`${this.apiUrl}/settings/auto-queue`);
+  }
+
+  /** Persist the auto-queue preference server-side. */
+  setAutoQueue(enabled: boolean): Observable<{ auto_queue: boolean }> {
+    return this.http.put<{ auto_queue: boolean }>(`${this.apiUrl}/settings/auto-queue`, { enabled });
+  }
 }

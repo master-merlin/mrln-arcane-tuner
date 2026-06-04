@@ -32,6 +32,13 @@ RUN python -m pip install --break-system-packages \
         --index-url https://download.pytorch.org/whl/cu130 \
     && python -m pip install --break-system-packages -r requirements.txt
 
+# Native shared libraries required by OpenCV (cv2) and friends at import time
+# — the slim CUDA runtime base lacks them. Placed after the pip layer so
+# editing this list never invalidates the cached dependency install.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Backend source.
 COPY backend/ /app/backend/
 

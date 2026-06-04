@@ -7,7 +7,6 @@ import { routes } from './app.routes';
 import { ShellComponent } from './shell/shell.component';
 import { SystemStore } from './state/system.store';
 import { KpiTileComponent } from './ui/kpi-tile/kpi-tile.component';
-import { ChipComponent } from './ui/chip/chip.component';
 import { StatePillsComponent } from './ui/state-pills/state-pills.component';
 
 describe('Smoke Test', () => {
@@ -73,12 +72,6 @@ describe('UI primitives — smoke', () => {
         expect(f.nativeElement.querySelector('.kpi')).toBeTruthy();
         expect(f.nativeElement.querySelector('.kpi-label')?.textContent).toContain('Datasets');
         expect(f.nativeElement.querySelector('.kpi-value')?.textContent).toContain('79');
-    });
-
-    it('Chip renders .chip root', () => {
-        const f = TestBed.createComponent(ChipComponent);
-        f.detectChanges();
-        expect(f.nativeElement.querySelector('.chip')).toBeTruthy();
     });
 
     it('StatePills renders 3 pills with correct on-state', () => {

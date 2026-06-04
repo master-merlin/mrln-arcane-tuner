@@ -5,6 +5,7 @@ import {
     computed,
     effect,
     ElementRef,
+    HostListener,
     inject,
     signal,
     viewChild,
@@ -98,8 +99,12 @@ export class TrainingScreen {
         // exclusion badge has excluded_count data when the Training screen is
         // opened directly (idempotent; other screens seed it too).
         void this.datasetStore.loadAll();
-        // Highlight an initial section once the form DOM exists.
-        afterNextRender(() => this.onPaneScroll());
+        // Highlight an initial section once the form DOM exists, and size the
+        // bottom overscroll pad so TOC jumps to the last sections land cleanly.
+        afterNextRender(() => {
+            this.onPaneScroll();
+            this.recomputeOverscroll();
+        });
 
         // Apply a config handed off from the Jobs screen ("Reload" / "Save
         // template") once the config form component is live. Mirrors the legacy
@@ -166,7 +171,32 @@ export class TrainingScreen {
     }
 
     protected onJump(id: string): void {
-        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Expand the target group first (collapsed sections have no body to
+        // scroll to), then scroll on the next tick once its body is laid out.
+        this.configEditor()?.expandSegment(id);
+        this.recomputeOverscroll();
+        setTimeout(() => {
+            document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    }
+
+    /**
+     * Bottom overscroll pad (px) for the form pane. Without it the scroll
+     * container bottoms out before the LAST sections can rise to the top of
+     * the viewport, so a TOC jump to them lands short. Sized to ~a viewport so
+     * even a short/collapsed final section can pin near the top (and light up
+     * in the scroll-spy). Recomputed on first render, resize, and each jump.
+     */
+    protected overscrollPx = signal(0);
+
+    private recomputeOverscroll(): void {
+        const pane = this.formPane()?.nativeElement;
+        if (pane) this.overscrollPx.set(Math.max(0, pane.clientHeight - 120));
+    }
+
+    @HostListener('window:resize')
+    protected onResize(): void {
+        this.recomputeOverscroll();
     }
 
     protected fetchModels(): void {

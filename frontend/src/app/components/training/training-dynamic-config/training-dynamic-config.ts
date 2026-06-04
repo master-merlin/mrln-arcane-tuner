@@ -2010,6 +2010,22 @@ export class TrainingDynamicConfigComponent {
     return this.collapsedGroups().has(groupName);
   }
 
+  /**
+   * Expand the collapsible group addressed by a TOC jump so its body is
+   * visible when the shell scrolls to it. Matched by the same `segmentId()`
+   * mapping the TOC uses. Model Selection / VRAM Budget are hard-coded,
+   * always-open sections (not in `groups()`), so those ids are a safe no-op.
+   */
+  expandSegment(id: string): void {
+    const group = this.groups().find(g => this.segmentId(g.name) === id);
+    if (!group || !this.collapsedGroups().has(group.name)) return;
+    this.collapsedGroups.update(current => {
+      const next = new Set(current);
+      next.delete(group.name);
+      return next;
+    });
+  }
+
   /** Hide an entire group when ALL its fields are hidden by depends_on */
   isGroupHidden(group: { name: string, props: { key: string, schema: any }[] }): boolean {
     return group.props.length > 0 && group.props.every(p => this.shouldHideField(p.schema, p.key));

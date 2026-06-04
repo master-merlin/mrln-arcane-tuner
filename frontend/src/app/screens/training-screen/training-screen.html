@@ -9,7 +9,8 @@
     </aside>
 
     <!-- ── CENTER · Page head + dynamic config form ───────────────── -->
-    <main class="ts-form-pane" #formPane (scroll)="onPaneScroll()">
+    <main class="ts-form-pane" #formPane (scroll)="onPaneScroll()"
+          [style.paddingBottom.px]="overscrollPx()">
         <div class="page-head ts-page-head">
             <div>
                 <div class="eyebrow">CONFIGURE</div>

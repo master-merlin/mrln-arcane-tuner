@@ -33,3 +33,9 @@ class CaptionRequest(BaseModel):
 class ToggleEnabledRequest(BaseModel):
     """Request body for image enable/disable toggle."""
     enabled: bool
+
+
+class ImportPathRequest(BaseModel):
+    archive_path: str
+    on_conflict: str | None = None  # None | "rename" | "overwrite"
+    new_name: str | None = None

@@ -128,3 +128,74 @@ def test_export_endpoint_returns_zip_with_manifest(client, tmp_path):
         manifest = json.loads(zf.read("manifest.json"))
         assert manifest["dataset"]["trigger_word"] == "rt"
         assert manifest["media"]["a.jpg"]["quality_score"] == 0.5
+
+
+def test_import_upload_roundtrip_restores_metadata(client, tmp_path):
+    import io
+    # Build an export from a seeded dataset, then delete it and re-import.
+    dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "Roundtrip")
+    export = client.get("/api/datasets/Roundtrip/export").content
+    dm.delete_dataset("Roundtrip", delete_files=True)
+    assert dm.get_dataset("Roundtrip") is None
+
+    resp = client.post(
+        "/api/datasets/import",
+        files={"file": ("Roundtrip_1.5.0.zip", io.BytesIO(export), "application/zip")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "Roundtrip"
+    assert body["trigger_word"] == "rt"
+    assert body["version"] == "1.5.0"
+    assert body["media_metadata"]["a.jpg"]["quality_score"] == 0.5
+
+
+def test_import_conflict_returns_409_then_overwrite_succeeds(client, tmp_path):
+    import io
+    dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "Dupe")
+    export = client.get("/api/datasets/Dupe/export").content
+
+    # Name still exists -> 409 with structured body
+    conflict = client.post(
+        "/api/datasets/import",
+        files={"file": ("Dupe.zip", io.BytesIO(export), "application/zip")},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["conflict"] is True
+    assert conflict.json()["detail"]["name"] == "Dupe"
+
+    # Retry with overwrite -> replaces it
+    ok = client.post(
+        "/api/datasets/import",
+        files={"file": ("Dupe.zip", io.BytesIO(export), "application/zip")},
+        data={"on_conflict": "overwrite"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["name"] == "Dupe"
+
+
+def test_import_conflict_rename_creates_suffixed_dataset(client, tmp_path):
+    import io
+    dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "Solo")
+    export = client.get("/api/datasets/Solo/export").content
+
+    ok = client.post(
+        "/api/datasets/import",
+        files={"file": ("Solo.zip", io.BytesIO(export), "application/zip")},
+        data={"on_conflict": "rename"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["name"] == "Solo (imported)"
+
+
+def test_import_path_roundtrip(client, tmp_path):
+    dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "ByPath")
+    export = client.get("/api/datasets/ByPath/export").content
+    archive_path = os.path.join(tmp_path, "ByPath_export.zip")
+    with open(archive_path, "wb") as f:
+        f.write(export)
+    dm.delete_dataset("ByPath", delete_files=True)
+
+    resp = client.post("/api/datasets/import-path", json={"archive_path": archive_path})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "ByPath"

@@ -6,9 +6,11 @@ import asyncio
 import io
 from pathlib import Path
 import shutil
+import tempfile
+import time
 import zipfile
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api._path_guard import sanitize_filename, validate_path_within
@@ -21,6 +23,7 @@ from app.api.schemas.dataset_schemas import (
     UpdateDatasetRequest,
     CaptionRequest,
     ToggleEnabledRequest,
+    ImportPathRequest,
 )
 
 router = APIRouter()
@@ -320,4 +323,95 @@ async def export_dataset(name: str):
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
+
+
+def _resolve_import_name(name: str, on_conflict: str | None, new_name: str | None) -> str:
+    """Decide the final dataset name, applying the collision directive.
+
+    Raises HTTPException(409) when the name is taken and no directive is given.
+    """
+    existing = dataset_manager.get_dataset(name)
+    if existing is None:
+        return name
+    if on_conflict == "overwrite":
+        dataset_manager.delete_dataset(name, delete_files=True)
+        return name
+    if on_conflict == "rename":
+        candidate = (new_name or "").strip() or f"{name} (imported)"
+        i = 2
+        while dataset_manager.get_dataset(candidate) is not None:
+            candidate = f"{name} ({i})"
+            i += 1
+        return candidate
+    # No directive -> tell the client to prompt.
+    raise HTTPException(
+        status_code=409,
+        detail={"conflict": True, "name": name,
+                "message": f"A dataset named '{name}' already exists."},
+    )
+
+
+def _import_from_zip_path(zip_path: Path, on_conflict: str | None, new_name: str | None):
+    """Validate, extract, and register a dataset from a zip already on disk."""
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            manifest = portable.read_manifest(zf)
+            source_name = str(manifest.get("dataset", {}).get("name") or "Imported")
+            final_name = _resolve_import_name(source_name, on_conflict, new_name)
+
+            safe = "".join(
+                c for c in final_name if c.isalnum() or c in (" ", "-", "_")
+            ).strip() or f"dataset_{int(time.time())}"
+            target = Path(dataset_manager.default_root) / safe
+            target.mkdir(parents=True, exist_ok=True)
+            try:
+                portable.safe_extract(zf, target)
+                return dataset_manager.register_imported_dataset(
+                    final_name, manifest, path=str(target)
+                )
+            except Exception:
+                # Roll back a half-written import: drop the folder + any row.
+                if dataset_manager.get_dataset(final_name) is not None:
+                    dataset_manager.delete_dataset(final_name, delete_files=True)
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+                raise
+    except portable.ManifestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Archive is not a valid zip file.") from exc
+
+
+@router.post("/datasets/import", response_model=Dataset)
+async def import_dataset_upload(
+    file: UploadFile = File(...),
+    on_conflict: str | None = Form(default=None),
+    new_name: str | None = Form(default=None),
+):
+    """Import a dataset from an uploaded portable zip (multipart)."""
+    # Stream the upload to a temp file — never buffer multi-GB archives in RAM.
+    suffix = Path(sanitize_filename(file.filename or "import.zip")).suffix or ".zip"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+        tmp.close()
+        logger.info("importing_dataset_upload", filename=file.filename)
+        return await asyncio.to_thread(
+            _import_from_zip_path, Path(tmp.name), on_conflict, new_name
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+@router.post("/datasets/import-path", response_model=Dataset)
+async def import_dataset_path(request: ImportPathRequest):
+    """Import a dataset from a zip already present on the server filesystem."""
+    archive = Path(request.archive_path)
+    if not archive.is_file():
+        raise HTTPException(status_code=404, detail=f"Archive not found: {request.archive_path}")
+    logger.info("importing_dataset_path", archive_path=str(archive))
+    return await asyncio.to_thread(
+        _import_from_zip_path, archive, request.on_conflict, request.new_name
     )

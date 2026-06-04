@@ -24,7 +24,7 @@
                 [availableModels]="availableModels()"
                 [projectId]="scope.projectId()"
                 (segmentsChanged)="onSegmentsChanged($event)"
-                (vramReportChanged)="onVramReport($event)"
+                (estimateChanged)="onEstimate($event)"
                 (configSubmitted)="queueJob($event)"/>
         } @else if (availableModels().length === 0) {
             <p class="muted ts-empty">Loading available models…</p>
@@ -33,9 +33,20 @@
         }
     </main>
 
-    <!-- ── RIGHT · Live Estimate rail ─────────────────────────────── -->
-    <aside class="ts-estimate-rail card">
-        <div class="card-body ts-estimate-body">
+    <!-- ── RIGHT · Estimate wall (shared with Quick Train) + VRAM detail ── -->
+    <aside class="ts-estimate-rail">
+        <!-- Card 1: same wall as Quick Train (wall time / throughput / VRAM / output / disk) -->
+        <app-estimate-wall
+            [estimate]="estimate()"
+            [ready]="estimateReady()"
+            [recomputing]="recomputing()"
+            emptyText="Choose a model to estimate."
+            (updateStats)="updateStats()" />
+
+        <!-- Card 2: detailed per-component VRAM breakdown.
+             No card-body padding: the hero KPI tile spans the full card width
+             (consistent with the wall tiles); the rail pads its own sections. -->
+        <div class="card">
             <app-training-estimate-rail [report]="vramReport()"/>
         </div>
     </aside>

@@ -2,10 +2,13 @@
     display: block;
 }
 
+/* Vertical padding only — the KPI hero tile spans the full card width
+   (edge-to-edge, like the estimate wall); eyebrow + detail are padded. */
 .rail {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
+    padding: 14px 0;
 }
 
 .rail-eyebrow {
@@ -14,59 +17,18 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--color-text-subtle);
+    padding: 0 16px;
 }
 
-/* ── Hero card ─────────────────────────────────────────── */
-.hero {
+/* Padded wrapper for everything below the full-width hero tile. */
+.rail-detail {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 14px;
-    background: var(--color-surface-mid);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-theme-lg);
+    gap: 16px;
+    padding: 0 16px;
 }
 
-.hero-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-}
-
-.hero-value {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 22px;
-    font-weight: 700;
-    line-height: 1.1;
-    color: var(--color-text-primary);
-}
-
-.hero-sub {
-    font-size: 11px;
-    color: var(--color-text-muted);
-}
-
-.chip {
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 3px 9px;
-    border-radius: 999px;
-    color: #0b0b0b;
-    white-space: nowrap;
-}
-
-.chip-fits {
-    background: var(--color-success);
-}
-
-.chip-over {
-    background: var(--color-warning);
-}
-
+/* ── Empty state ───────────────────────────────────────── */
 .hero-empty {
     font-size: 12px;
     color: var(--color-text-muted);

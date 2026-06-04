@@ -160,7 +160,7 @@ class BaseTrainingConfig(BaseModel):
     
     # [OPTIMIZER] Optimizer Settings
     optimizer_type: Literal["AdamW", "AdamW8bit", "Prodigy", "ProdigyPlusSF", "SophiaH", "SophiaG", "Lion", "Adafactor", "StableAdamW", "Shampoo", "RAdam", "AdEMAMix"] = Field("AdamW8bit", description="Optimizer algorithm for weight updates", json_schema_extra={"group": "OPTIMIZER"})
-    learning_rate: float = Field(1e-4, description="Learning rate (Prodigy/PPSF recommend 1.0)", json_schema_extra={"group": "OPTIMIZER", "min": 0, "max": 10, "step": 0.00001})
+    learning_rate: float = Field(1e-4, description="Learning rate (Prodigy/PPSF recommend 1.0)", json_schema_extra={"group": "OPTIMIZER", "min": 0, "max": 10, "step": 0.00001, "display": "scientific"})
     weight_decay: float = Field(0.01, description="Weight decay for regularization", json_schema_extra={"group": "OPTIMIZER", "min": 0, "max": 1, "step": 0.001})
     lr_scale_mode: Literal["none", "batch", "sqrt"] = Field("none", description="Scale LR by effective batch size (batch×accum). 'batch'=linear, 'sqrt'=conservative", json_schema_extra={"group": "OPTIMIZER", "depends_on": "optimizer_type:AdamW,AdamW8bit,SophiaH,SophiaG,Lion,Adafactor,StableAdamW,Shampoo,RAdam,AdEMAMix"})
     beta1: float = Field(0.9, description="Adam beta1 (momentum)", json_schema_extra={"group": "OPTIMIZER", "depends_on": "optimizer_type:AdamW,AdamW8bit,SophiaH,SophiaG,Lion,Adafactor,StableAdamW,Shampoo,RAdam,AdEMAMix", "min": 0.0, "max": 1.0, "step": 0.01})

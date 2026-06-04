@@ -146,6 +146,22 @@ async def estimate_vram(request: VRAMEstimateRequest):
     return report.to_dict()
 
 
+@router.post("/jobs/estimate")
+async def estimate_training(request: VRAMEstimateRequest):
+    """Full data-calibrated training estimate for the Quick Train wall.
+
+    Combines the config-driven cost model with per-definition coefficients
+    learned from local runs to return wall time, output size, throughput,
+    disk footprint, and calibrated VRAM. Falls back to default coefficients
+    (``stats_available=false``) when the definition has no local history.
+    """
+    from app.core.stats import definition_stats_service
+
+    return await asyncio.to_thread(
+        definition_stats_service.estimate, request.definition_id, request.config
+    )
+
+
 # ── Model Capabilities ──────────────────────────────────────────────────
 
 

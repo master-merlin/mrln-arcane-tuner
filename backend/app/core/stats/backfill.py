@@ -1,0 +1,182 @@
+"""Backfill / reconcile run costs from disk, then rebuild definition stats.
+
+Seeds the estimation wall from whatever local history exists. For every
+completed ``job_history`` row it recovers missing cost fields from the run's
+output directory (``training_log.json`` for size/elapsed, a directory walk
+for total footprint), persists them back, and finally recomputes the
+per-definition calibration coefficients.
+
+VRAM peaks cannot be recovered for legacy runs (per-step VRAM was never
+persisted to the DB), so only runs trained after this feature shipped
+contribute VRAM calibration. Time, output size, and disk footprint are
+recoverable for any run that still has its output directory.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
+import structlog
+
+from app.core.db.engine import get_db
+from app.core.stats import definition_stats_service
+
+logger = structlog.get_logger(__name__)
+
+
+def run_backfill() -> dict[str, Any]:
+    """Reconcile disk → DB, then recompute all definition stats.
+
+    Returns a summary suitable for an API response.
+    """
+    conn = get_db().connection()
+    rows = conn.execute(
+        "SELECT * FROM job_history WHERE status = 'completed'"
+    ).fetchall()
+
+    rows_updated = 0
+    fields_recovered = 0
+    for row in rows:
+        updates = _recover_row(row)
+        if updates:
+            _persist(row["id"], updates)
+            rows_updated += 1
+            fields_recovered += len(updates)
+
+    stats_summary = definition_stats_service.recompute(None)
+
+    result = {
+        "completed_runs": len(rows),
+        "rows_updated": rows_updated,
+        "fields_recovered": fields_recovered,
+        "definitions": stats_summary,
+    }
+    logger.info("stats_backfill_complete", **{k: v for k, v in result.items()
+                                             if k != "definitions"})
+    return result
+
+
+# ── Recovery ────────────────────────────────────────────────────────────
+
+
+def _recover_row(row) -> dict[str, Any]:
+    """Compute updates for a single run from its on-disk artifacts."""
+    keys = row.keys()
+    out_dir = row["output_dir"] if "output_dir" in keys else None
+    if not out_dir or not os.path.isdir(out_dir):
+        return {}
+
+    updates: dict[str, Any] = {}
+    tlog = _read_training_log(out_dir)
+
+    # Final LoRA size
+    if not _val(row, "final_lora_size_bytes"):
+        size = _recover_final_lora_bytes(row, out_dir, tlog)
+        if size:
+            updates["final_lora_size_bytes"] = size
+
+    # Total on-disk footprint
+    if "total_run_bytes" in keys and not _val(row, "total_run_bytes"):
+        total = _dir_size(out_dir)
+        if total:
+            updates["total_run_bytes"] = total
+
+    # Average step time (legacy rows that never recorded it)
+    if not _val(row, "avg_step_time"):
+        ast = _recover_avg_step_time(row, tlog)
+        if ast:
+            updates["avg_step_time"] = ast
+
+    return updates
+
+
+def _recover_final_lora_bytes(row, out_dir: str, tlog: dict | None) -> int | None:
+    # Prefer an explicit final file path
+    final_file = row["final_lora_file"] if "final_lora_file" in row.keys() else None
+    if final_file and os.path.isfile(final_file):
+        try:
+            return os.path.getsize(final_file)
+        except OSError:
+            pass
+    # training_log records the saved filename + MB size
+    if tlog:
+        name = tlog.get("lora_filename")
+        if name and name not in ("(not yet saved)",):
+            path = os.path.join(out_dir, name)
+            if os.path.isfile(path):
+                try:
+                    return os.path.getsize(path)
+                except OSError:
+                    pass
+        mb = tlog.get("lora_file_size_mb")
+        if mb:
+            return int(float(mb) * 1024 * 1024)
+    # Fallback: largest *_final*.safetensors, else largest .safetensors
+    return _largest_safetensors(out_dir)
+
+
+def _recover_avg_step_time(row, tlog: dict | None) -> float | None:
+    if not tlog:
+        return None
+    elapsed = tlog.get("elapsed_seconds")
+    steps = _val(row, "completed_steps") or tlog.get("step")
+    if elapsed and steps and steps > 0:
+        return float(elapsed) / float(steps)
+    return None
+
+
+# ── Disk helpers ────────────────────────────────────────────────────────
+
+
+def _read_training_log(out_dir: str) -> dict | None:
+    path = os.path.join(out_dir, "training_log.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _largest_safetensors(out_dir: str) -> int | None:
+    best = 0
+    final_best = 0
+    for root, _dirs, files in os.walk(out_dir):
+        for f in files:
+            if not f.endswith(".safetensors"):
+                continue
+            try:
+                size = os.path.getsize(os.path.join(root, f))
+            except OSError:
+                continue
+            best = max(best, size)
+            if "final" in f.lower():
+                final_best = max(final_best, size)
+    return (final_best or best) or None
+
+
+def _dir_size(out_dir: str) -> int | None:
+    total = 0
+    for root, _dirs, files in os.walk(out_dir):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                continue
+    return total or None
+
+
+def _val(row, key: str):
+    return row[key] if key in row.keys() else None
+
+
+def _persist(job_id: str, updates: dict[str, Any]) -> None:
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [job_id]
+    with get_db().write() as conn:
+        conn.execute(
+            f"UPDATE job_history SET {set_clause} WHERE id = ?", values
+        )

@@ -131,6 +131,11 @@ class PipelineTrainMixin:
 
         start_step = self.global_step + 1 if self.global_step > 0 else 0
         sps_window: list[float] = []  # Sliding window for Samples/s smoothing
+
+        # Snapshot the caching/load peak, then reset CUDA peak stats so the loop
+        # below measures the training-phase peak (calibrates the VRAM wall).
+        self._begin_training_vram_window()
+
         for step in range(start_step, max_steps):
             self.global_step = step
 
@@ -292,6 +297,12 @@ class PipelineTrainMixin:
             if self.ema_handler:
                 self.ema_handler.step()
 
+            # 6b. First completed optimizer step: optimizer states are now
+            # allocated and gradients are live — snapshot the resident set so
+            # _compute_vram_measured can isolate optimizer + activations.
+            if "after_first_step" not in getattr(self, "_vram_snapshots", {}):
+                self._snapshot_vram("after_first_step")
+
             # 7. Logging  — emit rich per-step diagnostics
             extra: dict[str, Any] = {}
 
@@ -422,6 +433,13 @@ class PipelineTrainMixin:
 
         # ── Training complete ──
         self.logger.info("training_finished")
+
+        # Capture training-phase VRAM peaks NOW — before the final checkpoint
+        # save allocates extra memory (EMA copy, safetensors buffers) that would
+        # otherwise inflate the measured "training" peak.
+        self._capture_training_peaks()
+        self._vram_measured = self._compute_vram_measured()
+
         self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
 
         self.logger.info("saving_final_checkpoint")
@@ -584,6 +602,18 @@ class PipelineTrainMixin:
             history = self.logger_component._loss_history
             losses = [h["loss"] for h in history] if history else []
 
+            # Measured VRAM (captured pre-save) + total on-disk footprint.
+            vram_measured = getattr(self, "_vram_measured", None)
+            peak_train = getattr(self, "_peak_vram_train_mb", None)
+            peak_cache = getattr(self, "_peak_vram_cache_mb", None)
+            total_bytes = self._measure_run_disk_bytes()
+
+            # Persist the full per-component breakdown alongside the LoRA, in
+            # training_log.json (written during the final save just above). The
+            # DB keeps only the compact peak scalars for fast calibration reads.
+            if vram_measured:
+                self._write_vram_measured(vram_measured)
+
             repo.complete(self._job_history_id,
                 completed_steps=max_steps,
                 completed_epochs=round(max_steps / self._steps_per_epoch, 2) if getattr(self, "_steps_per_epoch", 0) else None,
@@ -593,7 +623,139 @@ class PipelineTrainMixin:
                 min_loss=min(losses) if losses else None,
                 avg_step_time=elapsed / max_steps if max_steps > 0 else None,
                 avg_save_time=self.logger_component.avg_save_time or None,
+                peak_vram_train_mb=peak_train,
+                peak_vram_cache_mb=peak_cache,
+                total_run_bytes=total_bytes,
             )
             logger.info("job_history_completed", job_id=self._job_history_id)
+
+            # Refresh this definition's estimation coefficients (best-effort).
+            try:
+                from app.core.stats import definition_stats_service
+                definition_stats_service.recompute(self.config.get("definition_id") or None)
+            except Exception as e:
+                logger.warning("definition_stats_recompute_failed", error=str(e))
         except Exception as e:
             logger.warning("job_history_complete_failed", error=str(e))
+
+    # ── Measured VRAM (per-component, for estimation-wall calibration) ──
+
+    def _snapshot_vram(self, label: str) -> None:
+        """Record current allocated VRAM (MB) under a lifecycle label."""
+        if not torch.cuda.is_available():
+            return
+        if not hasattr(self, "_vram_snapshots"):
+            self._vram_snapshots: dict[str, float] = {}
+        try:
+            self._vram_snapshots[label] = torch.cuda.memory_allocated() / 1024**2
+        except Exception:
+            pass
+
+    def _begin_training_vram_window(self) -> None:
+        """Snapshot the caching/load peak, then reset CUDA peak stats.
+
+        After this, ``max_memory_*`` reflect only the training phase.
+        """
+        self._peak_vram_cache_mb = None
+        if not torch.cuda.is_available():
+            return
+        try:
+            self._peak_vram_cache_mb = round(torch.cuda.max_memory_reserved() / 1024**2)
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            self._peak_vram_cache_mb = None
+
+    def _capture_training_peaks(self) -> None:
+        """Record training-phase peaks (call BEFORE the final save)."""
+        self._peak_vram_train_mb = None
+        self._peak_vram_train_alloc_mb = None
+        if not torch.cuda.is_available():
+            return
+        try:
+            self._peak_vram_train_mb = round(torch.cuda.max_memory_reserved() / 1024**2)
+            self._peak_vram_train_alloc_mb = round(torch.cuda.max_memory_allocated() / 1024**2)
+        except Exception:
+            pass
+
+    def _compute_vram_measured(self) -> dict | None:
+        """Decompose measured GPU memory into Training VRAM Wall components.
+
+        Uses lifecycle snapshots (model load → adapter inject → first optimizer
+        step) plus the training-phase allocated/reserved peaks. Components are
+        deltas; activations are the spike above the resident set; overhead is
+        the allocator/context gap (reserved − allocated). Approximate by design
+        — it calibrates the analytic estimate, it is not an accounting ledger.
+        """
+        snaps = getattr(self, "_vram_snapshots", None)
+        peak_reserved = getattr(self, "_peak_vram_train_mb", None)
+        peak_alloc = getattr(self, "_peak_vram_train_alloc_mb", None)
+        if not snaps or peak_alloc is None:
+            return None
+        model = snaps.get("model")
+        if model is None:
+            return None
+        resident_adapters = snaps.get("adapters", model)
+        after_first = snaps.get("after_first_step")
+
+        model_weights = round(model)
+        adapters = round(max(resident_adapters - model, 0))
+        # Gradients ≈ trainable params at adapter precision (bf16/fp16 = 2 bytes)
+        trainable = getattr(self, "_trainable_params", 0) or 0
+        gradients = round(trainable * 2 / 1024**2)
+        if after_first is not None:
+            optimizer_states = round(max(after_first - resident_adapters - gradients, 0))
+            resident_set = after_first
+        else:
+            optimizer_states = 0
+            resident_set = resident_adapters + gradients
+        activations = round(max(peak_alloc - resident_set, 0))
+        overhead = round(max((peak_reserved or peak_alloc) - peak_alloc, 0))
+
+        return {
+            "model_weights_mb": model_weights,
+            "lora_adapters_mb": adapters,
+            "optimizer_states_mb": optimizer_states,
+            "gradients_mb": gradients,
+            "activations_mb": activations,
+            "overhead_mb": overhead,
+            "training_peak_mb": peak_reserved or peak_alloc,
+            "caching_peak_mb": getattr(self, "_peak_vram_cache_mb", None),
+            "peak_allocated_mb": peak_alloc,
+        }
+
+    def _write_vram_measured(self, measured: dict) -> None:
+        """Merge the measured VRAM breakdown into the run's training_log.json."""
+        try:
+            import json
+            import os
+            out_dir = getattr(self.checkpoint_manager, "output_dir", None)
+            if not out_dir:
+                return
+            path = os.path.join(out_dir, "training_log.json")
+            data = {}
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data["vram_measured"] = measured
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, default=str)
+        except Exception as e:
+            logger.warning("vram_measured_write_failed", error=str(e))
+
+    def _measure_run_disk_bytes(self) -> int | None:
+        """Total bytes written under the run's output directory."""
+        try:
+            import os
+            out_dir = getattr(self.checkpoint_manager, "output_dir", None)
+            if not out_dir or not os.path.isdir(out_dir):
+                return None
+            total = 0
+            for root, _dirs, files in os.walk(out_dir):
+                for f in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        continue
+            return total or None
+        except Exception:
+            return None

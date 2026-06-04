@@ -20,65 +20,67 @@ import { BreakdownPart, vramBreakdownParts } from '../vram-breakdown';
             <div class="rail-eyebrow">LIVE ESTIMATE</div>
 
             @if (report(); as r) {
-                <!-- Hero -->
-                <div class="hero">
-                    <div class="hero-row">
-                        <div class="hero-value">
-                            {{ (r.peak_mb / 1024).toFixed(1) }} / {{ (r.available_mb / 1024).toFixed(1) }} GB
+                <!-- Hero — full-width KPI tile (matches the estimate wall) -->
+                <div class="kpi compact">
+                    <div class="kpi-accent" [class.success]="r.fits" [class.danger]="!r.fits"></div>
+                    <div class="kpi-label">PEAK VRAM</div>
+                    <div class="kpi-value">{{ (r.peak_mb / 1024).toFixed(1) }}<span class="unit"> / {{ ((r.total_mb || r.available_mb) / 1024).toFixed(1) }} GB</span></div>
+                    <div class="kpi-sub" [style.color]="r.fits ? 'var(--color-success)' : 'var(--color-danger)'">
+                        {{ r.fits ? 'fits · ' + (r.available_mb / 1024).toFixed(1) + ' GB free' : 'exceeds free VRAM' }}{{ r.calibrated ? ' · calibrated' : '' }}
+                    </div>
+                    @if (r.used_mb && r.used_mb > 1024) {
+                        <div class="kpi-sub muted">{{ (r.used_mb / 1024).toFixed(1) }} GB used by other apps</div>
+                    }
+                </div>
+
+                <div class="rail-detail">
+                    <!-- Breakdown -->
+                    <div>
+                        <div class="section-label">VRAM Breakdown</div>
+                        <div class="bar">
+                            @for (p of barSegments(); track p.key) {
+                                <div class="bar-seg"
+                                     [style.flex-grow]="p.mb"
+                                     [style.flex-basis.px]="0"
+                                     [style.background]="p.color"
+                                     [title]="p.label + ' ' + (p.mb / 1024).toFixed(1) + ' GB'"></div>
+                            }
                         </div>
-                        @if (r.fits) {
-                            <span class="chip chip-fits">FITS</span>
-                        } @else {
-                            <span class="chip chip-over">OVER</span>
-                        }
+                        <div class="legend">
+                            @for (p of legendParts(); track p.key) {
+                                <div class="legend-row">
+                                    <span class="legend-name">
+                                        <span class="swatch" [style.background]="p.color"></span>
+                                        {{ p.label }}
+                                    </span>
+                                    <span class="legend-val">{{ (p.mb / 1024).toFixed(1) }} GB</span>
+                                </div>
+                            }
+                        </div>
                     </div>
-                    <div class="hero-sub">estimated peak VRAM</div>
-                </div>
 
-                <!-- Breakdown -->
-                <div>
-                    <div class="section-label">VRAM Breakdown</div>
-                    <div class="bar">
-                        @for (p of barSegments(); track p.key) {
-                            <div class="bar-seg"
-                                 [style.flex-grow]="p.mb"
-                                 [style.flex-basis.px]="0"
-                                 [style.background]="p.color"
-                                 [title]="p.label + ' ' + (p.mb / 1024).toFixed(1) + ' GB'"></div>
-                        }
-                    </div>
-                    <div class="legend">
-                        @for (p of legendParts(); track p.key) {
-                            <div class="legend-row">
-                                <span class="legend-name">
-                                    <span class="swatch" [style.background]="p.color"></span>
-                                    {{ p.label }}
-                                </span>
-                                <span class="legend-val">{{ (p.mb / 1024).toFixed(1) }} GB</span>
-                            </div>
-                        }
-                    </div>
-                </div>
+                    <!-- Warnings -->
+                    @if (r.warnings.length > 0) {
+                        <div class="callout callout-warn">
+                            @for (w of r.warnings; track w) {
+                                <span class="callout-item">{{ w }}</span>
+                            }
+                        </div>
+                    } @else {
+                        <div class="callout callout-ok">All checks passed</div>
+                    }
 
-                <!-- Warnings -->
-                @if (r.warnings.length > 0) {
-                    <div class="callout callout-warn">
-                        @for (w of r.warnings; track w) {
-                            <span class="callout-item">{{ w }}</span>
-                        }
-                    </div>
-                } @else {
-                    <div class="callout callout-ok">All checks passed</div>
-                }
+                    <!-- LR schedule (hidden until a label is provided) -->
+                    @if (lrLabel(); as lr) {
+                        <div>
+                            <div class="section-label">LR Schedule</div>
+                            <div class="lr-row"><span class="lr-val">{{ lr }}</span></div>
+                        </div>
+                    }
+                </div>
             } @else {
-                <div class="hero-empty">Configure a model to see the live VRAM estimate.</div>
-            }
-
-            <!-- LR schedule (hidden until a label is provided) -->
-            @if (lrLabel(); as lr) {
-                <div>
-                    <div class="section-label">LR Schedule</div>
-                    <div class="lr-row"><span class="lr-val">{{ lr }}</span></div>
+                <div class="rail-detail">
+                    <div class="hero-empty">Configure a model to see the live VRAM estimate.</div>
                 </div>
             }
         </div>

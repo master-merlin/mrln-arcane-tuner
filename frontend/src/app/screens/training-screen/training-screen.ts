@@ -2,6 +2,7 @@ import {
     afterNextRender,
     ChangeDetectionStrategy,
     Component,
+    computed,
     effect,
     ElementRef,
     inject,
@@ -14,11 +15,11 @@ import { TrainingHandoffService } from '../../state/training-handoff.service';
 import type { TrainingSegment } from '../../components/training/training-dynamic-config/training-dynamic-config';
 import { TrainingToc } from '../../components/training/training-toc/training-toc';
 import { TrainingEstimateRail } from '../../components/training/training-estimate-rail/training-estimate-rail';
-import type { VRAMReport } from '../../services/system.service';
+import { EstimateWallComponent } from '../../components/training/estimate-wall/estimate-wall';
 import { DatasetStore } from '../../state/dataset.store';
 import { ScopeStore } from '../../state/scope.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
-import { JobService } from '../../services/job';
+import { JobService, type TrainingEstimate } from '../../services/job';
 import { ToastService } from '../../services/toast';
 
 interface ModelDefinition {
@@ -52,7 +53,7 @@ interface ModelDefinition {
 @Component({
     selector: 'app-training-screen',
     standalone: true,
-    imports: [TrainingDynamicConfigComponent, TrainingToc, TrainingEstimateRail],
+    imports: [TrainingDynamicConfigComponent, TrainingToc, TrainingEstimateRail, EstimateWallComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './training-screen.html',
     styleUrl: './training-screen.css',
@@ -77,8 +78,14 @@ export class TrainingScreen {
     /** Section currently in view (scroll-spy). */
     protected activeSection = signal<string | null>(null);
 
-    /** Live VRAM report re-broadcast by the dynamic-config engine. */
-    protected vramReport = signal<VRAMReport | null>(null);
+    /** Full calibrated estimate re-broadcast by the dynamic-config engine. */
+    protected estimate = signal<TrainingEstimate | null>(null);
+    /** VRAM report derived from the estimate (drives the detail rail). */
+    protected vramReport = computed(() => this.estimate()?.vram ?? null);
+    /** Has a model definition been chosen yet (gates the estimate wall). */
+    protected estimateReady = computed(() => !!this.estimate());
+    /** True while "Update stats from history" backfill runs. */
+    protected recomputing = signal(false);
 
     /** The center scroll container — the scroll-spy reference frame. */
     private formPane = viewChild<ElementRef<HTMLElement>>('formPane');
@@ -120,8 +127,21 @@ export class TrainingScreen {
         this.segments.set(s);
     }
 
-    protected onVramReport(r: VRAMReport | null): void {
-        this.vramReport.set(r);
+    protected onEstimate(e: TrainingEstimate | null): void {
+        this.estimate.set(e);
+    }
+
+    /** Backfill calibration stats from history, then re-estimate. */
+    protected updateStats(): void {
+        if (this.recomputing()) return;
+        this.recomputing.set(true);
+        this.jobs.recomputeStats().subscribe({
+            next: () => {
+                this.configEditor()?.refreshEstimate();
+                this.recomputing.set(false);
+            },
+            error: () => this.recomputing.set(false),
+        });
     }
 
     /** Scroll-spy: pick the section whose top sits closest above the fold. */

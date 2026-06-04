@@ -6,11 +6,19 @@ import { WebSocketService } from './websocket.service';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
+export interface GpuProcess {
+    pid: number;
+    name: string;
+    used_mb: number;
+}
+
 export interface GPUStatus {
     index: number;
     name: string;
     vram_used_mb: number;
     vram_total_mb: number;
+    /** total − used (device-wide free VRAM). */
+    vram_free_mb?: number;
     vram_percent: number;
     temperature_c: number;
     power_draw_w: number;
@@ -19,6 +27,8 @@ export interface GPUStatus {
     memory_utilization: number;
     clock_graphics_mhz: number;
     clock_memory_mhz: number;
+    /** Top VRAM-holding processes (ComfyUI, browser, this app, …). */
+    processes?: GpuProcess[];
 }
 
 export interface SystemStatus {
@@ -50,9 +60,18 @@ export interface VRAMReport {
     caching_peak_mb: number;
     training_peak_mb: number;
     peak_mb: number;
+    /** FREE VRAM (total − used by all processes) — drives the fit check. */
     available_mb: number;
+    /** Total card capacity. */
+    total_mb?: number;
+    /** VRAM already held by other processes at estimate time. */
+    used_mb?: number;
     fits: boolean;
     warnings: string[];
+    /** True when ≥1 per-component multiplier was learned from local runs. */
+    calibrated?: boolean;
+    /** Which analytic components were calibrated from measured data. */
+    calibrated_components?: string[];
 }
 
 // ── Service ────────────────────────────────────────────────────────────

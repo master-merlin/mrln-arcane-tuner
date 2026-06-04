@@ -1,0 +1,66 @@
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">Estimate</div>
+        @if (estimate(); as est) {
+            @if (est.stats_available) {
+                <div class="ew-badge muted">calibrated · {{ est.samples }} run{{ est.samples === 1 ? '' : 's' }}</div>
+            }
+        }
+    </div>
+    @if (!ready()) {
+        <div class="ew-empty muted">{{ emptyText() }}</div>
+    } @else if (estimate(); as est) {
+        <div class="ew-grid">
+            <div class="kpi compact">
+                <div class="kpi-accent brand"></div>
+                <div class="kpi-label">WALL TIME</div>
+                <div class="kpi-value">{{ est.wall_time.display }}</div>
+                <div class="kpi-sub">{{ confidenceSub(est.wall_time) }}</div>
+            </div>
+            <div class="kpi compact">
+                <div class="kpi-accent warning"></div>
+                <div class="kpi-label">THROUGHPUT</div>
+                <div class="kpi-value">{{ est.throughput.display }}</div>
+                <div class="kpi-sub">{{ confidenceSub(est.throughput) }}</div>
+            </div>
+            <div class="kpi compact">
+                <div class="kpi-accent" [class.success]="est.vram?.fits" [class.danger]="est.vram && !est.vram.fits"></div>
+                <div class="kpi-label">VRAM</div>
+                @if (est.vram; as v) {
+                    <div class="kpi-value">{{ (v.peak_mb / 1024).toFixed(1) }}<span class="unit"> / {{ ((v.total_mb || v.available_mb) / 1024).toFixed(1) }} GB</span></div>
+                    <div class="kpi-sub" [style.color]="v.fits ? 'var(--color-success)' : 'var(--color-danger)'">
+                        {{ v.fits ? 'fits · ' + ((v.available_mb - v.peak_mb) / 1024).toFixed(1) + ' GB headroom' : 'exceeds free VRAM' }}{{ v.calibrated ? ' · calibrated' : '' }}
+                    </div>
+                    @if (v.used_mb && v.used_mb > 1024) {
+                        <div class="kpi-sub muted">{{ (v.used_mb / 1024).toFixed(1) }} GB used by other apps</div>
+                    }
+                } @else {
+                    <div class="kpi-value">—</div>
+                    <div class="kpi-sub">unavailable</div>
+                }
+            </div>
+            <div class="kpi compact">
+                <div class="kpi-accent teal"></div>
+                <div class="kpi-label">OUTPUT</div>
+                <div class="kpi-value">{{ est.output_size.display }}</div>
+                <div class="kpi-sub">{{ confidenceSub(est.output_size, '.safetensors') }}</div>
+            </div>
+            <div class="kpi compact">
+                <div class="kpi-accent violet"></div>
+                <div class="kpi-label">DISK FOOTPRINT</div>
+                <div class="kpi-value">{{ est.disk_footprint.display }}</div>
+                <div class="kpi-sub">{{ confidenceSub(est.disk_footprint, 'full run') }}</div>
+            </div>
+        </div>
+        @if (!est.stats_available) {
+            <div class="ew-hint">
+                <span class="muted">Using default estimates — no local runs for this model yet. Train once, or seed from existing history.</span>
+                <button class="btn ghost sm" type="button" (click)="updateStats.emit()" [disabled]="recomputing()">
+                    {{ recomputing() ? 'Updating…' : 'Update stats from history' }}
+                </button>
+            </div>
+        }
+    } @else {
+        <div class="ew-empty muted">Estimating…</div>
+    }
+</div>

@@ -457,44 +457,12 @@
                             </div>
                         </div>
 
-                        <div class="card">
-                            <div class="card-head">
-                                <div class="card-title">Estimate</div>
-                            </div>
-                            @if (!selectedTemplate()) {
-                                <div class="pd-qt-estimate-empty muted">Select a template to estimate.</div>
-                            } @else if (estimate(); as est) {
-                                <div class="pd-qt-estimate">
-                                    <div class="kpi compact">
-                                        <div class="kpi-accent brand"></div>
-                                        <div class="kpi-label">WALL TIME</div>
-                                        <div class="kpi-value">{{ est.wallTime }}</div>
-                                        <div class="kpi-sub">estimated</div>
-                                    </div>
-                                    <div class="kpi compact">
-                                        <div class="kpi-accent" [class.success]="est.vram?.fits" [class.danger]="est.vram && !est.vram.fits"></div>
-                                        <div class="kpi-label">VRAM</div>
-                                        @if (est.vram; as v) {
-                                            <div class="kpi-value">{{ (v.peak_mb / 1024).toFixed(1) }}<span class="unit"> / {{ (v.available_mb / 1024).toFixed(1) }} GB</span></div>
-                                            <div class="kpi-sub" [style.color]="v.fits ? 'var(--color-success)' : 'var(--color-danger)'">
-                                                {{ v.fits ? 'fits · ' + ((v.available_mb - v.peak_mb) / 1024).toFixed(1) + ' GB headroom' : 'exceeds available' }}
-                                            </div>
-                                        } @else {
-                                            <div class="kpi-value">—</div>
-                                            <div class="kpi-sub">unavailable</div>
-                                        }
-                                    </div>
-                                    <div class="kpi compact">
-                                        <div class="kpi-accent teal"></div>
-                                        <div class="kpi-label">OUTPUT</div>
-                                        <div class="kpi-value">{{ est.output }}</div>
-                                        <div class="kpi-sub">.safetensors · estimated</div>
-                                    </div>
-                                </div>
-                            } @else {
-                                <div class="pd-qt-estimate-empty muted">Estimating…</div>
-                            }
-                        </div>
+                        <app-estimate-wall
+                            [estimate]="estimate()"
+                            [ready]="!!selectedTemplate()"
+                            [recomputing]="recomputingStats()"
+                            emptyText="Select a template to estimate."
+                            (updateStats)="updateStatsFromHistory()" />
                     </div>
                 }
             }

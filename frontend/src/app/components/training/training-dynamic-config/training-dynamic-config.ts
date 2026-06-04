@@ -7,6 +7,7 @@ import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
+import { JobService, type TrainingEstimate } from '../../../services/job';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
@@ -152,7 +153,7 @@ export interface TrainingSegment {
                       <input type="checkbox" [formControlName]="prop.key"
                              [attr.data-testid]="'config-checkbox-' + prop.key"
                              class="sr-only peer">
-                      <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+                      <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
                       <span class="ml-3 text-sm font-medium text-text-muted group-hover:text-text-secondary">Enable</span>
                     </label>
                   } @else if (isString(prop.schema) && prop.schema.enum) {
@@ -362,7 +363,7 @@ export interface TrainingSegment {
                                    <input type="checkbox" [formControlName]="ip.key"
                                           [attr.data-testid]="'config-checkbox-' + ip.key"
                                           class="sr-only peer">
-                                   <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all"></div>
+                                   <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
                                  </label>
                                  <span class="text-[11px] font-medium text-text-secondary flex items-center gap-1.5">
                                    {{ ip.schema.title || (ip.key | titlecase) }}
@@ -532,6 +533,7 @@ export class TrainingDynamicConfigComponent {
   private http = inject(HttpClient);
   private toast = inject(ToastService);
   private systemService = inject(SystemService);
+  private jobService = inject(JobService);
   private modelService = inject(ModelService);
   private registryStore = inject(RegistryStore);
   private modelCapabilitiesService = inject(ModelCapabilitiesService);
@@ -545,6 +547,8 @@ export class TrainingDynamicConfigComponent {
 
   // VRAM estimation
   vramReport = signal<VRAMReport | null>(null);
+  // Full data-calibrated estimate (wall time, throughput, output, disk + VRAM).
+  estimate = signal<TrainingEstimate | null>(null);
   private vramEstimate$ = new Subject<void>();
   Math = Math; // expose to template
 
@@ -692,6 +696,9 @@ export class TrainingDynamicConfigComponent {
   // Model change → target layers modal
   showModelChangeModal = signal(false);
   private _isTemplateApplying = false;
+  // Set once a Jobs-screen handoff (Reload / Save template) has been applied,
+  // so the selector's one-time `auto` template apply yields to it.
+  private _externalConfigApplied = false;
   private _pendingDefinitionId: string | null = null;
   private _previousModelFamily: string | null = null;
   private _previousDefinitionId: string | null = null;
@@ -904,13 +911,25 @@ export class TrainingDynamicConfigComponent {
     if (!defId) return;
 
     const config = this.form.getRawValue();
-    this.systemService.estimateVRAM(defId, config).subscribe({
-      next: (report) => this.vramReport.set(report),
+    // One call to the full estimator: it returns the calibrated VRAM report
+    // (feeding the in-form budget card + the shell's VRAM detail rail) PLUS
+    // wall time / throughput / output / disk for the shared estimate wall.
+    this.jobService.estimate(defId, config).subscribe({
+      next: (est) => {
+        this.estimate.set(est);
+        this.vramReport.set(est?.vram ?? null);
+      },
       error: (err) => {
-        console.warn('[VRAM] Estimation failed', err);
+        console.warn('[Estimate] Estimation failed', err);
+        this.estimate.set(null);
         this.vramReport.set(null);
       }
     });
+  }
+
+  /** Force a re-estimate (e.g. after the shell backfills calibration stats). */
+  refreshEstimate(): void {
+    this.vramEstimate$.next();
   }
 
   // --- Config Help System ---
@@ -1008,7 +1027,13 @@ export class TrainingDynamicConfigComponent {
 
   // --- Template Logic ---
 
-  onTemplateApplied(event: { config: any, isDefault: boolean, definitionId?: string }) {
+  onTemplateApplied(event: { config: any, isDefault: boolean, definitionId?: string, auto?: boolean }) {
+    // The selector fires a one-time `auto` apply on load so the estimate wall
+    // reflects the active template. A Jobs-screen handoff (Reload / Save
+    // template) takes precedence — if one already landed, ignore the auto apply
+    // so it can't clobber the handed-off config (either ordering is safe: a
+    // handoff after this still wins, as it isn't gated).
+    if (event.auto && this._externalConfigApplied) return;
     this._isTemplateApplying = true;
     if (event.isDefault) {
       this.resetFormToDefaults();
@@ -1111,6 +1136,7 @@ export class TrainingDynamicConfigComponent {
   // --- External Config Import (from Job Queue) ---
 
   importTemplate(name: string, config: any, definitionId: string) {
+    this._externalConfigApplied = true;
     if (this.templateSelector) {
       this.templateSelector.importExternalTemplate(name, config, definitionId);
     }
@@ -1125,6 +1151,7 @@ export class TrainingDynamicConfigComponent {
 
   loadExternalConfig(config: any) {
     // Suppress auto-save so patching the form doesn't create a new template
+    this._externalConfigApplied = true;
     this._isTemplateApplying = true;
     if (this.templateSelector) {
       this.templateSelector.suppressAutoSave.set(true);
@@ -1673,6 +1700,13 @@ export class TrainingDynamicConfigComponent {
 
   private _vramEmitEffect = effect(() => {
     this.vramReportChanged.emit(this.vramReport());
+  });
+
+  /** Re-broadcasts the full calibrated estimate for the shell's estimate wall. */
+  estimateChanged = output<TrainingEstimate | null>();
+
+  private _estimateEmitEffect = effect(() => {
+    this.estimateChanged.emit(this.estimate());
   });
 
   resolveSchema(schema: any): any {

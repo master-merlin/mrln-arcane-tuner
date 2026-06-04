@@ -154,7 +154,7 @@
 .pd-run-summary { flex: 1; min-width: 0; }
 
 .pd-ds-thumb {
-    width: 48px; height: 32px; border-radius: 4px;
+    width: 72px; height: 48px; border-radius: 4px;
     overflow: hidden;
     background: var(--color-surface-mid);
     display: flex; align-items: center; justify-content: center;

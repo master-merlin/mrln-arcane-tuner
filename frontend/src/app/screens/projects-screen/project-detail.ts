@@ -83,9 +83,9 @@ export class ProjectDetail implements OnInit {
 
     protected tabs: ReadonlyArray<TabItem<DetailTab>> = [
         { value: 'overview', label: 'Overview' },
+        { value: 'quick-train', label: 'Quick Train' },
         { value: 'datasets', label: 'Datasets' },
         { value: 'templates', label: 'Templates' },
-        { value: 'quick-train', label: 'Quick Train' },
         { value: 'runs', label: 'Runs' },
     ];
 

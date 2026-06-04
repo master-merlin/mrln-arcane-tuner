@@ -340,6 +340,38 @@ export class DatasetService {
     return `${this.apiUrl}/${encodeURIComponent(name)}/download`;
   }
 
+  // ── Export / Import ─────────────────────────────────────────────────
+
+  getExportUrl(name: string): string {
+    return `${this.apiUrl}/${encodeURIComponent(name)}/export`;
+  }
+
+  /** Import a portable dataset zip via multipart upload. */
+  importDatasetFile(
+    file: File,
+    onConflict?: 'rename' | 'overwrite',
+    newName?: string,
+  ): Observable<Dataset> {
+    const form = new FormData();
+    form.append('file', file);
+    if (onConflict) form.append('on_conflict', onConflict);
+    if (newName) form.append('new_name', newName);
+    return this.http.post<Dataset>(`${this.apiUrl}/import`, form);
+  }
+
+  /** Import a portable dataset zip already present on the server filesystem. */
+  importDatasetPath(
+    archivePath: string,
+    onConflict?: 'rename' | 'overwrite',
+    newName?: string,
+  ): Observable<Dataset> {
+    return this.http.post<Dataset>(`${this.apiUrl}/import-path`, {
+      archive_path: archivePath,
+      on_conflict: onConflict ?? null,
+      new_name: newName ?? null,
+    });
+  }
+
   // ── Cache Administration ────────────────────────────────────────────
 
   listCache(name: string): Observable<any> {

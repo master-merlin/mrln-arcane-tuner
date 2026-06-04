@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -37,5 +39,6 @@ class ToggleEnabledRequest(BaseModel):
 
 class ImportPathRequest(BaseModel):
     archive_path: str
-    on_conflict: str | None = None  # None | "rename" | "overwrite"
+    # Constrained so an unexpected value 422s instead of silently becoming a 409.
+    on_conflict: Literal["rename", "overwrite"] | None = None
     new_name: str | None = None

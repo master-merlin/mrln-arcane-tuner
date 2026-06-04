@@ -199,3 +199,12 @@ def test_import_path_roundtrip(client, tmp_path):
     resp = client.post("/api/datasets/import-path", json={"archive_path": archive_path})
     assert resp.status_code == 200
     assert resp.json()["name"] == "ByPath"
+
+
+def test_import_path_rejects_invalid_on_conflict(client, tmp_path):
+    # An unexpected on_conflict value must 422 (Literal), not silently 409.
+    resp = client.post(
+        "/api/datasets/import-path",
+        json={"archive_path": str(tmp_path / "nope.zip"), "on_conflict": "bogus"},
+    )
+    assert resp.status_code == 422

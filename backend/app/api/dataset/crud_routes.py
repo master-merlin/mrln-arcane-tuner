@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
+from typing import Literal
 import zipfile
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
@@ -335,6 +336,12 @@ def _resolve_import_name(name: str, on_conflict: str | None, new_name: str | Non
     if existing is None:
         return name
     if on_conflict == "overwrite":
+        # v1 limitation: the existing dataset is deleted here, before extraction.
+        # Callers reach this only after read_manifest() succeeds, so a corrupt
+        # archive won't destroy existing data — but a failure during extract or
+        # register afterwards leaves neither old nor new. Acceptable for the
+        # local export -> delete -> re-import flow; revisit (import-to-temp,
+        # swap on success) if this becomes a real risk.
         dataset_manager.delete_dataset(name, delete_files=True)
         return name
     if on_conflict == "rename":
@@ -386,7 +393,7 @@ def _import_from_zip_path(zip_path: Path, on_conflict: str | None, new_name: str
 @router.post("/datasets/import", response_model=Dataset)
 async def import_dataset_upload(
     file: UploadFile = File(...),
-    on_conflict: str | None = Form(default=None),
+    on_conflict: Literal["rename", "overwrite"] | None = Form(default=None),
     new_name: str | None = Form(default=None),
 ):
     """Import a dataset from an uploaded portable zip (multipart)."""
@@ -407,7 +414,14 @@ async def import_dataset_upload(
 
 @router.post("/datasets/import-path", response_model=Dataset)
 async def import_dataset_path(request: ImportPathRequest):
-    """Import a dataset from a zip already present on the server filesystem."""
+    """Import a dataset from a zip already present on the server filesystem.
+
+    The archive path is intentionally unrestricted: this is a local
+    single-user app and the "server path" transport exists precisely so the
+    user can point at an export anywhere on their own disk (e.g.
+    ``D:/exports/Foo_1.2.0.zip``). Extraction targets are still confined to
+    ``default_root`` by ``portable.safe_extract``.
+    """
     archive = Path(request.archive_path)
     if not archive.is_file():
         raise HTTPException(status_code=404, detail=f"Archive not found: {request.archive_path}")

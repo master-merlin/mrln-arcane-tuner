@@ -116,7 +116,13 @@ export class TrainingScreen {
                 if (h.mode === 'reload') {
                     editor.loadExternalConfig(h.config);
                     this.toast.success('Configuration loaded into Training settings.');
+                } else if (h.templateId && h.definitionId) {
+                    // Edit-in-place (Projects → Edit) or job reload onto its
+                    // source template: select the existing template, recreating
+                    // it only if it was deleted. No duplicate is ever made.
+                    editor.applyExistingTemplate(h.templateId, h.templateName ?? 'Template', h.config, h.definitionId);
                 } else if (h.templateName && h.definitionId) {
+                    // Legacy path: no id available, fall back to a fresh clone.
                     editor.importTemplate(h.templateName, h.config, h.definitionId);
                 }
             }, 200);

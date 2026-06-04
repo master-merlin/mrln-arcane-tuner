@@ -19,6 +19,7 @@ import { JobService, type Job, JobStatus } from '../../services/job';
 import { JobStore } from '../../state/job.store';
 import { JobsViewState } from '../../state/jobs-view.state';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
+import { ScopeStore } from '../../state/scope.store';
 import { TemplateService } from '../../services/template.service';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -86,6 +87,7 @@ export class JobsScreen {
     private jobStore = inject(JobStore);
     private viewState = inject(JobsViewState);
     private handoff = inject(TrainingHandoffService);
+    private scope = inject(ScopeStore);
     private templateService = inject(TemplateService);
     private toast = inject(ToastService);
     private router = inject(Router);
@@ -668,11 +670,37 @@ export class JobsScreen {
             });
     }
 
-    /** Hand the config to the Training screen and navigate (no auto-template). */
+    /**
+     * Reload a job's config into the Training screen. First selects the job's
+     * scope (so any save lands in the right place), then — if the job recorded
+     * the template it was built from — selects that exact template as the
+     * save-target (recreating it only if it was since deleted). Jobs created
+     * before template-linking, or run from the bare default, have no link and
+     * fall back to loading the config into the default (the legacy behaviour).
+     */
     protected reloadConfig(): void {
         const j = this.selectedJob();
         if (!j) return;
-        this.handoff.set({ config: j.config as Record<string, unknown>, mode: 'reload' });
+        const cfg = (j.config ?? {}) as Record<string, unknown>;
+
+        // 1) Select the job's scope.
+        const pid = (j.project_id ?? cfg['project_id']) as string | undefined;
+        if (pid) this.scope.setProject(pid); else this.scope.setGlobal();
+
+        // 2) Select the source template if the job links one; else plain reload.
+        const templateId = cfg['template_id'] as string | undefined;
+        const definitionId = (cfg['definition_id'] ?? j.definition_id) as string | undefined;
+        if (templateId && definitionId) {
+            this.handoff.set({
+                config: cfg,
+                mode: 'template',
+                templateId,
+                templateName: (cfg['template_name'] as string | undefined) ?? 'Template',
+                definitionId,
+            });
+        } else {
+            this.handoff.set({ config: cfg, mode: 'reload' });
+        }
         void this.router.navigate(['/training']);
     }
 }

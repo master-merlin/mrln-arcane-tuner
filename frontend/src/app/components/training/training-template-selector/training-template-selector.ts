@@ -87,6 +87,13 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   // re-arms the one-time apply when the project changes.
   private _autoAppliedForProject: string | null | undefined = undefined;
 
+  // True once a template list has finished loading at least once, so an
+  // `adoptExternalTemplate` call that arrives before/after the load both work.
+  private _loaded = false;
+  // A pending "adopt this existing template by id" request (from a Projects
+  // "Edit" action or a job reload), applied as soon as templates are loaded.
+  private _pendingAdopt: { id: string; name: string; config: any; definitionId: string } | null = null;
+
   filteredTemplates = computed(() => {
     const all = this.allTemplates();
     const defId = this.selectedDefinitionId();
@@ -174,10 +181,63 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     this.templateService.listTrainingTemplates(undefined, this.projectId()).subscribe({
       next: (templates) => {
         this.allTemplates.set(templates);
-        this._maybeAutoApply();
+        this._loaded = true;
+        // A pending external adopt (edit-in-place / job reload) wins over the
+        // generic one-time auto-apply so we never clobber the chosen template.
+        if (this._pendingAdopt) this._applyPendingAdopt();
+        else this._maybeAutoApply();
       },
       error: (err: any) => console.error('[Templates] Failed to load training templates', err)
     });
+  }
+
+  /**
+   * Select an EXISTING training template by id as the active save-target —
+   * used when editing a template from Projects (Bug A) or reloading a job into
+   * Training (Bug B). Edits then auto-save to this template instead of spawning
+   * a duplicate. If the id no longer exists (template deleted after the job was
+   * created), it is recreated once from the supplied name + config so there is
+   * still a real, project-scoped row to edit. Deliberately does NOT patch the
+   * form — the caller applies the handed-off config, which for a job reload is
+   * the job's actual run config (it may differ from the template).
+   */
+  public adoptExternalTemplate(id: string, name: string, config: any, definitionId: string): void {
+    this._pendingAdopt = { id, name, config, definitionId };
+    // Claim the one-time auto-apply slot so _maybeAutoApply doesn't fight us.
+    this._autoAppliedForProject = this.projectId();
+    if (this._loaded) this._applyPendingAdopt();
+  }
+
+  private _applyPendingAdopt(): void {
+    const p = this._pendingAdopt;
+    if (!p) return;
+    const existing = this.allTemplates().find(t => t.id === p.id);
+    if (existing) {
+      this._pendingAdopt = null;
+      this._setActiveTemplateQuietly(existing.id);
+    } else {
+      // Template was deleted after the job ran — recreate it from the snapshot.
+      this.templateService.createTrainingTemplate({
+        definition_id: p.definitionId,
+        name: p.name,
+        project_id: this.projectId(),
+        config: p.config,
+      }).subscribe(newTpl => {
+        this.allTemplates.update(current => [...current, newTpl]);
+        this._pendingAdopt = null;
+        this._setActiveTemplateQuietly(newTpl.id);
+        this.toast.success(`Template "${p.name}" was missing — recreated it.`);
+      });
+    }
+  }
+
+  /** Set the active template without triggering an auto-save of the (about to
+   *  be patched) form. The caller's own patch settles inside the suppression
+   *  window, matching the dynamic-config's loadExternalConfig timing. */
+  private _setActiveTemplateQuietly(id: string): void {
+    this.suppressAutoSave.set(true);
+    this.activeTemplateId.set(id);
+    setTimeout(() => this.suppressAutoSave.set(false), 1500);
   }
 
   /**
@@ -276,6 +336,9 @@ export class TrainingTemplateSelectorComponent implements OnInit {
 
   public triggerAutoSave(newFormValue: any, currentDefId: string) {
     if (this.suppressAutoSave()) return;
+    // An external adopt (edit-in-place / job reload) is resolving — don't let a
+    // form patch save against the previously-active id and spawn a copy.
+    if (this._pendingAdopt) return;
 
     const id = this.activeTemplateId();
 

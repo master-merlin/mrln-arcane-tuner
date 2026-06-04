@@ -1149,6 +1149,46 @@ export class TrainingDynamicConfigComponent {
     this.patchFormRecursive(this.form, config);
   }
 
+  /**
+   * Edit an EXISTING template in place (Projects "Edit" → Training, Bug A) or
+   * reload a job onto its source template (Bug B). Unlike importTemplate, this
+   * never clones a copy: the selector adopts `templateId` as the save-target
+   * (recreating it only if it was deleted), and the form is patched with the
+   * handed-off `config` (the job's actual run values for a reload). Mirrors
+   * loadExternalConfig's auto-save suppression so the patch itself doesn't
+   * immediately rewrite the template.
+   */
+  applyExistingTemplate(templateId: string, name: string, config: any, definitionId: string) {
+    this._externalConfigApplied = true;
+    this._isTemplateApplying = true;
+    if (this.templateSelector) {
+      this.templateSelector.suppressAutoSave.set(true);
+      this.templateSelector.adoptExternalTemplate(templateId, name, config, definitionId);
+    }
+
+    const resumePath = this.form.get('resume_from_checkpoint')?.value;
+
+    const model = this.availableModels().find(m => m.id === definitionId);
+    if (model) {
+      this.selectedFamily.set(model.family);
+    }
+    this.patchFormRecursive(this.form, config);
+
+    if (resumePath) {
+      this.form.get('resume_from_checkpoint')?.setValue(resumePath);
+    }
+
+    this._syncBlockSwapFromForm();
+    this.targetLayersCard?.refreshFromControl();
+
+    setTimeout(() => {
+      this._isTemplateApplying = false;
+      if (this.templateSelector) {
+        this.templateSelector.suppressAutoSave.set(false);
+      }
+    }, 1500);
+  }
+
   loadExternalConfig(config: any) {
     // Suppress auto-save so patching the form doesn't create a new template
     this._externalConfigApplied = true;
@@ -2084,6 +2124,20 @@ export class TrainingDynamicConfigComponent {
       const pid = this.projectId();
       if (pid) {
         raw.project_id = pid;
+      }
+      // Link the job back to the template it was built from, so a later
+      // "Reload into Training" can re-select that exact template (and recreate
+      // it only if it was since deleted). Skip the bare default — there's no
+      // real, editable template to link to. Stored in config alongside
+      // project_id/job_id (no schema change needed; persisted with the job).
+      const selector = this.templateSelector;
+      if (selector) {
+        const tplId = selector.activeTemplateId();
+        const tpl = selector.activeTemplate();
+        if (tplId && tplId !== 'default' && tpl && !tpl.is_default && !tpl.readonly) {
+          raw.template_id = tplId;
+          raw.template_name = tpl.name;
+        }
       }
       this.configSubmitted.emit(raw);
     }

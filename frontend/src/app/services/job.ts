@@ -42,6 +42,8 @@ export interface Job {
   output_dir?: string;
   definition_id?: string;
   lora_name?: string;
+  /** Owning project (job_history column); null/absent for global jobs. */
+  project_id?: string | null;
 }
 
 export interface VramEstimate {

@@ -50,7 +50,7 @@ def test_container_mode_login_route_redirects_with_token(monkeypatch, tmp_path):
     (tmp_path / "index.html").write_text("<html><body>SPA OK</body></html>")
     main = _reload_app(monkeypatch, dist_dir=tmp_path, token="topsecret")
     client = TestClient(main.app)
-    r = client.get("/login", params={"token": "topsecret"}, follow_redirects=False)
+    r = client.post("/login", data={"token": "topsecret"}, follow_redirects=False)
     assert r.status_code == 302
     from app.core.auth import COOKIE_NAME
     assert COOKIE_NAME in r.cookies

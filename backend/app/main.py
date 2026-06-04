@@ -17,7 +17,7 @@ import webbrowser
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -243,10 +243,18 @@ from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402
 
 
 @app.get("/login")
-async def login(token: str = ""):
+async def login_page():
+    """Render the sign-in page (token is submitted via POST)."""
+    return HTMLResponse(LOGIN_HTML)
+
+
+@app.post("/login")
+async def login_submit(token: str = Form("")):
     """Validate the access token, set the auth cookie, then redirect home.
 
-    No-op pass-through when auth is disabled (no token configured).
+    No-op pass-through when auth is disabled (no token configured). The token
+    is read from the POST body (never a query string) so it cannot leak into
+    access logs, the log stream, browser history, or proxy logs.
     """
     configured = container_config.auth_token()
     if not configured or hmac.compare_digest(token, configured):

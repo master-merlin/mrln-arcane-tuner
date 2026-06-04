@@ -32,7 +32,7 @@ input,button{width:100%;padding:.6rem;margin-top:.4rem;border-radius:8px;
 border:1px solid #333;background:#0b0b0f;color:#eee;box-sizing:border-box}
 button{background:#6d4aff;border:none;cursor:pointer;margin-top:1rem;font-weight:600}
 </style></head>
-<body><form method="get" action="/login">
+<body><form method="post" action="/login">
 <h1>MRLN Arcane Tuner</h1>
 <label for="token">Access token</label>
 <input id="token" type="password" name="token" autofocus autocomplete="off" />

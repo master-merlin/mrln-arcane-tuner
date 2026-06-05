@@ -477,6 +477,24 @@
 }
 .ds-filter-search input:focus { outline: none; }
 
+/* Inline clear (X) button — only rendered when the query is non-empty. */
+.ds-filter-search-clear {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    padding: 2px;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-theme-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+}
+.ds-filter-search-clear:hover {
+    color: var(--color-text-primary);
+    background: var(--color-surface-high);
+}
+
 /* Chip row sits between the search box and the sort dropdown. Active
    dynamic chips (cat:/tag:) come first, then the "+ Filter" trigger,
    then the three smart-filter chips with live counts. */

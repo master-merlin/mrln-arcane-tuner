@@ -84,6 +84,14 @@
                    [value]="search.query()"
                    (input)="search.query.set($any($event.target).value)"
                    aria-label="Search datasets">
+            @if (search.query()) {
+                <button type="button"
+                        class="ds-filter-search-clear"
+                        (click)="clearSearch()"
+                        aria-label="Clear search">
+                    <app-ico name="X" [size]="12"/>
+                </button>
+            }
         </div>
 
         <div class="ds-filter-chip-row" role="group" aria-label="Filters">

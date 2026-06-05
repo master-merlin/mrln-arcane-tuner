@@ -665,8 +665,9 @@
         overflow: hidden;
         animation: modal-pop 200ms cubic-bezier(.16,1,.3,1);
     }
-    /* Wider variant for data-dense modals (Analyze, etc.) — matches the design's 960px shell. */
-    .modal.modal-wide { max-width: 960px; }
+    /* Wider variant for data-dense modals (Analyze, etc.). Widened from the
+       design's 960px so the Files table fits the orientation icon + columns. */
+    .modal.modal-wide { max-width: 1000px; }
     /* XL variant for modals that need a large image canvas (Crop Preview). */
     .modal.modal-xl   { max-width: min(1280px, 92vw); max-height: 92vh; }
     /* Compact variant — modal hugs its content (template settings edit). */

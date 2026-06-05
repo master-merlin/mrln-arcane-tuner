@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { forkJoin, firstValueFrom } from 'rxjs';
-import { IcoComponent } from '../../icons/ico.component';
+import { IcoComponent, IconKey } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { OverlayStore } from '../../state/overlay.store';
@@ -57,11 +57,14 @@ interface AnalysisImage {
 interface AnalysisStrategy {
     images: AnalysisImage[];
     target_resolution?: [number, number];
+    majority_ar?: number;
     majority_ar_display?: string;
     count_total?: number;
     count_majority?: number;
     max_long_side_found?: number;
 }
+
+type Orientation = 'landscape' | 'portrait' | 'squared';
 
 interface AnalysisData {
     landscape?: AnalysisStrategy;
@@ -95,6 +98,8 @@ interface FileRow {
     hps: number | null;
     width: number;
     height: number;
+    /** Derived from width/height — drives the Files-table orientation icon. */
+    orientation: Orientation;
     sizeBytes: number;
     flags: { H: boolean; C: boolean; M: boolean };
     thumbUrl: string;
@@ -367,6 +372,21 @@ const THUMB_FALLBACK_DATA_URI =
                                         <div class="card-title">
                                             <app-ico name="Image" [size]="11"/> Aspect ratios
                                         </div>
+                                        @if (arOrientations().length > 1) {
+                                            <div class="an-ar-tabs" role="tablist">
+                                                @for (o of arOrientations(); track o.key) {
+                                                    <button type="button" class="an-ar-tab"
+                                                            role="tab"
+                                                            [class.active]="effectiveArOrientation() === o.key"
+                                                            [attr.aria-selected]="effectiveArOrientation() === o.key"
+                                                            [title]="o.label + ' · ' + o.count"
+                                                            (click)="setArOrientation(o.key)">
+                                                        <app-ico [name]="o.icon" [size]="12"/>
+                                                        <span class="mono an-ar-tab-count">{{ o.count }}</span>
+                                                    </button>
+                                                }
+                                            </div>
+                                        }
                                     </div>
                                     <div class="card-body">
                                         @for (ar of aspectRatios(); track ar.label) {
@@ -379,6 +399,14 @@ const THUMB_FALLBACK_DATA_URI =
                                                 </div>
                                                 <span class="mono an-ar-val">{{ ar.ratio.toFixed(3) }}</span>
                                                 <span class="mono an-ar-count">{{ ar.count }}</span>
+                                            </div>
+                                        }
+                                        @for (p of arPadRows(); track p) {
+                                            <div class="an-ar-row an-ar-row-ghost" aria-hidden="true">
+                                                <div class="an-ar-label mono">&nbsp;</div>
+                                                <div class="an-ar-bar"></div>
+                                                <span class="mono an-ar-val">&nbsp;</span>
+                                                <span class="mono an-ar-count">&nbsp;</span>
                                             </div>
                                         }
                                     </div>
@@ -510,7 +538,10 @@ const THUMB_FALLBACK_DATA_URI =
                                             }
                                         </div>
                                         <span class="tag" [class]="hpsTone(r.hps)" [style.justifySelf]="'end'">{{ hpsText(r.hps) }}</span>
-                                        <span class="mono an-col-right an-files-mut">{{ r.width }}×{{ r.height }}</span>
+                                        <span class="mono an-col-right an-files-mut an-files-res">
+                                            <app-ico [name]="orientationIcon(r.orientation)" [size]="12" class="an-files-ori" [title]="r.orientation"/>
+                                            {{ r.width }}×{{ r.height }}
+                                        </span>
                                         <span class="mono an-col-right an-files-mut">{{ sizeLabel(r.sizeBytes) }}</span>
                                         <div class="an-col-center an-files-flags">
                                             <span class="state-pill H" [class.on]="r.flags.H">H</span>
@@ -667,6 +698,9 @@ const THUMB_FALLBACK_DATA_URI =
 
         /* Aspect ratios */
         .an-ar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+        /* Filler rows reserve the tallest orientation's height so switching
+           AR tabs never resizes the card / modal. Same markup ⇒ same height. */
+        .an-ar-row-ghost { visibility: hidden; }
         .an-ar-label { font-size: 11.5px; font-weight: 600; width: 36px; }
         .an-ar-bar {
             flex: 1; height: 8px;
@@ -676,6 +710,30 @@ const THUMB_FALLBACK_DATA_URI =
         .an-ar-bar-fill { height: 100%; border-radius: 4px; }
         .an-ar-val { font-size: 10.5px; color: var(--color-text-muted); width: 48px; text-align: right; }
         .an-ar-count { font-size: 11px; font-weight: 600; width: 28px; text-align: right; }
+
+        /* Orientation tabs on the Aspect Ratios card */
+        .an-ar-tabs {
+            display: flex; gap: 2px;
+            padding: 2px;
+            background: var(--color-surface-low);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-theme-md);
+        }
+        .an-ar-tab {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 3px 8px;
+            border: none; background: transparent;
+            color: var(--color-text-muted);
+            border-radius: var(--radius-theme-sm);
+            cursor: pointer;
+            transition: background 120ms, color 120ms;
+        }
+        .an-ar-tab:hover { color: var(--color-text-primary); }
+        .an-ar-tab.active {
+            background: var(--color-surface-high);
+            color: var(--color-brand-light);
+        }
+        .an-ar-tab-count { font-size: 10.5px; font-weight: 600; }
 
         /* Duplicates */
         .an-dup-list { display: flex; flex-direction: column; gap: 8px; }
@@ -740,7 +798,7 @@ const THUMB_FALLBACK_DATA_URI =
         .an-files-head,
         .an-files-row {
             display: grid;
-            grid-template-columns: 64px 1fr 80px 92px 72px 80px 180px;
+            grid-template-columns: 64px 1fr 80px 116px 72px 80px 180px;
             align-items: center; gap: 10px;
             padding: 8px 12px;
         }
@@ -753,6 +811,11 @@ const THUMB_FALLBACK_DATA_URI =
         }
         .an-col-right { text-align: right; }
         .an-col-center { text-align: center; }
+        .an-files-res {
+            display: inline-flex; align-items: center; justify-content: flex-end;
+            gap: 5px; white-space: nowrap;
+        }
+        .an-files-ori { color: var(--color-text-subtle); flex-shrink: 0; }
         .an-files-rows { max-height: 460px; overflow-y: auto; }
         .an-files-row {
             padding: 7px 12px;
@@ -973,6 +1036,71 @@ export class AnalyzeModalComponent implements OnInit {
         return strategies.reduce((max, s) => (s.images.length > max.images.length ? s : max));
     });
 
+    // ── Aspect-ratio orientation tabs ──────────────────────────────────
+    // Only the Aspect Ratios card is orientation-aware; every other stat
+    // (Mpx, HPS, duplicates) is orientation-agnostic and stays on the
+    // largest group / global pools.
+    private static readonly AR_ORIENTATIONS: { key: Orientation; label: string; icon: IconKey }[] = [
+        { key: 'landscape', label: 'Landscape', icon: 'RectangleHorizontal' },
+        { key: 'portrait', label: 'Portrait', icon: 'RectangleVertical' },
+        { key: 'squared', label: 'Square', icon: 'Square' },
+    ];
+
+    /** User-picked AR orientation tab. `null` ⇒ follow the largest group. */
+    protected selectedArOrientation = signal<Orientation | null>(null);
+
+    /** Orientation tabs to render — only groups that actually have images. */
+    protected arOrientations = computed(() => {
+        const d = this.analysisData();
+        if (!d) return [];
+        return AnalyzeModalComponent.AR_ORIENTATIONS
+            .map(o => ({ ...o, count: d[o.key]?.images?.length ?? 0 }))
+            .filter(o => o.count > 0);
+    });
+
+    /** Effective AR orientation — user pick, else the largest available group. */
+    protected effectiveArOrientation = computed<Orientation | null>(() => {
+        const opts = this.arOrientations();
+        if (!opts.length) return null;
+        const picked = this.selectedArOrientation();
+        if (picked && opts.some(o => o.key === picked)) return picked;
+        return opts.reduce((max, o) => (o.count > max.count ? o : max)).key;
+    });
+
+    /** Strategy backing the Aspect Ratios card (follows the orientation tab). */
+    private arStrategy = computed<AnalysisStrategy | null>(() => {
+        const d = this.analysisData();
+        const key = this.effectiveArOrientation();
+        return d && key ? d[key] ?? null : null;
+    });
+
+    /** Invisible filler rows appended to the Aspect Ratios list so every
+     *  orientation renders the same number of rows as the tallest group —
+     *  keeps the card (and the modal) a fixed height across tab switches.
+     *  Uses real-row markup, so no pixel/line-height guessing. */
+    protected arPadRows = computed<number[]>(() => {
+        const d = this.analysisData();
+        if (!d) return [];
+        let maxRows = 0;
+        for (const o of this.arOrientations()) {
+            const set = new Set((d[o.key]?.images ?? []).map(im => this.bucketAspect(im.aspect_ratio)));
+            if (set.size > maxRows) maxRows = set.size;
+        }
+        const pad = Math.max(0, maxRows - this.aspectRatios().length);
+        return Array.from({ length: pad }, (_, i) => i);
+    });
+
+    protected setArOrientation(o: Orientation): void {
+        this.selectedArOrientation.set(o);
+    }
+
+    /** Lucide icon stem for a row's orientation (Files table). */
+    protected orientationIcon(o: Orientation): IconKey {
+        return o === 'portrait' ? 'RectangleVertical'
+            : o === 'squared' ? 'Square'
+            : 'RectangleHorizontal';
+    }
+
     private allImages = computed<AnalysisImage[]>(() => {
         const d = this.analysisData();
         if (!d) return [];
@@ -1010,6 +1138,7 @@ export class AnalyzeModalComponent implements OnInit {
                 hps: typeof meta.quality_score === 'number' ? meta.quality_score : null,
                 width: w,
                 height: h,
+                orientation: w > h ? 'landscape' : w < h ? 'portrait' : 'squared',
                 sizeBytes: meta.size_bytes ?? p.size_bytes ?? 0,
                 flags: {
                     // Harmonized only when it matches the majority AR *and* needs no
@@ -1084,7 +1213,10 @@ export class AnalyzeModalComponent implements OnInit {
         const mps = imgs.map(im => (im.width * im.height) / 1_000_000).sort((a, b) => a - b);
         const median = mps.length ? mps[Math.floor(mps.length / 2)].toFixed(1) : '—';
         const duplicates = imgs.reduce((acc, im) => acc + (im.similar_count ?? 0), 0);
-        const aspectSet = new Set(imgs.map(im => this.bucketAspect(im.aspect_ratio)));
+        // Distinct-AR count follows the orientation tab so it matches the
+        // Aspect Ratios card (the only orientation-aware section).
+        const arImgs = this.arStrategy()?.images ?? imgs;
+        const aspectSet = new Set(arImgs.map(im => this.bucketAspect(im.aspect_ratio)));
 
         const hpsValues = this.allFiles()
             .map(r => r.hps)
@@ -1243,9 +1375,9 @@ export class AnalyzeModalComponent implements OnInit {
         return { curve: d, area, samples: sampleDots, xTicks, yTicks, median };
     });
 
-    /** Aspect-ratio breakdown bars. */
+    /** Aspect-ratio breakdown bars — scoped to the selected orientation tab. */
     protected aspectRatios = computed(() => {
-        const s = this.activeStrategy();
+        const s = this.arStrategy();
         if (!s) return [];
         const counts = new Map<string, { count: number; ratio: number; color: string }>();
         const tone = ['var(--color-success)', 'var(--color-brand)', 'var(--color-chart-lr)', 'var(--color-violet)', 'var(--color-warning)'];
@@ -1477,6 +1609,9 @@ export class AnalyzeModalComponent implements OnInit {
             height: r.height,
             target_width: im?.target_width ?? r.width,
             target_height: im?.target_height ?? r.height,
+            // Group majority AR so "Auto" lands on the bucket even when the
+            // per-image target is missing (un-harmonized rows).
+            majority_ar: this.analysisData()?.[r.orientation]?.majority_ar,
         });
     }
 

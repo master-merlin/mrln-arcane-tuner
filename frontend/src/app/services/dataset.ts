@@ -313,6 +313,21 @@ export class DatasetService {
     });
   }
 
+  /** Launch a backend-owned mask-generation task (CREATE). Returns the task id;
+   *  monitor via TaskStore. */
+  batchGenerateMasks(body: {
+    dataset_name: string; image_rel_paths: string[]; model_id: string; params: any;
+  }): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(body.dataset_name)}/masking/generate/batch`, body);
+  }
+
+  /** Launch a backend-owned mask-apply task (APPLY). Returns the task id;
+   *  monitor via TaskStore. */
+  batchApplyMasks(name: string, opacity: number, overwrite: boolean): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/masking/apply/batch?opacity=${opacity}&overwrite=${overwrite}`, {});
+  }
 
   unloadModels(): Observable<any> {
     return this.http.delete(`${this.rtc.apiUrl}/captions/unload`);

@@ -11,11 +11,15 @@ Module-level seams (monkeypatchable in tests):
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.core.logger import get_logger
 from app.core.masking.masking_service import MaskingService
 from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
+
+if TYPE_CHECKING:
+    from PIL.Image import Image
 
 logger = get_logger(__name__)
 
@@ -24,6 +28,7 @@ logger = get_logger(__name__)
 
 
 def _get_service() -> MaskingService:
+    """Return the MaskingService singleton."""
     return MaskingService.get_instance()
 
 
@@ -39,7 +44,7 @@ def _full_path(dataset_name: str, rel: str) -> str:
     return str(validate_path_within(root / rel, root))
 
 
-def _save_mask(dataset_name: str, rel: str, mask_image) -> None:
+def _save_mask(dataset_name: str, rel: str, mask_image: "Image") -> None:
     """Save the mask to masks/{stem}.png and flip has_mask on the media item.
 
     Mirrors the single-image generate route's metadata update so the grid

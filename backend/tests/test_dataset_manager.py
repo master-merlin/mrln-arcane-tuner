@@ -550,3 +550,30 @@ class TestThumbnailInvalidation:
         webps = list(new_thumb_dir.glob("*.webp"))
         assert len(webps) == 1
         assert webps[0].name.endswith("_00001.webp")
+
+
+# ── progress_cb seam + count_multimedia_files ────────────────────────────
+
+
+def test_count_multimedia_files(manager, tmp_path):
+    """count_multimedia_files counts only multimedia files in a dir (non-recursive)."""
+    d = tmp_path / "imgs"
+    d.mkdir()
+    _create_image(os.path.join(str(d), "a.png"))
+    _create_image(os.path.join(str(d), "b.jpg"))
+    _create_caption(os.path.join(str(d), "a.txt"))      # .txt is not multimedia
+    assert manager.count_multimedia_files(str(d)) == 2
+    assert manager.count_multimedia_files(str(tmp_path / "missing")) == 0
+
+
+@patch("app.core.dataset_manager.solide_hash_robust", return_value="abcd1234" * 4)
+def test_scan_invokes_progress_cb_per_image(mock_hash, manager):
+    """scan_dataset fires progress_cb once per multimedia file with a running count."""
+    ds = manager.create_dataset("prog")
+    _create_image(os.path.join(ds.path, "a.png"))
+    _create_image(os.path.join(ds.path, "b.png"))
+    calls = []
+    manager.scan_dataset("prog", progress_cb=lambda cur, tot, f: calls.append((cur, tot, f)))
+    assert len(calls) == 2
+    assert calls[-1][0] == 2                              # final current == file count
+    assert all(tot == 2 for _, tot, _ in calls)          # total == multimedia count

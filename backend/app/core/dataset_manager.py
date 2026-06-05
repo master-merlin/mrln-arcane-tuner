@@ -504,16 +504,37 @@ class DatasetManager:
             )
         return dataset
 
-    def scan_dataset(self, name: str, force_full: bool = False) -> Dataset:
+    def scan_dataset(self, name: str, force_full: bool = False, *,
+                     progress_cb=None) -> Dataset:
         """Scan a dataset — staged pipeline.
 
         Stages: prepare → enumerate & process per-file → compute statistics → finalize.
+
+        progress_cb: optional ``callable(current, total, filename)`` invoked once
+        per multimedia file. Default ``None`` → no-op (preserves existing callers
+        and the synchronous /scan route). Used by the background-rescan worker to
+        drive task progress.
         """
         dataset, ctx = self._prepare_scan(name, force_full)
+        ctx["progress_cb"] = progress_cb
         self._enumerate_and_extract(dataset, ctx)
         self._compute_scan_statistics(dataset, ctx)
         self._finalize_scan(dataset, ctx)
         return dataset
+
+    def count_multimedia_files(self, path: str) -> int:
+        """Count multimedia files directly under *path* (non-recursive).
+
+        Used to seed background-rescan task progress totals. Returns 0 for a
+        non-existent path. Same counting rule as the scan enumeration so the
+        task ``total`` and the per-file progress callback stay aligned."""
+        if not os.path.isdir(path):
+            return 0
+        return sum(
+            1 for x in os.scandir(path)
+            if x.is_file(follow_symlinks=False)
+            and os.path.splitext(x.name.lower())[1] in self.MULTIMEDIA_EXTS
+        )
 
     # ── Scan Stages ──────────────────────────────────────────────────────
 
@@ -569,6 +590,9 @@ class DatasetManager:
 
         name = dataset.name
         old_metadata = ctx["old_metadata"]
+        progress_cb = ctx.get("progress_cb")
+        task_total = self.count_multimedia_files(dataset.path) or 1
+        task_idx = 0
 
         # For incremental scans, count only NEW multimedia files for progress
         is_incremental = len(old_metadata) > 0
@@ -613,6 +637,7 @@ class DatasetManager:
 
             if ext in self.MULTIMEDIA_EXTS:
                 ctx["multimedia_stems"].add(stem)
+                task_idx += 1
                 existing_meta = old_metadata.get(rel_path, {})
                 is_new_file = not existing_meta
 
@@ -694,6 +719,8 @@ class DatasetManager:
                 except Exception as e:
                     logger.error("metadata_extraction_failed", path=rel_path, error=str(e))
 
+                if progress_cb is not None:
+                    progress_cb(task_idx, task_total, f)
                 if not ctx["preview_candidate"]:
                     ctx["preview_candidate"] = rel_path
 

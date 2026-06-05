@@ -11,6 +11,7 @@ import { OverlayStore, type WorkspaceMode } from '../state/overlay.store';
 import { DatasetStore } from '../state/dataset.store';
 import { MediaItemStore, MediaItem } from '../state/media-item.store';
 import { CaptionCacheStore, CaptionRow } from '../state/caption-cache.store';
+import { DatasetSyncService } from '../state/dataset-sync.service';
 import { DatasetService, Dataset } from '../services/dataset';
 import { ScopeStore } from '../state/scope.store';
 import { ToastService } from '../services/toast';
@@ -77,6 +78,7 @@ export class DatasetWorkspaceComponent {
     private datasetsApi = inject(DatasetService);
     private mediaItems = inject(MediaItemStore);
     private captions = inject(CaptionCacheStore);
+    private sync = inject(DatasetSyncService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
 
@@ -334,25 +336,10 @@ export class DatasetWorkspaceComponent {
         if (this.loadedDatasets().has(name)) return;
         // Mark loaded BEFORE the await so re-entries don't double-fetch.
         this.loadedDatasets.update(s => new Set(s).add(name));
-        try {
-            const pairs = (await firstValueFrom(
-                this.datasetsApi.getDatasetPairs(name),
-            )) as any[];
-            const captions = new Map<string, CaptionRow>();
-            for (const p of pairs ?? []) {
-                if (!p?.media_file) continue;
-                this.mediaItems.upsertFromPair(name, p);
-                captions.set(p.media_file, {
-                    caption_content: p.caption_content,
-                    masked_caption_content: p.masked_caption_content,
-                });
-            }
-            this.captions.seed(name, captions);
-        } catch {
-            // Leave `loadedDatasets` flipped — the user can manually
-            // refresh; further auto-retries would just spam the API.
-            this.captions.seed(name, new Map());
-        }
+        // Reconcile (replace + evict ghosts) through the shared sync service so
+        // first-open and refresh share one codepath. refreshDataset swallows
+        // its own errors and coalesces concurrent calls.
+        await this.sync.refreshDataset(name);
     }
 
     /** Pretty-prints an HTTP error payload's `detail` (or falls back to message). */
@@ -525,22 +512,15 @@ export class DatasetWorkspaceComponent {
      * produces a new file and the workspace needs the fresh metadata
      * (mask size, dimensions, etc.) to render the preview.
      *
-     * Clears both the load marker (so ensurePairsLoaded re-runs) and
-     * the caption cache for this dataset. MediaItemStore entries are
-     * left in place; upsertFromPair will overlay new values on top
-     * (preserving any entries the server might no longer report — see
-     * the "stale-on-reload caveat" in MediaItemStore.loadForDataset).
+     * Reconciles MediaItemStore + CaptionCacheStore to the server's current
+     * `/pairs` for this dataset — replace, not merge, so rows for files the
+     * server no longer reports (e.g. renamed-away by harmonize) are evicted
+     * rather than lingering as ghosts.
      */
     protected refreshPairs(): void {
         const d = this.dataset();
         if (!d) return;
-        this.loadedDatasets.update(s => {
-            const n = new Set(s);
-            n.delete(d.name);
-            return n;
-        });
-        this.captions.clear(d.name);
-        void this.ensurePairsLoaded(d.name);
+        void this.sync.refreshDataset(d.name);
     }
 
     /**

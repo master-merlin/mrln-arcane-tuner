@@ -11,7 +11,7 @@ import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
-import { MediaItemStore } from '../../state/media-item.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
@@ -247,7 +247,7 @@ export class MassCaptionModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
     private tasks = inject(TaskStore);
-    private mediaItems = inject(MediaItemStore);
+    private sync = inject(DatasetSyncService);
 
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
@@ -288,7 +288,7 @@ export class MassCaptionModalComponent implements OnInit {
         if (!t || this._finalized) return;
         if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
             this._finalized = true;
-            if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+            if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
             if (t.status === 'completed') this.data.onCompleted?.();
         }
     });

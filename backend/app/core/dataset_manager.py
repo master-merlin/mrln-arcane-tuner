@@ -17,7 +17,7 @@ from app.core.dataset.geometry import (
 from app.core.dataset.media_helpers import (
     invalidate_mask_files,
     invalidate_overlay_files,
-    update_metadata_after_edit,
+    refresh_media_metadata_after_change,
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 
@@ -207,6 +207,22 @@ class DatasetManager:
                     loop,
                 )
 
+    def _emit_dataset_invalidated(self, name: str) -> None:
+        """Broadcast ``dataset.invalidated`` so every connected client re-fetches
+        ``/pairs`` and reconciles its caches for this dataset. The coarse,
+        per-dataset signal (vs. per-file ``entity.changed``) is what cross-tab
+        sync needs after STRUCTURAL changes — renames (harmonize), rescans,
+        add/remove — where the file SET changed, not just one file's metadata.
+        Threadsafe: scans/harmonize run on a worker thread, the broadcast on the
+        event loop. No-op before the loop is wired (startup scans)."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(
+            event_manager.broadcast("dataset.invalidated", {"name": name}),
+            loop,
+        )
+
     def _emit_overlay_deleted(self, dataset: "Dataset", rel_path: str) -> None:
         """Broadcast ``overlay/deleted`` so the FE OverlayStore drops a now-stale
         overlay after an image deletion (or a failed re-render). Mirrors the id
@@ -267,7 +283,7 @@ class DatasetManager:
         """After a destructive pixel edit, re-apply the image's overlay recipe to
         the new pixels so the non-destructive edit survives — or, if it can't be
         re-rendered, drop the now-stale overlay. No-op when the image has no
-        overlay. Assumes ``update_metadata_after_edit`` just cleared the overlay
+        overlay. Assumes ``refresh_media_metadata_after_change`` just cleared the overlay
         metadata fields; on a successful re-render they're re-set + persisted.
         """
         lookup_key = rel_path.replace(os.sep, "/")
@@ -831,6 +847,11 @@ class DatasetManager:
             self._bump_version(dataset, "minor")
 
         self._persist_dataset(dataset)
+
+        # The file set may have changed (new/removed/renamed files, or a
+        # harmonize that renamed everything before re-scanning). Tell every
+        # client to reconcile so stale filenames/captions don't linger.
+        self._emit_dataset_invalidated(dataset.name)
 
     def _score_new_images(self, dataset: "Dataset", ctx: dict) -> None:
         """Stage 4: Score unscored images for quality using HPSv2.
@@ -1659,7 +1680,7 @@ class DatasetManager:
 
         # Update metadata in-place
         lookup_key = relative_path.replace(os.sep, '/')
-        update_metadata_after_edit(
+        refresh_media_metadata_after_change(
             dataset.media_metadata, lookup_key, full_path,
             new_dims=(target_w, target_h),
             dataset_path=dataset.path,
@@ -1705,7 +1726,7 @@ class DatasetManager:
 
         # Update lightweight metadata (dimensions unchanged)
         lookup_key = relative_path.replace(os.sep, "/")
-        update_metadata_after_edit(
+        refresh_media_metadata_after_change(
             dataset.media_metadata, lookup_key, full_path,
             dataset_path=dataset.path,
         )

@@ -77,6 +77,37 @@ def test_lane_runs_sequentially(tm):
     assert tm.get(b.id).status.value == "completed"
 
 
+def test_finish_emits_dataset_invalidated_when_scoped(tm, monkeypatch):
+    """A dataset-scoped task that finishes broadcasts dataset.invalidated so
+    clients reconcile (caption batch writes/renames files)."""
+    calls: list[str] = []
+    monkeypatch.setattr(tm, "_emit_dataset_invalidated", lambda name: calls.append(name))
+    t = tm.create(type="caption_batch", title="x", total=1, dataset_name="ds")
+    tm.start(t.id)
+    tm.complete(t.id)
+    assert calls == ["ds"]
+
+
+def test_finish_emits_dataset_invalidated_on_failure(tm, monkeypatch):
+    """Partial runs change files too — failure still triggers reconcile."""
+    calls: list[str] = []
+    monkeypatch.setattr(tm, "_emit_dataset_invalidated", lambda name: calls.append(name))
+    t = tm.create(type="caption_batch", title="x", total=1, dataset_name="ds")
+    tm.start(t.id)
+    tm.fail(t.id, "boom")
+    assert calls == ["ds"]
+
+
+def test_finish_no_invalidate_without_dataset(tm, monkeypatch):
+    """Non-dataset tasks must not broadcast a dataset signal."""
+    calls: list[str] = []
+    monkeypatch.setattr(tm, "_emit_dataset_invalidated", lambda name: calls.append(name))
+    t = tm.create(type="export", title="x", total=1)  # no dataset_name
+    tm.start(t.id)
+    tm.complete(t.id)
+    assert calls == []
+
+
 def test_cancel_pending_never_runs(tm):
     ran: list[str] = []
     gate = _threading.Event()

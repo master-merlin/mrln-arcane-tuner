@@ -5,6 +5,7 @@ import { MassMaskModalComponent } from './mass-mask.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore, mediaKey } from '../../state/media-item.store';
 import { CaptionCacheStore } from '../../state/caption-cache.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
@@ -34,6 +35,7 @@ describe('MassMaskComponent live updates', () => {
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
             ],
         });
@@ -50,16 +52,18 @@ describe('MassMaskComponent live updates', () => {
         comp.maskingSettings = { modelId: 'sam', params: {} };
         comp.running.set(true);
 
+        const sync = TestBed.inject(DatasetSyncService) as any;
+
         comp.processMaskQueue([makePair('a.png')], 0);
         // generateMask emits synchronously, so markMaskGenerated has already
         // flipped the flag here — the setTimeout reaching the terminal-guard
-        // loadForDataset reconcile has NOT fired yet. Asserting now isolates the
+        // refreshDataset reconcile has NOT fired yet. Asserting now isolates the
         // LIVE flip (the reconcile would set has_mask regardless).
         expect(api.generateMask).toHaveBeenCalled();
         expect(media.byId(mediaKey('ds1', 'a.png'))()?.has_mask).toBe(true);
 
         tick(200);   // drain the queue setTimeout + fire-and-forget reconcile
-        expect(api.getDatasetPairs).toHaveBeenCalled();
+        expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
     }));
 
     it('writes masked caption text to CaptionCacheStore as the caption queue runs', fakeAsync(() => {

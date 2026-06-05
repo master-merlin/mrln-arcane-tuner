@@ -9,6 +9,7 @@ import { of } from 'rxjs';
 import { MassEditModalComponent } from '../mass-edit.component';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
+import { DatasetSyncService } from '../../../state/dataset-sync.service';
 import { DatasetService } from '../../../services/dataset';
 import { WebSocketService } from '../../../services/websocket.service';
 import { ToastService } from '../../../services/toast';
@@ -28,6 +29,7 @@ describe('MassEditModalComponent — onCompleted callback', () => {
                 OverlayStore, MediaItemStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: {
                     success: jasmine.createSpy(),
                     error: jasmine.createSpy(),
@@ -116,6 +118,7 @@ describe('MassEditModalComponent — per-item error toast', () => {
                 OverlayStore, MediaItemStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: toast },
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: '/media' } },
             ],
@@ -198,6 +201,7 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
                 OverlayStore, MediaItemStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: {
                     success: jasmine.createSpy(),
                     error: jasmine.createSpy(),

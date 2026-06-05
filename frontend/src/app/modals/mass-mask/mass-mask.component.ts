@@ -14,6 +14,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { MediaItemStore } from '../../state/media-item.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import {
     DatasetMaskingSettingsComponent,
     MaskingSettingsState,
@@ -433,6 +434,7 @@ export class MassMaskModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
     private mediaItems = inject(MediaItemStore);
+    private sync = inject(DatasetSyncService);
     private captions = inject(CaptionCacheStore);
 
     protected data: MassMaskModalData = (this.overlay.topModal()?.data as MassMaskModalData) ?? {};
@@ -566,7 +568,7 @@ export class MassMaskModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Mass masking complete — ${queue.length} images processed.`);
-                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
                 this.data.onCompleted?.();
             }
             return;
@@ -608,7 +610,7 @@ export class MassMaskModalComponent implements OnInit {
                 const skipped = res?.skipped ?? 0;
                 this.toast.success(`Applied masks to ${applied} images (${skipped} skipped).`);
                 this.mediaItems.bumpMedia();
-                void this.mediaItems.loadForDataset(name);
+                void this.sync.refreshDataset(name);
                 this.data.onCompleted?.();
             },
             error: (err: any) => {
@@ -643,7 +645,7 @@ export class MassMaskModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Masked captioning complete — ${queue.length} processed.`);
-                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
                 this.data.onCompleted?.();
             }
             return;

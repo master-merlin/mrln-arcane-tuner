@@ -9,6 +9,7 @@ import { MassMaskModalComponent } from '../mass-mask.component';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
 import { CaptionCacheStore } from '../../../state/caption-cache.store';
+import { DatasetSyncService } from '../../../state/dataset-sync.service';
 import { DatasetService } from '../../../services/dataset';
 import { WebSocketService } from '../../../services/websocket.service';
 import { ToastService } from '../../../services/toast';
@@ -39,6 +40,7 @@ describe('MassMaskModalComponent — onCompleted callback', () => {
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: {
                     success: jasmine.createSpy(),
                     error: jasmine.createSpy(),

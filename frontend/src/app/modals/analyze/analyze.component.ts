@@ -8,6 +8,7 @@ import { ToastService } from '../../services/toast';
 import { SegmentedComponent } from '../../ui/segmented/segmented.component';
 import { runCropAll, CropAllItem, CropAllProgress } from './crop-all';
 import { MediaItemStore } from '../../state/media-item.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 
 type FileFilter = 'all' | 'low-hps' | 'no-cap' | 'masked' | 'crop' | 'dupes';
 type FileSort = 'idx' | 'hps-desc' | 'hps-asc' | 'name' | 'size';
@@ -898,6 +899,7 @@ export class AnalyzeModalComponent implements OnInit {
     private rtc = inject(RuntimeConfigService);
     private toast = inject(ToastService);
     private mediaItems = inject(MediaItemStore);
+    private sync = inject(DatasetSyncService);
 
     protected readonly chartW = CHART_W;
     protected readonly chartH = CHART_H;
@@ -1631,6 +1633,9 @@ export class AnalyzeModalComponent implements OnInit {
                 const p = res?.processed ?? 0;
                 this.toast.success(`Harmonized "${name}" — ${p} processed, ${c} converted, ${r} renamed.`);
                 this.fetch();
+                // Files were renamed on disk — reconcile the grid's stores so it
+                // drops the old filenames (ghosts) instead of 404ing their captions.
+                void this.sync.refreshDataset(name);
             },
             error: (err: { error?: { detail?: string }; message?: string }) => {
                 this.harmonizing.set(false);

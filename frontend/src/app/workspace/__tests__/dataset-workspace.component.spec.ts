@@ -6,6 +6,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { DatasetStore } from '../../state/dataset.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { CaptionCacheStore } from '../../state/caption-cache.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ScopeStore } from '../../state/scope.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
@@ -34,6 +35,11 @@ class StubDatasetStore {
     byId = (_: string) => signal<any>({ id: 'd1', name: 'alpha', version: '1.0.0' });
     entities = signal<any[]>([{ id: 'd1', name: 'alpha', version: '1.0.0' }]);
     loadAll = jasmine.createSpy('loadAll').and.returnValue(Promise.resolve());
+    // Version-bump effects (patch-bump / bumpVersion) call this; default it so
+    // an effect firing in a test that doesn't override it doesn't throw an
+    // uncaught error that disconnects the browser. Tests that assert on it
+    // reassign their own spy.
+    upsertLocal = jasmine.createSpy('upsertLocal');
 }
 
 /**
@@ -91,6 +97,7 @@ function bed(): DatasetWorkspaceComponent {
             { provide: DatasetStore, useClass: StubDatasetStore },
             { provide: MediaItemStore, useClass: StubMediaItems },
             { provide: CaptionCacheStore, useClass: StubCaptionCache },
+            { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
             { provide: ScopeStore, useClass: StubScope },
             { provide: DatasetService, useClass: StubDatasetService },
             { provide: ToastService, useClass: StubToast },

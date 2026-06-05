@@ -18,7 +18,7 @@ from app.core.dataset.scan_helpers import (
 )
 from app.core.dataset.media_helpers import (
     invalidate_mask_files,
-    update_metadata_after_edit,
+    refresh_media_metadata_after_change,
 )
 
 
@@ -264,8 +264,8 @@ class TestInvalidateMaskFiles:
         invalidate_mask_files(str(tmp_path), "nonexistent", reason="test")
 
 
-class TestUpdateMetadataAfterEdit:
-    """Tests for update_metadata_after_edit."""
+class TestRefreshMediaMetadataAfterChange:
+    """Tests for refresh_media_metadata_after_change."""
 
     def test_clears_hash_and_mask(self, tmp_path):
         """Should clear solid_hash and nullify mask fields."""
@@ -283,7 +283,7 @@ class TestUpdateMetadataAfterEdit:
                 "size_bytes": 50,
             }
         }
-        update_metadata_after_edit(metadata, "img.png", img_path)
+        refresh_media_metadata_after_change(metadata, "img.png", img_path)
 
         entry = metadata["img.png"]
         assert "solid_hash" not in entry
@@ -301,7 +301,7 @@ class TestUpdateMetadataAfterEdit:
         metadata = {
             "cropped.png": {"width": 400, "height": 300, "size_bytes": 100}
         }
-        update_metadata_after_edit(metadata, "cropped.png", img_path, new_dims=(200, 100))
+        refresh_media_metadata_after_change(metadata, "cropped.png", img_path, new_dims=(200, 100))
 
         entry = metadata["cropped.png"]
         assert entry["width"] == 200
@@ -313,5 +313,5 @@ class TestUpdateMetadataAfterEdit:
         """Calling with a non-existent key should do nothing."""
         img_path = str(tmp_path / "fake.png")
         metadata = {}
-        update_metadata_after_edit(metadata, "missing.png", img_path)
+        refresh_media_metadata_after_change(metadata, "missing.png", img_path)
         assert metadata == {}

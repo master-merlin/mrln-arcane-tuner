@@ -5,6 +5,7 @@ import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { DatasetStore } from '../../state/dataset.store';
 import { MediaItemStore } from '../../state/media-item.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { OverlayStore } from '../../state/overlay.store';
 
 interface RescanModalData {
@@ -231,6 +232,7 @@ export class RescanModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private datasets = inject(DatasetStore);
     private mediaItems = inject(MediaItemStore);
+    private sync = inject(DatasetSyncService);
     private ws = inject(WebSocketService);
     private destroyRef = inject(DestroyRef);
 
@@ -306,7 +308,7 @@ export class RescanModalComponent implements OnInit {
             ? [this.data.datasetName]
             : [...new Set(this.mediaItems.entities().map(i => i.dataset_name))];
         for (const ds of targets) {
-            void this.mediaItems.loadForDataset(ds).catch(() => undefined);
+            void this.sync.refreshDataset(ds).catch(() => undefined);
         }
         void this.datasets.loadAll()
             .then(() => {

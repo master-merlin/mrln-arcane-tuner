@@ -98,14 +98,18 @@ def invalidate_mask_files(dataset_path: str, stem: str, reason: str = "edit") ->
                 )
 
 
-def update_metadata_after_edit(
+def refresh_media_metadata_after_change(
     metadata: dict[str, dict[str, Any]],
     lookup_key: str,
     full_path: str,
     new_dims: tuple[int, int] | None = None,
     dataset_path: str | None = None,
 ) -> None:
-    """Update lightweight metadata fields after a destructive edit.
+    """Refresh lightweight metadata fields after ANY change to a media file.
+
+    Named for "after a change" rather than "after an edit": the helper grew
+    out of the crop/adjust edit path, but the same invalidation applies after
+    any op that rewrites a file's bytes.
 
     Clears the solid hash (content changed), updates size_bytes,
     nullifies mask references (physical files already deleted

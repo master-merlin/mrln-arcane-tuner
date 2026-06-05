@@ -110,6 +110,26 @@ class TaskManager:
         t.status = status
         t.finished_at = time.time()
         self._broadcast(t)
+        # A dataset-scoped task just ended — it may have written/renamed files
+        # (caption batch, and any future mass op that becomes a task). Tell
+        # clients to reconcile that dataset's caches. Fires for completed AND
+        # failed/cancelled: partial runs still change files on disk, and the
+        # client-side reconcile is idempotent.
+        if t.dataset_name:
+            self._emit_dataset_invalidated(t.dataset_name)
+
+    def _emit_dataset_invalidated(self, name: str) -> None:
+        """Broadcast the coarse ``dataset.invalidated`` signal (see
+        DatasetManager._emit_dataset_invalidated). Threadsafe; no-op pre-loop."""
+        if self._loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("dataset.invalidated", {"name": name}),
+                self._loop,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.warning("dataset_invalidated_broadcast_failed", name=name, error=str(e))
 
     def enqueue(self, task_id: str, worker_fn, *, lane: str = "gpu") -> None:
         """Append (task_id, worker_fn) to a lane FIFO and ensure the lane's

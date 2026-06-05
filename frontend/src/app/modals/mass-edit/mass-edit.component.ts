@@ -14,6 +14,7 @@ import { DatasetService, type PipelineBlock } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { MediaItemStore } from '../../state/media-item.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 
 interface MassEditModalData {
     datasetId?: string;
@@ -348,6 +349,7 @@ export class MassEditModalComponent implements OnInit {
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
     private mediaItems = inject(MediaItemStore);
+    private sync = inject(DatasetSyncService);
 
     protected data: MassEditModalData = (this.overlay.topModal()?.data as MassEditModalData) ?? {};
 
@@ -492,7 +494,7 @@ export class MassEditModalComponent implements OnInit {
             this.running.set(false);
             if (idx >= queue.length) {
                 this.toast.success(`Pipeline applied to ${queue.length} images.`);
-                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
+                if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
                 this.data.onCompleted?.();
                 // Close on success — legacy finalizeMassProcess closed
                 // the modal implicitly; redesign was leaving it open

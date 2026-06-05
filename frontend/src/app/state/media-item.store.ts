@@ -62,7 +62,8 @@ interface DatasetPair {
     media_file?: string;
     media_type?: string;
     stem?: string;
-    caption_file?: string;
+    // `/pairs` returns null (not absent) when an image has no caption sidecar.
+    caption_file?: string | null;
     metadata?: Partial<MediaItem> | null;
     [extra: string]: unknown;
 }
@@ -187,9 +188,35 @@ export class MediaItemStore extends EntityStore<MediaItem> {
      * cache — avoiding a second HTTP round trip.
      */
     upsertFromPair(datasetName: string, p: DatasetPair): void {
-        if (!p.media_file) return;
+        const item = this.buildItem(datasetName, p);
+        if (item) this.upsert(item);
+    }
+
+    /**
+     * Reconcile the store's slice for `datasetName` to EXACTLY the rows the
+     * server reports — upserting each pair AND evicting any existing row for
+     * the dataset that the server no longer lists. This is the authoritative
+     * "the file set changed on disk" path (harmonize rename, rescan, mass
+     * caption); unlike {@link loadForDataset}'s additive merge it drops ghost
+     * rows whose underlying file was renamed away, so the grid stops showing
+     * stale filenames + 404ing on their renamed-away captions.
+     *
+     * Other datasets' rows are untouched.
+     */
+    reconcileDataset(datasetName: string, pairs: DatasetPair[]): void {
+        const rows: MediaItem[] = [];
+        for (const p of pairs) {
+            const item = this.buildItem(datasetName, p);
+            if (item) rows.push(item);
+        }
+        this.replaceWhere(e => e.dataset_name === datasetName, rows);
+    }
+
+    /** Map a `/pairs` row to a {@link MediaItem}; null if it has no media file. */
+    private buildItem(datasetName: string, p: DatasetPair): MediaItem | null {
+        if (!p.media_file) return null;
         const meta = (p.metadata ?? {}) as Partial<MediaItem>;
-        const item: MediaItem = {
+        return {
             ...meta,
             id: mediaKey(datasetName, p.media_file),
             dataset_name: datasetName,
@@ -199,7 +226,6 @@ export class MediaItemStore extends EntityStore<MediaItem> {
             caption_file: p.caption_file ?? meta.caption_file,
             has_caption: !!(p.caption_file ?? meta.caption_file),
         };
-        this.upsert(item);
     }
 
     /**

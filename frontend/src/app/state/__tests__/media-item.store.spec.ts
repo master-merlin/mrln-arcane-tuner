@@ -76,6 +76,45 @@ describe('MediaItemStore', () => {
         ]);
     });
 
+    describe('reconcileDataset (replace-not-merge)', () => {
+        // Regression: after Harmonize renames `a.png` → `dataset_00001.jpg`,
+        // a plain re-fetch upserts the new key but leaves the old `a.png` row
+        // as a ghost (stale filename + 404 on its renamed-away caption). The
+        // reconcile must set the dataset's slice to EXACTLY the server list.
+        it('evicts rows the server no longer reports', async () => {
+            await store.loadForDataset('ds1'); // a.png + subdir/b.png
+            store.reconcileDataset('ds1', [makePair('dataset_00001.jpg')]);
+            const ids = store.entities().map(m => m.id).sort();
+            expect(ids).toEqual([mediaKey('ds1', 'dataset_00001.jpg')]);
+            expect(store.byId(mediaKey('ds1', 'a.png'))()).toBeUndefined();
+            expect(store.byId(mediaKey('ds1', 'subdir/b.png'))()).toBeUndefined();
+        });
+
+        it('upserts the freshly-reported rows', () => {
+            store.reconcileDataset('ds1', [makePair('x.png'), makePair('y.png', false)]);
+            expect(store.byId(mediaKey('ds1', 'x.png'))()?.enabled).toBe(true);
+            expect(store.byId(mediaKey('ds1', 'y.png'))()?.enabled).toBe(false);
+        });
+
+        it('leaves OTHER datasets untouched', async () => {
+            await store.loadForDataset('ds1');
+            api.getDatasetPairs.and.returnValue(of([makePair('c.png')]));
+            await store.loadForDataset('ds2');
+            store.reconcileDataset('ds1', [makePair('dataset_00001.jpg')]);
+            const ids = store.entities().map(m => m.id).sort();
+            expect(ids).toEqual([
+                mediaKey('ds1', 'dataset_00001.jpg'),
+                mediaKey('ds2', 'c.png'),
+            ]);
+        });
+
+        it('reconciling to an empty list clears the dataset slice', async () => {
+            await store.loadForDataset('ds1');
+            store.reconcileDataset('ds1', []);
+            expect(store.entities().filter(m => m.dataset_name === 'ds1')).toEqual([]);
+        });
+    });
+
     it('toggleEnabled applies optimistically and calls the API', async () => {
         await store.loadForDataset('ds1');
         const p = store.toggleEnabled('ds1', 'a.png', false);

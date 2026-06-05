@@ -484,7 +484,7 @@ class TestArToDisplay:
 
 
 class TestThumbnailInvalidation:
-    """Mutations that call update_metadata_after_edit must refresh the thumbnail."""
+    """Mutations that call refresh_media_metadata_after_change must refresh the thumbnail."""
 
     def test_crop_regenerates_thumbnail(self, manager, tmp_path):
         from app.core.dataset import thumbnails

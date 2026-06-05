@@ -91,6 +91,30 @@ export abstract class EntityStore<T extends HasId> {
         });
     }
 
+    /**
+     * Reconcile a SLICE of the store to an authoritative row set in one update:
+     * every existing entry matching `predicate` whose id is not in `rows` is
+     * EVICTED, and every row in `rows` is upserted. Entries outside the slice
+     * (predicate false) are untouched.
+     *
+     * This is the replace-not-merge primitive that lets a per-domain re-fetch
+     * drop rows the server no longer reports (e.g. files renamed away by a
+     * harmonize) instead of leaving them as ghosts — the additive `upsert`
+     * path can only add/update, never remove.
+     */
+    protected replaceWhere(predicate: (e: T) => boolean, rows: T[]): void {
+        this._entities.update(m => {
+            const n = new Map<string, T>();
+            // Keep everything OUTSIDE the slice as-is.
+            for (const [id, e] of m) {
+                if (!predicate(e)) n.set(id, e);
+            }
+            // Set the slice to exactly the authoritative rows.
+            for (const r of rows) n.set(r.id, r);
+            return n;
+        });
+    }
+
     // --- Optimistic mutation runner ---
 
     protected async runOptimistic<R>(args: {

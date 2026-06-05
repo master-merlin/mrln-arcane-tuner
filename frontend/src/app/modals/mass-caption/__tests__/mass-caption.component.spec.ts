@@ -13,6 +13,7 @@ import { MassCaptionModalComponent } from '../mass-caption.component';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
 import { CaptionCacheStore } from '../../../state/caption-cache.store';
+import { DatasetSyncService } from '../../../state/dataset-sync.service';
 import { DatasetService } from '../../../services/dataset';
 import { WebSocketService } from '../../../services/websocket.service';
 import { ToastService } from '../../../services/toast';
@@ -44,6 +45,7 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);

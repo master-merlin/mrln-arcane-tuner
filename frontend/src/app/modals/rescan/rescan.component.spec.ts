@@ -6,6 +6,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { DatasetStore } from '../../state/dataset.store';
 import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ToastService } from '../../services/toast';
 
 describe('RescanModalComponent — single-dataset filter + completion', () => {
@@ -49,6 +50,7 @@ describe('RescanModalComponent — single-dataset filter + completion', () => {
                         return new Subject().asObservable();
                     }),
                 }},
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: {
                     success: jasmine.createSpy(),
                     error: jasmine.createSpy(),

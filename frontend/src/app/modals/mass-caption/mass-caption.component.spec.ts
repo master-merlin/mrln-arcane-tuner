@@ -5,6 +5,7 @@ import { MassCaptionModalComponent } from './mass-caption.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { CaptionCacheStore } from '../../state/caption-cache.store';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
@@ -38,6 +39,7 @@ describe('MassCaptionComponent launcher', () => {
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
                 { provide: TaskStore, useValue: { byId: () => signal(undefined), cancel: jasmine.createSpy() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
@@ -144,6 +146,9 @@ describe('MassCaptionComponent completion effect', () => {
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
                 // Mutable TaskStore: byId returns our controllable signal
                 { provide: TaskStore, useValue: { byId: () => taskSig, cancel: jasmine.createSpy() } },
+                // Mock the sync collaborator at the boundary — the modal should
+                // funnel completion through DatasetSyncService.refreshDataset.
+                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
@@ -153,8 +158,7 @@ describe('MassCaptionComponent completion effect', () => {
         const onCompleted = jasmine.createSpy('onCompleted');
         overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
 
-        const media = TestBed.inject(MediaItemStore) as any;
-        spyOn(media, 'loadForDataset').and.returnValue(Promise.resolve());
+        const sync = TestBed.inject(DatasetSyncService) as any;
 
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
@@ -168,14 +172,14 @@ describe('MassCaptionComponent completion effect', () => {
         taskSig.set(makeTask('completed'));
         fixture.detectChanges();
 
-        expect(media.loadForDataset).toHaveBeenCalledWith('ds1');
+        expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
         expect(onCompleted).toHaveBeenCalledTimes(1);
 
         // Transition again — _finalized guard must prevent double-fire
         taskSig.set(makeTask('failed'));
         fixture.detectChanges();
 
-        expect(media.loadForDataset).toHaveBeenCalledTimes(1);
+        expect(sync.refreshDataset).toHaveBeenCalledTimes(1);
         expect(onCompleted).toHaveBeenCalledTimes(1);
     });
 
@@ -183,8 +187,7 @@ describe('MassCaptionComponent completion effect', () => {
         const onCompleted = jasmine.createSpy('onCompleted');
         overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
 
-        const media = TestBed.inject(MediaItemStore) as any;
-        spyOn(media, 'loadForDataset').and.returnValue(Promise.resolve());
+        const sync = TestBed.inject(DatasetSyncService) as any;
 
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
@@ -197,7 +200,7 @@ describe('MassCaptionComponent completion effect', () => {
         taskSig.set(makeTask('failed'));
         fixture.detectChanges();
 
-        expect(media.loadForDataset).toHaveBeenCalledWith('ds1');
+        expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
         expect(onCompleted).not.toHaveBeenCalled();
     });
 });

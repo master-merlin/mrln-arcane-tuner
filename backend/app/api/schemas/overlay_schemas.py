@@ -41,6 +41,18 @@ class RenderPipelineRequest(BaseModel):
     replace_recipe: bool = False
 
 
+class RenderPipelineBatchRequest(BaseModel):
+    """Request body for applying one pipeline recipe to MANY images (mass-edit).
+    Mirrors RenderPipelineRequest but takes a list of image paths; the blocks +
+    tile config + replace_recipe are shared across all targets."""
+
+    image_paths: list[str]
+    blocks: list[PipelineBlockSchema]
+    tile_size: int = 512
+    tile_pad: int = 32
+    replace_recipe: bool = False
+
+
 class OverlayCommitRequest(BaseModel):
     """Request body for committing (flattening) an overlay into the original."""
 

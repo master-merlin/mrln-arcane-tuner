@@ -1,82 +1,118 @@
-import { TestBed, fakeAsync, tick } from '@angular/core/testing';
+/**
+ * Mass-mask modal — launcher-contract spec.
+ *
+ * Each tab launches a backend task and monitors via TaskStore. Closing/returning
+ * does not cancel; Stop cancels. Caption reuses batchCaption(target='masked').
+ */
+import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import { MassMaskModalComponent } from './mass-mask.component';
 import { OverlayStore } from '../../state/overlay.store';
-import { MediaItemStore, mediaKey } from '../../state/media-item.store';
-import { CaptionCacheStore } from '../../state/caption-cache.store';
-import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService } from '../../services/dataset';
-import { WebSocketService } from '../../services/websocket.service';
+import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ToastService } from '../../services/toast';
+import { TaskStore } from '../../state/task.store';
 
-function makePair(mediaFile: string) {
-    return {
-        media_file: mediaFile, caption_file: undefined, media_type: 'image',
-        caption_content: '', masked_caption_content: undefined,
-        metadata: { enabled: true, has_mask: false, width: 512, height: 512 },
-    };
+function makePair(media: string, extra: any = {}) {
+    return { media_file: media, metadata: { has_mask: false, has_masked_caption: false, ...extra } };
 }
 
-describe('MassMaskComponent live updates', () => {
+describe('MassMaskModalComponent — launcher contract', () => {
     let api: any;
-    let overlay: OverlayStore;
-    let media: MediaItemStore;
-    let captions: CaptionCacheStore;
+    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
 
     beforeEach(() => {
         api = {
-            getDatasetPairs: jasmine.createSpy().and.returnValue(of([makePair('a.png')])),
-            generateMask: jasmine.createSpy().and.returnValue(of({ mask_path: 'm', message: 'ok' })),
-            generateCaption: jasmine.createSpy().and.returnValue(of({ caption: 'masked cap' })),
+            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
+            batchGenerateMasks: jasmine.createSpy('batchGenerateMasks').and.returnValue(of({ task_id: 't1' })),
+            batchApplyMasks: jasmine.createSpy('batchApplyMasks').and.returnValue(of({ task_id: 't1' })),
+            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
+        };
+        taskStoreSpy = {
+            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            cancel: jasmine.createSpy('cancel'),
         };
         TestBed.configureTestingModule({
             providers: [
-                OverlayStore, MediaItemStore, CaptionCacheStore,
+                OverlayStore,
                 { provide: DatasetService, useValue: api },
-                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy(), warning: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: taskStoreSpy },
             ],
         });
-        overlay = TestBed.inject(OverlayStore);
-        media = TestBed.inject(MediaItemStore);
-        captions = TestBed.inject(CaptionCacheStore);
-        overlay.openModal('mass-mask', { datasetName: 'ds1' });
+        TestBed.inject(OverlayStore).openModal('mass-mask', { datasetName: 'ds1' });
     });
 
-    it('flips has_mask on the media item live, before the completion reconcile', fakeAsync(() => {
-        media.upsertFromPair('ds1', makePair('a.png'));   // seeded has_mask:false
+    function make() {
         const fixture = TestBed.createComponent(MassMaskModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.maskingSettings = { modelId: 'sam', params: {} };
-        comp.running.set(true);
+        return { fixture, comp };
+    }
 
-        const sync = TestBed.inject(DatasetSyncService) as any;
+    it('Generate: start() fires batchGenerateMasks and stores task_id', () => {
+        const { comp } = make();
+        comp.maskingSettings = { modelId: 'rembg', params: {} };
+        comp.tab.set('generate');
+        comp.strategy.set('overwrite');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.batchGenerateMasks).toHaveBeenCalled();
+        expect(comp.taskId()).toBe('t1');
+        expect(comp.running()).toBe(true);
+    });
 
-        comp.processMaskQueue([makePair('a.png')], 0);
-        // generateMask emits synchronously, so markMaskGenerated has already
-        // flipped the flag here — the setTimeout reaching the terminal-guard
-        // refreshDataset reconcile has NOT fired yet. Asserting now isolates the
-        // LIVE flip (the reconcile would set has_mask regardless).
-        expect(api.generateMask).toHaveBeenCalled();
-        expect(media.byId(mediaKey('ds1', 'a.png'))()?.has_mask).toBe(true);
+    it('Apply: start() fires batchApplyMasks(name, opacity, overwrite)', () => {
+        const { comp } = make();
+        comp.tab.set('apply');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        comp.applyOpacity.set(0.25);
+        comp.applyOverwrite.set(true);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.batchApplyMasks).toHaveBeenCalledWith('ds1', 0.25, true);
+        expect(comp.taskId()).toBe('t1');
+    });
 
-        tick(200);   // drain the queue setTimeout + fire-and-forget reconcile
-        expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
-    }));
+    it('Caption: start() fires batchCaption with target masked', () => {
+        const { comp } = make();
+        comp.captionSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.tab.set('caption');
+        comp.captionStrategy.set('overwrite');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.batchCaption).toHaveBeenCalled();
+        const arg = api.batchCaption.calls.mostRecent().args[0];
+        expect(arg.target).toBe('masked');
+        expect(comp.taskId()).toBe('t1');
+    });
 
-    it('writes masked caption text to CaptionCacheStore as the caption queue runs', fakeAsync(() => {
-        media.upsertFromPair('ds1', makePair('a.png'));
-        const fixture = TestBed.createComponent(MassMaskModalComponent);
-        const comp = fixture.componentInstance as any;
-        comp.captionSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
-        comp.running.set(true);
+    it('cancel() delegates to TaskStore.cancel and clears running', () => {
+        const { comp } = make();
+        comp.maskingSettings = { modelId: 'rembg', params: {} };
+        comp.tab.set('generate');
+        comp.strategy.set('overwrite');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        comp.cancel();
+        expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
+        expect(comp.running()).toBe(false);
+    });
 
-        comp.processCaptionQueue([makePair('a.png')], 0);
-        tick(200);
-
-        expect(api.generateCaption).toHaveBeenCalled();
-        expect(captions.get('ds1').get('a.png')?.masked_caption_content).toBe('masked cap');
-    }));
+    it('pct() reflects task progress from TaskStore', () => {
+        const taskSignal = signal<any>({ current: 2, total: 8, current_item: 'a.png' });
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        const { comp } = make();
+        comp.maskingSettings = { modelId: 'rembg', params: {} };
+        comp.tab.set('generate');
+        comp.strategy.set('overwrite');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(comp.pct()).toBe(25);
+    });
 });

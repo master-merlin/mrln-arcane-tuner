@@ -1,20 +1,20 @@
 import {
     ChangeDetectionStrategy,
     Component,
-    DestroyRef,
     OnInit,
     computed,
+    effect,
     inject,
     signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { firstValueFrom } from 'rxjs';
+import { Observable, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
-import { MediaItemStore } from '../../state/media-item.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
+import { TaskStore } from '../../state/task.store';
 import {
     DatasetMaskingSettingsComponent,
     MaskingSettingsState,
@@ -23,7 +23,6 @@ import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
 } from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
-import { CaptionCacheStore } from '../../state/caption-cache.store';
 
 interface MassMaskModalData {
     datasetId?: string;
@@ -95,13 +94,13 @@ type Strategy = 'keep' | 'overwrite';
                             </div>
                             <div class="mm-progress-queue">
                                 <div class="eyebrow">QUEUE STATUS</div>
-                                <span class="mono">{{ progress().current }} / {{ progress().total }}</span>
+                                <span class="mono">{{ task()?.current ?? 0 }} / {{ task()?.total ?? 0 }}</span>
                             </div>
                         </div>
                         <div class="mm-progress-bar"><div class="mm-progress-bar-fill" [style.width.%]="pct()"></div></div>
                         <div class="mm-progress-cur">
                             <span class="eyebrow">CURRENT FRAME</span>
-                            <span class="mono">{{ progress().currentFile }}</span>
+                            <span class="mono">{{ task()?.current_item ?? '' }}</span>
                         </div>
                     </div>
                     <button class="btn danger-out mm-stop" type="button" (click)="cancel()">
@@ -141,17 +140,6 @@ type Strategy = 'keep' | 'overwrite';
                         </div>
                     </section>
                 } @else if (tab() === 'apply') {
-                    @if (applyWarnings().length > 0) {
-                        <div class="mm-warning">
-                            <app-ico name="TriangleAlert" [size]="14"/>
-                            <div>
-                                @for (w of applyWarnings(); track w) {
-                                    <p>{{ w }}</p>
-                                }
-                            </div>
-                        </div>
-                    }
-
                     <section class="mm-section">
                         <div class="mm-section-head">
                             <span class="mm-section-bar"></span>
@@ -433,9 +421,8 @@ export class MassMaskModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
-    private mediaItems = inject(MediaItemStore);
     private sync = inject(DatasetSyncService);
-    private captions = inject(CaptionCacheStore);
+    private tasks = inject(TaskStore);
 
     protected data: MassMaskModalData = (this.overlay.topModal()?.data as MassMaskModalData) ?? {};
 
@@ -447,31 +434,26 @@ export class MassMaskModalComponent implements OnInit {
 
     protected tab = signal<Tab>('generate');
     protected strategy = signal<Strategy>('keep');
-
-    /** Latest snapshot from the shared masking-settings component. */
     protected maskingSettings: MaskingSettingsState | null = null;
 
-    // Apply tab
     protected applyOpacity = signal<number>(0);
     protected applyOverwrite = signal<boolean>(false);
-    /** Server-emitted warnings from the most recent mass-apply call
-     *  (e.g. partial coverage, missing masks). Surfaced as a banner. */
-    protected applyWarnings = signal<string[]>([]);
 
-    // Caption tab
     protected captionStrategy = signal<Strategy>('keep');
-    /** Latest snapshot from the shared caption-settings component. */
     protected captionSettings: CaptionSettingsState | null = null;
 
     protected pairs = signal<any[]>([]);
     protected running = signal<boolean>(false);
-    protected progress = signal<{ current: number; total: number; currentFile: string }>({
-        current: 0, total: 0, currentFile: '',
-    });
 
+    protected taskId = signal<string | null>(null);
+    private _taskView: ReturnType<TaskStore['byId']> | null = null;
+    protected task = computed(() => {
+        this.taskId();
+        return this._taskView?.() ?? undefined;
+    });
     protected pct = computed(() => {
-        const p = this.progress();
-        return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+        const t = this.task();
+        return t && t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     });
 
     protected maskedCount = computed(() => this.pairs().filter(p => p.metadata?.has_mask).length);
@@ -492,7 +474,6 @@ export class MassMaskModalComponent implements OnInit {
         }
     });
 
-    /** Enable the CTA only when the active tab has the inputs it needs. */
     protected canStart = computed<boolean>(() => {
         switch (this.tab()) {
             case 'generate': return !!this.maskingSettings;
@@ -501,13 +482,26 @@ export class MassMaskModalComponent implements OnInit {
         }
     });
 
-    constructor() {
-        // Abort any in-flight recursive queue (generate, masked-caption) if
-        // the modal closes mid-run. Apply is a single HTTP call and ignores
-        // this, but the flag reset is harmless.
-        const destroyRef = inject(DestroyRef);
-        destroyRef.onDestroy(() => this.running.set(false));
-    }
+    /** Guard: the completion handler fires at most once per launch. */
+    private _finalized = false;
+    /** On any terminal status: reconcile, reload pairs (so the next section sees
+     *  updated has_mask/has_masked flags), and return to the tabs. The modal does
+     *  NOT auto-close — mass masking is a multi-step Generate→Apply→Caption flow. */
+    private _completion = effect(() => {
+        const t = this.task();
+        if (!t || this._finalized) return;
+        if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+            this._finalized = true;
+            const name = this.data.datasetName;
+            if (t.status === 'failed') this.toast.error(t.error ?? 'Masking task failed.');
+            if (name) {
+                void this.sync.refreshDataset(name).catch(() => undefined);
+                void this.loadPairs(name);
+            }
+            if (t.status === 'completed') this.data.onCompleted?.();
+            this.running.set(false);
+        }
+    });
 
     ngOnInit(): void {
         if (!this.data.datasetName) return;
@@ -532,6 +526,7 @@ export class MassMaskModalComponent implements OnInit {
     }
 
     protected start(): void {
+        this._finalized = false;
         switch (this.tab()) {
             case 'generate': this.startGenerate(); break;
             case 'apply':    this.startApply();    break;
@@ -540,132 +535,62 @@ export class MassMaskModalComponent implements OnInit {
     }
 
     protected cancel(): void {
+        const id = this.taskId();
+        if (id) this.tasks.cancel(id);
+        this._finalized = true;
         this.running.set(false);
     }
 
-    // ── Generate ───────────────────────────────────────────────
-    private startGenerate(): void {
-        const name = this.data.datasetName;
-        if (!name || !this.maskingSettings) return;
-        const mode = this.strategy();
-        const candidates = mode === 'keep'
-            ? this.pairs().filter(p => !p.metadata?.has_mask)
-            : [...this.pairs()];
-
-        if (candidates.length === 0) {
-            this.toast.info('No images need masking.');
-            return;
-        }
-        if (!confirm(`Start masking ${candidates.length} images?`)) return;
-
+    private launch(obs: Observable<{ task_id: string }>, errMsg: string): void {
         this.running.set(true);
-        this.progress.set({ current: 0, total: candidates.length, currentFile: '' });
-        this.processMaskQueue(candidates, 0);
-    }
-
-    private processMaskQueue(queue: any[], idx: number): void {
-        if (!this.running() || idx >= queue.length || !this.maskingSettings) {
-            this.running.set(false);
-            if (idx >= queue.length) {
-                this.toast.success(`Mass masking complete — ${queue.length} images processed.`);
-                if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
-                this.data.onCompleted?.();
-            }
-            return;
-        }
-        const name = this.data.datasetName!;
-        const pair = queue[idx];
-        const settings = this.maskingSettings;
-        this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
-
-        this.datasetsApi.generateMask(name, pair.media_file, settings.modelId, settings.params).subscribe({
-            next: () => {
-                this.mediaItems.markMaskGenerated(name, pair.media_file);
-                setTimeout(() => this.processMaskQueue(queue, idx + 1), 100);
-            },
-            error: () => this.processMaskQueue(queue, idx + 1),
+        obs.subscribe({
+            next: ({ task_id }) => { this._taskView = this.tasks.byId(task_id); this.taskId.set(task_id); },
+            error: () => { this.running.set(false); this.toast.error(errMsg); },
         });
     }
 
-    // ── Apply ──────────────────────────────────────────────────
+    private startGenerate(): void {
+        const name = this.data.datasetName;
+        if (!name || !this.maskingSettings) return;
+        const candidates = this.strategy() === 'keep'
+            ? this.pairs().filter(p => !p.metadata?.has_mask)
+            : [...this.pairs()];
+        if (candidates.length === 0) { this.toast.info('No images need masking.'); return; }
+        if (!confirm(`Start masking ${candidates.length} images?`)) return;
+        this.launch(this.datasetsApi.batchGenerateMasks({
+            dataset_name: name,
+            image_rel_paths: candidates.map(p => p.media_file),
+            model_id: this.maskingSettings.modelId,
+            params: this.maskingSettings.params,
+        }), 'Could not start mask generation.');
+    }
+
     private startApply(): void {
         const name = this.data.datasetName;
         if (!name) return;
         const maskCount = this.maskedCount();
-        if (maskCount === 0) {
-            this.toast.warning('No masks found. Generate masks first.');
-            return;
-        }
+        if (maskCount === 0) { this.toast.warning('No masks found. Generate masks first.'); return; }
         if (!confirm(`Apply masks to ${maskCount} images with ${(this.applyOpacity() * 100).toFixed(0)}% background opacity?`)) return;
-
-        this.applyWarnings.set([]);
-        this.running.set(true);
-        this.progress.set({ current: 0, total: maskCount, currentFile: 'batch apply' });
-
-        this.datasetsApi.massApplyMasks(name, this.applyOpacity(), this.applyOverwrite()).subscribe({
-            next: (res: any) => {
-                this.running.set(false);
-                if (Array.isArray(res?.warnings)) this.applyWarnings.set(res.warnings);
-                const applied = res?.applied ?? maskCount;
-                const skipped = res?.skipped ?? 0;
-                this.toast.success(`Applied masks to ${applied} images (${skipped} skipped).`);
-                this.mediaItems.bumpMedia();
-                void this.sync.refreshDataset(name);
-                this.data.onCompleted?.();
-            },
-            error: (err: any) => {
-                this.running.set(false);
-                this.toast.error('Mass apply failed: ' + (err.error?.detail || err.message));
-            },
-        });
+        this.launch(
+            this.datasetsApi.batchApplyMasks(name, this.applyOpacity(), this.applyOverwrite()),
+            'Could not start mask apply.');
     }
 
-    // ── Caption (masked) ───────────────────────────────────────
     private startCaption(): void {
         const name = this.data.datasetName;
         if (!name || !this.captionSettings) return;
-        const mode = this.captionStrategy();
-        const candidates = mode === 'keep'
+        const candidates = this.captionStrategy() === 'keep'
             ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
             : this.pairs().filter(p => p.metadata?.has_mask);
-
-        if (candidates.length === 0) {
-            this.toast.info('No masked images need captioning. Generate and apply masks first.');
-            return;
-        }
+        if (candidates.length === 0) { this.toast.info('No masked images need captioning. Generate and apply masks first.'); return; }
         if (!confirm(`Start captioning ${candidates.length} masked images?`)) return;
-
-        this.running.set(true);
-        this.progress.set({ current: 0, total: candidates.length, currentFile: '' });
-        this.processCaptionQueue(candidates, 0);
-    }
-
-    private processCaptionQueue(queue: any[], idx: number): void {
-        if (!this.running() || idx >= queue.length || !this.captionSettings) {
-            this.running.set(false);
-            if (idx >= queue.length) {
-                this.toast.success(`Masked captioning complete — ${queue.length} processed.`);
-                if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
-                this.data.onCompleted?.();
-            }
-            return;
-        }
-        const name = this.data.datasetName!;
-        const pair = queue[idx];
-        const settings = this.captionSettings;
-        this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
-
-        this.datasetsApi.generateCaption(
-            name, pair.media_file,
-            settings.resolvedModelId, settings.params,
-            settings.resolvedSystemPrompt, 'masked',
-        ).subscribe({
-            next: (res: any) => {
-                this.captions.setCaption(name, pair.media_file, res.caption, true);
-                this.mediaItems.markMaskedCaptioned(name, pair.media_file);
-                setTimeout(() => this.processCaptionQueue(queue, idx + 1), 100);
-            },
-            error: () => this.processCaptionQueue(queue, idx + 1),
-        });
+        this.launch(this.datasetsApi.batchCaption({
+            dataset_name: name,
+            image_rel_paths: candidates.map(p => p.media_file),
+            model_id: this.captionSettings.resolvedModelId,
+            params: this.captionSettings.params,
+            system_prompt: this.captionSettings.resolvedSystemPrompt,
+            target: 'masked',
+        }), 'Could not start masked captioning.');
     }
 }

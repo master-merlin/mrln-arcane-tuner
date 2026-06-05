@@ -33,6 +33,8 @@ class TaskManager:
         self._last_emit: dict[str, float] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
+        self._lanes: dict[str, list[tuple[str, object]]] = {}
+        self._lane_threads: dict[str, threading.Thread] = {}
 
     def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         self._loop = loop
@@ -108,6 +110,54 @@ class TaskManager:
         t.status = status
         t.finished_at = time.time()
         self._broadcast(t)
+
+    def enqueue(self, task_id: str, worker_fn, *, lane: str = "gpu") -> None:
+        """Append (task_id, worker_fn) to a lane FIFO and ensure the lane's
+        single worker thread is running. worker_fn is called as worker_fn(task_id)
+        on the lane thread when this task reaches the front of the queue."""
+        with self._lock:
+            self._lanes.setdefault(lane, []).append((task_id, worker_fn))
+            th = self._lane_threads.get(lane)
+            if th is None or not th.is_alive():
+                th = threading.Thread(target=self._run_lane, args=(lane,), daemon=True)
+                self._lane_threads[lane] = th
+                th.start()
+
+    def _run_lane(self, lane: str) -> None:
+        while True:
+            with self._lock:
+                queue = self._lanes.get(lane, [])
+                if not queue:
+                    return
+                task_id, worker_fn = queue.pop(0)
+
+            # Cancelled before it ran → finalize as cancelled, skip the worker.
+            if self.is_cancelled(task_id):
+                self._finish(task_id, TaskStatus.CANCELLED)
+                continue
+
+            self.start(task_id)
+            try:
+                worker_fn(task_id)
+            except Exception as e:  # worker should normally finalize itself
+                logger.warning("task_worker_crashed", task_id=task_id, error=str(e))
+                t = self.get(task_id)
+                if t and t.status == TaskStatus.RUNNING:
+                    self.fail(task_id, str(e))
+            else:
+                t = self.get(task_id)
+                if t and t.status == TaskStatus.RUNNING:
+                    # Worker returned without finalizing → infer from cancel flag.
+                    if not self.is_cancelled(task_id):
+                        self.complete(task_id)
+                    else:
+                        self._finish(task_id, TaskStatus.CANCELLED)
+
+    def join_lane(self, lane: str, timeout: float | None = None) -> None:
+        """Test helper — block until the lane's worker thread drains."""
+        th = self._lane_threads.get(lane)
+        if th:
+            th.join(timeout)
 
     def _broadcast(self, task: Task, *, throttle: bool = False) -> None:
         if self._loop is None:

@@ -1,3 +1,5 @@
+import threading as _threading
+
 import pytest
 from app.core.tasks.task_manager import TaskManager
 from app.core.tasks.task import TaskStatus
@@ -44,3 +46,55 @@ def test_list_is_insertion_ordered(tm):
     a = tm.create(type="caption_batch", title="a", total=1)
     b = tm.create(type="caption_batch", title="b", total=1)
     assert [t.id for t in tm.list()] == [a.id, b.id]
+
+
+def test_lane_runs_sequentially(tm):
+    order: list[str] = []
+    gate = _threading.Event()
+
+    def worker_a(task_id):
+        order.append("a-start")
+        gate.wait(2)
+        order.append("a-end")
+
+    def worker_b(task_id):
+        order.append("b-start")
+
+    a = tm.create(type="caption_batch", title="a", total=1)
+    b = tm.create(type="caption_batch", title="b", total=1)
+    tm.enqueue(a.id, worker_a, lane="gpu")
+    tm.enqueue(b.id, worker_b, lane="gpu")
+
+    # b must NOT start until a finishes.
+    _threading.Event().wait(0.1)
+    assert order == ["a-start"]
+    assert tm.get(b.id).status.value == "pending"
+
+    gate.set()
+    tm.join_lane("gpu", timeout=2)
+    assert order == ["a-start", "a-end", "b-start"]
+    assert tm.get(a.id).status.value == "completed"
+    assert tm.get(b.id).status.value == "completed"
+
+
+def test_cancel_pending_never_runs(tm):
+    ran: list[str] = []
+    gate = _threading.Event()
+
+    def slow(task_id):
+        gate.wait(2)
+
+    def should_skip(task_id):
+        ran.append("skipped-ran")
+
+    a = tm.create(type="caption_batch", title="a", total=1)
+    b = tm.create(type="caption_batch", title="b", total=1)
+    tm.enqueue(a.id, slow, lane="gpu")
+    tm.enqueue(b.id, should_skip, lane="gpu")
+
+    tm.cancel(b.id)            # cancel while still pending
+    gate.set()
+    tm.join_lane("gpu", timeout=2)
+
+    assert ran == []                                   # worker never invoked
+    assert tm.get(b.id).status.value == "cancelled"

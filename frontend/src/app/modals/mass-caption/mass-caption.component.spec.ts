@@ -38,7 +38,7 @@ describe('MassCaptionComponent launcher', () => {
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
-                { provide: TaskStore, useValue: { byId: () => signal(undefined), cancel: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: jasmine.createSpy() } },
                 { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
             ],
         });
@@ -145,7 +145,7 @@ describe('MassCaptionComponent completion effect', () => {
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
                 // Mutable TaskStore: byId returns our controllable signal
-                { provide: TaskStore, useValue: { byId: () => taskSig, cancel: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: { byId: () => taskSig, active: signal([]), cancel: jasmine.createSpy() } },
                 // Mock the sync collaborator at the boundary — the modal should
                 // funnel completion through DatasetSyncService.refreshDataset.
                 { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },

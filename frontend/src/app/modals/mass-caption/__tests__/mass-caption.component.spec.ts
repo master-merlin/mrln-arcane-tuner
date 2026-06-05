@@ -30,14 +30,14 @@ function makePair(mediaFile: string) {
 describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
     let api: any;
     let overlay: OverlayStore;
-    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
 
     beforeEach(() => {
         api = {
             getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
             batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
         };
-        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') };
+        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), active: signal([]), cancel: jasmine.createSpy('cancel') };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore, MediaItemStore, CaptionCacheStore,
@@ -102,6 +102,26 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         comp.cancel();
         expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
         expect(comp.running()).toBe(false);
+    });
+
+    it('reattaches to an in-flight caption task for the dataset on open (no duplicate launch)', () => {
+        // A caption task for ds1 is already running when the modal opens.
+        taskStoreSpy.active = signal([
+            { id: 'live', type: 'caption_batch', dataset_name: 'ds1', status: 'running' },
+        ]);
+        const live = signal<any>({ current: 12, total: 36, ok: 12, failed: 0 });
+        taskStoreSpy.byId.and.returnValue(live);
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        fixture.detectChanges();
+
+        // Bound to the existing task, showing progress — not the launcher.
+        expect(comp.running()).toBe(true);
+        expect(comp.taskId()).toBe('live');
+        expect(comp.pct()).toBe(33);
+        // Did not re-fetch pairs to build a fresh candidate list.
+        expect(api.getDatasetPairs).not.toHaveBeenCalled();
     });
 
     it('pct() reflects task progress from TaskStore', () => {

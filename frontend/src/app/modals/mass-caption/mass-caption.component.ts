@@ -296,7 +296,27 @@ export class MassCaptionModalComponent implements OnInit {
     ngOnInit(): void {
         if (this.data.initialTarget) this.target.set(this.data.initialTarget);
         if (!this.data.datasetName) return;
+        // Reattach to an in-flight caption task for this dataset rather than
+        // showing the launcher. Reopening the modal otherwise spawns a fresh
+        // launcher disconnected from the running task — and with the default
+        // Incremental strategy `start()` would queue a *second* task over only
+        // the still-uncaptioned remainder, so the original run's progress is
+        // lost and the new (smaller) task undercounts what was actually done.
+        if (this.attachToRunningTask(this.data.datasetName)) return;
         void this.loadPairs(this.data.datasetName);
+    }
+
+    /** If a caption task for *name* is already active, bind the live view to it
+     *  and show the progress UI. Returns true when reattached. */
+    private attachToRunningTask(name: string): boolean {
+        const existing = this.tasks.active().find(
+            t => t.type === 'caption_batch' && t.dataset_name === name,
+        );
+        if (!existing) return false;
+        this._taskView = this.tasks.byId(existing.id);
+        this.taskId.set(existing.id);
+        this.running.set(true);
+        return true;
     }
 
     private async loadPairs(name: string): Promise<void> {

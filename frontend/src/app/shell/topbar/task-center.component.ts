@@ -1,7 +1,27 @@
 import { ChangeDetectionStrategy, Component, ElementRef, HostListener, inject } from '@angular/core';
 import { IcoComponent } from '../../icons/ico.component';
-import { TaskStore } from '../../state/task.store';
+import { Task, TaskStore } from '../../state/task.store';
 import { TopbarPanelStore } from '../../state/topbar-panel.store';
+
+/** How a task row presents: a human kind label + an accent color token. */
+interface TaskView { kind: string; subject: string; accent: string; }
+
+/**
+ * Per-type presentation. `kind` is the tier-1 label; `accent` is a CSS color
+ * token reused from the KPI accent rails (brand / success / warning / danger /
+ * teal=chart-lr / violet). New task types (crop/scoring/rescan/adjustments)
+ * slot in here as the background-task framework absorbs them.
+ */
+const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
+    caption_batch: { kind: 'Captioning', accent: 'var(--color-brand)' },
+    // Lighter than --color-violet (oklch L=0.65, too dark to read as a tiny
+    // uppercase label); L=0.74 matches the readability of brand.
+    rescan_batch:  { kind: 'Rescan',     accent: 'oklch(0.74 0.15 295)' },
+    // Future task types slot in here as the background-task framework absorbs
+    // them — e.g. crop (teal: var(--color-chart-lr)), scoring (var(--color-warning)),
+    // adjustments (var(--color-success)). Until a type is mapped it falls back
+    // to a neutral rail + a label parsed from the "<Kind> · <subject>" title.
+};
 
 @Component({
     selector: 'app-task-center',
@@ -20,10 +40,12 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
                     <div class="tc-pop">
                         <div class="tc-head">Activity</div>
                         @for (t of active(); track t.id) {
-                            <div class="tc-row">
-                                <div class="tc-title">{{ t.title }}
-                                    @if (t.status === 'pending') { <span class="tc-q mono">Queued</span> }
+                            @let v = view(t);
+                            <div class="tc-row" [style.--accent]="v.accent">
+                                <div class="tc-kind">{{ v.kind }}
+                                    @if (t.status === 'pending') { <span class="tc-q">· Queued</span> }
                                 </div>
+                                <div class="tc-subject" [title]="v.subject">{{ v.subject }}</div>
                                 <div class="bar"><i [style.width.%]="pct(t)"></i></div>
                                 <div class="tc-meta mono">
                                     <span>{{ t.current }} / {{ t.total }}</span>
@@ -34,12 +56,22 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
                         }
                         @if (recent().length > 0) { <div class="tc-sep"></div> }
                         @for (t of recent(); track t.id) {
-                            <div class="tc-row done">
-                                <div class="tc-title">
-                                    <app-ico [name]="t.status === 'completed' ? 'Check' : 'X'" [size]="12"/>
-                                    {{ t.title }}
+                            @let v = view(t);
+                            <div class="tc-row done" [class.failed]="t.status !== 'completed'"
+                                 [style.--accent]="v.accent">
+                                <div class="tc-kind">{{ v.kind }}</div>
+                                <div class="tc-subject" [title]="v.subject">{{ v.subject }}</div>
+                                <div class="tc-detail mono">
+                                    <app-ico class="tc-glyph"
+                                        [name]="t.status === 'completed' ? 'Check' : 'X'" [size]="12"/>
+                                    @if (t.failed > 0) {
+                                        <span class="ok">{{ t.ok }} ok</span>
+                                        <span class="fail">· {{ t.failed }} failed</span>
+                                    } @else {
+                                        <span class="ok">{{ t.ok }} done</span>
+                                    }
+                                    @if (t.status === 'cancelled') { <span class="cancelled">· cancelled</span> }
                                 </div>
-                                <div class="tc-meta mono">{{ t.ok }} done · {{ t.failed }} failed</div>
                             </div>
                         }
                     </div>
@@ -59,13 +91,32 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
             border-radius: var(--radius-theme-lg); box-shadow: var(--shadow-lg); padding: 10px; }
         .tc-head { font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
             color: var(--color-text-subtle); margin-bottom: 8px; }
-        .tc-row { padding: 6px 0; }
-        .tc-row.done { color: var(--color-text-muted); display: flex; justify-content: space-between; }
-        .tc-title { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-        .tc-q { color: var(--color-warning); font-size: 10px; }
+        /* Each row is a 3-tier card — kind / subject / detail — with a left
+           accent rail colored per task type (--accent, set inline). Mirrors
+           the KPI-tile accent rails. */
+        .tc-row { position: relative; padding: 6px 0 6px 12px; }
+        .tc-row::before { content: ''; position: absolute; left: 0; top: 5px; bottom: 5px;
+            width: 2px; border-radius: 1px; background: var(--accent, var(--color-border-default)); }
+        /* Tier 1 — task kind: small, uppercase, in the type's accent tone. */
+        .tc-kind { font-size: 9.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+            color: var(--accent, var(--color-text-subtle)); }
+        .tc-q { color: var(--color-warning); font-weight: 600; }
+        /* Tier 2 — subject (dataset): the primary line, truncates not wraps. */
+        .tc-subject { font-size: 12.5px; font-weight: 600; color: var(--color-text-primary);
+            margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .bar { height: 6px; background: var(--color-surface-mid); border-radius: 3px; overflow: hidden; margin: 5px 0; }
+        /* Progress fill is always brand — the per-type accent lives on the rail
+           and kind label, not the bar, so progress reads consistently. */
         .bar i { display: block; height: 100%; background: var(--color-brand); }
+        /* Tier 3 — detail line. */
         .tc-meta { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--color-text-muted); }
+        .tc-detail { display: flex; align-items: center; gap: 5px; margin-top: 3px;
+            font-size: 10.5px; color: var(--color-text-muted); }
+        .tc-glyph { flex-shrink: 0; color: var(--color-success); }
+        .tc-row.done.failed .tc-glyph { color: var(--color-danger); }
+        .tc-detail .ok { color: var(--color-text-muted); }
+        .tc-detail .fail { color: var(--color-danger); font-weight: 600; }
+        .tc-detail .cancelled { color: var(--color-text-disabled); }
         .tc-cancel { background: none; border: none; color: var(--color-danger); cursor: pointer; font: inherit; }
         .tc-item { font-size: 10px; color: var(--color-text-disabled); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tc-sep { height: 1px; background: var(--color-border-subtle); margin: 8px 0; }
@@ -81,6 +132,22 @@ export class TaskCenterComponent {
     protected open = this.panels.isOpen('tasks');
 
     protected toggle(): void { this.panels.toggle('tasks'); }
+
+    /**
+     * Split a task into its three display tiers. Prefers the structured
+     * `type`/`dataset_name` fields; falls back to parsing the composed
+     * `"<Kind> · <subject>"` title for unmapped types or dataset-less tasks.
+     */
+    protected view(t: Task): TaskView {
+        const known = TASK_KINDS[t.type];
+        const [head, ...rest] = (t.title ?? '').split(' · ');
+        const tail = rest.join(' · ');
+        return {
+            kind: known?.kind ?? head ?? t.type,
+            subject: t.dataset_name ?? tail ?? head ?? '',
+            accent: known?.accent ?? 'var(--color-border-default)',
+        };
+    }
 
     protected pct(t: { current: number; total: number }): number {
         return t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;

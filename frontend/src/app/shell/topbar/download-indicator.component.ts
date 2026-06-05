@@ -4,6 +4,7 @@ import {
 } from '@angular/core';
 import { ModelDownloadStore, DownloadProgress, RecentDownload } from '../../state/model-download.store';
 import { TopbarPanelStore } from '../../state/topbar-panel.store';
+import { IcoComponent } from '../../icons/ico.component';
 
 /**
  * Global topbar pill + dropdown for model download progress.
@@ -15,18 +16,19 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
 @Component({
     selector: 'app-download-indicator',
     standalone: true,
-    imports: [],
+    imports: [IcoComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         @if (visible()) {
             <div class="anchor">
                 <button class="pill"
                         type="button"
+                        [class.busy]="store.activeCount() > 0"
                         [class.open]="open()"
                         (click)="toggle()"
                         [title]="pillTitle()">
-                    <span class="dot"></span>
-                    <span>{{ pillLabel() }}</span>
+                    <app-ico name="Download" [size]="14"/>
+                    @if (store.activeCount() > 0) { <span class="count mono">{{ store.activeCount() }}</span> }
                 </button>
                 @if (open()) {
                     <div class="panel">
@@ -63,6 +65,7 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
                                         <span class="glyph err">✗</span>
                                     }
                                     <span class="name mono">{{ r.model_id }}</span>
+                                    @if (humanSize(r); as sz) { <span class="size mono">{{ sz }}</span> }
                                     <span class="age">{{ ageOf(r) }}</span>
                                 </div>
                                 @if (r.error) { <div class="row-foot err">{{ r.error }}</div> }
@@ -76,26 +79,24 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
     styles: [`
         :host { display: inline-flex; }
         .anchor { position: relative; }
+        /* Rectangle + rounded corners, centered icon + count — mirrors the
+           task-center / notification buttons. Keeps the violet download
+           identity via the .busy / .open accents. */
         .pill {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 3px 9px;
-            background: color-mix(in oklab, var(--color-violet) 18%, transparent);
-            color: var(--color-violet);
-            border: 1px solid color-mix(in oklab, var(--color-violet) 35%, transparent);
-            border-radius: 999px;
-            font-size: 11px;
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 5px 8px;
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-theme-md);
+            background: var(--color-surface-mid);
+            color: var(--color-text-secondary);
             cursor: pointer;
         }
-        .pill.open { background: color-mix(in oklab, var(--color-violet) 30%, transparent); }
-        .dot {
-            width: 6px; height: 6px; border-radius: 50%;
-            background: var(--color-violet);
-            animation: pulse 1.2s infinite ease-in-out;
+        .pill.busy { color: var(--color-violet); }
+        .pill.open {
+            color: var(--color-violet);
+            border-color: color-mix(in oklab, var(--color-violet) 35%, transparent);
         }
-        @keyframes pulse {
-            0%, 100% { opacity: 0.45; }
-            50%      { opacity: 1; }
-        }
+        .count { font-size: 11px; font-weight: 700; }
         .panel {
             position: absolute; top: calc(100% + 6px); right: 0;
             width: 320px;
@@ -130,8 +131,9 @@ import { TopbarPanelStore } from '../../state/topbar-panel.store';
         .row-foot { font-size: 9px; color: var(--color-text-muted); margin-top: 2px; }
         .row-foot.err { color: var(--color-danger); }
         .row.recent { display: flex; align-items: center; gap: 6px; background: transparent; padding: 4px 8px; font-size: 11px; }
-        .row.recent .name { flex: 1; }
-        .row.recent .age { font-size: 9px; color: var(--color-text-muted); }
+        .row.recent .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .row.recent .size { font-size: 9px; color: var(--color-text-secondary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+        .row.recent .age { font-size: 9px; color: var(--color-text-muted); flex-shrink: 0; }
         .glyph.ok  { color: var(--color-success); }
         .glyph.err { color: var(--color-danger); }
         .mono { font-family: var(--font-mono); }
@@ -147,14 +149,6 @@ export class DownloadIndicatorComponent {
         this.store.activeCount() > 0 || this.store.recent().length > 0,
     );
 
-    protected pillLabel = computed<string>(() => {
-        const n = this.store.activeCount();
-        const pct = this.store.aggregatePercent();
-        const noun = n === 1 ? 'download' : 'downloads';
-        if (n === 0) return `${this.store.recent().length} done`;
-        return `${n} ${noun}` + (pct != null ? ` · ${pct}%` : ' · …');
-    });
-
     protected pillTitle = computed(() =>
         this.open() ? 'Hide downloads' : 'Show downloads',
     );
@@ -163,6 +157,14 @@ export class DownloadIndicatorComponent {
 
     protected mb(bytes: number): string {
         return (bytes / (1024 * 1024)).toFixed(1);
+    }
+
+    /** Human-readable total size of a finished download (GB ≥ 1024 MB, else MB). */
+    protected humanSize(r: RecentDownload): string {
+        const bytes = r.total_bytes ?? r.current_bytes ?? 0;
+        if (!bytes) return '';
+        const mb = bytes / (1024 * 1024);
+        return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
     }
 
     protected ageOf(r: RecentDownload): string {

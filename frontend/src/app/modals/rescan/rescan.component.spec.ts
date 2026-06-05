@@ -1,30 +1,32 @@
+/**
+ * Rescan modal — launcher behaviour spec.
+ *
+ * The backend owns the scan loop now. start() dispatches rescanDataset /
+ * rescanLibrary and stores the returned task_id; the modal monitors progress
+ * via TaskStore.byId. Closing the modal does NOT cancel the task. On terminal
+ * status the modal reconciles datasets and auto-closes.
+ */
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { Subject, of } from 'rxjs';
+import { of } from 'rxjs';
 import { RescanModalComponent } from './rescan.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetStore } from '../../state/dataset.store';
+import { MediaItemStore } from '../../state/media-item.store';
 import { DatasetService } from '../../services/dataset';
-import { WebSocketService } from '../../services/websocket.service';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ToastService } from '../../services/toast';
+import { TaskStore } from '../../state/task.store';
 
-describe('RescanModalComponent — single-dataset filter + completion', () => {
-    let scanProgress$: Subject<any>;
-    let rescanComplete$: Subject<unknown>;
-    let datasetStart$: Subject<any>;
-    let rescanStart$: Subject<any>;
+describe('RescanModalComponent — launcher contract', () => {
     let api: any;
-    let datasets: { loadAll: jasmine.Spy, entities: any, deleteDataset: jasmine.Spy };
+    let datasets: { loadAll: jasmine.Spy; entities: any; deleteDataset: jasmine.Spy };
+    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
 
     beforeEach(() => {
-        scanProgress$ = new Subject();
-        rescanComplete$ = new Subject();
-        datasetStart$ = new Subject();
-        rescanStart$ = new Subject();
         api = {
-            scanDataset: jasmine.createSpy().and.returnValue(of({})),
-            scanAllDatasets: jasmine.createSpy().and.returnValue(of([])),
+            rescanDataset: jasmine.createSpy('rescanDataset').and.returnValue(of({ task_id: 't1' })),
+            rescanLibrary: jasmine.createSpy('rescanLibrary').and.returnValue(of({ task_id: 't1' })),
         };
         datasets = {
             loadAll: jasmine.createSpy('loadAll').and.returnValue(Promise.resolve()),
@@ -34,87 +36,86 @@ describe('RescanModalComponent — single-dataset filter + completion', () => {
             ] as any),
             deleteDataset: jasmine.createSpy('deleteDataset').and.returnValue(Promise.resolve()),
         };
+        taskStoreSpy = {
+            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            cancel: jasmine.createSpy('cancel'),
+        };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
                 { provide: DatasetStore, useValue: datasets },
+                { provide: MediaItemStore, useValue: { entities: signal([]) } },
                 { provide: DatasetService, useValue: api },
-                { provide: WebSocketService, useValue: {
-                    entityChanged: signal(null),
-                    reconnected: signal(0),
-                    on: jasmine.createSpy('on').and.callFake((event: string) => {
-                        if (event === 'scan_progress') return scanProgress$.asObservable();
-                        if (event === 'rescan_complete') return rescanComplete$.asObservable();
-                        if (event === 'dataset_start') return datasetStart$.asObservable();
-                        if (event === 'rescan_start') return rescanStart$.asObservable();
-                        return new Subject().asObservable();
-                    }),
-                }},
                 { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
-                { provide: ToastService, useValue: {
-                    success: jasmine.createSpy(),
-                    error: jasmine.createSpy(),
-                    info: jasmine.createSpy(),
-                }},
+                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: taskStoreSpy },
             ],
         });
     });
 
-    it('ignores scan_progress events for other datasets when datasetName is set', () => {
+    it('single-dataset: start() fires rescanDataset and stores task_id', () => {
+        TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
+        const comp = TestBed.createComponent(RescanModalComponent).componentInstance as any;
+        comp.mode.set('safe');
+        comp.start();
+        expect(api.rescanDataset).toHaveBeenCalledWith('alpha', 'safe');
+        expect(comp.taskId()).toBe('t1');
+        expect(comp.running()).toBe(true);
+    });
+
+    it('library: start() fires rescanLibrary with the selected mode', () => {
+        TestBed.inject(OverlayStore).openModal('rescan');
+        const comp = TestBed.createComponent(RescanModalComponent).componentInstance as any;
+        comp.mode.set('full');
+        comp.start();
+        expect(api.rescanLibrary).toHaveBeenCalledWith('full');
+        expect(comp.taskId()).toBe('t1');
+    });
+
+    it('cancel() delegates to TaskStore.cancel and clears running', () => {
+        TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
+        const comp = TestBed.createComponent(RescanModalComponent).componentInstance as any;
+        comp.start();
+        comp.cancel();
+        expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
+        expect(comp.running()).toBe(false);
+    });
+
+    it('closing the modal does NOT cancel the task', () => {
         TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
-        fixture.detectChanges();
-
-        scanProgress$.next({ dataset: 'beta', current: 5, total: 10, file: 'x.png', status: 'Analyzing…' });
-        expect(comp.datasetProgress().current).toBe(0);   // unchanged — filtered out
-
-        scanProgress$.next({ dataset: 'alpha', current: 3, total: 10, file: 'y.png', status: 'Analyzing…' });
-        expect(comp.datasetProgress().current).toBe(3);   // accepted — matches our dataset
+        comp.start();
+        expect(comp.running()).toBe(true);
+        fixture.destroy();
+        expect(taskStoreSpy.cancel).not.toHaveBeenCalled();
     });
 
-    it('single-dataset target: hides the library bar (context-aware)', () => {
+    it('pct() reflects task progress from TaskStore', () => {
+        const taskSignal = signal<any>({ current: 3, total: 10, current_item: 'alpha → img.png' });
+        taskStoreSpy.byId.and.returnValue(taskSignal);
         TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
-        const fixture = TestBed.createComponent(RescanModalComponent);
-        const comp = fixture.componentInstance as any;
-        comp.start();   // enter the progress phase
-        fixture.detectChanges();
-        const html: string = fixture.nativeElement.textContent;
-        expect(html).not.toContain('Library Status');
+        const comp = TestBed.createComponent(RescanModalComponent).componentInstance as any;
+        comp.start();
+        expect(comp.pct()).toBe(30);
     });
 
-    it('single-dataset rescan completes when the POST resolves — refreshes, no prune, auto-closes', fakeAsync(() => {
+    it('on completion: reconciles, prunes missing (library), and auto-closes', fakeAsync(() => {
         spyOn(window, 'confirm').and.returnValue(true);
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
         const overlay = TestBed.inject(OverlayStore);
-        overlay.openModal('rescan', { datasetName: 'alpha' });
+        overlay.openModal('rescan');                         // library
         const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
         fixture.detectChanges();
-
-        comp.start();           // scanDataset() → of({}) emits `next` synchronously
-        tick();                 // flush loadAll().then(...) microtask
-        tick();
-
-        expect(api.scanDataset).toHaveBeenCalledWith('alpha', false);
-        expect(comp.phase()).toBe('complete');
+        comp.start();
+        taskSignal.set({ id: 't1', status: 'completed', total: 4, current: 4 });
+        fixture.detectChanges();                             // flush completion effect
+        tick(); tick();                                      // loadAll + deleteDataset microtasks
         expect(datasets.loadAll).toHaveBeenCalled();
-        // Single-dataset scans must NOT prune library-wide missing datasets.
-        expect(datasets.deleteDataset).not.toHaveBeenCalled();
-        expect(closeSpy).toHaveBeenCalled();
-    }));
-
-    it('library rescan_complete: loadAll + prompts to prune missing datasets', fakeAsync(() => {
-        spyOn(window, 'confirm').and.returnValue(true);
-        TestBed.inject(OverlayStore).openModal('rescan');   // no datasetName → library scan
-        const fixture = TestBed.createComponent(RescanModalComponent);
-        fixture.detectChanges();
-
-        rescanComplete$.next({});
-        tick();   // flush the loadAll().then(...) microtask
-        tick();   // and the deleteDataset(...) microtask
-        expect(datasets.loadAll).toHaveBeenCalled();
-        // Only 'beta' is missing in our seed; deleteDataset should be called once.
         expect(datasets.deleteDataset).toHaveBeenCalledWith('b', false);
+        expect(closeSpy).toHaveBeenCalled();
     }));
 });

@@ -1,12 +1,12 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { IcoComponent } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
-import { WebSocketService } from '../../services/websocket.service';
 import { DatasetStore } from '../../state/dataset.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { OverlayStore } from '../../state/overlay.store';
+import { ToastService } from '../../services/toast';
+import { TaskStore } from '../../state/task.store';
 
 interface RescanModalData {
     /** Optional single-dataset target. When provided, only that dataset rescans. */
@@ -14,22 +14,12 @@ interface RescanModalData {
     datasetName?: string;
 }
 
-type RescanPhase = 'idle' | 'running' | 'complete';
-
-interface ScanProgress {
-    name: string;
-    current: number;
-    total: number;
-    file: string;
-    status: string;
-}
-
 /**
- * Rescan modal — Safe vs Full mode picker and live progress once the rescan starts.
- *
- * Ports logic from `viewer-rescan-modal.ts` and `dataset-rescan-options-modal.ts`.
- * When `data.datasetName` is set we call `scanDataset(name, forceFull)`; otherwise
- * `scanAllDatasets(forceFull)`.
+ * Rescan modal — launches a backend-owned rescan task (single dataset or whole
+ * library) and monitors its live progress via TaskStore. The backend owns the
+ * scan loop; this component is a launcher + monitor only. Closing the modal
+ * does NOT cancel the task — it keeps running in the Task Center. On terminal
+ * status the modal reconciles the affected dataset(s) and auto-closes.
  */
 @Component({
     selector: 'app-modal-rescan',
@@ -46,7 +36,7 @@ interface ScanProgress {
         </div>
 
         <div class="modal-body">
-            @if (phase() === 'idle') {
+            @if (!running()) {
                 <section class="rs-section">
                     <div class="rs-section-head">Rescan mode</div>
                     <div class="rs-mode-grid">
@@ -71,56 +61,43 @@ interface ScanProgress {
                     <app-ico name="TriangleAlert" [size]="14"/>
                     <div>
                         Captions and mask files are <b>not deleted</b>. Full Rescan can take several minutes
-                        on large datasets.
+                        on large datasets — it runs in the background once started.
                     </div>
                 </div>
             } @else {
                 <section class="rs-progress">
-                    @if (!isSingle()) {
-                        <div class="rs-library">
-                            <div class="rs-label">Library Status</div>
-                            <div class="rs-lib-meta">
-                                <span class="mono">{{ libraryProgress().current }} / {{ libraryProgress().total || '—' }}</span>
-                                <span class="rs-percent">{{ libraryPercent() }}%</span>
-                            </div>
-                            <div class="bar lg"><i [style.width.%]="libraryPercent()"></i></div>
-                        </div>
-                    }
-
                     <div class="rs-current">
                         <div class="rs-cur-head">
                             <div>
-                                <div class="rs-label">{{ datasetProgress().name || 'Initializing…' }}</div>
-                                <div class="rs-cur-pct">{{ datasetPercent() }}%</div>
+                                <div class="rs-label">{{ task()?.current === 0 ? 'Starting…' : 'Scanning' }}</div>
+                                <div class="rs-cur-pct">{{ pct() }}%</div>
                             </div>
                             <div class="rs-cur-meta">
                                 <div class="rs-label">Files scanned</div>
-                                <div class="mono rs-cur-files">{{ datasetProgress().current }} / {{ datasetProgress().total }}</div>
+                                <div class="mono rs-cur-files">{{ task()?.current ?? 0 }} / {{ task()?.total ?? 0 }}</div>
                             </div>
                         </div>
                         <div class="rs-cur-status mono">
-                            <span class="rs-cur-arrow">›</span> {{ datasetProgress().status }}
-                            <span class="rs-cur-file">{{ datasetProgress().file }}</span>
+                            <span class="rs-cur-arrow">›</span>
+                            <span class="rs-cur-file">{{ task()?.current_item ?? '' }}</span>
                         </div>
-                        <div class="bar lg"><i [style.width.%]="datasetPercent()"></i></div>
+                        <div class="bar lg"><i [style.width.%]="pct()"></i></div>
                     </div>
-
-                    @if (phase() === 'complete') {
-                        <div class="rs-complete">Scanning complete</div>
-                    }
+                    <div class="rs-hint">Runs in the background — track it in the Task Center.</div>
                 </section>
             }
         </div>
 
         <div class="modal-foot">
-            @if (phase() === 'idle') {
+            @if (!running()) {
                 <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
                 <button class="btn primary" type="button" (click)="start()">
                     <app-ico name="RefreshCw" [size]="14"/> Start Rescan
                 </button>
             } @else {
-                <button class="btn ghost" type="button" (click)="overlay.closeModal()">
-                    {{ phase() === 'complete' ? 'Close' : 'Run in background' }}
+                <button class="btn ghost" type="button" (click)="overlay.closeModal()">Run in background</button>
+                <button class="btn danger-out" type="button" (click)="cancel()">
+                    <app-ico name="X" [size]="12"/> Stop
                 </button>
             }
         </div>
@@ -136,11 +113,7 @@ interface ScanProgress {
             font-weight: 600;
             margin-bottom: 8px;
         }
-        .rs-mode-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
+        .rs-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .rs-mode-card {
             text-align: left;
             padding: 14px;
@@ -172,7 +145,7 @@ interface ScanProgress {
             line-height: 1.5;
         }
         .rs-warn app-ico { color: var(--color-warning); flex-shrink: 0; margin-top: 1px; }
-        .rs-progress { display: flex; flex-direction: column; gap: 16px; }
+        .rs-progress { display: flex; flex-direction: column; gap: 12px; }
         .rs-label {
             font-size: 10px;
             color: var(--color-text-muted);
@@ -181,13 +154,6 @@ interface ScanProgress {
             font-weight: 600;
             margin-bottom: 4px;
         }
-        .rs-lib-meta {
-            display: flex;
-            justify-content: space-between;
-            align-items: baseline;
-            margin-bottom: 6px;
-        }
-        .rs-percent { color: var(--color-brand); font-weight: 700; font-size: 13px; }
         .rs-current {
             padding: 14px;
             background: var(--color-surface-mid);
@@ -212,97 +178,64 @@ interface ScanProgress {
             text-overflow: ellipsis;
         }
         .rs-cur-arrow { color: var(--color-brand); margin-right: 6px; }
-        .rs-cur-file { color: var(--color-text-disabled); margin-left: 6px; font-style: italic; }
-        .rs-complete {
-            padding: 12px;
-            text-align: center;
-            background: oklch(0.68 0.14 155 / 0.15);
-            color: var(--color-success);
-            border: 1px solid oklch(0.55 0.14 155);
-            border-radius: var(--radius-theme-md);
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-size: 12px;
+        .rs-cur-file { color: var(--color-text-disabled); font-style: italic; }
+        .rs-hint { font-size: 11px; color: var(--color-text-muted); font-style: italic; }
+        .btn.danger-out {
+            display: inline-flex; align-items: center; gap: 8px;
+            color: var(--color-danger);
+            border: 1px solid color-mix(in oklab, var(--color-danger) 30%, transparent);
+            background: color-mix(in oklab, var(--color-danger) 8%, transparent);
         }
     `],
 })
-export class RescanModalComponent implements OnInit {
+export class RescanModalComponent {
     protected overlay = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private datasets = inject(DatasetStore);
     private mediaItems = inject(MediaItemStore);
     private sync = inject(DatasetSyncService);
-    private ws = inject(WebSocketService);
-    private destroyRef = inject(DestroyRef);
+    private toast = inject(ToastService);
+    private tasks = inject(TaskStore);
 
     protected mode = signal<'safe' | 'full'>('safe');
-    protected phase = signal<RescanPhase>('idle');
-
-    protected libraryProgress = signal({ current: 0, total: 0 });
-    protected datasetProgress = signal<ScanProgress>({
-        name: '', current: 0, total: 0, file: '', status: 'Waiting…',
-    });
+    protected running = signal<boolean>(false);
 
     private data: RescanModalData = (this.overlay.topModal()?.data as RescanModalData) ?? {};
-
-    /** Single-dataset rescan (vs. full-library). Drives the context-aware UI
-     *  and the completion path — single scans don't emit `rescan_complete`. */
-    protected isSingle = computed(() => !!this.data.datasetName);
 
     protected headerTitle = computed(() => {
         const name = this.data.datasetName;
         return name ? `Rescan ${name}` : 'Rescan Library';
     });
 
-    protected libraryPercent = computed<number>(() => {
-        const { current, total } = this.libraryProgress();
-        return total > 0 ? Math.round((current / total) * 100) : 0;
+    protected taskId = signal<string | null>(null);
+    /** Captured once when the task starts — byId() returns a fresh computed per
+     *  call, so storing it keeps the live view a single stable subscription. */
+    private _taskView: ReturnType<TaskStore['byId']> | null = null;
+    protected task = computed(() => {
+        this.taskId();                       // re-bind when a new task starts
+        return this._taskView?.() ?? undefined;
+    });
+    protected pct = computed(() => {
+        const t = this.task();
+        return t && t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     });
 
-    protected datasetPercent = computed<number>(() => {
-        const { current, total } = this.datasetProgress();
-        return total > 0 ? Math.round((current / total) * 100) : 0;
+    /** Guard: the completion handler fires at most once. */
+    private _finalized = false;
+    private _completion = effect(() => {
+        const t = this.task();
+        if (!t || this._finalized) return;
+        if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+            this._finalized = true;
+            if (t.status === 'failed') this.toast.error(t.error ?? 'Rescan failed.');
+            this.finishScan();
+            this.overlay.closeModal();
+        }
     });
 
-    ngOnInit(): void {
-        this.ws.on<{ total_datasets: number }>('rescan_start')
-            .pipe(takeUntilDestroyed(this.destroyRef))
-            .subscribe(p => this.libraryProgress.set({ current: 0, total: p.total_datasets }));
-
-        this.ws.on<{ name: string; index: number; total: number }>('dataset_start')
-            .pipe(takeUntilDestroyed(this.destroyRef))
-            .subscribe(p => {
-                this.libraryProgress.set({ current: p.index, total: p.total });
-                this.datasetProgress.set({ name: p.name, current: 0, total: 0, file: '', status: 'Starting scan…' });
-            });
-
-        this.ws.on<{ dataset: string; current: number; total: number; file: string; status: string }>('scan_progress')
-            .pipe(takeUntilDestroyed(this.destroyRef))
-            .subscribe(p => {
-                // When the modal is targeted at a single dataset, ignore
-                // progress events from other datasets (a concurrent
-                // library-wide scan would otherwise overwrite our bar).
-                if (this.data.datasetName && p.dataset !== this.data.datasetName) return;
-                this.datasetProgress.set({
-                    name: p.dataset, current: p.current, total: p.total, file: p.file, status: p.status,
-                });
-            });
-
-        // Library-wide scans signal completion via this event. Single-dataset
-        // scans don't emit it — they complete when the POST resolves (see start()).
-        this.ws.on<unknown>('rescan_complete')
-            .pipe(takeUntilDestroyed(this.destroyRef))
-            .subscribe(() => {
-                this.phase.set('complete');
-                this.finishScan();
-            });
-    }
-
-    /** Post-scan refresh: re-fetch the affected dataset(s)' media (the store
-     *  would otherwise go stale until navigation), reload the dataset list so
-     *  counts/KPIs update, and — for a library scan only — offer to prune any
-     *  datasets found missing on disk. */
+    /** Post-scan refresh: re-fetch the affected dataset(s)' media, reload the
+     *  dataset list so counts/KPIs update, and — for a library scan only —
+     *  offer to prune any datasets found missing on disk. */
     private finishScan(): void {
         const targets = this.data.datasetName
             ? [this.data.datasetName]
@@ -312,8 +245,6 @@ export class RescanModalComponent implements OnInit {
         }
         void this.datasets.loadAll()
             .then(() => {
-                // Missing-on-disk pruning only makes sense for a library scan;
-                // a single-dataset rescan targets one known dataset.
                 if (this.data.datasetName) return;
                 const missing = this.datasets.entities().filter(d => d.missing);
                 if (missing.length === 0) return;
@@ -331,35 +262,22 @@ export class RescanModalComponent implements OnInit {
             .catch(() => undefined);
     }
 
-    start(): void {
-        const forceFull = this.mode() === 'full';
-        this.phase.set('running');
-
+    protected start(): void {
+        const mode = this.mode();
         const name = this.data.datasetName;
-        const onError = () => {
-            // Errors handled via toast in the existing pipeline; reset
-            // the UI to idle so the user can retry.
-            this.phase.set('idle');
-        };
-        if (name) {
-            // No library-wide `rescan_complete` fires for a single dataset — the
-            // POST resolving IS the completion signal. Refresh + close the modal.
-            // `takeUntilDestroyed` so "Run in background" (close mid-scan) cancels
-            // the client subscription cleanly; the server scan continues.
-            this.datasetsApi.scanDataset(name, forceFull)
-                .pipe(takeUntilDestroyed(this.destroyRef))
-                .subscribe({
-                    next: () => {
-                        this.phase.set('complete');
-                        this.finishScan();
-                        this.overlay.closeModal();
-                    },
-                    error: onError,
-                });
-        } else {
-            this.datasetsApi.scanAllDatasets(forceFull)
-                .pipe(takeUntilDestroyed(this.destroyRef))
-                .subscribe({ error: onError });
-        }
+        this.running.set(true);
+        const req = name
+            ? this.datasetsApi.rescanDataset(name, mode)
+            : this.datasetsApi.rescanLibrary(mode);
+        req.subscribe({
+            next: ({ task_id }) => { this._taskView = this.tasks.byId(task_id); this.taskId.set(task_id); },
+            error: () => { this.running.set(false); this.toast.error('Could not start rescan.'); },
+        });
+    }
+
+    protected cancel(): void {
+        const id = this.taskId();
+        if (id) this.tasks.cancel(id);
+        this.running.set(false);
     }
 }

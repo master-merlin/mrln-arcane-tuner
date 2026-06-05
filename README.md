@@ -126,18 +126,27 @@ ingress proxy.
 - Persistent data (SQLite DB, datasets, models, outputs) lives on a mounted
   volume so it survives pod restarts.
 
-### 1. Build & push the image
+### 1. Get the image
+
+The published image is on Docker Hub — you can use it directly, no build
+required:
+
+```
+mastermerlin/mrln-arcane-tuner:latest
+```
+
+**Building your own** (only needed if you've modified the code):
 
 ```bash
-docker build -t <your-registry>/mrln-arcane-tuner:latest .
-docker push <your-registry>/mrln-arcane-tuner:latest
+docker build -t mastermerlin/mrln-arcane-tuner:latest .
+docker push mastermerlin/mrln-arcane-tuner:latest
 ```
 
 ### 2. Create the pod on RunPod
 
 - **GPU:** any NVIDIA Ampere+ GPU. The image is built for **CUDA 13.0**
   (PyTorch 2.10).
-- **Container image:** `<your-registry>/mrln-arcane-tuner:latest`
+- **Container image:** `mastermerlin/mrln-arcane-tuner:latest`
 - **Volume (strongly recommended):** attach a **network volume mounted at
   `/workspace`**. The DB, `datasets/`, `models/`, and `outputs/` are stored
   there, so models download only once and your work survives restarts.

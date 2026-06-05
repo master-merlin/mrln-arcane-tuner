@@ -276,10 +276,13 @@ async def apply_masks_batch(name: str, opacity: float = 0.0, overwrite: bool = F
     if not dataset:
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
-    masks_dir = Path(dataset.path) / "masks"
-    total = 0
-    if masks_dir.is_dir():
-        total = len([f for f in masks_dir.iterdir() if f.suffix.lower() == ".png"])
+    def _count_masks() -> int:
+        masks_dir = Path(dataset.path) / "masks"
+        if not masks_dir.is_dir():
+            return 0
+        return sum(1 for f in masks_dir.iterdir() if f.suffix.lower() == ".png")
+
+    total = await asyncio.to_thread(_count_masks)
 
     task = task_manager.create(
         type="mask_apply_batch", title=f"Apply masks · {name}",

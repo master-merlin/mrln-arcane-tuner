@@ -19,7 +19,13 @@ _PROGRESS_MIN_DELTA = 0.02  # fraction of total
 class TaskManager:
     """In-memory registry + lifecycle for background tasks. Singleton via the
     module-level `task_manager`. Survives client reload (server-side); a server
-    restart drops everything (by design)."""
+    restart drops everything (by design).
+
+    Concurrency model: at most ONE writer per task id at a time — guaranteed by
+    the FIFO lane worker (a task is only ever advanced by the single lane thread
+    running it). `_lock` therefore only guards the registry mutation in
+    `create()`; the per-task lifecycle mutations are race-free under that
+    single-writer assumption, not because they hold the lock."""
 
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
@@ -104,6 +110,8 @@ class TaskManager:
         self._broadcast(t)
 
     def _broadcast(self, task: Task, *, throttle: bool = False) -> None:
+        if self._loop is None:
+            return  # tests / pre-startup: no-op (don't advance the throttle clock)
         if throttle:
             now = time.time()
             last = self._last_emit.get(task.id, 0.0)
@@ -114,8 +122,6 @@ class TaskManager:
             if recent and small:
                 return
             self._last_emit[task.id] = now
-        if self._loop is None:
-            return  # tests / pre-startup: no-op
         try:
             asyncio.run_coroutine_threadsafe(
                 event_manager.broadcast("task_update", task.model_dump(mode="json")),

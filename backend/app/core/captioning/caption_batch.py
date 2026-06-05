@@ -3,6 +3,7 @@
 Module-level seams (all monkeypatchable in tests):
   _get_service()        → CaptionService.get_instance()
   _full_path(ds, rel)   → absolute image path on disk
+  _masked_path(ds, rel) → masked composite path (masked/{stem}.jpg)
   _write_caption(...)   → persist caption + update metadata flag
   _emit_caption_written(**kw) → fire caption.written SSE event
   run_caption_batch(...)      → the worker function itself
@@ -43,6 +44,22 @@ def _full_path(dataset_name: str, rel: str) -> str:
         raise ValueError(f"Dataset '{dataset_name}' not found")
     root = Path(dataset.path)
     return str(validate_path_within(root / rel, root))
+
+
+def _masked_path(dataset_name: str, rel: str) -> str:
+    """Resolve the masked composite (``masked/{stem}.jpg``) used as the caption
+    source for ``target="masked"`` — mirrors the single-image route."""
+    from app.api._path_guard import validate_path_within
+    from app.core.dataset_manager import dataset_manager as dm
+
+    dataset = dm.get_dataset(dataset_name)
+    if dataset is None:
+        raise ValueError(f"Dataset '{dataset_name}' not found")
+    root = Path(dataset.path)
+    masked = root / "masked" / f"{Path(rel).stem}.jpg"
+    if not masked.exists():
+        raise FileNotFoundError(f"Masked image not found: masked/{Path(rel).stem}.jpg")
+    return str(validate_path_within(masked, root))
 
 
 def _write_caption(dataset_name: str, rel: str, text: str, target: str) -> None:
@@ -140,8 +157,10 @@ def run_caption_batch(
                 if system_prompt:
                     call_params["system_prompt"] = system_prompt
 
+                src = (_masked_path(dataset_name, rel) if target == "masked"
+                       else _full_path(dataset_name, rel))
                 caption = service.generate_caption(
-                    image_path=_full_path(dataset_name, rel),
+                    image_path=src,
                     model_id=model_id,
                     params=call_params,
                 )

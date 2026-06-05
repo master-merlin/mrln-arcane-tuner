@@ -10,6 +10,10 @@ import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
 
+function makeTask(status: string) {
+    return { id: 't1', status, total: 1, current: 1, ok: 1, failed: 0, current_item: 'a.png', title: 'x' };
+}
+
 function makePair(mediaFile: string) {
     return {
         media_file: mediaFile, caption_file: null, media_type: 'image',
@@ -118,5 +122,82 @@ describe('MassCaptionComponent launcher', () => {
         comp.cancel();
         expect(taskStore.cancel).toHaveBeenCalledWith('t1');
         expect(comp.running()).toBe(false);
+    });
+});
+
+describe('MassCaptionComponent completion effect', () => {
+    let taskSig: ReturnType<typeof signal<any>>;
+    let overlay: OverlayStore;
+    let api: any;
+
+    beforeEach(() => {
+        taskSig = signal<any>(makeTask('running'));
+        api = {
+            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
+            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                OverlayStore, MediaItemStore, CaptionCacheStore,
+                { provide: DatasetService, useValue: api },
+                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                // Mutable TaskStore: byId returns our controllable signal
+                { provide: TaskStore, useValue: { byId: () => taskSig, cancel: jasmine.createSpy() } },
+            ],
+        });
+        overlay = TestBed.inject(OverlayStore);
+    });
+
+    it('on task completion: reconciles the dataset and fires onCompleted once', async () => {
+        const onCompleted = jasmine.createSpy('onCompleted');
+        overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
+
+        const media = TestBed.inject(MediaItemStore) as any;
+        spyOn(media, 'loadForDataset').and.returnValue(Promise.resolve());
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();           // sets _taskView = byId('t1') = taskSig
+
+        // Transition to completed
+        taskSig.set(makeTask('completed'));
+        fixture.detectChanges();
+
+        expect(media.loadForDataset).toHaveBeenCalledWith('ds1');
+        expect(onCompleted).toHaveBeenCalledTimes(1);
+
+        // Transition again — _finalized guard must prevent double-fire
+        taskSig.set(makeTask('failed'));
+        fixture.detectChanges();
+
+        expect(media.loadForDataset).toHaveBeenCalledTimes(1);
+        expect(onCompleted).toHaveBeenCalledTimes(1);
+    });
+
+    it('on task failure: reconciles but does NOT fire onCompleted', () => {
+        const onCompleted = jasmine.createSpy('onCompleted');
+        overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
+
+        const media = TestBed.inject(MediaItemStore) as any;
+        spyOn(media, 'loadForDataset').and.returnValue(Promise.resolve());
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('b.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+
+        taskSig.set(makeTask('failed'));
+        fixture.detectChanges();
+
+        expect(media.loadForDataset).toHaveBeenCalledWith('ds1');
+        expect(onCompleted).not.toHaveBeenCalled();
     });
 });

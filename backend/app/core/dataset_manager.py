@@ -1087,15 +1087,50 @@ class DatasetManager:
             
         return analysis
 
+    def _discover_new_datasets(self) -> None:
+        """Auto-register any unregistered folders found under ``default_root``.
+
+        Extracted verbatim from ``scan_all_datasets`` so the background-rescan
+        route can run discovery *before* counting files for the task total."""
+        try:
+            if os.path.exists(self.default_root):
+                for entry in os.scandir(self.default_root):
+                    if entry.is_dir():
+                        is_registered = False
+                        for ds in self.datasets.values():
+                            if os.path.abspath(ds.path) == os.path.abspath(entry.path):
+                                is_registered = True
+                                break
+                        if not is_registered:
+                            logger.info("auto_discovering_dataset", name=entry.name)
+                            try:
+                                self.create_dataset(
+                                    name=entry.name, path=entry.path,
+                                    description="Auto-discovered",
+                                )
+                            except ValueError:
+                                self.create_dataset(
+                                    name=f"{entry.name}_{int(time.time())}",
+                                    path=entry.path, description="Auto-discovered",
+                                )
+        except Exception as e:
+            logger.error("auto_discovery_error", error=str(e))
+
+    def discover_and_list_dataset_names(self) -> list[str]:
+        """Run auto-discovery, then return all registered dataset names. Used by
+        the background library-rescan route to seed the task before enqueuing."""
+        self._discover_new_datasets()
+        return list(self.datasets.keys())
+
     def scan_all_datasets(self, force_full: bool = False) -> list[Dataset]:
         """
-        Scans all datasets. 
+        Scans all datasets.
         1. Auto-discovers new folders in default_root.
         2. Marks missing datasets if path is gone.
         3. Scans existing valid datasets.
         """
         results = []
-        
+
         # Notify Start
         if self._loop and not self._loop.is_closed():
              asyncio.run_coroutine_threadsafe(
@@ -1105,35 +1140,8 @@ class DatasetManager:
                 self._loop
             )
 
-        # 1. Auto-discover
-        try:
-            if os.path.exists(self.default_root):
-                for entry in os.scandir(self.default_root):
-                    if entry.is_dir():
-                        # Check if this path is already registered
-                        # We need to check exact paths to be sure, or just name match?
-                        # Name match is safer if we assume default_root structure.
-                        # But user could have renamed folder manually.
-                        
-                        # Check if any dataset points to this path
-                        is_registered = False
-                        for ds in self.datasets.values():
-                            if os.path.abspath(ds.path) == os.path.abspath(entry.path):
-                                is_registered = True
-                                break
-                        
-                        if not is_registered:
-                            # It's a new folder! Register it.
-                            logger.info("auto_discovering_dataset", name=entry.name)
-                            try:
-                                # Use folder name as dataset name
-                                self.create_dataset(name=entry.name, path=entry.path, description="Auto-discovered")
-                            except ValueError:
-                                # Name collision with a custom path dataset?
-                                # Try unique name
-                                self.create_dataset(name=f"{entry.name}_{int(time.time())}", path=entry.path, description="Auto-discovered")
-        except Exception as e:
-            logger.error("auto_discovery_error", error=str(e))
+        # 1. Auto-discover (shared with discover_and_list_dataset_names)
+        self._discover_new_datasets()
 
         # 2. Scan & Check Missing
         ds_idx = 0

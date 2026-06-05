@@ -578,3 +578,13 @@ def test_scan_invokes_progress_cb_per_image(mock_hash, manager):
     assert calls[-1][0] == 2                              # final current == file count
     assert all(tot == 2 for _, tot, _ in calls)          # total == multimedia count
     assert {f for _, _, f in calls} == {"a.png", "b.png"}  # filename passed through
+
+
+def test_discover_and_list_registers_new_folders(manager):
+    """discover_and_list_dataset_names auto-registers new folders under
+    default_root and returns all registered names."""
+    new_dir = os.path.join(manager.default_root, "freshds")
+    os.makedirs(new_dir, exist_ok=True)
+    names = manager.discover_and_list_dataset_names()
+    assert "freshds" in names
+    assert "freshds" in manager.datasets

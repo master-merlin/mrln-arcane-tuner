@@ -37,6 +37,24 @@ export class DatasetStore extends EntityStore<Dataset> {
         ws.on<{ datasets: string[] }>('dataset_cache_ready').subscribe(({ datasets }) => {
             this.patchHasCacheByName(datasets);
         });
+
+        // Task completion (caption / mask / rescan) broadcasts the coarse
+        // `dataset.invalidated`. We consume it from the RxJS stream — NOT the
+        // single `entityChanged` signal, whose value coalesces under
+        // `eventCoalescing` and gets clobbered by the flood of per-file
+        // entity.changed events during a batch (so the dataset's own count
+        // update was being dropped, leaving the Library card's C/M pills stale
+        // until the next reload — worse while the Task Center is open, since a
+        // slower CD widens the coalescing window). Re-fetch the affected
+        // dataset's authoritative counts so the H/C/M pills reflect the new
+        // status. Only refresh datasets we already hold; skip unknown names.
+        ws.on<{ name: string }>('dataset.invalidated').subscribe(({ name }) => {
+            if (!name || !this.entities().some(d => d.name === name)) return;
+            this.api.getDataset(name).subscribe({
+                next: row => this.upsert(row),
+                error: () => undefined,
+            });
+        });
     }
 
     /**

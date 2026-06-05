@@ -7,16 +7,30 @@ import { ToastService } from '../services/toast';
 import { signal } from '@angular/core';
 
 class StubWebSocketService {
-    private stream$ = new Subject<any>();
+    streams = new Map<string, Subject<any>>();
     entityChanged = signal<any>(null);
     reconnected = signal(0);
-    on<T>(_t: string) { return this.stream$.asObservable() as any; }
+    on<T>(t: string) {
+        if (!this.streams.has(t)) this.streams.set(t, new Subject<any>());
+        return this.streams.get(t)!.asObservable() as any;
+    }
+    emit(t: string, payload: any) {
+        if (!this.streams.has(t)) this.streams.set(t, new Subject<any>());
+        this.streams.get(t)!.next(payload);
+    }
 }
 
 class StubToastService { success() {} error() {} info() {} }
 
 class StubDatasetService {
+    getDatasetCalls: string[] = [];
+    nextDataset: Dataset | null = null;
     listDatasets() { return { subscribe: () => ({ unsubscribe: () => {} }) }; }
+    getDataset(name: string) {
+        this.getDatasetCalls.push(name);
+        const row = this.nextDataset;
+        return { subscribe: (o: any) => { if (row) o.next(row); return { unsubscribe: () => {} }; } };
+    }
 }
 
 function ds(over: Partial<Dataset>): Dataset {
@@ -94,5 +108,43 @@ describe('DatasetStore.bumpFileCounts', () => {
         const row = store.entities().find(d => d.name === 'alpha')!;
         expect(row.multimedia_count).toBe(1);
         expect(row.file_count).toBe(1);
+    });
+});
+
+describe('DatasetStore dataset.invalidated refresh', () => {
+    let store: DatasetStore;
+    let ws: StubWebSocketService;
+    let api: StubDatasetService;
+
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            providers: [
+                DatasetStore,
+                { provide: WebSocketService, useClass: StubWebSocketService },
+                { provide: ToastService, useClass: StubToastService },
+                { provide: DatasetService, useClass: StubDatasetService },
+            ],
+        });
+        store = TestBed.inject(DatasetStore);
+        ws = TestBed.inject(WebSocketService) as unknown as StubWebSocketService;
+        api = TestBed.inject(DatasetService) as unknown as StubDatasetService;
+    });
+
+    it('re-fetches a loaded dataset on dataset.invalidated and upserts fresh counts', () => {
+        (store as any).setAll([ds({ id: 'a', name: 'alpha', caption_count: 3, mask_count: 0 })]);
+        api.nextDataset = ds({ id: 'a', name: 'alpha', caption_count: 10, mask_count: 10 });
+
+        ws.emit('dataset.invalidated', { name: 'alpha' });
+
+        expect(api.getDatasetCalls).toEqual(['alpha']);
+        const row = store.entities().find(d => d.name === 'alpha')!;
+        expect(row.caption_count).toBe(10);
+        expect(row.mask_count).toBe(10);
+    });
+
+    it('ignores dataset.invalidated for a dataset it does not hold', () => {
+        (store as any).setAll([ds({ id: 'a', name: 'alpha' })]);
+        ws.emit('dataset.invalidated', { name: 'ghost' });
+        expect(api.getDatasetCalls).toEqual([]);
     });
 });

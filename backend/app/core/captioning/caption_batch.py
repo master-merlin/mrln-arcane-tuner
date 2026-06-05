@@ -30,56 +30,52 @@ def _get_service() -> CaptionService:
 
 
 def _full_path(dataset_name: str, rel: str) -> str:
-    """Resolve the absolute image path for *rel* inside *dataset_name*."""
+    """Resolve the absolute image path for *rel* inside *dataset_name*.
+
+    Guards against path traversal (``rel`` comes from the request body) the
+    same way the single-image caption route does.
+    """
+    from app.api._path_guard import validate_path_within
     from app.core.dataset_manager import dataset_manager as dm
 
     dataset = dm.get_dataset(dataset_name)
     if dataset is None:
         raise ValueError(f"Dataset '{dataset_name}' not found")
-    return str(Path(dataset.path) / rel)
+    root = Path(dataset.path)
+    return str(validate_path_within(root / rel, root))
 
 
 def _write_caption(dataset_name: str, rel: str, text: str, target: str) -> None:
     """Persist *text* to disk and update the media-item metadata flag.
 
-    Verified storage locations (dataset_manager.py):
-    - original: ``{dataset.path}/{stem}.txt``  → sets ``has_caption = True``
-      (mirrors save_caption, lines 1364-1410)
-    - masked:   ``{dataset.path}/masked/{stem}.txt`` → sets
-      ``has_masked_caption = True``  (mirrors generate_caption route, lines
-      81-96 of caption_routes.py)
+    Storage:
+    - original: delegates to ``dataset_manager.save_caption`` — writes
+      ``{dataset.path}/{stem}.txt``, flips ``has_caption``, recomputes
+      ``caption_count`` and broadcasts ``entity.changed`` so the dataset card
+      updates live during the batch (don't reimplement — that path drifts the
+      count and skips the broadcast).
+    - masked: ``{dataset.path}/masked/{stem}.txt`` → sets
+      ``has_masked_caption = True`` (no save_caption equivalent for masked).
     """
     from app.core.dataset_manager import dataset_manager as dm
+
+    stem = Path(rel).stem
+
+    if target != "masked":
+        dm.save_caption(dataset_name, f"{stem}.txt", text)
+        return
 
     dataset = dm.get_dataset(dataset_name)
     if dataset is None:
         raise ValueError(f"Dataset '{dataset_name}' not found")
+    masked_dir = Path(dataset.path) / "masked"
+    masked_dir.mkdir(parents=True, exist_ok=True)
+    (masked_dir / f"{stem}.txt").write_text(text, encoding="utf-8")
 
-    stem = Path(rel).stem
-    dataset_root = Path(dataset.path)
-
-    if target == "masked":
-        masked_dir = dataset_root / "masked"
-        masked_dir.mkdir(parents=True, exist_ok=True)
-        caption_path = masked_dir / f"{stem}.txt"
-        caption_path.write_text(text, encoding="utf-8")
-
-        lookup_key = rel.replace("\\", "/")
-        if lookup_key in dataset.media_metadata:
-            dataset.media_metadata[lookup_key]["has_masked_caption"] = True
-            dm._persist_media_item(dataset, lookup_key)
-    else:
-        # original: sibling .txt next to the image
-        caption_path = dataset_root / f"{stem}.txt"
-        caption_path.write_text(text, encoding="utf-8")
-
-        lookup_key = rel.replace("\\", "/")
-        for key, meta in dataset.media_metadata.items():
-            media_stem = Path(key).stem
-            if media_stem == stem:
-                meta["has_caption"] = True
-                dm._persist_media_item(dataset, key)
-                break
+    lookup_key = rel.replace("\\", "/")
+    if lookup_key in dataset.media_metadata:
+        dataset.media_metadata[lookup_key]["has_masked_caption"] = True
+        dm._persist_media_item(dataset, lookup_key)
 
 
 def _emit_caption_written(

@@ -175,6 +175,22 @@ export class DatasetService {
     return this.http.post<Dataset[]>(`${this.apiUrl}/scan-all?force_full=${forceFull}`, {});
   }
 
+  /** Launch a backend-owned single-dataset rescan task. Returns the task id;
+   *  monitor progress via TaskStore. */
+  rescanDataset(name: string, mode: 'safe' | 'full'): Observable<{ task_id: string }> {
+    const forceFull = mode === 'full';
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/scan/batch?force_full=${forceFull}`, {});
+  }
+
+  /** Launch a backend-owned library-wide rescan task (one file-granular parent
+   *  task). Returns the task id; monitor progress via TaskStore. */
+  rescanLibrary(mode: 'safe' | 'full'): Observable<{ task_id: string }> {
+    const forceFull = mode === 'full';
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/scan-all/batch?force_full=${forceFull}`, {});
+  }
+
   getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }> {
     return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }>(`${this.apiUrl}/cache/stats`);
   }

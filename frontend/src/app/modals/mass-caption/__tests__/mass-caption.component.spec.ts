@@ -39,6 +39,7 @@ describe('MassCaptionModalComponent — onCompleted callback', () => {
             ),
             generateCaption: jasmine.createSpy('generateCaption').and.returnValue(of({ caption: 'a cat' })),
             saveCaption: jasmine.createSpy('saveCaption').and.returnValue(of({})),
+            unloadModels: jasmine.createSpy('unloadModels').and.returnValue(of({})),
         };
         TestBed.configureTestingModule({
             providers: [

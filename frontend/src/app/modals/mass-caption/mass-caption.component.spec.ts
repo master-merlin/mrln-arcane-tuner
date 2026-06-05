@@ -31,6 +31,7 @@ describe('MassCaptionComponent live updates', () => {
             ),
             generateCaption: jasmine.createSpy('generateCaption').and.returnValue(of({ caption: 'a cat' })),
             saveCaption: jasmine.createSpy('saveCaption').and.returnValue(of({})),
+            unloadModels: jasmine.createSpy('unloadModels').and.returnValue(of({})),
         };
         TestBed.configureTestingModule({
             providers: [
@@ -86,5 +87,32 @@ describe('MassCaptionComponent live updates', () => {
         tick(200);
         expect(api.generateCaption).toHaveBeenCalled();
         expect(captions.get('ds1').get('a.png')?.masked_caption_content).toBe('a cat');
+    }));
+
+    it('unloads the caption model when the batch completes', fakeAsync(() => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.target.set('original');
+        comp.running.set(true);
+        comp.processQueue([makePair('a.png')], 0);
+        tick(200);
+        flushMicrotasks();
+        expect(api.unloadModels).toHaveBeenCalled();
+    }));
+
+    it('unloads the caption model when the run is stopped early', fakeAsync(() => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.target.set('original');
+        comp.running.set(true);
+        comp.cancel();   // user hits Stop → running flips off
+        // Re-entering the queue with running=false hits the terminal guard,
+        // which must free VRAM even though the batch never finished.
+        comp.processQueue([makePair('a.png'), makePair('b.png')], 0);
+        tick(200);
+        flushMicrotasks();
+        expect(api.unloadModels).toHaveBeenCalled();
     }));
 });

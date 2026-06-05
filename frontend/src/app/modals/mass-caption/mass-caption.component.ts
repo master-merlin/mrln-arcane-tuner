@@ -326,14 +326,23 @@ export class MassCaptionModalComponent implements OnInit {
 
     private processQueue(queue: any[], idx: number): void {
         if (!this.running() || idx >= queue.length || !this.currentSettings) {
+            const completed = idx >= queue.length;
             this.running.set(false);
-            if (idx >= queue.length) {
+            if (completed) {
                 this.toast.success(`Mass captioning complete — ${queue.length} images processed.`);
                 // Authoritative metadata reconcile (server-computed flags etc.).
                 if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
                 // Workspace-side reconcile (e.g. per-session patch bump).
                 this.data.onCompleted?.();
+            } else if (idx > 0) {
+                this.toast.info(`Captioning stopped — ${idx} of ${queue.length} captioned.`);
             }
+            // The backend keeps the caption model resident across the per-image
+            // /generate calls (it only unloads on a model switch or an explicit
+            // request), so free its VRAM now the batch is over — whether it
+            // finished or was stopped. Safe here: the queue is sequential, so no
+            // /generate is in flight at this exit point.
+            this.datasetsApi.unloadModels().subscribe({ error: () => undefined });
             return;
         }
 

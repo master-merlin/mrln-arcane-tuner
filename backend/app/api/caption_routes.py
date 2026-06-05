@@ -10,8 +10,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.api._path_guard import validate_path_within
+from app.core.captioning.caption_batch import run_caption_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.logger import get_logger
+from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -112,3 +114,39 @@ async def unload_models_api():
     except (OSError, RuntimeError) as e:
         logger.error("unload_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class BatchCaptionRequest(BaseModel):
+    """Request body for batch caption generation."""
+
+    dataset_name: str
+    image_rel_paths: list[str]
+    model_id: str
+    params: dict[str, Any]
+    system_prompt: str | None = None
+    target: str = "original"
+
+
+@router.post("/batch")
+async def batch_caption_api(request: BatchCaptionRequest):
+    """Start a backend-owned captioning task. Always creates the task (queued if
+    the GPU lane is busy) and returns its id immediately."""
+    title = f"Captioning · {request.dataset_name}"
+    task = task_manager.create(
+        type="caption_batch", title=title,
+        total=len(request.image_rel_paths), dataset_name=request.dataset_name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_caption_batch(
+            tid,
+            dataset_name=request.dataset_name,
+            image_rel_paths=request.image_rel_paths,
+            model_id=request.model_id,
+            params=request.params,
+            system_prompt=request.system_prompt,
+            target=request.target,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}

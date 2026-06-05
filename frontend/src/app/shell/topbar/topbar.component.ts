@@ -11,6 +11,7 @@ import { ContextSwitcherComponent } from '../context-switcher/context-switcher.c
 import { IcoComponent } from '../../icons/ico.component';
 import { DownloadIndicatorComponent } from './download-indicator.component';
 import { NotificationPanelComponent } from './notification-panel.component';
+import { TaskCenterComponent } from './task-center.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
 import { ProjectService } from '../../services/project.service';
@@ -32,7 +33,7 @@ interface Crumb {
 @Component({
     selector: 'app-topbar',
     standalone: true,
-    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, NotificationPanelComponent],
+    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, NotificationPanelComponent, TaskCenterComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './topbar.component.html',
 })

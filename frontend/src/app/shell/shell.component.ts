@@ -12,6 +12,7 @@ import { GlobalShortcutsService } from '../shared/shortcuts.service';
 import { ProjectService } from '../services/project.service';
 import { ToastContainerComponent } from '../components/shared/toast-container/toast-container';
 import { CaptionWriteListener } from '../state/caption-write.listener';
+import { MaskApplySummaryListener } from '../state/mask-apply-summary.listener';
 
 /**
  * App shell — sidebar + topbar + router-outlet + workspace/modal layers
@@ -53,6 +54,7 @@ export class ShellComponent implements OnInit {
     private projects = inject(ProjectService);
     private router = inject(Router);
     private _captionWrites = inject(CaptionWriteListener);
+    private _maskApplySummary = inject(MaskApplySummaryListener);
 
     private url = toSignal(
         this.router.events.pipe(filter(e => e instanceof NavigationEnd)),

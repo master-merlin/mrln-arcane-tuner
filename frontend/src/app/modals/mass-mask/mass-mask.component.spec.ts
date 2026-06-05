@@ -67,9 +67,18 @@ describe('MassMaskModalComponent — launcher contract', () => {
         return { fixture, comp };
     }
 
+    it('canStart() flips true when the settings child emits, without a tab switch', () => {
+        const { comp } = make();
+        expect(comp.tab()).toBe('generate');
+        expect(comp.canStart()).toBe(false);          // no settings yet
+        comp.onMaskingSettingsChange({ modelId: 'rembg', params: {} });
+        // Must react on the settings signal alone — no tab change forced it.
+        expect(comp.canStart()).toBe(true);
+    });
+
     it('Generate: start() fires batchGenerateMasks and stores task_id', () => {
         const { comp } = make();
-        comp.maskingSettings = { modelId: 'rembg', params: {} };
+        comp.maskingSettings.set({ modelId: 'rembg', params: {} });
         comp.tab.set('generate');
         comp.strategy.set('overwrite');
         comp.pairs.set([makePair('a.png')]);
@@ -94,7 +103,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
 
     it('Caption: start() fires batchCaption with target masked', () => {
         const { comp } = make();
-        comp.captionSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.captionSettings.set({ resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' });
         comp.tab.set('caption');
         comp.captionStrategy.set('overwrite');
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
@@ -108,7 +117,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
 
     it('cancel() delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
-        comp.maskingSettings = { modelId: 'rembg', params: {} };
+        comp.maskingSettings.set({ modelId: 'rembg', params: {} });
         comp.tab.set('generate');
         comp.strategy.set('overwrite');
         comp.pairs.set([makePair('a.png')]);
@@ -123,7 +132,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         const taskSignal = signal<any>({ current: 2, total: 8, current_item: 'a.png' });
         taskStoreSpy.byId.and.returnValue(taskSignal);
         const { comp } = make();
-        comp.maskingSettings = { modelId: 'rembg', params: {} };
+        comp.maskingSettings.set({ modelId: 'rembg', params: {} });
         comp.tab.set('generate');
         comp.strategy.set('overwrite');
         comp.pairs.set([makePair('a.png')]);

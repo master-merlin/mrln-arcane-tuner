@@ -438,13 +438,16 @@ export class MassMaskModalComponent implements OnInit {
 
     protected tab = signal<Tab>('generate');
     protected strategy = signal<Strategy>('keep');
-    protected maskingSettings: MaskingSettingsState | null = null;
+    // Signals, not plain fields: `canStart` is a computed and must react when
+    // the embedded settings child emits its first state, or the CTA stays
+    // disabled until an unrelated signal (a tab switch) forces a recompute.
+    protected maskingSettings = signal<MaskingSettingsState | null>(null);
 
     protected applyOpacity = signal<number>(0);
     protected applyOverwrite = signal<boolean>(false);
 
     protected captionStrategy = signal<Strategy>('keep');
-    protected captionSettings: CaptionSettingsState | null = null;
+    protected captionSettings = signal<CaptionSettingsState | null>(null);
 
     protected pairs = signal<any[]>([]);
     protected running = signal<boolean>(false);
@@ -480,9 +483,9 @@ export class MassMaskModalComponent implements OnInit {
 
     protected canStart = computed<boolean>(() => {
         switch (this.tab()) {
-            case 'generate': return !!this.maskingSettings;
+            case 'generate': return !!this.maskingSettings();
             case 'apply':    return this.maskedCount() > 0;
-            case 'caption':  return !!this.captionSettings;
+            case 'caption':  return !!this.captionSettings();
         }
     });
 
@@ -543,11 +546,11 @@ export class MassMaskModalComponent implements OnInit {
     }
 
     protected onMaskingSettingsChange(state: MaskingSettingsState): void {
-        this.maskingSettings = state;
+        this.maskingSettings.set(state);
     }
 
     protected onCaptionSettingsChange(state: CaptionSettingsState): void {
-        this.captionSettings = state;
+        this.captionSettings.set(state);
     }
 
     protected start(): void {
@@ -576,7 +579,8 @@ export class MassMaskModalComponent implements OnInit {
 
     private startGenerate(): void {
         const name = this.data.datasetName;
-        if (!name || !this.maskingSettings) return;
+        const settings = this.maskingSettings();
+        if (!name || !settings) return;
         const candidates = this.strategy() === 'keep'
             ? this.pairs().filter(p => !p.metadata?.has_mask)
             : [...this.pairs()];
@@ -585,8 +589,8 @@ export class MassMaskModalComponent implements OnInit {
         this.launch(this.datasetsApi.batchGenerateMasks({
             dataset_name: name,
             image_rel_paths: candidates.map(p => p.media_file),
-            model_id: this.maskingSettings.modelId,
-            params: this.maskingSettings.params,
+            model_id: settings.modelId,
+            params: settings.params,
         }), 'Could not start mask generation.');
     }
 
@@ -603,7 +607,8 @@ export class MassMaskModalComponent implements OnInit {
 
     private startCaption(): void {
         const name = this.data.datasetName;
-        if (!name || !this.captionSettings) return;
+        const settings = this.captionSettings();
+        if (!name || !settings) return;
         const candidates = this.captionStrategy() === 'keep'
             ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
             : this.pairs().filter(p => p.metadata?.has_mask);
@@ -612,9 +617,9 @@ export class MassMaskModalComponent implements OnInit {
         this.launch(this.datasetsApi.batchCaption({
             dataset_name: name,
             image_rel_paths: candidates.map(p => p.media_file),
-            model_id: this.captionSettings.resolvedModelId,
-            params: this.captionSettings.params,
-            system_prompt: this.captionSettings.resolvedSystemPrompt,
+            model_id: settings.resolvedModelId,
+            params: settings.params,
+            system_prompt: settings.resolvedSystemPrompt,
             target: 'masked',
         }), 'Could not start masked captioning.');
     }

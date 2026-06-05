@@ -302,6 +302,21 @@ export class DatasetService {
     return this.http.delete(`${this.rtc.apiUrl}/captions/unload`);
   }
 
+  batchCaption(body: {
+    dataset_name: string; image_rel_paths: string[]; model_id: string;
+    params: any; system_prompt?: string; target: string;
+  }): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/batch`, body);
+  }
+
+  getTasks(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.rtc.apiUrl}/tasks`);
+  }
+
+  cancelTask(taskId: string): Observable<any> {
+    return this.http.post(`${this.rtc.apiUrl}/tasks/${encodeURIComponent(taskId)}/cancel`, {});
+  }
+
   bumpVersion(name: string, type: 'patch' | 'minor' | 'major' = 'patch'): Observable<any> {
     return this.http.post(`${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/bump?type=${type}`, {});
   }

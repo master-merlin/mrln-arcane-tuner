@@ -75,14 +75,16 @@ interface ScanProgress {
                 </div>
             } @else {
                 <section class="rs-progress">
-                    <div class="rs-library">
-                        <div class="rs-label">Library Status</div>
-                        <div class="rs-lib-meta">
-                            <span class="mono">{{ libraryProgress().current }} / {{ libraryProgress().total || '—' }}</span>
-                            <span class="rs-percent">{{ libraryPercent() }}%</span>
+                    @if (!isSingle()) {
+                        <div class="rs-library">
+                            <div class="rs-label">Library Status</div>
+                            <div class="rs-lib-meta">
+                                <span class="mono">{{ libraryProgress().current }} / {{ libraryProgress().total || '—' }}</span>
+                                <span class="rs-percent">{{ libraryPercent() }}%</span>
+                            </div>
+                            <div class="bar lg"><i [style.width.%]="libraryPercent()"></i></div>
                         </div>
-                        <div class="bar lg"><i [style.width.%]="libraryPercent()"></i></div>
-                    </div>
+                    }
 
                     <div class="rs-current">
                         <div class="rs-cur-head">
@@ -242,6 +244,10 @@ export class RescanModalComponent implements OnInit {
 
     private data: RescanModalData = (this.overlay.topModal()?.data as RescanModalData) ?? {};
 
+    /** Single-dataset rescan (vs. full-library). Drives the context-aware UI
+     *  and the completion path — single scans don't emit `rescan_complete`. */
+    protected isSingle = computed(() => !!this.data.datasetName);
+
     protected headerTitle = computed(() => {
         const name = this.data.datasetName;
         return name ? `Rescan ${name}` : 'Rescan Library';
@@ -281,42 +287,46 @@ export class RescanModalComponent implements OnInit {
                 });
             });
 
+        // Library-wide scans signal completion via this event. Single-dataset
+        // scans don't emit it — they complete when the POST resolves (see start()).
         this.ws.on<unknown>('rescan_complete')
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe(() => {
                 this.phase.set('complete');
-                // A rescan rebuilds media metadata on the backend but emits only
-                // a dataset-level event, so the MediaItemStore would go stale
-                // until navigation. Re-fetch the affected dataset(s)' media so
-                // the open workspace grid updates live: the targeted dataset, or
-                // every dataset currently loaded in the store for an all-scan.
-                const targets = this.data.datasetName
-                    ? [this.data.datasetName]
-                    : [...new Set(this.mediaItems.entities().map(i => i.dataset_name))];
-                for (const ds of targets) {
-                    void this.mediaItems.loadForDataset(ds).catch(() => undefined);
-                }
-                // Reload the dataset list so the grid + KPIs reflect new counts,
-                // then offer to remove any datasets that the rescan found
-                // missing on disk (legacy parity: one DELETE per missing row;
-                // no bulk endpoint exists).
-                void this.datasets.loadAll()
-                    .then(() => {
-                        const missing = this.datasets.entities().filter(d => d.missing);
-                        if (missing.length === 0) return;
-                        const names = missing.map(d => d.name).join(', ');
-                        if (!confirm(
-                            `The following dataset${missing.length === 1 ? ' is' : 's are'} ` +
-                            `missing on disk: ${names}.\n\n` +
-                            `Remove ${missing.length === 1 ? 'it' : 'them'} from your library? ` +
-                            `(Files were not on disk anyway.)`
-                        )) return;
-                        for (const d of missing) {
-                            void this.datasets.deleteDataset(d.id, false).catch(() => undefined);
-                        }
-                    })
-                    .catch(() => undefined);
+                this.finishScan();
             });
+    }
+
+    /** Post-scan refresh: re-fetch the affected dataset(s)' media (the store
+     *  would otherwise go stale until navigation), reload the dataset list so
+     *  counts/KPIs update, and — for a library scan only — offer to prune any
+     *  datasets found missing on disk. */
+    private finishScan(): void {
+        const targets = this.data.datasetName
+            ? [this.data.datasetName]
+            : [...new Set(this.mediaItems.entities().map(i => i.dataset_name))];
+        for (const ds of targets) {
+            void this.mediaItems.loadForDataset(ds).catch(() => undefined);
+        }
+        void this.datasets.loadAll()
+            .then(() => {
+                // Missing-on-disk pruning only makes sense for a library scan;
+                // a single-dataset rescan targets one known dataset.
+                if (this.data.datasetName) return;
+                const missing = this.datasets.entities().filter(d => d.missing);
+                if (missing.length === 0) return;
+                const names = missing.map(d => d.name).join(', ');
+                if (!confirm(
+                    `The following dataset${missing.length === 1 ? ' is' : 's are'} ` +
+                    `missing on disk: ${names}.\n\n` +
+                    `Remove ${missing.length === 1 ? 'it' : 'them'} from your library? ` +
+                    `(Files were not on disk anyway.)`
+                )) return;
+                for (const d of missing) {
+                    void this.datasets.deleteDataset(d.id, false).catch(() => undefined);
+                }
+            })
+            .catch(() => undefined);
     }
 
     start(): void {
@@ -330,9 +340,24 @@ export class RescanModalComponent implements OnInit {
             this.phase.set('idle');
         };
         if (name) {
-            this.datasetsApi.scanDataset(name, forceFull).subscribe({ error: onError });
+            // No library-wide `rescan_complete` fires for a single dataset — the
+            // POST resolving IS the completion signal. Refresh + close the modal.
+            // `takeUntilDestroyed` so "Run in background" (close mid-scan) cancels
+            // the client subscription cleanly; the server scan continues.
+            this.datasetsApi.scanDataset(name, forceFull)
+                .pipe(takeUntilDestroyed(this.destroyRef))
+                .subscribe({
+                    next: () => {
+                        this.phase.set('complete');
+                        this.finishScan();
+                        this.overlay.closeModal();
+                    },
+                    error: onError,
+                });
         } else {
-            this.datasetsApi.scanAllDatasets(forceFull).subscribe({ error: onError });
+            this.datasetsApi.scanAllDatasets(forceFull)
+                .pipe(takeUntilDestroyed(this.destroyRef))
+                .subscribe({ error: onError });
         }
     }
 }

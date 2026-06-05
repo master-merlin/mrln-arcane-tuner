@@ -56,10 +56,10 @@ describe('RescanModalComponent — single-dataset filter + completion', () => {
                 }},
             ],
         });
-        TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
     });
 
     it('ignores scan_progress events for other datasets when datasetName is set', () => {
+        TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
         fixture.detectChanges();
@@ -71,8 +71,40 @@ describe('RescanModalComponent — single-dataset filter + completion', () => {
         expect(comp.datasetProgress().current).toBe(3);   // accepted — matches our dataset
     });
 
-    it('on rescan_complete, calls datasets.loadAll and prompts for missing datasets', fakeAsync(() => {
+    it('single-dataset target: hides the library bar (context-aware)', () => {
+        TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
+        const fixture = TestBed.createComponent(RescanModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.start();   // enter the progress phase
+        fixture.detectChanges();
+        const html: string = fixture.nativeElement.textContent;
+        expect(html).not.toContain('Library Status');
+    });
+
+    it('single-dataset rescan completes when the POST resolves — refreshes, no prune, auto-closes', fakeAsync(() => {
         spyOn(window, 'confirm').and.returnValue(true);
+        const overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('rescan', { datasetName: 'alpha' });
+        const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
+        const fixture = TestBed.createComponent(RescanModalComponent);
+        const comp = fixture.componentInstance as any;
+        fixture.detectChanges();
+
+        comp.start();           // scanDataset() → of({}) emits `next` synchronously
+        tick();                 // flush loadAll().then(...) microtask
+        tick();
+
+        expect(api.scanDataset).toHaveBeenCalledWith('alpha', false);
+        expect(comp.phase()).toBe('complete');
+        expect(datasets.loadAll).toHaveBeenCalled();
+        // Single-dataset scans must NOT prune library-wide missing datasets.
+        expect(datasets.deleteDataset).not.toHaveBeenCalled();
+        expect(closeSpy).toHaveBeenCalled();
+    }));
+
+    it('library rescan_complete: loadAll + prompts to prune missing datasets', fakeAsync(() => {
+        spyOn(window, 'confirm').and.returnValue(true);
+        TestBed.inject(OverlayStore).openModal('rescan');   // no datasetName → library scan
         const fixture = TestBed.createComponent(RescanModalComponent);
         fixture.detectChanges();
 

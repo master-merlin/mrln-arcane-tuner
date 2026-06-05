@@ -260,9 +260,13 @@ export class MassCaptionModalComponent implements OnInit {
     protected pairs = signal<any[]>([]);
 
     protected taskId = signal<string | null>(null);
+    /** Captured once when the task starts. `byId()` returns a fresh computed per
+     *  call, so reading it inside `task` every tick would allocate a new node;
+     *  storing it keeps the live view a single stable reactive subscription. */
+    private _taskView: ReturnType<TaskStore['byId']> | null = null;
     protected task = computed(() => {
-        const id = this.taskId();
-        return id ? this.tasks.byId(id)() : undefined;
+        this.taskId();                       // re-bind when a new task starts
+        return this._taskView?.() ?? undefined;
     });
 
     protected pct = computed(() => {
@@ -321,7 +325,7 @@ export class MassCaptionModalComponent implements OnInit {
             system_prompt: this.currentSettings.resolvedSystemPrompt,
             target: target,
         }).subscribe({
-            next: ({ task_id }) => { this.taskId.set(task_id); },
+            next: ({ task_id }) => { this._taskView = this.tasks.byId(task_id); this.taskId.set(task_id); },
             error: () => { this.running.set(false); this.toast.error('Could not start captioning.'); },
         });
     }

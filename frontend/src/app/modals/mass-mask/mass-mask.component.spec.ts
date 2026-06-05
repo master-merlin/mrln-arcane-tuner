@@ -1,10 +1,16 @@
 /**
- * Mass-mask modal — launcher-contract spec.
+ * Mass-mask modal — launcher contract + completion handler spec.
  *
  * Each tab launches a backend task and monitors via TaskStore. Closing/returning
  * does not cancel; Stop cancels. Caption reuses batchCaption(target='masked').
+ * On terminal status the completion effect refreshes the dataset and fires
+ * onCompleted (on success only). NO auto-close — mass masking is multi-step.
+ *
+ * NOTE: All specs that create a fixture store it in `fixture` and destroy it in
+ * afterEach. This prevents signal effect teardown from leaking across specs and
+ * triggering NG0101 (ApplicationRef.tick called recursively).
  */
-import { TestBed } from '@angular/core/testing';
+import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import { MassMaskModalComponent } from './mass-mask.component';
@@ -18,11 +24,15 @@ function makePair(media: string, extra: any = {}) {
     return { media_file: media, metadata: { has_mask: false, has_masked_caption: false, ...extra } };
 }
 
+// ─── Launcher contract ────────────────────────────────────────────────────────
+
 describe('MassMaskModalComponent — launcher contract', () => {
     let api: any;
     let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
 
     beforeEach(() => {
+        fixture = null;
         api = {
             getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
             batchGenerateMasks: jasmine.createSpy('batchGenerateMasks').and.returnValue(of({ task_id: 't1' })),
@@ -45,8 +55,13 @@ describe('MassMaskModalComponent — launcher contract', () => {
         TestBed.inject(OverlayStore).openModal('mass-mask', { datasetName: 'ds1' });
     });
 
+    afterEach(() => {
+        fixture?.destroy();
+        fixture = null;
+    });
+
     function make() {
-        const fixture = TestBed.createComponent(MassMaskModalComponent);
+        fixture = TestBed.createComponent(MassMaskModalComponent);
         const comp = fixture.componentInstance as any;
         return { fixture, comp };
     }
@@ -115,4 +130,104 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.start();
         expect(comp.pct()).toBe(25);
     });
+});
+
+// ─── Completion handler ───────────────────────────────────────────────────────
+
+describe('MassMaskModalComponent — completion handler', () => {
+    let api: any;
+    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let sync: { refreshDataset: jasmine.Spy };
+    let onCompleted: jasmine.Spy;
+    let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
+
+    beforeEach(() => {
+        fixture = null;
+        api = {
+            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
+            batchGenerateMasks: jasmine.createSpy('batchGenerateMasks').and.returnValue(of({ task_id: 'tg' })),
+            batchApplyMasks: jasmine.createSpy('batchApplyMasks').and.returnValue(of({ task_id: 'ta' })),
+            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 'tc' })),
+        };
+        taskStoreSpy = {
+            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            cancel: jasmine.createSpy('cancel'),
+        };
+        sync = { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) };
+        onCompleted = jasmine.createSpy('onCompleted');
+        TestBed.configureTestingModule({
+            providers: [
+                OverlayStore,
+                { provide: DatasetService, useValue: api },
+                { provide: DatasetSyncService, useValue: sync },
+                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy(), warning: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: taskStoreSpy },
+            ],
+        });
+        TestBed.inject(OverlayStore).openModal('mass-mask', { datasetName: 'ds1', onCompleted });
+    });
+
+    afterEach(() => {
+        fixture?.destroy();
+        fixture = null;
+    });
+
+    function make() {
+        fixture = TestBed.createComponent(MassMaskModalComponent);
+        const comp = fixture.componentInstance as any;
+        return { fixture, comp };
+    }
+
+    // Use tab='apply' for all completion tests: the _completion effect is
+    // tab-independent, and 'apply' does not render DatasetMaskingSettingsComponent
+    // or DatasetCaptionSettingsComponent, so fakeAsync stays XHR-free.
+
+    it('completed task fires onCompleted + refreshDataset + running=false', fakeAsync(() => {
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        const { comp } = make();
+        comp.tab.set('apply');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        // start() → running=true; detectChanges() after the signal change flushes
+        // the _completion effect without rendering the child settings components.
+        comp.start();
+        taskSignal.set({ status: 'completed', current: 1, total: 1, current_item: null, error: null });
+        fixture!.detectChanges();  // flush the _completion effect
+        tick(); tick();            // drain refreshDataset + loadPairs Promise microtasks
+        expect(onCompleted).toHaveBeenCalledTimes(1);
+        expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
+        expect(comp.running()).toBe(false);
+    }));
+
+    it('Apply tab — completed task fires onCompleted (tab-specific launch path)', fakeAsync(() => {
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        const { comp } = make();
+        comp.tab.set('apply');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        taskSignal.set({ status: 'completed', current: 1, total: 1, current_item: null, error: null });
+        fixture!.detectChanges();
+        tick(); tick();
+        expect(onCompleted).toHaveBeenCalledTimes(1);
+        expect(comp.running()).toBe(false);
+    }));
+
+    it('cancelled task — onCompleted does NOT fire (explicit cancel sets _finalized)', fakeAsync(() => {
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        const { comp } = make();
+        // Use 'apply' tab: avoids DatasetMaskingSettingsComponent XHR in fakeAsync.
+        comp.tab.set('apply');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        comp.cancel();   // arms _finalized before the status arrives
+        taskSignal.set({ status: 'cancelled', current: 0, total: 1, current_item: null, error: null });
+        fixture!.detectChanges();
+        tick(); tick();
+        expect(onCompleted).not.toHaveBeenCalled();
+    }));
 });

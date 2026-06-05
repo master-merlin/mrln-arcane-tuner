@@ -26,6 +26,8 @@ from app.api.schemas.dataset_schemas import (
     ToggleEnabledRequest,
     ImportPathRequest,
 )
+from app.core.dataset.rescan_batch import run_rescan_batch, count_multimedia
+from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -115,6 +117,48 @@ async def scan_all_datasets(force_full: bool = Query(False)):
     """Re-scan all registered datasets."""
     logger.info("scanning_all_datasets", force_full=force_full)
     return await asyncio.to_thread(dataset_manager.scan_all_datasets, force_full)
+
+
+@router.post("/datasets/{name}/scan/batch")
+async def scan_dataset_batch(name: str, force_full: bool = Query(False)):
+    """Start a backend-owned single-dataset rescan task. Queued on the GPU lane
+    (shared with captioning); returns the task id immediately."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    total = await asyncio.to_thread(count_multimedia, [name])
+    task = task_manager.create(
+        type="rescan_batch", title=f"Rescan · {name}",
+        total=total, dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_rescan_batch(
+            tid, dataset_names=[name], force_full=force_full, total=total,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}
+
+
+@router.post("/datasets/scan-all/batch")
+async def scan_all_datasets_batch(force_full: bool = Query(False)):
+    """Start a backend-owned library-wide rescan task. Runs auto-discovery, then
+    queues one file-granular parent task on the GPU lane."""
+    names = await asyncio.to_thread(dataset_manager.discover_and_list_dataset_names)
+    total = await asyncio.to_thread(count_multimedia, names)
+    task = task_manager.create(
+        type="rescan_batch", title="Rescan · Library",
+        total=total, dataset_name=None,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_rescan_batch(
+            tid, dataset_names=names, force_full=force_full, total=total,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}
 
 
 # ── File Upload ──────────────────────────────────────────────────────────

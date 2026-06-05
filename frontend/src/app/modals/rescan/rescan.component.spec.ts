@@ -118,4 +118,40 @@ describe('RescanModalComponent — launcher contract', () => {
         expect(datasets.deleteDataset).toHaveBeenCalledWith('b', false);
         expect(closeSpy).toHaveBeenCalled();
     }));
+
+    it('on failure: toasts the error and auto-closes', fakeAsync(() => {
+        const toast = TestBed.inject(ToastService) as any;
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        const overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('rescan', { datasetName: 'alpha' });
+        const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
+        const fixture = TestBed.createComponent(RescanModalComponent);
+        const comp = fixture.componentInstance as any;
+        fixture.detectChanges();
+        comp.start();
+        taskSignal.set({ id: 't1', status: 'failed', total: 4, current: 1, error: 'boom' });
+        fixture.detectChanges();
+        tick(); tick();
+        expect(toast.error).toHaveBeenCalledWith('boom');
+        expect(closeSpy).toHaveBeenCalled();
+    }));
+
+    it('after Stop, a late "cancelled" update does NOT reconcile or auto-close', fakeAsync(() => {
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        const overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('rescan');                         // library
+        const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
+        const fixture = TestBed.createComponent(RescanModalComponent);
+        const comp = fixture.componentInstance as any;
+        fixture.detectChanges();
+        comp.start();
+        comp.cancel();                                       // explicit Stop arms _finalized
+        taskSignal.set({ id: 't1', status: 'cancelled', total: 4, current: 2 });
+        fixture.detectChanges();
+        tick(); tick();
+        expect(datasets.loadAll).not.toHaveBeenCalled();     // no reconcile after user stop
+        expect(closeSpy).not.toHaveBeenCalled();             // launcher stays open
+    }));
 });

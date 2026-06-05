@@ -265,6 +265,7 @@ export class RescanModalComponent {
     protected start(): void {
         const mode = this.mode();
         const name = this.data.datasetName;
+        this._finalized = false;        // re-arm completion for a fresh launch
         this.running.set(true);
         const req = name
             ? this.datasetsApi.rescanDataset(name, mode)
@@ -278,6 +279,10 @@ export class RescanModalComponent {
     protected cancel(): void {
         const id = this.taskId();
         if (id) this.tasks.cancel(id);
+        // Explicit user stop: suppress the late 'cancelled' task_update from
+        // auto-closing the modal / firing the missing-prune confirm. Returns to
+        // the launcher; start() re-arms _finalized for a relaunch.
+        this._finalized = true;
         this.running.set(false);
     }
 }

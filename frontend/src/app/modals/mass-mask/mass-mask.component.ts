@@ -350,17 +350,6 @@ type Strategy = 'keep' | 'overwrite';
         }
         .mm-info app-ico { color: var(--color-chart-lr); margin-top: 1px; flex-shrink: 0; }
 
-        .mm-warning {
-            padding: 12px 14px;
-            background: color-mix(in oklab, var(--color-warning) 10%, transparent);
-            border: 1px solid color-mix(in oklab, var(--color-warning) 30%, transparent);
-            border-radius: var(--radius-theme-md);
-            display: flex; align-items: flex-start; gap: 10px;
-            font-size: 11.5px; color: var(--color-warning); line-height: 1.55;
-        }
-        .mm-warning app-ico { margin-top: 1px; flex-shrink: 0; }
-        .mm-warning p { margin: 0; }
-
         .mm-progress {
             padding: 20px 22px;
             background: var(--color-surface-mid);

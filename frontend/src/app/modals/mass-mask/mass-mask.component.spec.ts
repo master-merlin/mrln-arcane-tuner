@@ -200,7 +200,8 @@ describe('MassMaskModalComponent — completion handler', () => {
         expect(comp.running()).toBe(false);
     }));
 
-    it('Apply tab — completed task fires onCompleted (tab-specific launch path)', fakeAsync(() => {
+    it('failed task fires toast.error, does NOT fire onCompleted, running=false', fakeAsync(() => {
+        const toast = TestBed.inject(ToastService) as any;
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.and.returnValue(taskSignal);
         const { comp } = make();
@@ -208,10 +209,11 @@ describe('MassMaskModalComponent — completion handler', () => {
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
         spyOn(window, 'confirm').and.returnValue(true);
         comp.start();
-        taskSignal.set({ status: 'completed', current: 1, total: 1, current_item: null, error: null });
+        taskSignal.set({ status: 'failed', current: 0, total: 1, current_item: null, error: 'boom' });
         fixture!.detectChanges();
         tick(); tick();
-        expect(onCompleted).toHaveBeenCalledTimes(1);
+        expect(toast.error).toHaveBeenCalledWith('boom');
+        expect(onCompleted).not.toHaveBeenCalled();
         expect(comp.running()).toBe(false);
     }));
 

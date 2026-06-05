@@ -22,7 +22,7 @@ describe('TaskCenterComponent', () => {
     it('renders active task + cancels on click', () => {
         const f = TestBed.createComponent(TaskCenterComponent);
         const c = f.componentInstance as any;
-        c.open.set(true);
+        c.toggle();
         f.detectChanges();
         const txt = f.nativeElement.textContent;
         expect(txt).toContain('Captioning · ds');

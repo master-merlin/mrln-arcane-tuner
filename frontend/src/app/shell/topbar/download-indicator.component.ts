@@ -1,8 +1,9 @@
 import {
     ChangeDetectionStrategy, Component, ElementRef, HostListener,
-    computed, inject, signal,
+    computed, inject,
 } from '@angular/core';
 import { ModelDownloadStore, DownloadProgress, RecentDownload } from '../../state/model-download.store';
+import { TopbarPanelStore } from '../../state/topbar-panel.store';
 
 /**
  * Global topbar pill + dropdown for model download progress.
@@ -139,7 +140,8 @@ import { ModelDownloadStore, DownloadProgress, RecentDownload } from '../../stat
 export class DownloadIndicatorComponent {
     protected store = inject(ModelDownloadStore);
     private host = inject(ElementRef<HTMLElement>);
-    protected open = signal(false);
+    private panels = inject(TopbarPanelStore);
+    protected open = this.panels.isOpen('downloads');
 
     protected visible = computed(() =>
         this.store.activeCount() > 0 || this.store.recent().length > 0,
@@ -157,7 +159,7 @@ export class DownloadIndicatorComponent {
         this.open() ? 'Hide downloads' : 'Show downloads',
     );
 
-    protected toggle(): void { this.open.update(v => !v); }
+    protected toggle(): void { this.panels.toggle('downloads'); }
 
     protected mb(bytes: number): string {
         return (bytes / (1024 * 1024)).toFixed(1);
@@ -178,12 +180,12 @@ export class DownloadIndicatorComponent {
     protected onOutsidePointer(event: MouseEvent): void {
         if (!this.open()) return;
         if (!this.host.nativeElement.contains(event.target as Node)) {
-            this.open.set(false);
+            this.panels.close('downloads');
         }
     }
 
     @HostListener('document:keydown.escape')
     protected onEsc(): void {
-        if (this.open()) this.open.set(false);
+        if (this.open()) this.panels.close('downloads');
     }
 }

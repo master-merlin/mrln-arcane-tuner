@@ -1,9 +1,10 @@
 import {
     ChangeDetectionStrategy, Component, ElementRef, HostListener,
-    inject, signal,
+    inject,
 } from '@angular/core';
 import { IcoComponent } from '../../icons/ico.component';
 import { ToastService, ToastHistoryEntry } from '../../services/toast';
+import { TopbarPanelStore } from '../../state/topbar-panel.store';
 
 /**
  * Topbar bell button + dropdown listing the most recent toast messages
@@ -87,9 +88,10 @@ import { ToastService, ToastHistoryEntry } from '../../services/toast';
 export class NotificationPanelComponent {
     protected toast = inject(ToastService);
     private host = inject(ElementRef<HTMLElement>);
-    protected open = signal(false);
+    private panels = inject(TopbarPanelStore);
+    protected open = this.panels.isOpen('notifications');
 
-    protected toggle(): void { this.open.update(v => !v); }
+    protected toggle(): void { this.panels.toggle('notifications'); }
 
     protected glyph(n: ToastHistoryEntry): string {
         switch (n.type) {
@@ -111,12 +113,12 @@ export class NotificationPanelComponent {
     protected onOutsidePointer(event: MouseEvent): void {
         if (!this.open()) return;
         if (!this.host.nativeElement.contains(event.target as Node)) {
-            this.open.set(false);
+            this.panels.close('notifications');
         }
     }
 
     @HostListener('document:keydown.escape')
     protected onEsc(): void {
-        if (this.open()) this.open.set(false);
+        if (this.open()) this.panels.close('notifications');
     }
 }

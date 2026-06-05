@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, HostListener, inject } from '@angular/core';
 import { IcoComponent } from '../../icons/ico.component';
 import { TaskStore } from '../../state/task.store';
+import { TopbarPanelStore } from '../../state/topbar-panel.store';
 
 @Component({
     selector: 'app-task-center',
@@ -10,7 +11,7 @@ import { TaskStore } from '../../state/task.store';
     template: `
         @if (count() > 0 || recent().length > 0) {
             <div class="tc">
-                <button class="tc-pill" type="button" (click)="open.set(!open())"
+                <button class="tc-pill" type="button" (click)="toggle()"
                         [class.busy]="count() > 0" title="Background tasks">
                     <app-ico [name]="count() > 0 ? 'Loader2' : 'Activity'" [size]="14"/>
                     @if (count() > 0) { <span class="tc-count mono">{{ count() }}</span> }
@@ -72,13 +73,30 @@ import { TaskStore } from '../../state/task.store';
 })
 export class TaskCenterComponent {
     private store = inject(TaskStore);
+    private host = inject(ElementRef<HTMLElement>);
+    private panels = inject(TopbarPanelStore);
     protected active = this.store.active;
     protected recent = this.store.recent;
     protected count = this.store.activeCount;
-    protected open = signal(false);
+    protected open = this.panels.isOpen('tasks');
+
+    protected toggle(): void { this.panels.toggle('tasks'); }
 
     protected pct(t: { current: number; total: number }): number {
         return t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     }
     protected cancel(id: string): void { this.store.cancel(id); }
+
+    @HostListener('document:mousedown', ['$event'])
+    protected onOutsidePointer(event: MouseEvent): void {
+        if (!this.open()) return;
+        if (!this.host.nativeElement.contains(event.target as Node)) {
+            this.panels.close('tasks');
+        }
+    }
+
+    @HostListener('document:keydown.escape')
+    protected onEsc(): void {
+        if (this.open()) this.panels.close('tasks');
+    }
 }

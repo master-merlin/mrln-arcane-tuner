@@ -20,3 +20,17 @@ class CalcCropTargetRequest(BaseModel):
     width: int
     height: int
     aspect_ratio: float
+
+
+class CropBatchItem(BaseModel):
+    """One image queued for batch crop, with its own analysis-derived target."""
+    path: str
+    target_width: int
+    target_height: int
+
+
+class CropBatchRequest(BaseModel):
+    """Request body for a batch crop. `origin` (9-position anchor) is shared
+    across all items; each item carries its own target dimensions."""
+    items: list[CropBatchItem]
+    origin: str = "center"

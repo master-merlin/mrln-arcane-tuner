@@ -117,8 +117,12 @@ class TaskManager:
         on the lane thread when this task reaches the front of the queue."""
         with self._lock:
             self._lanes.setdefault(lane, []).append((task_id, worker_fn))
-            th = self._lane_threads.get(lane)
-            if th is None or not th.is_alive():
+            # Presence in `_lane_threads` IS the "lane has a live worker" flag —
+            # added here and removed by `_run_lane` when it drains, both under
+            # `_lock`. This closes the is_alive() race where a thread caught
+            # between "saw empty / returning" and actually dying would leave a
+            # newly-enqueued task orphaned in `pending`.
+            if lane not in self._lane_threads:
                 th = threading.Thread(target=self._run_lane, args=(lane,), daemon=True)
                 self._lane_threads[lane] = th
                 th.start()
@@ -128,6 +132,7 @@ class TaskManager:
             with self._lock:
                 queue = self._lanes.get(lane, [])
                 if not queue:
+                    self._lane_threads.pop(lane, None)  # release the lane under lock
                     return
                 task_id, worker_fn = queue.pop(0)
 

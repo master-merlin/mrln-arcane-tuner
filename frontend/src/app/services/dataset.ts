@@ -504,6 +504,20 @@ export class DatasetService {
     );
   }
 
+  batchRenderPipeline(
+    name: string,
+    imagePaths: string[],
+    blocks: PipelineBlock[],
+    tileSize: number = 512,
+    tilePad: number = 32,
+    replaceRecipe: boolean = false,
+  ): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/render-pipeline/batch`,
+      { image_paths: imagePaths, blocks, tile_size: tileSize, tile_pad: tilePad, replace_recipe: replaceRecipe },
+    );
+  }
+
   getOverlayUrl(name: string, imagePath: string): string {
     return `${this.apiUrl}/${encodeURIComponent(name)}/overlay/${encodeURIComponent(imagePath)}`;
   }

@@ -13,14 +13,18 @@ interface TaskView { kind: string; subject: string; accent: string; }
  * slot in here as the background-task framework absorbs them.
  */
 const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
-    caption_batch: { kind: 'Captioning', accent: 'var(--color-brand)' },
+    caption_batch:       { kind: 'Captioning',  accent: 'var(--color-brand)' },
     // Lighter than --color-violet (oklch L=0.65, too dark to read as a tiny
     // uppercase label); L=0.74 matches the readability of brand.
-    rescan_batch:  { kind: 'Rescan',     accent: 'oklch(0.74 0.15 295)' },
+    rescan_batch:        { kind: 'Rescan',       accent: 'oklch(0.74 0.15 295)' },
+    // Mass masking offload — generate (AI mask) then apply (composite). Green
+    // to match the mass-mask modal's success theme.
+    mask_generate_batch: { kind: 'Masking',      accent: 'var(--color-success)' },
+    mask_apply_batch:    { kind: 'Apply Masks',  accent: 'var(--color-success)' },
     // Future task types slot in here as the background-task framework absorbs
-    // them — e.g. crop (teal: var(--color-chart-lr)), scoring (var(--color-warning)),
-    // adjustments (var(--color-success)). Until a type is mapped it falls back
-    // to a neutral rail + a label parsed from the "<Kind> · <subject>" title.
+    // them — e.g. scoring (var(--color-warning)), crop (var(--color-chart-lr)).
+    // Until a type is mapped it falls back to a neutral rail + a label parsed
+    // from the "<Kind> · <subject>" title.
 };
 
 @Component({

@@ -36,6 +36,17 @@ type Tab = 'generate' | 'apply' | 'caption';
 type Strategy = 'keep' | 'overwrite';
 
 /**
+ * In-flight mask task types this modal can re-hook to on reopen, and the tab
+ * each maps to. `caption_batch` is intentionally excluded: it's shared with the
+ * mass-caption modal and indistinguishable from an unrelated original-caption
+ * run, so reattaching to it could hijack the modal.
+ */
+const MASK_TASK_TABS: Record<string, Tab> = {
+    mask_generate_batch: 'generate',
+    mask_apply_batch: 'apply',
+};
+
+/**
  * Mass Masking modal — three tabs (Generate / Apply / Caption).
  *
  * The AI configuration UIs are delegated to the shared
@@ -494,7 +505,28 @@ export class MassMaskModalComponent implements OnInit {
 
     ngOnInit(): void {
         if (!this.data.datasetName) return;
+        // Re-hook to an in-flight mask task for THIS dataset rather than showing
+        // the launcher (which would let the user queue a duplicate task). Scoped
+        // to the modal's own dataset: a masking run in dataset A must not surface
+        // when the modal is opened on dataset B.
+        this.attachToRunningTask(this.data.datasetName);
         void this.loadPairs(this.data.datasetName);
+    }
+
+    /** If a mask task for *name* is already active, bind the live view and show
+     *  its tab's progress. Returns true when reattached. */
+    private attachToRunningTask(name: string): boolean {
+        const mine = this.tasks.active().filter(
+            t => t.dataset_name === name && MASK_TASK_TABS[t.type] !== undefined,
+        );
+        if (mine.length === 0) return false;
+        // Prefer the one actually running over any queued behind it.
+        const t = mine.find(x => x.status === 'running') ?? mine[0];
+        this._taskView = this.tasks.byId(t.id);
+        this.taskId.set(t.id);
+        this.tab.set(MASK_TASK_TABS[t.type]);
+        this.running.set(true);
+        return true;
     }
 
     private async loadPairs(name: string): Promise<void> {

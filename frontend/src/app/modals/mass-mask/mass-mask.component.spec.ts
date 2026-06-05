@@ -28,7 +28,7 @@ function makePair(media: string, extra: any = {}) {
 
 describe('MassMaskModalComponent — launcher contract', () => {
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
     let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
 
     beforeEach(() => {
@@ -41,6 +41,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         };
         taskStoreSpy = {
             byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            active: signal([]),
             cancel: jasmine.createSpy('cancel'),
         };
         TestBed.configureTestingModule({
@@ -130,13 +131,35 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.start();
         expect(comp.pct()).toBe(25);
     });
+
+    it('reattaches to an in-flight mask task for this dataset and shows its tab', () => {
+        taskStoreSpy.active = signal([
+            { id: 'live', type: 'mask_apply_batch', dataset_name: 'ds1', status: 'running' },
+        ]);
+        taskStoreSpy.byId.and.returnValue(signal({ current: 4, total: 8 }));
+        const { comp, fixture } = make();
+        fixture.detectChanges();
+        expect(comp.running()).toBe(true);
+        expect(comp.taskId()).toBe('live');
+        expect(comp.tab()).toBe('apply');     // mapped from mask_apply_batch
+        expect(comp.pct()).toBe(50);
+    });
+
+    it('does NOT reattach to a mask task from a different dataset', () => {
+        taskStoreSpy.active = signal([
+            { id: 'other', type: 'mask_generate_batch', dataset_name: 'ds2', status: 'running' },
+        ]);
+        const { comp } = make();
+        expect(comp.running()).toBe(false);
+        expect(comp.taskId()).toBe(null);
+    });
 });
 
 // ─── Completion handler ───────────────────────────────────────────────────────
 
 describe('MassMaskModalComponent — completion handler', () => {
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
     let sync: { refreshDataset: jasmine.Spy };
     let onCompleted: jasmine.Spy;
     let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
@@ -151,6 +174,7 @@ describe('MassMaskModalComponent — completion handler', () => {
         };
         taskStoreSpy = {
             byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            active: signal([]),
             cancel: jasmine.createSpy('cancel'),
         };
         sync = { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) };

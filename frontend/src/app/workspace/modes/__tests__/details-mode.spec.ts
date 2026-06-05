@@ -196,7 +196,13 @@ describe('DetailsMode', () => {
             })]);
             f.componentRef.setInput('showMasked', true);
             const c = f.componentInstance;
-            // User has typed but not saved.
+            // Initial render: the sidebar's pair-sync effect seeds captionText
+            // from the saved masked caption (real-usage order — the pair loads
+            // BEFORE the user edits). Without this, the later edit below is
+            // clobbered by that first sync and the test wouldn't exercise the
+            // "unsaved edit" path it intends to.
+            f.detectChanges();
+            // Now the user types an unsaved masked edit (differs from saved).
             (c as any).captionText.set('in-progress masked edit');
             (c as any).isDirty.set(true);
             f.detectChanges();

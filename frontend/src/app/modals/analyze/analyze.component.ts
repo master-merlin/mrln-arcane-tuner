@@ -1,14 +1,14 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
-import { forkJoin, firstValueFrom } from 'rxjs';
+import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal } from '@angular/core';
+import { forkJoin } from 'rxjs';
 import { IcoComponent, IconKey } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ToastService } from '../../services/toast';
 import { SegmentedComponent } from '../../ui/segmented/segmented.component';
-import { runCropAll, CropAllItem, CropAllProgress } from './crop-all';
-import { MediaItemStore } from '../../state/media-item.store';
+import { CropAllItem } from './crop-all';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
+import { TaskStore } from '../../state/task.store';
 
 type FileFilter = 'all' | 'low-hps' | 'no-cap' | 'masked' | 'crop' | 'dupes';
 type FileSort = 'idx' | 'hps-desc' | 'hps-asc' | 'name' | 'size';
@@ -183,12 +183,12 @@ const THUMB_FALLBACK_DATA_URI =
                 @if (cropAllRunning()) {
                     <div class="card an-cropall-progress">
                         <div class="card-head">
-                            <div class="card-title"><app-ico name="Crop" [size]="11"/> Cropping {{ cropAllProgress().current }} / {{ cropAllProgress().total }}</div>
+                            <div class="card-title"><app-ico name="Crop" [size]="11"/> Cropping {{ cropAllPercent() }}%</div>
                             <button class="btn sm danger-out" type="button" (click)="cancelCropAll()">Stop</button>
                         </div>
                         <div class="card-body">
                             <div class="bar lg"><i [style.width.%]="cropAllPercent()"></i></div>
-                            <div class="mono an-cropall-file">{{ cropAllProgress().path }}</div>
+                            <div class="mono an-cropall-file">{{ cropAllCurrentItem() }}</div>
                         </div>
                     </div>
                 }
@@ -898,7 +898,6 @@ export class AnalyzeModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private rtc = inject(RuntimeConfigService);
     private toast = inject(ToastService);
-    private mediaItems = inject(MediaItemStore);
     private sync = inject(DatasetSyncService);
 
     protected readonly chartW = CHART_W;
@@ -943,10 +942,16 @@ export class AnalyzeModalComponent implements OnInit {
     protected searchQuery = signal<string>('');
 
     protected readonly ORIGINS = ['top-left','top','top-right','left','center','right','bottom-left','bottom','bottom-right'] as const;
+    private taskStore = inject(TaskStore);
     protected cropAllRunning = signal(false);
     protected cropAllOrigin = signal<string>('center');
-    protected cropAllProgress = signal<CropAllProgress>({ current: 0, total: 0, path: '' });
-    private cropAllCancel = false;
+    protected cropTaskId = signal<string | null>(null);
+    private _cropTaskView: ReturnType<TaskStore['byId']> | null = null;
+    private _cropTask = computed(() => {
+        this.cropTaskId();                       // re-bind when a new task starts
+        return this._cropTaskView?.() ?? null;
+    });
+    private _cropFinalized = false;
 
     protected data: AnalyzeModalData = (this.overlay.topModal()?.data as AnalyzeModalData) ?? {};
 
@@ -1175,8 +1180,30 @@ export class AnalyzeModalComponent implements OnInit {
     });
 
     protected cropAllPercent = computed<number>(() => {
-        const p = this.cropAllProgress();
-        return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+        const t = this._cropTask();
+        const total = t?.total ?? 0;
+        return total > 0 ? Math.round(((t?.current ?? 0) / total) * 100) : 0;
+    });
+
+    /** Current item label for the progress card ("" when idle). */
+    protected cropAllCurrentItem = computed<string>(() => this._cropTask()?.current_item ?? '');
+
+    private _cropCompletion = effect(() => {
+        const t = this._cropTask();
+        if (!t) return;
+        const status = t.status;
+        if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') return;
+        if (this._cropFinalized) return;
+        this._cropFinalized = true;
+        this.cropAllRunning.set(false);
+
+        if (status === 'completed') {
+            if (t.failed) this.toast.warning(`Cropped ${t.ok} image${t.ok === 1 ? '' : 's'} · ${t.failed} failed`);
+            else this.toast.success(`Cropped ${t.ok} image${t.ok === 1 ? '' : 's'}`);
+        } else if (status === 'failed') {
+            this.toast.error(t.error || 'Crop-all failed.');
+        }
+        this.fetch();   // refresh analysis table; cropAllCandidates empties
     });
 
     /** Filtered + sorted view of `allFiles()` for the table. */
@@ -1563,7 +1590,7 @@ export class AnalyzeModalComponent implements OnInit {
         });
     }
 
-    protected async startCropAll(): Promise<void> {
+    protected startCropAll(): void {
         const name = this.data.datasetName;
         const candidates = this.cropAllCandidates();
         if (!name || candidates.length === 0 || this.cropAllRunning()) return;
@@ -1572,32 +1599,28 @@ export class AnalyzeModalComponent implements OnInit {
             `from the "${this.cropAllOrigin()}" anchor?\n\nThis rewrites files on disk and cannot be undone.`,
         )) return;
 
-        this.cropAllCancel = false;
+        const items = candidates.map(c => ({
+            path: c.path, target_width: c.targetWidth, target_height: c.targetHeight,
+        }));
+        this._cropFinalized = false;
         this.cropAllRunning.set(true);
-        this.cropAllProgress.set({ current: 0, total: candidates.length, path: '' });
-
-        const result = await runCropAll(candidates, {
-            origin: this.cropAllOrigin(),
-            crop: (item, origin) => firstValueFrom(
-                this.datasetsApi.cropImage(name, item.path, item.targetWidth, item.targetHeight, origin),
-            ).then(() => undefined),
-            onProgress: (p) => this.cropAllProgress.set(p),
-            isCancelled: () => this.cropAllCancel,
+        this.datasetsApi.batchCrop(name, items, this.cropAllOrigin()).subscribe({
+            next: ({ task_id }) => { this._cropTaskView = this.taskStore.byId(task_id); this.cropTaskId.set(task_id); },
+            error: (err) => {
+                this.cropAllRunning.set(false);
+                this.toast.error('Crop-all failed to start: ' + (err?.error?.detail || err?.message));
+            },
         });
-
-        this.cropAllRunning.set(false);
-        this.mediaItems.bumpMedia();
-        const tail = result.failed ? ` · ${result.failed} failed` : '';
-        const head = result.cancelled
-            ? `Crop-all stopped — ${result.ok} cropped`
-            : `Cropped ${result.ok} image${result.ok === 1 ? '' : 's'}`;
-        if (result.failed) this.toast.warning(head + tail);
-        else if (result.cancelled && result.ok === 0) this.toast.info(head);
-        else this.toast.success(head);
-        this.fetch();
     }
 
-    protected cancelCropAll(): void { this.cropAllCancel = true; }
+    protected cancelCropAll(): void {
+        const id = this.cropTaskId();
+        if (!id) return;
+        this._cropFinalized = true;
+        this.taskStore.cancel(id);
+        this.cropAllRunning.set(false);
+        this.toast.info('Crop-all cancelled.');
+    }
 
     protected cropFile(r: FileRow): void {
         // Seed the crop-preview modal with everything it needs to render the

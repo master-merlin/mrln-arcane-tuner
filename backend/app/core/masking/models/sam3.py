@@ -34,17 +34,16 @@ def _resolve_bpe_path() -> str:
     import gzip
 
     try:
-        from app.api.events.download_progress import WSProgressTqdm, with_progress
-        from functools import partial
-        bound_tqdm = partial(
-            WSProgressTqdm,
-            source="hf", model_id="facebook/sam3/merges.txt", category="mask",
-        )
+        from app.api.events.download_progress import with_progress
+        # hf_hub_download() does NOT accept tqdm_class (huggingface_hub >= 0.36 —
+        # only snapshot_download does). Passing it raised "unexpected keyword
+        # argument 'tqdm_class'", which the except below wrapped in the
+        # misleading "accept the SAM 3 license" message. with_progress still
+        # emits coarse start/complete/error events for this file.
         with with_progress(model_id="facebook/sam3/merges.txt", category="mask"):
             merges_path = hf_hub_download(
                 repo_id="facebook/sam3",
                 filename="merges.txt",
-                tqdm_class=bound_tqdm,
             )
     except Exception as e:
         logger.error("merges_txt_download_failed", error=str(e))

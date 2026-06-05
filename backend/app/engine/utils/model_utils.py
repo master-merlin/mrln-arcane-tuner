@@ -110,9 +110,11 @@ class ModelPathResolver:
             with with_progress(model_id=progress_id, category="training"):
                 if filename:
                     logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
-                    return hf_hub_download(
-                        repo_id=repo_id, filename=filename, tqdm_class=bound_tqdm,
-                    )
+                    # hf_hub_download() does NOT accept tqdm_class (huggingface_hub
+                    # >= 0.36 — only snapshot_download does); passing it raises
+                    # "unexpected keyword argument 'tqdm_class'" and aborts the
+                    # download. with_progress still emits coarse start/complete.
+                    return hf_hub_download(repo_id=repo_id, filename=filename)
                 else:
                     logger.info("downloading_snapshot_from_hub", repo=repo_id)
                     return snapshot_download(repo_id=repo_id, tqdm_class=bound_tqdm)

@@ -1,13 +1,14 @@
-import { TestBed, fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import { MassCaptionModalComponent } from './mass-caption.component';
 import { OverlayStore } from '../../state/overlay.store';
-import { MediaItemStore, mediaKey } from '../../state/media-item.store';
+import { MediaItemStore } from '../../state/media-item.store';
 import { CaptionCacheStore } from '../../state/caption-cache.store';
 import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
+import { TaskStore } from '../../state/task.store';
 
 function makePair(mediaFile: string) {
     return {
@@ -17,21 +18,14 @@ function makePair(mediaFile: string) {
     };
 }
 
-describe('MassCaptionComponent live updates', () => {
+describe('MassCaptionComponent launcher', () => {
     let api: any;
     let overlay: OverlayStore;
-    let media: MediaItemStore;
-    let captions: CaptionCacheStore;
 
     beforeEach(() => {
         api = {
-            // The reconcile call from completion re-fetches with caption_file populated.
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(
-                of([{ ...makePair('a.png'), caption_file: 'a.txt' }]),
-            ),
-            generateCaption: jasmine.createSpy('generateCaption').and.returnValue(of({ caption: 'a cat' })),
-            saveCaption: jasmine.createSpy('saveCaption').and.returnValue(of({})),
-            unloadModels: jasmine.createSpy('unloadModels').and.returnValue(of({})),
+            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
+            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
         };
         TestBed.configureTestingModule({
             providers: [
@@ -39,80 +33,90 @@ describe('MassCaptionComponent live updates', () => {
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), cancel: jasmine.createSpy() } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
-        media = TestBed.inject(MediaItemStore);
-        captions = TestBed.inject(CaptionCacheStore);
         overlay.openModal('mass-caption', { datasetName: 'ds1' });
     });
 
-    it('writes generated caption text to CaptionCacheStore and stamps the media item', fakeAsync(() => {
-        // Seed the MediaItemStore synchronously so stampCaption can find the row.
-        // makePair produces caption_file: null so has_caption starts false —
-        // only the live stampCaption call can flip it to true before the reconcile.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        media.upsertFromPair('ds1', makePair('a.png') as any);
-
+    it('Execute posts a batch caption task and runs no client loop', () => {
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
-        comp.running.set(true);
+        comp.pairs.set([{ media_file: 'a.png', caption_file: null, caption_content: '' }]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.batchCaption).toHaveBeenCalled();
+        expect(comp.taskId()).toBe('t1');
+    });
 
-        comp.processQueue([makePair('a.png')], 0);
-        // generateCaption + saveCaption emit synchronously (both return of(...)),
-        // so setCaption + stampCaption have already run here — BEFORE the
-        // setTimeout that reaches the terminal-guard loadForDataset reconcile.
-        // Asserting now isolates the LIVE writes (the reconcile would set
-        // has_caption anyway, making the post-tick assertion a tautology).
-        expect(api.generateCaption).toHaveBeenCalled();
-        expect(captions.get('ds1').get('a.png')?.caption_content).toBe('a cat');
-        expect(media.byId(mediaKey('ds1', 'a.png'))()?.has_caption).toBe(true);
-
-        tick(200);   // drain the queue setTimeout + fire-and-forget reconcile
-        flushMicrotasks(); // flush the completion loadForDataset Promise
-        expect(api.getDatasetPairs).toHaveBeenCalled();
-    }));
-
-    it('writes masked caption text to CaptionCacheStore for the masked target', fakeAsync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        media.upsertFromPair('ds1', makePair('a.png') as any);
+    it('sets running=true immediately and stores task_id on success', () => {
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.currentSettings = { resolvedModelId: 'm2', params: { steps: 10 }, resolvedSystemPrompt: 'describe' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('b.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(comp.running()).toBe(true);
+        expect(comp.taskId()).toBe('t1');
+    });
+
+    it('passes all required batch caption fields to the API', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'flux-1', params: { max_new_tokens: 256 }, resolvedSystemPrompt: 'a photo of' };
         comp.target.set('masked');
-        comp.running.set(true);
-        comp.processQueue([makePair('a.png')], 0);
-        tick(200);
-        expect(api.generateCaption).toHaveBeenCalled();
-        expect(captions.get('ds1').get('a.png')?.masked_caption_content).toBe('a cat');
-    }));
+        comp.pairs.set([
+            { media_file: 'img1.png', caption_file: null, caption_content: '', metadata: { has_mask: true } },
+        ]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.batchCaption).toHaveBeenCalledWith(jasmine.objectContaining({
+            dataset_name: 'ds1',
+            image_rel_paths: ['img1.png'],
+            model_id: 'flux-1',
+            system_prompt: 'a photo of',
+            target: 'masked',
+        }));
+    });
 
-    it('unloads the caption model when the batch completes', fakeAsync(() => {
+    it('does not call batchCaption when candidates list is empty', () => {
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
-        comp.running.set(true);
-        comp.processQueue([makePair('a.png')], 0);
-        tick(200);
-        flushMicrotasks();
-        expect(api.unloadModels).toHaveBeenCalled();
-    }));
+        // All pairs have captions → strategy='keep' yields zero candidates
+        comp.pairs.set([{ media_file: 'a.png', caption_file: 'a.txt', caption_content: 'already captioned' }]);
+        comp.start();
+        expect(api.batchCaption).not.toHaveBeenCalled();
+    });
 
-    it('unloads the caption model when the run is stopped early', fakeAsync(() => {
+    it('does not call batchCaption when user cancels the confirm dialog', () => {
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
-        comp.running.set(true);
-        comp.cancel();   // user hits Stop → running flips off
-        // Re-entering the queue with running=false hits the terminal guard,
-        // which must free VRAM even though the batch never finished.
-        comp.processQueue([makePair('a.png'), makePair('b.png')], 0);
-        tick(200);
-        flushMicrotasks();
-        expect(api.unloadModels).toHaveBeenCalled();
-    }));
+        comp.pairs.set([makePair('c.png')]);
+        spyOn(window, 'confirm').and.returnValue(false);
+        comp.start();
+        expect(api.batchCaption).not.toHaveBeenCalled();
+    });
+
+    it('cancel() calls TaskStore.cancel with the task id and resets running', () => {
+        const taskStore = TestBed.inject(TaskStore) as any;
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('d.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(comp.taskId()).toBe('t1');
+        comp.cancel();
+        expect(taskStore.cancel).toHaveBeenCalledWith('t1');
+        expect(comp.running()).toBe(false);
+    });
 });

@@ -1,13 +1,12 @@
 /**
- * Mass-caption modal — completion-callback spec.
+ * Mass-caption modal — launcher behaviour spec.
  *
- * Narrow: assert that `data.onCompleted` fires exactly once when the
- * queue drains successfully, and does NOT fire when the user cancels
- * mid-run (running.set(false)). The store-side wiring (captions.setCaption,
- * mediaItems.stampCaption) is covered in the sibling spec; this file
- * locks the new completion contract added in PR4 Task 1.
+ * Verifies that start() dispatches a batchCaption request and that closing
+ * the modal does NOT cancel the background task (the onDestroy stop was
+ * removed in Task 9). The per-image processQueue store writes are gone —
+ * the backend owns the loop now.
  */
-import { TestBed, fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import { MassCaptionModalComponent } from '../mass-caption.component';
@@ -17,6 +16,7 @@ import { CaptionCacheStore } from '../../../state/caption-cache.store';
 import { DatasetService } from '../../../services/dataset';
 import { WebSocketService } from '../../../services/websocket.service';
 import { ToastService } from '../../../services/toast';
+import { TaskStore } from '../../../state/task.store';
 
 function makePair(mediaFile: string) {
     return {
@@ -26,63 +26,94 @@ function makePair(mediaFile: string) {
     };
 }
 
-describe('MassCaptionModalComponent — onCompleted callback', () => {
+describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
     let api: any;
     let overlay: OverlayStore;
-    let media: MediaItemStore;
-    let onCompleted: jasmine.Spy;
+    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
 
     beforeEach(() => {
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(
-                of([{ ...makePair('a.png'), caption_file: 'a.txt' }]),
-            ),
-            generateCaption: jasmine.createSpy('generateCaption').and.returnValue(of({ caption: 'a cat' })),
-            saveCaption: jasmine.createSpy('saveCaption').and.returnValue(of({})),
-            unloadModels: jasmine.createSpy('unloadModels').and.returnValue(of({})),
+            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
+            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
         };
+        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
                 { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: taskStoreSpy },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
-        media = TestBed.inject(MediaItemStore);
-        onCompleted = jasmine.createSpy('onCompleted');
-        overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
+        overlay.openModal('mass-caption', { datasetName: 'ds1' });
     });
 
-    it('fires onCompleted exactly once when the queue drains', fakeAsync(() => {
-        media.upsertFromPair('ds1', makePair('a.png') as any);
-
+    it('fires batchCaption and stores the task_id on execute', () => {
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
-        comp.running.set(true);
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.batchCaption).toHaveBeenCalled();
+        expect(comp.taskId()).toBe('t1');
+    });
 
-        comp.processQueue([makePair('a.png')], 0);
-        tick(200);              // drain the recursive setTimeout
-        flushMicrotasks();      // flush loadForDataset Promise chain
-
-        expect(onCompleted).toHaveBeenCalledTimes(1);
-    }));
-
-    it('does NOT fire onCompleted when running flips to false mid-run (cancel)', fakeAsync(() => {
+    it('does NOT run a client-side processQueue loop (no generateCaption call)', () => {
+        api.generateCaption = jasmine.createSpy('generateCaption').and.returnValue(of({ caption: 'x' }));
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
-        comp.currentSettings = { resolvedModelId: 'm', params: {}, systemPrompt: '' };
-        // Pre-cancelled: running starts false, so the very first processQueue
-        // call hits the guard and returns without invoking onCompleted.
-        comp.running.set(false);
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png'), makePair('b.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(api.generateCaption).not.toHaveBeenCalled();
+    });
 
-        comp.processQueue([makePair('a.png'), makePair('b.png')], 0);
-        tick(200);
-        flushMicrotasks();
+    it('closing the modal does NOT cancel the task (no onDestroy running.set(false))', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        expect(comp.running()).toBe(true);
+        // Simulate the component being destroyed (modal close)
+        fixture.destroy();
+        // running should still be true — the background task is not aborted
+        expect(comp.running()).toBe(true);
+    });
 
-        expect(onCompleted).not.toHaveBeenCalled();
-    }));
+    it('cancel() delegates to TaskStore.cancel and clears running flag', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        comp.cancel();
+        expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
+        expect(comp.running()).toBe(false);
+    });
+
+    it('pct() reflects task progress from TaskStore', () => {
+        const taskSignal = signal<any>({ current: 3, total: 10, current_item: 'img.png', title: 'Captioning' });
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png')]);
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.start();
+        // After taskId is set, task() resolves via byId
+        expect(comp.pct()).toBe(30);
+    });
 });

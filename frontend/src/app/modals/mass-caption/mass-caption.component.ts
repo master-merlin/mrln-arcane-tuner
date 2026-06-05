@@ -1,7 +1,6 @@
 import {
     ChangeDetectionStrategy,
     Component,
-    DestroyRef,
     OnInit,
     computed,
     inject,
@@ -13,8 +12,7 @@ import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
-import { MediaItemStore } from '../../state/media-item.store';
-import { CaptionCacheStore } from '../../state/caption-cache.store';
+import { TaskStore } from '../../state/task.store';
 import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
@@ -35,12 +33,9 @@ interface MassCaptionModalData {
 type CaptionStrategy = 'keep' | 'overwrite';
 
 /**
- * Mass Captioning modal — drives a recursive HTTP queue over the active
- * dataset's pairs. Delegates the AI knobs (model picker, params, system
- * prompt, template management) to the shared
- * `<app-dataset-caption-settings>` component — the new design shell wraps
- * it, but the controls themselves are identical to the legacy modal so
- * keyboard / template muscle memory transfers.
+ * Mass Captioning modal — launches a server-side batch captioning task and
+ * monitors its live progress via TaskStore. The backend owns the processing
+ * loop; this component is a launcher + monitor only.
  */
 @Component({
     selector: 'app-modal-mass-caption',
@@ -66,19 +61,20 @@ type CaptionStrategy = 'keep' | 'overwrite';
                 <div class="mc-progress">
                     <div class="mc-progress-head">
                         <div>
-                            <div class="eyebrow brand">{{ progress().current === 0 ? 'LOADING MODEL…' : 'NEURAL PROCESSING' }}</div>
+                            <div class="eyebrow brand">{{ task()?.current === 0 ? 'LOADING MODEL…' : 'NEURAL PROCESSING' }}</div>
                             <div class="mc-progress-pct">{{ pct() }}%</div>
                         </div>
                         <div class="mc-progress-queue">
                             <div class="eyebrow">QUEUE STATUS</div>
-                            <span class="mono">{{ progress().current }} / {{ progress().total }}</span>
+                            <span class="mono">{{ task()?.current ?? 0 }} / {{ task()?.total ?? 0 }}</span>
                         </div>
                     </div>
                     <div class="mc-progress-bar"><div class="mc-progress-bar-fill" [style.width.%]="pct()"></div></div>
                     <div class="mc-progress-cur">
                         <span class="eyebrow">CURRENT FRAME</span>
-                        <span class="mono">{{ progress().currentFile }}</span>
+                        <span class="mono">{{ task()?.current_item ?? '' }}</span>
                     </div>
+                    <div class="mc-progress-hint">Runs in the background — track it in Activity.</div>
                 </div>
 
                 <button class="btn danger-out mc-stop" type="button" (click)="cancel()">
@@ -216,6 +212,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
         }
         .mc-progress-cur { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
         .mc-progress-cur .mono { font-size: 11.5px; color: var(--color-text-secondary); }
+        .mc-progress-hint { font-size: 11px; color: var(--color-text-muted); margin-top: 8px; font-style: italic; }
         .mc-stop { width: 100%; justify-content: center; }
 
         .mc-foot { display: flex; justify-content: flex-end; gap: 8px; }
@@ -247,8 +244,7 @@ export class MassCaptionModalComponent implements OnInit {
     protected overlay = inject(OverlayStore);
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
-    private mediaItems = inject(MediaItemStore);
-    private captions = inject(CaptionCacheStore);
+    private tasks = inject(TaskStore);
 
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
@@ -262,20 +258,17 @@ export class MassCaptionModalComponent implements OnInit {
 
     protected running = signal<boolean>(false);
     protected pairs = signal<any[]>([]);
-    protected progress = signal<{ current: number; total: number; currentFile: string }>({
-        current: 0, total: 0, currentFile: '',
+
+    protected taskId = signal<string | null>(null);
+    protected task = computed(() => {
+        const id = this.taskId();
+        return id ? this.tasks.byId(id)() : undefined;
     });
 
     protected pct = computed(() => {
-        const p = this.progress();
-        return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+        const t = this.task();
+        return t && t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     });
-
-    constructor() {
-        // Abort the recursive queue if the modal closes mid-run.
-        const destroyRef = inject(DestroyRef);
-        destroyRef.onDestroy(() => this.running.set(false));
-    }
 
     ngOnInit(): void {
         if (this.data.initialTarget) this.target.set(this.data.initialTarget);
@@ -320,70 +313,22 @@ export class MassCaptionModalComponent implements OnInit {
         if (!confirm(`Start captioning ${candidates.length} ${target} images?`)) return;
 
         this.running.set(true);
-        this.progress.set({ current: 0, total: candidates.length, currentFile: '' });
-        this.processQueue(candidates, 0);
-    }
-
-    private processQueue(queue: any[], idx: number): void {
-        if (!this.running() || idx >= queue.length || !this.currentSettings) {
-            const completed = idx >= queue.length;
-            this.running.set(false);
-            if (completed) {
-                this.toast.success(`Mass captioning complete — ${queue.length} images processed.`);
-                // Authoritative metadata reconcile (server-computed flags etc.).
-                if (this.data.datasetName) void this.mediaItems.loadForDataset(this.data.datasetName);
-                // Workspace-side reconcile (e.g. per-session patch bump).
-                this.data.onCompleted?.();
-            } else if (idx > 0) {
-                this.toast.info(`Captioning stopped — ${idx} of ${queue.length} captioned.`);
-            }
-            // The backend keeps the caption model resident across the per-image
-            // /generate calls (it only unloads on a model switch or an explicit
-            // request), so free its VRAM now the batch is over — whether it
-            // finished or was stopped. Safe here: the queue is sequential, so no
-            // /generate is in flight at this exit point.
-            this.datasetsApi.unloadModels().subscribe({ error: () => undefined });
-            return;
-        }
-
-        const name = this.data.datasetName!;
-        const pair = queue[idx];
-        const settings = this.currentSettings;
-        const target = this.target();
-        this.progress.set({ current: idx, total: queue.length, currentFile: pair.media_file });
-
-        this.datasetsApi.generateCaption(
-            name,
-            pair.media_file,
-            settings.resolvedModelId,
-            settings.params,
-            settings.resolvedSystemPrompt,
-            target,
-        ).subscribe({
-            next: (res: any) => {
-                if (target === 'original') {
-                    const fname = pair.caption_file
-                        || pair.media_file.substring(0, pair.media_file.lastIndexOf('.')) + '.txt';
-                    this.datasetsApi.saveCaption(name, fname, res.caption).subscribe(() => {
-                        pair.caption_file = fname;
-                        pair.caption_content = res.caption;
-                        // Publish to the shared stores so the workspace grid repaints live.
-                        this.captions.setCaption(name, pair.media_file, res.caption, false);
-                        this.mediaItems.stampCaption(name, pair.media_file, fname);
-                        setTimeout(() => this.processQueue(queue, idx + 1), 100);
-                    });
-                } else {
-                    // Backend auto-saves masked-target captions to masked_captions/.
-                    this.captions.setCaption(name, pair.media_file, res.caption, true);
-                    this.mediaItems.markMaskedCaptioned(name, pair.media_file);
-                    setTimeout(() => this.processQueue(queue, idx + 1), 100);
-                }
-            },
-            error: () => this.processQueue(queue, idx + 1),
+        this.datasetsApi.batchCaption({
+            dataset_name: name,
+            image_rel_paths: candidates.map(p => p.media_file),
+            model_id: this.currentSettings.resolvedModelId,
+            params: this.currentSettings.params,
+            system_prompt: this.currentSettings.resolvedSystemPrompt,
+            target: target,
+        }).subscribe({
+            next: ({ task_id }) => { this.taskId.set(task_id); },
+            error: () => { this.running.set(false); this.toast.error('Could not start captioning.'); },
         });
     }
 
     protected cancel(): void {
+        const id = this.taskId();
+        if (id) this.tasks.cancel(id);
         this.running.set(false);
     }
 }

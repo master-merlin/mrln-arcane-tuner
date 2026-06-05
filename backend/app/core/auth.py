@@ -30,7 +30,11 @@ h1{font-size:1.1rem;margin:0 0 1rem}
 label{font-size:.85rem;color:#aaa}
 input,button{width:100%;padding:.6rem;margin-top:.4rem;border-radius:8px;
 border:1px solid #333;background:#0b0b0f;color:#eee;box-sizing:border-box}
-button{background:#6d4aff;border:none;cursor:pointer;margin-top:1rem;font-weight:600}
+button{background:oklch(0.68 0.13 55);color:#fff;border:none;cursor:pointer;
+margin-top:1rem;font-weight:700;transition:all .15s;
+box-shadow:0 4px 6px -1px oklch(0.70 0.18 55 / .2)}
+button:hover{background:oklch(0.70 0.18 55 / .9)}
+button:active{transform:scale(.97)}
 </style></head>
 <body><form method="post" action="/login">
 <h1>MRLN Arcane Tuner</h1>

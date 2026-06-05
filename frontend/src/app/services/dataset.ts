@@ -275,6 +275,17 @@ export class DatasetService {
     return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/crop`, body);
   }
 
+  batchCrop(
+    name: string,
+    items: { path: string; target_width: number; target_height: number }[],
+    origin: string,
+  ): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/crop/batch`,
+      { items, origin },
+    );
+  }
+
   calcCropTargets(name: string, width: number, height: number, aspectRatio: number): Observable<{ target_width: number; target_height: number }> {
     return this.http.post<{ target_width: number; target_height: number }>(`${this.apiUrl}/${encodeURIComponent(name)}/calc-crop-targets`, {
       width,

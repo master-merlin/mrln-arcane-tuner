@@ -577,3 +577,4 @@ def test_scan_invokes_progress_cb_per_image(mock_hash, manager):
     assert len(calls) == 2
     assert calls[-1][0] == 2                              # final current == file count
     assert all(tot == 2 for _, tot, _ in calls)          # total == multimedia count
+    assert {f for _, _, f in calls} == {"a.png", "b.png"}  # filename passed through

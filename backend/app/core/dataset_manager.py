@@ -590,6 +590,12 @@ class DatasetManager:
 
         name = dataset.name
         old_metadata = ctx["old_metadata"]
+        # Task progress is tracked SEPARATELY from the legacy `scan_progress`
+        # counters below (`current_progress_idx`/`total_for_progress`): those are
+        # incremental-aware (they only count/advance for NEW files), whereas the
+        # background-rescan worker pre-counts ALL multimedia files for the task
+        # total. So progress_cb must report over every file — new or existing —
+        # to stay aligned with the task bar.
         progress_cb = ctx.get("progress_cb")
         task_total = self.count_multimedia_files(dataset.path) or 1
         task_idx = 0

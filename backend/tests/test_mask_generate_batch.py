@@ -81,3 +81,52 @@ def test_generate_item_error_continues(monkeypatch):
     assert task.status.value == "completed"
     assert task.ok == 1
     assert task.failed == 1
+
+
+def test_generate_reconciles_mask_count_when_saved(monkeypatch):
+    from app.core.dataset_manager import dataset_manager
+    calls = []
+    monkeypatch.setattr(mask_generate_batch, "_get_service", lambda: StubService())
+    monkeypatch.setattr(mask_generate_batch, "_full_path", lambda ds, rel: f"/full/{rel}")
+    monkeypatch.setattr(mask_generate_batch, "_save_mask", lambda ds, rel, mask: None)
+    monkeypatch.setattr(mask_generate_batch, "_unload", lambda: None)
+    monkeypatch.setattr(dataset_manager, "reconcile_mask_count", lambda name: calls.append(name))
+
+    t = task_manager.create(type="mask_generate_batch", title="x", total=1, dataset_name="ds")
+    mask_generate_batch.run_mask_generate_batch(
+        t.id, dataset_name="ds", image_rel_paths=["a.png"], model_id="rembg", params={},
+    )
+    assert calls == ["ds"]
+
+
+def test_generate_skips_reconcile_when_nothing_saved(monkeypatch):
+    from app.core.dataset_manager import dataset_manager
+    calls = []
+    monkeypatch.setattr(mask_generate_batch, "_get_service", lambda: StubService())
+    monkeypatch.setattr(mask_generate_batch, "_full_path", lambda ds, rel: f"/full/{rel}")
+    monkeypatch.setattr(mask_generate_batch, "_save_mask",
+                        lambda ds, rel, mask: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(mask_generate_batch, "_unload", lambda: None)
+    monkeypatch.setattr(dataset_manager, "reconcile_mask_count", lambda name: calls.append(name))
+
+    t = task_manager.create(type="mask_generate_batch", title="x", total=1, dataset_name="ds")
+    mask_generate_batch.run_mask_generate_batch(
+        t.id, dataset_name="ds", image_rel_paths=["a.png"], model_id="rembg", params={},
+    )
+    assert calls == []  # every item failed → mask_count unchanged, no reconcile
+
+
+def test_reconcile_mask_count_recomputes(monkeypatch):
+    from app.core.dataset_manager import dataset_manager, Dataset
+    monkeypatch.setattr(dataset_manager, "_persist_dataset", lambda ds: None)
+    monkeypatch.setattr(dataset_manager, "_loop", None)  # no broadcast in tests
+    ds = Dataset(
+        id="i1", name="rds", path="/tmp/rds", created_at=0.0, mask_count=0,
+        media_metadata={"a.png": {"has_mask": True}, "b.png": {"has_mask": True}, "c.png": {}},
+    )
+    dataset_manager.datasets["rds"] = ds
+    try:
+        dataset_manager.reconcile_mask_count("rds")
+        assert ds.mask_count == 2
+    finally:
+        dataset_manager.datasets.pop("rds", None)

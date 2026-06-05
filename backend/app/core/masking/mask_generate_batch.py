@@ -119,6 +119,17 @@ def run_mask_generate_batch(
     finally:
         _unload()
 
+    # Reconcile the dataset-level mask_count + broadcast so the Library card's
+    # M pill refreshes (mask saves only flip per-item has_mask; the aggregate
+    # would otherwise stay stale until a full rescan). Fires for partial runs
+    # too — cancelled batches still changed has_mask flags on disk.
+    if ok > 0:
+        try:
+            from app.core.dataset_manager import dataset_manager as dm
+            dm.reconcile_mask_count(dataset_name)
+        except Exception as exc:  # noqa: BLE001 — count refresh must never fail the task
+            logger.warning("mask_count_reconcile_failed", dataset=dataset_name, error=str(exc))
+
     if cancelled:
         task_manager._finish(task_id, TaskStatus.CANCELLED)
     else:

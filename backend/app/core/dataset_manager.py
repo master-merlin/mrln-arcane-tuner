@@ -1493,6 +1493,46 @@ class DatasetManager:
 
         return content
 
+    def reconcile_mask_count(self, name: str) -> None:
+        """Recompute ``dataset.mask_count`` from ``has_mask`` flags and broadcast
+        a full dataset ``entity.changed:updated`` so the Library card's M pill
+        refreshes after a mass-masking run.
+
+        Mirrors :meth:`save_caption`'s caption_count reconcile. Unlike captions
+        (which save through ``save_caption`` and reconcile per write), mask saves
+        only flip the per-item ``has_mask`` flag, so the dataset-level count would
+        otherwise stay stale until a full rescan. Call once at the end of a
+        mask-generate batch — counting truthy flags matches what
+        ``_compute_scan_statistics`` derives via ``mask_stems``.
+        """
+        dataset = self.datasets.get(name)
+        if dataset is None:
+            return
+        new_count = sum(
+            1 for m in dataset.media_metadata.values() if m.get("has_mask")
+        )
+        if new_count == dataset.mask_count:
+            return
+        dataset.mask_count = new_count
+        self._persist_dataset(dataset)
+
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            from app.core.events import emit_entity_change
+            # Full payload — the frontend EntityStore replaces (not merges) the
+            # row on entity.changed:updated, so a partial would stub out the
+            # other fields. Matches save_caption.
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="updated",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+
     def toggle_image_enabled(self, name: str, media_file: str, enabled: bool) -> dict:
         """Toggle enabled state for a single image in the dataset.
 

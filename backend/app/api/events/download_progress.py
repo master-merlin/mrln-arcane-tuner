@@ -214,8 +214,22 @@ class WSProgressTqdm(hf_tqdm):
         super().close()
 
 
+def _is_repo_cached(repo_id: str) -> bool:
+    """Best-effort: True when the repo's ``config.json`` is already in the HF
+    cache, i.e. the model was downloaded before and loading it won't hit the
+    network. Used to suppress a spurious download-bar flash on a pure cache hit
+    (loading cached shards from disk into VRAM is not a download)."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        return isinstance(try_to_load_from_cache(repo_id, "config.json"), str)
+    except Exception:
+        return False
+
+
 @contextmanager
-def with_progress(*, model_id: str, category: str) -> Generator[None, None, None]:
+def with_progress(
+    *, model_id: str, category: str, repo_id: str | None = None,
+) -> Generator[None, None, None]:
     """Wrap an HF download callsite to ensure starting/complete/error events fire.
 
     When the HF library does its own download, `WSProgressTqdm` (if passed
@@ -227,7 +241,16 @@ def with_progress(*, model_id: str, category: str) -> Generator[None, None, None
     Note: when both the context manager and `WSProgressTqdm` fire, the
     frontend store deduplicates by `(source, model_id)` and treats the
     later state as authoritative.
+
+    Pass ``repo_id`` to suppress the start/complete pair when that repo is
+    already fully cached — no download happens, so flashing the download
+    indicator would be misleading. Callers that can't cheaply know the repo
+    (e.g. single-file fetches) omit it and keep the old always-emit behavior.
     """
+    if repo_id and _is_repo_cached(repo_id):
+        yield
+        return
+
     payload_kw: dict = dict(source="hf", model_id=model_id, category=category)
     schedule_emit_from_thread(
         _make_payload(**payload_kw, status="starting", current=0, total=None)

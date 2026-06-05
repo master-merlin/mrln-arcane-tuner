@@ -171,7 +171,7 @@ class JoyCaptionModel(CaptionModel):
 
         logger.info("loading_joycaption", path=self.MODEL_PATH)
 
-        with with_progress(model_id=self.MODEL_PATH, category="caption"):
+        with with_progress(model_id=self.MODEL_PATH, category="caption", repo_id=self.MODEL_PATH):
             self.model = LlavaForConditionalGeneration.from_pretrained(
                 self.MODEL_PATH,
                 torch_dtype=torch.bfloat16,

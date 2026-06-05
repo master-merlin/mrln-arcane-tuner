@@ -61,7 +61,7 @@ class YoutuVLModel(CaptionModel):
         # complete events still drive the frontend download indicator.
         from app.api.events.download_progress import with_progress
 
-        with with_progress(model_id=model_id, category="caption"):
+        with with_progress(model_id=model_id, category="caption", repo_id=model_id):
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 torch_dtype=dtype,

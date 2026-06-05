@@ -73,7 +73,7 @@ class Florence2Model(CaptionModel):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if device == "cuda" else torch.float32
 
-        with with_progress(model_id=self.MODEL_PATH, category="caption"):
+        with with_progress(model_id=self.MODEL_PATH, category="caption", repo_id=self.MODEL_PATH):
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.MODEL_PATH,
                 trust_remote_code=True,

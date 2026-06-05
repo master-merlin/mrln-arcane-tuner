@@ -40,13 +40,15 @@ class TaskManager:
         self._loop = loop
 
     def create(self, *, type: str, title: str, total: int = 0,
-               dataset_name: str | None = None) -> Task:
+               dataset_name: str | None = None,
+               target: str | None = None) -> Task:
         task = Task(
             id=uuid.uuid4().hex,
             type=type,
             title=title,
             total=total,
             dataset_name=dataset_name,
+            target=target,
             created_at=time.time(),
         )
         with self._lock:

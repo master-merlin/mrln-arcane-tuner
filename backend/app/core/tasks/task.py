@@ -19,6 +19,10 @@ class Task(BaseModel):
     title: str
     status: TaskStatus = TaskStatus.PENDING
     dataset_name: str | None = None
+    # Caption-specific discriminator ("original" | "masked"); None for task
+    # types that don't have a target. Lets a reopened modal re-hook to the
+    # right run (mass-caption = original, mass-mask caption tab = masked).
+    target: str | None = None
     total: int = 0
     current: int = 0
     current_item: str | None = None

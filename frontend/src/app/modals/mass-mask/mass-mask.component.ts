@@ -14,7 +14,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
-import { TaskStore } from '../../state/task.store';
+import { Task, TaskStore } from '../../state/task.store';
 import {
     DatasetMaskingSettingsComponent,
     MaskingSettingsState,
@@ -36,15 +36,19 @@ type Tab = 'generate' | 'apply' | 'caption';
 type Strategy = 'keep' | 'overwrite';
 
 /**
- * In-flight mask task types this modal can re-hook to on reopen, and the tab
- * each maps to. `caption_batch` is intentionally excluded: it's shared with the
- * mass-caption modal and indistinguishable from an unrelated original-caption
- * run, so reattaching to it could hijack the modal.
+ * Which tab (if any) an in-flight task belongs to, for reopen re-hooking.
+ * Masked captioning is THIS modal's Caption tab; original captioning belongs
+ * to the mass-caption modal, so `caption_batch` only matches when its target
+ * is "masked".
  */
-const MASK_TASK_TABS: Record<string, Tab> = {
-    mask_generate_batch: 'generate',
-    mask_apply_batch: 'apply',
-};
+function tabForTask(t: Task): Tab | null {
+    switch (t.type) {
+        case 'mask_generate_batch': return 'generate';
+        case 'mask_apply_batch':    return 'apply';
+        case 'caption_batch':       return t.target === 'masked' ? 'caption' : null;
+        default:                    return null;
+    }
+}
 
 /**
  * Mass Masking modal — three tabs (Generate / Apply / Caption).
@@ -517,14 +521,14 @@ export class MassMaskModalComponent implements OnInit {
      *  its tab's progress. Returns true when reattached. */
     private attachToRunningTask(name: string): boolean {
         const mine = this.tasks.active().filter(
-            t => t.dataset_name === name && MASK_TASK_TABS[t.type] !== undefined,
+            t => t.dataset_name === name && tabForTask(t) !== null,
         );
         if (mine.length === 0) return false;
         // Prefer the one actually running over any queued behind it.
         const t = mine.find(x => x.status === 'running') ?? mine[0];
         this._taskView = this.tasks.byId(t.id);
         this.taskId.set(t.id);
-        this.tab.set(MASK_TASK_TABS[t.type]);
+        this.tab.set(tabForTask(t)!);
         this.running.set(true);
         return true;
     }

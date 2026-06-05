@@ -10,6 +10,8 @@ export interface Task {
     title: string;
     status: TaskStatus;
     dataset_name: string | null;
+    /** Caption-only discriminator ("original" | "masked"); null otherwise. */
+    target: string | null;
     total: number;
     current: number;
     current_item: string | null;

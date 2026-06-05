@@ -8,7 +8,7 @@ import { DatasetService } from '../services/dataset';
 function mkTask(over: Partial<Task> = {}): Task {
     return {
         id: 't1', type: 'caption_batch', title: 'Captioning · ds', status: 'running',
-        dataset_name: 'ds', total: 3, current: 1, current_item: 'a.png',
+        dataset_name: 'ds', target: null, total: 3, current: 1, current_item: 'a.png',
         ok: 1, failed: 0, created_at: 0, started_at: 1, finished_at: null, error: null,
         ...over,
     };

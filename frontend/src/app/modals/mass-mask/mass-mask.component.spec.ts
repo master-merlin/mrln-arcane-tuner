@@ -149,7 +149,30 @@ describe('MassMaskModalComponent — launcher contract', () => {
         taskStoreSpy.active = signal([
             { id: 'other', type: 'mask_generate_batch', dataset_name: 'ds2', status: 'running' },
         ]);
-        const { comp } = make();
+        const { comp, fixture } = make();
+        fixture.detectChanges();
+        expect(comp.running()).toBe(false);
+        expect(comp.taskId()).toBe(null);
+    });
+
+    it('reattaches to a MASKED caption task on the caption tab', () => {
+        taskStoreSpy.active = signal([
+            { id: 'mc', type: 'caption_batch', dataset_name: 'ds1', target: 'masked', status: 'running' },
+        ]);
+        taskStoreSpy.byId.and.returnValue(signal({ current: 1, total: 4 }));
+        const { comp, fixture } = make();
+        fixture.detectChanges();
+        expect(comp.running()).toBe(true);
+        expect(comp.taskId()).toBe('mc');
+        expect(comp.tab()).toBe('caption');
+    });
+
+    it('does NOT reattach to an original caption task (belongs to the mass-caption modal)', () => {
+        taskStoreSpy.active = signal([
+            { id: 'orig', type: 'caption_batch', dataset_name: 'ds1', target: 'original', status: 'running' },
+        ]);
+        const { comp, fixture } = make();
+        fixture.detectChanges();
         expect(comp.running()).toBe(false);
         expect(comp.taskId()).toBe(null);
     });

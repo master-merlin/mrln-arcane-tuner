@@ -306,11 +306,15 @@ export class MassCaptionModalComponent implements OnInit {
         void this.loadPairs(this.data.datasetName);
     }
 
-    /** If a caption task for *name* is already active, bind the live view to it
-     *  and show the progress UI. Returns true when reattached. */
+    /** If a caption task for *name* with this modal's target is already active,
+     *  bind the live view to it and show the progress UI. Matching on `target`
+     *  keeps original (this modal) and masked (mass-mask caption tab) runs
+     *  distinct so neither modal re-hooks to the other's task. Returns true
+     *  when reattached. */
     private attachToRunningTask(name: string): boolean {
         const existing = this.tasks.active().find(
-            t => t.type === 'caption_batch' && t.dataset_name === name,
+            t => t.type === 'caption_batch' && t.dataset_name === name
+                && t.target === this.target(),
         );
         if (!existing) return false;
         this._taskView = this.tasks.byId(existing.id);

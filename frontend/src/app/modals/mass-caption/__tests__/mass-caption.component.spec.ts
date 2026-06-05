@@ -104,10 +104,10 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         expect(comp.running()).toBe(false);
     });
 
-    it('reattaches to an in-flight caption task for the dataset on open (no duplicate launch)', () => {
+    it('reattaches to an in-flight original caption task for the dataset on open (no duplicate launch)', () => {
         // A caption task for ds1 is already running when the modal opens.
         taskStoreSpy.active = signal([
-            { id: 'live', type: 'caption_batch', dataset_name: 'ds1', status: 'running' },
+            { id: 'live', type: 'caption_batch', dataset_name: 'ds1', target: 'original', status: 'running' },
         ]);
         const live = signal<any>({ current: 12, total: 36, ok: 12, failed: 0 });
         taskStoreSpy.byId.and.returnValue(live);
@@ -122,6 +122,18 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         expect(comp.pct()).toBe(33);
         // Did not re-fetch pairs to build a fresh candidate list.
         expect(api.getDatasetPairs).not.toHaveBeenCalled();
+    });
+
+    it('does NOT reattach to a masked caption task (that belongs to the mass-mask modal)', () => {
+        // Same dataset, but target=masked → this original-caption modal must ignore it.
+        taskStoreSpy.active = signal([
+            { id: 'masked', type: 'caption_batch', dataset_name: 'ds1', target: 'masked', status: 'running' },
+        ]);
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        fixture.detectChanges();
+        expect(comp.running()).toBe(false);
+        expect(comp.taskId()).toBe(null);
     });
 
     it('pct() reflects task progress from TaskStore', () => {

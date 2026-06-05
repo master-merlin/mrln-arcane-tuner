@@ -135,6 +135,7 @@ async def batch_caption_api(request: BatchCaptionRequest):
     task = task_manager.create(
         type="caption_batch", title=title,
         total=len(request.image_rel_paths), dataset_name=request.dataset_name,
+        target=request.target,
     )
     task_manager.enqueue(
         task.id,

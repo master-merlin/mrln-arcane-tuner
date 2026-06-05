@@ -19,10 +19,13 @@ from app.core.logger import get_logger
 from app.api.schemas.overlay_schemas import (
     ModelDownloadRequest,
     OverlayCommitRequest,
+    RenderPipelineBatchRequest,
     RenderPipelineRequest,
     RestoreModelListRequest,
 )
 from app.core import model_registry
+from app.core.image_processing.pipeline_batch import run_pipeline_batch
+from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -209,6 +212,27 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
         "dimensions": list(dimensions),
         "hash": overlay_hash,
     }
+
+
+@router.post("/datasets/{name}/render-pipeline/batch")
+async def render_pipeline_batch(name: str, request: RenderPipelineBatchRequest):
+    """Start a backend-owned task that applies one pipeline recipe to many
+    images (mass-edit). Returns the task id immediately; monitored via TaskStore."""
+    blocks = [b.model_dump() for b in request.blocks]
+    task = task_manager.create(
+        type="adjust_batch", title=f"Adjustments · {name}",
+        total=len(request.image_paths), dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_pipeline_batch(
+            tid, dataset_name=name, image_paths=request.image_paths, blocks=blocks,
+            tile_size=request.tile_size, tile_pad=request.tile_pad,
+            replace_recipe=request.replace_recipe,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}
 
 
 # ---------------------------------------------------------------------------

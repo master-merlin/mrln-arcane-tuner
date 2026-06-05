@@ -112,3 +112,26 @@ def test_render_one_writes_overlay_and_sets_metadata(monkeypatch, tmp_path):
         assert ds.media_metadata[rel]["overlay_dimensions"] == [64, 48]
     finally:
         dataset_manager.datasets.pop(ds_name, None)
+
+
+def test_render_pipeline_batch_route_enqueues(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.dataset import overlay_routes
+
+    captured = {}
+
+    def fake_enqueue(task_id, worker_fn, *, lane="gpu"):
+        captured["task_id"] = task_id
+        captured["lane"] = lane
+    monkeypatch.setattr(overlay_routes.task_manager, "enqueue", fake_enqueue)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/datasets/ds1/render-pipeline/batch",
+        json={"image_paths": ["a.png", "b.png"],
+              "blocks": [{"type": "contrast", "enabled": True, "params": {"factor": 1.1}}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["task_id"] == captured["task_id"]
+    assert captured["lane"] == "gpu"

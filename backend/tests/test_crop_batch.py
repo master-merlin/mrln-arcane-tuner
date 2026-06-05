@@ -76,3 +76,26 @@ def test_crop_progress_advances(monkeypatch):
     crop_batch.run_crop_batch(t.id, dataset_name="ds", items=ITEMS, origin="center")
 
     assert seen == [1, 2]
+
+
+def test_crop_batch_route_enqueues(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.dataset import crop_routes
+
+    captured = {}
+
+    def fake_enqueue(task_id, worker_fn, *, lane="gpu"):
+        captured["task_id"] = task_id
+        captured["lane"] = lane
+    monkeypatch.setattr(crop_routes.task_manager, "enqueue", fake_enqueue)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/datasets/ds1/crop/batch",
+        json={"items": [{"path": "a.png", "target_width": 512, "target_height": 512}],
+              "origin": "center"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["task_id"] == captured["task_id"]
+    assert captured["lane"] == "gpu"

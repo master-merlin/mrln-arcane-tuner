@@ -8,7 +8,11 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
-from app.api.schemas.crop_schemas import CropRequest, CalcCropTargetRequest
+from app.api.schemas.crop_schemas import (
+    CropRequest, CalcCropTargetRequest, CropBatchRequest,
+)
+from app.core.dataset.crop_batch import run_crop_batch
+from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -34,6 +38,25 @@ async def crop_media(name: str, request: CropRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/datasets/{name}/crop/batch")
+async def crop_media_batch(name: str, request: CropBatchRequest):
+    """Start a backend-owned batch-crop task (queued if the lane is busy).
+    Returns the task id immediately; progress is monitored via TaskStore."""
+    items = [item.model_dump() for item in request.items]
+    task = task_manager.create(
+        type="crop_batch", title=f"Crop · {name}",
+        total=len(items), dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_crop_batch(
+            tid, dataset_name=name, items=items, origin=request.origin,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}
 
 
 @router.post("/datasets/{name}/calc-crop-targets")

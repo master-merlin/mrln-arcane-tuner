@@ -35,6 +35,11 @@ export class CropPanelComponent {
     mediaFile = input.required<string>();
     width = input<number | undefined>(undefined);
     height = input<number | undefined>(undefined);
+    /** Per-image harmonization crop target (majority-AR bucket) from the scan.
+     *  Lets the crop modal's "Auto" land on the group bucket instead of the
+     *  image's own near-native AR. Falls back to source dims when absent. */
+    targetWidth = input<number | undefined>(undefined);
+    targetHeight = input<number | undefined>(undefined);
 
     private overlay = inject(OverlayStore);
 
@@ -44,8 +49,8 @@ export class CropPanelComponent {
             path: this.mediaFile(),
             width: this.width(),
             height: this.height(),
-            target_width: this.width(),
-            target_height: this.height(),
+            target_width: this.targetWidth() ?? this.width(),
+            target_height: this.targetHeight() ?? this.height(),
         });
     }
 }

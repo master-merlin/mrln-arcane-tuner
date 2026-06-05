@@ -29,6 +29,10 @@ interface CropPreviewData {
     /** Target bucket dimensions from analysis (used as the initial "Auto" target). */
     target_width?: number;
     target_height?: number;
+    /** Majority aspect ratio (W/H) of the image's orientation group. When the
+     *  analysis target is missing, "Auto" crops to this AR instead of the
+     *  image's own (near-native) AR — so it lands on the group's bucket. */
+    majority_ar?: number;
 }
 
 interface ARPreset {
@@ -38,7 +42,7 @@ interface ARPreset {
 }
 
 const AR_PRESETS: ReadonlyArray<ARPreset> = [
-    { value: 'auto',  label: 'Auto (from analysis)', ratio: 0 },
+    { value: 'auto',  label: 'Auto (majority AR)',   ratio: 0 },
     { value: '1:1',   label: '1:1 — Square',         ratio: 1 },
     { value: '4:3',   label: '4:3',                  ratio: 4 / 3 },
     { value: '3:2',   label: '3:2',                  ratio: 3 / 2 },
@@ -284,7 +288,12 @@ type InteractionMode = 'move' | 'resize-tl' | 'resize-tr' | 'resize-bl' | 'resiz
             position: relative;
             display: block;
             max-width: 100%;
-            max-height: 100%;
+            /* Definite viewport-based cap (not % — the modal uses max-height,
+               so a percentage parent height is indefinite and gets ignored).
+               Keeps tall portrait images shrunk-to-fit and never pushes the
+               footer (Apply Crop) past the 92vh modal. Offset ≈ head + foot +
+               body/stage padding. */
+            max-height: calc(92vh - 188px);
         }
         .cp-image {
             display: block;
@@ -496,11 +505,15 @@ export class CropPreviewModalComponent implements OnInit, OnDestroy {
         this.freeformY.set(Math.max(0, Math.floor((this.srcH - tH) / 2)));
 
         // If the analysis didn't produce a useful target (target == source —
-        // typical for un-harmonized datasets), ask the backend for one based
-        // on the image's own AR, then snap the response to 32px ourselves.
+        // typical for un-harmonized datasets), ask the backend for one. Prefer
+        // the orientation group's majority AR so "Auto" lands on the group's
+        // bucket (e.g. 16:9); fall back to the image's own AR only when the
+        // majority AR is unknown. Snap the response to 32px ourselves.
         const hasAnalysisTarget = tW !== this.srcW || tH !== this.srcH;
         if (!hasAnalysisTarget && this.srcW > 0 && this.srcH > 0 && this.data.datasetName) {
-            const ar = this.srcW / this.srcH;
+            const ar = this.data.majority_ar && this.data.majority_ar > 0
+                ? this.data.majority_ar
+                : this.srcW / this.srcH;
             this.datasetsApi
                 .calcCropTargets(this.data.datasetName, this.srcW, this.srcH, ar)
                 .subscribe(res => this.applyTargetsFromBackend(res.target_width, res.target_height));

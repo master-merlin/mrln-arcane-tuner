@@ -25,7 +25,9 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
                         [datasetName]="datasetName()"
                         [mediaFile]="pair.media_file"
                         [width]="pair.metadata?.width"
-                        [height]="pair.metadata?.height"/>
+                        [height]="pair.metadata?.height"
+                        [targetWidth]="pair.metadata?.target_width"
+                        [targetHeight]="pair.metadata?.target_height"/>
                 </aside>
                 <main class="pane center">
                     <app-edit-canvas

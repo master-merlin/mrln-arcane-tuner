@@ -66,7 +66,9 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                         [datasetName]="datasetName()"
                         [mediaFile]="mediaFile()"
                         [width]="width()"
-                        [height]="height()"/>
+                        [height]="height()"
+                        [targetWidth]="targetWidth()"
+                        [targetHeight]="targetHeight()"/>
                 }
                 @case ('white_balance') {
                     <app-wb-panel/>
@@ -199,6 +201,9 @@ export class EditLeftPanelComponent {
     mediaFile = input.required<string>();
     width = input<number | undefined>(undefined);
     height = input<number | undefined>(undefined);
+    /** Per-image harmonization crop target — forwarded to the crop panel. */
+    targetWidth = input<number | undefined>(undefined);
+    targetHeight = input<number | undefined>(undefined);
 
     protected state = inject(PipelineEditorState);
 

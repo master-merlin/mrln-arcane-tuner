@@ -15,6 +15,9 @@ from app.api._path_guard import safe_remove
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.core.masking.masking_service import MaskingService
+from app.core.masking.mask_generate_batch import run_mask_generate_batch
+from app.core.masking.mask_apply_batch import run_mask_apply_batch
+from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -234,3 +237,59 @@ async def mass_apply_masks(name: str, request: MassApplyRequest):
         "missing_masks": result["missing_masks"],
         "warnings": warnings,
     }
+
+
+class MaskGenerateBatchRequest(BaseModel):
+    """Request body for batch mask generation."""
+
+    image_rel_paths: list[str]
+    model_id: str
+    params: dict[str, Any] = {}
+
+
+@router.post("/datasets/{name}/masking/generate/batch")
+async def generate_masks_batch(name: str, request: MaskGenerateBatchRequest):
+    """Start a backend-owned mask-generation task (queued on the GPU lane)."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    task = task_manager.create(
+        type="mask_generate_batch", title=f"Masks · {name}",
+        total=len(request.image_rel_paths), dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_mask_generate_batch(
+            tid, dataset_name=name, image_rel_paths=request.image_rel_paths,
+            model_id=request.model_id, params=request.params,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}
+
+
+@router.post("/datasets/{name}/masking/apply/batch")
+async def apply_masks_batch(name: str, opacity: float = 0.0, overwrite: bool = False):
+    """Start a backend-owned mask-apply task (queued on the GPU lane)."""
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+
+    masks_dir = Path(dataset.path) / "masks"
+    total = 0
+    if masks_dir.is_dir():
+        total = len([f for f in masks_dir.iterdir() if f.suffix.lower() == ".png"])
+
+    task = task_manager.create(
+        type="mask_apply_batch", title=f"Apply masks · {name}",
+        total=total, dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_mask_apply_batch(
+            tid, dataset_name=name, opacity=opacity, overwrite=overwrite,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}

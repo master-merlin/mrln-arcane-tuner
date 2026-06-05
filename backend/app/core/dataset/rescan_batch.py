@@ -88,6 +88,8 @@ def run_rescan_batch(
             n = _dataset_file_count(name)
             base = done
 
+            # scan_dataset calls progress_cb(cur, tot, fname) per file; we offset
+            # the dataset-local cur by `base` to keep one continuous global bar.
             def progress_cb(cur, tot, fname, _base=base, _name=name):
                 task_manager.update(
                     task_id,
@@ -107,6 +109,9 @@ def run_rescan_batch(
                     task_id=task_id, dataset=name, error=str(exc),
                 )
 
+            # Advance even on failure so the bar doesn't stall. Note the
+            # asymmetry: `ok` counts files (in succeeded datasets), `failed`
+            # counts datasets — so on a failed dataset `current` still moves by n.
             done += n
             task_manager.update(task_id, current=done, ok=ok, failed=failed)
 

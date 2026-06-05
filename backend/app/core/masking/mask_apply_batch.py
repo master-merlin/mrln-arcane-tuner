@@ -56,6 +56,9 @@ def _reconcile_has_masked(dataset_name: str) -> None:
 
     dataset = dm.get_dataset(dataset_name)
     if dataset is None:
+        # Unreachable in normal flow (_dataset_path already verified existence);
+        # logs a race where the dataset is removed mid-apply.
+        logger.warning("mask_apply_reconcile_dataset_not_found", dataset=dataset_name)
         return
     masked_dir = os.path.join(dataset.path, "masked")
     masked_stems: set[str] = set()

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, EventEmitter, inject, input, Output, signal, effect, computed } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output, signal, effect, computed } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../../../icons/ico.component';
 import { DatasetService } from '../../../../services/dataset';
@@ -199,14 +199,14 @@ export class ModelRestorePanelComponent {
     targetScale = input<number>(2);
     resizeMethod = input<string>('lanczos');
 
-    @Output() enableChanged = new EventEmitter<boolean>();
-    @Output() folderChanged = new EventEmitter<string>();
-    @Output() modelChanged = new EventEmitter<string | null>();
-    @Output() strengthChanged = new EventEmitter<number>();
-    @Output() tileSizeChanged = new EventEmitter<number>();
-    @Output() faceOnlyChanged = new EventEmitter<boolean>();
-    @Output() targetScaleChanged = new EventEmitter<number>();
-    @Output() resizeMethodChanged = new EventEmitter<string>();
+    enableChanged = output<boolean>();
+    folderChanged = output<string>();
+    modelChanged = output<string | null>();
+    strengthChanged = output<number>();
+    tileSizeChanged = output<number>();
+    faceOnlyChanged = output<boolean>();
+    targetScaleChanged = output<number>();
+    resizeMethodChanged = output<string>();
 
     private datasets = inject(DatasetService);
     private downloads = inject(ModelDownloadStore);

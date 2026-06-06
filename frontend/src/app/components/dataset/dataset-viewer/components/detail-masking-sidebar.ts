@@ -1,4 +1,4 @@
-import { Component, input, output, inject, signal } from '@angular/core';
+import { Component, input, output, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { DatasetMaskingSettingsComponent, MaskingSettingsState } from '../../dataset-masking-settings/dataset-masking-settings';
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
@@ -7,6 +7,7 @@ import { ToastService } from '../../../../services/toast';
 @Component({
     selector: 'app-detail-masking-sidebar',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'w-80 h-full flex flex-col' },
     imports: [DatasetMaskingSettingsComponent, DecimalPipe],
     template: `

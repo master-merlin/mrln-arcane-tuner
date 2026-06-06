@@ -1,4 +1,4 @@
-import { Component, OnInit, ElementRef, viewChild, signal, inject, effect, input, computed, DestroyRef } from '@angular/core';
+import { Component, OnInit, ElementRef, viewChild, signal, inject, effect, input, computed, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ToastService } from '../../../services/toast';
@@ -40,6 +40,7 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
 @Component({
     selector: 'app-live-log-viewer',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [IcoComponent],
     template: `
     <div class="card log-card">

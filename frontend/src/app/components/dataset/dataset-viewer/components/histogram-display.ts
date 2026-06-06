@@ -1,9 +1,10 @@
-import { Component, input, ElementRef, ViewChild, effect } from '@angular/core';
+import { Component, input, ElementRef, ViewChild, effect, ChangeDetectionStrategy } from '@angular/core';
 import { HistogramData } from '../../../../services/dataset';
 
 @Component({
     selector: 'app-histogram-display',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [],
     template: `
     <div class="flex flex-col gap-2">

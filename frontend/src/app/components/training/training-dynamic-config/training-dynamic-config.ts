@@ -1,4 +1,4 @@
-import { Component, output, input, inject, signal, computed, effect, DestroyRef, ViewChild } from '@angular/core';
+import { Component, ChangeDetectionStrategy, output, input, inject, signal, computed, effect, DestroyRef, ViewChild } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
 import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, FormsModule, type AbstractControl, type ValidationErrors } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
@@ -50,6 +50,7 @@ export interface TrainingSegment {
 @Component({
   selector: 'app-training-dynamic-config',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent, ModelSourceConfigComponent],
   template: `
     @if (schema()) {

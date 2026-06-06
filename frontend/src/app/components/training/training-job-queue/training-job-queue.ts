@@ -1,4 +1,4 @@
-﻿import { Component, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
+﻿import { Component, ChangeDetectionStrategy, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { JobService, Job, JobStatus, type JobSample, type TrainingConfig } from '../../../services/job';
@@ -23,6 +23,7 @@ import type { JobConfigData } from '../../../modals/job-config/job-config.compon
 @Component({
   selector: 'app-training-job-queue',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [DatePipe, NgTemplateOutlet, FormsModule],
   templateUrl: './training-job-queue.html',
   styleUrl: './training-job-queue.css'

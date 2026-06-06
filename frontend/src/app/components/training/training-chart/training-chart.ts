@@ -1,5 +1,5 @@
 import {
-    Component, AfterViewInit, OnDestroy, ElementRef, ViewChild,
+    Component, ChangeDetectionStrategy, AfterViewInit, OnDestroy, ElementRef, ViewChild,
     ViewEncapsulation, input, output, effect
 } from '@angular/core';
 import uPlot from 'uplot';
@@ -17,6 +17,7 @@ export interface ChartDataPoint {
 @Component({
     selector: 'app-training-chart',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
     <div class="training-chart-wrap">
       <div #chartContainer class="uplot-container"></div>

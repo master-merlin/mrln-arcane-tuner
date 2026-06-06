@@ -1,4 +1,4 @@
-import { Component, input, output, signal } from '@angular/core';
+import { Component, input, output, signal, ChangeDetectionStrategy } from '@angular/core';
 
 export interface HSLRangeAdjustment {
     hue_shift: number;
@@ -20,6 +20,7 @@ interface HSLRange {
 @Component({
     selector: 'app-hsl-panel',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [],
     template: `
     <div class="flex flex-col gap-3">

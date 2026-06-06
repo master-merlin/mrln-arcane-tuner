@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, OnInit, OnDestroy, signal } from '@angular/core';
+import { Component, computed, effect, inject, OnInit, OnDestroy, signal, ChangeDetectionStrategy } from '@angular/core';
 import { SystemService } from '../../../services/system.service';
 import { JobStore } from '../../../state/job.store';
 import { Job, JobStatus } from '../../../services/job';
@@ -33,6 +33,7 @@ const HISTORY_CAP = 80;
 @Component({
     selector: 'app-system-monitor',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'sys-rail' },
     imports: [SparklineComponent],
     template: `

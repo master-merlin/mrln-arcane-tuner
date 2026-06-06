@@ -1,4 +1,4 @@
-import { Component, inject, input, signal, OnDestroy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject, input, signal, OnDestroy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
@@ -75,6 +75,7 @@ export interface LoraResizeResult {
 @Component({
     selector: 'app-lora-tools',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule],
     template: `
     <div class="space-y-4 animate-in fade-in duration-300">

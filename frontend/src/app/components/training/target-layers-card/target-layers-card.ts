@@ -1,4 +1,4 @@
-﻿import { Component, input, inject, OnInit, signal, computed, effect } from '@angular/core';
+﻿import { Component, input, inject, OnInit, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ModelService } from '../../../services/model.service';
 import { ModelCapabilities, BlockTopologyGroup } from '../../../services/model-capabilities.service';
@@ -32,6 +32,7 @@ export interface BlockGroupNode {
 @Component({
   selector: 'app-target-layers-card',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, FormsModule],
   template: `
     <div class="bg-surface-mid/30 border border-surface-mid rounded-theme-xl overflow-hidden mt-4">
@@ -138,7 +139,7 @@ export interface BlockGroupNode {
                <!-- Group Level (e.g. double_blocks) -->
                <div class="flex flex-col mb-2 bg-surface-base/50 rounded-theme-md border border-surface-high overflow-hidden">
                    <div class="flex items-center gap-3 p-2 hover:bg-surface-mid/50 transition-colors">
-                       <button type="button" (click)="group.expanded = !group.expanded" class="p-1 text-text-subtle hover:text-white transition-colors">
+                       <button type="button" (click)="toggleGroupExpanded(group)" class="p-1 text-text-subtle hover:text-white transition-colors">
                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                                 class="transition-transform duration-200" [class.rotate-90]="group.expanded">
                              <polyline points="9 18 15 12 9 6"></polyline>
@@ -182,7 +183,7 @@ export interface BlockGroupNode {
                            @for (inst of group.instances; track inst.index) {
                                <div class="flex flex-col border-b border-surface-high/50 last:border-0">
                                    <div class="flex items-center gap-3 p-2 pl-8 hover:bg-surface-mid/30 transition-colors">
-                                       <button type="button" (click)="inst.expanded = !inst.expanded" class="p-1 text-text-subtle hover:text-white transition-colors">
+                                       <button type="button" (click)="toggleInstanceExpanded(inst)" class="p-1 text-text-subtle hover:text-white transition-colors">
                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                                                 class="transition-transform duration-200" [class.rotate-90]="inst.expanded">
                                              <polyline points="9 18 15 12 9 6"></polyline>
@@ -496,6 +497,26 @@ export class TargetLayersCardComponent implements OnInit {
 
   // --- Toggles ---
 
+  /**
+   * Commit in-place tree mutations to the signal by bumping its array reference.
+   * The node objects are mutated directly (selection/expand cascades read & write
+   * the same instances), so under OnPush we must re-publish the signal to refresh
+   * `filteredTree` and the view — events alone don't cover the async import path.
+   */
+  private commitTree() {
+    this.tree.set([...this.tree()]);
+  }
+
+  toggleGroupExpanded(group: BlockGroupNode) {
+    group.expanded = !group.expanded;
+    this.commitTree();
+  }
+
+  toggleInstanceExpanded(inst: BlockInstanceNode) {
+    inst.expanded = !inst.expanded;
+    this.commitTree();
+  }
+
   private updateCascadingState(tree: BlockGroupNode[]) {
     for (const group of tree) {
       let groupAll = true;
@@ -535,6 +556,7 @@ export class TargetLayersCardComponent implements OnInit {
     }
     this.updateCascadingState(this.tree());
     this.syncStateToControl();
+    this.commitTree();
   }
 
   toggleInstance(group: BlockGroupNode, inst: BlockInstanceNode) {
@@ -546,12 +568,14 @@ export class TargetLayersCardComponent implements OnInit {
     }
     this.updateCascadingState(this.tree());
     this.syncStateToControl();
+    this.commitTree();
   }
 
   toggleLayer(group: BlockGroupNode, inst: BlockInstanceNode, layer: LayerNode) {
     layer.selected = !layer.selected;
     this.updateCascadingState(this.tree());
     this.syncStateToControl();
+    this.commitTree();
   }
 
   toggleFilteringMode() {
@@ -581,6 +605,7 @@ export class TargetLayersCardComponent implements OnInit {
       // (If they hadn't touched it, it will sync [] meaning everything is checked).
       this.syncStateToControl();
     }
+    this.commitTree();
   }
 
   selectAll() {
@@ -788,6 +813,7 @@ export class TargetLayersCardComponent implements OnInit {
 
         this.updateCascadingState(tree);
         this.syncStateToControl();
+        this.commitTree();
 
         if (matchCount > 0) {
           this.toast.success(`Imported ${moduleNames.length} modules â€” ${matchCount} layers selected`);
@@ -819,6 +845,7 @@ export class TargetLayersCardComponent implements OnInit {
 
         this.updateCascadingState(tree);
         this.syncStateToControl();
+        this.commitTree();
 
         if (matchCount > 0) {
           this.toast.success(`Imported ${moduleNames.length} modules â€” ${matchCount} layers selected`);

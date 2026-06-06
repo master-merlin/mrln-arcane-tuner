@@ -1,4 +1,4 @@
-import { Component, input, output, inject, signal, OnInit, DestroyRef } from '@angular/core';
+import { Component, ChangeDetectionStrategy, input, output, inject, signal, OnInit, DestroyRef } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { TitleCasePipe } from '@angular/common';
@@ -26,6 +26,7 @@ interface CheckpointInspectResponse {
 @Component({
   selector: 'app-dynamic-form-field',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, TitleCasePipe],
   host: { 'class': 'contents' },
   template: `

@@ -1,10 +1,11 @@
-import { Component, computed, input, signal } from '@angular/core';
+import { Component, ChangeDetectionStrategy, computed, input, signal } from '@angular/core';
 import { VRAMReport } from '../../../services/system.service';
 import { vramBreakdownParts } from '../vram-breakdown';
 
 @Component({
   selector: 'app-vram-budget-card',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="card" data-testid="vram-budget-card">
       <div class="card-head cursor-pointer select-none" (click)="toggleCollapsed()">

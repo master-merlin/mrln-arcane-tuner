@@ -1,4 +1,4 @@
-import { Component, ElementRef, effect, input, output, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, effect, input, output, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
@@ -23,6 +23,7 @@ export interface GridCropRequest {
 @Component({
     selector: 'app-viewer-grid-view',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule, StatePillsComponent],
     host: { class: 'flex-1 flex flex-col overflow-hidden' },
     template: `

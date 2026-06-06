@@ -1,4 +1,4 @@
-import { Component, input, output, inject, effect } from '@angular/core';
+import { Component, input, output, inject, effect, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { TitleCasePipe, DatePipe } from '@angular/common';
 import { ReactiveFormsModule, FormArray, FormGroup, FormControl, AbstractControl } from '@angular/forms';
 import { DatasetService, Dataset } from '../../../services/dataset';
@@ -12,6 +12,7 @@ import { SchemaNode, SchemaProp } from '../schema-node';
 @Component({
   selector: 'app-dynamic-form-group',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [TitleCasePipe, DatePipe, ReactiveFormsModule, DynamicFormFieldComponent, StatePillsComponent],
   host: { 'class': 'contents' },
   template: `
@@ -326,6 +327,7 @@ export class DynamicFormGroupComponent {
   private datasetStore = inject(DatasetStore);
   // Media base URL for per-dataset thumbnails (mirrors the dataset library card).
   private rtc = inject(RuntimeConfigService);
+  private cdr = inject(ChangeDetectorRef);
   availableDatasets: string[] = [];
   private _allDatasetNames: string[] = [];
   /** name → full Dataset, for the per-row thumbnail / meta / H·C·M pills. */
@@ -566,6 +568,9 @@ export class DynamicFormGroupComponent {
       this.arrayItemAdded.emit({ key: this.fieldKey(), schemaParam: this.schema().items });
       setTimeout(() => {
         array.at(array.length - 1).setValue(res);
+        // OnPush: the async setValue isn't tied to a template event or signal,
+        // so nudge CD to refresh the preset-selected state and custom-list filter.
+        this.cdr.markForCheck();
       });
     }
   }

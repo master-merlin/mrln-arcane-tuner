@@ -1,4 +1,4 @@
-import { Component, input, output, model, inject, signal, computed, effect } from '@angular/core';
+import { Component, input, output, model, inject, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
@@ -8,6 +8,7 @@ import { ToastService } from '../../../../services/toast';
 @Component({
     selector: 'app-detail-caption-sidebar',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'w-80 h-full flex flex-col' },
     imports: [FormsModule, DatasetCaptionSettingsComponent],
     template: `

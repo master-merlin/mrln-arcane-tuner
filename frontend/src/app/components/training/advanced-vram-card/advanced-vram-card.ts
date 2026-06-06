@@ -1,4 +1,4 @@
-import { Component, input, output, signal, inject } from '@angular/core';
+import { Component, ChangeDetectionStrategy, input, output, signal, inject } from '@angular/core';
 import { ModelService } from '../../../services/model.service';
 import { BlockTopologyGroup, ModelCapabilities } from '../../../services/model-capabilities.service';
 import { ToastService } from '../../../services/toast';
@@ -6,6 +6,7 @@ import { ToastService } from '../../../services/toast';
 @Component({
   selector: 'app-advanced-vram-card',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div data-testid="advanced-vram-card">
       <div class="flex items-center justify-between cursor-pointer select-none"

@@ -1,4 +1,4 @@
-import { Component, input, output, inject, signal, computed, OnInit, effect } from '@angular/core';
+import { Component, ChangeDetectionStrategy, input, output, inject, signal, computed, OnInit, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ToastService } from '../../../services/toast';
 import { TemplateService, Template } from '../../../services/template.service';
@@ -9,6 +9,7 @@ import type { ModelDefinition } from '../../../screens/training-screen/training-
 @Component({
   selector: 'app-training-template-selector',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [FormsModule, TemplateInfoCardComponent],
   template: `
     <section class="card mb-3.5">

@@ -1,4 +1,4 @@
-import { Component, input, output, signal, computed, ElementRef, ViewChild, effect, AfterViewInit } from '@angular/core';
+import { Component, input, output, signal, computed, ElementRef, ViewChild, effect, AfterViewInit, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CurvePoint, HistogramData } from '../../../../services/dataset';
 
@@ -22,6 +22,7 @@ const PRESETS: CurvePreset[] = [
 @Component({
     selector: 'app-curves-editor',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule],
     template: `
     <div class="flex flex-col gap-3">

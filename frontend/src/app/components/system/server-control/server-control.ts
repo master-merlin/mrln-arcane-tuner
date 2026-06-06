@@ -1,4 +1,4 @@
-import { Component, inject, signal, OnInit, effect } from '@angular/core';
+import { Component, inject, signal, OnInit, effect, ChangeDetectionStrategy } from '@angular/core';
 import { ToastService } from '../../../services/toast';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
@@ -34,6 +34,7 @@ interface ModelGlobalSettings {
 @Component({
     selector: 'app-server-control',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule, IcoComponent],
     template: `
     <div class="server-settings-grid">

@@ -1,9 +1,10 @@
-import { Component, effect, input, output, signal } from '@angular/core';
+import { Component, ChangeDetectionStrategy, effect, input, output, signal } from '@angular/core';
 import { PanZoomDirective } from '../../../../workspace/shared/pan-zoom.directive';
 import type { DatasetPair } from '../../../../services/dataset';
 
 @Component({
     selector: 'app-detail-media-container',
+    changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'flex-1 flex flex-col overflow-hidden bg-base' },
     imports: [PanZoomDirective],
     template: `

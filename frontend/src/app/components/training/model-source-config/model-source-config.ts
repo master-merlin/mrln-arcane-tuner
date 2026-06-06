@@ -1,4 +1,4 @@
-import { Component, input, output, inject, signal, computed, OnInit, effect } from '@angular/core';
+import { Component, ChangeDetectionStrategy, input, output, inject, signal, computed, OnInit, effect } from '@angular/core';
 import { UpperCasePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ToastService } from '../../../services/toast';
@@ -13,6 +13,7 @@ import { RegistryStore } from '../../../state/registry.store';
 @Component({
   selector: 'app-model-source-config',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [FormsModule, UpperCasePipe],
   template: `
     <!-- Backdrop -->

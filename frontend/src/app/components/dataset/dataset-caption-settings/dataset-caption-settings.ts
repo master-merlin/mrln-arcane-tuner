@@ -1,5 +1,5 @@
 
-import { Component, OnInit, inject, signal, computed, input, output, effect, untracked } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, input, output, effect, untracked, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
@@ -55,6 +55,7 @@ export interface CaptionSettingsState {
 @Component({
     selector: 'app-dataset-caption-settings',
     standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule],
     template: `
         <div class="space-y-3 animate-fadeIn">

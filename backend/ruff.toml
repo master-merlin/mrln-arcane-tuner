@@ -1,0 +1,10 @@
+# Ruff configuration for the MRLN Arcane Tuner backend.
+#
+# Rule selection is intentionally left at Ruff's defaults (E4/E7/E9 + F) — this
+# file exists only to carve out vendored code from linting.
+#
+# `**/vendor` holds third-party model implementations (DiT / transformer code)
+# vendored verbatim from their upstream repos and refreshed via each family's
+# `vendor/_refresh.py`. We track it as-is and must not reformat or relint it,
+# so its upstream style (e.g. `lambda` assignments) is not our concern.
+extend-exclude = ["**/vendor"]

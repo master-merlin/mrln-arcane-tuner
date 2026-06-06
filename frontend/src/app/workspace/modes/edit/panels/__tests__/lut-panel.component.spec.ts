@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { of, throwError } from 'rxjs';
+import { of, throwError, NEVER } from 'rxjs';
 import { LutPanelComponent } from '../lut-panel.component';
 import { PipelineEditorState } from '../../pipeline-editor.state';
 import { OverlayStore } from '../../../../../state/overlay.store';
@@ -16,7 +16,13 @@ class StubToastService {
     error   = jasmine.createSpy('error');
 }
 function makeWsMock() {
-    return { entityChanged: signal(null), reconnected: signal(0) } as unknown as WebSocketService;
+    // `on()` is needed because this spec builds a component tree that
+    // transitively constructs TaskStore, which subscribes via ws.on().
+    return {
+        entityChanged: signal(null),
+        reconnected: signal(0),
+        on: () => NEVER,
+    } as unknown as WebSocketService;
 }
 
 describe('LutPanelComponent.exportStack', () => {

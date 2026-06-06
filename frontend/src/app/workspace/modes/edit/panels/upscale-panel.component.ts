@@ -45,9 +45,9 @@ import { UpscaleParams } from '../operation-defs';
 export class UpscalePanelComponent {
     private state = inject(PipelineEditorState);
     protected op = computed(() => this.state.upscale());
-    set(field: string, value: any): void {
+    set(field: string, value: unknown): void {
         if (field === 'enabled') {
-            this.state.upscale.update(o => ({ ...o, enabled: value }));
+            this.state.upscale.update(o => ({ ...o, enabled: value as boolean }));
         } else {
             this.state.upscale.update(o => ({ ...o, enabled: true, params: { ...o.params, [field]: value } as UpscaleParams }));
         }

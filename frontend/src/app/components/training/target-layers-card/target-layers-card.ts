@@ -319,7 +319,7 @@ export class TargetLayersCardComponent implements OnInit {
         this.topology.set(caps.block_topology || []);
         this.buildTree();
       },
-      error: (err: any) => {
+      error: (err: unknown) => {
         console.error('Failed to load capabilities', err);
       }
     });
@@ -337,7 +337,7 @@ export class TargetLayersCardComponent implements OnInit {
         this.toast.success('Successfully scanned target layers.');
         this.buildTree();
       },
-      error: (err: any) => {
+      error: () => {
         this.isScanning.set(false);
         this.toast.error('Failed to scan model modules.');
       }
@@ -654,7 +654,7 @@ export class TargetLayersCardComponent implements OnInit {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) {
-          moduleNames = parsed.map((m: any) => String(m).trim()).filter(Boolean);
+          moduleNames = parsed.map((m: unknown) => String(m).trim()).filter(Boolean);
         }
       } catch {
         // Fall back to comma-separated

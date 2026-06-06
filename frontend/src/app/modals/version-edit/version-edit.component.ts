@@ -187,8 +187,9 @@ export class VersionEditModalComponent {
             d.onSaved?.(res.version);
             this.toast.success(`Version set to ${res.version}`);
             this.overlay.closeModal();
-        } catch (err: any) {
-            const msg = err?.error?.detail ?? err?.message ?? 'Failed to set version';
+        } catch (err: unknown) {
+            const e = err as { error?: { detail?: string }; message?: string };
+            const msg = e?.error?.detail ?? e?.message ?? 'Failed to set version';
             this.errorMessage.set(msg);
             this.toast.error(`Failed to set version: ${msg}`);
             this.inFlight.set(false);

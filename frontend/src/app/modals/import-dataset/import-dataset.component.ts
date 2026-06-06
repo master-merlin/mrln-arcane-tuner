@@ -153,13 +153,18 @@ export class ImportDatasetModalComponent {
             this.toast.success(`Imported "${ds.name}".`);
             await this.datasets.loadAll().catch(() => undefined);
             this.overlay.closeModal();
-        } catch (err: any) {
-            const detail = err?.error?.detail;
-            if (err?.status === 409 && detail?.conflict) {
+        } catch (err: unknown) {
+            const e = err as { status?: number; message?: string; error?: { detail?: unknown } };
+            const detail = e?.error?.detail;
+            const detailObj = detail && typeof detail === 'object'
+                ? detail as { conflict?: boolean; name?: string; message?: string }
+                : null;
+            if (e?.status === 409 && detailObj?.conflict) {
                 // Switch the modal into collision-prompt mode and let the user choose.
-                this.conflictName.set(detail.name);
+                this.conflictName.set(detailObj.name ?? '');
             } else {
-                this.toast.error('Import failed: ' + (detail?.message || detail || err?.message || 'unknown error'));
+                const msg = detailObj?.message || (typeof detail === 'string' ? detail : null) || e?.message || 'unknown error';
+                this.toast.error('Import failed: ' + msg);
             }
         } finally {
             this.submitting.set(false);

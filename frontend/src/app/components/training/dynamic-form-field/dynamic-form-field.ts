@@ -8,6 +8,21 @@ import { ToastService } from '../../../services/toast';
 import type { TrainingConfig } from '../../../services/job';
 import { SchemaNode } from '../schema-node';
 
+/** `GET /filesystem/browse` — directory listing for the path-picker dialog. */
+interface BrowseResponse {
+  path: string;
+  parent: string;
+  entries: { name: string; path: string; type: string }[];
+}
+
+/** `GET /checkpoints/inspect` — checkpoint validity + its embedded training config. */
+interface CheckpointInspectResponse {
+  valid: boolean;
+  error?: string;
+  config?: TrainingConfig;
+  global_step?: number;
+}
+
 @Component({
   selector: 'app-dynamic-form-field',
   standalone: true,
@@ -310,7 +325,7 @@ export class DynamicFormFieldComponent implements OnInit {
   }
 
   browseNavigate(path: string) {
-    this.http.get<any>(`${this.rtc.apiUrl}/filesystem/browse`, { params: { path } }).subscribe({
+    this.http.get<BrowseResponse>(`${this.rtc.apiUrl}/filesystem/browse`, { params: { path } }).subscribe({
       next: (result) => {
         this.browsePath.set(result.path);
         this.browseParent.set(result.parent);
@@ -335,7 +350,7 @@ export class DynamicFormFieldComponent implements OnInit {
     const checkpointPath = this.control().value;
     if (!checkpointPath) return;
 
-    this.http.get<any>(`${this.rtc.apiUrl}/checkpoints/inspect`, {
+    this.http.get<CheckpointInspectResponse>(`${this.rtc.apiUrl}/checkpoints/inspect`, {
       params: { path: checkpointPath }
     }).subscribe({
       next: (result) => {

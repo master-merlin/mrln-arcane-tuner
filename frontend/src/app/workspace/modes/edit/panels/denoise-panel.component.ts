@@ -43,9 +43,9 @@ import { RestoreParams } from '../operation-defs';
 export class DenoisePanelComponent {
     private state = inject(PipelineEditorState);
     protected op = computed(() => this.state.denoise());
-    set(field: string, value: any): void {
+    set(field: string, value: unknown): void {
         if (field === 'enabled') {
-            this.state.denoise.update(o => ({ ...o, enabled: value }));
+            this.state.denoise.update(o => ({ ...o, enabled: value as boolean }));
         } else {
             this.state.denoise.update(o => ({ ...o, enabled: true, params: { ...o.params, [field]: value } as RestoreParams }));
         }

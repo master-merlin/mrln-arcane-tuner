@@ -222,17 +222,20 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         this._bestLossVal = minLoss === Infinity ? null : minLoss;
         this._bestLossStep = minLoss === Infinity ? null : minStep;
 
-        const bestDummy = Array(currentData.length).fill(null);
+        const bestDummy: (number | null)[] = Array(currentData.length).fill(null);
 
+        // One cast at the uPlot boundary: the series are plain (number|null)[]
+        // (+ a Float64Array x-axis), which uPlot accepts at runtime but its
+        // `AlignedData` tuple type doesn't structurally infer from the literal.
         if (prodigy) {
             // Prodigy: 5 data slots — no grad norm at all
             const dEstimate = currentData.map(d => d.d_estimate ?? null);
-            return [steps, smoothedLoss as any, rawLoss as any, bestDummy as any, dEstimate as any];
+            return [steps, smoothedLoss, rawLoss, bestDummy, dEstimate] as unknown as uPlot.AlignedData;
         } else {
             // AdamW: 6 data slots — includes grad norm
             const lr = currentData.map(d => d.lr);
             const gradNorm = currentData.map(d => d.grad_norm ?? null);
-            return [steps, smoothedLoss as any, rawLoss as any, bestDummy as any, lr as any, gradNorm as any];
+            return [steps, smoothedLoss, rawLoss, bestDummy, lr, gradNorm] as unknown as uPlot.AlignedData;
         }
     }
 

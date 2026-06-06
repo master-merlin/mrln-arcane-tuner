@@ -45,9 +45,9 @@ import { RestoreParams } from '../operation-defs';
 export class FaceRestorePanelComponent {
     private state = inject(PipelineEditorState);
     protected op = computed(() => this.state.faceRestore());
-    set(field: string, value: any): void {
+    set(field: string, value: unknown): void {
         if (field === 'enabled') {
-            this.state.faceRestore.update(o => ({ ...o, enabled: value }));
+            this.state.faceRestore.update(o => ({ ...o, enabled: value as boolean }));
         } else {
             this.state.faceRestore.update(o => ({ ...o, enabled: true, params: { ...o.params, [field]: value } as RestoreParams }));
         }

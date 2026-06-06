@@ -274,8 +274,9 @@ export class SimilarImagesModalComponent implements OnInit {
                 this.deleting.set(null);
                 this.overlay.closeModal();
             },
-            error: (err: any) => {
-                this.toast.error(`Delete failed: ${err.error?.detail || err.message}`);
+            error: (err: unknown) => {
+                const e = err as { error?: { detail?: string }; message?: string };
+                this.toast.error(`Delete failed: ${e.error?.detail || e.message}`);
                 this.deleting.set(null);
             },
         });

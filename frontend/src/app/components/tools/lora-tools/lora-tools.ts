@@ -646,7 +646,7 @@ export class LoraToolsComponent implements OnDestroy {
             const splineFn = (uPlot as any).paths?.spline;
             const splineBuilder = typeof splineFn === 'function' ? splineFn() : undefined;
 
-            const seriesConfig: any = {
+            const seriesConfig: uPlot.Series = {
                 label: 'Norm',
                 stroke: `rgba(${brandRGB}, 0.9)`,
                 width: 2,

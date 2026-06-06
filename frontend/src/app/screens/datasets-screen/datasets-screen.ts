@@ -892,7 +892,7 @@ export class DatasetsScreen {
                         this.finalizeUpload(name, completed, failed);
                     }
                 },
-                error: (err: any) => {
+                error: (err: unknown) => {
                     failed++;
                     console.error('[datasets-screen] upload failed', file.name, err);
                     if (completed + failed === list.length) {
@@ -910,9 +910,10 @@ export class DatasetsScreen {
             // and the grid + workspace pick them up.
             this.datasetsApi.scanDataset(name, false).subscribe({
                 next: () => void this.datasets.loadAll().catch(() => undefined),
-                error: (err: any) => this.toast.error(
-                    'Rescan after upload failed: ' + (err.error?.detail || err.message),
-                ),
+                error: (err: unknown) => {
+                    const e = err as { error?: { detail?: string }; message?: string };
+                    this.toast.error('Rescan after upload failed: ' + (e.error?.detail || e.message));
+                },
             });
         }
         if (failed > 0) {

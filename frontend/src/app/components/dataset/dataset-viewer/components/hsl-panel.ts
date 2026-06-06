@@ -106,11 +106,11 @@ export class HSLPanelComponent {
         this.activeRange.set(key);
     }
 
-    getAdj(field: string): number {
+    getAdj(field: keyof HSLRangeAdjustment): number {
         const config = this.hslConfig();
         const range = config[this.activeRange()];
         if (!range) return 0;
-        return (range as any)[field] ?? 0;
+        return range[field] ?? 0;
     }
 
     onSlider(field: string, event: Event): void {

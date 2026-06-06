@@ -216,7 +216,7 @@ export class LiveLogViewerComponent implements OnInit {
         this.fetchLogs().subscribe(logs => this.logs.set(logs));
 
         // Subscribe to real-time logs
-        this.wsService.on<any>('server_log').pipe(
+        this.wsService.on<{ message: string }>('server_log').pipe(
             takeUntilDestroyed(this.destroyRef),
         ).subscribe(payload => {
             // payload.message is the raw JSON string from structlog

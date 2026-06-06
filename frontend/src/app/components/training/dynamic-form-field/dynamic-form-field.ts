@@ -280,7 +280,8 @@ export class DynamicFormFieldComponent implements OnInit {
     if (propSchema.backend_map) {
       const backendMap = propSchema.backend_map;
       const backend = this.currentBackend();
-      const supportedSchemes = backendMap[backend] || [];
+      const rawSchemes = backendMap[backend];
+      const supportedSchemes = Array.isArray(rawSchemes) ? rawSchemes : (rawSchemes?.schemes || []);
 
       return defaultOptions.map((opt: { value: string, label: string, disabled: boolean }) => {
         if (opt.value === 'none' || opt.value === 'bf16') {

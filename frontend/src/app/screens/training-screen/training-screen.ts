@@ -21,6 +21,7 @@ import { DatasetStore } from '../../state/dataset.store';
 import { ScopeStore } from '../../state/scope.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { JobService, type TrainingEstimate, type TrainingConfig } from '../../services/job';
+import type { SchemaNode } from '../../components/training/schema-node';
 import { ToastService } from '../../services/toast';
 
 interface ModelDefinition {
@@ -72,7 +73,7 @@ export class TrainingScreen {
     private configEditor = viewChild(TrainingDynamicConfigComponent);
 
     protected availableModels = signal<ModelDefinition[]>([]);
-    protected currentSchema = signal<unknown>(null);
+    protected currentSchema = signal<SchemaNode | undefined>(undefined);
 
     /** Config segments emitted by the dynamic config form (DOM order). */
     protected segments = signal<TrainingSegment[]>([]);
@@ -216,8 +217,8 @@ export class TrainingScreen {
      * form's Model Selection segment — so it is fetched once.
      */
     protected loadSchema(): void {
-        this.http.get(`${this.rtc.apiUrl}/plugins/${this.pluginId}/schema?t=${Date.now()}`).subscribe({
-            next: (s: unknown) => this.currentSchema.set(s),
+        this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${this.pluginId}/schema?t=${Date.now()}`).subscribe({
+            next: (s) => this.currentSchema.set(s),
             error: (err: { message?: string }) =>
                 this.toast.error('Failed to load training schema: ' + (err?.message ?? 'unknown error')),
         });

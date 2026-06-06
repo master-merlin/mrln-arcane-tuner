@@ -41,8 +41,9 @@ export interface SchemaNode {
   depends_on?: string;
   disabled_if?: Record<string, unknown>;
   hidden_if?: Record<string, unknown>;
-  /** backend name → schemes that backend supports (e.g. quantization). */
-  backend_map?: Record<string, string[]>;
+  /** backend name → schemes that backend supports (e.g. quantization). Values
+   *  are usually a plain scheme list, but some schemas wrap them as `{schemes}`. */
+  backend_map?: Record<string, string[] | { schemes?: string[] }>;
 
   // Composition
   items?: SchemaNode;

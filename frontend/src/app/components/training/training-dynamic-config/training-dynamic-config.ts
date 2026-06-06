@@ -7,7 +7,7 @@ import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
-import { JobService, type TrainingEstimate } from '../../../services/job';
+import { JobService, type TrainingEstimate, type TrainingConfig } from '../../../services/job';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
@@ -24,13 +24,14 @@ import { TargetLayersCardComponent } from '../target-layers-card/target-layers-c
 import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
+import { SchemaNode, SchemaProp } from '../schema-node';
 
 export interface TrainingTemplate {
   id: string;
   name: string;
   definition_id: string; // Scoped to model definition
   is_default?: boolean;
-  config: any;
+  config: TrainingConfig;
 }
 
 /**
@@ -524,10 +525,10 @@ export interface TrainingSegment {
   styleUrl: 'training-dynamic-config.css'
 })
 export class TrainingDynamicConfigComponent {
-  schema = input<any>(); // JSON Schema
+  schema = input<SchemaNode>(); // JSON Schema
   availableModels = input<any[]>([]); // New input for model list
   projectId = input<string | null>(null); // Passed down to components
-  configSubmitted = output<any>();
+  configSubmitted = output<TrainingConfig>();
 
   private fb = inject(FormBuilder);
   private http = inject(HttpClient);
@@ -558,10 +559,10 @@ export class TrainingDynamicConfigComponent {
   defaultModelPath = signal('');
 
   form: FormGroup = new FormGroup({});
-  properties = signal<{ key: string, schema: any }[]>([]);
-  groups = signal<{ name: string, props: { key: string, schema: any }[] }[]>([]);
-  modelSelectionProps = signal<{ key: string, schema: any }[]>([]);
-  nestedItemPropsMap = signal<Record<string, { key: string, schema: any }[]>>({});
+  properties = signal<SchemaProp[]>([]);
+  groups = signal<{ name: string, props: SchemaProp[] }[]>([]);
+  modelSelectionProps = signal<SchemaProp[]>([]);
+  nestedItemPropsMap = signal<Record<string, SchemaProp[]>>({});
 
   // Collapsible groups — ENGINE starts collapsed
   collapsedGroups = signal<Set<string>>(new Set(['Advanced Engine', 'Sampling', 'Expert Features']));
@@ -1027,7 +1028,7 @@ export class TrainingDynamicConfigComponent {
 
   // --- Template Logic ---
 
-  onTemplateApplied(event: { config: any, isDefault: boolean, definitionId?: string, auto?: boolean }) {
+  onTemplateApplied(event: { config: TrainingConfig, isDefault: boolean, definitionId?: string, auto?: boolean }) {
     // The selector fires a one-time `auto` apply on load so the estimate wall
     // reflects the active template. A Jobs-screen handoff (Reload / Save
     // template) takes precedence — if one already landed, ignore the auto apply
@@ -1064,7 +1065,7 @@ export class TrainingDynamicConfigComponent {
 
   resetFormToDefaults() {
     const schema = this.schema();
-    const props = schema.properties || {};
+    const props = schema?.properties || {};
 
     Object.keys(this.form.controls).forEach(key => {
       if (key === 'definition_id') return;
@@ -1075,8 +1076,8 @@ export class TrainingDynamicConfigComponent {
       if (propSchema.type === 'array') {
         const formArray = control as FormArray;
         formArray.clear();
-        const defaults = propSchema.default || [];
-        defaults.forEach((d: any) => {
+        const defaults = Array.isArray(propSchema.default) ? propSchema.default : [];
+        defaults.forEach(() => {
           this.addArrayItem(key, propSchema.items);
         });
         if (this.isPrimitiveArray(key)) {
@@ -1127,7 +1128,7 @@ export class TrainingDynamicConfigComponent {
     return this.form.get(key) as FormControl<string[]>;
   }
 
-  getSchemaForKey(key: string, parent: any): any {
+  getSchemaForKey(key: string, parent?: unknown): SchemaNode | null {
     const prop = this.properties().find(p => p.key === key);
     if (prop) return prop.schema;
     return null;
@@ -1135,7 +1136,7 @@ export class TrainingDynamicConfigComponent {
 
   // --- External Config Import (from Job Queue) ---
 
-  importTemplate(name: string, config: any, definitionId: string) {
+  importTemplate(name: string, config: TrainingConfig, definitionId: string) {
     this._externalConfigApplied = true;
     if (this.templateSelector) {
       this.templateSelector.importExternalTemplate(name, config, definitionId);
@@ -1158,7 +1159,7 @@ export class TrainingDynamicConfigComponent {
    * loadExternalConfig's auto-save suppression so the patch itself doesn't
    * immediately rewrite the template.
    */
-  applyExistingTemplate(templateId: string, name: string, config: any, definitionId: string) {
+  applyExistingTemplate(templateId: string, name: string, config: TrainingConfig, definitionId: string) {
     this._externalConfigApplied = true;
     this._isTemplateApplying = true;
     if (this.templateSelector) {
@@ -1189,7 +1190,7 @@ export class TrainingDynamicConfigComponent {
     }, 1500);
   }
 
-  loadExternalConfig(config: any) {
+  loadExternalConfig(config: TrainingConfig) {
     // Suppress auto-save so patching the form doesn't create a new template
     this._externalConfigApplied = true;
     this._isTemplateApplying = true;
@@ -1230,10 +1231,10 @@ export class TrainingDynamicConfigComponent {
   }
   buildForm() {
     const schema = this.schema();
-    const props = schema.properties || {};
+    const props = schema?.properties || {};
     const group: any = {};
-    const properties: { key: string, schema: any }[] = [];
-    const nestedItemPropsMap: Record<string, { key: string, schema: any }[]> = {};
+    const properties: SchemaProp[] = [];
+    const nestedItemPropsMap: Record<string, SchemaProp[]> = {};
 
     for (const key in props) {
       if (props.hasOwnProperty(key)) {
@@ -1249,8 +1250,8 @@ export class TrainingDynamicConfigComponent {
             group[key] = array;
 
             if (this.isPrimitiveArrayForKey(key, properties)) {
-              const defaults = propSchema.default || [];
-              defaults.forEach((d: any) => {
+              const defaults = Array.isArray(propSchema.default) ? propSchema.default : [];
+              defaults.forEach((d) => {
                 array.push(new FormControl(d));
               });
             } else {
@@ -1266,7 +1267,7 @@ export class TrainingDynamicConfigComponent {
           }
         } else {
           const validators = [];
-          if (schema.required && schema.required.includes(key)) {
+          if (schema?.required?.includes(key)) {
             validators.push(Validators.required);
           }
           const defaultValue = propSchema.default !== undefined ? propSchema.default : '';
@@ -1444,8 +1445,8 @@ export class TrainingDynamicConfigComponent {
     this._updateLoraNamePreview();
   }
 
-  organizeGroups(properties: { key: string, schema: any }[]) {
-    const groupMap: Record<string, { key: string, schema: any }[]> = {};
+  organizeGroups(properties: SchemaProp[]) {
+    const groupMap: Record<string, SchemaProp[]> = {};
     const groupOrder = ['MODEL_SELECTION', 'BASE', 'CONCEPTS', 'STRATEGY', 'NETWORK', 'OPTIMIZER', 'OPTIMIZER_EXPERT', 'SAMPLING', 'ENGINE', 'OTHER'];
 
     properties.forEach(prop => {
@@ -1567,7 +1568,7 @@ export class TrainingDynamicConfigComponent {
   }
 
   /** Resolve the props belonging to a segment label (for validity checks). */
-  private _propsForLabel(label: string): { key: string, schema: any }[] {
+  private _propsForLabel(label: string): SchemaProp[] {
     if (label === 'Model Selection') return this.modelSelectionProps();
     const group = this.groups().find(g => g.name === label);
     return group ? group.props : [];
@@ -1749,11 +1750,13 @@ export class TrainingDynamicConfigComponent {
     this.estimateChanged.emit(this.estimate());
   });
 
-  resolveSchema(schema: any): any {
-    const definitions = this.schema().$defs || this.schema().definitions || {};
-    if (schema && schema.$ref) {
+  resolveSchema(schema: SchemaNode | undefined): SchemaNode {
+    if (!schema) return {};
+    const root = this.schema();
+    const definitions = root?.$defs || root?.definitions || {};
+    if (schema.$ref) {
       const refKey = schema.$ref.split('/').pop();
-      if (definitions[refKey]) {
+      if (refKey && definitions[refKey]) {
         return { ...definitions[refKey], ...schema };
       }
     }
@@ -1764,7 +1767,7 @@ export class TrainingDynamicConfigComponent {
     return this.form.get(key) as FormArray;
   }
 
-  addArrayItem(key: string, itemSchemaRef: any) {
+  addArrayItem(key: string, itemSchemaRef: SchemaNode | undefined) {
     const itemSchema = this.resolveSchema(itemSchemaRef);
     const array = this.getFormArray(key);
 
@@ -1839,7 +1842,7 @@ export class TrainingDynamicConfigComponent {
   /**
    * Returns a filtered list of `{value, label, disabled}` based on a dynamically injected `backend_map`.
    */
-  getFilteredEnumOptions(prop: { key: string, schema: any }): { value: string, label: string, disabled: boolean }[] {
+  getFilteredEnumOptions(prop: SchemaProp): { value: string, label: string, disabled: boolean }[] {
     const defaultOptions = (prop.schema.enum || []).map((opt: string, idx: number) => {
       const label = prop.schema.enum_labels && prop.schema.enum_labels[idx] ? prop.schema.enum_labels[idx] : opt;
       return { value: opt, label: label, disabled: false };
@@ -1892,7 +1895,7 @@ export class TrainingDynamicConfigComponent {
   /**
    * Same as above, but for arrays of objects where the form control lives inside a FormArray.
    */
-  getFilteredNestedEnumOptions(nestedProp: { key: string, schema: any }, arrayKey: string, dsIdx: number): { value: string, label: string, disabled: boolean }[] {
+  getFilteredNestedEnumOptions(nestedProp: SchemaProp, arrayKey: string, dsIdx: number): { value: string, label: string, disabled: boolean }[] {
     const defaultOptions = (nestedProp.schema.enum || []).map((opt: string, idx: number) => {
       const label = nestedProp.schema.enum_labels && nestedProp.schema.enum_labels[idx] ? nestedProp.schema.enum_labels[idx] : opt;
       return { value: opt, label: label, disabled: false };
@@ -1928,7 +1931,7 @@ export class TrainingDynamicConfigComponent {
     if (ctrl) ctrl.setValue(!ctrl.value);
   }
 
-  isPrimitiveArrayForKey(key: string, properties: { key: string, schema: any }[]): boolean {
+  isPrimitiveArrayForKey(key: string, properties: SchemaProp[]): boolean {
     const prop = properties.find(p => p.key === key);
     if (!prop || (prop.schema && prop.schema.type !== 'array')) return false;
     const items = this.resolveSchema(prop.schema.items);
@@ -1939,7 +1942,7 @@ export class TrainingDynamicConfigComponent {
     return this.isPrimitiveArrayForKey(key, this.properties());
   }
 
-  getArrayItemProps(itemSchemaRef: any): { key: string, schema: any }[] {
+  getArrayItemProps(itemSchemaRef: SchemaNode | undefined): SchemaProp[] {
     const itemSchema = this.resolveSchema(itemSchemaRef);
     const props = itemSchema.properties || {};
     return Object.keys(props)
@@ -1947,8 +1950,8 @@ export class TrainingDynamicConfigComponent {
       .filter(p => !p.schema.hidden);
   }
 
-  getInlineGroups(props: { key: string, schema: any }[]): { name: string, props: { key: string, schema: any }[] }[] {
-    const map: Record<string, { key: string, schema: any }[]> = {};
+  getInlineGroups(props: SchemaProp[]): { name: string, props: SchemaProp[] }[] {
+    const map: Record<string, SchemaProp[]> = {};
     for (const prop of props) {
       const ig = prop.schema.inline_group;
       if (ig) {
@@ -1959,34 +1962,34 @@ export class TrainingDynamicConfigComponent {
     return Object.keys(map).map(name => ({ name, props: map[name] }));
   }
 
-  isFirstInlineGroupProp(key: string, props: { key: string, schema: any }[]): boolean {
+  isFirstInlineGroupProp(key: string, props: SchemaProp[]): boolean {
     const group = props.find(p => p.key === key)?.schema.inline_group;
     if (!group) return false;
     return props.find(p => p.schema.inline_group === group)?.key === key;
   }
 
-  getInlineGroupProps(groupName: string, props: { key: string, schema: any }[]): { key: string, schema: any }[] {
+  getInlineGroupProps(groupName: string, props: SchemaProp[]): SchemaProp[] {
     return props.filter(p => p.schema.inline_group === groupName);
   }
 
 
-  isNumber(schema: any): boolean {
+  isNumber(schema: SchemaNode): boolean {
     return schema.type === 'number' || schema.type === 'integer';
   }
 
-  isBoolean(schema: any): boolean {
+  isBoolean(schema: SchemaNode): boolean {
     return schema.type === 'boolean';
   }
 
-  isString(schema: any): boolean {
+  isString(schema: SchemaNode): boolean {
     return schema.type === 'string' || !schema.type;
   }
 
-  isObject(schema: any): boolean {
+  isObject(schema: SchemaNode): boolean {
     return schema.type === 'object';
   }
 
-  isLongInput(key: string, schema: any): boolean {
+  isLongInput(key: string, schema: SchemaNode): boolean {
     return key === 'lora_name' || key === 'lora_prefix' || key === 'lora_suffix'
       || key === 'output_dir' || key === 'global_triggerword'
       || key === 'save_every_n_steps' || key === 'resume_from_checkpoint'
@@ -2027,12 +2030,12 @@ export class TrainingDynamicConfigComponent {
   }
 
   /** Hide an entire group when ALL its fields are hidden by depends_on */
-  isGroupHidden(group: { name: string, props: { key: string, schema: any }[] }): boolean {
+  isGroupHidden(group: { name: string, props: SchemaProp[] }): boolean {
     return group.props.length > 0 && group.props.every(p => this.shouldHideField(p.schema, p.key));
   }
 
   // --- Conditional Field Disable ---
-  isFieldDisabled(schema: any): boolean {
+  isFieldDisabled(schema: SchemaNode): boolean {
     if (!schema.depends_on) return false;
     const dep: string = schema.depends_on;
 
@@ -2066,7 +2069,7 @@ export class TrainingDynamicConfigComponent {
 
 
 
-  shouldHideField(schema: any, key?: string): boolean {
+  shouldHideField(schema: SchemaNode, key?: string): boolean {
     if (schema.hidden) return true;
     // Hide fields the selected model family does not support
     // (capability descriptor: field_visibility[key].supported === false).

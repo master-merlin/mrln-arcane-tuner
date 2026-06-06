@@ -6,9 +6,28 @@ import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 
 router = APIRouter()
+
+
+# ── Response Models ──────────────────────────────────────────────────────
+
+class BrowseEntry(BaseModel):
+    """A single directory entry from a filesystem browse listing."""
+
+    name: str
+    path: str
+    type: str
+
+
+class BrowseResponse(BaseModel):
+    """Directory listing for the frontend folder picker."""
+
+    path: str
+    parent: str
+    entries: list[BrowseEntry]
 
 # Allowed browsing roots — constrain all browse requests to these trees.
 _ALLOWED_ROOTS: list[Path] = [
@@ -50,7 +69,7 @@ async def pick_folder(body: dict | None = None):
     return {"path": path}
 
 
-@router.get("/filesystem/browse")
+@router.get("/filesystem/browse", response_model=BrowseResponse)
 async def browse_filesystem(path: str = "outputs") -> dict:
     """List directories and checkpoint markers at a given path.
 

@@ -9,11 +9,29 @@ import sys
 import time
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
 
 from app.core.logger import SERVER_LOG_PATH, get_logger
 
 router = APIRouter(prefix="/system", tags=["System"])
 logger = get_logger(__name__)
+
+
+# ── Response Models ──────────────────────────────────────────────────────
+
+class MessageResponse(BaseModel):
+    """Simple ``{"message": ...}`` acknowledgement."""
+
+    message: str
+
+
+class HealthResponse(BaseModel):
+    """Lightweight health snapshot for the Server screen KPI rail."""
+
+    status: str
+    uptime_seconds: float
+    model_count: int
+    active_jobs: int
 
 _LOG_FILE = SERVER_LOG_PATH
 
@@ -47,14 +65,14 @@ async def _restart_server_logic() -> None:
     os._exit(0)
 
 
-@router.post("/restart")
+@router.post("/restart", response_model=MessageResponse)
 async def restart_server(background_tasks: BackgroundTasks):
     """Trigger a graceful server restart."""
     background_tasks.add_task(_restart_server_logic)
     return {"message": "Server restart initiated. Connection will be lost temporarily."}
 
 
-@router.post("/logs/clear")
+@router.post("/logs/clear", response_model=MessageResponse)
 async def clear_logs():
     """Truncate the server log file."""
     def _truncate():
@@ -91,7 +109,7 @@ async def get_logs(lines: int = 100):
 # ── System & GPU Status ─────────────────────────────────────────────────
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthResponse)
 async def get_health():
     """Lightweight health snapshot for the Server screen KPI rail.
 

@@ -28,6 +28,24 @@ class PurgeCacheRequest(BaseModel):
     variants: list[str] | None = None    # ["original", "masked"]
 
 
+# ── Response Models ──────────────────────────────────────────────────────
+
+class CacheStatsResponse(BaseModel):
+    """Aggregated cache size statistics across all datasets."""
+    total_bytes: int
+    latent_bytes: int
+    embedding_bytes: int
+    cached_datasets: int
+    dataset_root_bytes: int
+
+
+class PurgeCacheResponse(BaseModel):
+    """Summary of a cache purge operation."""
+    dataset: str
+    deleted: int
+    freed_bytes: int
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _dir_size(path: Path) -> int:
@@ -318,7 +336,7 @@ def run_cache_stats_refresh(task_id: str) -> None:
     task_manager.complete(task_id)
 
 
-@router.get("/datasets/cache/stats")
+@router.get("/datasets/cache/stats", response_model=CacheStatsResponse)
 async def cache_stats():
     """Aggregate cache size statistics across all datasets (TTL-cached; warmed
     at startup by a silent background task)."""
@@ -342,7 +360,7 @@ async def list_cache(name: str):
     return {"dataset": name, "cache": tree}
 
 
-@router.post("/datasets/{name}/cache/purge")
+@router.post("/datasets/{name}/cache/purge", response_model=PurgeCacheResponse)
 async def purge_cache(name: str, request: PurgeCacheRequest):
     """Purge selected cache subtrees for a dataset."""
     dataset = dataset_manager.get_dataset(name)

@@ -387,8 +387,9 @@ export class DatasetService {
     return this.http.post(`${this.apiUrl}/${encodeURIComponent(datasetName)}/images/enable-all`, {});
   }
 
-  harmonizeFiles(name: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/harmonize`, {});
+  taskHarmonize(name: string): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/harmonize/task`, {});
   }
 
   // ── Download ───────────────────────────────────────────────────────

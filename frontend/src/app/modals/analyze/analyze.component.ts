@@ -1648,17 +1648,9 @@ export class AnalyzeModalComponent implements OnInit {
             `files to a canonical sequence. It rewrites files on disk and cannot be undone.`,
         )) return;
         this.harmonizing.set(true);
-        this.datasetsApi.harmonizeFiles(name).subscribe({
-            next: (res: { processed?: number; converted?: number; renamed?: number }) => {
+        this.datasetsApi.taskHarmonize(name).subscribe({
+            next: () => {
                 this.harmonizing.set(false);
-                const c = res?.converted ?? 0;
-                const r = res?.renamed ?? 0;
-                const p = res?.processed ?? 0;
-                this.toast.success(`Harmonized "${name}" — ${p} processed, ${c} converted, ${r} renamed.`);
-                this.fetch();
-                // Files were renamed on disk — reconcile the grid's stores so it
-                // drops the old filenames (ghosts) instead of 404ing their captions.
-                void this.sync.refreshDataset(name);
             },
             error: (err: { error?: { detail?: string }; message?: string }) => {
                 this.harmonizing.set(false);

@@ -423,7 +423,10 @@ export class MassEditModalComponent implements OnInit {
     private async load(name: string): Promise<void> {
         try {
             const pairs = await firstValueFrom(this.datasetsApi.getDatasetPairs(name));
-            this.pairs.set(pairs ?? []);
+            // SourceImage is this modal's view-model: it reads typed metadata
+            // fields (has_overlay/width/…) off the otherwise-opaque `/pairs`
+            // metadata dict. Cross the API-dict → view-model boundary once here.
+            this.pairs.set((pairs ?? []) as unknown as SourceImage[]);
         } catch {
             this.pairs.set([]);
         }

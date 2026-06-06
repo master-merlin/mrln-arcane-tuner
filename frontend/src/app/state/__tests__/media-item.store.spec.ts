@@ -2,14 +2,15 @@ import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
 import { MediaItemStore, mediaKey } from '../media-item.store';
-import { DatasetService } from '../../services/dataset';
+import { DatasetService, DatasetPair } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
 import type { EntityChangedMessage } from '../entity-events';
 
-function makePair(mediaFile: string, enabled: boolean = true) {
+function makePair(mediaFile: string, enabled: boolean = true): DatasetPair {
     return {
         media_file: mediaFile,
+        stem: mediaFile.replace(/\.[^.]+$/, ''),
         caption_file: null,
         media_type: 'image',
         caption_content: '',

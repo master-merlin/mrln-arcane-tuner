@@ -64,13 +64,13 @@ export class DatasetSyncService {
 
     private async doRefresh(name: string): Promise<void> {
         try {
-            const pairs = (await firstValueFrom(this.api.getDatasetPairs(name))) as any[];
+            const pairs = await firstValueFrom(this.api.getDatasetPairs(name));
             const captions = new Map<string, CaptionRow>();
             for (const p of pairs ?? []) {
                 if (!p?.media_file) continue;
                 captions.set(p.media_file, {
                     caption_content: p.caption_content,
-                    masked_caption_content: p.masked_caption_content,
+                    masked_caption_content: p.masked_caption_content ?? undefined,
                 });
             }
             // Reconcile media items (replace + evict ghosts) and replace the

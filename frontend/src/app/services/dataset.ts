@@ -105,6 +105,25 @@ export interface HistogramData {
   luminance: number[];
 }
 
+/**
+ * One image-caption pair from ``GET /datasets/{name}/pairs``. Mirrors the
+ * dict built by ``dataset_manager.get_dataset_pairs`` — results are filtered
+ * to rows that have a media file, so ``media_file`` is always present.
+ */
+export interface DatasetPair {
+  stem: string;
+  media_file: string;
+  /** Always set on returned rows (results are filtered to those with media). */
+  media_type: 'image' | 'video';
+  /** null (not absent) when the image has no caption sidecar. */
+  caption_file: string | null;
+  /** Present only for media rows. */
+  size_bytes?: number;
+  caption_content: string;
+  masked_caption_content: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -213,8 +232,8 @@ export class DatasetService {
     });
   }
 
-  getDatasetPairs(name: string): Observable<any[]> {
-    return this.http.get<any[]>(`${this.apiUrl}/${encodeURIComponent(name)}/pairs`);
+  getDatasetPairs(name: string): Observable<DatasetPair[]> {
+    return this.http.get<DatasetPair[]>(`${this.apiUrl}/${encodeURIComponent(name)}/pairs`);
   }
 
   getCaption(name: string, filename: string): Observable<{ content: string }> {
@@ -243,15 +262,15 @@ export class DatasetService {
   }
 
   cropImage(name: string, path: string, targetWidth: number, targetHeight: number, origin: string, cropX?: number, cropY?: number): Observable<any> {
-    const body: any = {
+    const body: Record<string, unknown> = {
       path,
       target_width: targetWidth,
       target_height: targetHeight,
       origin
     };
     if (cropX !== undefined && cropY !== undefined) {
-      body.crop_x = cropX;
-      body.crop_y = cropY;
+      body['crop_x'] = cropX;
+      body['crop_y'] = cropY;
     }
     return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/crop`, body);
   }
@@ -274,18 +293,18 @@ export class DatasetService {
       aspect_ratio: aspectRatio
     });
   }
-  generateCaption(datasetName: string, imagePath: string, modelId: string, params: any, systemPrompt?: string, target: string = 'original'): Observable<{ caption: string }> {
+  generateCaption(datasetName: string, imagePath: string, modelId: string, params: Record<string, unknown>, systemPrompt?: string, target: string = 'original'): Observable<{ caption: string }> {
     return this.http.post<{ caption: string }>(`${this.rtc.apiUrl}/captions/generate`, {
       dataset_name: datasetName,
       image_rel_path: imagePath,
       model_id: modelId,
       params: params,
-      system_prompt: systemPrompt || params.system_prompt || null,
+      system_prompt: systemPrompt || params['system_prompt'] || null,
       target
     });
   }
 
-  generateMask(datasetName: string, imagePath: string, modelId: string, params: any): Observable<{ mask_path: string, message: string }> {
+  generateMask(datasetName: string, imagePath: string, modelId: string, params: Record<string, unknown>): Observable<{ mask_path: string, message: string }> {
     return this.http.post<{ mask_path: string, message: string }>(`${this.apiUrl}/${encodeURIComponent(datasetName)}/masking/generate`, {
       dataset_name: datasetName,
       image_rel_path: imagePath,
@@ -308,7 +327,7 @@ export class DatasetService {
   /** Launch a backend-owned mask-generation task (CREATE). Returns the task id;
    *  monitor via TaskStore. */
   batchGenerateMasks(body: {
-    dataset_name: string; image_rel_paths: string[]; model_id: string; params: any;
+    dataset_name: string; image_rel_paths: string[]; model_id: string; params: Record<string, unknown>;
   }): Observable<{ task_id: string }> {
     return this.http.post<{ task_id: string }>(
       `${this.apiUrl}/${encodeURIComponent(body.dataset_name)}/masking/generate/batch`, body);
@@ -327,7 +346,7 @@ export class DatasetService {
 
   batchCaption(body: {
     dataset_name: string; image_rel_paths: string[]; model_id: string;
-    params: any; system_prompt?: string; target: string;
+    params: Record<string, unknown>; system_prompt?: string; target: string;
   }): Observable<{ task_id: string }> {
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/batch`, body);
   }

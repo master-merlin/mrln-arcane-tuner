@@ -1,7 +1,7 @@
 import { Injectable, Signal, computed, effect, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { EntityStore, OptimisticResult } from './entity-store';
-import { DatasetService } from '../services/dataset';
+import { DatasetService, DatasetPair } from '../services/dataset';
 import { WebSocketService } from '../services/websocket.service';
 import { ToastService } from '../services/toast';
 
@@ -54,17 +54,6 @@ export interface MediaItem {
     quality_score?: number | null;
     is_video?: boolean;
     is_majority_ar?: boolean;
-    [extra: string]: unknown;
-}
-
-/** Shape returned by ``DatasetService.getDatasetPairs`` (subset we use). */
-interface DatasetPair {
-    media_file?: string;
-    media_type?: string;
-    stem?: string;
-    // `/pairs` returns null (not absent) when an image has no caption sidecar.
-    caption_file?: string | null;
-    metadata?: Partial<MediaItem> | null;
     [extra: string]: unknown;
 }
 
@@ -173,9 +162,9 @@ export class MediaItemStore extends EntityStore<MediaItem> {
      * client was disconnected — acceptable for the MVP.
      */
     async loadForDataset(datasetName: string): Promise<void> {
-        const pairs = (await firstValueFrom(
+        const pairs = await firstValueFrom(
             this.api.getDatasetPairs(datasetName),
-        )) as DatasetPair[];
+        );
         for (const p of pairs) {
             this.upsertFromPair(datasetName, p);
         }

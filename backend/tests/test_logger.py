@@ -155,7 +155,7 @@ class TestWebSocketLogHandler:
         mock_loop.is_closed.return_value = False
 
         try:
-            with patch("app.core.events.event_manager") as mock_em, \
+            with patch("app.core.events.event_manager"), \
                  patch("app.core.logger._log_loop", mock_loop), \
                  patch("app.core.logger.asyncio.run_coroutine_threadsafe") as mock_rcts:
                 handler.emit(record)

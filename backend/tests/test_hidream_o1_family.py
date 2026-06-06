@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
+import torch
 import yaml
 
 from app.engine.core.definitions import ModelDefinition
@@ -23,9 +23,6 @@ def test_family_is_discovered():
     registry.discover_families()
     family_cls = registry.get_family_class("hidream_o1")
     assert family_cls.family_name == "hidream_o1"
-
-
-import torch
 
 
 def test_loader_manifest_is_single_unified_model():
@@ -139,10 +136,8 @@ def test_lora_wrapper_forward_adds_lora_to_base_output():
 
 def test_saver_writes_safetensors_and_sidecar(tmp_path):
     """Saver produces ``<name>.safetensors`` + ``hidream_o1_lora_config.json`` sidecar."""
-    import torch
     import torch.nn as nn
     from app.engine.models.families.hidream_o1.lora_wrapper import (
-        HiDreamO1LoRALinear,
         inject_lora_layers,
     )
     from app.engine.models.families.hidream_o1.saver import HiDreamO1Saver
@@ -184,7 +179,6 @@ def test_saver_keys_use_diffusion_model_prefix_kohya_style(tmp_path):
     Kijai-published reference LoRAs).
     """
     import json
-    import torch
     import torch.nn as nn
     from safetensors import safe_open
 

@@ -19,7 +19,6 @@ Concerns covered:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,9 +31,7 @@ from app.engine.models.families.hidream_o1.saver import HiDreamO1Saver
 from app.engine.models.families.hidream_o1.trainer import (
     HiDreamO1Trainer,
     _PixelPassthroughLatentManager,
-    NOISE_SCALE,
     PATCH_SIZE,
-    T_EPS,
 )
 
 

@@ -33,7 +33,6 @@ class TestEMAStep:
     def test_step_updates_shadow(self):
         model = _make_model()
         ema = EMAHandler(model, decay=0.5)
-        original_shadow = ema.shadow["weight"].clone()
         # Change model weights
         model.weight.data.fill_(0.0)
         ema.step()
@@ -128,7 +127,6 @@ class TestRestore:
     def test_restore_reverts_model(self):
         model = _make_model()
         ema = EMAHandler(model, decay=0.5)
-        original_weights = model.weight.data.clone()
         model.weight.data.fill_(0.0)
         ema.step()
 

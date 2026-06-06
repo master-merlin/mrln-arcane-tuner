@@ -38,7 +38,9 @@ def test_update_emits_downloading_with_throttle():
         bar = WSProgressTqdm(total=100, source="hf", model_id="m1", category="caption")
         captured.clear()  # drop the 'starting' emit
         # Fast successive updates — only one should pass per throttle window
-        bar.update(1); bar.update(1); bar.update(1)
+        bar.update(1)
+        bar.update(1)
+        bar.update(1)
         # Big jump should always emit
         bar.update(50)
     statuses = [e.status for e in captured]

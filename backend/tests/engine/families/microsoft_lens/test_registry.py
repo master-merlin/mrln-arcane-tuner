@@ -40,7 +40,6 @@ def test_microsoft_lens_trainer_class_resolves():
 
 
 def test_vendored_transformer_imports_and_constructs_tiny():
-    import torch
     from app.engine.models.families.microsoft_lens.vendor.transformer import (
         LensTransformer2DModel,
     )

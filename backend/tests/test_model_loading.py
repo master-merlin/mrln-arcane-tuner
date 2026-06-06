@@ -230,7 +230,7 @@ class TestSDXLLoaderPathLogic:
             }
         )
 
-        loader = SDXLLoader(device="cpu")
+        SDXLLoader(device="cpu")
 
         # Test resolve_path behavior - we can't run async load, but validate path logic
         unet_comp = defn.components.get("unet")
@@ -394,7 +394,7 @@ class TestFluxLoaderContract:
             )
             # Should not raise TypeError about missing abstractmethod
             try:
-                instance = cls(defn, {"output_dir": "/tmp/test"})
+                cls(defn, {"output_dir": "/tmp/test"})
             except TypeError as e:
                 if "abstract" in str(e).lower():
                     pytest.fail(

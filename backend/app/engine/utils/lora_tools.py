@@ -876,8 +876,8 @@ def _compute_layer_relevance(layer_details: list[dict[str, Any]]) -> dict[str, A
     # Sort by energy descending
     layers_with_energy.sort(key=lambda x: x["energy"], reverse=True)
 
-    total_energy = sum(l["energy"] for l in layers_with_energy)
-    total_params = sum(l["params"] for l in layers_with_energy)
+    total_energy = sum(layer["energy"] for layer in layers_with_energy)
+    total_params = sum(layer["params"] for layer in layers_with_energy)
     if total_energy <= 0 or total_params <= 0:
         return {}
 

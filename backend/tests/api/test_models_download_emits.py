@@ -1,6 +1,5 @@
 """Verify curated /models/download emits the expected event sequence."""
-from unittest.mock import patch, AsyncMock, MagicMock
-from pathlib import Path
+from unittest.mock import patch, MagicMock
 import pytest
 from app.core import model_registry as mr
 

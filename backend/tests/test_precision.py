@@ -79,7 +79,6 @@ class TestEMAHandler:
         model = SimpleModel()
         ema = EMAHandler(model, decay=0.5)
         
-        original_weights = model.linear.weight.data.clone()
         with torch.no_grad():
             model.linear.weight.fill_(10.0)
         ema.step()

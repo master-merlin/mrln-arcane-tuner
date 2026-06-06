@@ -7,7 +7,6 @@ only models that are known to work well with Spandrel's auto-architecture detect
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 

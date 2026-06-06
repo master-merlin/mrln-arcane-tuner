@@ -1,5 +1,4 @@
 import time
-import pytest
 from app.api.events.download_progress import RateLimiter
 
 

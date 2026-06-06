@@ -24,7 +24,7 @@ import { JobService, type TrainingEstimate, type TrainingConfig } from '../../se
 import type { SchemaNode } from '../../components/training/schema-node';
 import { ToastService } from '../../services/toast';
 
-interface ModelDefinition {
+export interface ModelDefinition {
     id: string;
     name?: string;
     family?: string;

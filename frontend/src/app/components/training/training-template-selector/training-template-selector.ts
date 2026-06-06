@@ -3,6 +3,8 @@ import { FormsModule } from '@angular/forms';
 import { ToastService } from '../../../services/toast';
 import { TemplateService, Template } from '../../../services/template.service';
 import { TemplateInfoCardComponent, TemplateInfoRow } from '../../../ui/template-info-card/template-info-card.component';
+import type { TrainingConfig } from '../../../services/job';
+import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
 
 @Component({
   selector: 'app-training-template-selector',
@@ -64,14 +66,14 @@ import { TemplateInfoCardComponent, TemplateInfoRow } from '../../../ui/template
 })
 export class TrainingTemplateSelectorComponent implements OnInit {
   // Inputs from Main Orchestrator
-  availableModels = input<any[]>([]);
+  availableModels = input<ModelDefinition[]>([]);
   selectedDefinitionId = input<string | null>(null);
-  currentFormConfig = input<any>({});
+  currentFormConfig = input<TrainingConfig>({});
   projectId = input<string | null>(null);
 
   // Outputs to Main Orchestrator. `auto` flags the one-time apply fired on
   // load (vs a user dropdown selection) so the parent can yield to a handoff.
-  templateApplied = output<{ config: any, isDefault: boolean, definitionId?: string, auto?: boolean }>();
+  templateApplied = output<{ config: TrainingConfig, isDefault: boolean, definitionId?: string, auto?: boolean }>();
 
   private templateService = inject(TemplateService);
   private toast = inject(ToastService);
@@ -92,7 +94,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   private _loaded = false;
   // A pending "adopt this existing template by id" request (from a Projects
   // "Edit" action or a job reload), applied as soon as templates are loaded.
-  private _pendingAdopt: { id: string; name: string; config: any; definitionId: string } | null = null;
+  private _pendingAdopt: { id: string; name: string; config: TrainingConfig; definitionId: string } | null = null;
 
   filteredTemplates = computed(() => {
     const all = this.allTemplates();
@@ -187,7 +189,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
         if (this._pendingAdopt) this._applyPendingAdopt();
         else this._maybeAutoApply();
       },
-      error: (err: any) => console.error('[Templates] Failed to load training templates', err)
+      error: (err: unknown) => console.error('[Templates] Failed to load training templates', err)
     });
   }
 
@@ -201,7 +203,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
    * form — the caller applies the handed-off config, which for a job reload is
    * the job's actual run config (it may differ from the template).
    */
-  public adoptExternalTemplate(id: string, name: string, config: any, definitionId: string): void {
+  public adoptExternalTemplate(id: string, name: string, config: TrainingConfig, definitionId: string): void {
     this._pendingAdopt = { id, name, config, definitionId };
     // Claim the one-time auto-apply slot so _maybeAutoApply doesn't fight us.
     this._autoAppliedForProject = this.projectId();
@@ -334,7 +336,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     });
   }
 
-  public triggerAutoSave(newFormValue: any, currentDefId: string) {
+  public triggerAutoSave(newFormValue: TrainingConfig, currentDefId: string) {
     if (this.suppressAutoSave()) return;
     // An external adopt (edit-in-place / job reload) is resolving — don't let a
     // form patch save against the previously-active id and spawn a copy.
@@ -363,7 +365,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     });
   }
 
-  public importExternalTemplate(name: string, config: any, definitionId: string) {
+  public importExternalTemplate(name: string, config: TrainingConfig, definitionId: string) {
     this.templateService.createTrainingTemplate({
         definition_id: definitionId,
         name: name,

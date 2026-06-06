@@ -80,6 +80,19 @@ export interface JobCheckpointMeta {
   created_at: number;
 }
 
+/** Echo ack for a job lifecycle action (mirrors backend JobActionResponse). */
+export interface JobActionResponse { status: string; job_id: string; }
+
+/** One sample image a job produced, from `GET /jobs/{id}/samples`. */
+export interface JobSample {
+  filename: string;
+  step: number;
+  index: number;
+  path: string;
+  /** Unix seconds (file mtime). */
+  created_at: number;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -136,42 +149,42 @@ export class JobService {
     return this.http.get<Job[]>(this.apiUrl);
   }
 
-  startJob(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/start`, {});
+  startJob(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/start`, {});
   }
 
-  stopJob(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/stop`, {});
+  stopJob(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/stop`, {});
   }
 
-  pauseJob(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/pause`, {});
+  pauseJob(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/pause`, {});
   }
 
-  resumeJob(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/resume`, {});
+  resumeJob(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/resume`, {});
   }
 
-  softStopJob(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/soft-stop`, {});
+  softStopJob(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/soft-stop`, {});
   }
 
-  restartJob(jobId: string, fresh = false): Observable<any> {
+  restartJob(jobId: string, fresh = false): Observable<JobActionResponse & { fresh: boolean }> {
     const q = fresh ? '?fresh=true' : '';
-    return this.http.post(`${this.apiUrl}/${jobId}/restart${q}`, {});
+    return this.http.post<JobActionResponse & { fresh: boolean }>(`${this.apiUrl}/${jobId}/restart${q}`, {});
   }
 
   /** Move a pending job up/down in the run queue (priority reorder). */
-  reorderJob(jobId: string, direction: 'up' | 'down'): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/reorder?direction=${direction}`, {});
+  reorderJob(jobId: string, direction: 'up' | 'down'): Observable<JobActionResponse & { direction: string }> {
+    return this.http.post<JobActionResponse & { direction: string }>(`${this.apiUrl}/${jobId}/reorder?direction=${direction}`, {});
   }
 
-  deleteJob(jobId: string): Observable<any> {
-    return this.http.delete(`${this.apiUrl}/${jobId}`);
+  deleteJob(jobId: string): Observable<JobActionResponse> {
+    return this.http.delete<JobActionResponse>(`${this.apiUrl}/${jobId}`);
   }
 
-  getJobSamples(jobId: string): Observable<any[]> {
-    return this.http.get<any[]>(`${this.apiUrl}/${jobId}/samples`);
+  getJobSamples(jobId: string): Observable<JobSample[]> {
+    return this.http.get<JobSample[]>(`${this.apiUrl}/${jobId}/samples`);
   }
 
   /** LoRA `.safetensors` artifacts saved by a job (one per checkpoint). */
@@ -184,20 +197,20 @@ export class JobService {
     return `${this.apiUrl}/${jobId}/checkpoints/${encodeURIComponent(filename)}`;
   }
 
-  pauseSampling(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/pause-sampling`, {});
+  pauseSampling(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/pause-sampling`, {});
   }
 
-  resumeSampling(jobId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/resume-sampling`, {});
+  resumeSampling(jobId: string): Observable<JobActionResponse> {
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/resume-sampling`, {});
   }
 
   getSamplingStatus(jobId: string): Observable<{ job_id: string; sampling_paused: boolean }> {
     return this.http.get<{ job_id: string; sampling_paused: boolean }>(`${this.apiUrl}/${jobId}/sampling-status`);
   }
 
-  setSamplingCadence(jobId: string, interval: number): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${jobId}/sampling-cadence`, { interval });
+  setSamplingCadence(jobId: string, interval: number): Observable<JobActionResponse & { interval: number }> {
+    return this.http.post<JobActionResponse & { interval: number }>(`${this.apiUrl}/${jobId}/sampling-cadence`, { interval });
   }
 
   getSamplingCadence(jobId: string): Observable<{ job_id: string; interval: number; default_interval: number }> {

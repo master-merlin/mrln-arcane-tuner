@@ -21,6 +21,7 @@ export interface Task {
     started_at: number | null;
     finished_at: number | null;
     error: string | null;
+    user_visible?: boolean;
 }
 
 export interface RecentTask extends Task { recordedAt: number; }
@@ -60,6 +61,7 @@ export class TaskStore {
     }
 
     private apply(t: Task): void {
+        if (t.user_visible === false) return;   // internal/background task — hide from Task Center
         if (ACTIVE.includes(t.status)) {
             this._active.update(m => new Map(m).set(t.id, t));
             return;

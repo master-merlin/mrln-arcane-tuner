@@ -129,3 +129,14 @@ def test_cancel_pending_never_runs(tm):
 
     assert ran == []                                   # worker never invoked
     assert tm.get(b.id).status.value == "cancelled"
+
+
+def test_create_defaults_user_visible_true(tm):
+    t = tm.create(type="x", title="x")
+    assert t.user_visible is True
+    assert "user_visible" in t.model_dump()
+
+
+def test_create_silent_task(tm):
+    t = tm.create(type="x", title="x", user_visible=False)
+    assert t.user_visible is False

@@ -41,7 +41,8 @@ class TaskManager:
 
     def create(self, *, type: str, title: str, total: int = 0,
                dataset_name: str | None = None,
-               target: str | None = None) -> Task:
+               target: str | None = None,
+               user_visible: bool = True) -> Task:
         task = Task(
             id=uuid.uuid4().hex,
             type=type,
@@ -49,6 +50,7 @@ class TaskManager:
             total=total,
             dataset_name=dataset_name,
             target=target,
+            user_visible=user_visible,
             created_at=time.time(),
         )
         with self._lock:

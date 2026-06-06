@@ -32,3 +32,6 @@ class Task(BaseModel):
     started_at: float | None = None
     finished_at: float | None = None
     error: str | None = None
+    # When False the task runs + broadcasts as usual but is hidden from the
+    # user-facing Task Center (internal/background jobs, e.g. cache-stats warmup).
+    user_visible: bool = True

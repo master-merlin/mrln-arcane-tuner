@@ -3,6 +3,7 @@ import { provideRouter } from '@angular/router';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { routes } from './app.routes';
 import { RuntimeConfigService } from './services/runtime-config.service';
+import { WebSocketService } from './services/websocket.service';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -10,9 +11,12 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes),
     provideHttpClient(withFetch()),
     {
+      // Load runtime config first, THEN open the WebSocket — connect() needs
+      // rtc.wsUrl, which is only populated after config.load() resolves.
       provide: APP_INITIALIZER,
-      useFactory: (config: RuntimeConfigService) => () => config.load(),
-      deps: [RuntimeConfigService],
+      useFactory: (config: RuntimeConfigService, ws: WebSocketService) => () =>
+        config.load().then(() => ws.connect()),
+      deps: [RuntimeConfigService, WebSocketService],
       multi: true,
     },
   ]

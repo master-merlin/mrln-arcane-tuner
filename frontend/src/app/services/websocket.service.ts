@@ -49,10 +49,6 @@ export class WebSocketService implements OnDestroy {
 
     private rtc = inject(RuntimeConfigService);
 
-    constructor() {
-        this.connect();
-    }
-
     /**
      * Force an immediate reconnect attempt, pre-empting the scheduled
      * 1s auto-retry. Used by the global connection banner's Retry button.
@@ -65,7 +61,15 @@ export class WebSocketService implements OnDestroy {
         this.connect();
     }
 
-    private connect() {
+    /**
+     * Open the WebSocket connection. Called once at app startup by the
+     * APP_INITIALIZER in app.config.ts, AFTER RuntimeConfigService.load() has
+     * resolved (so `rtc.wsUrl` is populated). Not invoked from the constructor:
+     * a side-effectful connect there would (a) race ahead of config load and
+     * (b) spin a 1s reconnect loop in any environment with no server — notably
+     * under Karma, where it floods the browser and trips the no-activity hang.
+     */
+    public connect() {
         const wsUrl = this.rtc.wsUrl;
 
         console.log('[WebSocket] Connecting to', wsUrl);

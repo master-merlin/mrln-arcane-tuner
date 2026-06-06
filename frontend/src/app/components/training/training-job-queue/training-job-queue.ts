@@ -691,7 +691,7 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   onPlateauDetected(job: Job, event: { step: number; loss: number }) {
-    const warning = `âš ï¸ Loss appears to have plateaued at ~${event.loss} since step ${event.step}. This may indicate a model loading or configuration issue.`;
+    const warning = `⚠️ Loss appears to have plateaued at ~${event.loss} since step ${event.step}. This may indicate a model loading or configuration issue.`;
     this.jobs.update(current => {
       const target = current.find(j => j.id === job.id);
       if (target) {

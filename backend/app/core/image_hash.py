@@ -183,70 +183,77 @@ def _hex_to_bool_grid(hex_str):
         
     return bits.reshape((size, size)).astype(bool)
 
+def similarity_from_grids(grid1, grid2) -> float:
+    """Spatial-difference-weighted similarity between two pre-parsed bool grids.
+    Extracted from measure_similarity so callers comparing one hash against many
+    can parse each grid ONCE (see DatasetManager.analyze_harmonization). The math
+    is byte-identical to the original measure_similarity body."""
+    if grid1.shape != grid2.shape:
+        return 0.0
+
+    # 1. Base Difference
+    # diff is True where the hashes differ
+    diff = (grid1 != grid2).astype(np.float32)
+    total_bits = grid1.size  # noqa: F841
+
+    # 2. Adaptive Max Cost Scaling
+    # Instead of comparing against a totally scrambled imaginary board (which is impossible
+    # since flat surfaces like car doors don't produce bits in D-Hash), we measure the
+    # MAX potential feature changes based on the UNION of active bits in both hashes.
+    # An active bit (True) represents a structural edge.
+    active_union = (grid1 | grid2).astype(np.float32)
+
+    if np.sum(active_union) == 0:
+        return 1.0  # Both images are completely empty/flat
+
+    # 3. Spatial Weighting via Convolution
+    # Apply a 3x3 uniform convolution to count neighboring differences.
+    # This weights grouped structural changes extremely heavily compared to isolated bit flips.
+    kernel = np.ones((3, 3), dtype=np.float32)
+
+    # Border isolation ensures edge bits don't wrap in the filter.
+    density = cv2.filter2D(diff, -1, kernel, borderType=cv2.BORDER_ISOLATED)
+
+    # We multiply the original difference by its local density.
+    # Isolated difference: cost 1
+    # 3x3 clustered difference: cost 9
+    weighted_cost = diff * density
+
+    # 4. Normalize Score Adaptively
+    # The max cost for the visible features is if EVERY active edge in the union
+    # was completely flipped and perfectly clustered.
+    density_union = cv2.filter2D(active_union, -1, kernel, borderType=cv2.BORDER_ISOLATED)
+    max_cost = np.sum(active_union * density_union)
+
+    # Fallback to prevent division by zero or negative similarity
+    if max_cost <= 0:
+        return 0.0
+
+    actual_cost = np.sum(weighted_cost)
+
+    # Similarity is 1.0 minus the normalized cost, bounded
+    sim = 1.0 - (actual_cost / max_cost)
+
+    return float(max(0.0, sim))
+
+
 def measure_similarity(hash1, hash2, hash_size=None):
     """
     Compares two hashes and returns a similarity score between 0.0 and 1.0.
     1.0 means identical, 0.0 means completely opposite.
-    
+
     This implementation uses Spatial Difference Weighting.
     It penalizes heavily for grouped/clustered block differences (structural changes),
     while being lenient on sparse, separated bit flips (noise/compression).
     """
     if not hash1 or not hash2 or hash1.startswith("Error") or hash2.startswith("Error"):
         return 0.0
-        
+
     try:
-        # Convert both to boolean grids
         grid1 = _hex_to_bool_grid(hash1)
         grid2 = _hex_to_bool_grid(hash2)
     except Exception as e:
         logger.error("hash_parsing_failed", hash1=hash1, hash2=hash2, error=str(e))
         return 0.0
 
-    if grid1.shape != grid2.shape:
-        return 0.0
-        
-    # 1. Base Difference
-    # diff is True where the hashes differ
-    diff = (grid1 != grid2).astype(np.float32)
-    total_bits = grid1.size
-    
-    # 2. Adaptive Max Cost Scaling
-    # Instead of comparing against a totally scrambled imaginary board (which is impossible 
-    # since flat surfaces like car doors don't produce bits in D-Hash), we measure the 
-    # MAX potential feature changes based on the UNION of active bits in both hashes.
-    # An active bit (True) represents a structural edge.
-    active_union = (grid1 | grid2).astype(np.float32)
-    
-    if np.sum(active_union) == 0:
-        return 1.0 # Both images are completely empty/flat
-        
-    # 3. Spatial Weighting via Convolution
-    # Apply a 3x3 uniform convolution to count neighboring differences.
-    # This weights grouped structural changes extremely heavily compared to isolated bit flips.
-    kernel = np.ones((3, 3), dtype=np.float32)
-    
-    # Border isolation ensures edge bits don't wrap in the filter.
-    density = cv2.filter2D(diff, -1, kernel, borderType=cv2.BORDER_ISOLATED)
-    
-    # We multiply the original difference by its local density.
-    # Isolated difference: cost 1
-    # 3x3 clustered difference: cost 9
-    weighted_cost = diff * density
-    
-    # 4. Normalize Score Adaptively
-    # The max cost for the visible features is if EVERY active edge in the union 
-    # was completely flipped and perfectly clustered. 
-    density_union = cv2.filter2D(active_union, -1, kernel, borderType=cv2.BORDER_ISOLATED)
-    max_cost = np.sum(active_union * density_union)
-    
-    # Fallback to prevent division by zero or negative similarity
-    if max_cost <= 0:
-        return 0.0
-        
-    actual_cost = np.sum(weighted_cost)
-    
-    # Similarity is 1.0 minus the normalized cost, bounded
-    sim = 1.0 - (actual_cost / max_cost)
-    
-    return float(max(0.0, sim))
+    return similarity_from_grids(grid1, grid2)

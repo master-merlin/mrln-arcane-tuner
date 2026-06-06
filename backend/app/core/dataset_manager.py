@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 import shutil
 from PIL import Image
 from app.core.settings_manager import get_settings_manager
-from app.core.image_hash import solide_hash_robust, measure_similarity
+from app.core.image_hash import solide_hash_robust, _hex_to_bool_grid, similarity_from_grids
 import structlog
 
 from app.core.dataset.geometry import (
@@ -983,6 +983,21 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
+        # Parse each image's hash into a bool grid ONCE (the similarity loop below
+        # is O(N^2); without this, _hex_to_bool_grid would re-parse each hash ~N
+        # times). Results are identical — only the parsing is hoisted.
+        _grid_cache: dict[str, Any] = {}
+
+        def _grid(h: str):
+            if h in _grid_cache:
+                return _grid_cache[h]
+            try:
+                g = _hex_to_bool_grid(h)
+            except Exception:
+                g = None
+            _grid_cache[h] = g
+            return g
+
         from collections import Counter
         from app.core.dataset.scan_helpers import (
             _snap_ar, is_majority_match, compute_crop_target,
@@ -1044,22 +1059,27 @@ class DatasetManager:
                 similar_images = []
                 my_hash = item.get("solid_hash")
                 if my_hash and isinstance(my_hash, str) and not my_hash.startswith("Error"):
-                    for other_path, other_meta in dataset.media_metadata.items():
-                        if other_path == item["path"]:
-                            continue
-                        other_hash = other_meta.get("solid_hash")
-                        if other_hash and isinstance(other_hash, str) and not other_hash.startswith("Error"):
-                            try:
-                                sim = measure_similarity(my_hash, other_hash)
-                                if sim >= similarity_threshold:
-                                    similar_images.append({
-                                        "path": other_path,
-                                        "score": round(sim, 4),
-                                        "width": other_meta.get("width", 0),
-                                        "height": other_meta.get("height", 0)
-                                    })
-                            except Exception:
+                    my_grid = _grid(my_hash)
+                    if my_grid is not None:
+                        for other_path, other_meta in dataset.media_metadata.items():
+                            if other_path == item["path"]:
                                 continue
+                            other_hash = other_meta.get("solid_hash")
+                            if other_hash and isinstance(other_hash, str) and not other_hash.startswith("Error"):
+                                other_grid = _grid(other_hash)
+                                if other_grid is None:
+                                    continue
+                                try:
+                                    sim = similarity_from_grids(my_grid, other_grid)
+                                    if sim >= similarity_threshold:
+                                        similar_images.append({
+                                            "path": other_path,
+                                            "score": round(sim, 4),
+                                            "width": other_meta.get("width", 0),
+                                            "height": other_meta.get("height", 0)
+                                        })
+                                except Exception:
+                                    continue
                 
                 image_list.append({
                     "path": item["path"],

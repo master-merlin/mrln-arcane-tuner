@@ -13,6 +13,7 @@ from app.core.image_hash import (
     solide_hash_robust,
     measure_similarity,
     _hex_to_bool_grid,
+    similarity_from_grids,
 )
 
 
@@ -210,3 +211,128 @@ class TestEdgeCases:
         path = _write_test_image(str(tmp_path / "tiny.png"), width=8, height=8, pattern="random")
         h = solide_hash_robust(path)
         assert isinstance(h, str) and len(h) > 0
+
+
+# ── similarity_from_grids ────────────────────────────────────────────────
+
+
+class TestSimilarityFromGrids:
+    """Tests for the grid-level similarity function extracted from measure_similarity."""
+
+    def test_equivalent_to_measure_similarity(self, tmp_path):
+        """Parsing-hoisted path must yield byte-identical results to measure_similarity."""
+        a = _write_test_image(str(tmp_path / "a.png"), pattern="gradient")
+        b = _write_test_image(str(tmp_path / "b.png"), pattern="circle")
+        ha = solide_hash_robust(a)
+        hb = solide_hash_robust(b)
+        g_a = _hex_to_bool_grid(ha)
+        g_b = _hex_to_bool_grid(hb)
+        # parsing-hoisted path must equal the original
+        assert similarity_from_grids(g_a, g_b) == measure_similarity(ha, hb)
+        assert similarity_from_grids(g_a, g_a) == 1.0
+        assert measure_similarity(ha, hb) == similarity_from_grids(_hex_to_bool_grid(ha), _hex_to_bool_grid(hb))
+
+    def test_shape_mismatch_returns_zero(self, tmp_path):
+        """Grids of different shapes must return 0.0."""
+        path = _write_test_image(str(tmp_path / "t.png"))
+        g16 = _hex_to_bool_grid(solide_hash_robust(path, size=16))
+        g48 = _hex_to_bool_grid(solide_hash_robust(path, size=48))
+        assert similarity_from_grids(g16, g48) == 0.0
+
+    def test_identical_grids_return_one(self, tmp_path):
+        """Comparing a grid with itself must return 1.0."""
+        path = _write_test_image(str(tmp_path / "same.png"), pattern="circle")
+        h = solide_hash_robust(path)
+        g = _hex_to_bool_grid(h)
+        assert similarity_from_grids(g, g) == 1.0
+
+
+# ── analyze_harmonization dedup equivalence ──────────────────────────────
+
+
+class TestAnalyzeDedup:
+    """Guard: memoised grid path produces same similar_images as direct measure_similarity."""
+
+    def test_memoised_equals_direct(self, tmp_path):
+        """Build metadata for 3 images (2 near-identical, 1 different) and assert
+        that the memoised similarity_from_grids path produces the same similar_images
+        entries as computing measure_similarity directly over the same metadata."""
+        # Create images: near-duplicate pair (same content) + one visually distinct
+        path_a = _write_test_image(str(tmp_path / "dup_a.png"), pattern="circle")
+        path_b = _write_test_image(str(tmp_path / "dup_b.png"), pattern="circle")
+        path_c = _write_test_image(str(tmp_path / "other.png"), pattern="gradient")
+
+        ha = solide_hash_robust(path_a)
+        hb = solide_hash_robust(path_b)
+        hc = solide_hash_robust(path_c)
+
+        metadata = {
+            path_a: {"solid_hash": ha, "width": 200, "height": 200},
+            path_b: {"solid_hash": hb, "width": 200, "height": 200},
+            path_c: {"solid_hash": hc, "width": 200, "height": 200},
+        }
+
+        similarity_threshold = 0.9
+
+        # --- Reference: direct measure_similarity (old path) ---
+        def reference_similar(my_path, my_hash):
+            results = []
+            for other_path, other_meta in metadata.items():
+                if other_path == my_path:
+                    continue
+                other_hash = other_meta.get("solid_hash")
+                if other_hash and isinstance(other_hash, str) and not other_hash.startswith("Error"):
+                    try:
+                        sim = measure_similarity(my_hash, other_hash)
+                        if sim >= similarity_threshold:
+                            results.append({"path": other_path, "score": round(sim, 4)})
+                    except Exception:
+                        continue
+            return sorted(results, key=lambda x: x["score"], reverse=True)
+
+        # --- Optimised: memoised similarity_from_grids (new path) ---
+        _grid_cache: dict = {}
+
+        def _grid(h):
+            if h in _grid_cache:
+                return _grid_cache[h]
+            try:
+                g = _hex_to_bool_grid(h)
+            except Exception:
+                g = None
+            _grid_cache[h] = g
+            return g
+
+        def optimised_similar(my_path, my_hash):
+            results = []
+            my_grid = _grid(my_hash)
+            if my_grid is None:
+                return results
+            for other_path, other_meta in metadata.items():
+                if other_path == my_path:
+                    continue
+                other_hash = other_meta.get("solid_hash")
+                if other_hash and isinstance(other_hash, str) and not other_hash.startswith("Error"):
+                    other_grid = _grid(other_hash)
+                    if other_grid is None:
+                        continue
+                    try:
+                        sim = similarity_from_grids(my_grid, other_grid)
+                        if sim >= similarity_threshold:
+                            results.append({"path": other_path, "score": round(sim, 4)})
+                    except Exception:
+                        continue
+            return sorted(results, key=lambda x: x["score"], reverse=True)
+
+        for test_path, test_hash in [(path_a, ha), (path_b, hb), (path_c, hc)]:
+            ref = reference_similar(test_path, test_hash)
+            opt = optimised_similar(test_path, test_hash)
+            assert ref == opt, (
+                f"Mismatch for {test_path}: reference={ref}, optimised={opt}"
+            )
+
+        # The duplicate pair (same content → identical hashes) must appear in each other's results
+        sim_ab = measure_similarity(ha, hb)
+        assert sim_ab >= similarity_threshold, (
+            f"Expected near-duplicate pair to be similar; got {sim_ab}"
+        )

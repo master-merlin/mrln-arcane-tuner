@@ -8,8 +8,10 @@ from fractions import Fraction
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.core.dataset.harmonize_batch import run_harmonize_batch
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
+from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -100,13 +102,18 @@ async def set_version(name: str, body: SetVersionRequest):
     return {"version": new_version}
 
 
-@router.post("/datasets/{name}/harmonize")
-async def harmonize_files(name: str):
-    """Convert all media to JPG and rename pairs to a consistent naming scheme."""
-    try:
-        logger.info("harmonizing_dataset", dataset_name=name)
-        return await asyncio.to_thread(dataset_manager.harmonize_files, name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+@router.post("/datasets/{name}/harmonize/task")
+async def harmonize_files_task(name: str):
+    """Start a backend-owned harmonize task (convert→rename→rescan all files).
+    Returns the task id immediately; progress is monitored via TaskStore."""
+    pairs = await asyncio.to_thread(dataset_manager.get_dataset_pairs, name)
+    task = task_manager.create(
+        type="harmonize", title=f"Harmonize · {name}",
+        total=len(pairs), dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_harmonize_batch(tid, dataset_name=name),
+        lane="gpu",
+    )
+    return {"task_id": task.id}

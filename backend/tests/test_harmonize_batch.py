@@ -59,3 +59,30 @@ def test_harmonize_files_progress_cb_fires_per_pair(monkeypatch, tmp_path):
         assert not (ds_root / "a.png").exists()
     finally:
         dataset_manager.datasets.pop(ds_name, None)
+
+
+def test_harmonize_task_route_enqueues(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.dataset import analysis_routes
+
+    captured = {}
+    monkeypatch.setattr(analysis_routes.dataset_manager, "get_dataset_pairs",
+                        lambda name: [{"media_file": "a.jpg"}, {"media_file": "b.jpg"}])
+
+    def fake_enqueue(task_id, worker_fn, *, lane="gpu"):
+        captured["task_id"] = task_id
+        captured["lane"] = lane
+    monkeypatch.setattr(analysis_routes.task_manager, "enqueue", fake_enqueue)
+
+    created = {}
+    orig = analysis_routes.task_manager.create
+    monkeypatch.setattr(analysis_routes.task_manager, "create",
+                        lambda **kw: created.update(kw) or orig(**kw))
+
+    resp = TestClient(app).post("/api/datasets/ds1/harmonize/task")
+    assert resp.status_code == 200
+    assert resp.json()["task_id"] == captured["task_id"]
+    assert captured["lane"] == "gpu"
+    assert created["type"] == "harmonize"
+    assert created["total"] == 2

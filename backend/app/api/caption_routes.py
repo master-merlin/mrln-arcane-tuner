@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.api._path_guard import validate_path_within
+from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.captioning.caption_batch import run_caption_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.logger import get_logger
@@ -17,6 +18,19 @@ from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+class GenerateCaptionResponse(BaseModel):
+    """Response body for single-image caption generation."""
+
+    caption: str
+
+
+class UnloadModelsResponse(BaseModel):
+    """Response body for the caption-model unload endpoint."""
+
+    status: str = "success"
+    message: str = "All models unloaded and VRAM cleared."
 
 
 class GenerateCaptionRequest(BaseModel):
@@ -30,7 +44,7 @@ class GenerateCaptionRequest(BaseModel):
     target: str = "original"  # "original" or "masked"
 
 
-@router.post("/generate")
+@router.post("/generate", response_model=GenerateCaptionResponse)
 async def generate_caption_api(request: GenerateCaptionRequest):
     """Generate a caption for a single image using the specified model."""
     logger.info(
@@ -103,7 +117,7 @@ async def generate_caption_api(request: GenerateCaptionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/unload")
+@router.delete("/unload", response_model=UnloadModelsResponse)
 async def unload_models_api():
     """Unload all caption models and free VRAM."""
     try:
@@ -127,7 +141,7 @@ class BatchCaptionRequest(BaseModel):
     target: str = "original"
 
 
-@router.post("/batch")
+@router.post("/batch", response_model=TaskEnqueuedResponse)
 async def batch_caption_api(request: BatchCaptionRequest):
     """Start a backend-owned captioning task. Always creates the task (queued if
     the GPU lane is busy) and returns its id immediately."""

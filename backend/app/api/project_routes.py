@@ -46,6 +46,12 @@ class DatasetAssociationRequest(BaseModel):
     dataset_id: str
 
 
+class DatasetAssociationResponse(BaseModel):
+    """Ack for associating a dataset with a project."""
+
+    status: str = "added"
+
+
 # ── Project CRUD ─────────────────────────────────────────────────────────
 
 
@@ -108,7 +114,7 @@ async def get_project_datasets(project_id: str) -> list[dict[str, Any]]:
     return _projects.get_datasets(project_id)
 
 
-@router.post("/{project_id}/datasets", status_code=201)
+@router.post("/{project_id}/datasets", status_code=201, response_model=DatasetAssociationResponse)
 async def add_project_dataset(
     project_id: str, req: DatasetAssociationRequest
 ) -> dict[str, str]:

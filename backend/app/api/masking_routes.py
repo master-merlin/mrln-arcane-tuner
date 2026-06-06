@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api._path_guard import safe_remove
+from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.core.masking.masking_service import MaskingService
@@ -94,7 +95,15 @@ class ApplyMaskRequest(BaseModel):
     opacity: float = 0.0
 
 
-@router.post("/datasets/{name}/masking/apply")
+class ApplyMaskResponse(BaseModel):
+    """Response body for applying a mask to an image."""
+
+    status: str = "success"
+    message: str
+    output_path: str
+
+
+@router.post("/datasets/{name}/masking/apply", response_model=ApplyMaskResponse)
 async def apply_mask(name: str, request: ApplyMaskRequest):
     """Composite an image with its mask and save the result."""
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
@@ -160,7 +169,14 @@ async def preview_mask(name: str, image_rel_path: str, opacity: float = 0.5):
     return StreamingResponse(buf, media_type="image/png")
 
 
-@router.delete("/datasets/{name}/masking/delete")
+class DeleteMaskResponse(BaseModel):
+    """Response body for mask deletion."""
+
+    status: str = "deleted"
+    message: str = "Mask deleted successfully"
+
+
+@router.delete("/datasets/{name}/masking/delete", response_model=DeleteMaskResponse)
 async def delete_mask(name: str, image_rel_path: str):
     """Delete the mask file associated with an image."""
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
@@ -202,7 +218,7 @@ class MaskGenerateBatchRequest(BaseModel):
     params: dict[str, Any] = {}
 
 
-@router.post("/datasets/{name}/masking/generate/batch")
+@router.post("/datasets/{name}/masking/generate/batch", response_model=TaskEnqueuedResponse)
 async def generate_masks_batch(name: str, request: MaskGenerateBatchRequest):
     """Start a backend-owned mask-generation task (queued on the GPU lane)."""
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
@@ -224,7 +240,7 @@ async def generate_masks_batch(name: str, request: MaskGenerateBatchRequest):
     return {"task_id": task.id}
 
 
-@router.post("/datasets/{name}/masking/apply/batch")
+@router.post("/datasets/{name}/masking/apply/batch", response_model=TaskEnqueuedResponse)
 async def apply_masks_batch(name: str, opacity: float = 0.0, overwrite: bool = False):
     """Start a backend-owned mask-apply task (queued on the GPU lane)."""
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)

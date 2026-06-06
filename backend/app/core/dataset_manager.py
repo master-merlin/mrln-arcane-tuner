@@ -1576,13 +1576,14 @@ class DatasetManager:
                 meta["enabled"] = True
                 changed.append(key)
 
-        # Persist the dataset row (excluded_count aggregate changed) AND emit a
-        # per-item event for each flipped image, so the frontend MediaItemStore
-        # reflects the change live without a manual reload (matches the single
-        # toggle_image_enabled path).
-        self._persist_dataset(dataset)
-        for key in changed:
-            self._persist_media_item(dataset, key)
+        # Single bulk write + one coarse invalidate. The frontend enableAll is
+        # optimistic (it flips every row client-side), and other clients reconcile
+        # via dataset.invalidated → refreshDataset — the standard path for broad
+        # metadata changes. This replaces the old O(N) per-item _persist_media_item
+        # writes (one DB transaction per flipped image).
+        if changed:
+            self._persist_dataset(dataset)
+            self._emit_dataset_invalidated(name)
 
         logger.info("all_images_enabled", dataset=name, reset_count=len(changed))
         return {"reset_count": len(changed)}

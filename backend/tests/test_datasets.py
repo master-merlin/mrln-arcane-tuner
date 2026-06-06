@@ -588,3 +588,55 @@ def test_excluded_count_reaches_list_response(mock_manager, client):
     assert len(rows) == 1
     assert rows[0]["excluded_count"] == 1
 
+
+# ── Enable All — bulk-persist optimization ───────────────────────────────
+
+
+def test_enable_all_bulk_persists_once_and_invalidates(monkeypatch):
+    from app.core.dataset_manager import Dataset, dataset_manager
+
+    ds = Dataset(id="ea-i", name="ea", path="/tmp/ea", created_at=0.0,
+                 media_metadata={
+                     "a.jpg": {"enabled": False},
+                     "b.jpg": {"enabled": False},
+                     "c.jpg": {"enabled": True},
+                 })
+    dataset_manager.datasets["ea"] = ds
+    calls = {"persist_dataset": 0, "persist_item": 0, "invalidate": 0}
+    monkeypatch.setattr(dataset_manager, "_persist_dataset",
+                        lambda d: calls.__setitem__("persist_dataset", calls["persist_dataset"] + 1))
+    monkeypatch.setattr(dataset_manager, "_persist_media_item",
+                        lambda d, k: calls.__setitem__("persist_item", calls["persist_item"] + 1))
+    monkeypatch.setattr(dataset_manager, "_emit_dataset_invalidated",
+                        lambda name: calls.__setitem__("invalidate", calls["invalidate"] + 1))
+    try:
+        res = dataset_manager.enable_all_images("ea")
+        assert res["reset_count"] == 2
+        assert ds.media_metadata["a.jpg"]["enabled"] is True
+        assert ds.media_metadata["b.jpg"]["enabled"] is True
+        assert calls["persist_dataset"] == 1     # one bulk write
+        assert calls["persist_item"] == 0        # NO per-item writes
+        assert calls["invalidate"] == 1          # one coarse broadcast
+    finally:
+        dataset_manager.datasets.pop("ea", None)
+
+
+def test_enable_all_noop_when_all_enabled(monkeypatch):
+    from app.core.dataset_manager import Dataset, dataset_manager
+
+    ds = Dataset(id="ea2-i", name="ea2", path="/tmp/ea2", created_at=0.0,
+                 media_metadata={"a.jpg": {"enabled": True}})
+    dataset_manager.datasets["ea2"] = ds
+    calls = {"persist_dataset": 0, "invalidate": 0}
+    monkeypatch.setattr(dataset_manager, "_persist_dataset",
+                        lambda d: calls.__setitem__("persist_dataset", calls["persist_dataset"] + 1))
+    monkeypatch.setattr(dataset_manager, "_emit_dataset_invalidated",
+                        lambda name: calls.__setitem__("invalidate", calls["invalidate"] + 1))
+    try:
+        res = dataset_manager.enable_all_images("ea2")
+        assert res["reset_count"] == 0
+        assert calls["persist_dataset"] == 0     # nothing changed → no write
+        assert calls["invalidate"] == 0
+    finally:
+        dataset_manager.datasets.pop("ea2", None)
+

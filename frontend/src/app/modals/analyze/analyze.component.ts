@@ -883,8 +883,9 @@ const THUMB_FALLBACK_DATA_URI =
         /* Spin the Loader2 icon while harmonizing. Gated on a dedicated class
            (not [disabled]) to mirror the editor's Save-spinner pattern and stay
            robust if the button ever becomes disabled for other reasons. */
-        .btn.primary.harmonizing app-ico { display: inline-flex; }
-        .btn.primary.harmonizing app-ico ::ng-deep svg { animation: an-harm-spin 0.9s linear infinite; }
+        /* Rotate the whole <app-ico> host (which wraps a single <svg>) instead
+           of piercing encapsulation — visually identical for a spin. */
+        .btn.primary.harmonizing app-ico { display: inline-flex; animation: an-harm-spin 0.9s linear infinite; }
         @keyframes an-harm-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
         /* Batch crop-all */

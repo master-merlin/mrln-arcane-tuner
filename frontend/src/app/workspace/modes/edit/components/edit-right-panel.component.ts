@@ -128,7 +128,9 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
            the Check icon doesn't spin in the "nothing-to-save" disabled
            state. */
         .btn.primary.save app-ico { display: inline-flex; }
-        .btn.primary.save.is-saving app-ico ::ng-deep svg { animation: edit-save-spin 0.9s linear infinite; }
+        /* Rotate the <app-ico> host (single <svg> inside) rather than piercing
+           encapsulation — visually identical for a spin. */
+        .btn.primary.save.is-saving app-ico { animation: edit-save-spin 0.9s linear infinite; }
         @keyframes edit-save-spin {
             from { transform: rotate(0deg); }
             to   { transform: rotate(360deg); }

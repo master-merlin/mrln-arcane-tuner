@@ -22,7 +22,7 @@ import { ToastService, Toast } from '../../../services/toast';
       from { opacity: 0; transform: translateX(1rem); }
       to   { opacity: 1; transform: translateX(0); }
     }
-    :host ::ng-deep .animate-slideIn {
+    .animate-slideIn {
       animation: slideIn 0.25s ease-out;
     }
   `]

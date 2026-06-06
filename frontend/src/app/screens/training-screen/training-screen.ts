@@ -28,6 +28,9 @@ export interface ModelDefinition {
     id: string;
     name?: string;
     family?: string;
+    /** Plugin-declared architecture descriptor (e.g. `transformer.type`); read
+     *  by the config form to branch on the model's transformer kind. */
+    architecture_params?: Record<string, unknown>;
     [key: string]: unknown;
 }
 

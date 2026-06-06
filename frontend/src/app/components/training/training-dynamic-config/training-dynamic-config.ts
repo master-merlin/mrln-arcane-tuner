@@ -1,6 +1,6 @@
 import { Component, output, input, inject, signal, computed, effect, DestroyRef, ViewChild } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
-import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, FormsModule } from '@angular/forms';
+import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, FormsModule, type AbstractControl, type ValidationErrors } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
@@ -25,6 +25,7 @@ import { ModelSourceConfigComponent } from '../model-source-config/model-source-
 import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
 import { SchemaNode, SchemaProp } from '../schema-node';
+import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
 
 export interface TrainingTemplate {
   id: string;
@@ -526,7 +527,7 @@ export interface TrainingSegment {
 })
 export class TrainingDynamicConfigComponent {
   schema = input<SchemaNode>(); // JSON Schema
-  availableModels = input<any[]>([]); // New input for model list
+  availableModels = input<ModelDefinition[]>([]); // New input for model list
   projectId = input<string | null>(null); // Passed down to components
   configSubmitted = output<TrainingConfig>();
 
@@ -752,10 +753,10 @@ export class TrainingDynamicConfigComponent {
         const model = this.availableModels().find(m => m.id === currentDef);
 
         if (model) {
-          this.selectedFamily.set(model.family);
+          this.selectedFamily.set(model.family ?? '');
         } else if (this.availableModels().length > 0) {
           const firstModel = this.availableModels()[0];
-          this.selectedFamily.set(firstModel.family);
+          this.selectedFamily.set(firstModel.family ?? '');
           this.form.get('definition_id')?.setValue(firstModel.id);
         }
 
@@ -894,8 +895,8 @@ export class TrainingDynamicConfigComponent {
     }
   }
 
-  onFamilyChange(event: any) {
-    const family = event.target.value;
+  onFamilyChange(event: Event) {
+    const family = (event.target as HTMLSelectElement).value;
     this.selectedFamily.set(family);
     // Auto-select first definition in family
     const defs = this.filteredDefinitions();
@@ -1042,7 +1043,7 @@ export class TrainingDynamicConfigComponent {
       if (event.definitionId) {
         const model = this.availableModels().find(m => m.id === event.definitionId);
         if (model) {
-          this.selectedFamily.set(model.family);
+          this.selectedFamily.set(model.family ?? '');
           // Explicitly update the form control so valueChanges triggers the tracking signal
           this.form.get('definition_id')?.setValue(event.definitionId);
         }
@@ -1145,7 +1146,7 @@ export class TrainingDynamicConfigComponent {
     // Switch family to match the template's definition
     const model = this.availableModels().find(m => m.id === definitionId);
     if (model) {
-      this.selectedFamily.set(model.family);
+      this.selectedFamily.set(model.family ?? '');
     }
     this.patchFormRecursive(this.form, config);
   }
@@ -1171,7 +1172,7 @@ export class TrainingDynamicConfigComponent {
 
     const model = this.availableModels().find(m => m.id === definitionId);
     if (model) {
-      this.selectedFamily.set(model.family);
+      this.selectedFamily.set(model.family ?? '');
     }
     this.patchFormRecursive(this.form, config);
 
@@ -1206,7 +1207,7 @@ export class TrainingDynamicConfigComponent {
     if (defId) {
       const model = this.availableModels().find(m => m.id === defId);
       if (model) {
-        this.selectedFamily.set(model.family);
+        this.selectedFamily.set(model.family ?? '');
       }
     }
     this.patchFormRecursive(this.form, config);
@@ -1797,7 +1798,7 @@ export class TrainingDynamicConfigComponent {
 
       const validators = [];
       if (key === 'resolutions') {
-        validators.push((control: any) => {
+        validators.push((control: AbstractControl): ValidationErrors | null => {
           const val = parseInt(control.value);
           return (val > 0 && val % 32 === 0) ? null : { 'mod32': true };
         });
@@ -1808,25 +1809,25 @@ export class TrainingDynamicConfigComponent {
   }
 
   // --- Resolution Helpers ---
-  isPreset(val: any): boolean {
-    return [512, 768, 1024, 1280, 1536].includes(parseInt(val));
+  isPreset(val: unknown): boolean {
+    return [512, 768, 1024, 1280, 1536].includes(parseInt(String(val)));
   }
 
   isResolutionSelected(res: number): boolean {
     const array = this.getFormArray('resolutions');
     if (!array) return false;
-    return array.value.some((id: any) => parseInt(id) === res);
+    return array.value.some((id: unknown) => parseInt(String(id)) === res);
   }
 
   toggleResolution(res: number) {
     const array = this.getFormArray('resolutions');
     if (!array) return;
 
-    const index = array.value.findIndex((v: any) => parseInt(v) === res);
+    const index = array.value.findIndex((v: unknown) => parseInt(String(v)) === res);
     if (index >= 0) {
       array.removeAt(index);
     } else {
-      array.push(new FormControl(res, [(control: any) => {
+      array.push(new FormControl(res, [(control: AbstractControl): ValidationErrors | null => {
         const val = parseInt(control.value);
         return (val > 0 && val % 32 === 0) ? null : { 'mod32': true };
       }]));
@@ -2119,7 +2120,7 @@ export class TrainingDynamicConfigComponent {
         // (but NOT fields with hidden:true — those are just visually hidden
         // and rendered by custom components like TargetLayersCard)
         for (const [key, propSchema] of Object.entries(schema.properties)) {
-          const ps = propSchema as any;
+          const ps = propSchema;
           // Strip depends_on-hidden AND family-unsupported (capability-hidden)
           // fields so stale values are never submitted. Passing `key` lets
           // shouldHideField also consult the capability descriptor.

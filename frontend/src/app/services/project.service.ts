@@ -37,7 +37,7 @@ export interface Dataset {
   // partial representation depends on backend structure
   id: string;
   name: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 @Injectable({
@@ -130,8 +130,8 @@ export class ProjectService {
     return this.http.get<Dataset[]>(`${this.apiUrl}/${projectId}/datasets`);
   }
 
-  addProjectDataset(projectId: string, datasetId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${projectId}/datasets`, { dataset_id: datasetId });
+  addProjectDataset(projectId: string, datasetId: string): Observable<{ status: string }> {
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${projectId}/datasets`, { dataset_id: datasetId });
   }
 
   removeProjectDataset(projectId: string, datasetId: string): Observable<void> {

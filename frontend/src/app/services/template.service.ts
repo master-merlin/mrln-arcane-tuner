@@ -96,15 +96,15 @@ export class TemplateService {
     return this.http.put<Template>(`${this.apiUrl}/${domain}/${templateId}`, updates);
   }
 
-  deleteTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<any> {
-    return this.http.delete(`${this.apiUrl}/${domain}/${templateId}`);
+  deleteTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<{ status: string }> {
+    return this.http.delete<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}`);
   }
 
   branchTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string, targetProjectId: string, newName?: string): Observable<Template> {
     return this.http.post<Template>(`${this.apiUrl}/${domain}/${templateId}/branch`, { target_project_id: targetProjectId, new_name: newName });
   }
 
-  useTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${domain}/${templateId}/use`, {});
+  useTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<{ status: string }> {
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}/use`, {});
   }
 }

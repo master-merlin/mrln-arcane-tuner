@@ -111,27 +111,9 @@ export class SystemService implements OnDestroy {
         });
     }
 
-    /** One-shot system snapshot (REST). */
-    getSystemStatus(): Observable<SystemSnapshot> {
-        return this.http.get<SystemSnapshot>(`${this.apiUrl}/system/status`);
-    }
-
-    /** One-shot GPU-only snapshot (REST). */
-    getGPUStatus(): Observable<{ gpus: GPUStatus[] }> {
-        return this.http.get<{ gpus: GPUStatus[] }>(`${this.apiUrl}/system/gpu`);
-    }
-
     /** Backend health snapshot for the Server screen KPI rail. */
     getHealth(): Observable<HealthSnapshot> {
         return this.http.get<HealthSnapshot>(`${this.apiUrl}/system/health`);
-    }
-
-    /** Estimate VRAM for a training configuration. */
-    estimateVRAM(definitionId: string, config: Record<string, any>): Observable<VRAMReport> {
-        return this.http.post<VRAMReport>(`${this.apiUrl}/jobs/estimate-vram`, {
-            definition_id: definitionId,
-            config,
-        });
     }
 
     /** Start receiving live system metrics via WebSocket. Reference-counted. */

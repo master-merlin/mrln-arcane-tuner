@@ -21,7 +21,6 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
     listJobs: jasmine.Spy;
     listJobHistory: jasmine.Spy;
     deleteJob: jasmine.Spy;
-    getStats: jasmine.Spy;
   };
 
   beforeEach(() => {
@@ -31,7 +30,6 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         of([makeJob('archived-1'), makeJob('archived-2')]),
       ),
       deleteJob: jasmine.createSpy('deleteJob').and.returnValue(of({ status: 'deleted' })),
-      getStats: jasmine.createSpy('getStats').and.returnValue(of({})),
     };
 
     const wsStub = {

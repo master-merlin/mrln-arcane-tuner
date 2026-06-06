@@ -46,22 +46,6 @@ export interface Job {
   project_id?: string | null;
 }
 
-export interface VramEstimate {
-  peak_mb: number;
-  /** FREE VRAM (total − used by all processes) — what the fit check uses. */
-  available_mb: number;
-  /** Total card capacity. */
-  total_mb?: number;
-  /** VRAM already held by other processes (ComfyUI, browser, other runs). */
-  used_mb?: number;
-  fits: boolean;
-  warnings?: string[];
-  caching_peak_mb?: number;
-  training_peak_mb?: number;
-  calibrated?: boolean;
-  calibrated_components?: string[];
-}
-
 /** One calibrated metric in a TrainingEstimate. */
 export interface EstimateMetric {
   display: string;
@@ -83,36 +67,6 @@ export interface TrainingEstimate {
   throughput: EstimateMetric & { steps_per_sec: number };
   disk_footprint: EstimateMetric & { bytes: number };
   vram: VRAMReport | null;
-}
-
-export interface DefinitionStats {
-  definition_id: string;
-  stats_available: boolean;
-  run_count: number;
-  stats: Record<string, { value: number; samples: number }>;
-  updated_at: number | null;
-}
-
-export interface TrainingStats {
-  total_jobs: number;
-  completed: number;
-  failed: number;
-  stopped: number;
-  running: number;
-  paused: number;
-  success_rate: number;
-  total_steps: number;
-  total_runtime_sec: number;
-  total_training_sec: number;
-  avg_steps: number;
-  avg_loss: number;
-  avg_min_loss: number;
-  avg_step_time_sec: number;
-  avg_runtime_sec: number;
-  model_families: { id: string; count: number }[];
-  optimizers: { name: string; count: number }[];
-  unique_datasets: number;
-  last_job: { lora_name: string; definition_id: string; status: string; created_at: number } | null;
 }
 
 /** A LoRA `.safetensors` artifact a job saved at a checkpoint. */
@@ -142,18 +96,9 @@ export class JobService {
     return this.http.put<Job>(`${this.apiUrl}/${jobId}/config`, { config });
   }
 
-  estimateVram(definitionId: string, config: any): Observable<VramEstimate> {
-    return this.http.post<VramEstimate>(`${this.apiUrl}/estimate-vram`, { definition_id: definitionId, config });
-  }
-
   /** Full data-calibrated training estimate (wall time, output, throughput, disk, VRAM). */
   estimate(definitionId: string, config: any): Observable<TrainingEstimate> {
     return this.http.post<TrainingEstimate>(`${this.apiUrl}/estimate`, { definition_id: definitionId, config });
-  }
-
-  /** Raw calibration stats + freshness for one definition. */
-  getDefinitionStats(definitionId: string): Observable<DefinitionStats> {
-    return this.http.get<DefinitionStats>(`${this.apiUrl}/stats/${definitionId}`);
   }
 
   /** Backfill run costs from disk + rebuild per-definition coefficients. */
@@ -167,10 +112,6 @@ export class JobService {
       url += `&project_id=${projectId}`;
     }
     return this.http.get<Job[]>(url);
-  }
-
-  getStats(): Observable<TrainingStats> {
-    return this.http.get<TrainingStats>(`${this.apiUrl}/history/stats`);
   }
 
   /**
@@ -227,10 +168,6 @@ export class JobService {
 
   deleteJob(jobId: string): Observable<any> {
     return this.http.delete(`${this.apiUrl}/${jobId}`);
-  }
-
-  getJobLogs(jobId: string): Observable<string[]> {
-    return this.http.get<string[]>(`${this.apiUrl}/${jobId}/logs`);
   }
 
   getJobSamples(jobId: string): Observable<any[]> {

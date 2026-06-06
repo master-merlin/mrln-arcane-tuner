@@ -98,21 +98,6 @@ export interface HSLSelectiveConfig {
   [range: string]: HSLRangeConfig;
 }
 
-export interface ImageAdjustments {
-  color_match?: { reference_path: string; method: string; strength: number };
-  curves?: CurvesConfig;
-  cube_lut?: string;
-  cube_lut_strength?: number;
-  hue_shift?: number;
-  saturation?: number;
-  contrast?: number;
-  sharpening?: SharpeningConfig;
-  white_balance?: WhiteBalanceConfig;
-  vignette?: VignetteConfig;
-  lens_correction?: LensCorrectionConfig;
-  hsl_selective?: HSLSelectiveConfig;
-}
-
 export interface HistogramData {
   r: number[];
   g: number[];
@@ -169,10 +154,6 @@ export class DatasetService {
 
   scanDataset(name: string, forceFull: boolean = false): Observable<Dataset> {
     return this.http.post<Dataset>(`${this.apiUrl}/${encodeURIComponent(name)}/scan?force_full=${forceFull}`, {});
-  }
-
-  scanAllDatasets(forceFull: boolean = false): Observable<Dataset[]> {
-    return this.http.post<Dataset[]>(`${this.apiUrl}/scan-all?force_full=${forceFull}`, {});
   }
 
   /** Launch a backend-owned single-dataset rescan task. Returns the task id;
@@ -442,10 +423,6 @@ export class DatasetService {
 
   // ── Image Adjustments ──────────────────────────────────────────────
 
-  applyImageAdjustments(name: string, path: string, adjustments: ImageAdjustments): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/adjust`, { path, ...adjustments });
-  }
-
   getHistogram(name: string, imagePath: string): Observable<HistogramData> {
     return this.http.get<HistogramData>(
       `${this.apiUrl}/${encodeURIComponent(name)}/histogram?image_path=${encodeURIComponent(imagePath)}`
@@ -458,17 +435,6 @@ export class DatasetService {
       { curves, size },
       { responseType: 'blob' }
     );
-  }
-
-  applyBatchAdjustments(name: string, paths: string[], adjustments: ImageAdjustments): Observable<any> {
-    return this.http.post(
-      `${this.apiUrl}/${encodeURIComponent(name)}/adjust-batch`,
-      { paths, ...adjustments },
-    );
-  }
-
-  getBatchAdjustUrl(name: string): string {
-    return `${this.apiUrl}/${encodeURIComponent(name)}/adjust-batch`;
   }
 
   colorMatch(name: string, sourcePath: string, referencePath: string, method: string = 'cdf', strength: number = 1.0): Observable<Blob> {

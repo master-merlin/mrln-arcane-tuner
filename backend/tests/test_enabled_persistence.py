@@ -116,10 +116,11 @@ class TestV8EnabledMigration:
             assert row["enabled"] == 1
 
     def test_run_migrations_reaches_v8(self, db_engine):
-        """Full run_migrations should bring schema to v8."""
+        """Full run_migrations should bring schema through at least v8 (the
+        enabled-persistence migration); later migrations push it higher."""
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 8
+            assert row["version"] >= 8
 
 
 # ── Repository round-trip ─────────────────────────────────────────────────

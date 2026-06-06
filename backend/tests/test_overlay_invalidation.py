@@ -5,8 +5,8 @@ When a base image's pixels change (crop / adjustment), the previously rendered
 overlay PNG is stale but the *recipe* in ``overlays.json`` is still valid intent,
 so the overlay is re-rendered from the recipe against the new pixels (or dropped
 if it can't be re-rendered). On image deletion the overlay is cleaned up so it
-doesn't orphan. ``enable_all_images`` emits a per-item event for each flipped
-image so the frontend updates live.
+doesn't orphan. ``enable_all_images`` emits a single coarse ``dataset.invalidated``
+(clients reconcile via refreshDataset) rather than per-item events.
 """
 from __future__ import annotations
 
@@ -165,8 +165,10 @@ async def test_delete_removes_overlay_and_emits(overlay_manager):
 # ── Enable-all: per-item events ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_enable_all_emits_per_item_events(overlay_manager):
-    """enable_all_images emits a media_item/updated for each flipped image."""
+async def test_enable_all_emits_dataset_invalidated(overlay_manager):
+    """enable_all_images flips every image and emits ONE coarse
+    dataset.invalidated (clients reconcile via refreshDataset) — not per-item
+    media_item/updated events. Replaces the old O(N) per-item emission."""
     mgr, ds, rel_a, rel_b = overlay_manager
     ds.media_metadata[rel_a]["enabled"] = False
     ds.media_metadata[rel_b]["enabled"] = False
@@ -177,10 +179,15 @@ async def test_enable_all_emits_per_item_events(overlay_manager):
         await asyncio.sleep(0.05)
 
     assert result["reset_count"] == 2
-    updated = _entity_events(mock_broadcast, entity="media_item", op="updated")
-    ids = {e["id"] for e in updated}
-    assert ids == {f"{ds.name}/{rel_a}", f"{ds.name}/{rel_b}"}
-    assert all(e["payload"]["enabled"] is True for e in updated)
+    # No per-item events any more …
+    assert not _entity_events(mock_broadcast, entity="media_item", op="updated")
+    # … just one coarse dataset.invalidated for this dataset.
+    invalidated = [
+        c.args[1]
+        for c in mock_broadcast.await_args_list
+        if c.args and c.args[0] == "dataset.invalidated"
+    ]
+    assert invalidated == [{"name": ds.name}]
 
 
 # ── overlay_recipe.rerender_overlay_from_recipe (real pipeline, CPU op) ──────

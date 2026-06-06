@@ -34,3 +34,18 @@ class CropBatchRequest(BaseModel):
     across all items; each item carries its own target dimensions."""
     items: list[CropBatchItem]
     origin: str = "center"
+
+
+# ── Response models ──────────────────────────────────────────────────────
+
+
+class CropResponse(BaseModel):
+    """Ack for a single-image crop."""
+    status: str = "cropped"
+    file: str
+
+
+class CalcCropTargetResponse(BaseModel):
+    """Computed crop target dimensions for a given image + aspect ratio."""
+    target_width: int
+    target_height: int

@@ -10,7 +10,9 @@ from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.crop_schemas import (
     CropRequest, CalcCropTargetRequest, CropBatchRequest,
+    CropResponse, CalcCropTargetResponse,
 )
+from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset.crop_batch import run_crop_batch
 from app.core.tasks.task_manager import task_manager
 
@@ -18,7 +20,7 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-@router.post("/datasets/{name}/crop")
+@router.post("/datasets/{name}/crop", response_model=CropResponse)
 async def crop_media(name: str, request: CropRequest):
     """Crop an image to the specified dimensions."""
     try:
@@ -40,7 +42,7 @@ async def crop_media(name: str, request: CropRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/datasets/{name}/crop/batch")
+@router.post("/datasets/{name}/crop/batch", response_model=TaskEnqueuedResponse)
 async def crop_media_batch(name: str, request: CropBatchRequest):
     """Start a backend-owned batch-crop task (queued if the lane is busy).
     Returns the task id immediately; progress is monitored via TaskStore."""
@@ -59,7 +61,7 @@ async def crop_media_batch(name: str, request: CropBatchRequest):
     return {"task_id": task.id}
 
 
-@router.post("/datasets/{name}/calc-crop-targets")
+@router.post("/datasets/{name}/calc-crop-targets", response_model=CalcCropTargetResponse)
 async def calc_crop_targets(name: str, request: CalcCropTargetRequest):
     """Calculate crop target dimensions for a given image size and aspect ratio."""
     try:

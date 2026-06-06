@@ -71,3 +71,79 @@ class ModelDownloadRequest(BaseModel):
     category: Literal["restore", "upscale"]
     filename: str
     target_folder: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+
+class RenderPipelineResponse(BaseModel):
+    """Ack for a synchronous (non-destructive) pipeline render that saved an overlay."""
+
+    status: str = "overlay_saved"
+    file: str
+    overlay: str
+    dimensions: list[int]
+    hash: str
+
+
+class OverlayRecipeResponse(BaseModel):
+    """The pipeline recipe that produced an overlay.
+
+    ``recipe`` is the raw overlays.json entry (overlay_file / created_at /
+    operations); kept as a free-form dict so no recipe fields are dropped.
+    """
+
+    image_path: str
+    recipe: dict[str, Any]
+
+
+class OverlayActionResponse(BaseModel):
+    """Ack for overlay revert/commit actions ({"status", "file"})."""
+
+    status: str
+    file: str
+
+
+class RestoreModelItem(BaseModel):
+    """One restoration model file found on disk."""
+
+    name: str
+    path: str
+    size_mb: float
+
+
+class RestoreModelListResponse(BaseModel):
+    """Listing of restoration model files in a folder."""
+
+    models: list[RestoreModelItem]
+    folder: str
+
+
+class ModelRegistryItem(BaseModel):
+    """One curated registry model with its download status + metadata."""
+
+    filename: str
+    downloaded: bool
+    local_size_mb: float | None = None
+    url: str
+    size_mb: float
+    description: str
+
+
+class ModelRegistryResponse(BaseModel):
+    """All known models for a category with download status."""
+
+    category: str
+    folder: str
+    models: list[ModelRegistryItem]
+
+
+class ModelDownloadResponse(BaseModel):
+    """Ack for a completed model download."""
+
+    status: str = "downloaded"
+    filename: str
+    path: str
+    size_mb: float

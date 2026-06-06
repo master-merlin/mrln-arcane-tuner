@@ -8,6 +8,7 @@ from fractions import Fraction
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset.harmonize_batch import run_harmonize_batch
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
@@ -15,6 +16,11 @@ from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+class VersionResponse(BaseModel):
+    """The dataset's semantic version after a bump/set operation."""
+    version: str
 
 
 @router.get("/datasets/{name}/analysis")
@@ -67,7 +73,7 @@ async def analyze_dataset(
         raise HTTPException(status_code=status, detail=msg)
 
 
-@router.post("/datasets/{name}/bump")
+@router.post("/datasets/{name}/bump", response_model=VersionResponse)
 async def bump_version(name: str, type: str = "patch"):
     """Bump the dataset's semantic version."""
     logger.info("bumping_version", dataset_name=name, type=type)
@@ -82,7 +88,7 @@ class SetVersionRequest(BaseModel):
     version: str
 
 
-@router.post("/datasets/{name}/version")
+@router.post("/datasets/{name}/version", response_model=VersionResponse)
 async def set_version(name: str, body: SetVersionRequest):
     """Manually overwrite the dataset's semantic version.
 
@@ -102,7 +108,7 @@ async def set_version(name: str, body: SetVersionRequest):
     return {"version": new_version}
 
 
-@router.post("/datasets/{name}/harmonize/task")
+@router.post("/datasets/{name}/harmonize/task", response_model=TaskEnqueuedResponse)
 async def harmonize_files_task(name: str):
     """Start a backend-owned harmonize task (convert→rename→rescan all files).
     Returns the task id immediately; progress is monitored via TaskStore."""

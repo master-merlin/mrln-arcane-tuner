@@ -10,7 +10,10 @@ from fastapi import APIRouter, HTTPException
 from app.api._path_guard import safe_remove
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
-from app.api.schemas.upscale_schemas import UpscaleListRequest, UpscaleApplyRequest
+from app.api.schemas.upscale_schemas import (
+    UpscaleListRequest, UpscaleApplyRequest,
+    UpscaleListResponse, UpscaleApplyResponse,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -24,7 +27,7 @@ _LEGACY_UPSCALE_FOLDER = (
 )
 
 
-@router.post("/upscale/list-models")
+@router.post("/upscale/list-models", response_model=UpscaleListResponse)
 async def list_upscale_models(request: UpscaleListRequest):
     """Scan a folder for upscale model files (.pth, .safetensors)."""
     folder_str = request.folder.strip() if request.folder else ""
@@ -57,7 +60,7 @@ async def list_upscale_models(request: UpscaleListRequest):
     return {"models": models, "folder": str(folder)}
 
 
-@router.post("/datasets/{name}/upscale")
+@router.post("/datasets/{name}/upscale", response_model=UpscaleApplyResponse)
 async def upscale_media(name: str, request: UpscaleApplyRequest):
     """Upscale an image using a selected model with tiled inference."""
     try:

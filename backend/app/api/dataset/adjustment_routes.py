@@ -15,10 +15,12 @@ from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.adjustment_schemas import (
     AdjustmentRequest,
+    AdjustResponse,
     BatchAdjustmentRequest,
     ColorMatchRequest,
     CurvePointModel,
     ExportCubeRequest,
+    HistogramResponse,
 )
 
 router = APIRouter()
@@ -68,7 +70,7 @@ def _build_adjustments_dict(request: AdjustmentRequest | BatchAdjustmentRequest)
 # ── Single Image Adjustment ─────────────────────────────────────────────
 
 
-@router.post("/datasets/{name}/adjust")
+@router.post("/datasets/{name}/adjust", response_model=AdjustResponse)
 async def adjust_media(name: str, request: AdjustmentRequest):
     """Apply image adjustments."""
     try:
@@ -171,7 +173,7 @@ async def color_match_preview(name: str, request: ColorMatchRequest):
 # ── Histogram ────────────────────────────────────────────────────────────
 
 
-@router.get("/datasets/{name}/histogram")
+@router.get("/datasets/{name}/histogram", response_model=HistogramResponse)
 async def get_histogram(name: str, image_path: str = Query(...)):
     """Return per-channel histogram data for an image."""
     from app.core.image_adjustments import compute_histogram

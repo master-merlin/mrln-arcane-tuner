@@ -18,11 +18,18 @@ from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
 from app.api.schemas.overlay_schemas import (
     ModelDownloadRequest,
+    ModelDownloadResponse,
+    ModelRegistryResponse,
+    OverlayActionResponse,
     OverlayCommitRequest,
+    OverlayRecipeResponse,
     RenderPipelineBatchRequest,
     RenderPipelineRequest,
+    RenderPipelineResponse,
     RestoreModelListRequest,
+    RestoreModelListResponse,
 )
+from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core import model_registry
 from app.core.image_processing.pipeline_batch import run_pipeline_batch
 from app.core.tasks.task_manager import task_manager
@@ -94,7 +101,7 @@ def _overlay_id(dataset_name: str, image_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/datasets/{name}/render-pipeline")
+@router.post("/datasets/{name}/render-pipeline", response_model=RenderPipelineResponse)
 async def render_pipeline(name: str, request: RenderPipelineRequest):
     """Execute the full pipeline on an image and save the overlay."""
     dataset, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
@@ -214,7 +221,7 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
     }
 
 
-@router.post("/datasets/{name}/render-pipeline/batch")
+@router.post("/datasets/{name}/render-pipeline/batch", response_model=TaskEnqueuedResponse)
 async def render_pipeline_batch(name: str, request: RenderPipelineBatchRequest):
     """Start a backend-owned task that applies one pipeline recipe to many
     images (mass-edit). Returns the task id immediately; monitored via TaskStore."""
@@ -235,7 +242,7 @@ async def render_pipeline_batch(name: str, request: RenderPipelineBatchRequest):
     return {"task_id": task.id}
 
 
-@router.post("/datasets/{name}/render-pipeline/task")
+@router.post("/datasets/{name}/render-pipeline/task", response_model=TaskEnqueuedResponse)
 async def render_pipeline_task(name: str, request: RenderPipelineRequest):
     """Run a SINGLE-image pipeline render as a gpu-lane background task (used by
     the edit workspace when the pipeline contains a GPU op — denoise/upscale).
@@ -278,7 +285,10 @@ async def get_overlay(name: str, image_path: str):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/datasets/{name}/overlay-recipe/{image_path:path}")
+@router.get(
+    "/datasets/{name}/overlay-recipe/{image_path:path}",
+    response_model=OverlayRecipeResponse,
+)
 async def get_overlay_recipe(name: str, image_path: str):
     """Return the pipeline recipe that produced an overlay."""
     _, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
@@ -294,7 +304,10 @@ async def get_overlay_recipe(name: str, image_path: str):
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/datasets/{name}/overlay/{image_path:path}")
+@router.delete(
+    "/datasets/{name}/overlay/{image_path:path}",
+    response_model=OverlayActionResponse,
+)
 async def delete_overlay(name: str, image_path: str):
     """Delete the overlay for an image, reverting to the original."""
     dataset, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
@@ -336,7 +349,7 @@ async def delete_overlay(name: str, image_path: str):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/datasets/{name}/overlay/commit")
+@router.post("/datasets/{name}/overlay/commit", response_model=OverlayActionResponse)
 async def commit_overlay(name: str, request: OverlayCommitRequest):
     """Flatten the overlay into the original file (destructive)."""
     dataset, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
@@ -422,7 +435,7 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/restore/list-models")
+@router.post("/restore/list-models", response_model=RestoreModelListResponse)
 async def list_restore_models(request: RestoreModelListRequest):
     """Scan a folder for restoration model files."""
     folder_str = request.folder.strip() if request.folder else ""
@@ -464,7 +477,7 @@ def _default_folder_for_category(category: str) -> Path:
     return _BACKEND_ROOT / "models" / category
 
 
-@router.get("/models/registry/{category}")
+@router.get("/models/registry/{category}", response_model=ModelRegistryResponse)
 async def get_model_registry(category: str):
     """Return all known models for a category with download status."""
     if category not in ("restore", "upscale"):
@@ -479,7 +492,7 @@ async def get_model_registry(category: str):
     }
 
 
-@router.post("/models/download")
+@router.post("/models/download", response_model=ModelDownloadResponse)
 async def download_model_route(request: ModelDownloadRequest):
     """Download a model from the curated registry to the target folder."""
     if request.target_folder.strip():

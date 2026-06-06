@@ -105,3 +105,20 @@ class ExportCubeRequest(BaseModel):
     """Request body to export curves as a .cube LUT file."""
     curves: CurvesConfig
     size: int = 33
+
+
+# ── Response models ──────────────────────────────────────────────────────
+
+
+class AdjustResponse(BaseModel):
+    """Ack for a single-image adjustment apply."""
+    status: str = "adjusted"
+    file: str
+
+
+class HistogramResponse(BaseModel):
+    """Per-channel histograms (R, G, B, luminance), each 256 bins."""
+    r: list[int]
+    g: list[int]
+    b: list[int]
+    luminance: list[int]

@@ -172,6 +172,12 @@ export interface MaskingModelConfig {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        /* Sliders honor an inherited --form-accent override (e.g. the green
+           mass-mask modal) and fall back to the browser default otherwise, so
+           the other embedders (detail sidebar, template-edit) are unchanged. */
+        input[type="range"] {
+            accent-color: var(--form-accent, auto);
+        }
     `]
 })
 export class DatasetMaskingSettingsComponent implements OnInit {

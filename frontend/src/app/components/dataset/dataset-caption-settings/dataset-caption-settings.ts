@@ -266,6 +266,11 @@ export interface CaptionSettingsState {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        /* Honor an inherited --form-accent override (e.g. the green mass-mask
+           modal) and fall back to the browser default otherwise. */
+        input[type="range"] {
+            accent-color: var(--form-accent, auto);
+        }
     `]
 })
 export class DatasetCaptionSettingsComponent implements OnInit {

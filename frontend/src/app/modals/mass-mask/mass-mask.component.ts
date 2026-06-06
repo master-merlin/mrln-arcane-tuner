@@ -324,32 +324,19 @@ function tabForTask(t: Task): Tab | null {
         .mm-choice-desc { font-size: 10.5px; color: var(--color-text-subtle); line-height: 1.5; }
 
         .mm-settings {
+            /* Re-tint the embedded masking-/caption-settings sliders +
+               checkboxes to this modal's success/green accent. Setting the
+               --form-accent custom property cascades through Angular's
+               emulated encapsulation into each child's form controls (their
+               own slider rule + the global checkbox rule both read it), which
+               replaces the prior ng-deep overrides. The brand-coloured "+"
+               template button doesn't read --form-accent, so it's unaffected. */
+            --form-accent: var(--color-success);
             background: color-mix(in oklab, var(--color-surface-mid) 70%, transparent);
             border: 1px solid var(--color-border-default);
             border-radius: var(--radius-theme-2xl);
             padding: 16px;
             display: flex; flex-direction: column; gap: 12px;
-        }
-        /* Re-tint range sliders and checkboxes inside the embedded
-           <app-dataset-masking-settings> so they match this modal's
-           success/green accent. ::ng-deep pierces the shared component's
-           emulated encapsulation; targeting form controls only leaves
-           the brand-coloured "+" template button alone. Checkboxes are
-           styled with appearance:none + explicit background-color in
-           the global styles.css, so accent-color alone is ignored —
-           the checked/hover/focus colours have to be overridden directly. */
-        .mm-settings ::ng-deep input[type="range"] {
-            accent-color: var(--color-success) !important;
-        }
-        .mm-settings ::ng-deep input[type="checkbox"]:checked {
-            background-color: var(--color-success) !important;
-            border-color: var(--color-success) !important;
-        }
-        .mm-settings ::ng-deep input[type="checkbox"]:hover {
-            border-color: var(--color-success) !important;
-        }
-        .mm-settings ::ng-deep input[type="checkbox"]:focus-visible {
-            outline-color: var(--color-success) !important;
         }
         .mm-slider-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
         .mm-range { width: 100%; accent-color: var(--color-success); }

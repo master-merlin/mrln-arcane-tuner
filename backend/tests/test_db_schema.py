@@ -230,7 +230,18 @@ class TestV2Migration:
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 11
+            assert row["version"] == 12
+
+    def test_v12_drops_saved_concepts(self, db_engine):
+        """V12 removes the orphaned ``saved_concepts`` table; the drop is
+        idempotent so a DB that never had the table still migrates cleanly."""
+        run_migrations(db_engine)
+        with db_engine.connection() as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='saved_concepts'"
+            ).fetchone()
+            assert row is None
 
 
 # ── V10 Migration: persisted pending-queue priority ──────────────────────

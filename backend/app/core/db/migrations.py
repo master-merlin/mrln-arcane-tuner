@@ -43,6 +43,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v9,
         _migrate_v10,
         _migrate_v11,
+        _migrate_v12,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -814,4 +815,21 @@ def _migrate_v11(conn) -> None:
         )
     except Exception:
         pass  # Column already exists
+
+
+# ── V12: Drop dead saved_concepts table ────────────────────────────
+
+def _migrate_v12(conn) -> None:
+    """Drop the orphaned ``saved_concepts`` table.
+
+    The saved-concepts feature (masking concepts with global/project scope)
+    was removed in the post-overhaul dead-code sweep — its HTTP routes and
+    repository are gone and nothing in the codebase reads or writes the table.
+    No other table FK-references it, so the drop is self-contained.
+
+    Destructive + irreversible: any rows are permanently lost. This is a
+    forward-only migration (the system has no down-migrations), so it runs
+    exactly once on each DB already at v11.
+    """
+    conn.execute("DROP TABLE IF EXISTS saved_concepts")
 

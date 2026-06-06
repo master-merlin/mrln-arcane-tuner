@@ -12,8 +12,8 @@ import { ScopeStore } from '../../state/scope.store';
  * template list falls back to General-only — so project templates can't be
  * selected for captioning or masking.
  *
- * `activeDatasetProject` must therefore mirror {@link ScopeStore} exactly like
- * the migrated `activeTrainingProject` compat shim.
+ * `activeDatasetProject` must therefore mirror {@link ScopeStore} exactly,
+ * reading the active project through scope rather than holding its own state.
  */
 describe('ProjectService.activeDatasetProject — scope read-through', () => {
     let service: ProjectService;

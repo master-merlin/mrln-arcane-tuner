@@ -53,23 +53,21 @@ export class ProjectService {
   activeJobsProject = signal<string | null>(null);
 
   /**
-   * Compat shim — `activeTrainingProject` and `activeDatasetProject` used to
-   * be independent writable signals scattered around the old training /
-   * captioning / masking screens. In the Hi-Fi overhaul (Phase 8) the user's
-   * current project scope ({@link ScopeStore}) became the single source of
-   * truth, so both now read **through** it: switching scope switches the
-   * active project for training, captioning and masking alike.
+   * Compat shim — `activeDatasetProject` used to be an independent writable
+   * signal scattered around the old captioning / masking screens. In the Hi-Fi
+   * overhaul (Phase 8) the user's current project scope ({@link ScopeStore})
+   * became the single source of truth, so it now reads **through** it:
+   * switching scope switches the active project for captioning and masking.
    *
    * Exposed as an object with the same `.set()` / call-as-signal surface the
-   * old code expected, so any straggling consumer (the legacy dataset-manager
-   * / viewer-toolbar "Context" selectors, the shared caption/masking-settings
-   * components) continues to work. `.set(null)` switches to Global; `.set(id)`
-   * switches to that project.
+   * old code expected, so the shared caption/masking-settings components
+   * continue to work. `.set(null)` switches to Global; `.set(id)` switches to
+   * that project.
    *
-   * `activeDatasetProject` reading through scope is what lets project-scoped
-   * captioning/masking templates appear in the mass-* modals: those modals
-   * resolve their project via `effectiveProjectId() = input ?? activeDatasetProject()`,
-   * and the new shell only ever sets scope — never an explicit input.
+   * Reading through scope is what lets project-scoped captioning/masking
+   * templates appear in the mass-* modals: those modals resolve their project
+   * via `effectiveProjectId() = input ?? activeDatasetProject()`, and the new
+   * shell only ever sets scope — never an explicit input.
    */
   private scopeProjectShim(): { (): string | null; set: (value: string | null) => void } {
     const read = computed(() => this.scope.projectId());
@@ -81,7 +79,6 @@ export class ProjectService {
     return fn;
   }
 
-  readonly activeTrainingProject = this.scopeProjectShim();
   readonly activeDatasetProject = this.scopeProjectShim();
 
   loadProjects() {

@@ -15,6 +15,64 @@ from pydantic import BaseModel
 router = APIRouter()
 
 
+# ── Response schemas ─────────────────────────────────────────────────────
+# Each template domain is a fixed table (SELECT *), so the row shape is
+# stable. `config` is JSON-parsed into a dict by the repo's `_from_row`,
+# but may remain a raw string if parsing fails — hence `dict | str | None`.
+
+
+class StatusResponse(BaseModel):
+    """Simple ``{"status": ...}`` acknowledgement."""
+
+    status: str
+
+
+class CaptioningTemplate(BaseModel):
+    id: str
+    project_id: str | None = None
+    model_id: str
+    name: str
+    is_default: bool = False
+    readonly: bool = False
+    system_prompt: str = "Describe this image in detail."
+    config: dict[str, Any] | str | None = None
+    created_at: float
+    updated_at: float | None = None
+    used_count: int = 0
+    last_used_at: float | None = None
+    branched_from: str | None = None
+
+
+class MaskingTemplate(BaseModel):
+    id: str
+    project_id: str | None = None
+    model_id: str
+    name: str
+    is_default: bool = False
+    readonly: bool = False
+    config: dict[str, Any] | str | None = None
+    created_at: float
+    updated_at: float | None = None
+    used_count: int = 0
+    last_used_at: float | None = None
+    branched_from: str | None = None
+
+
+class TrainingTemplate(BaseModel):
+    id: str
+    project_id: str | None = None
+    definition_id: str
+    name: str
+    is_default: bool = False
+    readonly: bool = False
+    config: dict[str, Any] | str | None = None
+    created_at: float
+    updated_at: float | None = None
+    used_count: int = 0
+    last_used_at: float | None = None
+    branched_from: str | None = None
+
+
 # ── Request schemas ──────────────────────────────────────────────────────
 
 
@@ -65,7 +123,7 @@ class CreateFromJobRequest(BaseModel):
 # ── Captioning templates ─────────────────────────────────────────────────
 
 
-@router.get("/templates/captioning")
+@router.get("/templates/captioning", response_model=list[CaptioningTemplate])
 async def list_captioning_templates(
     model_id: str | None = None,
     project_id: str | None = None,
@@ -76,7 +134,7 @@ async def list_captioning_templates(
     return await asyncio.to_thread(repo.list_for_project, model_id, project_id)
 
 
-@router.post("/templates/captioning", status_code=201)
+@router.post("/templates/captioning", status_code=201, response_model=CaptioningTemplate)
 async def create_captioning_template(
     req: CreateCaptioningTemplateRequest,
 ) -> dict[str, Any]:
@@ -88,7 +146,7 @@ async def create_captioning_template(
 # ── Masking templates ────────────────────────────────────────────────────
 
 
-@router.get("/templates/masking")
+@router.get("/templates/masking", response_model=list[MaskingTemplate])
 async def list_masking_templates(
     model_id: str | None = None,
     project_id: str | None = None,
@@ -98,7 +156,7 @@ async def list_masking_templates(
     return await asyncio.to_thread(repo.list_for_project, model_id, project_id)
 
 
-@router.post("/templates/masking", status_code=201)
+@router.post("/templates/masking", status_code=201, response_model=MaskingTemplate)
 async def create_masking_template(
     req: CreateMaskingTemplateRequest,
 ) -> dict[str, Any]:
@@ -110,7 +168,7 @@ async def create_masking_template(
 # ── Training templates ───────────────────────────────────────────────────
 
 
-@router.get("/templates/training")
+@router.get("/templates/training", response_model=list[TrainingTemplate])
 async def list_training_templates(
     definition_id: str | None = None,
     project_id: str | None = None,
@@ -120,7 +178,7 @@ async def list_training_templates(
     return await asyncio.to_thread(repo.list_for_project, definition_id, project_id)
 
 
-@router.post("/templates/training", status_code=201)
+@router.post("/templates/training", status_code=201, response_model=TrainingTemplate)
 async def create_training_template(
     req: CreateTrainingTemplateRequest,
 ) -> dict[str, Any]:
@@ -129,7 +187,7 @@ async def create_training_template(
     return await asyncio.to_thread(repo.create, req.model_dump())
 
 
-@router.post("/templates/training/from-job", status_code=201)
+@router.post("/templates/training/from-job", status_code=201, response_model=TrainingTemplate)
 async def create_training_template_from_job(
     req: CreateFromJobRequest,
 ) -> dict[str, Any]:
@@ -197,7 +255,7 @@ async def update_template(
     return result or existing
 
 
-@router.delete("/templates/{domain}/{template_id}")
+@router.delete("/templates/{domain}/{template_id}", response_model=StatusResponse)
 async def delete_template(domain: str, template_id: str) -> dict[str, str]:
     """Delete a template."""
     repo = _get_repo(domain)
@@ -224,7 +282,7 @@ async def branch_template(
         raise HTTPException(404, str(e))
 
 
-@router.post("/templates/{domain}/{template_id}/use")
+@router.post("/templates/{domain}/{template_id}/use", response_model=StatusResponse)
 async def use_template(domain: str, template_id: str) -> dict[str, str]:
     """Increment usage counter."""
     repo = _get_repo(domain)

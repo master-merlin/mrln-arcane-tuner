@@ -3,13 +3,119 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter()
 
 
-@router.get("/jobs/history/stats")
+# ── Response schemas ─────────────────────────────────────────────────────
+
+
+class ModelFamilyCount(BaseModel):
+    id: str | None = None
+    count: int
+
+
+class OptimizerCount(BaseModel):
+    name: str | None = None
+    count: int
+
+
+class LastJobSummary(BaseModel):
+    lora_name: str | None = None
+    definition_id: str | None = None
+    status: str | None = None
+    created_at: float | None = None
+
+
+class JobStatsResponse(BaseModel):
+    total_jobs: int
+    completed: int
+    failed: int
+    stopped: int
+    running: int
+    paused: int
+    success_rate: float
+    total_steps: int
+    total_runtime_sec: float
+    total_training_sec: float
+    avg_steps: int
+    avg_loss: float
+    avg_min_loss: float
+    avg_step_time_sec: float
+    avg_runtime_sec: float
+    model_families: list[ModelFamilyCount]
+    optimizers: list[OptimizerCount]
+    unique_datasets: int
+    last_job: LastJobSummary | None = None
+
+
+class BackfillResponse(BaseModel):
+    completed_runs: int
+    rows_updated: int
+    fields_recovered: int
+    definitions: dict[str, int]
+
+
+class DefinitionStatsResponse(BaseModel):
+    definition_id: str
+    stats_available: bool
+    run_count: int
+    stats: dict[str, Any]
+    updated_at: float | None = None
+
+
+class Checkpoint(BaseModel):
+    id: int
+    job_id: str
+    step: int
+    path: str
+    lora_file: str | None = None
+    lora_size_bytes: int | None = None
+    created_at: float
+    loss_at_step: float | None = None
+    lr_at_step: float | None = None
+    is_final: bool = False
+    is_deleted: bool = False
+
+
+class SampleImage(BaseModel):
+    id: int
+    job_id: str
+    step: int
+    prompt: str = ""
+    seed: int | None = None
+    path: str
+    width: int = 0
+    height: int = 0
+    created_at: float
+
+
+class LossCurvePoint(BaseModel):
+    step: int
+    loss: float | None = None
+    lr: float | None = None
+    grad_norm: float | None = None
+    timestep_mean: float | None = None
+    epoch: float | None = None
+
+
+class JobMetricsResponse(BaseModel):
+    curve: list[LossCurvePoint]
+    summary: dict[str, Any]
+
+
+class JobReplayResponse(BaseModel):
+    available: bool
+    source: str
+    output_dir: str | None = None
+    loss: list[Any]
+
+
+@router.get("/jobs/history/stats", response_model=JobStatsResponse)
 async def get_job_stats():
     """Aggregate training statistics for the dashboard card."""
     from app.core.db.engine import get_db
@@ -121,7 +227,7 @@ async def get_job_stats():
 # ── Estimation-wall statistics ──────────────────────────────────────────
 
 
-@router.post("/jobs/stats/recompute")
+@router.post("/jobs/stats/recompute", response_model=BackfillResponse)
 async def recompute_definition_stats():
     """Backfill run costs from disk + rebuild per-definition coefficients.
 
@@ -134,7 +240,7 @@ async def recompute_definition_stats():
     return await asyncio.to_thread(run_backfill)
 
 
-@router.get("/jobs/stats/{definition_id}")
+@router.get("/jobs/stats/{definition_id}", response_model=DefinitionStatsResponse)
 async def get_definition_stats(definition_id: str):
     """Raw calibration stats + freshness for a single definition."""
     from app.core.stats import definition_stats_service
@@ -181,7 +287,7 @@ async def get_job_history_detail(job_id: str):
     return job
 
 
-@router.get("/jobs/history/{job_id}/checkpoints")
+@router.get("/jobs/history/{job_id}/checkpoints", response_model=list[Checkpoint])
 async def get_job_checkpoints(job_id: str):
     """Checkpoint list for a job."""
     from app.core.db.repositories.checkpoint_repo import CheckpointRepository
@@ -189,7 +295,7 @@ async def get_job_checkpoints(job_id: str):
     return await asyncio.to_thread(repo.list_by_job, job_id)
 
 
-@router.get("/jobs/history/{job_id}/samples")
+@router.get("/jobs/history/{job_id}/samples", response_model=list[SampleImage])
 async def get_job_samples(job_id: str):
     """Sample images for a job."""
     from app.core.db.repositories.sample_repo import SampleImageRepository
@@ -197,7 +303,7 @@ async def get_job_samples(job_id: str):
     return await asyncio.to_thread(repo.list_by_job, job_id)
 
 
-@router.get("/jobs/history/{job_id}/metrics")
+@router.get("/jobs/history/{job_id}/metrics", response_model=JobMetricsResponse)
 async def get_job_metrics(job_id: str):
     """Loss curve data for charting."""
     from app.core.db.repositories.metrics_repo import MetricsRepository
@@ -208,7 +314,7 @@ async def get_job_metrics(job_id: str):
     }
 
 
-@router.get("/jobs/history/{job_id}/replay")
+@router.get("/jobs/history/{job_id}/replay", response_model=JobReplayResponse)
 async def get_job_replay(job_id: str):
     """Replay an archived run's loss history for the Jobs detail pane.
 

@@ -43,7 +43,12 @@ def test_get_job_history_detail_not_found(MockRepo, client):
 
 @patch(_CP_REPO)
 def test_get_job_checkpoints(MockRepo, client):
-    MockRepo.return_value.list_by_job.return_value = [{"step": 100}]
+    # Realistic checkpoint row (the response_model declares the NOT-NULL columns
+    # id/job_id/step/path/created_at as required).
+    MockRepo.return_value.list_by_job.return_value = [{
+        "id": 1, "job_id": "job-1", "step": 100,
+        "path": "/runs/job-1/lora_000100.safetensors", "created_at": 0.0,
+    }]
     response = client.get("/api/jobs/history/job-1/checkpoints")
     assert response.status_code == 200
     assert len(response.json()) == 1

@@ -23,7 +23,11 @@ _MASK_REPO = "app.core.db.repositories.masking_template_repo.MaskingTemplateRepo
 
 @patch(_TRAIN_REPO)
 def test_list_training_templates(MockRepo, client):
-    MockRepo.return_value.list_for_project.return_value = [{"id": "t1", "name": "Default"}]
+    # Realistic training-template row (definition_id/created_at are NOT-NULL
+    # columns the response_model requires).
+    MockRepo.return_value.list_for_project.return_value = [
+        {"id": "t1", "definition_id": "sdxl_base_1.0", "name": "Default", "created_at": 0.0}
+    ]
     response = client.get("/api/templates/training")
     assert response.status_code == 200
     assert len(response.json()) == 1
@@ -68,7 +72,10 @@ def test_get_template_not_found(MockRepo, client):
 
 @patch(_TRAIN_REPO)
 def test_create_training_template(MockRepo, client):
-    MockRepo.return_value.create.return_value = {"id": "new-id"}
+    MockRepo.return_value.create.return_value = {
+        "id": "new-id", "definition_id": "sdxl_base_1.0",
+        "name": "My Template", "created_at": 0.0,
+    }
     response = client.post("/api/templates/training", json={
         "definition_id": "sdxl_base_1.0",
         "name": "My Template",

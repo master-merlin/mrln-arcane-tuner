@@ -231,14 +231,3 @@ class TimestepSampler:
             mode, bs, device, config, latents=latents, progress=progress,
         )
         return (t * scale).clamp(0, scale)
-
-
-# ── Backward compatibility ────────────────────────────────────────────────
-
-
-def _get_bsmntw() -> torch.Tensor:
-    """Legacy BSMNTW weights — wraps ``_make_radc_pdf(0.5, 1/3)``.
-
-    Kept for backward compatibility with code that directly imports this.
-    """
-    return _make_radc_pdf(0.5, 1.0 / 3.0)

@@ -440,12 +440,6 @@ export class DatasetService {
     return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/cache/purge`, options);
   }
 
-  // ── Mass Apply Masks ────────────────────────────────────────────────
-
-  massApplyMasks(name: string, opacity: number, overwrite: boolean): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/masking/mass-apply`, { opacity, overwrite });
-  }
-
   // ── Image Adjustments ──────────────────────────────────────────────
 
   applyImageAdjustments(name: string, path: string, adjustments: ImageAdjustments): Observable<any> {

@@ -194,51 +194,6 @@ async def delete_mask(name: str, image_rel_path: str):
     return {"status": "deleted", "message": "Mask deleted successfully"}
 
 
-class MassApplyRequest(BaseModel):
-    """Request body for mass applying masks."""
-
-    opacity: float = 0.0
-    overwrite: bool = False
-
-
-@router.post("/datasets/{name}/masking/mass-apply")
-async def mass_apply_masks(name: str, request: MassApplyRequest):
-    """Apply masks to all images that have a mask file."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
-
-    logger.info(
-        "mass_apply_masks",
-        dataset=name,
-        opacity=request.opacity,
-        overwrite=request.overwrite,
-    )
-
-    result = await asyncio.to_thread(
-        masking_service.mass_apply,
-        dataset.path,
-        request.opacity,
-        request.overwrite,
-    )
-
-    await asyncio.to_thread(dataset_manager.scan_dataset, name)
-
-    warnings = []
-    if result["missing_masks"]:
-        warnings.append(
-            f"{len(result['missing_masks'])} image(s) have no mask and were skipped"
-        )
-
-    return {
-        "status": "success",
-        "applied": result["applied"],
-        "skipped": result["skipped"],
-        "missing_masks": result["missing_masks"],
-        "warnings": warnings,
-    }
-
-
 class MaskGenerateBatchRequest(BaseModel):
     """Request body for batch mask generation."""
 

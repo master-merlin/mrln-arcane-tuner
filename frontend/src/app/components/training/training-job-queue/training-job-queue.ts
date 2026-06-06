@@ -1,9 +1,9 @@
 ﻿import { Component, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
-import { JobService, Job, JobStatus } from '../../../services/job';
+import { JobService, Job, JobStatus, type JobSample, type TrainingConfig } from '../../../services/job';
 import { JobStore } from '../../../state/job.store';
-import { WebSocketService } from '../../../services/websocket.service';
+import { WebSocketService, type WsEvent } from '../../../services/websocket.service';
 import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { type ChartDataPoint, type SmoothingMode } from '../training-chart/training-chart';
@@ -15,6 +15,30 @@ import { RegistryStore } from '../../../state/registry.store';
 import { JobsViewState } from '../../../state/jobs-view.state';
 import { OverlayStore } from '../../../state/overlay.store';
 import type { JobConfigData } from '../../../modals/job-config/job-config.component';
+
+/**
+ * Parsed `STEP_LOG:` JSON line emitted by the trainer each step. The named
+ * fields below are the ones read by the queue UI / chart; throttled or extra
+ * metrics arrive under the index signature.
+ */
+export interface StepMetrics {
+  status?: string;
+  step?: number;
+  progress?: number;
+  eta?: number;
+  loss?: number;
+  learning_rate?: number;
+  grad_norm?: number;
+  d_estimate?: number;
+  vram_allocated_mb?: number;
+  vram_reserved_mb?: number;
+  amp_scale?: number;
+  resolution?: number | string;
+  [key: string]: unknown;
+}
+
+/** {@link StepMetrics} plus the derived total-steps shown next to the step counter. */
+export type LatestMetrics = StepMetrics & { total_steps: number | string };
 
 @Component({
   selector: 'app-training-job-queue',
@@ -64,8 +88,8 @@ export class TrainingJobQueueComponent implements OnInit {
   recentJobs = computed(() => this.historicalJobs().filter(j => this.matchesFilter(j)).slice(0, 6));
 
   // Output events for config actions
-  saveAsTemplate = output<any>();
-  reloadConfig = output<any>();
+  saveAsTemplate = output<{ name: string; config: TrainingConfig; definition_id: string }>();
+  reloadConfig = output<TrainingConfig>();
 
   configExpandedJobs = signal<Set<string>>(new Set());
   chartExpandedJobs = signal<Set<string>>(new Set());
@@ -74,8 +98,8 @@ export class TrainingJobQueueComponent implements OnInit {
   samplingCadence = signal<Map<string, number>>(new Map());
   customCadenceMode = signal<Set<string>>(new Set());
   jobsWithSamples = signal<Set<string>>(new Set());
-  jobSamples = signal<Map<string, any[]>>(new Map());
-  sampleModalData = signal<{ jobId: string; sample: any } | null>(null);
+  jobSamples = signal<Map<string, JobSample[]>>(new Map());
+  sampleModalData = signal<{ jobId: string; sample: JobSample } | null>(null);
   sampleCacheBuster = signal<number>(Date.now());
 
   currentNow = signal<number>(Date.now());
@@ -249,7 +273,7 @@ export class TrainingJobQueueComponent implements OnInit {
     });
   }
 
-  handleWsEvent(event: any) {
+  handleWsEvent(event: WsEvent) {
     if (event.type === 'job_update') {
       const updatedJob = event.payload as Job;
       const isTerminal =
@@ -295,7 +319,7 @@ export class TrainingJobQueueComponent implements OnInit {
         }
       });
     } else if (event.type === 'job_log') {
-      const { job_id, message, timestamp } = event.payload;
+      const { job_id, message } = event.payload as { job_id: string; message: string };
       this.jobs.update(current => {
         const job = current.find(j => j.id === job_id);
         if (job) {
@@ -316,7 +340,7 @@ export class TrainingJobQueueComponent implements OnInit {
         }
       }
     } else if (event.type === 'job_warning') {
-      const { job_id, message } = event.payload;
+      const { job_id, message } = event.payload as { job_id: string; message: string };
       this.jobs.update(current => {
         const job = current.find(j => j.id === job_id);
         if (job) {
@@ -452,7 +476,7 @@ export class TrainingJobQueueComponent implements OnInit {
     return `${this.rtc.apiUrl}/jobs/${jobId}/samples/${filename}?t=${this.sampleCacheBuster()}`;
   }
 
-  openSampleModal(jobId: string, sample: any) {
+  openSampleModal(jobId: string, sample: JobSample) {
     this.sampleModalData.set({ jobId, sample });
   }
 
@@ -466,7 +490,7 @@ export class TrainingJobQueueComponent implements OnInit {
     if (!modal) return -1;
     const samples = this.jobSamples().get(modal.jobId);
     if (!samples) return -1;
-    return samples.findIndex((s: any) => s.filename === modal.sample.filename);
+    return samples.findIndex(s => s.filename === modal.sample.filename);
   }
 
   /** Can navigate to a newer sample (toward index 0). */
@@ -602,7 +626,7 @@ export class TrainingJobQueueComponent implements OnInit {
     this.jobService.setAutoQueue(enabled).subscribe({ error: () => {} });
   }
 
-  private parseLogLine(line: string): any | null {
+  private parseLogLine(line: string): StepMetrics | null {
     const prefix = "STEP_LOG:";
     let jsonStr = line;
     if (line.includes(prefix)) {
@@ -611,7 +635,7 @@ export class TrainingJobQueueComponent implements OnInit {
       return null;
     }
     try {
-      return JSON.parse(jsonStr);
+      return JSON.parse(jsonStr) as StepMetrics;
     } catch {
       return null;
     }
@@ -622,15 +646,19 @@ export class TrainingJobQueueComponent implements OnInit {
     'vram_allocated_mb', 'vram_reserved_mb', 'amp_scale', 'resolution',
   ];
 
-  getLatestMetrics(job: Job): any {
+  getLatestMetrics(job: Job): LatestMetrics | null {
     if (!job.logs || job.logs.length === 0) return null;
     for (let i = job.logs.length - 1; i >= 0; i--) {
       const metrics = this.parseLogLine(job.logs[i]);
       if (metrics && metrics.status === 'training') {
-        const totalSteps = job.config['max_train_steps'] || Math.round(metrics.step / (metrics.progress / 100)) || '?';
+        const step = typeof metrics.step === 'number' ? metrics.step : 0;
+        const progress = typeof metrics.progress === 'number' ? metrics.progress : 0;
+        const totalSteps = Number(job.config['max_train_steps'])
+          || (progress > 0 ? Math.round(step / (progress / 100)) : 0)
+          || '?';
 
         // Back-fill throttled fields from recent log history
-        const carryForward: Record<string, any> = {};
+        const carryForward: Record<string, unknown> = {};
         const keysNeeded = new Set(
           TrainingJobQueueComponent.CARRY_FORWARD_KEYS.filter(k => metrics[k] == null)
         );
@@ -675,7 +703,7 @@ export class TrainingJobQueueComponent implements OnInit {
     const startStep = 5;
     for (const line of job.logs) {
       const m = this.parseLogLine(line);
-      if (m && m.step >= startStep && typeof m.loss === 'number') {
+      if (m && typeof m.step === 'number' && m.step >= startStep && typeof m.loss === 'number') {
         points.push({
           step: m.step,
           loss: m.loss,
@@ -722,7 +750,7 @@ export class TrainingJobQueueComponent implements OnInit {
     return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
-  formatEta(seconds: number): string {
+  formatEta(seconds: number | undefined): string {
     if (!seconds || seconds < 0) return '--:--';
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -918,7 +946,7 @@ export class TrainingJobQueueComponent implements OnInit {
   onSaveAsTemplate(job: Job) {
     const name = prompt('Template name:');
     if (!name?.trim()) return;
-    this.saveAsTemplate.emit({ name: name.trim(), config: job.config, definition_id: job.config['definition_id'] || job.plugin_id });
+    this.saveAsTemplate.emit({ name: name.trim(), config: job.config, definition_id: (job.config['definition_id'] as string) || job.plugin_id });
   }
 
   onReloadConfig(job: Job) {

@@ -1,9 +1,9 @@
 import {
     ChangeDetectionStrategy,
     Component,
-    DestroyRef,
     OnInit,
     computed,
+    effect,
     inject,
     signal,
 } from '@angular/core';
@@ -13,8 +13,8 @@ import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService, type PipelineBlock } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
-import { MediaItemStore } from '../../state/media-item.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
+import { TaskStore } from '../../state/task.store';
 
 interface MassEditModalData {
     datasetId?: string;
@@ -42,8 +42,8 @@ interface SourceImage {
  * Ports the workflow from the orphan
  * [viewer-mass-edit-modal](../../components/dataset/dataset-viewer/components/viewer-mass-edit-modal.ts).
  * The flow is: pick a source image whose overlay recipe to clone, select
- * one or more targets, then queue the recipe against each target via
- * the existing `OverlayStore.renderPipeline` optimistic action.
+ * one or more targets, then submit the recipe to the backend batch endpoint
+ * which owns the processing loop. The modal monitors progress via TaskStore.
  *
  * Design source: `modals-more.jsx → MassEditModal`.
  */
@@ -76,13 +76,16 @@ interface SourceImage {
                         </div>
                         <div class="me-progress-queue">
                             <div class="eyebrow">QUEUE</div>
-                            <span class="mono">{{ progress().current }} / {{ progress().total }}</span>
+                            <span class="mono">{{ queueCurrent() }} / {{ queueTotal() }}</span>
                         </div>
                     </div>
                     <div class="me-progress-bar"><div class="me-progress-bar-fill" [style.width.%]="pct()"></div></div>
                     <div class="me-progress-cur">
                         <span class="eyebrow">CURRENT</span>
-                        <span class="mono">{{ progress().currentFile }}</span>
+                        <span class="mono">{{ currentFile() }}</span>
+                    </div>
+                    <div class="me-progress-actions">
+                        <button class="btn ghost" type="button" (click)="cancel()">Stop</button>
                     </div>
                 </div>
             } @else {
@@ -328,6 +331,7 @@ interface SourceImage {
             transition: width 200ms;
         }
         .me-progress-cur { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+        .me-progress-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 
         .me-foot { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
         .me-foot-hint { margin-right: auto; font-size: 11.5px; }
@@ -348,8 +352,8 @@ export class MassEditModalComponent implements OnInit {
     private datasetsApi = inject(DatasetService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
-    private mediaItems = inject(MediaItemStore);
     private sync = inject(DatasetSyncService);
+    private taskStore = inject(TaskStore);
 
     protected data: MassEditModalData = (this.overlay.topModal()?.data as MassEditModalData) ?? {};
 
@@ -359,24 +363,47 @@ export class MassEditModalComponent implements OnInit {
     protected selectedTargets = signal<Set<string>>(new Set());
 
     protected running = signal<boolean>(false);
-    protected progress = signal<{ current: number; total: number; currentFile: string }>({
-        current: 0, total: 0, currentFile: '',
+    protected taskId = signal<string | null>(null);
+
+    /** Captured once per launch so the computed stays stable (same reference). */
+    private _taskView: ReturnType<TaskStore['byId']> | null = null;
+    private _task = computed(() => {
+        this.taskId();
+        return this._taskView?.() ?? undefined;
     });
 
     protected pct = computed(() => {
-        const p = this.progress();
-        return p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+        const t = this._task();
+        const total = t?.total ?? 0;
+        return total > 0 ? Math.round(((t?.current ?? 0) / total) * 100) : 0;
     });
+    protected queueCurrent = computed(() => this._task()?.current ?? 0);
+    protected queueTotal = computed(() => this._task()?.total ?? 0);
+    protected currentFile = computed(() => this._task()?.current_item ?? '');
 
-    constructor() {
-        // Stop the recursive setTimeout queue if the modal is destroyed
-        // mid-run (e.g. the user clicked the × button). Without this, the
-        // queue keeps firing HTTP calls and toasts after the component is
-        // gone. `processQueue` already checks `running()` before each
-        // iteration, so flipping the flag is enough to abort cleanly.
-        const destroyRef = inject(DestroyRef);
-        destroyRef.onDestroy(() => this.running.set(false));
-    }
+    /** Guard: the completion handler fires at most once per launch. */
+    private _finalized = false;
+
+    private _completion = effect(() => {
+        const t = this._task();
+        if (!t || this._finalized) return;
+        const status = t.status;
+        if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') return;
+        this._finalized = true;
+        this.running.set(false);
+
+        const name = this.data.datasetName;
+        if (status === 'completed') {
+            if (t.failed) this.toast.warning(`Pipeline applied to ${t.ok} image${t.ok === 1 ? '' : 's'} · ${t.failed} failed`);
+            else this.toast.success(`Pipeline applied to ${t.ok} image${t.ok === 1 ? '' : 's'}`);
+            if (name) void this.sync.refreshDataset(name);
+            this.data.onCompleted?.();
+            this.overlay.closeModal();
+        } else if (status === 'failed') {
+            this.toast.error(t.error || 'Mass edit failed.');
+            if (name) void this.sync.refreshDataset(name);
+        }
+    });
 
     protected sourceCandidates = computed(() => this.pairs().filter(p => p.metadata?.has_overlay));
 
@@ -483,46 +510,27 @@ export class MassEditModalComponent implements OnInit {
             enabled: op.enabled ?? true,
             params: { ...op.params },
         }));
-
+        const name = this.data.datasetName!;
+        this._finalized = false;
         this.running.set(true);
-        this.progress.set({ current: 0, total: targets.length, currentFile: '' });
-        this.processQueue(targets, blocks, 0);
+        this.datasetsApi.batchRenderPipeline(name, targets, blocks).subscribe({
+            next: ({ task_id }) => {
+                this._taskView = this.taskStore.byId(task_id);
+                this.taskId.set(task_id);
+            },
+            error: (err) => {
+                this.running.set(false);
+                this.toast.error('Mass edit failed to start: ' + (err?.error?.detail || err?.message));
+            },
+        });
     }
 
-    private processQueue(queue: string[], blocks: PipelineBlock[], idx: number): void {
-        if (!this.running() || idx >= queue.length) {
-            this.running.set(false);
-            if (idx >= queue.length) {
-                this.toast.success(`Pipeline applied to ${queue.length} images.`);
-                if (this.data.datasetName) void this.sync.refreshDataset(this.data.datasetName);
-                this.data.onCompleted?.();
-                // Close on success — legacy finalizeMassProcess closed
-                // the modal implicitly; redesign was leaving it open
-                // with the CTA still labeled "Apply to N image(s)".
-                this.overlay.closeModal();
-            }
-            return;
-        }
-        const name = this.data.datasetName!;
-        const target = queue[idx];
-        this.progress.set({ current: idx, total: queue.length, currentFile: target });
-
-        void this.overlay.renderPipeline(name, target, blocks).then((result: any) => {
-            if (!result.ok) {
-                // Surface the server's reason — "GPU out of memory" vs
-                // "permission denied" matters to the user. Falls back
-                // through HttpErrorResponse-shape candidates.
-                const detail =
-                    result?.error?.error?.detail
-                    || result?.error?.message
-                    || 'unknown error';
-                this.toast.error(`Failed: ${target} — ${detail}`);
-            } else {
-                // Overlay bytes changed under the same URL — bust the grid cache.
-                this.mediaItems.bumpMedia();
-            }
-            this.progress.update(p => ({ ...p, current: idx + 1 }));
-            setTimeout(() => this.processQueue(queue, blocks, idx + 1), 50);
-        });
+    protected cancel(): void {
+        const id = this.taskId();
+        if (!id) return;
+        this._finalized = true;
+        this.taskStore.cancel(id);
+        this.running.set(false);
+        this.toast.info('Mass edit cancelled.');
     }
 }

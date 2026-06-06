@@ -7,7 +7,11 @@ import { WebSocketService, type WsEvent } from '../../../services/websocket.serv
 import { interval } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { type ChartDataPoint, type SmoothingMode } from '../training-chart/training-chart';
-import { lossStatus, CONVERGENCE_WINDOW, type LossStatus } from '../../../shared/job-metrics';
+import {
+  lossStatus, CONVERGENCE_WINDOW, type LossStatus,
+  latestMetrics, lossSeries, formatEta as fmtEta, formatDuration,
+  type StepMetrics,
+} from '../../../shared/job-metrics';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ProjectService } from '../../../services/project.service';
 import { ModelSourceOverride } from '../../../services/model.service';
@@ -15,30 +19,6 @@ import { RegistryStore } from '../../../state/registry.store';
 import { JobsViewState } from '../../../state/jobs-view.state';
 import { OverlayStore } from '../../../state/overlay.store';
 import type { JobConfigData } from '../../../modals/job-config/job-config.component';
-
-/**
- * Parsed `STEP_LOG:` JSON line emitted by the trainer each step. The named
- * fields below are the ones read by the queue UI / chart; throttled or extra
- * metrics arrive under the index signature.
- */
-export interface StepMetrics {
-  status?: string;
-  step?: number;
-  progress?: number;
-  eta?: number;
-  loss?: number;
-  learning_rate?: number;
-  grad_norm?: number;
-  d_estimate?: number;
-  vram_allocated_mb?: number;
-  vram_reserved_mb?: number;
-  amp_scale?: number;
-  resolution?: number | string;
-  [key: string]: unknown;
-}
-
-/** {@link StepMetrics} plus the derived total-steps shown next to the step counter. */
-export type LatestMetrics = StepMetrics & { total_steps: number | string };
 
 @Component({
   selector: 'app-training-job-queue',
@@ -626,67 +606,14 @@ export class TrainingJobQueueComponent implements OnInit {
     this.jobService.setAutoQueue(enabled).subscribe({ error: () => {} });
   }
 
-  private parseLogLine(line: string): StepMetrics | null {
-    const prefix = "STEP_LOG:";
-    let jsonStr = line;
-    if (line.includes(prefix)) {
-      jsonStr = line.split(prefix)[1];
-    } else if (!line.trim().startsWith('{')) {
-      return null;
-    }
-    try {
-      return JSON.parse(jsonStr) as StepMetrics;
-    } catch {
-      return null;
-    }
+  /** Latest `status:'training'` metrics — delegates to the shared parser
+   *  (`shared/job-metrics`) so the queue and the Jobs detail pane compute the
+   *  same values from one implementation. */
+  getLatestMetrics(job: Job): StepMetrics | null {
+    return latestMetrics(job.logs, Number(job.config['max_train_steps']) || undefined);
   }
 
-  /** Throttled fields emitted every N steps â€” carry forward last known value. */
-  private static readonly CARRY_FORWARD_KEYS = [
-    'vram_allocated_mb', 'vram_reserved_mb', 'amp_scale', 'resolution',
-  ];
-
-  getLatestMetrics(job: Job): LatestMetrics | null {
-    if (!job.logs || job.logs.length === 0) return null;
-    for (let i = job.logs.length - 1; i >= 0; i--) {
-      const metrics = this.parseLogLine(job.logs[i]);
-      if (metrics && metrics.status === 'training') {
-        const step = typeof metrics.step === 'number' ? metrics.step : 0;
-        const progress = typeof metrics.progress === 'number' ? metrics.progress : 0;
-        const totalSteps = Number(job.config['max_train_steps'])
-          || (progress > 0 ? Math.round(step / (progress / 100)) : 0)
-          || '?';
-
-        // Back-fill throttled fields from recent log history
-        const carryForward: Record<string, unknown> = {};
-        const keysNeeded = new Set(
-          TrainingJobQueueComponent.CARRY_FORWARD_KEYS.filter(k => metrics[k] == null)
-        );
-        if (keysNeeded.size > 0) {
-          const lookback = Math.min(50, i); // Increased lookback to 50 for more tolerant caching of throttled values
-          for (let j = i - 1; j >= i - lookback && keysNeeded.size > 0; j--) {
-            const prev = this.parseLogLine(job.logs[j]);
-            if (!prev) continue;
-            for (const key of [...keysNeeded]) {
-              if (prev[key] != null) {
-                carryForward[key] = prev[key];
-                keysNeeded.delete(key);
-              }
-            }
-          }
-        }
-
-        return {
-          ...metrics,
-          ...carryForward,
-          total_steps: totalSteps
-        };
-      }
-    }
-    return null;
-  }
-
-  // Cache chart data to avoid re-parsing on every change detection cycle
+  // Cache chart series to avoid re-parsing on every change-detection cycle.
   private chartCache = new Map<string, { len: number; data: ChartDataPoint[] }>();
 
   getChartData(job: Job): ChartDataPoint[] | null {
@@ -699,21 +626,8 @@ export class TrainingJobQueueComponent implements OnInit {
       return cached.data.length >= 2 ? cached.data : null;
     }
 
-    const points: ChartDataPoint[] = [];
-    const startStep = 5;
-    for (const line of job.logs) {
-      const m = this.parseLogLine(line);
-      if (m && typeof m.step === 'number' && m.step >= startStep && typeof m.loss === 'number') {
-        points.push({
-          step: m.step,
-          loss: m.loss,
-          lr: m.learning_rate ?? 0,
-          grad_norm: m.grad_norm ?? undefined,
-          d_estimate: m.d_estimate ?? undefined,
-        });
-      }
-    }
-
+    // `LossPoint` (shared) is structurally `ChartDataPoint`.
+    const points: ChartDataPoint[] = lossSeries(job.logs);
     this.chartCache.set(job.id, { len: logsLen, data: points });
     return points.length >= 2 ? points : null;
   }
@@ -741,22 +655,12 @@ export class TrainingJobQueueComponent implements OnInit {
     const end = job.finished_at ? job.finished_at * 1000
       : job.paused_at ? job.paused_at * 1000
         : this.currentNow();
-    const seconds = Math.floor((end - (job.started_at * 1000)) / 1000);
-    if (seconds < 0) return '0:00';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-    return `${m}:${s.toString().padStart(2, '0')}`;
+    return formatDuration(job.started_at, end);
   }
 
+  /** Template entry point; delegates to the shared `formatEta`. */
   formatEta(seconds: number | undefined): string {
-    if (!seconds || seconds < 0) return '--:--';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m ${s}s`;
+    return fmtEta(seconds);
   }
 
   /**

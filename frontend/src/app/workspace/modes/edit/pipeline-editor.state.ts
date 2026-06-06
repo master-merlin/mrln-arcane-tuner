@@ -1,7 +1,8 @@
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { Overlay, OverlayStore } from '../../../state/overlay.store';
 import { ToastService } from '../../../services/toast';
-import { PipelineBlock } from '../../../services/dataset';
+import { DatasetService, PipelineBlock } from '../../../services/dataset';
+import { TaskStore } from '../../../state/task.store';
 import {
     OperationKind, PIPELINE_ORDER, BACKEND_TYPE_FOR, DEFAULT_PARAMS,
     WBParams, CurvesParams, LutParams, ColorMatchParams, HslParams,
@@ -41,6 +42,8 @@ function mkOp<K extends keyof typeof DEFAULT_PARAMS>(
 export class PipelineEditorState {
     private overlay = inject(OverlayStore);
     private toast = inject(ToastService);
+    private taskStore = inject(TaskStore);
+    private datasetsApi = inject(DatasetService);
 
     readonly datasetName = signal<string>('');
     readonly mediaFile = signal<string>('');
@@ -52,6 +55,49 @@ export class PipelineEditorState {
      * failure; this state is purely UI feedback.
      */
     readonly saving = signal<boolean>(false);
+
+    /** Backend block types that run on the GPU — saves containing any of these
+     *  are routed through the gpu-lane task framework instead of the inline
+     *  optimistic render, so they serialize against other GPU work and stay
+     *  visible/cancellable in the Task Center. */
+    private static readonly GPU_TYPES = new Set(['denoise', 'face_restore', 'deartifact', 'dehaze', 'upscale']);
+
+    readonly renderTaskId = signal<string | null>(null);
+    private _renderTaskView = computed(() => {
+        const id = this.renderTaskId();
+        return id ? this.taskStore.byId(id)() : null;
+    });
+    /** True when no render task is being monitored (guards the completion effect
+     *  so it fires exactly once per launch and never on a stale task). */
+    private _finalized = true;
+    /** The image a render task was launched for — completion effects only touch
+     *  editor-local state if the editor is still on this file. */
+    private _launchedFile = '';
+
+    private hasGpuOp(blocks: PipelineBlock[]): boolean {
+        return blocks.some(b => PipelineEditorState.GPU_TYPES.has(b.type));
+    }
+
+    private _renderCompletion = effect(() => {
+        const t = this._renderTaskView();
+        if (!t) return;
+        const status = t.status;
+        if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') return;
+        if (this._finalized) return;
+        this._finalized = true;
+        this.saving.set(false);
+
+        const sameFile = this.mediaFile() === this._launchedFile;
+        if (status === 'completed') {
+            if (sameFile) {
+                this.markClean();
+                this.toast.success('Overlay saved');
+            }
+        } else if (status === 'failed') {
+            if (sameFile) this.toast.error(t.error || 'Render failed.');
+        }
+        // cancelled: silent — state stays dirty.
+    });
 
     readonly whiteBalance = signal(mkOp('white_balance'));
     readonly curves       = signal(mkOp('curves'));
@@ -225,6 +271,12 @@ export class PipelineEditorState {
      * is the authoritative gate.
      */
     async hydrate(datasetName: string, mediaFile: string, hasOverlay: boolean): Promise<void> {
+        // Drop any in-flight render-task monitor from the previous image so its
+        // late completion can't fire editor-local effects on this new one.
+        this.renderTaskId.set(null);
+        this._finalized = true;
+        this.saving.set(false);
+
         this.datasetName.set(datasetName);
         this.mediaFile.set(mediaFile);
 
@@ -289,30 +341,49 @@ export class PipelineEditorState {
      * Backend uses replace_recipe=true so it sources from the original
      * (not from any existing overlay PNG).
      *
-     * Toasts on success with the rendered dimensions so the user gets
-     * confirmation that the click actually did something. Failure is
-     * already toasted by the OverlayStore's optimistic-rollback path.
-     * The `saving` signal is set for the duration of the round-trip so
-     * the right panel can show "Saving…" and disable the button.
+     * CPU-only pipelines use the fast inline optimistic path. Pipelines
+     * containing a GPU op (denoise/upscale/face_restore/deartifact/dehaze)
+     * are dispatched as a gpu-lane background task so they serialize against
+     * other GPU work and remain visible/cancellable in the Task Center.
      */
     async applyAndSave(): Promise<void> {
         const name = this.datasetName();
         const file = this.mediaFile();
         if (!name || !file) return;
-        this.saving.set(true);
-        try {
-            const result = await this.overlay.renderPipeline(name, file, this.blocks(), 512, 32, true);
-            if (result.ok) {
-                const dims = result.value.dimensions;
-                const w = dims?.[0];
-                const h = dims?.[1];
-                this.toast.success(w && h ? `Overlay saved (${w}×${h})` : 'Overlay saved');
-                this.markClean();
+        const blocks = this.blocks();
+
+        // CPU-only save: keep the snappy inline optimistic path unchanged.
+        if (!this.hasGpuOp(blocks)) {
+            this.saving.set(true);
+            try {
+                const result = await this.overlay.renderPipeline(name, file, blocks, 512, 32, true);
+                if (result.ok) {
+                    const dims = result.value.dimensions;
+                    const w = dims?.[0];
+                    const h = dims?.[1];
+                    this.toast.success(w && h ? `Overlay saved (${w}×${h})` : 'Overlay saved');
+                    this.markClean();
+                }
+            } finally {
+                this.saving.set(false);
             }
-            // result.ok === false → OverlayStore already toasted + rolled back.
-        } finally {
-            this.saving.set(false);
+            return;
         }
+
+        // GPU op present: launch a gpu-lane render task (non-blocking). The
+        // canvas refreshes when the worker broadcasts the new overlay hash; the
+        // completion effect markCleans + clears `saving`.
+        this._launchedFile = file;
+        this._finalized = false;
+        this.saving.set(true);
+        this.datasetsApi.taskRenderPipeline(name, file, blocks, 512, 32, true).subscribe({
+            next: ({ task_id }) => this.renderTaskId.set(task_id),
+            error: (err) => {
+                this._finalized = true;
+                this.saving.set(false);
+                this.toast.error('Render failed to start: ' + (err?.error?.detail || err?.message));
+            },
+        });
     }
 
     /**

@@ -1,9 +1,12 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { of } from 'rxjs';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { OverlayStore } from '../../../../state/overlay.store';
 import { ToastService } from '../../../../services/toast';
 import { WebSocketService } from '../../../../services/websocket.service';
+import { DatasetService } from '../../../../services/dataset';
+import { TaskStore } from '../../../../state/task.store';
 
 // Canonical WS stub used across `frontend/src/app/state/__tests__/*.spec.ts`:
 // only `entityChanged` and `reconnected` are read by EntityStore's constructor
@@ -12,6 +15,12 @@ function makeWsMock() {
     return { entityChanged: signal(null), reconnected: signal(0) } as unknown as WebSocketService;
 }
 class StubToast { success() {} error() {} warning() {} info() {} }
+
+// Minimal stubs for the two new deps injected by PipelineEditorState.
+// All existing describes just need something in the DI tree so Angular
+// doesn't try to instantiate the real TaskStore (which calls ws.on()).
+const STUB_TASK_STORE = { byId: () => signal(undefined), cancel: () => {} };
+const STUB_DATASET_SERVICE = { taskRenderPipeline: () => {} };
 
 describe('PipelineEditorState.resetAllForUser', () => {
     let state: PipelineEditorState;
@@ -23,6 +32,8 @@ describe('PipelineEditorState.resetAllForUser', () => {
                 OverlayStore,
                 { provide: WebSocketService, useValue: makeWsMock() },
                 { provide: ToastService, useClass: StubToast },
+                { provide: TaskStore, useValue: STUB_TASK_STORE },
+                { provide: DatasetService, useValue: STUB_DATASET_SERVICE },
             ],
         });
         state = TestBed.inject(PipelineEditorState);
@@ -110,6 +121,8 @@ describe('PipelineEditorState.resetAll', () => {
                 OverlayStore,
                 { provide: WebSocketService, useValue: makeWsMock() },
                 { provide: ToastService, useClass: StubToast },
+                { provide: TaskStore, useValue: STUB_TASK_STORE },
+                { provide: DatasetService, useValue: STUB_DATASET_SERVICE },
             ],
         });
         state = TestBed.inject(PipelineEditorState);
@@ -132,6 +145,8 @@ describe('PipelineEditorState.blocks (color_match edge case)', () => {
                 OverlayStore,
                 { provide: WebSocketService, useValue: makeWsMock() },
                 { provide: ToastService, useClass: StubToast },
+                { provide: TaskStore, useValue: STUB_TASK_STORE },
+                { provide: DatasetService, useValue: STUB_DATASET_SERVICE },
             ],
         });
         state = TestBed.inject(PipelineEditorState);
@@ -157,5 +172,65 @@ describe('PipelineEditorState.blocks (color_match edge case)', () => {
 
         const block = state.blocks().find(b => b.type === 'color_match');
         expect(block).toBeDefined();
+    });
+});
+
+describe('PipelineEditorState.applyAndSave — task routing', () => {
+    let state: PipelineEditorState;
+    let api: any;
+    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let overlay: OverlayStore;
+
+    beforeEach(() => {
+        api = { taskRenderPipeline: jasmine.createSpy('taskRenderPipeline').and.returnValue(of({ task_id: 't1' })) };
+        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') };
+        TestBed.configureTestingModule({
+            providers: [
+                PipelineEditorState,
+                OverlayStore,
+                { provide: WebSocketService, useValue: makeWsMock() },
+                { provide: ToastService, useClass: StubToast },
+                { provide: DatasetService, useValue: api },
+                { provide: TaskStore, useValue: taskStoreSpy },
+            ],
+        });
+        state = TestBed.inject(PipelineEditorState);
+        overlay = TestBed.inject(OverlayStore);
+        state.datasetName.set('ds1');
+        state.mediaFile.set('a.png');
+    });
+
+    it('routes a GPU-op save (upscale) through taskRenderPipeline, not the inline render', async () => {
+        const inlineSpy = spyOn(overlay, 'renderPipeline');
+        state.upscale.update(o => ({ ...o, enabled: true }));
+        await state.applyAndSave();
+        expect(api.taskRenderPipeline).toHaveBeenCalled();
+        const [name, file] = api.taskRenderPipeline.calls.mostRecent().args;
+        expect(name).toBe('ds1');
+        expect(file).toBe('a.png');
+        expect(inlineSpy).not.toHaveBeenCalled();
+        expect(state.renderTaskId()).toBe('t1');
+        expect(state.saving()).toBeTrue();
+    });
+
+    it('routes a CPU-only save (white_balance) through the inline render, not a task', async () => {
+        spyOn(overlay, 'renderPipeline').and.returnValue(Promise.resolve({ ok: true, value: { dimensions: [10, 10] } } as any));
+        state.whiteBalance.update(o => ({ ...o, enabled: true }));
+        await state.applyAndSave();
+        expect(overlay.renderPipeline).toHaveBeenCalled();
+        expect(api.taskRenderPipeline).not.toHaveBeenCalled();
+        expect(state.saving()).toBeFalse();
+    });
+
+    it('completion: completed task markCleans + clears saving (same image)', () => {
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        state.upscale.update(o => ({ ...o, enabled: true }));
+        void state.applyAndSave();
+        expect(state.dirty()).toBeTrue();
+        taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
+        TestBed.tick();
+        expect(state.dirty()).toBeFalse();
+        expect(state.saving()).toBeFalse();
     });
 });

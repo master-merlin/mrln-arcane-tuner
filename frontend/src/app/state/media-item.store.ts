@@ -54,6 +54,8 @@ export interface MediaItem {
     quality_score?: number | null;
     is_video?: boolean;
     is_majority_ar?: boolean;
+    /** Present once a mask exists; mirrors `PairMetadata.mask_info`. */
+    mask_info?: { width?: number; height?: number; size_bytes?: number; [k: string]: unknown };
     [extra: string]: unknown;
 }
 

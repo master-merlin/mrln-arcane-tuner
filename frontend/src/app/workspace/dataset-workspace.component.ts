@@ -12,7 +12,7 @@ import { DatasetStore } from '../state/dataset.store';
 import { MediaItemStore, MediaItem } from '../state/media-item.store';
 import { CaptionCacheStore, CaptionRow } from '../state/caption-cache.store';
 import { DatasetSyncService } from '../state/dataset-sync.service';
-import { DatasetService, Dataset } from '../services/dataset';
+import { DatasetService, Dataset, type DatasetPair } from '../services/dataset';
 import { ScopeStore } from '../state/scope.store';
 import { ToastService } from '../services/toast';
 import { RuntimeConfigService } from '../services/runtime-config.service';
@@ -109,7 +109,7 @@ export class DatasetWorkspaceComponent {
      * the orphan-tree grid + detail components don't need to know about
      * the store split.
      */
-    protected pairs = computed<any[]>(() => {
+    protected pairs = computed<DatasetPair[]>(() => {
         const d = this.dataset();
         if (!d) return [];
         const items = this.mediaItems.byDataset(d.name)();
@@ -123,7 +123,7 @@ export class DatasetWorkspaceComponent {
      * on the full {@link pairs} list so navigation isn't constrained by
      * the active filter.
      */
-    protected visiblePairs = computed<any[]>(() => {
+    protected visiblePairs = computed<DatasetPair[]>(() => {
         const list = this.pairs();
         switch (this.filter()) {
             case 'enabled':
@@ -343,8 +343,9 @@ export class DatasetWorkspaceComponent {
     }
 
     /** Pretty-prints an HTTP error payload's `detail` (or falls back to message). */
-    private errMsg(err: any, fallback: string): string {
-        return `${fallback}: ${err?.error?.detail || err?.message || 'unknown error'}`;
+    private errMsg(err: unknown, fallback: string): string {
+        const e = err as { error?: { detail?: string }; message?: string } | null;
+        return `${fallback}: ${e?.error?.detail || e?.message || 'unknown error'}`;
     }
 
     protected openMass(kind: 'mass-caption' | 'mass-mask' | 'mass-edit'): void {
@@ -415,7 +416,7 @@ export class DatasetWorkspaceComponent {
      *     store failure we restore the previous text.
      */
     protected onSaveCaption(
-        event: { pair: any; content: string; isMasked: boolean },
+        event: { pair: DatasetPair; content: string; isMasked: boolean },
     ): void {
         const d = this.dataset();
         if (!d) return;
@@ -460,7 +461,7 @@ export class DatasetWorkspaceComponent {
      * failure the store rolls back its row — we restore the caption
      * row and the cursor.
      */
-    protected onDeletePairRequested(pair: any): void {
+    protected onDeletePairRequested(pair: DatasetPair): void {
         const d = this.dataset();
         if (!d || !pair?.media_file) return;
         if (!confirm('Delete this entry?')) return;
@@ -495,7 +496,7 @@ export class DatasetWorkspaceComponent {
     }
 
     /** Delete the mask for a pair — store handles optimistic flip + rollback. */
-    protected onDeleteMaskRequested(pair: any): void {
+    protected onDeleteMaskRequested(pair: DatasetPair): void {
         const d = this.dataset();
         if (!d || !pair?.metadata?.has_mask) return;
         if (!confirm('Delete the mask for this image?')) return;
@@ -536,10 +537,10 @@ export class DatasetWorkspaceComponent {
         if (!d) return;
         this.hasBumpedPatchInSession = true;
         this.datasetsApi.bumpVersion(d.name, 'patch').subscribe({
-            next: (res: any) => {
+            next: (res) => {
                 this.datasets.upsertLocal({ ...d, version: res.version });
             },
-            error: (err: any) => {
+            error: (err: unknown) => {
                 console.warn('[workspace] auto patch bump failed', err);
                 this.hasBumpedPatchInSession = false;
             },
@@ -568,10 +569,10 @@ export class DatasetWorkspaceComponent {
             const res = await firstValueFrom(
                 this.datasetsApi.bumpVersion(d.name, 'major'),
             );
-            const newVersion = (res as { version: string }).version;
+            const newVersion = res.version;
             this.datasets.upsertLocal({ ...d, version: newVersion });
             this.toast.success(`Version bumped to ${newVersion}`);
-        } catch (err: any) {
+        } catch (err: unknown) {
             this.toast.error(this.errMsg(err, 'Failed to bump version'));
         }
     }
@@ -616,7 +617,7 @@ export class DatasetWorkspaceComponent {
  * `caption_file`) are hoisted out of the MediaItem; everything else
  * (enabled, has_mask, dimensions, HPS, etc.) goes into `metadata`.
  */
-function projectPair(item: MediaItem, caption?: CaptionRow): any {
+function projectPair(item: MediaItem, caption?: CaptionRow): DatasetPair {
     const {
         id, dataset_name, media_file, stem, media_type, caption_file,
         ...metadata
@@ -624,10 +625,12 @@ function projectPair(item: MediaItem, caption?: CaptionRow): any {
     return {
         stem: stem ?? stripExt(media_file),
         media_file,
-        media_type: media_type ?? (item.is_video ? 'video' : 'image'),
-        caption_file,
-        caption_content: caption?.caption_content,
-        masked_caption_content: caption?.masked_caption_content,
+        media_type: (media_type ?? (item.is_video ? 'video' : 'image')) as 'image' | 'video',
+        caption_file: caption_file ?? null,
+        // Absent caption row → empty/null, matching the `/pairs` HTTP shape
+        // (and the grid's truthiness/`!= null` reads treat them identically).
+        caption_content: caption?.caption_content ?? '',
+        masked_caption_content: caption?.masked_caption_content ?? null,
         metadata,
     };
 }

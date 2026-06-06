@@ -26,3 +26,60 @@ class SetSamplingCadenceRequest(BaseModel):
 class SetAutoQueueRequest(BaseModel):
     """Request body for toggling backend-owned auto-queue advancement."""
     enabled: bool
+
+
+class JobActionResponse(BaseModel):
+    """Status + job id returned by a job lifecycle action."""
+    status: str
+    job_id: str
+
+
+class JobRestartResponse(JobActionResponse):
+    """Restart action result, including whether the run folder was wiped."""
+    fresh: bool
+
+
+class JobReorderResponse(JobActionResponse):
+    """Reorder action result, including the direction moved."""
+    direction: str
+
+
+class JobCadenceSetResponse(JobActionResponse):
+    """Sampling-cadence change result, including the new interval."""
+    interval: int
+
+
+class AutoQueueResponse(BaseModel):
+    """Current backend auto-queue preference."""
+    auto_queue: bool
+
+
+class SamplingStatusResponse(BaseModel):
+    """Whether sampling is currently paused for a job."""
+    job_id: str
+    sampling_paused: bool
+
+
+class SamplingCadenceResponse(BaseModel):
+    """Effective sampling cadence (override + config default) for a job."""
+    job_id: str
+    interval: int
+    default_interval: int
+
+
+class JobSampleResponse(BaseModel):
+    """A single sample image produced during training."""
+    filename: str
+    step: int
+    index: int
+    path: str
+    created_at: float
+
+
+class JobCheckpointResponse(BaseModel):
+    """A single saved LoRA checkpoint artifact for a job."""
+    filename: str
+    step: int
+    is_final: bool
+    size_bytes: int
+    created_at: float

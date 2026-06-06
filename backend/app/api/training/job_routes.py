@@ -20,6 +20,15 @@ from app.api.schemas.job_schemas import (
     UpdateJobConfigRequest,
     SetSamplingCadenceRequest,
     SetAutoQueueRequest,
+    JobActionResponse,
+    JobRestartResponse,
+    JobReorderResponse,
+    JobCadenceSetResponse,
+    AutoQueueResponse,
+    SamplingStatusResponse,
+    SamplingCadenceResponse,
+    JobSampleResponse,
+    JobCheckpointResponse,
 )
 from app.core.settings_manager import get_settings_manager
 
@@ -56,7 +65,7 @@ async def list_jobs():
     return await asyncio.to_thread(job_manager.list_jobs)
 
 
-@router.get("/jobs/settings/auto-queue")
+@router.get("/jobs/settings/auto-queue", response_model=AutoQueueResponse)
 async def get_auto_queue():
     """Return the persisted backend auto-queue preference."""
     sm = get_settings_manager()
@@ -64,7 +73,7 @@ async def get_auto_queue():
     return {"auto_queue": bool(mod.get("auto_queue", False))}
 
 
-@router.put("/jobs/settings/auto-queue")
+@router.put("/jobs/settings/auto-queue", response_model=AutoQueueResponse)
 async def set_auto_queue(request: SetAutoQueueRequest):
     """Persist the auto-queue preference server-side.
 
@@ -83,7 +92,7 @@ async def set_auto_queue(request: SetAutoQueueRequest):
     return {"auto_queue": request.enabled}
 
 
-@router.post("/jobs/{job_id}/start")
+@router.post("/jobs/{job_id}/start", response_model=JobActionResponse)
 async def start_job(job_id: str):
     """Start a pending training job."""
     try:
@@ -97,7 +106,7 @@ async def start_job(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/stop")
+@router.post("/jobs/{job_id}/stop", response_model=JobActionResponse)
 async def stop_job(job_id: str):
     """Force-stop a running training job."""
     try:
@@ -108,7 +117,7 @@ async def stop_job(job_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/pause")
+@router.post("/jobs/{job_id}/pause", response_model=JobActionResponse)
 async def pause_job(job_id: str):
     """Send a pause signal to a running job."""
     try:
@@ -119,7 +128,7 @@ async def pause_job(job_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/resume")
+@router.post("/jobs/{job_id}/resume", response_model=JobActionResponse)
 async def resume_job(job_id: str):
     """Resume a paused training job."""
     try:
@@ -130,7 +139,7 @@ async def resume_job(job_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/soft-stop")
+@router.post("/jobs/{job_id}/soft-stop", response_model=JobActionResponse)
 async def soft_stop_job(job_id: str):
     """Signal the trainer to save a checkpoint and exit gracefully."""
     try:
@@ -141,7 +150,7 @@ async def soft_stop_job(job_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/restart")
+@router.post("/jobs/{job_id}/restart", response_model=JobRestartResponse)
 async def restart_job(job_id: str, fresh: bool = False):
     """Reset a finished/failed job and re-launch it.
 
@@ -158,7 +167,7 @@ async def restart_job(job_id: str, fresh: bool = False):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/reorder")
+@router.post("/jobs/{job_id}/reorder", response_model=JobReorderResponse)
 async def reorder_job(job_id: str, direction: str = "up"):
     """Move a pending job up/down in the run queue (priority reorder)."""
     try:
@@ -177,7 +186,7 @@ async def get_job_logs(job_id: str):
     return job.logs
 
 
-@router.delete("/jobs/{job_id}")
+@router.delete("/jobs/{job_id}", response_model=JobActionResponse)
 async def delete_job(job_id: str):
     """Remove a job from the registry."""
     logger.info("deleting_job", job_id=job_id)
@@ -188,7 +197,7 @@ async def delete_job(job_id: str):
 # ── Sampling Control ────────────────────────────────────────────────────
 
 
-@router.post("/jobs/{job_id}/pause-sampling")
+@router.post("/jobs/{job_id}/pause-sampling", response_model=JobActionResponse)
 async def pause_sampling(job_id: str):
     """Pause sampling for a running job (training continues)."""
     try:
@@ -198,7 +207,7 @@ async def pause_sampling(job_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/resume-sampling")
+@router.post("/jobs/{job_id}/resume-sampling", response_model=JobActionResponse)
 async def resume_sampling(job_id: str):
     """Resume sampling for a job."""
     try:
@@ -208,14 +217,14 @@ async def resume_sampling(job_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/jobs/{job_id}/sampling-status")
+@router.get("/jobs/{job_id}/sampling-status", response_model=SamplingStatusResponse)
 async def get_sampling_status(job_id: str):
     """Check if sampling is paused for a job."""
     paused = await asyncio.to_thread(job_manager.is_sampling_paused, job_id)
     return {"job_id": job_id, "sampling_paused": paused}
 
 
-@router.post("/jobs/{job_id}/sampling-cadence")
+@router.post("/jobs/{job_id}/sampling-cadence", response_model=JobCadenceSetResponse)
 async def set_sampling_cadence(job_id: str, request: SetSamplingCadenceRequest):
     """Change how often samples are generated during training."""
     if request.interval <= 0:
@@ -227,7 +236,7 @@ async def set_sampling_cadence(job_id: str, request: SetSamplingCadenceRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/jobs/{job_id}/sampling-cadence")
+@router.get("/jobs/{job_id}/sampling-cadence", response_model=SamplingCadenceResponse)
 async def get_sampling_cadence(job_id: str):
     """Get the current sampling cadence (override + config default)."""
     job = await asyncio.to_thread(job_manager.get_job, job_id)
@@ -256,7 +265,7 @@ def _resolve_sample_dir(job: Job) -> Path:
     return output_dir / f"{lora_name}_{model_part}" / "samples"
 
 
-@router.get("/jobs/{job_id}/samples")
+@router.get("/jobs/{job_id}/samples", response_model=list[JobSampleResponse])
 async def list_job_samples(job_id: str):
     """List all sample images for a job, sorted by step.
 
@@ -336,7 +345,7 @@ def _resolve_run_dir(job: Job) -> Path:
     return _resolve_sample_dir(job).parent
 
 
-@router.get("/jobs/{job_id}/checkpoints")
+@router.get("/jobs/{job_id}/checkpoints", response_model=list[JobCheckpointResponse])
 async def list_job_checkpoints(job_id: str):
     """List the LoRA ``.safetensors`` artifacts a job has saved.
 

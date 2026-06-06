@@ -4,6 +4,15 @@ import { RuntimeConfigService } from './runtime-config.service';
 import { Observable } from 'rxjs';
 import type { VRAMReport } from './system.service';
 
+/**
+ * A plugin-schema-driven training config. The concrete fields are defined by
+ * the selected plugin's JSON schema and resolved dynamically at runtime, so
+ * this is an open record rather than a fixed interface. Call sites read
+ * specific keys defensively — bracket access with `||` fallbacks or explicit
+ * casts (e.g. `config['lora_name']`, `config['definition_id'] as string`).
+ */
+export type TrainingConfig = Record<string, unknown>;
+
 export enum JobStatus {
   PENDING = "pending",
   RUNNING = "running",
@@ -16,7 +25,7 @@ export enum JobStatus {
 export interface Job {
   id: string;
   plugin_id: string;
-  config: any;
+  config: TrainingConfig;
   status: JobStatus;
   status_label?: string;
   created_at: number;
@@ -100,17 +109,17 @@ export class JobService {
   private http = inject(HttpClient);
   private apiUrl = `${inject(RuntimeConfigService).apiUrl}/jobs`;
 
-  createJob(plugin_id: string, config: any): Observable<Job> {
+  createJob(plugin_id: string, config: TrainingConfig): Observable<Job> {
     return this.http.post<Job>(this.apiUrl, { plugin_id, config });
   }
 
   /** Edit a pending or terminal job's stored config (running/paused rejected). */
-  updateJobConfig(jobId: string, config: any): Observable<Job> {
+  updateJobConfig(jobId: string, config: TrainingConfig): Observable<Job> {
     return this.http.put<Job>(`${this.apiUrl}/${jobId}/config`, { config });
   }
 
   /** Full data-calibrated training estimate (wall time, output, throughput, disk, VRAM). */
-  estimate(definitionId: string, config: any): Observable<TrainingEstimate> {
+  estimate(definitionId: string, config: TrainingConfig): Observable<TrainingEstimate> {
     return this.http.post<TrainingEstimate>(`${this.apiUrl}/estimate`, { definition_id: definitionId, config });
   }
 

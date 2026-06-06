@@ -255,7 +255,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
 
                 // Inject saved masking concepts into generic training_selections JSON payload
                 const sels = this.preferences.training_selections || {};
-                sels.saved_masking_concepts = this.savedConcepts;
+                sels['saved_masking_concepts'] = this.savedConcepts;
 
                 return this.projectService.updatePreferences(this.effectiveProjectId(), {
                     selected_mask_model: this.selectedMaskModel(),
@@ -273,8 +273,8 @@ export class DatasetMaskingSettingsComponent implements OnInit {
                 this.preferences = prefs;
                 
                 // Retrieve custom saved concepts from generic selections json
-                if (prefs.training_selections?.saved_masking_concepts) {
-                    this.savedConcepts = prefs.training_selections.saved_masking_concepts;
+                if (prefs.training_selections?.['saved_masking_concepts']) {
+                    this.savedConcepts = prefs.training_selections['saved_masking_concepts'] as string[];
                 }
 
                 if (prefs.selected_mask_model && this.maskingModels.some(m => m.id === prefs.selected_mask_model)) {

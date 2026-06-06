@@ -30,7 +30,7 @@ export interface ProjectPreferences {
   qwen3_variant: string;
   selected_mask_model: string;
   active_mask_template: string | null;
-  training_selections: any;
+  training_selections: Record<string, unknown>;
 }
 
 export interface Dataset {

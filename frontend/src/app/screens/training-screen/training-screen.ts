@@ -20,7 +20,7 @@ import { EstimateWallComponent } from '../../components/training/estimate-wall/e
 import { DatasetStore } from '../../state/dataset.store';
 import { ScopeStore } from '../../state/scope.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
-import { JobService, type TrainingEstimate } from '../../services/job';
+import { JobService, type TrainingEstimate, type TrainingConfig } from '../../services/job';
 import { ToastService } from '../../services/toast';
 
 interface ModelDefinition {
@@ -223,7 +223,7 @@ export class TrainingScreen {
         });
     }
 
-    protected queueJob(config: unknown): void {
+    protected queueJob(config: TrainingConfig): void {
         this.jobs.createJob(this.pluginId, config).subscribe({
             next: () => this.toast.success('Training job queued.'),
             error: (err: { error?: { detail?: string }; message?: string }) =>

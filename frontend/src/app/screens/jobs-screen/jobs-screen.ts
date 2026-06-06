@@ -179,7 +179,7 @@ export class JobsScreen {
     protected readonly metrics = computed<StepMetrics | null>(() => {
         const j = this.selectedJob();
         if (!j) return null;
-        return latestMetrics(j.logs, j.config?.['max_train_steps']);
+        return latestMetrics(j.logs, j.config?.['max_train_steps'] as number | undefined);
     });
 
     /**

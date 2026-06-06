@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
+import type { TrainingConfig } from './job';
 
 export type TemplateDomain = 'captioning' | 'masking' | 'training';
 
@@ -9,7 +10,7 @@ export interface Template {
   id: string;
   name: string;
   project_id: string | null;
-  config: any;
+  config: TrainingConfig;
   created_at: number;
   updated_at: number;
   used_count: number;
@@ -49,7 +50,7 @@ export class TemplateService {
     return this.http.get<Template[]>(`${this.apiUrl}/captioning`, { params });
   }
 
-  createCaptioningTemplate(data: { model_id: string; name: string; project_id?: string | null; system_prompt?: string; wildcard?: string; config?: any }): Observable<Template> {
+  createCaptioningTemplate(data: { model_id: string; name: string; project_id?: string | null; system_prompt?: string; wildcard?: string; config?: TrainingConfig }): Observable<Template> {
     return this.http.post<Template>(`${this.apiUrl}/captioning`, data);
   }
 
@@ -63,7 +64,7 @@ export class TemplateService {
     return this.http.get<Template[]>(`${this.apiUrl}/masking`, { params });
   }
 
-  createMaskingTemplate(data: { model_id: string; name: string; project_id?: string | null; config?: any }): Observable<Template> {
+  createMaskingTemplate(data: { model_id: string; name: string; project_id?: string | null; config?: TrainingConfig }): Observable<Template> {
     return this.http.post<Template>(`${this.apiUrl}/masking`, data);
   }
 
@@ -79,7 +80,7 @@ export class TemplateService {
     return this.http.get<Template[]>(`${this.apiUrl}/training`, { params });
   }
 
-  createTrainingTemplate(data: { definition_id: string; name: string; project_id?: string | null; config?: any }): Observable<Template> {
+  createTrainingTemplate(data: { definition_id: string; name: string; project_id?: string | null; config?: TrainingConfig }): Observable<Template> {
     return this.http.post<Template>(`${this.apiUrl}/training`, data);
   }
 

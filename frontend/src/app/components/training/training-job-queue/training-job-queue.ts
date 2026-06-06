@@ -577,7 +577,7 @@ export class TrainingJobQueueComponent implements OnInit {
         this.loadModelSources(jobs);
         // Pre-check sample availability for jobs with sampling configured
         for (const job of jobs) {
-          if (job.config?.['sample_every_n_steps'] > 0 && !this.jobsWithSamples().has(job.id)) {
+          if (Number(job.config?.['sample_every_n_steps']) > 0 && !this.jobsWithSamples().has(job.id)) {
             this.jobService.getJobSamples(job.id).subscribe({
               next: (samples) => {
                 if (samples && samples.length > 0) {
@@ -840,13 +840,13 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   getModelSource(job: Job): ModelSourceOverride | null {
-    const defId = job.config['definition_id'] || job.plugin_id;
+    const defId = (job.config['definition_id'] as string) || job.plugin_id;
     return this.jobModelSources().get(defId) || null;
   }
 
   /** Fetch model source overrides for all unique definition IDs in current jobs */
   private loadModelSources(jobs: Job[]) {
-    const defIds = new Set(jobs.map(j => j.config['definition_id'] || j.plugin_id).filter(Boolean));
+    const defIds = new Set(jobs.map(j => (j.config['definition_id'] as string) || j.plugin_id).filter(Boolean));
     const cached = this.jobModelSources();
     for (const defId of defIds) {
       if (!cached.has(defId)) {

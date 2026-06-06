@@ -19,8 +19,6 @@ import { SimilarImagesModalComponent } from '../../modals/similar-images/similar
 import { MaskPreviewModalComponent } from '../../modals/mask-preview/mask-preview.component';
 import { CropPreviewModalComponent } from '../../modals/crop-preview/crop-preview.component';
 import { ProjectDialogComponent } from '../../modals/project-dialog/project-dialog.component';
-import { ModelSourceModalComponent } from '../../modals/model-source/model-source.component';
-import { BrowseFolderModalComponent } from '../../modals/browse-folder/browse-folder.component';
 import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
 import { VersionEditModalComponent } from '../../modals/version-edit/version-edit.component';
 import { TemplatesLibraryModalComponent } from '../../modals/templates-library/templates-library.component';
@@ -36,12 +34,10 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
  * `rescan` / `analyze` / `cache`). Phase 4 added six more: three
  * mass-action modals (caption / mask / edit) plus three image-related
  * modals (similar-images / mask-preview / crop-preview). Phase 5 added
- * `project-dialog`. Phase 8 closes out the final three: `model-source`
- * and `browse-folder` (both backend-blocked stubs) plus the generic
- * typed `confirm` modal. Fixup R added `version-edit`. All 15
- * ModalKind values are covered; the `@default` branch logs a loud
- * console error so missing wiring shows up immediately during
- * development.
+ * `project-dialog`. Phase 8 added the generic typed `confirm` modal.
+ * Fixup R added `version-edit`. All ModalKind values are covered; the
+ * `@default` branch logs a loud console error so missing wiring shows
+ * up immediately during development.
  *
  * Each branch uses `@defer` so the modal body bundle loads on demand.
  */
@@ -60,8 +56,6 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
         MaskPreviewModalComponent,
         CropPreviewModalComponent,
         ProjectDialogComponent,
-        ModelSourceModalComponent,
-        BrowseFolderModalComponent,
         ConfirmModalComponent,
         VersionEditModalComponent,
         TemplatesLibraryModalComponent,
@@ -137,12 +131,6 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
                             }
                             @case ('project-dialog') {
                                 @defer { <app-modal-project-dialog/> }
-                            }
-                            @case ('model-source') {
-                                @defer { <app-modal-model-source/> }
-                            }
-                            @case ('browse-folder') {
-                                @defer { <app-modal-browse-folder/> }
                             }
                             @case ('confirm') {
                                 @defer { <app-modal-confirm/> }

@@ -24,7 +24,7 @@ export type ModalKind =
     | 'mass-caption' | 'mass-mask' | 'mass-edit'
     | 'dataset-form' | 'rescan' | 'analyze' | 'cache'
     | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
-    | 'model-source' | 'browse-folder' | 'confirm' | 'version-edit'
+    | 'confirm' | 'version-edit'
     | 'templates-library' | 'template-edit' | 'template-json' | 'job-config'
     | 'import-dataset';
 

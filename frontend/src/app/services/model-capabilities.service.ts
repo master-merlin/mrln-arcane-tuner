@@ -4,6 +4,13 @@ import { Observable, of } from 'rxjs';
 import { tap, shareReplay } from 'rxjs/operators';
 import { RuntimeConfigService } from './runtime-config.service';
 
+/** A named group of structurally-identical transformer blocks. */
+export interface BlockTopologyGroup {
+  name: string;
+  count: number;
+  attr_path: string;
+}
+
 export interface CapabilityFlags {
   has_vae: boolean;
   has_external_te: boolean;
@@ -19,16 +26,26 @@ export interface FieldVisibility {
   reason?: string;
 }
 
+/**
+ * Canonical capabilities descriptor for a model definition.
+ *
+ * This is the single source of truth for the payload of
+ * ``GET /models/capabilities/{definition_id}`` — the backend route always
+ * returns the full superset (topology fields set unconditionally, then the
+ * archetype descriptor merged in via ``resolve_capabilities``), so every
+ * field is required. Both {@link ModelCapabilitiesService} (cached, used by
+ * the config form) and ``ModelService.getCapabilities`` (uncached, used by
+ * the topology cards that need post-enrich freshness) resolve to this type.
+ */
 export interface ModelCapabilities {
+  enriched: boolean;
+  block_topology: BlockTopologyGroup[];
+  lora_targetable_modules: string[];
+  trainable_layers: string[];
   archetype: string;
   capabilities: CapabilityFlags;
   field_visibility: Record<string, FieldVisibility>;
   defaults: Record<string, unknown>;
-  // Optional keys kept for callers that need them:
-  enriched?: boolean;
-  block_topology?: unknown[];
-  lora_targetable_modules?: string[];
-  trainable_layers?: string[];
 }
 
 /**

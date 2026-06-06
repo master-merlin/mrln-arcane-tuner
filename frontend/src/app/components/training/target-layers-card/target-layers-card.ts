@@ -1,6 +1,7 @@
 ﻿import { Component, input, inject, OnInit, signal, computed, effect } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { ModelService, ModelCapabilities, BlockTopologyGroup } from '../../../services/model.service';
+import { ModelService } from '../../../services/model.service';
+import { ModelCapabilities, BlockTopologyGroup } from '../../../services/model-capabilities.service';
 import { ToastService } from '../../../services/toast';
 import { FormsModule } from '@angular/forms';
 

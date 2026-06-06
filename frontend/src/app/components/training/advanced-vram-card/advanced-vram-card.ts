@@ -1,5 +1,6 @@
 import { Component, input, output, signal, inject } from '@angular/core';
-import { ModelService, BlockTopologyGroup, ModelCapabilities } from '../../../services/model.service';
+import { ModelService } from '../../../services/model.service';
+import { BlockTopologyGroup, ModelCapabilities } from '../../../services/model-capabilities.service';
 import { ToastService } from '../../../services/toast';
 
 @Component({

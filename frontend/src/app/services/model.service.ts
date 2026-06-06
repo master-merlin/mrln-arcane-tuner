@@ -2,19 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from './runtime-config.service';
 import { Observable } from 'rxjs';
-
-export interface BlockTopologyGroup {
-    name: string;
-    count: number;
-    attr_path: string;
-}
-
-export interface ModelCapabilities {
-    enriched: boolean;
-    block_topology: BlockTopologyGroup[];
-    lora_targetable_modules: string[];
-    trainable_layers: string[];
-}
+import { BlockTopologyGroup, ModelCapabilities } from './model-capabilities.service';
 
 export interface EnrichmentResult {
     status: string;

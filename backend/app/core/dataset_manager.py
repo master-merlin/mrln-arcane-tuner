@@ -19,6 +19,7 @@ from app.core.dataset.media_helpers import (
     invalidate_overlay_files,
     refresh_media_metadata_after_change,
 )
+from app.core.dataset.media_types import MULTIMEDIA_EXTENSIONS, VIDEO_EXTENSIONS
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 
 from app.core.events import event_manager
@@ -106,7 +107,7 @@ class Dataset(BaseModel):
         )
 
 class DatasetManager:
-    MULTIMEDIA_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.avif', '.mp4', '.gif'}
+    MULTIMEDIA_EXTS = MULTIMEDIA_EXTENSIONS  # canonical: app.core.dataset.media_types
     CAPTION_EXTS = {'.txt', '.caption'}
 
     def __init__(self, storage_file: str = "dataset_locations.json", default_root: str = "datasets"):
@@ -805,7 +806,7 @@ class DatasetManager:
         total_est: int,
     ) -> None:
         """Compute solid hash for an image if not already cached."""
-        if ext in {".mp4", ".gif", ".webm", ".mkv", ".avi"}:
+        if ext in VIDEO_EXTENSIONS:
             return
         try:
             existing_hash = existing_meta.get("solid_hash")
@@ -1332,7 +1333,7 @@ class DatasetManager:
         if not os.path.exists(dataset.path):
             return []
             
-        multimedia_exts = {'.png', '.jpg', '.jpeg', '.webp', '.avif', '.mp4', '.gif'}
+        multimedia_exts = MULTIMEDIA_EXTENSIONS
         caption_exts = {'.txt', '.caption'}
         
         pairs = {}

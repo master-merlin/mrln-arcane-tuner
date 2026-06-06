@@ -7,6 +7,10 @@ import structlog
 import torch
 from PIL import Image
 
+from app.core.dataset.media_types import (
+    IMAGE_EXTENSION_PREFERENCE,
+    IMAGE_EXTENSIONS,
+)
 from app.core.masking.models import (
     MaskingModel,
     RemBGModel,
@@ -145,10 +149,9 @@ class MaskingService:
         ]
 
         # Find which images are missing masks
-        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff"}
         all_images = [
             f for f in os.listdir(dataset_path)
-            if os.path.splitext(f)[1].lower() in image_exts
+            if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
         ]
         mask_stems = {os.path.splitext(f)[0] for f in mask_files}
         missing_masks = [
@@ -166,7 +169,7 @@ class MaskingService:
 
             # Find matching source image
             source_path = None
-            for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif", ".bmp", ".tiff"]:
+            for ext in IMAGE_EXTENSION_PREFERENCE:
                 candidate = os.path.join(dataset_path, f"{stem}{ext}")
                 if os.path.exists(candidate):
                     source_path = candidate

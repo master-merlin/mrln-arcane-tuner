@@ -13,7 +13,7 @@ from typing import Any
 import cv2
 from PIL import Image
 
-
+from app.core.dataset.media_types import VIDEO_EXTENSIONS
 
 
 # ── Per-File Extraction ──────────────────────────────────────────────────
@@ -28,7 +28,7 @@ def extract_media_dimensions(
         (width, height) tuple. (0, 0) on failure.
     """
     try:
-        if ext in {".mp4", ".gif", ".webm", ".mkv", ".avi"}:
+        if ext in VIDEO_EXTENSIONS:
             cap = cv2.VideoCapture(file_path)
             if cap.isOpened():
                 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

@@ -953,6 +953,14 @@ export class AnalyzeModalComponent implements OnInit {
     });
     private _cropFinalized = false;
 
+    protected harmonizeTaskId = signal<string | null>(null);
+    private _harmonizeTaskView: ReturnType<TaskStore['byId']> | null = null;
+    private _harmonizeTask = computed(() => {
+        this.harmonizeTaskId();                  // re-bind when a new task starts
+        return this._harmonizeTaskView?.() ?? null;
+    });
+    private _harmonizeFinalized = false;
+
     protected data: AnalyzeModalData = (this.overlay.topModal()?.data as AnalyzeModalData) ?? {};
 
     protected readonly filterOptions = [
@@ -1204,6 +1212,19 @@ export class AnalyzeModalComponent implements OnInit {
             this.toast.error(t.error || 'Crop-all failed.');
         }
         this.fetch();   // refresh analysis table; cropAllCandidates empties
+    });
+
+    private _harmonizeCompletion = effect(() => {
+        const t = this._harmonizeTask();
+        if (!t) return;
+        const status = t.status;
+        if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') return;
+        if (this._harmonizeFinalized) return;
+        this._harmonizeFinalized = true;
+        this.harmonizing.set(false);
+        if (status === 'failed') this.toast.error(t.error || 'Harmonize failed.');
+        // success detail toast is emitted by HarmonizeSummaryListener; cancelled is silent.
+        this.fetch();
     });
 
     /** Filtered + sorted view of `allFiles()` for the table. */
@@ -1642,19 +1663,18 @@ export class AnalyzeModalComponent implements OnInit {
 
     protected harmonize(): void {
         const name = this.data.datasetName;
-        if (!name) return;
+        if (!name || this.harmonizing()) return;
         if (!confirm(
             `Harmonize "${name}"?\n\nThis converts non-JPG images to JPG and renames ` +
             `files to a canonical sequence. It rewrites files on disk and cannot be undone.`,
         )) return;
+        this._harmonizeFinalized = false;
         this.harmonizing.set(true);
         this.datasetsApi.taskHarmonize(name).subscribe({
-            next: () => {
-                this.harmonizing.set(false);
-            },
+            next: ({ task_id }) => { this._harmonizeTaskView = this.taskStore.byId(task_id); this.harmonizeTaskId.set(task_id); },
             error: (err: { error?: { detail?: string }; message?: string }) => {
                 this.harmonizing.set(false);
-                this.toast.error('Harmonize failed: ' + (err?.error?.detail || err?.message));
+                this.toast.error('Harmonize failed to start: ' + (err?.error?.detail || err?.message));
             },
         });
     }

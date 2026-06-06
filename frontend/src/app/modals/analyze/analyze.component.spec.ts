@@ -104,6 +104,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
             analyzeDataset: jasmine.createSpy('analyzeDataset').and.returnValue(of({ landscape: null, portrait: null, squared: null })),
             getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
             batchCrop: jasmine.createSpy('batchCrop').and.returnValue(of({ task_id: 't1' })),
+            taskHarmonize: jasmine.createSpy('taskHarmonize').and.returnValue(of({ task_id: 'h1' })),
         };
         taskStoreSpy = {
             byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
@@ -181,6 +182,29 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         f.detectChanges();
         tick();
         expect(comp.cropAllRunning()).toBe(false);
+        expect(fetchSpy).toHaveBeenCalled();
+    }));
+
+    it('harmonize() fires taskHarmonize and stores task id', () => {
+        const { comp } = make();
+        spyOn(window, 'confirm').and.returnValue(true);
+        comp.harmonize();
+        expect(api.taskHarmonize).toHaveBeenCalled();
+        expect(comp.harmonizeTaskId()).toBe('h1');
+        expect(comp.harmonizing()).toBe(true);
+    });
+
+    it('harmonize completion clears harmonizing and refetches', fakeAsync(() => {
+        const taskSignal = signal<any>(undefined);
+        taskStoreSpy.byId.and.returnValue(taskSignal);
+        spyOn(window, 'confirm').and.returnValue(true);
+        const { fixture: f, comp } = make();
+        const fetchSpy = spyOn(comp as any, 'fetch').and.stub();
+        comp.harmonize();
+        taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
+        f.detectChanges();
+        tick();
+        expect(comp.harmonizing()).toBe(false);
         expect(fetchSpy).toHaveBeenCalled();
     }));
 });

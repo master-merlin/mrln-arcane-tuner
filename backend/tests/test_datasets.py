@@ -343,9 +343,12 @@ def test_enable_all_images(mock_to_thread, mock_manager, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
-    mock_manager.enable_all_images.return_value = {"status": "all_enabled"}
+    # Mirror the real enable_all_images shape (see test_enable_all_resets_* /
+    # test_enable_all_noop_*); the route now validates it via EnableAllResponse.
+    mock_manager.enable_all_images.return_value = {"reset_count": 3}
     response = client.post("/api/datasets/myds/images/enable-all")
     assert response.status_code == 200
+    assert response.json() == {"reset_count": 3}
 
 
 # ── Save Caption (success) ───────────────────────────────────────────────

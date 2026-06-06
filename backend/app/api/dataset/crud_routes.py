@@ -25,7 +25,16 @@ from app.api.schemas.dataset_schemas import (
     CaptionRequest,
     ToggleEnabledRequest,
     ImportPathRequest,
+    DatasetDeletedResponse,
+    MediaPairDeletedResponse,
+    UploadResponse,
+    CaptionContentResponse,
+    CaptionSavedResponse,
+    ToggleEnabledResponse,
+    EnableAllResponse,
+    DatasetPairResponse,
 )
+from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset.rescan_batch import run_rescan_batch, count_multimedia
 from app.core.tasks.task_manager import task_manager
 
@@ -88,7 +97,7 @@ async def update_dataset(name: str, request: UpdateDatasetRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/datasets/{name}")
+@router.delete("/datasets/{name}", response_model=DatasetDeletedResponse)
 async def delete_dataset(name: str, delete_files: bool = False):
     """Unregister a dataset, optionally deleting files on disk."""
     try:
@@ -119,7 +128,7 @@ async def scan_all_datasets(force_full: bool = Query(False)):
     return await asyncio.to_thread(dataset_manager.scan_all_datasets, force_full)
 
 
-@router.post("/datasets/{name}/scan/batch")
+@router.post("/datasets/{name}/scan/batch", response_model=TaskEnqueuedResponse)
 async def scan_dataset_batch(name: str, force_full: bool = Query(False)):
     """Start a backend-owned single-dataset rescan task. Queued on the GPU lane
     (shared with captioning); returns the task id immediately."""
@@ -141,7 +150,7 @@ async def scan_dataset_batch(name: str, force_full: bool = Query(False)):
     return {"task_id": task.id}
 
 
-@router.post("/datasets/scan-all/batch")
+@router.post("/datasets/scan-all/batch", response_model=TaskEnqueuedResponse)
 async def scan_all_datasets_batch(force_full: bool = Query(False)):
     """Start a backend-owned library-wide rescan task. Runs auto-discovery, then
     queues one file-granular parent task on the GPU lane."""
@@ -164,7 +173,7 @@ async def scan_all_datasets_batch(force_full: bool = Query(False)):
 # ── File Upload ──────────────────────────────────────────────────────────
 
 
-@router.post("/datasets/{name}/upload")
+@router.post("/datasets/{name}/upload", response_model=UploadResponse)
 async def upload_file(name: str, file: UploadFile = File(...)):
     """Upload a file into a dataset directory."""
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
@@ -193,7 +202,7 @@ async def upload_file(name: str, file: UploadFile = File(...)):
 # ── Pairs & Media ────────────────────────────────────────────────────────
 
 
-@router.get("/datasets/{name}/pairs")
+@router.get("/datasets/{name}/pairs", response_model=list[DatasetPairResponse])
 async def get_dataset_pairs(name: str):
     """Return all image-caption pairs for a dataset."""
     try:
@@ -249,7 +258,7 @@ async def get_dataset_thumbnail(name: str, image_rel_path: str = Query(...)):
     )
 
 
-@router.delete("/datasets/{name}/pairs/{filename:path}")
+@router.delete("/datasets/{name}/pairs/{filename:path}", response_model=MediaPairDeletedResponse)
 async def delete_media_pair(name: str, filename: str):
     """Delete a media file and its associated caption."""
     try:
@@ -263,7 +272,7 @@ async def delete_media_pair(name: str, filename: str):
 # ── Captions ─────────────────────────────────────────────────────────────
 
 
-@router.get("/datasets/{name}/captions/{filename:path}")
+@router.get("/datasets/{name}/captions/{filename:path}", response_model=CaptionContentResponse)
 async def get_caption(name: str, filename: str):
     """Read a caption file's contents."""
     try:
@@ -273,7 +282,7 @@ async def get_caption(name: str, filename: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.put("/datasets/{name}/captions/{filename:path}")
+@router.put("/datasets/{name}/captions/{filename:path}", response_model=CaptionSavedResponse)
 async def save_caption(name: str, filename: str, request: CaptionRequest):
     """Save or update a caption file."""
     try:
@@ -287,7 +296,10 @@ async def save_caption(name: str, filename: str, request: CaptionRequest):
 # ── Image Enable/Disable ────────────────────────────────────────────────
 
 
-@router.patch("/datasets/{name}/images/{media_file:path}/enabled")
+@router.patch(
+    "/datasets/{name}/images/{media_file:path}/enabled",
+    response_model=ToggleEnabledResponse,
+)
 async def toggle_image_enabled(name: str, media_file: str, request: ToggleEnabledRequest):
     """Toggle the enabled/disabled state of a single image."""
     try:
@@ -298,7 +310,7 @@ async def toggle_image_enabled(name: str, media_file: str, request: ToggleEnable
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/datasets/{name}/images/enable-all")
+@router.post("/datasets/{name}/images/enable-all", response_model=EnableAllResponse)
 async def enable_all_images(name: str):
     """Reset all images in a dataset to enabled."""
     try:

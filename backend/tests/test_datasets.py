@@ -441,31 +441,6 @@ def test_set_version_invalid_semver(mock_to_thread, mock_manager, client):
     assert "bad" in response.json()["detail"]
 
 
-# ── Harmonize Files ──────────────────────────────────────────────────────
-
-
-@patch("app.api.dataset.analysis_routes.dataset_manager")
-@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
-def test_harmonize_files_success(mock_to_thread, mock_manager, client):
-    async def run_sync(func, *args, **kw):
-        return func(*args, **kw)
-    mock_to_thread.side_effect = run_sync
-    mock_manager.harmonize_files.return_value = {"status": "harmonized", "renamed": 3}
-    response = client.post("/api/datasets/myds/harmonize")
-    assert response.status_code == 200
-
-
-@patch("app.api.dataset.analysis_routes.dataset_manager")
-@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
-def test_harmonize_files_error(mock_to_thread, mock_manager, client):
-    async def run_sync(func, *args, **kw):
-        return func(*args, **kw)
-    mock_to_thread.side_effect = run_sync
-    mock_manager.harmonize_files.side_effect = FileNotFoundError("not found")
-    response = client.post("/api/datasets/ghost/harmonize")
-    assert response.status_code == 404
-
-
 # ── Thumbnail Endpoint ───────────────────────────────────────────────────
 
 

@@ -10,7 +10,7 @@ import {
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
-import { DatasetService, type PipelineBlock } from '../../services/dataset';
+import { DatasetService, type PipelineBlock, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
@@ -24,16 +24,12 @@ interface MassEditModalData {
     onCompleted?: () => void;
 }
 
-interface SourceImage {
-    media_file: string;
-    metadata?: {
-        has_overlay?: boolean;
-        width?: number;
-        height?: number;
-        aspect_ratio?: number;
-        [k: string]: unknown;
-    };
-    [k: string]: unknown;
+/** One operation in an overlay recipe (the `operations` list returned by
+ *  `GET …/overlay-recipe`). `params` is the free-form per-op settings dict. */
+interface RecipeOperation {
+    type: string;
+    params?: Record<string, unknown>;
+    enabled?: boolean;
 }
 
 /**
@@ -357,9 +353,9 @@ export class MassEditModalComponent implements OnInit {
 
     protected data: MassEditModalData = (this.overlay.topModal()?.data as MassEditModalData) ?? {};
 
-    protected pairs = signal<SourceImage[]>([]);
-    protected source = signal<SourceImage | null>(null);
-    protected recipe = signal<{ operations: any[] } | null>(null);
+    protected pairs = signal<DatasetPair[]>([]);
+    protected source = signal<DatasetPair | null>(null);
+    protected recipe = signal<{ operations: RecipeOperation[] } | null>(null);
     protected selectedTargets = signal<Set<string>>(new Set());
 
     protected running = signal<boolean>(false);
@@ -409,10 +405,11 @@ export class MassEditModalComponent implements OnInit {
 
     protected targetCandidates = computed(() => {
         const src = this.source();
-        return this.pairs().filter(
-            p => p.metadata && !(p.metadata as any)?.media_type?.includes?.('video')
-                && (!src || p.media_file !== src.media_file),
-        );
+        return this.pairs().filter(p => {
+            const mt = p.metadata?.['media_type'];
+            const isVideo = typeof mt === 'string' && mt.includes('video');
+            return p.metadata && !isVideo && (!src || p.media_file !== src.media_file);
+        });
     });
 
     ngOnInit(): void {
@@ -423,10 +420,7 @@ export class MassEditModalComponent implements OnInit {
     private async load(name: string): Promise<void> {
         try {
             const pairs = await firstValueFrom(this.datasetsApi.getDatasetPairs(name));
-            // SourceImage is this modal's view-model: it reads typed metadata
-            // fields (has_overlay/width/…) off the otherwise-opaque `/pairs`
-            // metadata dict. Cross the API-dict → view-model boundary once here.
-            this.pairs.set((pairs ?? []) as unknown as SourceImage[]);
+            this.pairs.set(pairs ?? []);
         } catch {
             this.pairs.set([]);
         }
@@ -435,7 +429,7 @@ export class MassEditModalComponent implements OnInit {
     /** Image's natural aspect ratio for inline `aspect-ratio` styling on the
      *  tile box. Falls back to square when metadata is missing so first paint
      *  stays stable even before scan metadata is populated. */
-    protected aspectRatio(p: SourceImage): string {
+    protected aspectRatio(p: DatasetPair): string {
         const w = p.metadata?.width;
         const h = p.metadata?.height;
         if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
@@ -446,20 +440,21 @@ export class MassEditModalComponent implements OnInit {
         return '1';
     }
 
-    protected thumbUrl(p: SourceImage): string {
+    protected thumbUrl(p: DatasetPair): string {
         // Use the 256px /thumbnail endpoint, not /media — the grid renders
         // dozens of tiles and full-res loads were saturating bandwidth.
         const name = this.data.datasetName!;
         return `${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/thumbnail?image_rel_path=${encodeURIComponent(p.media_file)}`;
     }
 
-    protected pickSource(p: SourceImage): void {
+    protected pickSource(p: DatasetPair): void {
         this.source.set(p);
         this.recipe.set(null);
         this.datasetsApi.getOverlayRecipe(this.data.datasetName!, p.media_file).subscribe({
-            next: (res: any) => {
-                if (res?.recipe?.operations?.length) {
-                    this.recipe.set({ operations: res.recipe.operations });
+            next: (res) => {
+                const ops = res?.recipe?.['operations'] as RecipeOperation[] | undefined;
+                if (ops?.length) {
+                    this.recipe.set({ operations: ops });
                 } else {
                     this.recipe.set(null);
                     this.toast.warning('No pipeline operations found.');
@@ -469,7 +464,7 @@ export class MassEditModalComponent implements OnInit {
         });
     }
 
-    protected describe(op: any): string {
+    protected describe(op: RecipeOperation): string {
         if (!op?.params) return '';
         const parts: string[] = [];
         for (const [k, v] of Object.entries(op.params)) {
@@ -508,7 +503,7 @@ export class MassEditModalComponent implements OnInit {
         if (!r || targets.length === 0) return;
         if (!confirm(`Apply pipeline to ${targets.length} image${targets.length === 1 ? '' : 's'}?`)) return;
 
-        const blocks: PipelineBlock[] = r.operations.map((op: any) => ({
+        const blocks: PipelineBlock[] = r.operations.map(op => ({
             type: op.type,
             enabled: op.enabled ?? true,
             params: { ...op.params },

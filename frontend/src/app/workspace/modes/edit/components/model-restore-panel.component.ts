@@ -251,13 +251,11 @@ export class ModelRestorePanelComponent {
         try {
             const category = this.kind() === 'upscale' ? 'upscale' : 'restore';
             const fn = category === 'upscale'
-                ? (this.datasets as any).listUpscaleModels
-                : (this.datasets as any).listRestoreModels;
+                ? this.datasets.listUpscaleModels
+                : this.datasets.listRestoreModels;
             const [diskResp, regResp] = await Promise.all([
-                typeof fn === 'function'
-                    ? firstValueFrom(fn.call(this.datasets, this.folder())) as Promise<any>
-                    : Promise.resolve(null),
-                firstValueFrom(this.datasets.getModelRegistry(category)) as Promise<any>,
+                firstValueFrom(fn.call(this.datasets, this.folder())),
+                firstValueFrom(this.datasets.getModelRegistry(category)),
             ]);
             this.models.set(Array.isArray(diskResp?.models) ? (diskResp.models as ModelEntry[]) : []);
             this.registry.set(Array.isArray(regResp?.models) ? (regResp.models as RegistryEntry[]) : []);

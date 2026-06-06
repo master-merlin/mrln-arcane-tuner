@@ -3,6 +3,9 @@ import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from './runtime-config.service';
 import { Observable } from 'rxjs';
+// Type-only import: erased at compile time, so it does NOT create a runtime
+// circular dependency with task.store (which imports DatasetService).
+import type { Task } from '../state/task.store';
 
 export interface Dataset {
   id: string;
@@ -124,6 +127,70 @@ export interface DatasetPair {
   metadata: Record<string, unknown> | null;
 }
 
+// ── Response shapes ────────────────────────────────────────────────────
+// Mirror the backend C2 Pydantic response models (api/dataset, api/training,
+// api/* routes) one-to-one. These replace the prior `Observable<any>` returns.
+
+/** `POST /datasets/{name}/upload`. */
+export interface UploadResponse { filename: string; status: string; }
+/** `DELETE /datasets/{name}`. */
+export interface DatasetDeletedResponse { status: string; name: string; }
+/** `PUT /datasets/{name}/captions/{file}`. */
+export interface CaptionSavedResponse { status: string; }
+/** `DELETE /datasets/{name}/pairs/{file}`. */
+export interface MediaPairDeletedResponse { status: string; file: string; }
+/** `POST /datasets/{name}/crop`. */
+export interface CropResponse { status: string; file: string; }
+/** `DELETE /datasets/{name}/masking/delete`. */
+export interface MaskDeletedResponse { status: string; message: string; }
+/** `POST /datasets/{name}/masking/apply`. */
+export interface ApplyMaskResponse { status: string; message: string; output_path: string; }
+/** `DELETE /captions/unload`. */
+export interface UnloadModelsResponse { status: string; message: string; }
+/** `POST /tasks/{id}/cancel`. */
+export interface CancelTaskResponse { status: string; task_id: string; }
+/** `POST /datasets/{name}/bump` and `/version`. */
+export interface VersionResponse { version: string; }
+/** `PATCH /datasets/{name}/images/{file}/enabled`. */
+export interface ToggleEnabledResponse { media_file: string; enabled: boolean; }
+/** `POST /datasets/{name}/images/enable-all`. */
+export interface EnableAllResponse { reset_count: number; }
+/** `POST /datasets/{name}/cache/purge`. */
+export interface PurgeCacheResponse { dataset: string; deleted: number; freed_bytes: number; }
+/** Per-version cache node: total bytes + per-type → per-variant entries. */
+export interface CacheVersionNode {
+  size_bytes?: number;
+  types?: Record<string, Record<string, unknown>>;
+}
+/** Dataset cache tree: modelName → version → node. */
+export type CacheTree = Record<string, Record<string, CacheVersionNode>>;
+/** `GET /datasets/{name}/cache/list`. */
+export interface CacheListResponse { dataset: string; cache: CacheTree; }
+/** One local model file in an upscale/restore model folder. */
+export interface ModelFileItem { name: string; path: string; size_mb: number; }
+/** `POST /upscale/list-models` and `/restore/list-models`. */
+export interface ModelFileListResponse { models: ModelFileItem[]; folder: string; }
+/** `POST /datasets/{name}/upscale`. */
+export interface UpscaleApplyResponse { status: string; file: string; scale: number; new_size: number[]; }
+/** `POST /datasets/{name}/render-pipeline`. */
+export interface RenderPipelineResponse {
+  status: string; file: string; overlay: string; dimensions: number[]; hash: string;
+}
+/** `GET /datasets/{name}/overlay-recipe/{path}` — `recipe` is the free-form
+ *  overlays.json entry (operations list with arbitrary per-op params). */
+export interface OverlayRecipeResponse { image_path: string; recipe: Record<string, unknown>; }
+/** `DELETE /datasets/{name}/overlay/{path}` (revert) and `/overlay/commit`. */
+export interface OverlayActionResponse { status: string; file: string; }
+/** One downloadable model in a registry category. */
+export interface ModelRegistryItem {
+  filename: string; downloaded: boolean; local_size_mb: number | null;
+  url: string; size_mb: number; description: string;
+}
+/** `GET /models/registry/{category}`. */
+export interface ModelRegistryResponse { category: string; folder: string; models: ModelRegistryItem[]; }
+/** `POST /models/download`. */
+export interface ModelDownloadResponse { status: string; filename: string; path: string; size_mb: number; }
+
 @Injectable({
   providedIn: 'root'
 })
@@ -205,14 +272,14 @@ export class DatasetService {
     return this.http.get<MpxDistribution>(`${this.apiUrl}/stats/mpx-distribution`);
   }
 
-  uploadFile(name: string, file: File): Observable<any> {
+  uploadFile(name: string, file: File): Observable<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/upload`, formData);
+    return this.http.post<UploadResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/upload`, formData);
   }
 
-  deleteDataset(name: string, deleteFiles: boolean = false): Observable<any> {
-    return this.http.delete(`${this.apiUrl}/${encodeURIComponent(name)}?delete_files=${deleteFiles}`);
+  deleteDataset(name: string, deleteFiles: boolean = false): Observable<DatasetDeletedResponse> {
+    return this.http.delete<DatasetDeletedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}?delete_files=${deleteFiles}`);
   }
 
   updateDataset(
@@ -240,17 +307,20 @@ export class DatasetService {
     return this.http.get<{ content: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${filename}`);
   }
 
-  saveCaption(name: string, filename: string, content: string): Observable<any> {
-    return this.http.put(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${filename}`, { content });
+  saveCaption(name: string, filename: string, content: string): Observable<CaptionSavedResponse> {
+    return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${filename}`, { content });
   }
 
-  deletePair(name: string, mediaFile: string): Observable<any> {
+  deletePair(name: string, mediaFile: string): Observable<MediaPairDeletedResponse> {
     // Encoded file path to handle slashes correctly in URL
     const encodedFile = encodeURIComponent(mediaFile);
-    return this.http.delete(`${this.apiUrl}/${encodeURIComponent(name)}/pairs/${encodedFile}`);
+    return this.http.delete<MediaPairDeletedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/pairs/${encodedFile}`);
   }
 
-  analyzeDataset(name: string, similarityThreshold: number = 0.9, resolutions?: number[], bucketingMode?: string): Observable<any> {
+  // Free-form harmonization analysis blob; the analyze modal asserts its own
+  // `AnalysisData` view model at the consumer boundary (backend returns a
+  // dynamic, orientation-keyed dict — see analysis_routes.py, left untyped).
+  analyzeDataset(name: string, similarityThreshold: number = 0.9, resolutions?: number[], bucketingMode?: string): Observable<unknown> {
     let url = `${this.apiUrl}/${encodeURIComponent(name)}/analysis?similarity_threshold=${similarityThreshold}`;
     if (resolutions?.length) {
       url += `&resolutions=${resolutions.join(',')}`;
@@ -261,7 +331,7 @@ export class DatasetService {
     return this.http.get(url);
   }
 
-  cropImage(name: string, path: string, targetWidth: number, targetHeight: number, origin: string, cropX?: number, cropY?: number): Observable<any> {
+  cropImage(name: string, path: string, targetWidth: number, targetHeight: number, origin: string, cropX?: number, cropY?: number): Observable<CropResponse> {
     const body: Record<string, unknown> = {
       path,
       target_width: targetWidth,
@@ -272,7 +342,7 @@ export class DatasetService {
       body['crop_x'] = cropX;
       body['crop_y'] = cropY;
     }
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/crop`, body);
+    return this.http.post<CropResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/crop`, body);
   }
 
   batchCrop(
@@ -313,12 +383,12 @@ export class DatasetService {
     });
   }
 
-  deleteMask(datasetName: string, imagePath: string): Observable<any> {
-    return this.http.delete(`${this.apiUrl}/${encodeURIComponent(datasetName)}/masking/delete?image_rel_path=${encodeURIComponent(imagePath)}`);
+  deleteMask(datasetName: string, imagePath: string): Observable<MaskDeletedResponse> {
+    return this.http.delete<MaskDeletedResponse>(`${this.apiUrl}/${encodeURIComponent(datasetName)}/masking/delete?image_rel_path=${encodeURIComponent(imagePath)}`);
   }
 
-  applyMask(datasetName: string, imagePath: string, opacity: number): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(datasetName)}/masking/apply`, {
+  applyMask(datasetName: string, imagePath: string, opacity: number): Observable<ApplyMaskResponse> {
+    return this.http.post<ApplyMaskResponse>(`${this.apiUrl}/${encodeURIComponent(datasetName)}/masking/apply`, {
       image_rel_path: imagePath,
       opacity: opacity
     });
@@ -340,8 +410,8 @@ export class DatasetService {
       `${this.apiUrl}/${encodeURIComponent(name)}/masking/apply/batch?opacity=${opacity}&overwrite=${overwrite}`, {});
   }
 
-  unloadModels(): Observable<any> {
-    return this.http.delete(`${this.rtc.apiUrl}/captions/unload`);
+  unloadModels(): Observable<UnloadModelsResponse> {
+    return this.http.delete<UnloadModelsResponse>(`${this.rtc.apiUrl}/captions/unload`);
   }
 
   batchCaption(body: {
@@ -351,16 +421,16 @@ export class DatasetService {
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/batch`, body);
   }
 
-  getTasks(): Observable<any[]> {
-    return this.http.get<any[]>(`${this.rtc.apiUrl}/tasks`);
+  getTasks(): Observable<Task[]> {
+    return this.http.get<Task[]>(`${this.rtc.apiUrl}/tasks`);
   }
 
-  cancelTask(taskId: string): Observable<any> {
-    return this.http.post(`${this.rtc.apiUrl}/tasks/${encodeURIComponent(taskId)}/cancel`, {});
+  cancelTask(taskId: string): Observable<CancelTaskResponse> {
+    return this.http.post<CancelTaskResponse>(`${this.rtc.apiUrl}/tasks/${encodeURIComponent(taskId)}/cancel`, {});
   }
 
-  bumpVersion(name: string, type: 'patch' | 'minor' | 'major' = 'patch'): Observable<any> {
-    return this.http.post(`${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/bump?type=${type}`, {});
+  bumpVersion(name: string, type: 'patch' | 'minor' | 'major' = 'patch'): Observable<VersionResponse> {
+    return this.http.post<VersionResponse>(`${this.rtc.apiUrl}/datasets/${encodeURIComponent(name)}/bump?type=${type}`, {});
   }
 
   /**
@@ -376,15 +446,15 @@ export class DatasetService {
     );
   }
 
-  toggleImageEnabled(datasetName: string, mediaFile: string, enabled: boolean): Observable<any> {
-    return this.http.patch(
+  toggleImageEnabled(datasetName: string, mediaFile: string, enabled: boolean): Observable<ToggleEnabledResponse> {
+    return this.http.patch<ToggleEnabledResponse>(
       `${this.apiUrl}/${encodeURIComponent(datasetName)}/images/${encodeURIComponent(mediaFile)}/enabled`,
       { enabled }
     );
   }
 
-  enableAllImages(datasetName: string): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(datasetName)}/images/enable-all`, {});
+  enableAllImages(datasetName: string): Observable<EnableAllResponse> {
+    return this.http.post<EnableAllResponse>(`${this.apiUrl}/${encodeURIComponent(datasetName)}/images/enable-all`, {});
   }
 
   taskHarmonize(name: string): Observable<{ task_id: string }> {
@@ -432,12 +502,12 @@ export class DatasetService {
 
   // ── Cache Administration ────────────────────────────────────────────
 
-  listCache(name: string): Observable<any> {
-    return this.http.get(`${this.apiUrl}/${encodeURIComponent(name)}/cache/list?_t=${Date.now()}`);
+  listCache(name: string): Observable<CacheListResponse> {
+    return this.http.get<CacheListResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/cache/list?_t=${Date.now()}`);
   }
 
-  purgeCache(name: string, options: { models?: string[]; versions?: string[]; types?: string[]; variants?: string[] } = {}): Observable<any> {
-    return this.http.post(`${this.apiUrl}/${encodeURIComponent(name)}/cache/purge`, options);
+  purgeCache(name: string, options: { models?: string[]; versions?: string[]; types?: string[]; variants?: string[] } = {}): Observable<PurgeCacheResponse> {
+    return this.http.post<PurgeCacheResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/cache/purge`, options);
   }
 
   // ── Image Adjustments ──────────────────────────────────────────────
@@ -464,12 +534,12 @@ export class DatasetService {
     );
   }
 
-  listUpscaleModels(folder: string): Observable<any> {
-    return this.http.post(`${this.rtc.apiUrl}/upscale/list-models`, { folder });
+  listUpscaleModels(folder: string): Observable<ModelFileListResponse> {
+    return this.http.post<ModelFileListResponse>(`${this.rtc.apiUrl}/upscale/list-models`, { folder });
   }
 
-  applyUpscale(name: string, modelPath: string, imagePath: string, tileSize: number = 512, targetScale: number = 0, resizeMethod: string = 'lanczos'): Observable<any> {
-    return this.http.post(
+  applyUpscale(name: string, modelPath: string, imagePath: string, tileSize: number = 512, targetScale: number = 0, resizeMethod: string = 'lanczos'): Observable<UpscaleApplyResponse> {
+    return this.http.post<UpscaleApplyResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/upscale`,
       { model_path: modelPath, image_path: imagePath, tile_size: tileSize, target_scale: targetScale, resize_method: resizeMethod },
     );
@@ -477,8 +547,8 @@ export class DatasetService {
 
   // ── Non-Destructive Overlay Pipeline ───────────────────────────────
 
-  renderPipeline(name: string, imagePath: string, blocks: PipelineBlock[], tileSize: number = 512, tilePad: number = 32, replaceRecipe: boolean = false): Observable<any> {
-    return this.http.post(
+  renderPipeline(name: string, imagePath: string, blocks: PipelineBlock[], tileSize: number = 512, tilePad: number = 32, replaceRecipe: boolean = false): Observable<RenderPipelineResponse> {
+    return this.http.post<RenderPipelineResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/render-pipeline`,
       { image_path: imagePath, blocks, tile_size: tileSize, tile_pad: tilePad, replace_recipe: replaceRecipe },
     );
@@ -516,37 +586,37 @@ export class DatasetService {
     return `${this.apiUrl}/${encodeURIComponent(name)}/overlay/${encodeURIComponent(imagePath)}`;
   }
 
-  getOverlayRecipe(name: string, imagePath: string): Observable<any> {
-    return this.http.get(
+  getOverlayRecipe(name: string, imagePath: string): Observable<OverlayRecipeResponse> {
+    return this.http.get<OverlayRecipeResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/overlay-recipe/${encodeURIComponent(imagePath)}`,
     );
   }
 
-  deleteOverlay(name: string, imagePath: string): Observable<any> {
-    return this.http.delete(
+  deleteOverlay(name: string, imagePath: string): Observable<OverlayActionResponse> {
+    return this.http.delete<OverlayActionResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/overlay/${encodeURIComponent(imagePath)}`,
     );
   }
 
-  commitOverlay(name: string, imagePath: string): Observable<any> {
-    return this.http.post(
+  commitOverlay(name: string, imagePath: string): Observable<OverlayActionResponse> {
+    return this.http.post<OverlayActionResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/overlay/commit`,
       { image_path: imagePath },
     );
   }
 
-  listRestoreModels(folder: string): Observable<any> {
-    return this.http.post(`${this.rtc.apiUrl}/restore/list-models`, { folder });
+  listRestoreModels(folder: string): Observable<ModelFileListResponse> {
+    return this.http.post<ModelFileListResponse>(`${this.rtc.apiUrl}/restore/list-models`, { folder });
   }
 
   // ── Model Registry & Download ──────────────────────────────────────
 
-  getModelRegistry(category: string): Observable<any> {
-    return this.http.get(`${this.rtc.apiUrl}/models/registry/${encodeURIComponent(category)}`);
+  getModelRegistry(category: string): Observable<ModelRegistryResponse> {
+    return this.http.get<ModelRegistryResponse>(`${this.rtc.apiUrl}/models/registry/${encodeURIComponent(category)}`);
   }
 
-  downloadModel(category: string, filename: string, targetFolder: string = ''): Observable<any> {
-    return this.http.post(`${this.rtc.apiUrl}/models/download`, {
+  downloadModel(category: string, filename: string, targetFolder: string = ''): Observable<ModelDownloadResponse> {
+    return this.http.post<ModelDownloadResponse>(`${this.rtc.apiUrl}/models/download`, {
       category, filename, target_folder: targetFolder,
     });
   }
@@ -556,7 +626,7 @@ export class DatasetService {
 export interface PipelineBlock {
   type: string;
   enabled: boolean;
-  params: Record<string, any>;
+  params: Record<string, unknown>;
 }
 
 /** One bin of the cross-dataset megapixel histogram. */

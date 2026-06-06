@@ -430,58 +430,6 @@ class IModelDriver(ABC):
         return [name for name, _ in model.named_parameters()]
 
 
-class IModelSampler(ABC):
-    """Family-specific sampling behavior for inference during training.
-
-    The GenericSamplingPipeline handles orchestration (interval
-    checking, VRAM phasing, image saving, broadcasting). The sampler
-    provides the family-specific operations.
-    """
-
-    @abstractmethod
-    def encode_prompt(self, prompt: str) -> Any:
-        """Encode a text prompt into embeddings for denoising.
-
-        Returns:
-            Prompt embedding(s) in the format expected by ``denoise()``.
-        """
-
-    @abstractmethod
-    def denoise(
-        self,
-        noise: torch.Tensor,
-        prompt_embedding: Any,
-        num_steps: int,
-        guidance_scale: float,
-        seed: int,
-    ) -> Any:
-        """Run the full denoising loop.
-
-        Returns:
-            Latent tensor(s) ready for ``decode_latents()``.
-        """
-
-    @abstractmethod
-    def decode_latents(self, latents: torch.Tensor) -> Any:
-        """Decode latent tensor(s) to a PIL ``Image``.
-
-        Handles family-specific post-processing (BN denormalization,
-        unpatchify, pixel shuffle, etc.).
-        """
-
-    @abstractmethod
-    def create_initial_noise(
-        self,
-        width: int,
-        height: int,
-        generator: torch.Generator,
-    ) -> torch.Tensor:
-        """Create initial noise tensor of the correct shape for this family.
-
-        Handles family-specific latent dimensions (packing, channels).
-        """
-
-
 # ---------------------------------------------------------------------------
 # IDataPipeline — Data pipeline contract (pre-cacher and training)
 # ---------------------------------------------------------------------------

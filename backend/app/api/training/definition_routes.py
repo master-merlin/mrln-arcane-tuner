@@ -14,8 +14,17 @@ from app.core.schemas.model_overrides import ModelOverride
 from app.engine.utils.model_override_manager import ModelOverrideManager
 from app.api.schemas.definition_schemas import (
     CreateDefinitionRequest,
+    DeleteDefinitionResponse,
+    DeleteModelSourceResponse,
+    EnrichDefinitionResponse,
+    ModelCapabilitiesResponse,
+    ModelSettingsResponse,
+    ModelSourceResponse,
+    TrainingEstimateResponse,
     UpdateDefinitionRequest,
+    ValidateModelPathResponse,
     VRAMEstimateRequest,
+    VRAMEstimateResponse,
 )
 
 router = APIRouter()
@@ -96,7 +105,9 @@ async def update_definition(definition_id: str, request: UpdateDefinitionRequest
     return registry.get_definition(definition_id).model_dump()
 
 
-@router.delete("/models/definitions/{definition_id}")
+@router.delete(
+    "/models/definitions/{definition_id}", response_model=DeleteDefinitionResponse
+)
 async def delete_definition(definition_id: str):
     """Delete a model definition (removes YAML file and registry entry)."""
     from app.engine.models.registry import registry
@@ -127,7 +138,7 @@ async def delete_definition(definition_id: str):
 # ── VRAM Estimation ─────────────────────────────────────────────────────
 
 
-@router.post("/jobs/estimate-vram")
+@router.post("/jobs/estimate-vram", response_model=VRAMEstimateResponse)
 async def estimate_vram(request: VRAMEstimateRequest):
     """Estimate peak VRAM for a training configuration before launching.
 
@@ -146,7 +157,7 @@ async def estimate_vram(request: VRAMEstimateRequest):
     return report.to_dict()
 
 
-@router.post("/jobs/estimate")
+@router.post("/jobs/estimate", response_model=TrainingEstimateResponse)
 async def estimate_training(request: VRAMEstimateRequest):
     """Full data-calibrated training estimate for the Quick Train wall.
 
@@ -165,7 +176,9 @@ async def estimate_training(request: VRAMEstimateRequest):
 # ── Model Capabilities ──────────────────────────────────────────────────
 
 
-@router.get("/models/capabilities/{definition_id}")
+@router.get(
+    "/models/capabilities/{definition_id}", response_model=ModelCapabilitiesResponse
+)
 async def get_model_capabilities(definition_id: str):
     """Return block topology, trainable layer names, and archetype capability
     descriptor for a model definition."""
@@ -190,7 +203,10 @@ async def get_model_capabilities(definition_id: str):
     return response
 
 
-@router.post("/models/definitions/{definition_id}/enrich")
+@router.post(
+    "/models/definitions/{definition_id}/enrich",
+    response_model=EnrichDefinitionResponse,
+)
 async def enrich_definition(definition_id: str):
     """Trigger enrichment for a model definition.
 
@@ -232,7 +248,7 @@ async def enrich_definition(definition_id: str):
 # ── Global Model Settings ───────────────────────────────────────────────
 
 
-@router.get("/models/settings")
+@router.get("/models/settings", response_model=ModelSettingsResponse)
 async def get_model_settings():
     """Get global model settings (offline mode, default path)."""
     settings = await ModelOverrideManager.get_all_async()
@@ -242,7 +258,7 @@ async def get_model_settings():
     }
 
 
-@router.put("/models/settings")
+@router.put("/models/settings", response_model=ModelSettingsResponse)
 async def update_model_settings(body: dict[str, Any]):
     """Update global model settings."""
     settings = await ModelOverrideManager.get_all_async()
@@ -274,7 +290,9 @@ async def update_model_settings(body: dict[str, Any]):
 # ── Model Source Overrides ──────────────────────────────────────────────
 
 
-@router.get("/models/definitions/{definition_id}/source")
+@router.get(
+    "/models/definitions/{definition_id}/source", response_model=ModelSourceResponse
+)
 async def get_model_source(definition_id: str):
     """Get the source override for a model definition."""
     override = await ModelOverrideManager.get_override_async(definition_id)
@@ -283,7 +301,9 @@ async def get_model_source(definition_id: str):
     return {"source_type": "hf_hub", "local_path": None, "skip_update": False}
 
 
-@router.put("/models/definitions/{definition_id}/source")
+@router.put(
+    "/models/definitions/{definition_id}/source", response_model=ModelSourceResponse
+)
 async def set_model_source(definition_id: str, override: ModelOverride):
     """Set a source override for a model definition."""
     from app.engine.models.registry import registry
@@ -334,7 +354,10 @@ async def set_model_source(definition_id: str, override: ModelOverride):
     return override.model_dump()
 
 
-@router.delete("/models/definitions/{definition_id}/source")
+@router.delete(
+    "/models/definitions/{definition_id}/source",
+    response_model=DeleteModelSourceResponse,
+)
 async def delete_model_source(definition_id: str):
     """Remove source override — revert to YAML default."""
     await ModelOverrideManager.delete_override_async(definition_id)
@@ -349,7 +372,10 @@ async def delete_model_source(definition_id: str):
     return {"status": "removed", "id": definition_id}
 
 
-@router.post("/models/definitions/{definition_id}/validate-path")
+@router.post(
+    "/models/definitions/{definition_id}/validate-path",
+    response_model=ValidateModelPathResponse,
+)
 async def validate_model_path(
     definition_id: str,
     body: dict[str, Any],

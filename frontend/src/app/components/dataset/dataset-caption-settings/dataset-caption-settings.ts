@@ -9,6 +9,34 @@ import { debounceTime, switchMap } from 'rxjs/operators';
 
 export interface CaptionTemplate extends Template {}
 
+/** A single tunable parameter on a caption model (see {@link DatasetCaptionSettingsComponent.captionModels}). */
+export interface CaptionParam {
+    key: string;
+    label: string;
+    type: 'select' | 'number' | 'checkbox' | 'text';
+    default: string | number | boolean;
+    /** Choices for `select` (may be numeric, e.g. image sizes). */
+    options?: (string | number)[];
+    min?: number;
+    max?: number;
+    step?: number;
+    /** `'extra'` params live in the collapsible "Extra Options" panel. */
+    group?: 'extra';
+    /** Only render for video media. */
+    videoOnly?: boolean;
+    /** Param key whose truthiness gates this one (extra `text` rows). */
+    showWhen?: string;
+    placeholder?: string;
+}
+
+/** A caption method and its tunable parameters. */
+export interface CaptionModelConfig {
+    id: string;
+    name: string;
+    description: string;
+    params: CaptionParam[];
+}
+
 export interface CaptionSettingsState {
     modelId: string;
     resolvedModelId: string;
@@ -21,7 +49,7 @@ export interface CaptionSettingsState {
     resolvedSystemPrompt: string;
     /** The wildcard substitution value (per-template). */
     wildcard: string;
-    params: Record<string, any>;
+    params: Record<string, unknown>;
 }
 
 @Component({
@@ -153,7 +181,7 @@ export interface CaptionSettingsState {
                                                 (ngModelChange)="updateParam(param.key, $event)"
                                                 [attr.data-testid]="'caption-param-' + param.key"
                                                 class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1 outline-none focus:border-brand">
-                                                @for (opt of param.options; track opt) {
+                                                @for (opt of param.options ?? []; track opt) {
                                                     <option [value]="opt">{{ opt }}</option>
                                                 }
                                             </select>
@@ -260,7 +288,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     autoSave = input(true);
     presetTemplate = input<Template | null>(null);
 
-    captionModels: any[] = [
+    captionModels: CaptionModelConfig[] = [
         {
             id: 'youtu-vl',
             name: 'Youtu-VL',
@@ -350,7 +378,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     captionSystemPrompt = signal<string>('Describe this image in detail.');
     /** Wildcard value substituted into {wildcard} tokens of the system prompt. */
     captionWildcard = signal<string>('');
-    captionModelParams = signal<Record<string, any>>({});
+    captionModelParams = signal<Record<string, unknown>>({});
     showExtraOptions = false;
     /** Collapsible holding all model-detail params. Collapsed by default so the
      *  top items (System Prompt) get the room; expanding shrinks the prompt. */
@@ -358,7 +386,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
 
     private preferences: ProjectPreferences | null = null;
     private settingsUpdate$ = new Subject<void>();
-    private pendingSaves = new Map<string, any>();
+    private pendingSaves = new Map<string, { config: Record<string, unknown>; system_prompt?: string; wildcard?: string }>();
 
     activeModelConfig = computed(() => {
         return this.captionModels.find(m => m.id === this.selectedCaptionModel());
@@ -371,12 +399,12 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         return tpl ? tpl.is_default || tpl.readonly : false;
     }
 
-    getCoreParams(config: any): any[] {
-        return config.params.filter((p: any) => !p.group);
+    getCoreParams(config: CaptionModelConfig): CaptionParam[] {
+        return config.params.filter(p => !p.group);
     }
 
-    getExtraParams(config: any): any[] {
-        return config.params.filter((p: any) => p.group === 'extra');
+    getExtraParams(config: CaptionModelConfig): CaptionParam[] {
+        return config.params.filter(p => p.group === 'extra');
     }
 
     constructor() {
@@ -463,8 +491,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             this.captionWildcard.set(tpl.wildcard || '');
 
             const modelConfig = this.captionModels.find(m => m.id === this.selectedCaptionModel());
-            const codeDefaults: Record<string, any> = {};
-            modelConfig?.params.forEach((p: any) => { codeDefaults[p.key] = p.default; });
+            const codeDefaults: Record<string, unknown> = {};
+            modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
 
             this.captionModelParams.set({ ...codeDefaults, ...(tpl.config || {}) });
             this.emitChanges();
@@ -479,8 +507,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             // Edit mode: switch model locally, reset params to its defaults; the
             // host's Save persists. No backend template list reload.
             const cfg = this.captionModels.find(m => m.id === modelId);
-            const defaults: Record<string, any> = {};
-            cfg?.params.forEach((p: any) => { defaults[p.key] = p.default; });
+            const defaults: Record<string, unknown> = {};
+            cfg?.params.forEach(p => { defaults[p.key] = p.default; });
             this.captionModelParams.set(defaults);
             this.emitChanges();
             return;
@@ -503,7 +531,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         this.settingsUpdate$.next();
     }
 
-    updateParam(key: string, value: any) {
+    updateParam(key: string, value: unknown) {
         if (!this.autoSave()) {
             this.captionModelParams.update(p => ({ ...p, [key]: value }));
             this.emitChanges();
@@ -540,7 +568,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         return prompt.replace(/\{wildcard\}/g, this.captionWildcard());
     }
 
-    private updateActiveTemplate(changes: { config?: Record<string, any>; system_prompt?: string; wildcard?: string }) {
+    private updateActiveTemplate(changes: { config?: Record<string, unknown>; system_prompt?: string; wildcard?: string }) {
         const activeId = this.activeTemplateId();
         if (!activeId) return;
 

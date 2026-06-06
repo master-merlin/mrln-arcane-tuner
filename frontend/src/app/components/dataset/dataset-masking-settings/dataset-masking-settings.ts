@@ -9,7 +9,30 @@ import { debounceTime, switchMap } from 'rxjs/operators';
 
 export interface MaskingSettingsState {
     modelId: string;
-    params: Record<string, any>;
+    params: Record<string, unknown>;
+}
+
+/** A single tunable parameter on a masking model (see {@link DatasetMaskingSettingsComponent.maskingModels}). */
+export interface MaskingParam {
+    key: string;
+    label: string;
+    type: 'creatable-select' | 'select' | 'checkbox' | 'number';
+    default: string | number | boolean;
+    /** Choices for `select` / `creatable-select`. */
+    options?: string[];
+    /** Inline label rendered next to a `checkbox`. */
+    checkboxLabel?: string;
+    min?: number;
+    max?: number;
+    step?: number;
+}
+
+/** A masking method and its tunable parameters. */
+export interface MaskingModelConfig {
+    id: string;
+    name: string;
+    description: string;
+    params: MaskingParam[];
 }
 
 @Component({
@@ -113,7 +136,7 @@ export interface MaskingSettingsState {
                                             (ngModelChange)="updateParam(param.key, $event)"
                                             [attr.data-testid]="'masking-param-' + param.key"
                                             class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1 outline-none focus:border-brand">
-                                            @for (opt of param.options; track opt) {
+                                            @for (opt of param.options ?? []; track opt) {
                                                 <option [value]="opt">{{ opt }}</option>
                                             }
                                         </select>
@@ -168,7 +191,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     autoSave = input(true);
     presetTemplate = input<Template | null>(null);
 
-    maskingModels: any[] = [
+    maskingModels: MaskingModelConfig[] = [
         {
             id: 'sam3',
             name: 'Meta SAM 3',
@@ -206,12 +229,12 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     selectedMaskModel = signal<string>('sam3');
     currentTemplates = signal<Template[]>([]);
     activeTemplateId = signal<string | null>(null);
-    maskingParams = signal<Record<string, any>>({});
+    maskingParams = signal<Record<string, unknown>>({});
 
     private preferences: ProjectPreferences | null = null;
     private savedConcepts: string[] = [];
     private settingsUpdate$ = new Subject<void>();
-    private pendingSaves = new Map<string, any>();
+    private pendingSaves = new Map<string, { config: Record<string, unknown> }>();
 
     activeModelConfig = computed(() => {
         return this.maskingModels.find(m => m.id === this.selectedMaskModel());
@@ -312,8 +335,8 @@ export class DatasetMaskingSettingsComponent implements OnInit {
 
         if (tpl) {
             const modelConfig = this.maskingModels.find(m => m.id === this.selectedMaskModel());
-            const codeDefaults: Record<string, any> = {};
-            modelConfig?.params.forEach((p: any) => { codeDefaults[p.key] = p.default; });
+            const codeDefaults: Record<string, unknown> = {};
+            modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
 
             this.maskingParams.set({ ...codeDefaults, ...(tpl.config || {}) });
             this.emitChanges();
@@ -325,8 +348,8 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         this.selectedMaskModel.set(modelId);
         if (!this.autoSave()) {
             const cfg = this.maskingModels.find(m => m.id === modelId);
-            const defaults: Record<string, any> = {};
-            cfg?.params.forEach((p: any) => { defaults[p.key] = p.default; });
+            const defaults: Record<string, unknown> = {};
+            cfg?.params.forEach(p => { defaults[p.key] = p.default; });
             this.maskingParams.set(defaults);
             this.emitChanges();
             return;
@@ -341,7 +364,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         this.settingsUpdate$.next();
     }
 
-    updateParam(key: string, value: any) {
+    updateParam(key: string, value: unknown) {
         if (!this.autoSave()) {
             this.maskingParams.update(p => ({ ...p, [key]: value }));
             this.emitChanges();
@@ -351,7 +374,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         this.updateActiveTemplate({ config: newParams });
     }
 
-    private updateActiveTemplate(changes: { config?: Record<string, any> }) {
+    private updateActiveTemplate(changes: { config?: Record<string, unknown> }) {
         const activeId = this.activeTemplateId();
         if (!activeId) return;
 
@@ -452,26 +475,26 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         }
     }
 
-    getCombinedOptions(param: any): string[] {
-        return [...new Set([...param.options, ...this.savedConcepts])];
+    getCombinedOptions(param: MaskingParam): string[] {
+        return [...new Set([...(param.options ?? []), ...this.savedConcepts])];
     }
 
-    isCustomValue(param: any, value: any): boolean {
+    isCustomValue(param: MaskingParam, value: unknown): boolean {
         if (!value) return false;
         if (value === '__custom__') return true;
         const options = this.getCombinedOptions(param);
-        return !options.includes(value);
+        return !options.includes(value as string);
     }
 
-    onCreatableSelectChange(param: any, selection: string) {
+    onCreatableSelectChange(param: MaskingParam, selection: string) {
         this.updateParam(param.key, selection);
     }
 
-    onCustomInputChange(param: any, value: string) {
+    onCustomInputChange(param: MaskingParam, value: string) {
         this.updateParam(param.key, value);
 
         if (value && value.length > 2 && value !== '__custom__') {
-            this.saveCustomConcept(value, param.options);
+            this.saveCustomConcept(value, param.options ?? []);
         }
     }
 

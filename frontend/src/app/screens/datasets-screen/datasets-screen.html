@@ -299,6 +299,13 @@
                             }
                             <div class="ds-card-meta">
                                 <span class="mono">v{{ d.version }}</span>
+                                <button type="button"
+                                        class="icon-btn ds-version-edit"
+                                        (click)="editVersion(d, $event)"
+                                        title="Edit version (manual override)"
+                                        aria-label="Edit version">
+                                    <app-ico name="Pencil" [size]="12"/>
+                                </button>
                             </div>
                         </div>
                         @if (d.classifier) {

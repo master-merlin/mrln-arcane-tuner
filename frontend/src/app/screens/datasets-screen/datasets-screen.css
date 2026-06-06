@@ -250,6 +250,17 @@
     margin-top: 4px;
 }
 
+/* Inline version-edit pencil — mirrors the workspace header's `.ws-version-edit`.
+   Shrinks the global 32px `.icon-btn` down to fit the meta row. */
+.ds-version-edit {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    color: var(--color-text-muted);
+    opacity: 0.7;
+}
+.ds-version-edit:hover { opacity: 1; color: var(--color-text-primary); }
+
 .ds-card-sep { opacity: 0.4; }
 
 .ds-card-counts {

@@ -770,6 +770,22 @@ export class DatasetsScreen {
         this.overlay.openWorkspace(d.id ?? d.name, 'browse');
     }
 
+    /** Inline version-edit pencil on a card. Mirrors the workspace header's
+     *  {@link DatasetWorkspaceComponent.editVersion}: opens the shared
+     *  `version-edit` modal and reflects the saved version into the local
+     *  store row on success. `stopPropagation` keeps the click off
+     *  {@link openCard}. */
+    protected editVersion(d: Dataset, event: Event): void {
+        event.stopPropagation();
+        this.overlay.openModal('version-edit', {
+            datasetName: d.name,
+            currentVersion: d.version,
+            onSaved: (newVersion: string) => {
+                this.datasets.upsertLocal({ ...d, version: newVersion });
+            },
+        });
+    }
+
     protected openNewDataset(): void {
         this.overlay.openModal('dataset-form');
     }

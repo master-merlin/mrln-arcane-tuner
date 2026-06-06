@@ -19,7 +19,7 @@ import { TemplateInfoCardComponent, TemplateInfoRow } from '../../../ui/template
         </div>
         @if (activeTemplate(); as tpl) {
           <span class="chip shrink-0">
-            <span class="dot" style="background:var(--color-brand)"></span>
+            <span class="dot bg-brand"></span>
             {{ tpl.name }} · {{ (tpl.is_default || tpl.readonly) ? 'default' : 'custom' }}
           </span>
         }

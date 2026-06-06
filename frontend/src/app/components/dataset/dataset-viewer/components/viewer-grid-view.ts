@@ -1,6 +1,24 @@
 import { Component, ElementRef, effect, input, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
+import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
+
+/**
+ * A grid row: a dataset pair plus the transient `_captionDirty` flag the
+ * textarea stamps in place so blur can tell a real edit from a focus-then-blur
+ * (which must NOT save). A plain `DatasetPair` is assignable to this (the flag
+ * is optional), so parents can keep passing `DatasetPair[]`.
+ */
+type GridPair = DatasetPair & { _captionDirty?: boolean };
+
+/** Payload emitted by the per-tile crop button. */
+export interface GridCropRequest {
+    path: string;
+    width?: number;
+    height?: number;
+    target_width?: number;
+    target_height?: number;
+}
 
 @Component({
     selector: 'app-viewer-grid-view',
@@ -89,10 +107,10 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                              
                              <!-- HPS pill (top-left) — shared .hps-pill from components.css -->
                              @if (pair.metadata?.quality_score != null) {
-                                <span [class]="'absolute top-2 left-2 z-20 hps-pill ' + hpsTone(pair.metadata.quality_score)"
+                                <span [class]="'absolute top-2 left-2 z-20 hps-pill ' + hpsTone(pair.metadata!.quality_score!)"
                                       title="HPSv2 quality score">
                                     <span class="hps-pill-label">HPS</span>
-                                    <span class="hps-pill-value">{{ pair.metadata.quality_score.toFixed(4) }}</span>
+                                    <span class="hps-pill-value">{{ pair.metadata!.quality_score!.toFixed(4) }}</span>
                                 </span>
                              }
 
@@ -114,7 +132,7 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
                                  <button (click)="onEditClick(pair, $event, i)" class="tile-action bg-surface-low/60 hover:bg-purple-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Adjust image">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
                                  </button>
-                                 @if (pair.metadata?.target_width && (pair.metadata.target_width !== pair.metadata.width || pair.metadata.target_height !== pair.metadata.height)) {
+                                 @if (pair.metadata?.target_width && (pair.metadata!.target_width !== pair.metadata!.width || pair.metadata!.target_height !== pair.metadata!.height)) {
                                      <button (click)="onCropClick(pair, $event)" class="tile-action bg-surface-low/60 hover:bg-orange-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Crop image (aspect ratio mismatch)">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"></path><path d="M18 22V8a2 2 0 0 0-2-2H2"></path></svg>
                                      </button>
@@ -231,7 +249,7 @@ import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills
     `]
 })
 export class ViewerGridViewComponent {
-    pairs = input.required<any[]>();
+    pairs = input.required<GridPair[]>();
     datasetName = input.required<string>();
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
@@ -263,7 +281,7 @@ export class ViewerGridViewComponent {
      */
     protected failedOverlays = signal<Set<string>>(new Set());
 
-    protected onOverlayError(pair: any): void {
+    protected onOverlayError(pair: GridPair): void {
         const mf = pair?.media_file;
         if (!mf) return;
         this.failedOverlays.update(s => {
@@ -286,11 +304,11 @@ export class ViewerGridViewComponent {
      */
     private loadedUrls = signal<Set<string>>(new Set());
 
-    protected isLoaded(pair: any): boolean {
+    protected isLoaded(pair: GridPair): boolean {
         return this.loadedUrls().has(this.getDisplayUrl(pair));
     }
 
-    protected onTileLoaded(event: Event, pair: any): void {
+    protected onTileLoaded(event: Event, pair: GridPair): void {
         const target = event.target as HTMLImageElement | HTMLVideoElement | null;
         // currentSrc is what the browser actually fetched (resolved + winning
         // <picture>/srcset entry). Fall back to the computed displayUrl when
@@ -321,7 +339,7 @@ export class ViewerGridViewComponent {
     private scrollActiveIntoView(mediaFile: string): void {
         const host = this.scrollHost()?.nativeElement;
         if (!host) return;
-        const cssEscape = (window as any).CSS?.escape;
+        const cssEscape = window.CSS?.escape;
         const selector = cssEscape
             ? `[data-media-file="${cssEscape(mediaFile)}"]`
             : `[data-media-file="${mediaFile.replace(/["\\]/g, '\\$&')}"]`;
@@ -339,15 +357,15 @@ export class ViewerGridViewComponent {
     massCaptionRequested = output<void>();
     massMaskingRequested = output<void>();
     massEditRequested = output<void>();
-    pairDeleted = output<any>();
-    captionSaved = output<any>();
-    cropRequested = output<any>();
+    pairDeleted = output<DatasetPair>();
+    captionSaved = output<DatasetPair>();
+    cropRequested = output<GridCropRequest>();
     exclusionToggled = output<{ media_file: string, enabled: boolean }>();
     editRequested = output<number>();
     enableAllRequested = output<void>();
 
     hasAnyOverlay(): boolean {
-        return this.pairs().some((p: any) => p.metadata?.has_overlay);
+        return this.pairs().some(p => p.metadata?.has_overlay);
     }
 
     getMediaUrl(relativePath: string): string {
@@ -358,7 +376,7 @@ export class ViewerGridViewComponent {
         return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/overlay/${encodeURIComponent(imagePath)}?t=${this.lastUpdateTime()}`;
     }
 
-    getDisplayUrl(pair: any): string {
+    getDisplayUrl(pair: GridPair): string {
         if (this.showMasked() && pair.metadata?.has_masked) {
             return this.getMediaUrl('masked/' + this.getStem(pair.media_file) + '.jpg');
         }
@@ -371,18 +389,18 @@ export class ViewerGridViewComponent {
         return this.getMediaUrl(pair.media_file);
     }
 
-    deletePair(pair: any, event: Event) {
+    deletePair(pair: GridPair, event: Event) {
         event.stopPropagation();
         this.pairDeleted.emit(pair);
     }
 
-    toggleExclusion(pair: any, event: Event) {
+    toggleExclusion(pair: GridPair, event: Event) {
         event.stopPropagation();
         const newEnabled = pair.metadata?.enabled === false ? true : false;
         this.exclusionToggled.emit({ media_file: pair.media_file, enabled: newEnabled });
     }
 
-    onCropClick(pair: any, event: Event) {
+    onCropClick(pair: GridPair, event: Event) {
         event.stopPropagation();
         if (!pair?.metadata) return;
         this.cropRequested.emit({
@@ -394,7 +412,7 @@ export class ViewerGridViewComponent {
         });
     }
 
-    onEditClick(pair: any, event: Event, index: number) {
+    onEditClick(pair: GridPair, event: Event, index: number) {
         event.stopPropagation();
         this.editRequested.emit(index);
     }
@@ -405,7 +423,7 @@ export class ViewerGridViewComponent {
      * flag on the pair so the blur handler can distinguish a real edit
      * from a focus-then-blur (which used to trigger an unwanted save).
      */
-    onCaptionEdit(pair: any, value: string): void {
+    onCaptionEdit(pair: GridPair, value: string): void {
         if (this.showMasked()) {
             pair.masked_caption_content = value;
         } else {
@@ -415,7 +433,7 @@ export class ViewerGridViewComponent {
     }
 
     /** Persist only if the textarea was actually edited since last focus. */
-    onCaptionBlur(pair: any): void {
+    onCaptionBlur(pair: GridPair): void {
         if (!pair?._captionDirty) return;
         pair._captionDirty = false;
         this.captionSaved.emit(pair);
@@ -427,7 +445,7 @@ export class ViewerGridViewComponent {
         return 'danger';
     }
 
-    pairState(pair: any): StatePillsState {
+    pairState(pair: GridPair): StatePillsState {
         const captioned = !!(pair?.caption_content && String(pair.caption_content).trim().length > 0);
         const masked = !!pair?.metadata?.has_mask;
         // Harmonization (file level) = matches the dataset majority aspect ratio
@@ -435,7 +453,7 @@ export class ViewerGridViewComponent {
         // still needs a crop reads as un-harmonized so the H pill stays grey —
         // mirrors the analyze screen's "Needs Crop" filter. NOT the same as
         // overlay — overlay has its own OVR badge.
-        const meta = pair?.metadata ?? {};
+        const meta: PairMetadata = pair?.metadata ?? {};
         const tw = meta.target_width;
         const th = meta.target_height;
         const needsCrop = tw != null && th != null && (tw !== meta.width || th !== meta.height);

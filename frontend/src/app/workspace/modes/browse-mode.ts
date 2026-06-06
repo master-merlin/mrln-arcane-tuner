@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
-import { ViewerGridViewComponent } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
+import { ViewerGridViewComponent, type GridCropRequest } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -142,10 +142,7 @@ export class BrowseMode {
     }
 
     /** Crop dialog request from a tile hover-action. */
-    protected onCropRequested(event: {
-        path: string; width: number; height: number;
-        target_width: number; target_height: number;
-    }): void {
+    protected onCropRequested(event: GridCropRequest): void {
         this.overlay.openModal('crop-preview', {
             datasetName: this.datasetName(),
             ...event,

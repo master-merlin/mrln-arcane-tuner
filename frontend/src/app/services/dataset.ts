@@ -109,6 +109,34 @@ export interface HistogramData {
 }
 
 /**
+ * Per-media metadata blob — the `metadata` value on a `/pairs` row. The
+ * backend keeps these as a free-form dict under ``Dataset.media_metadata``
+ * keyed by relative path (there is no dedicated Pydantic model), so the named
+ * fields below are the ones the UI actually reads and the index signature
+ * covers everything else. Mirrors the metadata-subset of {@link MediaItem}
+ * (which the store builds by spreading this blob); keep the two in sync.
+ */
+export interface PairMetadata {
+  enabled?: boolean;
+  has_mask?: boolean;
+  has_masked?: boolean;
+  has_masked_caption?: boolean;
+  has_overlay?: boolean;
+  width?: number;
+  height?: number;
+  target_width?: number;
+  target_height?: number;
+  aspect_ratio?: number;
+  orientation?: string;
+  size_bytes?: number;
+  quality_score?: number | null;
+  is_majority_ar?: boolean;
+  /** Present once a mask has been generated; drives the mask-info readouts. */
+  mask_info?: { width?: number; height?: number; size_bytes?: number; [k: string]: unknown };
+  [extra: string]: unknown;
+}
+
+/**
  * One image-caption pair from ``GET /datasets/{name}/pairs``. Mirrors the
  * dict built by ``dataset_manager.get_dataset_pairs`` — results are filtered
  * to rows that have a media file, so ``media_file`` is always present.
@@ -124,7 +152,7 @@ export interface DatasetPair {
   size_bytes?: number;
   caption_content: string;
   masked_caption_content: string | null;
-  metadata: Record<string, unknown> | null;
+  metadata: PairMetadata | null;
 }
 
 // ── Response shapes ────────────────────────────────────────────────────

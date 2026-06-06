@@ -10,6 +10,7 @@ from typing import Any
 import structlog
 import torch
 
+from app.core.naming import model_part_from_definition_id
 from app.engine.components.checkpoints import CheckpointManager
 from app.engine.strategies.ema import EMAHandler
 from app.engine.components.latents import LatentManager
@@ -428,7 +429,7 @@ class PipelineOptimizationMixin:
         # Checkpoint path
         output_root = self.config.get("output_dir", "outputs")
         lora_name = self.config.get("lora_name", "lora")
-        model_part = self.definition.id.split("/")[-1].replace(":", "_")
+        model_part = model_part_from_definition_id(self.definition.id)
         run_name = f"{lora_name}_{model_part}"
         final_output_dir = os.path.join(output_root, run_name)
 

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from app.api._path_guard import validate_path_within
 from app.core.job import Job
 from app.core.job_manager import job_manager
+from app.core.naming import model_part_from_definition_id
 from app.core.logger import get_logger
 from app.api.schemas.job_schemas import (
     CreateJobRequest,
@@ -251,7 +252,7 @@ def _resolve_sample_dir(job: Job) -> Path:
     output_dir = Path(cfg.get("output_dir", "outputs"))
     lora_name = cfg.get("lora_name", "lora")
     definition_id = cfg.get("definition_id", "")
-    model_part = definition_id.split("/")[-1].replace(":", "_")
+    model_part = model_part_from_definition_id(definition_id)
     return output_dir / f"{lora_name}_{model_part}" / "samples"
 
 

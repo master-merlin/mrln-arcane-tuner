@@ -330,7 +330,8 @@ class GenericSamplingPipeline(ABC):
             lora_name = self.config.get("lora_name", "lora")
             definition = getattr(self.pipeline, "definition", None)
             if definition:
-                model_part = definition.id.split("/")[-1].replace(":", "_")
+                from app.core.naming import model_part_from_definition_id
+                model_part = model_part_from_definition_id(definition.id)
                 run_name = f"{lora_name}_{model_part}"
             else:
                 run_name = lora_name

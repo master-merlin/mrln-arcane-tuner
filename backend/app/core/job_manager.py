@@ -20,6 +20,7 @@ from typing import Any
 
 from app.core.events import event_manager
 from app.core.job import Job, JobStatus
+from app.core.naming import model_part_from_definition_id
 from app.core.log_tailer import LogTailer, LOG_FILENAME
 from app.core.plugin_manager import plugin_manager
 
@@ -853,7 +854,7 @@ class JobManager:
         output_dir = job.config.get("output_dir", "outputs")
         lora_name = job.config.get("lora_name", "untitled")
         definition_id = job.config.get("definition_id", "")
-        model_part = definition_id.split("/")[-1].replace(":", "_")
+        model_part = model_part_from_definition_id(definition_id)
         run_name = f"{lora_name}_{model_part}"
         return os.path.join(output_dir, run_name)
 

@@ -59,9 +59,11 @@ def _resolve_output_dir(config: dict, definition_id: str) -> str:
     Must match the path logic used by the backend's JobManager
     (``_get_job_output_dir``) and the trainers' CheckpointManager.
     """
+    from app.core.naming import model_part_from_definition_id
+
     output_root = config.get("output_dir", "outputs")
     lora_name = config.get("lora_name", "untitled")
-    model_part = definition_id.split("/")[-1].replace(":", "_")
+    model_part = model_part_from_definition_id(definition_id)
     run_name = f"{lora_name}_{model_part}"
     return os.path.join(output_root, run_name)
 

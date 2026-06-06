@@ -20,6 +20,7 @@ import { RunSummaryComponent } from '../../components/training/run-summary/run-s
 import { TemplateInfoCardComponent } from '../../ui/template-info-card/template-info-card.component';
 import { EstimateWallComponent } from '../../components/training/estimate-wall/estimate-wall';
 import { nextTriggerWord } from '../../shared/trigger-word';
+import type { SchemaNode } from '../../components/training/schema-node';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
 export type TemplateDomain = 'captioning' | 'masking' | 'training';
@@ -132,8 +133,8 @@ export class ProjectDetail implements OnInit {
     // block the Training screen renders. The full DatasetItem fields
     // (num_repeats, caption_dropout_rate, masking_enabled, …) stay in sync
     // with the Training layout via DynamicFormGroupComponent.
-    protected trainingSchema = signal<any>(null);
-    protected datasetsSchema = signal<any>(null);
+    protected trainingSchema = signal<SchemaNode | undefined>(undefined);
+    protected datasetsSchema = signal<SchemaNode | undefined>(undefined);
     protected launchForm: FormGroup = this.fb.group({ datasets: this.fb.array([]) });
     /** FormArray.length is not reactive on its own — mirror it into a signal. */
     protected datasetCount = signal(0);
@@ -613,13 +614,13 @@ export class ProjectDetail implements OnInit {
      * Resolve a (possibly `$ref`) schema node against the root training
      * schema's `$defs`/`definitions`. Mirrors the legacy/live pattern.
      */
-    private resolveSchemaRef(schemaOrRef: any): any {
+    private resolveSchemaRef(schemaOrRef: SchemaNode | undefined): SchemaNode {
         if (!schemaOrRef) return {};
-        const root = this.trainingSchema() || {};
-        const defs = root.$defs || root.definitions || {};
+        const root: SchemaNode = this.trainingSchema() ?? {};
+        const defs: Record<string, SchemaNode> = root.$defs || root.definitions || {};
         if (schemaOrRef.$ref) {
             const refKey = schemaOrRef.$ref.split('/').pop();
-            if (defs[refKey]) return { ...defs[refKey], ...schemaOrRef };
+            if (refKey && defs[refKey]) return { ...defs[refKey], ...schemaOrRef };
         }
         return schemaOrRef;
     }
@@ -636,24 +637,24 @@ export class ProjectDetail implements OnInit {
             return;
         }
         try {
-            const schema: any = await firstValueFrom(
-                this.http.get(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`),
+            const schema = await firstValueFrom(
+                this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`),
             );
             this.trainingSchema.set(schema);
 
-            const props = schema?.properties || {};
-            if (!props.datasets) return;
+            const datasetsBlock = schema.properties?.['datasets'];
+            if (!datasetsBlock) return;
 
             // Deep-clone so we never mutate the shared schema object.
-            const dsSchema = JSON.parse(JSON.stringify(props.datasets));
+            const dsSchema = JSON.parse(JSON.stringify(datasetsBlock)) as SchemaNode;
             const names = this.projectDatasetNames();
             // The real patch site: `datasets.items` is a `$ref` into `$defs`
             // (DatasetItem), so the dataset_name enum lives in the $defs mirror,
             // not on dsSchema.items directly. Patch every matching $defs entry.
-            const defs = schema.$defs || schema.definitions || {};
-            for (const defVal of Object.values(defs) as any[]) {
-                if (defVal?.properties?.dataset_name) {
-                    defVal.properties.dataset_name.enum = names;
+            const defs: Record<string, SchemaNode> = schema.$defs || schema.definitions || {};
+            for (const defVal of Object.values(defs)) {
+                if (defVal?.properties?.['dataset_name']) {
+                    defVal.properties['dataset_name'].enum = names;
                 }
             }
             this.datasetsSchema.set(dsSchema);
@@ -661,7 +662,7 @@ export class ProjectDetail implements OnInit {
             // Seed with a single row so the user has somewhere to start.
             const fa = this.launchForm.get('datasets') as FormArray;
             if (fa.length === 0) {
-                this.addDatasetItem(schema.properties.datasets.items);
+                this.addDatasetItem(datasetsBlock.items);
             }
         } catch {
             this.toast.error('Failed to load training schema.');
@@ -672,15 +673,15 @@ export class ProjectDetail implements OnInit {
     private refreshDatasetSchemaEnum(): void {
         const current = this.datasetsSchema();
         if (!current) return;
-        const updated = JSON.parse(JSON.stringify(current));
+        const updated = JSON.parse(JSON.stringify(current)) as SchemaNode;
         const names = this.projectDatasetNames();
         const root = this.trainingSchema();
         // The real patch site: `datasets.items` is a `$ref` into `$defs`
         // (DatasetItem), so the dataset_name enum lives in the $defs mirror.
-        const defs = root?.$defs || root?.definitions || {};
-        for (const defVal of Object.values(defs) as any[]) {
-            if (defVal?.properties?.dataset_name) {
-                defVal.properties.dataset_name.enum = names;
+        const defs: Record<string, SchemaNode> = root?.$defs || root?.definitions || {};
+        for (const defVal of Object.values(defs)) {
+            if (defVal?.properties?.['dataset_name']) {
+                defVal.properties['dataset_name'].enum = names;
             }
         }
         this.datasetsSchema.set(updated);
@@ -693,10 +694,10 @@ export class ProjectDetail implements OnInit {
      * iterate `items.properties`, create one FormControl per field honoring
      * defaults (and falling back to the first enum value when empty).
      */
-    protected addDatasetItem(itemSchemaRef: any): void {
+    protected addDatasetItem(itemSchemaRef: SchemaNode | undefined): void {
         const itemSchema = this.resolveSchemaRef(itemSchemaRef);
         const fa = this.launchForm.get('datasets') as FormArray;
-        if (!fa || !itemSchema?.properties) return;
+        if (!fa || !itemSchema.properties) return;
 
         const group: Record<string, FormControl> = {};
         for (const pKey in itemSchema.properties) {

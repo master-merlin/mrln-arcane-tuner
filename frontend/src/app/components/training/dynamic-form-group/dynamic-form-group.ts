@@ -1,11 +1,13 @@
 import { Component, input, output, inject, effect } from '@angular/core';
 import { TitleCasePipe, DatePipe } from '@angular/common';
-import { ReactiveFormsModule, FormArray, FormGroup, FormControl } from '@angular/forms';
+import { ReactiveFormsModule, FormArray, FormGroup, FormControl, AbstractControl } from '@angular/forms';
 import { DatasetService, Dataset } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { StatePillsComponent, StatePillsState, datasetStatePills } from '../../../ui/state-pills/state-pills.component';
 import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-field';
+import type { TrainingConfig } from '../../../services/job';
+import { SchemaNode, SchemaProp } from '../schema-node';
 
 @Component({
   selector: 'app-dynamic-form-group',
@@ -300,9 +302,9 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
 })
 export class DynamicFormGroupComponent {
   fieldKey = input.required<string>();
-  schema = input.required<any>();
+  schema = input.required<SchemaNode>();
   parentForm = input.required<FormGroup>();
-  rootSchema = input<any>();
+  rootSchema = input<SchemaNode>();
 
   // Passed down context
   currentBackend = input<string>('local');
@@ -312,10 +314,10 @@ export class DynamicFormGroupComponent {
   datasetNames = input<string[] | null>(null);
 
   // External actions
-  arrayItemAdded = output<{ key: string, schemaParam: any }>();
+  arrayItemAdded = output<{ key: string, schemaParam: SchemaNode | undefined }>();
   arrayItemRemoved = output<{ key: string, index: number }>();
   helpRequested = output<string>();
-  checkpointConfigLoaded = output<any>();
+  checkpointConfigLoaded = output<TrainingConfig>();
 
   // Use dataset service locally for dataset_name autocomplete
   private datasetService = inject(DatasetService);
@@ -365,10 +367,10 @@ export class DynamicFormGroupComponent {
 
   isPrimitiveArray(): boolean {
     const itemsSchema = this.resolveSchema(this.schema().items);
-    return itemsSchema && ['string', 'number', 'integer', 'boolean'].includes(itemsSchema.type);
+    return !!itemsSchema.type && ['string', 'number', 'integer', 'boolean'].includes(itemsSchema.type);
   }
 
-  isNumber(schema: any): boolean {
+  isNumber(schema: SchemaNode | undefined): boolean {
     if (!schema) return false;
     const resolved = this.resolveSchema(schema);
     return resolved.type === 'number' || resolved.type === 'integer';
@@ -384,13 +386,14 @@ export class DynamicFormGroupComponent {
     sample_prompts: ['prompt', 'seed', 'guidance_scale', 'width', 'height', 'num_inference_steps'],
   };
 
-  nestedProps(): any[] {
+  nestedProps(): SchemaProp[] {
     const schema = this.schema();
     if (!schema?.items) return [];
     const itemsSchema = this.resolveSchema(schema.items);
-    if (itemsSchema.type !== 'object' || !itemsSchema.properties) return [];
+    const itemProps = itemsSchema.properties;
+    if (itemsSchema.type !== 'object' || !itemProps) return [];
 
-    let keys = Object.keys(itemsSchema.properties).filter(propKey => propKey !== 'ignore_filter');
+    let keys = Object.keys(itemProps).filter(propKey => propKey !== 'ignore_filter');
     const order = this.nestedFieldOrder[this.fieldKey()];
     if (order) {
       keys = keys.slice().sort((a, b) => {
@@ -401,17 +404,17 @@ export class DynamicFormGroupComponent {
 
     return keys.map(propKey => ({
       key: propKey,
-      schema: this.resolveSchema(itemsSchema.properties[propKey])
+      schema: this.resolveSchema(itemProps[propKey])
     }));
   }
 
-  resolveSchema(schemaOrRef: any): any {
+  resolveSchema(schemaOrRef: SchemaNode | undefined): SchemaNode {
     if (!schemaOrRef) return {};
-    const root = this.rootSchema?.() || {};
+    const root: SchemaNode = this.rootSchema?.() || {};
     const definitions = root.$defs || root.definitions || {};
-    if (schemaOrRef && schemaOrRef.$ref) {
+    if (schemaOrRef.$ref) {
       const refKey = schemaOrRef.$ref.split('/').pop();
-      if (definitions[refKey]) {
+      if (refKey && definitions[refKey]) {
         return { ...definitions[refKey], ...schemaOrRef };
       }
     }
@@ -495,7 +498,7 @@ export class DynamicFormGroupComponent {
     return groupProps.length > 0 && groupProps[0].key === key;
   }
 
-  getInlineGroupProps(groupName: string): any[] {
+  getInlineGroupProps(groupName: string): SchemaProp[] {
     return this.nestedProps().filter(p => p.schema.inline_group === groupName);
   }
 
@@ -514,7 +517,7 @@ export class DynamicFormGroupComponent {
     }
   }
 
-  isNestedFieldDisabled(schema: any, itemGroup: any): boolean {
+  isNestedFieldDisabled(schema: SchemaNode, itemGroup: AbstractControl | null): boolean {
     // depends_on: boolean parent → disable when parent is false
     if (schema.depends_on) {
       const parentVal = itemGroup?.get(schema.depends_on)?.value;
@@ -532,7 +535,7 @@ export class DynamicFormGroupComponent {
     return false;
   }
 
-  shouldHideNestedField(schema: any, itemGroup: any): boolean {
+  shouldHideNestedField(schema: SchemaNode, itemGroup: AbstractControl | null): boolean {
     // depends_on: boolean parent → hide when parent is false
     if (schema.depends_on) {
       const parentVal = itemGroup?.get(schema.depends_on)?.value;

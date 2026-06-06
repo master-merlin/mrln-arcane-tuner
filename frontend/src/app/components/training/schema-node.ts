@@ -1,0 +1,59 @@
+/**
+ * One node of a plugin's training JSON schema.
+ *
+ * This is a custom JSON-Schema dialect: standard keywords (`type`, `title`,
+ * `description`, `default`, `enum`, `properties`, `items`, `required`, `$ref`,
+ * `$defs`/`definitions`) plus UI extensions the dynamic form renderer reads
+ * (`input_type`, `ui_type`, `display`, `inline_group`, `group`, `depends_on`,
+ * `disabled_if`/`hidden_if`, `backend_map`, `options_labels`/`enum_labels`,
+ * `hide_unsupported`, `hidden`, numeric `min`/`max`/`step`). Recursive via
+ * `items` / `properties` / `$defs`. Every field is optional — a node only
+ * carries what its kind needs.
+ */
+export interface SchemaNode {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  required?: string[];
+
+  // Enum / select options
+  enum?: string[];
+  enum_labels?: Record<string, string>;
+  options_labels?: Record<string, string>;
+
+  // Numeric constraints
+  min?: number;
+  max?: number;
+  step?: number;
+
+  // UI / rendering extensions
+  input_type?: string;
+  ui_type?: string;
+  display?: string;
+  readOnly?: boolean;
+  hidden?: boolean;
+  hide_unsupported?: boolean;
+  inline_group?: string;
+  group?: string;
+
+  // Conditional visibility / enablement
+  depends_on?: string;
+  disabled_if?: Record<string, unknown>;
+  hidden_if?: Record<string, unknown>;
+  /** backend name → schemes that backend supports (e.g. quantization). */
+  backend_map?: Record<string, string[]>;
+
+  // Composition
+  items?: SchemaNode;
+  properties?: Record<string, SchemaNode>;
+  $ref?: string;
+  $defs?: Record<string, SchemaNode>;
+  definitions?: Record<string, SchemaNode>;
+}
+
+/** One renderable property: its key plus its (ref-resolved) schema node. */
+export interface SchemaProp {
+  key: string;
+  schema: SchemaNode;
+}

@@ -5,6 +5,8 @@ import { TitleCasePipe } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ToastService } from '../../../services/toast';
+import type { TrainingConfig } from '../../../services/job';
+import { SchemaNode } from '../schema-node';
 
 @Component({
   selector: 'app-dynamic-form-field',
@@ -184,7 +186,7 @@ import { ToastService } from '../../../services/toast';
 })
 export class DynamicFormFieldComponent implements OnInit {
   control = input.required<FormControl>();
-  schema = input.required<any>();
+  schema = input.required<SchemaNode>();
   fieldKey = input.required<string>();
   currentBackend = input<string>('local');
   outputDir = input<string>('outputs'); // for fallback browsing
@@ -194,7 +196,7 @@ export class DynamicFormFieldComponent implements OnInit {
   datasetAutocomplete = input<string[]>();
 
   helpRequested = output<string>();
-  checkpointConfigLoaded = output<any>();
+  checkpointConfigLoaded = output<TrainingConfig>();
   autofillRequested = output<void>();
 
   private http = inject(HttpClient);
@@ -269,7 +271,7 @@ export class DynamicFormFieldComponent implements OnInit {
     const propSchema = this.schema();
     if (!propSchema.enum) return [];
 
-    let defaultOptions = propSchema.enum.map((opt: any) => ({
+    let defaultOptions = propSchema.enum.map((opt) => ({
       value: opt,
       label: propSchema.options_labels?.[opt] || opt,
       disabled: false

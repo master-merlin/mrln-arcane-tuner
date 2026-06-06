@@ -13,16 +13,16 @@
                         {{ j.status | uppercase }} · #{{ j.id.slice(0, 8).toUpperCase() }}
                     </div>
                     <h1 class="detail-title">
-                        {{ j.config?.['definition_id'] || j.plugin_id }}
+                        {{ j.config['definition_id'] || j.plugin_id }}
                         <span class="muted"> · </span>
-                        {{ j.config?.['lora_name'] || 'untitled' }}
+                        {{ j.config['lora_name'] || 'untitled' }}
                     </h1>
                     <div class="detail-meta mono">
                         @if (j.pid) { <span>PID {{ j.pid }}</span><span class="dot-sep">·</span> }
                         <span>{{ elapsed() }} elapsed</span>
-                        @if (j.config?.['project_id']) {
+                        @if (j.config['project_id']) {
                             <span class="dot-sep">·</span>
-                            <span>project {{ j.config?.['project_id'] }}</span>
+                            <span>project {{ j.config['project_id'] }}</span>
                         }
                     </div>
                 </div>

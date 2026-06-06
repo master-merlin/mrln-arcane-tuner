@@ -174,14 +174,14 @@ export interface LoraResizeResult {
                                                         }
                                                     </p>
                                                 </div>
-                                                @if (inspectResult()!.layer_relevance.target_module_patterns?.length) {
+                                                @if (inspectResult()!.layer_relevance.target_module_patterns.length) {
                                                     <button (click)="copyTargetModules()"
                                                         class="shrink-0 text-[10px] font-bold uppercase px-3 py-1.5 rounded-theme-md bg-amber-600/20 text-amber-400 border border-amber-600/30 hover:bg-amber-600/30 transition-colors">
                                                         {{ copiedModules() ? '&#10003; Copied' : 'Copy Modules' }}
                                                     </button>
                                                 }
                                             </div>
-                                            @if (inspectResult()!.layer_relevance.target_module_patterns?.length) {
+                                            @if (inspectResult()!.layer_relevance.target_module_patterns.length) {
                                                 <div class="mt-2 flex flex-wrap gap-1">
                                                     @for (mod of inspectResult()!.layer_relevance.target_module_patterns; track mod) {
                                                         <span class="text-[10px] font-mono bg-amber-900/30 text-amber-300/80 px-2 py-0.5 rounded-full border border-amber-700/20">{{ mod }}</span>

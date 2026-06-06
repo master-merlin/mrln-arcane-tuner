@@ -9,7 +9,6 @@ Reference: https://github.com/tgxs002/HPSv2
 from __future__ import annotations
 
 import gc
-import os
 
 import structlog
 import torch
@@ -70,35 +69,6 @@ class HPSv2Model(ScoringModel):
 
         results = hpsv2.score(image, prompt, hps_version=version)
         return float(results[0]) if results else 0.0
-
-    def score_batch(self, image_paths: list[str], params: dict) -> dict[str, float]:
-        """Score multiple images.
-
-        HPSv2's score() accepts a list of paths, but each call requires the
-        same prompt. For dataset scoring, we score one-by-one to allow
-        per-image captions.
-
-        Returns:
-            Dict mapping filename → score.
-        """
-        import hpsv2
-
-        version = params.get("hps_version", "v2.1")
-        captions: dict[str, str] = params.get("captions", {})
-        default_prompt = params.get("prompt", "")
-
-        results: dict[str, float] = {}
-        for path in image_paths:
-            filename = os.path.basename(path)
-            prompt = captions.get(filename, default_prompt)
-            try:
-                scores = hpsv2.score(path, prompt, hps_version=version)
-                results[filename] = float(scores[0]) if scores else 0.0
-            except Exception as e:
-                logger.warning("hpsv2_score_failed", file=filename, error=str(e))
-                results[filename] = 0.0
-
-        return results
 
     def unload(self) -> None:
         """Unload HPSv2 model and free GPU memory."""

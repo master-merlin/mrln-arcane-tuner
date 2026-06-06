@@ -31,15 +31,6 @@ class ScoringModel(ABC):
         ...
 
     @abstractmethod
-    def score_batch(self, image_paths: list[str], params: dict) -> dict[str, float]:
-        """
-        Score multiple images in one pass.
-
-        Returns a dict mapping image filename → score.
-        """
-        ...
-
-    @abstractmethod
     def unload(self) -> None:
         """Unload the model and free GPU memory."""
         ...

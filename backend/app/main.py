@@ -18,11 +18,15 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Form, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
+from app.api.schemas.common_schemas import ErrorResponse
 from app.core import container_config
 from app.core.auth import COOKIE_NAME, LOGIN_HTML, TokenAuthMiddleware
 from app.core.logger import setup_logging, get_logger
@@ -184,11 +188,68 @@ def _maybe_start_frontend() -> None:
 app = FastAPI(title="MRLN Arcane Tuner API", lifespan=lifespan)
 
 
-# ── Global Exception Handler ─────────────────────────────────────────────
+# ── Exception Handlers ───────────────────────────────────────────────────
+# All error responses share the standard envelope (docs/API_CONVENTIONS.md):
+#   {"detail": <message>, "error_code": <token>, "context": {...}}
+# `detail` is preserved verbatim from the raised HTTPException so consumers
+# that read structured detail payloads (e.g. the import-dataset 409 conflict
+# body) keep working; error_code/context are additive.
+
+# HTTP status → stable machine-readable error code. Unmapped statuses fall back
+# to ``HTTP_<status>`` so the field is always populated.
+_HTTP_ERROR_CODES: dict[int, str] = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    409: "CONFLICT",
+    410: "GONE",
+    413: "PAYLOAD_TOO_LARGE",
+    415: "UNSUPPORTED_MEDIA_TYPE",
+    422: "UNPROCESSABLE_ENTITY",
+    429: "TOO_MANY_REQUESTS",
+}
+
+
+def _error_code_for(status_code: int) -> str:
+    return _HTTP_ERROR_CODES.get(status_code, f"HTTP_{status_code}")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Wrap every ``HTTPException`` (404/409/400/…) in the standard envelope."""
+    envelope = ErrorResponse(
+        detail=exc.detail,
+        error_code=_error_code_for(exc.status_code),
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=envelope.model_dump(),
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Map Pydantic/FastAPI request-validation failures into the envelope.
+
+    The per-field error list stays in ``detail`` (matching FastAPI's default
+    shape so existing clients still read ``detail``), with a stable
+    ``VALIDATION_ERROR`` code.
+    """
+    return JSONResponse(
+        status_code=422,
+        content=ErrorResponse(
+            detail=jsonable_encoder(exc.errors()),
+            error_code="VALIDATION_ERROR",
+        ).model_dump(),
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Log unhandled exceptions as CRITICAL with full stack traces."""
+    """Log unhandled exceptions as CRITICAL; never leak tracebacks to clients."""
     stack_trace = "".join(traceback.format_tb(exc.__traceback__))
 
     logger.critical(
@@ -202,10 +263,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 
     return JSONResponse(
         status_code=500,
-        content={
-            "error": "Internal Server Error",
-            "message": "A critical error occurred. Please check server logs.",
-        },
+        content=ErrorResponse(
+            detail="A critical error occurred. Please check server logs.",
+            error_code="INTERNAL_ERROR",
+        ).model_dump(),
     )
 
 

@@ -8,7 +8,9 @@ the frontend a single canonical contract per shape.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class TaskEnqueuedResponse(BaseModel):
@@ -19,3 +21,19 @@ class TaskEnqueuedResponse(BaseModel):
     """
 
     task_id: str
+
+
+class ErrorResponse(BaseModel):
+    """Standard error envelope (``docs/API_CONVENTIONS.md`` → error_responses).
+
+    Every error response — HTTPExceptions, validation failures, and the
+    unhandled-500 fallback — is serialized through this shape so clients can
+    rely on one contract. ``detail`` carries the human-readable message (kept
+    verbatim from the raised ``HTTPException`` so existing consumers that read
+    structured ``detail`` payloads keep working); ``error_code`` is a stable
+    machine-readable token; ``context`` holds optional structured extras.
+    """
+
+    detail: Any = Field(..., description="Human-readable message (or structured detail payload).")
+    error_code: str = Field(..., description="Stable machine-readable error code.")
+    context: dict[str, Any] = Field(default_factory=dict, description="Optional structured context.")

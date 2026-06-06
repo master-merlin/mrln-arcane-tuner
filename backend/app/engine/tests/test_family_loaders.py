@@ -202,3 +202,17 @@ class TestZImageLoader:
 
         te_spec = next(s for s in manifest if s.key == "text_encoder")
         assert "AutoModelForCausalLM" in te_spec.hf_class
+
+    def test_transformer_separate_repo(self):
+        """unet/transformer spec supports a pinned separate repo (De-Turbo)."""
+        from app.engine.models.families.zimage.loader import ZImageLoader
+
+        loader = ZImageLoader(torch.device("cpu"))
+        manifest = loader.get_component_manifest(_make_definition())
+
+        unet_spec = next(s for s in manifest if s.key == "unet")
+        assert unet_spec.separate_repo is True
+        assert unet_spec.definition_key == "transformer"
+        assert unet_spec.subfolder == "transformer"
+        # Not a subfolder-kwarg spec → resolver descends into transformer/.
+        assert unet_spec.use_subfolder_kwarg is False

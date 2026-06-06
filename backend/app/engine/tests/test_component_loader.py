@@ -166,6 +166,91 @@ class TestGenericComponentLoader:
             loader._resolve_root(definition)
 
 
+class TestSeparateRepoSubfolder:
+    """Separate-repo components that keep a Diffusers subfolder layout.
+
+    Covers the ostris Z-Image-De-Turbo case: the transformer lives in its
+    own repo under a ``transformer/`` subfolder, while VAE/TE/tokenizer
+    come from the base repo root.
+    """
+
+    def _loader(self):
+        loader = _StubLoader([ComponentSpec(key="x", hf_class="x")])
+        return loader
+
+    def test_descends_into_subfolder_when_present(self):
+        """Separate repo + subfolder dir exists → returns the subfolder."""
+        loader = self._loader()
+        spec = ComponentSpec(
+            key="unet",
+            hf_class="diffusers.models.ZImageTransformer2DModel",
+            subfolder="transformer",
+            definition_key="transformer",
+            separate_repo=True,
+        )
+        definition = _make_definition(transformer="huggingface:ostris/Z-Image-De-Turbo")
+
+        with patch(
+            "app.engine.core.pipeline.loader_base.ModelPathResolver.resolve",
+            return_value="/cache/deturbo",
+        ), patch(
+            "app.engine.core.pipeline.loader_base.os.path.isdir",
+            return_value=True,
+        ):
+            path = loader._resolve_component_path(spec, definition, "/cache/base")
+
+        import os
+        assert path == os.path.join("/cache/deturbo", "transformer")
+
+    def test_falls_back_to_root_when_no_subfolder(self):
+        """Separate repo but subfolder dir absent → returns the repo root."""
+        loader = self._loader()
+        spec = ComponentSpec(
+            key="unet",
+            hf_class="x",
+            subfolder="transformer",
+            definition_key="transformer",
+            separate_repo=True,
+        )
+        definition = _make_definition(transformer="huggingface:some/flat-repo")
+
+        with patch(
+            "app.engine.core.pipeline.loader_base.ModelPathResolver.resolve",
+            return_value="/cache/flat",
+        ), patch(
+            "app.engine.core.pipeline.loader_base.os.path.isdir",
+            return_value=False,
+        ):
+            path = loader._resolve_component_path(spec, definition, "/cache/base")
+
+        assert path == "/cache/flat"
+
+    def test_subfolder_kwarg_specs_do_not_descend(self):
+        """use_subfolder_kwarg specs (e.g. SDXL VAE) keep prior behaviour:
+        return the separate repo root, never the joined subfolder."""
+        loader = self._loader()
+        spec = ComponentSpec(
+            key="vae",
+            hf_class="diffusers.AutoencoderKL",
+            subfolder="vae",
+            definition_key="vae",
+            separate_repo=True,
+            use_subfolder_kwarg=True,
+        )
+        definition = _make_definition(vae="huggingface:madebyollin/sdxl-vae")
+
+        with patch(
+            "app.engine.core.pipeline.loader_base.ModelPathResolver.resolve",
+            return_value="/cache/vae",
+        ), patch(
+            "app.engine.core.pipeline.loader_base.os.path.isdir",
+            return_value=True,
+        ):
+            path = loader._resolve_component_path(spec, definition, "/cache/base")
+
+        assert path == "/cache/vae"
+
+
 class TestImportClass:
     """Test dynamic class import utility."""
 

@@ -1,0 +1,404 @@
+id: zimage-de-turbo
+family: zimage
+name: Z-Image De-Turbo (ostris)
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 5e-6
+# De-distilled Z-Image from ostris. The De-Turbo repo ships ONLY the
+# transformer (it was released before the full Tongyi-MAI/Z-Image base was
+# public), so VAE / text-encoder / tokenizer are sourced from the original
+# Z-Image-Turbo repo — matching ai-toolkit's `extras_name_or_path`.
+components:
+  repo:
+    path: huggingface:Tongyi-MAI/Z-Image-Turbo
+    type: diffusers
+    params: {}
+  transformer:
+    path: huggingface:ostris/Z-Image-De-Turbo
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer.architecture_type: s3_dit
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  te.type: auto
+  te.max_length: 512
+  in_channels: 16
+  transformer._class_name: ZImageTransformer2DModel
+  transformer.all_f_patch_size:
+  - 1
+  transformer.all_patch_size:
+  - 2
+  transformer.axes_dims:
+  - 32
+  - 48
+  - 48
+  transformer.axes_lens:
+  - 1536
+  - 512
+  - 512
+  transformer.cap_feat_dim: 2560
+  transformer.dim: 3840
+  transformer.in_channels: 16
+  transformer.n_heads: 30
+  transformer.n_kv_heads: 30
+  transformer.n_layers: 30
+  transformer.n_refiner_layers: 2
+  transformer.norm_eps: 1.0e-05
+  transformer.qk_norm: true
+  transformer.rope_theta: 256.0
+  transformer.siglip_feat_dim: null
+  transformer.t_scale: 1000.0
+  te.architectures:
+  - Qwen3ForCausalLM
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.eos_token_id: 151645
+  te.head_dim: 128
+  te.hidden_act: silu
+  te.hidden_size: 2560
+  te.initializer_range: 0.02
+  te.intermediate_size: 9728
+  te.max_position_embeddings: 40960
+  te.max_window_layers: 36
+  te.model_type: qwen3
+  te.num_attention_heads: 32
+  te.num_hidden_layers: 36
+  te.num_key_value_heads: 8
+  te.rms_norm_eps: 1.0e-06
+  te.rope_scaling: null
+  te.rope_theta: 1000000
+  te.sliding_window: null
+  te.tie_word_embeddings: true
+  te.torch_dtype: bfloat16
+  te.use_cache: true
+  te.use_sliding_window: false
+  te.vocab_size: 151936
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.use_dynamic_shifting: false
+  scheduler.shift: 6.0
+  vae._class_name: AutoencoderKL
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 16
+  vae.latents_mean: null
+  vae.latents_std: null
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+model_size_mb:
+  transformer: 12300.0
+  text_encoder: 8050.0
+  vae: 167.0
+lora_targetable_modules:
+- all_x_embedder.2-1
+- all_final_layer.2-1.linear
+- all_final_layer.2-1.adaLN_modulation.1
+- noise_refiner.0.attention.to_q
+- noise_refiner.0.attention.to_k
+- noise_refiner.0.attention.to_v
+- noise_refiner.0.attention.to_out.0
+- noise_refiner.0.feed_forward.w1
+- noise_refiner.0.feed_forward.w2
+- noise_refiner.0.feed_forward.w3
+- noise_refiner.0.adaLN_modulation.0
+- noise_refiner.1.attention.to_q
+- noise_refiner.1.attention.to_k
+- noise_refiner.1.attention.to_v
+- noise_refiner.1.attention.to_out.0
+- noise_refiner.1.feed_forward.w1
+- noise_refiner.1.feed_forward.w2
+- noise_refiner.1.feed_forward.w3
+- noise_refiner.1.adaLN_modulation.0
+- context_refiner.0.attention.to_q
+- context_refiner.0.attention.to_k
+- context_refiner.0.attention.to_v
+- context_refiner.0.attention.to_out.0
+- context_refiner.0.feed_forward.w1
+- context_refiner.0.feed_forward.w2
+- context_refiner.0.feed_forward.w3
+- context_refiner.1.attention.to_q
+- context_refiner.1.attention.to_k
+- context_refiner.1.attention.to_v
+- context_refiner.1.attention.to_out.0
+- context_refiner.1.feed_forward.w1
+- context_refiner.1.feed_forward.w2
+- context_refiner.1.feed_forward.w3
+- t_embedder.mlp.0
+- t_embedder.mlp.2
+- cap_embedder.1
+- layers.0.attention.to_q
+- layers.0.attention.to_k
+- layers.0.attention.to_v
+- layers.0.attention.to_out.0
+- layers.0.feed_forward.w1
+- layers.0.feed_forward.w2
+- layers.0.feed_forward.w3
+- layers.0.adaLN_modulation.0
+- layers.1.attention.to_q
+- layers.1.attention.to_k
+- layers.1.attention.to_v
+- layers.1.attention.to_out.0
+- layers.1.feed_forward.w1
+- layers.1.feed_forward.w2
+- layers.1.feed_forward.w3
+- layers.1.adaLN_modulation.0
+- layers.2.attention.to_q
+- layers.2.attention.to_k
+- layers.2.attention.to_v
+- layers.2.attention.to_out.0
+- layers.2.feed_forward.w1
+- layers.2.feed_forward.w2
+- layers.2.feed_forward.w3
+- layers.2.adaLN_modulation.0
+- layers.3.attention.to_q
+- layers.3.attention.to_k
+- layers.3.attention.to_v
+- layers.3.attention.to_out.0
+- layers.3.feed_forward.w1
+- layers.3.feed_forward.w2
+- layers.3.feed_forward.w3
+- layers.3.adaLN_modulation.0
+- layers.4.attention.to_q
+- layers.4.attention.to_k
+- layers.4.attention.to_v
+- layers.4.attention.to_out.0
+- layers.4.feed_forward.w1
+- layers.4.feed_forward.w2
+- layers.4.feed_forward.w3
+- layers.4.adaLN_modulation.0
+- layers.5.attention.to_q
+- layers.5.attention.to_k
+- layers.5.attention.to_v
+- layers.5.attention.to_out.0
+- layers.5.feed_forward.w1
+- layers.5.feed_forward.w2
+- layers.5.feed_forward.w3
+- layers.5.adaLN_modulation.0
+- layers.6.attention.to_q
+- layers.6.attention.to_k
+- layers.6.attention.to_v
+- layers.6.attention.to_out.0
+- layers.6.feed_forward.w1
+- layers.6.feed_forward.w2
+- layers.6.feed_forward.w3
+- layers.6.adaLN_modulation.0
+- layers.7.attention.to_q
+- layers.7.attention.to_k
+- layers.7.attention.to_v
+- layers.7.attention.to_out.0
+- layers.7.feed_forward.w1
+- layers.7.feed_forward.w2
+- layers.7.feed_forward.w3
+- layers.7.adaLN_modulation.0
+- layers.8.attention.to_q
+- layers.8.attention.to_k
+- layers.8.attention.to_v
+- layers.8.attention.to_out.0
+- layers.8.feed_forward.w1
+- layers.8.feed_forward.w2
+- layers.8.feed_forward.w3
+- layers.8.adaLN_modulation.0
+- layers.9.attention.to_q
+- layers.9.attention.to_k
+- layers.9.attention.to_v
+- layers.9.attention.to_out.0
+- layers.9.feed_forward.w1
+- layers.9.feed_forward.w2
+- layers.9.feed_forward.w3
+- layers.9.adaLN_modulation.0
+- layers.10.attention.to_q
+- layers.10.attention.to_k
+- layers.10.attention.to_v
+- layers.10.attention.to_out.0
+- layers.10.feed_forward.w1
+- layers.10.feed_forward.w2
+- layers.10.feed_forward.w3
+- layers.10.adaLN_modulation.0
+- layers.11.attention.to_q
+- layers.11.attention.to_k
+- layers.11.attention.to_v
+- layers.11.attention.to_out.0
+- layers.11.feed_forward.w1
+- layers.11.feed_forward.w2
+- layers.11.feed_forward.w3
+- layers.11.adaLN_modulation.0
+- layers.12.attention.to_q
+- layers.12.attention.to_k
+- layers.12.attention.to_v
+- layers.12.attention.to_out.0
+- layers.12.feed_forward.w1
+- layers.12.feed_forward.w2
+- layers.12.feed_forward.w3
+- layers.12.adaLN_modulation.0
+- layers.13.attention.to_q
+- layers.13.attention.to_k
+- layers.13.attention.to_v
+- layers.13.attention.to_out.0
+- layers.13.feed_forward.w1
+- layers.13.feed_forward.w2
+- layers.13.feed_forward.w3
+- layers.13.adaLN_modulation.0
+- layers.14.attention.to_q
+- layers.14.attention.to_k
+- layers.14.attention.to_v
+- layers.14.attention.to_out.0
+- layers.14.feed_forward.w1
+- layers.14.feed_forward.w2
+- layers.14.feed_forward.w3
+- layers.14.adaLN_modulation.0
+- layers.15.attention.to_q
+- layers.15.attention.to_k
+- layers.15.attention.to_v
+- layers.15.attention.to_out.0
+- layers.15.feed_forward.w1
+- layers.15.feed_forward.w2
+- layers.15.feed_forward.w3
+- layers.15.adaLN_modulation.0
+- layers.16.attention.to_q
+- layers.16.attention.to_k
+- layers.16.attention.to_v
+- layers.16.attention.to_out.0
+- layers.16.feed_forward.w1
+- layers.16.feed_forward.w2
+- layers.16.feed_forward.w3
+- layers.16.adaLN_modulation.0
+- layers.17.attention.to_q
+- layers.17.attention.to_k
+- layers.17.attention.to_v
+- layers.17.attention.to_out.0
+- layers.17.feed_forward.w1
+- layers.17.feed_forward.w2
+- layers.17.feed_forward.w3
+- layers.17.adaLN_modulation.0
+- layers.18.attention.to_q
+- layers.18.attention.to_k
+- layers.18.attention.to_v
+- layers.18.attention.to_out.0
+- layers.18.feed_forward.w1
+- layers.18.feed_forward.w2
+- layers.18.feed_forward.w3
+- layers.18.adaLN_modulation.0
+- layers.19.attention.to_q
+- layers.19.attention.to_k
+- layers.19.attention.to_v
+- layers.19.attention.to_out.0
+- layers.19.feed_forward.w1
+- layers.19.feed_forward.w2
+- layers.19.feed_forward.w3
+- layers.19.adaLN_modulation.0
+- layers.20.attention.to_q
+- layers.20.attention.to_k
+- layers.20.attention.to_v
+- layers.20.attention.to_out.0
+- layers.20.feed_forward.w1
+- layers.20.feed_forward.w2
+- layers.20.feed_forward.w3
+- layers.20.adaLN_modulation.0
+- layers.21.attention.to_q
+- layers.21.attention.to_k
+- layers.21.attention.to_v
+- layers.21.attention.to_out.0
+- layers.21.feed_forward.w1
+- layers.21.feed_forward.w2
+- layers.21.feed_forward.w3
+- layers.21.adaLN_modulation.0
+- layers.22.attention.to_q
+- layers.22.attention.to_k
+- layers.22.attention.to_v
+- layers.22.attention.to_out.0
+- layers.22.feed_forward.w1
+- layers.22.feed_forward.w2
+- layers.22.feed_forward.w3
+- layers.22.adaLN_modulation.0
+- layers.23.attention.to_q
+- layers.23.attention.to_k
+- layers.23.attention.to_v
+- layers.23.attention.to_out.0
+- layers.23.feed_forward.w1
+- layers.23.feed_forward.w2
+- layers.23.feed_forward.w3
+- layers.23.adaLN_modulation.0
+- layers.24.attention.to_q
+- layers.24.attention.to_k
+- layers.24.attention.to_v
+- layers.24.attention.to_out.0
+- layers.24.feed_forward.w1
+- layers.24.feed_forward.w2
+- layers.24.feed_forward.w3
+- layers.24.adaLN_modulation.0
+- layers.25.attention.to_q
+- layers.25.attention.to_k
+- layers.25.attention.to_v
+- layers.25.attention.to_out.0
+- layers.25.feed_forward.w1
+- layers.25.feed_forward.w2
+- layers.25.feed_forward.w3
+- layers.25.adaLN_modulation.0
+- layers.26.attention.to_q
+- layers.26.attention.to_k
+- layers.26.attention.to_v
+- layers.26.attention.to_out.0
+- layers.26.feed_forward.w1
+- layers.26.feed_forward.w2
+- layers.26.feed_forward.w3
+- layers.26.adaLN_modulation.0
+- layers.27.attention.to_q
+- layers.27.attention.to_k
+- layers.27.attention.to_v
+- layers.27.attention.to_out.0
+- layers.27.feed_forward.w1
+- layers.27.feed_forward.w2
+- layers.27.feed_forward.w3
+- layers.27.adaLN_modulation.0
+- layers.28.attention.to_q
+- layers.28.attention.to_k
+- layers.28.attention.to_v
+- layers.28.attention.to_out.0
+- layers.28.feed_forward.w1
+- layers.28.feed_forward.w2
+- layers.28.feed_forward.w3
+- layers.28.adaLN_modulation.0
+- layers.29.attention.to_q
+- layers.29.attention.to_k
+- layers.29.attention.to_v
+- layers.29.attention.to_out.0
+- layers.29.feed_forward.w1
+- layers.29.feed_forward.w2
+- layers.29.feed_forward.w3
+- layers.29.adaLN_modulation.0
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 24
+  approx_vram_mb: 400

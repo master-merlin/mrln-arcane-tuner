@@ -405,6 +405,18 @@ class GenericComponentLoader(IModelLoader):
                     comp.path, local_files_only=local_files_only,
                 )
                 if resolved != root_path:
+                    # Truly separate repo. Some single-component repos keep a
+                    # Diffusers subfolder layout (e.g. ostris Z-Image-De-Turbo
+                    # ships only ``transformer/``) — descend into the subfolder
+                    # when it exists. Skipped for ``use_subfolder_kwarg`` specs
+                    # (e.g. SDXL's standalone VAE), which pass ``subfolder=`` to
+                    # ``from_pretrained`` instead of joining the path.
+                    if (
+                        spec.subfolder
+                        and not spec.use_subfolder_kwarg
+                        and os.path.isdir(os.path.join(resolved, spec.subfolder))
+                    ):
+                        return os.path.join(resolved, spec.subfolder)
                     # Truly separate repo — load from its root
                     return resolved
 

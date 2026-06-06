@@ -40,10 +40,18 @@ class ZImageLoader(GenericComponentLoader):
                 candidates=["vae"],
             ),
             # -- Transformer → mapped to "unet" --
+            # ``definition_key="transformer"`` + ``separate_repo=True`` let a
+            # definition pin the transformer to its own repo (e.g. the
+            # ostris De-Turbo, which ships only ``transformer/`` and reuses
+            # the base repo for VAE/TE/tokenizer). When no ``transformer``
+            # component is declared (e.g. zimage-base) this falls back to
+            # discovering ``transformer/`` inside the repo root, unchanged.
             ComponentSpec(
                 key="unet",
                 hf_class="diffusers.models.ZImageTransformer2DModel",
                 subfolder="transformer",
                 candidates=["transformer"],
+                definition_key="transformer",
+                separate_repo=True,
             ),
         ]

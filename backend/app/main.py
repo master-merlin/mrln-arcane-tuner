@@ -299,7 +299,6 @@ from app.api.system_routes import router as system_router    # noqa: E402
 from app.api.cache_routes import router as cache_router      # noqa: E402
 from app.api.scoring_routes import router as scoring_router  # noqa: E402
 from app.api.project_routes import router as project_router  # noqa: E402
-from app.api.saved_concept_routes import router as saved_concept_router  # noqa: E402
 from app.api.tasks_routes import router as tasks_router  # noqa: E402
 
 app.include_router(ws_router, prefix="/api")
@@ -313,7 +312,6 @@ app.include_router(system_router, prefix="/api")
 app.include_router(cache_router, prefix="/api")
 app.include_router(scoring_router, prefix="/api")
 app.include_router(project_router, prefix="/api")
-app.include_router(saved_concept_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 
 

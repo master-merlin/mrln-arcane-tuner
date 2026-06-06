@@ -1818,7 +1818,7 @@ class DatasetManager:
         self._reconcile_overlay_after_edit(dataset, relative_path)
         return True
 
-    def harmonize_files(self, name: str) -> dict:
+    def harmonize_files(self, name: str, *, progress_cb=None) -> dict:
         """Convert all media to JPG 95% and rename pairs consistently.
 
         Naming scheme: {dataset_name_snake}_{00001}.jpg
@@ -1858,6 +1858,8 @@ class DatasetManager:
 
         for idx, pair in enumerate(pairs):
             media_file = pair["media_file"]
+            if progress_cb is not None:
+                progress_cb(idx + 1, len(pairs), media_file)
             old_stem, old_ext = os.path.splitext(media_file)
             old_ext_lower = old_ext.lower()
 
@@ -1994,6 +1996,8 @@ class DatasetManager:
                     meta.pop("size_bytes", None)
                 dataset.media_metadata[new_key] = meta
 
+        if progress_cb is not None:
+            progress_cb(len(pairs), len(pairs), "Rescanning…")
         # Rescan dataset to update metadata
         self.scan_dataset(name)
 

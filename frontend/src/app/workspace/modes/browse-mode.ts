@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
 import { ViewerGridViewComponent, type GridCropRequest } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
+import type { DatasetPair } from '../../services/dataset';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -65,9 +66,9 @@ export class BrowseMode {
     datasetId = input.required<string>();
     /** Unfiltered pairs (used to translate visible-grid clicks to the
      *  global imageIndex cursor that details / edit / filmstrip share). */
-    pairs = input.required<any[]>();
+    pairs = input.required<DatasetPair[]>();
     /** Filter-projected pairs shown in the grid. */
-    visiblePairs = input.required<any[]>();
+    visiblePairs = input.required<DatasetPair[]>();
     /** HTTP-name of the dataset (URL slug). */
     datasetName = input.required<string>();
     /** Grid column count (3-7) from the secondary toolbar density slider. */
@@ -82,11 +83,11 @@ export class BrowseMode {
     showOverlay = input<boolean>(true);
 
     /** Caption was edited and the textarea lost focus while dirty. */
-    saveCaption = output<{ pair: any; content: string; isMasked: boolean }>();
+    saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean }>();
     /** Eye-toggle on a tile — workspace performs the API + rollback. */
     toggleExclusion = output<{ media_file: string; enabled: boolean }>();
     /** Trash icon on a tile — workspace confirms + performs the API. */
-    deletePair = output<any>();
+    deletePair = output<DatasetPair>();
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);
@@ -132,7 +133,7 @@ export class BrowseMode {
      * always non-masked today (showMasked input defaults to false on the
      * grid component), so `isMasked` is false here.
      */
-    protected onCaptionSaved(pair: any): void {
+    protected onCaptionSaved(pair: DatasetPair): void {
         if (!pair?.media_file) return;
         this.saveCaption.emit({
             pair,

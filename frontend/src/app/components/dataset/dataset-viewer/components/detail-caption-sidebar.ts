@@ -1,7 +1,7 @@
 import { Component, input, output, model, inject, signal, computed, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
-import { DatasetService } from '../../../../services/dataset';
+import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { DatasetStore } from '../../../../state/dataset.store';
 import { ToastService } from '../../../../services/toast';
 
@@ -28,7 +28,7 @@ import { ToastService } from '../../../../services/toast';
                 <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid flex items-start justify-between gap-3">
                     <div class="min-w-0 flex-1">
                         <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
-                        <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair()?.caption_file || '(New File)' }}</p>
+                        <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
                     </div>
                     <span class="mono text-[10px] text-text-muted whitespace-nowrap mt-0.5" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
                 </div>
@@ -132,7 +132,7 @@ export class DetailCaptionSidebarComponent {
     private static readonly TAG_CHIP_LIMIT = 6;
 
     datasetName = input.required<string>();
-    currentPair = input.required<any>();
+    currentPair = input.required<DatasetPair>();
     captionText = model<string>('');
     isDirty = input<boolean>(false);
     isCurrentMediaVideo = input<boolean>(false);
@@ -210,7 +210,7 @@ export class DetailCaptionSidebarComponent {
             this.currentSettings.params,
             this.currentSettings.resolvedSystemPrompt
         ).subscribe({
-            next: (res: any) => {
+            next: (res) => {
                 this.suggestedCaption.set(res.caption);
                 this.isGeneratingCaption.set(false);
                 // Auto-expand the AI panel so the suggestion is visible
@@ -218,10 +218,11 @@ export class DetailCaptionSidebarComponent {
                     this.internalShowCaptionPanel.set(true);
                 }
             },
-            error: (err: any) => {
+            error: (err: unknown) => {
                 console.error(err);
                 this.isGeneratingCaption.set(false);
-                this.toast.error('Generation failed: ' + (err.error?.detail || err.message));
+                const e = err as { error?: { detail?: string }; message?: string };
+                this.toast.error('Generation failed: ' + (e.error?.detail || e.message));
             }
         });
     }

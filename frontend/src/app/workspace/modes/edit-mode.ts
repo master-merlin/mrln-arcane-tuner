@@ -5,6 +5,7 @@ import { PreviewPipeline } from './edit/preview/preview-pipeline';
 import { EditLeftPanelComponent } from './edit/components/edit-left-panel.component';
 import { EditCanvasComponent } from './edit/components/edit-canvas.component';
 import { EditRightPanelComponent } from './edit/components/edit-right-panel.component';
+import type { DatasetPair } from '../../services/dataset';
 
 /**
  * Edit mode — non-destructive image editor. 3-pane shell (340/1fr/340)
@@ -69,7 +70,7 @@ import { EditRightPanelComponent } from './edit/components/edit-right-panel.comp
 export class EditMode {
     datasetId = input.required<string>();
     imageIndex = input.required<number>();
-    pairs = input<any[]>([]);
+    pairs = input<DatasetPair[]>([]);
     datasetName = input.required<string>();
 
     protected overlay = inject(OverlayStore);

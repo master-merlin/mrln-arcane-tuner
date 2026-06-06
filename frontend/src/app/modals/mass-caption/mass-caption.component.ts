@@ -12,7 +12,7 @@ import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
-import { DatasetService } from '../../services/dataset';
+import { DatasetService, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
 import {
@@ -260,7 +260,7 @@ export class MassCaptionModalComponent implements OnInit {
     protected currentSettings: CaptionSettingsState | null = null;
 
     protected running = signal<boolean>(false);
-    protected pairs = signal<any[]>([]);
+    protected pairs = signal<DatasetPair[]>([]);
 
     protected taskId = signal<string | null>(null);
     /** Captured once when the task starts. `byId()` returns a fresh computed per

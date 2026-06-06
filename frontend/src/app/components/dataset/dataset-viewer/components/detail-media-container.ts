@@ -1,5 +1,6 @@
 import { Component, effect, input, output, signal } from '@angular/core';
 import { PanZoomDirective } from '../../../../workspace/shared/pan-zoom.directive';
+import type { DatasetPair } from '../../../../services/dataset';
 
 @Component({
     selector: 'app-detail-media-container',
@@ -33,7 +34,7 @@ import { PanZoomDirective } from '../../../../workspace/shared/pan-zoom.directiv
     styles: []
 })
 export class DetailMediaContainerComponent {
-    currentPair = input.required<any>();
+    currentPair = input.required<DatasetPair>();
     datasetName = input.required<string>();
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
@@ -72,7 +73,7 @@ export class DetailMediaContainerComponent {
         });
     }
 
-    protected onOverlayError(pair: any): void {
+    protected onOverlayError(pair: DatasetPair): void {
         const mf = pair?.media_file;
         if (!mf) return;
         this.failedOverlays.update(s => {
@@ -91,7 +92,7 @@ export class DetailMediaContainerComponent {
         return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/overlay/${encodeURIComponent(imagePath)}?t=${this.lastUpdateTime()}`;
     }
 
-    getDisplayUrl(pair: any): string {
+    getDisplayUrl(pair: DatasetPair): string {
         if (this.showMasked() && pair.metadata?.has_masked) {
             const stem = pair.media_file.substring(0, pair.media_file.lastIndexOf('.'));
             return this.getMediaUrl('masked/' + stem + '.jpg');

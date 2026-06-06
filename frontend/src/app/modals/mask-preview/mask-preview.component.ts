@@ -12,11 +12,12 @@ import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
+import type { DatasetPair } from '../../services/dataset';
 
 interface MaskPreviewData {
     datasetId?: string;
     datasetName?: string;
-    pair?: any;
+    pair?: DatasetPair;
     /** Open mode — 'preview' (composite) or 'mask' (raw alpha). */
     mode?: 'preview' | 'mask';
 }

@@ -11,7 +11,7 @@ import { FormsModule } from '@angular/forms';
 import { Observable, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
-import { DatasetService } from '../../services/dataset';
+import { DatasetService, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { Task, TaskStore } from '../../state/task.store';
@@ -449,7 +449,7 @@ export class MassMaskModalComponent implements OnInit {
     protected captionStrategy = signal<Strategy>('keep');
     protected captionSettings = signal<CaptionSettingsState | null>(null);
 
-    protected pairs = signal<any[]>([]);
+    protected pairs = signal<DatasetPair[]>([]);
     protected running = signal<boolean>(false);
 
     protected taskId = signal<string | null>(null);

@@ -1,7 +1,7 @@
 import { Component, input, output, inject, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { DatasetMaskingSettingsComponent, MaskingSettingsState } from '../../dataset-masking-settings/dataset-masking-settings';
-import { DatasetService } from '../../../../services/dataset';
+import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { ToastService } from '../../../../services/toast';
 
 @Component({
@@ -43,7 +43,7 @@ import { ToastService } from '../../../../services/toast';
              <!-- Scrollable mask preview area -->
              <div class="flex-1 min-h-[60px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
                 <div class="relative p-4">
-                @if (currentPair()?.metadata?.has_mask) {
+                @if (currentPair().metadata?.has_mask) {
                     <div class="space-y-3 animate-fadeIn">
                         <h5 class="text-[10px] text-text-subtle uppercase font-bold tracking-widest flex items-center gap-2">
                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-success"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
@@ -73,8 +73,8 @@ import { ToastService } from '../../../../services/toast';
                             
                             <!-- Info Patch -->
                             <div class="absolute bottom-0 inset-x-0 bg-base/70 backdrop-blur-sm p-1.5 text-[10px] text-text-muted font-mono flex justify-between border-t border-white/5">
-                                <span>{{ currentPair()?.metadata?.mask_info?.width }}x{{ currentPair()?.metadata?.mask_info?.height }}</span>
-                                <span>{{ (currentPair()?.metadata?.mask_info?.size_bytes || 0) / 1024 | number:'1.0-1' }} KB</span>
+                                <span>{{ currentPair().metadata?.mask_info?.width }}x{{ currentPair().metadata?.mask_info?.height }}</span>
+                                <span>{{ (currentPair().metadata?.mask_info?.size_bytes || 0) / 1024 | number:'1.0-1' }} KB</span>
                             </div>
                         </div>
                     </div>
@@ -138,7 +138,7 @@ export class DetailMaskingSidebarComponent {
     private datasetService = inject(DatasetService);
     private toast = inject(ToastService);
 
-    currentPair = input.required<any>();
+    currentPair = input.required<DatasetPair>();
     datasetName = input.required<string>();
     mediaBaseUrl = input.required<string>();
     lastUpdateTime = input<number>(0);
@@ -193,9 +193,10 @@ export class DetailMaskingSidebarComponent {
                 this.toast.success('Mask created successfully');
                 this.maskGenerated.emit();
             },
-            error: (err: any) => {
+            error: (err: unknown) => {
                 this.isGeneratingMask.set(false);
-                this.toast.error('Mask failed: ' + (err.error?.detail || err.message));
+                const e = err as { error?: { detail?: string }; message?: string };
+                this.toast.error('Mask failed: ' + (e.error?.detail || e.message));
             }
         });
     }
@@ -211,7 +212,10 @@ export class DetailMaskingSidebarComponent {
             next: () => {
                 this.maskGenerated.emit(); // Parent should reload pairs
             },
-            error: (err: any) => this.toast.error('Delete failed: ' + (err.error?.detail || err.message))
+            error: (err: unknown) => {
+                const e = err as { error?: { detail?: string }; message?: string };
+                this.toast.error('Delete failed: ' + (e.error?.detail || e.message));
+            }
         });
     }
 

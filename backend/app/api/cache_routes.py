@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time as _time
 from pathlib import Path
 from typing import Any
 
@@ -282,11 +283,51 @@ def _aggregate_cache_stats() -> dict[str, Any]:
     }
 
 
+# ── TTL cache for the expensive cross-dataset aggregation ────────────────
+
+# Process-wide cache for the (expensive) cross-dataset aggregation. Served
+# instantly within the TTL; recomputed on a cold/stale GET and warmed at startup
+# by a silent background task.
+_CACHE_STATS_TTL_S = 120.0
+_cache_stats_value: dict | None = None
+_cache_stats_at: float = 0.0
+
+
+def _get_fresh_cache_stats() -> dict | None:
+    if _cache_stats_value is not None and (_time.time() - _cache_stats_at) < _CACHE_STATS_TTL_S:
+        return _cache_stats_value
+    return None
+
+
+def _store_cache_stats(stats: dict) -> None:
+    global _cache_stats_value, _cache_stats_at
+    _cache_stats_value = stats
+    _cache_stats_at = _time.time()
+
+
+def run_cache_stats_refresh(task_id: str) -> None:
+    """Silent background worker — recompute the cross-dataset cache aggregation
+    and warm the in-memory cache. Runs on the non-GPU 'background' lane."""
+    from app.core.tasks.task_manager import task_manager
+    try:
+        stats = _aggregate_cache_stats()
+        _store_cache_stats(stats)
+    except Exception as exc:  # noqa: BLE001
+        task_manager.fail(task_id, str(exc))
+        return
+    task_manager.complete(task_id)
+
 
 @router.get("/datasets/cache/stats")
 async def cache_stats():
-    """Aggregate cache size statistics across all datasets."""
-    return await asyncio.to_thread(_aggregate_cache_stats)
+    """Aggregate cache size statistics across all datasets (TTL-cached; warmed
+    at startup by a silent background task)."""
+    cached = _get_fresh_cache_stats()
+    if cached is not None:
+        return cached
+    stats = await asyncio.to_thread(_aggregate_cache_stats)
+    _store_cache_stats(stats)
+    return stats
 
 
 @router.get("/datasets/{name}/cache/list")

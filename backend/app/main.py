@@ -62,6 +62,14 @@ async def lifespan(app: FastAPI):
     from app.core.tasks import task_manager
     task_manager.set_loop(loop)
 
+    # Warm the cross-dataset cache-stats aggregation in the background so the
+    # datasets KPI is ready by the time the user navigates (silent — hidden from
+    # the Task Center). Non-GPU 'background' lane so it never blocks GPU work.
+    from app.api.cache_routes import run_cache_stats_refresh
+    _warm = task_manager.create(type="cache_stats_warmup", title="Cache stats",
+                                user_visible=False)
+    task_manager.enqueue(_warm.id, run_cache_stats_refresh, lane="background")
+
     from app.core.logger import set_logging_loop
     set_logging_loop(loop)
 

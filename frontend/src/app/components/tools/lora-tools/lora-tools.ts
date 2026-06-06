@@ -6,6 +6,72 @@ import uPlot from 'uplot';
 
 export type ToolTab = 'inspect' | 'resize';
 
+/** One LoRA layer's weight-delta stats (`inspect_lora().layer_details[]`). */
+export interface LoraLayerDetail {
+  module: string;
+  component: string;
+  norm_delta: number;
+  strength: number;
+  /** Bar width %, computed client-side in sortedLayerDetails(). */
+  _barPct?: number;
+}
+
+/** Aggregate norm stats across all layers. */
+export interface LoraNormSummary {
+  mean_norm: number;
+  std_norm: number;
+  max_norm: number;
+  max_norm_layer: string;
+  min_norm: number;
+  min_norm_layer: string;
+}
+
+/** Layer-relevance / speed-training analysis. Fields are required because the
+ *  template reads them via non-null assertion inside an `@if` that gates the
+ *  whole section on its presence (Angular evaluates that guard at runtime). */
+export interface LoraLayerRelevance {
+  essential_count: number;
+  total_layers: number;
+  essential_params_pct: number;
+  speed_gain_pct: number;
+  target_module_patterns: string[];
+  essential_modules: string[];
+  tier_map: Record<string, string>;
+}
+
+/**
+ * `GET /tools/lora/inspect` result. The backend returns a free-form dict; these
+ * are the fields this component actually reads (all optional — older/partial
+ * inspections may omit sections).
+ */
+export interface LoraInspectResult {
+  format?: string;
+  rank?: number;
+  alpha?: number;
+  lora_modules?: number;
+  dtype?: string;
+  file_size_mb?: number;
+  path?: string;
+  layer_details?: LoraLayerDetail[];
+  // Required (not optional): the template reads `.norm_summary.x` /
+  // `.layer_relevance.y` via `!` inside `@if`-guarded sections — Angular still
+  // evaluates the guard on the real (possibly-absent) runtime value.
+  norm_summary: LoraNormSummary;
+  layer_relevance: LoraLayerRelevance;
+  module_list?: string[];
+  training_params?: Record<string, unknown>;
+  tag_frequency?: Record<string, Record<string, number>>;
+  weight_stats?: Record<string, { avg_magnitude?: number; avg_strength?: number }>;
+}
+
+/** `POST /tools/lora/resize` result. */
+export interface LoraResizeResult {
+  old_rank?: number;
+  new_rank?: number;
+  modules_resized?: number;
+  output_size_mb?: number;
+}
+
 @Component({
     selector: 'app-lora-tools',
     standalone: true,
@@ -359,7 +425,7 @@ export class LoraToolsComponent implements OnDestroy {
     // ── Inspect State ──
     inspectPath = '';
     isInspecting = signal<boolean>(false);
-    inspectResult = signal<any>(null);
+    inspectResult = signal<LoraInspectResult | null>(null);
     inspectError = signal<string | null>(null);
     showModules = signal<boolean>(false);
     showTrainingParams = signal<boolean>(false);
@@ -377,7 +443,7 @@ export class LoraToolsComponent implements OnDestroy {
     resizeNewAlpha: number | null = null;
     resizeDtype = '';
     isResizing = signal<boolean>(false);
-    resizeResult = signal<any>(null);
+    resizeResult = signal<LoraResizeResult | null>(null);
     resizeError = signal<string | null>(null);
 
     quickStats = signal<{ label: string; value: string }[]>([]);
@@ -392,7 +458,7 @@ export class LoraToolsComponent implements OnDestroy {
         this.inspectError.set(null);
         this.inspectResult.set(null);
 
-        this.http.get<any>(`${this.rtc.apiUrl}/tools/lora/inspect`, {
+        this.http.get<LoraInspectResult>(`${this.rtc.apiUrl}/tools/lora/inspect`, {
             params: { path: this.inspectPath }
         }).subscribe({
             next: (result) => {
@@ -426,15 +492,15 @@ export class LoraToolsComponent implements OnDestroy {
         this.resizeError.set(null);
         this.resizeResult.set(null);
 
-        const body: any = {
+        const body: Record<string, unknown> = {
             input_path: this.resizeInputPath,
             output_path: this.resizeOutputPath,
             new_rank: this.resizeNewRank,
         };
-        if (this.resizeNewAlpha != null) body.new_alpha = this.resizeNewAlpha;
-        if (this.resizeDtype) body.save_dtype = this.resizeDtype;
+        if (this.resizeNewAlpha != null) body['new_alpha'] = this.resizeNewAlpha;
+        if (this.resizeDtype) body['save_dtype'] = this.resizeDtype;
 
-        this.http.post<any>(`${this.rtc.apiUrl}/tools/lora/resize`, body).subscribe({
+        this.http.post<LoraResizeResult>(`${this.rtc.apiUrl}/tools/lora/resize`, body).subscribe({
             next: (result) => {
                 this.resizeResult.set(result);
                 this.isResizing.set(false);
@@ -446,11 +512,11 @@ export class LoraToolsComponent implements OnDestroy {
         });
     }
 
-    hasKeys(obj: any): boolean {
-        return obj && Object.keys(obj).length > 0;
+    hasKeys(obj: Record<string, unknown> | undefined): boolean {
+        return !!obj && Object.keys(obj).length > 0;
     }
 
-    private buildQuickStats(r: any) {
+    private buildQuickStats(r: LoraInspectResult) {
         this.quickStats.set([
             { label: 'Format', value: r.format || '—' },
             { label: 'Rank', value: r.rank != null ? String(r.rank) : '—' },
@@ -461,9 +527,9 @@ export class LoraToolsComponent implements OnDestroy {
         ]);
     }
 
-    private buildWeightStats(r: any) {
+    private buildWeightStats(r: LoraInspectResult) {
         if (!r.weight_stats) { this.weightStatEntries.set([]); return; }
-        const entries = Object.entries(r.weight_stats).map(([component, stats]: [string, any]) => ({
+        const entries = Object.entries(r.weight_stats).map(([component, stats]) => ({
             component: component.replace(/_/g, ' '),
             avg_magnitude: stats.avg_magnitude != null ? stats.avg_magnitude.toFixed(6) : '—',
             avg_strength: stats.avg_strength != null ? stats.avg_strength.toFixed(6) : '—',
@@ -471,7 +537,7 @@ export class LoraToolsComponent implements OnDestroy {
         this.weightStatEntries.set(entries);
     }
 
-    private buildTrainingParams(r: any) {
+    private buildTrainingParams(r: LoraInspectResult) {
         if (!r.training_params) { this.trainingParamEntries.set([]); return; }
         const entries = Object.entries(r.training_params)
             .filter(([_, v]) => v != null && v !== '')
@@ -482,9 +548,9 @@ export class LoraToolsComponent implements OnDestroy {
         this.trainingParamEntries.set(entries);
     }
 
-    private buildTagGroups(r: any) {
+    private buildTagGroups(r: LoraInspectResult) {
         if (!r.tag_frequency) { this.tagGroups.set([]); return; }
-        const groups = Object.entries(r.tag_frequency).map(([name, tags]: [string, any]) => ({
+        const groups = Object.entries(r.tag_frequency).map(([name, tags]) => ({
             name,
             tags: Object.entries(tags)
                 .map(([tagName, count]) => ({ name: tagName, count: count as number }))
@@ -501,22 +567,22 @@ export class LoraToolsComponent implements OnDestroy {
     }
 
     /** Get layer details sorted by current sort mode, with bar percentages pre-computed. */
-    sortedLayerDetails(): any[] {
+    sortedLayerDetails(): LoraLayerDetail[] {
         const details = this.inspectResult()?.layer_details;
         if (!details?.length) return [];
 
         const sorted = [...details];
         const sortBy = this.layerSortBy();
         if (sortBy === 'norm') {
-            sorted.sort((a: any, b: any) => b.norm_delta - a.norm_delta);
+            sorted.sort((a, b) => b.norm_delta - a.norm_delta);
         } else if (sortBy === 'strength') {
-            sorted.sort((a: any, b: any) => b.strength - a.strength);
+            sorted.sort((a, b) => b.strength - a.strength);
         } else {
-            sorted.sort((a: any, b: any) => a.module.localeCompare(b.module));
+            sorted.sort((a, b) => a.module.localeCompare(b.module));
         }
 
         // Compute bar percentages relative to the max value
-        const maxNorm = Math.max(...sorted.map((l: any) => l.norm_delta || 0), 1e-10);
+        const maxNorm = Math.max(...sorted.map((l) => l.norm_delta || 0), 1e-10);
         for (const layer of sorted) {
             layer._barPct = Math.round(((layer.norm_delta || 0) / maxNorm) * 100);
         }
@@ -527,7 +593,7 @@ export class LoraToolsComponent implements OnDestroy {
     blockTypes(): string[] {
         const details = this.inspectResult()?.layer_details;
         if (!details?.length) return [];
-        return [...new Set<string>(details.map((l: any) => l.component))] as string[];
+        return [...new Set<string>(details.map((l) => l.component))] as string[];
     }
 
     /** Toggle graphs and build charts when opening. */
@@ -566,13 +632,13 @@ export class LoraToolsComponent implements OnDestroy {
 
             // Filter layers for this block, sorted by module name for consistent ordering
             const layers = details
-                .filter((l: any) => l.component === block)
-                .sort((a: any, b: any) => a.module.localeCompare(b.module));
+                .filter((l) => l.component === block)
+                .sort((a, b) => a.module.localeCompare(b.module));
             if (!layers.length) continue;
 
-            const indices = new Float64Array(layers.map((_: any, i: number) => i));
-            const norms = new Float64Array(layers.map((l: any) => l.norm_delta || 0));
-            const labels: string[] = layers.map((l: any) => this.shortLayer(l.module));
+            const indices = new Float64Array(layers.map((_, i) => i));
+            const norms = new Float64Array(layers.map((l) => l.norm_delta || 0));
+            const labels: string[] = layers.map((l) => this.shortLayer(l.module));
 
             const width = container.clientWidth || 500;
             const brandRGB = '255, 51, 102'; // brand red (matches harmonization chart)
@@ -685,7 +751,7 @@ export class LoraToolsComponent implements OnDestroy {
     }
 
     /** Get bar color based on tier and percentage. */
-    getLayerBarColor(module: string, barPct: number): string {
+    getLayerBarColor(module: string, barPct?: number): string {
         const tier = this.inspectResult()?.layer_relevance?.tier_map?.[module];
         if (tier === 'essential') return '#f59e0b';  // amber
         if (tier === 'contributing') return '#8b5cf6'; // purple

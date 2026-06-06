@@ -135,3 +135,36 @@ def test_render_pipeline_batch_route_enqueues(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["task_id"] == captured["task_id"]
     assert captured["lane"] == "gpu"
+
+
+def test_render_pipeline_task_route_enqueues(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.dataset import overlay_routes
+
+    captured = {}
+
+    def fake_enqueue(task_id, worker_fn, *, lane="gpu"):
+        captured["task_id"] = task_id
+        captured["lane"] = lane
+    monkeypatch.setattr(overlay_routes.task_manager, "enqueue", fake_enqueue)
+
+    created = {}
+    orig_create = overlay_routes.task_manager.create
+
+    def spy_create(**kw):
+        created.update(kw)
+        return orig_create(**kw)
+    monkeypatch.setattr(overlay_routes.task_manager, "create", spy_create)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/datasets/ds1/render-pipeline/task",
+        json={"image_path": "a.png",
+              "blocks": [{"type": "upscale", "enabled": True, "params": {}}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["task_id"] == captured["task_id"]
+    assert captured["lane"] == "gpu"
+    assert created["total"] == 1
+    assert created["type"] == "render_task"

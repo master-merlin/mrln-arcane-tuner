@@ -235,6 +235,28 @@ async def render_pipeline_batch(name: str, request: RenderPipelineBatchRequest):
     return {"task_id": task.id}
 
 
+@router.post("/datasets/{name}/render-pipeline/task")
+async def render_pipeline_task(name: str, request: RenderPipelineRequest):
+    """Run a SINGLE-image pipeline render as a gpu-lane background task (used by
+    the edit workspace when the pipeline contains a GPU op — denoise/upscale).
+    Returns the task id immediately; the overlay updates via entity.changed."""
+    blocks = [b.model_dump() for b in request.blocks]
+    task = task_manager.create(
+        type="render_task", title=f"Render · {Path(request.image_path).stem}",
+        total=1, dataset_name=name,
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_pipeline_batch(
+            tid, dataset_name=name, image_paths=[request.image_path], blocks=blocks,
+            tile_size=request.tile_size, tile_pad=request.tile_pad,
+            replace_recipe=request.replace_recipe,
+        ),
+        lane="gpu",
+    )
+    return {"task_id": task.id}
+
+
 # ---------------------------------------------------------------------------
 # Serve overlay
 # ---------------------------------------------------------------------------

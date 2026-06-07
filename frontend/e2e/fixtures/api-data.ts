@@ -435,3 +435,27 @@ export const maskingTemplates = [
         model_id: 'sam3',
     },
 ];
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Dataset-viewer editors (Flow D / E5) fixtures.
+ *
+ * Flow D opens the fullscreen workspace, switches to EDIT mode, and drives the
+ * real curves / HSL / histogram editors. The live preview is rendered ENTIRELY
+ * client-side by PreviewPipeline (it loads the image pixels via a crossOrigin
+ * <img>, runs the recipe in a <canvas>, and computes the histogram in-browser);
+ * adjusting a slider does NOT hit the network. The only editor → backend round
+ * trip is SAVE, which POSTs `/api/datasets/{name}/render-pipeline` and consumes
+ * `RenderPipelineResponse` (src/app/services/dataset.ts):
+ *   { status, file, overlay, dimensions:[w,h], hash }
+ *
+ * The Save success toast reads `dimensions`, so a real [w,h] keeps the path
+ * happy. `overlay` points at a media path the `/media/**` handler already
+ * serves as a PNG.
+ * ════════════════════════════════════════════════════════════════════════ */
+export const renderPipelineResponse = {
+    status: 'ok',
+    file: 'img001.png',
+    overlay: 'overlays/img001.png',
+    dimensions: [64, 64] as number[],
+    hash: 'e2eovhash',
+};

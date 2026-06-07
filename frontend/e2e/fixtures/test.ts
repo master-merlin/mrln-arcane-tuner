@@ -59,3 +59,27 @@ export async function openDatasetWorkspace(page: Page, name: string): Promise<vo
     // are present (and the secondary toolbar only renders in Browse mode).
     await expect(page.getByTestId('ws-mass-caption-btn')).toBeVisible();
 }
+
+/**
+ * Switch the (already-open) dataset workspace into EDIT mode and wait for the
+ * non-destructive image editor to mount with an image active.
+ *
+ * Call AFTER {@link openDatasetWorkspace}. Path (all testid-based):
+ *   topbar mode segmented → click `ws-mode-edit`
+ *     → `<app-dataset-workspace>` switches its mode `@switch` to `edit`
+ *     → the `@defer`red `<app-workspace-edit>` loads, projects the active pair,
+ *       and mounts the 3-pane editor: left tab panels (Crop active by default),
+ *       center `<app-edit-canvas>`, right `<app-histogram-panel>`.
+ *
+ * The editor only renders a body when a pair is present at the cursor, so the
+ * fixture dataset must have ≥1 pair (alpha has one). The right-panel histogram
+ * canvas is always in the DOM once edit mode mounts, so we resolve on it —
+ * proving the deferred editor is live. The left-panel adjustment tabs (Curves /
+ * HSL) and the histogram channel toggles are then reachable by their own
+ * testids.
+ */
+export async function enterEditMode(page: Page): Promise<void> {
+    await page.getByTestId('ws-mode-edit').click();
+    // The deferred editor mounted: the right-panel histogram canvas is present.
+    await expect(page.getByTestId('histogram-canvas')).toBeVisible();
+}

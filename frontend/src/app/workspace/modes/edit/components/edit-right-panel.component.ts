@@ -53,6 +53,7 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
             </div>
             <div class="row">
                 <button type="button" class="btn primary save"
+                        data-testid="edit-save-btn"
                         [class.is-saving]="state.saving()"
                         [attr.title]="saveTitle()"
                         (click)="onSave()"

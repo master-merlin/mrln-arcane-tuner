@@ -20,14 +20,19 @@ import {
     projectPreferences,
     captionTemplates,
     maskingTemplates,
+    renderPipelineResponse,
 } from './api-data';
 
 /**
- * 1×1 transparent PNG — served for any `/media/**` request so dataset preview
- * thumbnails resolve to a valid image instead of 404ing.
+ * 64×64 solid-color PNG — served for any `/media/**` request (and dataset
+ * `/thumbnail`) so dataset previews resolve to a valid image. Sized 64×64
+ * rather than 1×1 because Flow D's edit-mode PreviewPipeline reads the source
+ * image's natural dimensions (it sizes its <canvas> to them and runs the recipe
+ * over the pixels). A 1×1 source produced a degenerate 1-pixel canvas; 64×64
+ * gives the curves/HSL/histogram preview a real raster to operate on.
  */
-const PNG_1x1 = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+const PNG_64 = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwJfTJAYzoCH8OITBAtxmr/N1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYB5rZhaXyasxIAAAAASUVORK5CYII=',
     'base64',
 );
 
@@ -79,12 +84,12 @@ export const bootApiRoutes: ApiRoute[] = [
     },
     // Filmstrip thumbnails — the workspace's filmstrip-scrubber loads a 256px
     // WebP per pair from the dataset `/thumbnail` endpoint (under `/api/`, NOT
-    // `/media/`, so it falls through to this table). Serve the 1×1 PNG.
+    // `/media/`, so it falls through to this table). Serve the 64×64 PNG.
     {
         method: 'GET',
         test: (p) => /\/api\/datasets\/[^/]+\/thumbnail$/.test(p),
         handler: (route) =>
-            route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1x1 }),
+            route.fulfill({ status: 200, contentType: 'image/png', body: PNG_64 }),
     },
     {
         method: 'GET',
@@ -217,6 +222,17 @@ export const bootApiRoutes: ApiRoute[] = [
         test: (p) => /\/api\/templates\/masking\/[^/]+$/.test(p),
         handler: (route) => json(route, maskingTemplates[0]),
     },
+
+    // ── Dataset-viewer editors (Flow D / E5) ──────────────────────────────
+    // Edit mode's only backend round-trip is SAVE → render-pipeline. The live
+    // curves/HSL/histogram preview is computed client-side and hits no network.
+    // Returns a RenderPipelineResponse so the Save success path (which reads
+    // `dimensions`) completes without erroring.
+    {
+        method: 'POST',
+        test: (p) => /\/api\/datasets\/[^/]+\/render-pipeline$/.test(p),
+        handler: (route) => json(route, renderPipelineResponse),
+    },
 ];
 
 /**
@@ -263,9 +279,9 @@ export async function installMockBackend(
             return;
         }
 
-        // 2. Media → tiny PNG.
+        // 2. Media → 64×64 PNG.
         if (pathname.startsWith('/media/')) {
-            await route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1x1 });
+            await route.fulfill({ status: 200, contentType: 'image/png', body: PNG_64 });
             return;
         }
 

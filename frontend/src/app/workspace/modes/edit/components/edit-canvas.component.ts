@@ -133,6 +133,7 @@ export function buildPixelSourceUrl(
             @if (state.dirty()) {
                 <span class="chip warning dirty-chip"
                       role="status"
+                      data-testid="edit-dirty-chip"
                       aria-label="Unsaved adjustments — modified"
                       title="You have unsaved adjustments — Save to commit or Revert to discard">
                     <app-ico name="Edit3" [size]="10"/> Modified

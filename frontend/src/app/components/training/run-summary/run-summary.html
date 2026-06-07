@@ -6,8 +6,14 @@
             <span class="rs-model">{{ model() }}</span>
         </div>
         <div class="rs-head-right">
-            @if (statusTone(); as tone) {
-                <span class="chip" [class]="tone">{{ job().status_label || job().status }}</span>
+            @if (isDone()) {
+                <!-- Finished OK: neutral chip + green check (redesign), not a solid success chip. -->
+                <span class="chip rs-done"><app-ico name="Check" [size]="11"/> {{ job().status_label || job().status }}</span>
+            } @else if (statusTone(); as tone) {
+                <span class="chip" [class]="tone">
+                    @if (job().status === 'running') { <span class="rs-dot"></span> }
+                    {{ job().status_label || job().status }}
+                </span>
             }
             <span class="rs-when">{{ job().created_at * 1000 | date:'MMM d, HH:mm' }}</span>
         </div>

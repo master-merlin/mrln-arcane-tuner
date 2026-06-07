@@ -20,7 +20,10 @@ export default defineConfig({
     retries: process.env['CI'] ? 1 : 0,
     reporter: [['list']],
     use: {
-        baseURL: 'http://localhost:4200',
+        // Dedicated port so the suite never reuses a developer's proxied :4200
+        // dev server (the whole premise is no-backend). Runs cold-start their
+        // own ng serve on 4300.
+        baseURL: 'http://localhost:4300',
         trace: 'on-first-retry',
     },
     projects: [
@@ -31,9 +34,9 @@ export default defineConfig({
     ],
     webServer: {
         // No --proxy-config: /api + /media + the WS are mocked in-browser.
-        command: `node ${NG_BIN} serve --port 4200`,
+        command: `node ${NG_BIN} serve --port 4300`,
         cwd: FRONTEND_ROOT,
-        url: 'http://localhost:4200',
+        url: 'http://localhost:4300',
         reuseExistingServer: !process.env['CI'],
         timeout: 180_000,
         stdout: 'pipe',

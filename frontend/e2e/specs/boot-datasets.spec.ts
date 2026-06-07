@@ -27,3 +27,25 @@ test('boots to the datasets screen with a fully-mocked backend', async ({
     // No un-mocked /api endpoint was hit during boot.
     expect(unhandledApi, `unhandled /api calls: ${unhandledApi.join(', ')}`).toEqual([]);
 });
+
+/**
+ * Proves the `/media/**` and `/runtime-config.json` mocks ACTUALLY fire through
+ * the single `page.route` handler — they were previously dead because a broad
+ * `route.continue()` terminated the chain before they ran. In-page `fetch` goes
+ * through `page.route`; `page.request` would NOT, so we probe via `fetch`.
+ */
+test('media and runtime-config mocks fire through the page route handler', async ({ page }) => {
+    await page.goto('/');
+
+    // A media URL returns image/png from the mock (not a dev-server 404).
+    const mediaContentType = await page.evaluate(() =>
+        fetch('/media/probe.png').then((r) => r.headers.get('content-type')),
+    );
+    expect(mediaContentType).toBe('image/png');
+
+    // runtime-config.json returns JSON from the mock.
+    const configContentType = await page.evaluate(() =>
+        fetch('/runtime-config.json').then((r) => r.headers.get('content-type')),
+    );
+    expect(configContentType).toContain('application/json');
+});

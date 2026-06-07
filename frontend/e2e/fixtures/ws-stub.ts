@@ -64,8 +64,10 @@ export function installWebSocketStub(): void {
         }
 
         addEventListener(type: string, listener: Listener): void {
-            // Map addEventListener('open', fn) → onopen = fn, etc. The service
-            // uses the on* properties, but support both for completeness.
+            // Map addEventListener('open', fn) → onopen = fn, etc. This shim is
+            // single-listener-per-type (it overwrites the matching on* slot
+            // rather than maintaining a listener list); the real service only
+            // uses the on* properties, so one listener per type is sufficient.
             const key = `on${type}` as 'onopen' | 'onmessage' | 'onclose' | 'onerror';
             (this as Record<string, unknown>)[key] = listener;
         }

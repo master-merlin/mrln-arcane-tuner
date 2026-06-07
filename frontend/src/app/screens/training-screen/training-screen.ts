@@ -99,6 +99,14 @@ export class TrainingScreen {
 
     constructor() {
         this.fetchModels();
+        // (Re)load the training schema for the current scope. The dataset
+        // dropdown is scoped server-side by project_id, so switching project
+        // (or landing in/out of a project) must refetch. Reads availableModels
+        // so it also fires once the model list arrives (first load).
+        effect(() => {
+            const projectId = this.scope.projectId();
+            if (this.availableModels().length > 0) this.loadSchema(projectId);
+        });
         // Hydrate the global dataset store so the per-dataset "N suppressed"
         // exclusion badge has excluded_count data when the Training screen is
         // opened directly (idempotent; other screens seed it too).
@@ -206,8 +214,7 @@ export class TrainingScreen {
     protected fetchModels(): void {
         this.http.get<ModelDefinition[]>(`${this.rtc.apiUrl}/models/definitions`).subscribe({
             next: defs => {
-                this.availableModels.set(defs);
-                if (defs.length > 0) this.loadSchema();
+                this.availableModels.set(defs); // the scope effect loads the schema once this lands
             },
             error: (err: { message?: string }) =>
                 this.toast.error('Failed to load model definitions: ' + (err?.message ?? 'unknown error')),
@@ -219,8 +226,11 @@ export class TrainingScreen {
      * every definition — the active family/definition is chosen inside the
      * form's Model Selection segment — so it is fetched once.
      */
-    protected loadSchema(): void {
-        this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${this.pluginId}/schema?t=${Date.now()}`).subscribe({
+    protected loadSchema(projectId: string | null = this.scope.projectId()): void {
+        // Scope the dataset dropdown to the project's datasets when in a project
+        // (the backend filters dataset_name's enum by project_id); global omits it.
+        const scopeParam = projectId ? `&project_id=${encodeURIComponent(projectId)}` : '';
+        this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${this.pluginId}/schema?t=${Date.now()}${scopeParam}`).subscribe({
             next: (s) => this.currentSchema.set(s),
             error: (err: { message?: string }) =>
                 this.toast.error('Failed to load training schema: ' + (err?.message ?? 'unknown error')),

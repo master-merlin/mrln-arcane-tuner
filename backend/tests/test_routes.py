@@ -28,6 +28,29 @@ def test_get_plugin_schema_success(mock_to_thread, mock_pm, client):
     response = client.get("/api/plugins/std/schema")
     assert response.status_code == 200
     assert "type" in response.json()
+    # Global scope → enrich_schema called with no project (None) so all datasets show.
+    args, kwargs = mock_plugin.enrich_schema.call_args
+    assert (len(args) > 1 and args[1] is None) or kwargs.get("project_id") is None
+
+
+@patch("app.api.training.plugin_routes.plugin_manager")
+@patch("app.api.training.plugin_routes.asyncio.to_thread")
+def test_get_plugin_schema_passes_project_id(mock_to_thread, mock_pm, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_plugin = MagicMock()
+    mock_config_schema = MagicMock()
+    mock_config_schema.model_json_schema.return_value = {"type": "object", "properties": {}}
+    mock_plugin.get_config_schema.return_value = mock_config_schema
+    mock_plugin.enrich_schema.return_value = {"type": "object", "properties": {}}
+    mock_pm.get_plugin.return_value = mock_plugin
+    response = client.get("/api/plugins/std/schema?project_id=proj-1")
+    assert response.status_code == 200
+    # The project scope MUST reach enrich_schema so the dataset_name enum is
+    # filtered to the project's datasets (the dropdown-not-scoped bug).
+    args, kwargs = mock_plugin.enrich_schema.call_args
+    assert "proj-1" in args or kwargs.get("project_id") == "proj-1"
 
 
 @patch("app.api.training.plugin_routes.plugin_manager")

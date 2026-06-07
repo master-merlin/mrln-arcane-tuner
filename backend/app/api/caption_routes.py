@@ -145,7 +145,11 @@ class BatchCaptionRequest(BaseModel):
 async def batch_caption_api(request: BatchCaptionRequest):
     """Start a backend-owned captioning task. Always creates the task (queued if
     the GPU lane is busy) and returns its id immediately."""
-    title = f"Captioning · {request.dataset_name}"
+    # Distinguish masked-caption runs in the Task Center — they target the
+    # masked/<stem>.txt sidecar, not the plain caption, and can run alongside
+    # an original-caption task for the same dataset.
+    kind = "Captioning (masked)" if request.target == "masked" else "Captioning"
+    title = f"{kind} · {request.dataset_name}"
     task = task_manager.create(
         type="caption_batch", title=title,
         total=len(request.image_rel_paths), dataset_name=request.dataset_name,

@@ -41,6 +41,23 @@ def test_list_captioning_templates(MockRepo, client):
     assert response.json() == []
 
 
+@patch(_CAP_REPO)
+def test_captioning_template_response_includes_wildcard(MockRepo, client):
+    """Regression: wildcard must survive the response model. Without the field
+    on CaptioningTemplate, FastAPI strips it and a saved wildcard never reads
+    back — so the UI looks like it didn't autosave (system_prompt did)."""
+    MockRepo.return_value.list_for_project.return_value = [{
+        "id": "c1", "model_id": "m", "name": "T",
+        "system_prompt": "Describe {wildcard}.", "wildcard": "Alice",
+        "config": {}, "created_at": 0.0,
+    }]
+    response = client.get("/api/templates/captioning")
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["wildcard"] == "Alice"
+    assert body[0]["system_prompt"] == "Describe {wildcard}."
+
+
 @patch(_MASK_REPO)
 def test_list_masking_templates(MockRepo, client):
     MockRepo.return_value.list_for_project.return_value = []

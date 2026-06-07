@@ -115,13 +115,22 @@ class StandardPlugin(TrainingPlugin):
         
         return process
 
-    def enrich_schema(self, schema: dict[str, any]) -> dict[str, any]:
-        """Inject available datasets and optimizer options into the UI schema."""
-        schema = super().enrich_schema(schema)
+    def enrich_schema(self, schema: dict[str, any], project_id: str | None = None) -> dict[str, any]:
+        """Inject available datasets and optimizer options into the UI schema.
 
-        from app.core.dataset_manager import dataset_manager
-        dataset_names = [ds.name for ds in dataset_manager.list_datasets()]
-        
+        When ``project_id`` is given, the dataset dropdown is scoped to that
+        project's own datasets (so a project template can't reference datasets
+        outside its project). Without it, every dataset is offered (global scope).
+        """
+        schema = super().enrich_schema(schema, project_id)
+
+        if project_id:
+            from app.core.db.repositories.project_repo import ProjectRepository
+            dataset_names = [d["name"] for d in ProjectRepository().get_datasets(project_id)]
+        else:
+            from app.core.dataset_manager import dataset_manager
+            dataset_names = [ds.name for ds in dataset_manager.list_datasets()]
+
         try:
             # Check properties directly
             if "properties" in schema and "datasets" in schema["properties"]:

@@ -270,8 +270,13 @@ class TrainingPlugin(ABC):
     def start_training(self, config: dict[str, any]) -> any:
         pass
 
-    def enrich_schema(self, schema: dict[str, any]) -> dict[str, any]:
-        """Optional: enrich the JSON schema with dynamic data (e.g. dataset names)."""
+    def enrich_schema(self, schema: dict[str, any], project_id: str | None = None) -> dict[str, any]:
+        """Optional: enrich the JSON schema with dynamic data (e.g. dataset names).
+
+        ``project_id`` lets subclasses scope dynamic options to a project (e.g.
+        the dataset dropdown). It is unused here (family/definition injection is
+        global) but kept in the signature so the route can pass it uniformly.
+        """
         from app.engine.factories.quantization import QuantizationFactory
         from app.engine.models.registry import registry
 

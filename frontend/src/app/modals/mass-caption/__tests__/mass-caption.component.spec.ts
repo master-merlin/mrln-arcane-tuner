@@ -9,6 +9,7 @@
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { of } from 'rxjs';
 import { MassCaptionModalComponent } from '../mass-caption.component';
 import { OverlayStore } from '../../../state/overlay.store';
@@ -45,6 +46,11 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         taskStoreSpy = { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() };
         TestBed.configureTestingModule({
             providers: [
+                // v22's default HttpClient backend is Fetch, which can't resolve the
+                // app-relative URL the rendered caption-settings child requests under
+                // jsdom; XHR (the pre-v22 default) resolves it so the call fails
+                // gracefully instead of throwing an unhandled URL-parse error.
+                provideHttpClient(withXhr()),
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },

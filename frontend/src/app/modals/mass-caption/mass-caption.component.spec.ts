@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { of } from 'rxjs';
 import { MassCaptionModalComponent } from './mass-caption.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -34,6 +35,11 @@ describe('MassCaptionComponent launcher', () => {
         };
         TestBed.configureTestingModule({
             providers: [
+                // v22 default HttpClient backend is Fetch, which can't resolve the
+                // app-relative URLs the rendered caption-settings child requests in
+                // jsdom; XHR (the pre-v22 default) resolves them so the call fails
+                // gracefully instead of throwing an unhandled URL-parse error.
+                provideHttpClient(withXhr()),
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
@@ -140,6 +146,11 @@ describe('MassCaptionComponent completion effect', () => {
         };
         TestBed.configureTestingModule({
             providers: [
+                // v22 default HttpClient backend is Fetch, which can't resolve the
+                // app-relative URLs the rendered caption-settings child requests in
+                // jsdom; XHR (the pre-v22 default) resolves them so the call fails
+                // gracefully instead of throwing an unhandled URL-parse error.
+                provideHttpClient(withXhr()),
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },

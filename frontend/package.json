@@ -6,7 +6,9 @@
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test"
+    "test": "ng test",
+    "e2e": "playwright test -c e2e/playwright.config.ts",
+    "e2e:ui": "playwright test -c e2e/playwright.config.ts --ui"
   },
   "prettier": {
     "printWidth": 100,
@@ -48,6 +50,7 @@
     "@angular/build": "21.1.2",
     "@angular/cli": "21.1.2",
     "@angular/compiler-cli": "21.1.2",
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4.2.0",
     "browser-sync": "^3.0.4",
     "jsdom": "^29.1.1",

@@ -1113,7 +1113,15 @@ export class TrainingDynamicConfigComponent {
               // `datasets` selection reverted to the first dataset on reload).
               control.push(this.cloneArrayRow(control.at(0)));
             } else {
-              break;
+              // Empty array AND no resolvable schema (worst-case mid-load). For
+              // a PRIMITIVE array (e.g. `resolutions`) we can still grow it with
+              // plain controls seeded from the target values, so the saved list
+              // loads instead of collapsing to its first element ("only 1024
+              // selected"). Object rows need a structure we can't synthesise
+              // without a schema or an existing row, so those stop here.
+              const sample = Array.isArray(value) ? value[control.length] : undefined;
+              if (sample !== null && typeof sample === 'object') break;
+              control.push(new FormControl(sample ?? null));
             }
           } else {
             control.removeAt(control.length - 1);

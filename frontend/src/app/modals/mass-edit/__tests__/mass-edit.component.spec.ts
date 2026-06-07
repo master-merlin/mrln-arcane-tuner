@@ -10,6 +10,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
+import { allByTestId } from '../../../../testing/by-test-id';
 import { MassEditModalComponent } from '../mass-edit.component';
 import { OverlayStore } from '../../../state/overlay.store';
 import { DatasetSyncService } from '../../../state/dataset-sync.service';
@@ -65,10 +66,8 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
             { media_file: 'dog.png', metadata: { has_overlay: false, width: 512, height: 512 } },
         ]);
         fixture.detectChanges();
-        const host: HTMLElement = fixture.nativeElement;
-        const badges = host.querySelectorAll('.me-tile .ovr-badge');
         // Only the tile for cat.png should have an OVR badge.
-        expect(badges.length).toBe(1);
+        expect(allByTestId(fixture, 'mass-edit-override-badge').length).toBe(1);
     });
 
     it('does NOT render OVR badges when no targets have has_overlay', () => {
@@ -79,7 +78,6 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
             { media_file: 'dog.png', metadata: { width: 512, height: 512 } },
         ]);
         fixture.detectChanges();
-        const host: HTMLElement = fixture.nativeElement;
-        expect(host.querySelectorAll('.me-tile .ovr-badge').length).toBe(0);
+        expect(allByTestId(fixture, 'mass-edit-override-badge').length).toBe(0);
     });
 });

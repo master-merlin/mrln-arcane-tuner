@@ -152,7 +152,7 @@ interface RecipeOperation {
                                     [title]="p.media_file">
                                 <img class="me-thumb" [src]="thumbUrl(p)" alt="" loading="lazy" decoding="async"/>
                                 @if (p.metadata?.has_overlay) {
-                                    <span class="ovr-badge"
+                                    <span class="ovr-badge" data-testid="mass-edit-override-badge"
                                           title="This image already has an overlay — Apply will overwrite it">OVR</span>
                                 }
                                 @if (on) {

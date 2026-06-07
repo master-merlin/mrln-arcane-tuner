@@ -4,6 +4,7 @@ import { of } from 'rxjs';
 
 import { TrainingTemplateSelectorComponent } from './training-template-selector';
 import { TemplateService, Template } from '../../../services/template.service';
+import { ProjectService } from '../../../services/project.service';
 import { ToastService } from '../../../services/toast';
 
 function tpl(over: Partial<Template>): Template {
@@ -24,6 +25,10 @@ describe('TrainingTemplateSelectorComponent — auto-apply active template on lo
     let svc: {
         listTrainingTemplates: Mock;
     };
+    let projects: {
+        getPreferences: Mock;
+        updatePreferences: Mock;
+    };
     let emitted: Array<{
         config: unknown;
         isDefault: boolean;
@@ -31,12 +36,17 @@ describe('TrainingTemplateSelectorComponent — auto-apply active template on lo
         auto?: boolean;
     }>;
 
-    function build(templates: Template[]) {
+    function build(templates: Template[], trainingSelections: Record<string, unknown> = {}) {
         svc = { listTrainingTemplates: vi.fn().mockReturnValue(of(templates)) };
+        projects = {
+            getPreferences: vi.fn().mockReturnValue(of({ training_selections: trainingSelections })),
+            updatePreferences: vi.fn().mockReturnValue(of({})),
+        };
         TestBed.configureTestingModule({
             imports: [TrainingTemplateSelectorComponent],
             providers: [
                 { provide: TemplateService, useValue: svc },
+                { provide: ProjectService, useValue: projects },
                 { provide: ToastService, useValue: {} },
             ],
         });
@@ -75,5 +85,48 @@ describe('TrainingTemplateSelectorComponent — auto-apply active template on lo
         fixture.componentInstance.applyTemplate('custom1');
         expect(emitted.length).toBe(1);
         expect(emitted[0].auto).toBeFalsy();
+    });
+
+    it('restores the persisted active template on load instead of the first one', () => {
+        // Two templates; preferences point at the SECOND — load must apply it,
+        // not templates[0]. (Mirrors a reload returning to the edited template.)
+        build(
+            [tpl({ id: 'a', name: 'Phase I', config: { x: 1 } }),
+             tpl({ id: 'b', name: 'Phase I', config: { x: 2 } })],
+            { active_training_template: 'b' },
+        );
+        expect(emitted.length).toBe(1);
+        expect(emitted[0].auto).toBe(true);
+        expect(emitted[0].config).toEqual({ x: 2 });
+    });
+
+    it('falls back to the first template when the persisted id no longer exists', () => {
+        // `is_default` so no synthetic Default is prepended → templates[0] is 'a'.
+        build(
+            [tpl({ id: 'a', name: 'Phase I', is_default: true, config: { x: 1 } })],
+            { active_training_template: 'deleted-id' },
+        );
+        expect(emitted[0].config).toEqual({ x: 1 });
+    });
+
+    it('persists the active template id on a manual selection (merging training_selections)', () => {
+        const fixture = build(
+            [tpl({ id: 'a', name: 'Phase I' }), tpl({ id: 'b', name: 'Phase I' })],
+            { saved_masking_concepts: ['x'] }, // pre-existing key must be preserved
+        );
+        projects.updatePreferences.mockClear();
+        fixture.componentInstance.applyTemplate('b'); // manual (auto defaults false)
+        expect(projects.updatePreferences).toHaveBeenCalledTimes(1);
+        const [, updates] = projects.updatePreferences.mock.calls[0];
+        expect(updates.training_selections).toEqual({
+            saved_masking_concepts: ['x'],
+            active_training_template: 'b',
+        });
+    });
+
+    it('does NOT persist on the auto-apply (restoring, not choosing)', () => {
+        build([tpl({ id: 'a', name: 'Phase I' })], { active_training_template: 'a' });
+        // Only getPreferences (the load) ran; no write-back from the auto-apply.
+        expect(projects.updatePreferences).not.toHaveBeenCalled();
     });
 });

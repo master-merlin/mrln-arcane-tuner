@@ -1,10 +1,18 @@
 import { Component, ChangeDetectionStrategy, input, output, inject, signal, computed, OnInit, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { forkJoin, of } from 'rxjs';
+import { catchError, switchMap } from 'rxjs/operators';
 import { ToastService } from '../../../services/toast';
 import { TemplateService, Template } from '../../../services/template.service';
+import { ProjectService } from '../../../services/project.service';
 import { TemplateInfoCardComponent, TemplateInfoRow } from '../../../ui/template-info-card/template-info-card.component';
 import type { TrainingConfig } from '../../../services/job';
 import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
+
+/** training_selections key under which the active training template id is
+ *  persisted, so a reload returns to the exact template the user was editing
+ *  (instead of falling back to the first one in the list). */
+const ACTIVE_TPL_PREF_KEY = 'active_training_template';
 
 @Component({
   selector: 'app-training-template-selector',
@@ -77,10 +85,15 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   templateApplied = output<{ config: TrainingConfig, isDefault: boolean, definitionId?: string, auto?: boolean }>();
 
   private templateService = inject(TemplateService);
+  private projects = inject(ProjectService);
   private toast = inject(ToastService);
 
   allTemplates = signal<Template[]>([]);
   activeTemplateId = signal<string>('default');
+
+  /** Persisted active-template id for this project (from preferences), used by
+   *  _maybeAutoApply to restore the user's selection across a reload. */
+  private _preferredActiveId: string | null = null;
 
   // Internal flag to prevent recursive auto-saving when applying a template
   suppressAutoSave = signal<boolean>(false);
@@ -181,9 +194,18 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   loadTrainingSettings() {
     // Load ALL templates for this project context (no definition_id filter).
     // When a template is applied, the parent component handles model switching.
-    this.templateService.listTrainingTemplates(undefined, this.projectId()).subscribe({
-      next: (templates) => {
+    // Preferences are fetched alongside so we can restore the active template
+    // the user last had selected (survives a reload); a prefs failure is
+    // non-fatal — we just fall back to the default resolution.
+    forkJoin({
+      templates: this.templateService.listTrainingTemplates(undefined, this.projectId()),
+      prefs: this.projects.getPreferences(this.projectId()).pipe(catchError(() => of(null))),
+    }).subscribe({
+      next: ({ templates, prefs }) => {
         this.allTemplates.set(templates);
+        const sel = (prefs?.training_selections ?? {}) as Record<string, unknown>;
+        const pref = sel[ACTIVE_TPL_PREF_KEY];
+        this._preferredActiveId = typeof pref === 'string' ? pref : null;
         this._loaded = true;
         // A pending external adopt (edit-in-place / job reload) wins over the
         // generic one-time auto-apply so we never clobber the chosen template.
@@ -259,8 +281,30 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     if (templates.length === 0) return;
     this._autoAppliedForProject = pid;
     const current = this.activeTemplateId();
-    const resolvedId = templates.some(t => t.id === current) ? current : templates[0].id;
+    // Priority: the persisted active template (restores the user's selection
+    // across reload) → the current selection if still valid → the first template.
+    const preferred = this._preferredActiveId;
+    const resolvedId =
+      preferred && templates.some(t => t.id === preferred) ? preferred
+      : templates.some(t => t.id === current) ? current
+      : templates[0].id;
     this.applyTemplate(resolvedId, true);
+  }
+
+  /** Persist the active template id into project preferences (merged into the
+   *  existing training_selections so other keys — masking concepts, Quick Train
+   *  inputs — are preserved). Best-effort; failures are swallowed. */
+  private _persistActiveTemplate(tplId: string): void {
+    if (!tplId || tplId === 'default') return;
+    const pid = this.projectId();
+    this.projects.getPreferences(pid).pipe(
+      switchMap(prefs => {
+        const sel = { ...((prefs?.training_selections ?? {}) as Record<string, unknown>) };
+        sel[ACTIVE_TPL_PREF_KEY] = tplId;
+        return this.projects.updatePreferences(pid, { training_selections: sel });
+      }),
+      catchError(() => of(null)),
+    ).subscribe();
   }
 
   getDefinitionLabel(definitionId?: string): string {
@@ -275,6 +319,11 @@ export class TrainingTemplateSelectorComponent implements OnInit {
 
     const tpl = this.filteredTemplates().find(t => t.id === tplId);
     if (!tpl) { this.suppressAutoSave.set(false); return; }
+
+    // A user-driven selection updates the persisted active template so a later
+    // reload restores it. The one-time `auto` apply on load must NOT persist —
+    // it's restoring, not choosing.
+    if (!auto) this._persistActiveTemplate(tplId);
 
     this.templateApplied.emit({
       config: tpl.config,

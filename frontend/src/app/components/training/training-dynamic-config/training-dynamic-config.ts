@@ -1105,8 +1105,15 @@ export class TrainingDynamicConfigComponent {
             const schema = this.getSchemaForKey(key, formGroup);
             if (schema && schema.items) {
               this.addArrayItem(key, schema.items);
+            } else if (control.length > 0) {
+              // Schema lookup can return null mid-load (properties() not yet
+              // populated). Clone an existing row's control structure rather
+              // than `return`-ing, which would SKIP this key and leave the
+              // array at its pre-seeded default (the bug where a saved
+              // `datasets` selection reverted to the first dataset on reload).
+              control.push(this.cloneArrayRow(control.at(0)));
             } else {
-              return;
+              break;
             }
           } else {
             control.removeAt(control.length - 1);
@@ -1120,6 +1127,24 @@ export class TrainingDynamicConfigComponent {
         control.setValue(value);
       }
     });
+  }
+
+  /** Build a new array row mirroring an existing row's control structure (keys
+   *  + nesting), seeded with that row's current values. Used as a fallback when
+   *  growing a FormArray during a patch and the item schema isn't resolvable
+   *  yet — `patchValue` then overwrites the seeded values with the real config. */
+  private cloneArrayRow(template: AbstractControl): AbstractControl {
+    if (template instanceof FormGroup) {
+      const group: Record<string, AbstractControl> = {};
+      for (const k of Object.keys(template.controls)) {
+        group[k] = this.cloneArrayRow(template.get(k)!);
+      }
+      return this.fb.group(group);
+    }
+    if (template instanceof FormArray) {
+      return this.fb.array(template.controls.map(c => this.cloneArrayRow(c)));
+    }
+    return new FormControl(template.value);
   }
 
   getControl(key: string): FormControl {

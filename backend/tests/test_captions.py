@@ -133,6 +133,32 @@ def test_system_prompt_propagation_through_route(
     assert passed_params["temperature"] == 0.5
 
 
+def test_batch_caption_title_marks_masked(client, monkeypatch):
+    """A masked-target batch caption must be distinguishable in the Task Center."""
+    from app.api import caption_routes
+    monkeypatch.setattr(caption_routes.task_manager, "enqueue", lambda *a, **k: None)
+    resp = client.post("/api/captions/batch", json={
+        "dataset_name": "ds", "image_rel_paths": ["a.jpg"],
+        "model_id": "m", "params": {}, "target": "masked",
+    })
+    assert resp.status_code == 200
+    task = caption_routes.task_manager.get(resp.json()["task_id"])
+    assert task.title == "Captioning (masked) · ds"
+    assert task.target == "masked"
+
+
+def test_batch_caption_title_plain_for_original(client, monkeypatch):
+    from app.api import caption_routes
+    monkeypatch.setattr(caption_routes.task_manager, "enqueue", lambda *a, **k: None)
+    resp = client.post("/api/captions/batch", json={
+        "dataset_name": "ds", "image_rel_paths": ["a.jpg"],
+        "model_id": "m", "params": {}, "target": "original",
+    })
+    assert resp.status_code == 200
+    task = caption_routes.task_manager.get(resp.json()["task_id"])
+    assert task.title == "Captioning · ds"
+
+
 # ── QWEN VL Image Resize Tests ──────────────────────────────────────────
 
 

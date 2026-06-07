@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Job } from '../../../services/job';
+import { IcoComponent } from '../../../icons/ico.component';
 
 /**
  * Presentational metric-strip for a single training run/job.
@@ -13,7 +14,7 @@ import { Job } from '../../../services/job';
 @Component({
     selector: 'app-run-summary',
     standalone: true,
-    imports: [DatePipe, DecimalPipe],
+    imports: [DatePipe, DecimalPipe, IcoComponent],
     templateUrl: './run-summary.html',
     styleUrl: './run-summary.css',
     changeDetection: ChangeDetectionStrategy.OnPush,
@@ -34,15 +35,24 @@ export class RunSummaryComponent {
         return (j.config?.['definition_id'] as string) || j.definition_id || j.plugin_id || '—';
     });
 
-    /** Tone class consumed by the global `.chip` styles. Mirrors projects-screen. */
+    /** True for a finished-OK run, rendered as a neutral chip with a green
+     *  check (per the redesign) rather than a solid success chip. */
+    protected readonly isDone = computed<boolean>(() => this.job().status === 'completed');
+
+    /**
+     * Tone class for the global `.chip` styles, matching the Projects → Runs
+     * redesign (`screen-extras.jsx` ProjectRuns): running = success (+ dot),
+     * queued/pending = warning, failed = danger. `completed` is handled
+     * separately by {@link isDone} (neutral chip + green check), so it returns
+     * '' here.
+     */
     protected readonly statusTone = computed<string>(() => {
         switch (this.job().status) {
-            case 'running':
-            case 'completed': return 'success';
+            case 'running': return 'success';
             case 'failed': return 'danger';
             case 'stopped':
-            case 'paused': return 'warning';
-            case 'pending': return 'teal';
+            case 'paused':
+            case 'pending': return 'warning';
             default: return '';
         }
     });

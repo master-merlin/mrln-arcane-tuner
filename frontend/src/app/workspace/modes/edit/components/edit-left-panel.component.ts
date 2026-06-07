@@ -38,6 +38,7 @@ import { TAB_DEFS, TabDef, TabKind } from '../operation-defs';
                             <button type="button" class="tab"
                                     [class.active]="active() === t.kind"
                                     [class.ai]="group.kind === 'ai'"
+                                    [attr.data-testid]="'edit-tab-' + t.kind"
                                     (click)="active.set(t.kind)">
                                 <app-ico [name]="t.icon" [size]="11"/>
                                 <span>{{ t.label }}</span>

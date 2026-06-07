@@ -22,6 +22,7 @@ export interface SegOption<T> {
             @for (o of options(); track o.value) {
                 <button type="button"
                         [class.active]="o.value === value()"
+                        [attr.data-testid]="testidPrefix() ? testidPrefix() + '-' + o.value : null"
                         (click)="changed.emit(o.value)">
                     @if (o.icon) {
                         <app-ico [name]="o.icon" [size]="12"/>
@@ -38,5 +39,8 @@ export interface SegOption<T> {
 export class SegmentedComponent<T> {
     options = input.required<ReadonlyArray<SegOption<T>>>();
     value = input.required<T>();
+    /** Optional kebab prefix; when set, each button gets
+     *  `data-testid="{prefix}-{value}"` for stable e2e selection. */
+    testidPrefix = input<string | null>(null);
     changed = output<T>();
 }

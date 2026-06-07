@@ -60,6 +60,7 @@
                 <app-segmented
                     [options]="modeOptions"
                     [value]="w.mode"
+                    testidPrefix="ws-mode"
                     (changed)="onModeChange($event)"/>
             </div>
 
@@ -92,13 +93,19 @@
         @if (w.mode === 'browse') {
             <div class="ws-secondary">
                 <div class="mass-actions">
-                    <button class="btn primary sm" type="button" (click)="openMass('mass-caption')">
+                    <button class="btn primary sm" type="button"
+                            data-testid="ws-mass-caption-btn"
+                            (click)="openMass('mass-caption')">
                         <app-ico name="Sparkles" [size]="13"/> Mass caption
                     </button>
-                    <button class="btn sm ws-mass-mask" type="button" (click)="openMass('mass-mask')">
+                    <button class="btn sm ws-mass-mask" type="button"
+                            data-testid="ws-mass-mask-btn"
+                            (click)="openMass('mass-mask')">
                         <app-ico name="Shield" [size]="13"/> Mass mask
                     </button>
-                    <button class="btn sm ws-mass-edit" type="button" (click)="openMass('mass-edit')">
+                    <button class="btn sm ws-mass-edit" type="button"
+                            data-testid="ws-mass-edit-btn"
+                            (click)="openMass('mass-edit')">
                         <app-ico name="Sliders" [size]="13"/> Mass edit
                     </button>
                 </div>

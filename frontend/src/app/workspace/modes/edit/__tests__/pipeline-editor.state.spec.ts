@@ -1,3 +1,4 @@
+import type { Mock } from "vitest";
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
@@ -14,13 +15,18 @@ import { TaskStore } from '../../../../state/task.store';
 function makeWsMock() {
     return { entityChanged: signal(null), reconnected: signal(0) } as unknown as WebSocketService;
 }
-class StubToast { success() {} error() {} warning() {} info() {} }
+class StubToast {
+    success() { }
+    error() { }
+    warning() { }
+    info() { }
+}
 
 // Minimal stubs for the two new deps injected by PipelineEditorState.
 // All existing describes just need something in the DI tree so Angular
 // doesn't try to instantiate the real TaskStore (which calls ws.on()).
-const STUB_TASK_STORE = { byId: () => signal(undefined), cancel: () => {} };
-const STUB_DATASET_SERVICE = { taskRenderPipeline: () => {} };
+const STUB_TASK_STORE = { byId: () => signal(undefined), cancel: () => { } };
+const STUB_DATASET_SERVICE = { taskRenderPipeline: () => { } };
 
 describe('PipelineEditorState.resetAllForUser', () => {
     let state: PipelineEditorState;
@@ -45,10 +51,10 @@ describe('PipelineEditorState.resetAllForUser', () => {
 
         state.resetAllForUser();
 
-        expect(state.whiteBalance().enabled).toBeFalse();
+        expect(state.whiteBalance().enabled).toBe(false);
         expect(state.whiteBalance().params.temperature).toBe(6500);
         expect(state.whiteBalance().params.tint).toBe(0);
-        expect(state.hslSelective().enabled).toBeFalse();
+        expect(state.hslSelective().enabled).toBe(false);
     });
 
     it('clears every panel\'s enabled flag and restores operationOrder', () => {
@@ -74,18 +80,18 @@ describe('PipelineEditorState.resetAllForUser', () => {
         state.resetAllForUser();
 
         // Every panel disabled.
-        expect(state.whiteBalance().enabled).toBeFalse();
-        expect(state.curves().enabled).toBeFalse();
-        expect(state.lut().enabled).toBeFalse();
-        expect(state.colorMatch().enabled).toBeFalse();
-        expect(state.hslSelective().enabled).toBeFalse();
-        expect(state.colorTone().enabled).toBeFalse();
-        expect(state.vignette().enabled).toBeFalse();
-        expect(state.lens().enabled).toBeFalse();
-        expect(state.sharpen().enabled).toBeFalse();
-        expect(state.denoise().enabled).toBeFalse();
-        expect(state.faceRestore().enabled).toBeFalse();
-        expect(state.upscale().enabled).toBeFalse();
+        expect(state.whiteBalance().enabled).toBe(false);
+        expect(state.curves().enabled).toBe(false);
+        expect(state.lut().enabled).toBe(false);
+        expect(state.colorMatch().enabled).toBe(false);
+        expect(state.hslSelective().enabled).toBe(false);
+        expect(state.colorTone().enabled).toBe(false);
+        expect(state.vignette().enabled).toBe(false);
+        expect(state.lens().enabled).toBe(false);
+        expect(state.sharpen().enabled).toBe(false);
+        expect(state.denoise().enabled).toBe(false);
+        expect(state.faceRestore().enabled).toBe(false);
+        expect(state.upscale().enabled).toBe(false);
 
         // operationOrder back to its canonical sequence.
         // Read the canonical via the state's blocks() side-effect:
@@ -94,7 +100,7 @@ describe('PipelineEditorState.resetAllForUser', () => {
         // kinds in the canonical order; assert the count for now.
         const order = state.operationOrder();
         expect(order.length).toBeGreaterThan(0);
-        expect(new Set(order).size).toBe(order.length);   // no dupes
+        expect(new Set(order).size).toBe(order.length); // no dupes
         expect(state.blocks().length).toBe(0);
     });
 
@@ -103,11 +109,11 @@ describe('PipelineEditorState.resetAllForUser', () => {
         // opened with a saved recipe already on disk".
         state.whiteBalance.update(o => ({ ...o, enabled: true, params: { temperature: 7800, tint: 12 } }));
         state.markClean();
-        expect(state.dirty()).toBeFalse();
+        expect(state.dirty()).toBe(false);
 
         state.resetAllForUser();
 
-        expect(state.dirty()).toBeTrue();
+        expect(state.dirty()).toBe(true);
     });
 });
 
@@ -131,7 +137,7 @@ describe('PipelineEditorState.resetAll', () => {
     it('still markCleans so the bake/hydrate flows do not leak dirty=true', () => {
         state.whiteBalance.update(o => ({ ...o, enabled: true, params: { temperature: 7800, tint: 12 } }));
         state.resetAll();
-        expect(state.dirty()).toBeFalse();
+        expect(state.dirty()).toBe(false);
     });
 });
 
@@ -178,12 +184,15 @@ describe('PipelineEditorState.blocks (color_match edge case)', () => {
 describe('PipelineEditorState.applyAndSave — task routing', () => {
     let state: PipelineEditorState;
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let taskStoreSpy: {
+        byId: Mock;
+        cancel: Mock;
+    };
     let overlay: OverlayStore;
 
     beforeEach(() => {
-        api = { taskRenderPipeline: jasmine.createSpy('taskRenderPipeline').and.returnValue(of({ task_id: 't1' })) };
-        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') };
+        api = { taskRenderPipeline: vi.fn().mockReturnValue(of({ task_id: 't1' })) };
+        taskStoreSpy = { byId: vi.fn().mockReturnValue(signal(undefined)), cancel: vi.fn() };
         TestBed.configureTestingModule({
             providers: [
                 PipelineEditorState,
@@ -201,36 +210,36 @@ describe('PipelineEditorState.applyAndSave — task routing', () => {
     });
 
     it('routes a GPU-op save (upscale) through taskRenderPipeline, not the inline render', async () => {
-        const inlineSpy = spyOn(overlay, 'renderPipeline');
+        const inlineSpy = vi.spyOn(overlay, 'renderPipeline');
         state.upscale.update(o => ({ ...o, enabled: true }));
         await state.applyAndSave();
         expect(api.taskRenderPipeline).toHaveBeenCalled();
-        const [name, file] = api.taskRenderPipeline.calls.mostRecent().args;
+        const [name, file] = vi.mocked(api.taskRenderPipeline).mock.lastCall;
         expect(name).toBe('ds1');
         expect(file).toBe('a.png');
         expect(inlineSpy).not.toHaveBeenCalled();
         expect(state.renderTaskId()).toBe('t1');
-        expect(state.saving()).toBeTrue();
+        expect(state.saving()).toBe(true);
     });
 
     it('routes a CPU-only save (white_balance) through the inline render, not a task', async () => {
-        spyOn(overlay, 'renderPipeline').and.returnValue(Promise.resolve({ ok: true, value: { dimensions: [10, 10] } } as any));
+        vi.spyOn(overlay, 'renderPipeline').mockReturnValue(Promise.resolve({ ok: true, value: { dimensions: [10, 10] } } as any));
         state.whiteBalance.update(o => ({ ...o, enabled: true }));
         await state.applyAndSave();
         expect(overlay.renderPipeline).toHaveBeenCalled();
         expect(api.taskRenderPipeline).not.toHaveBeenCalled();
-        expect(state.saving()).toBeFalse();
+        expect(state.saving()).toBe(false);
     });
 
     it('completion: completed task markCleans + clears saving (same image)', () => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         state.upscale.update(o => ({ ...o, enabled: true }));
         void state.applyAndSave();
-        expect(state.dirty()).toBeTrue();
+        expect(state.dirty()).toBe(true);
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         TestBed.tick();
-        expect(state.dirty()).toBeFalse();
-        expect(state.saving()).toBeFalse();
+        expect(state.dirty()).toBe(false);
+        expect(state.saving()).toBe(false);
     });
 });

@@ -1,3 +1,4 @@
+import type { Mock } from "vitest";
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, Subject, throwError } from 'rxjs';
@@ -28,45 +29,43 @@ function makeDataset(id: string, name: string = id): Dataset {
 describe('DatasetStore', () => {
     let store: DatasetStore;
     let api: {
-        listDatasets: jasmine.Spy,
-        createDataset: jasmine.Spy,
-        deleteDataset: jasmine.Spy,
-        updateDataset: jasmine.Spy,
+        listDatasets: Mock;
+        createDataset: Mock;
+        deleteDataset: Mock;
+        updateDataset: Mock;
     };
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
-        on: jasmine.Spy,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
+        on: Mock;
     };
-    let cacheReady$: Subject<{ datasets: string[] }>;
-    let toastMock: { error: jasmine.Spy };
+    let cacheReady$: Subject<{
+        datasets: string[];
+    }>;
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            listDatasets: jasmine.createSpy('listDatasets').and.returnValue(
-                of([makeDataset('a', 'alpha'), makeDataset('b', 'beta')]),
-            ),
-            createDataset: jasmine.createSpy('createDataset').and.callFake(
-                (name: string, _desc: string, _cls: string) => of(makeDataset('new-id', name)),
-            ),
-            deleteDataset: jasmine.createSpy('deleteDataset').and.returnValue(
-                of({ status: 'deleted', name: 'alpha' }),
-            ),
-            updateDataset: jasmine.createSpy('updateDataset').and.callFake(
-                (_cur: string, newName: string, desc: string, cls: string) =>
-                    of({ ...makeDataset('a', newName), description: desc, classifier: cls }),
-            ),
+            listDatasets: vi.fn().mockReturnValue(of([makeDataset('a', 'alpha'), makeDataset('b', 'beta')])),
+            createDataset: vi.fn().mockImplementation((name: string, _desc: string, _cls: string) => of(makeDataset('new-id', name))),
+            deleteDataset: vi.fn().mockReturnValue(of({ status: 'deleted', name: 'alpha' })),
+            updateDataset: vi.fn().mockImplementation((_cur: string, newName: string, desc: string, cls: string) => of({ ...makeDataset('a', newName), description: desc, classifier: cls })),
         };
-        cacheReady$ = new Subject<{ datasets: string[] }>();
+        cacheReady$ = new Subject<{
+            datasets: string[];
+        }>();
         wsMock = {
             entityChanged: signal(null),
             reconnected: signal(0),
-            on: jasmine.createSpy('on').and.callFake((event: string) => {
-                if (event === 'dataset_cache_ready') return cacheReady$.asObservable();
+            on: vi.fn().mockImplementation((event: string) => {
+                if (event === 'dataset_cache_ready')
+                    return cacheReady$.asObservable();
                 return new Subject().asObservable();
             }),
         };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
 
         TestBed.configureTestingModule({
             providers: [
@@ -96,7 +95,7 @@ describe('DatasetStore', () => {
     });
 
     it('deleteDataset rolls back on API failure', async () => {
-        api.deleteDataset.and.returnValue(throwError(() => new Error('boom')));
+        api.deleteDataset.mockReturnValue(throwError(() => new Error('boom')));
         await store.loadAll();
         await store.deleteDataset('a');
         expect(store.entities().map(d => d.id).sort()).toEqual(['a', 'b']);
@@ -121,7 +120,7 @@ describe('DatasetStore', () => {
     });
 
     it('updateDataset rolls back on API failure', async () => {
-        api.updateDataset.and.returnValue(throwError(() => new Error('boom')));
+        api.updateDataset.mockReturnValue(throwError(() => new Error('boom')));
         await store.loadAll();
         await store.updateDataset('a', { description: 'doomed' });
         expect(store.byId('a')()?.description).toBe('');
@@ -131,7 +130,7 @@ describe('DatasetStore', () => {
     it('subscribes to dataset_cache_ready on construction', () => {
         // Store was constructed in beforeEach via TestBed.inject; on() must
         // have been called for the cache-ready channel by now.
-        const calls = (wsMock.on as jasmine.Spy).calls.allArgs().map(a => a[0]);
+        const calls = vi.mocked((wsMock.on as Mock)).mock.calls.map(a => a[0]);
         expect(calls).toContain('dataset_cache_ready');
     });
 

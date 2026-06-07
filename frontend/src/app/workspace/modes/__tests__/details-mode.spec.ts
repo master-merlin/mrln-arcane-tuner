@@ -18,14 +18,17 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
 
 class StubOverlay {
     workspaceImage = signal<number>(0);
-    setWorkspaceImage = jasmine.createSpy('setWorkspaceImage');
-    setWorkspaceMode = jasmine.createSpy('setWorkspaceMode');
-    openModal = jasmine.createSpy('openModal');
+    setWorkspaceImage = vi.fn();
+    setWorkspaceMode = vi.fn();
+    openModal = vi.fn();
 }
 class StubMediaItems {
     mediaRev = signal<number>(0);
 }
-class StubRtc { apiUrl = '/api'; mediaBaseUrl = '/media'; }
+class StubRtc {
+    apiUrl = '/api';
+    mediaBaseUrl = '/media';
+}
 
 function makePair(overrides: Partial<any> = {}): any {
     return {
@@ -73,7 +76,7 @@ describe('DetailsMode', () => {
             (c as any).captionText.set('hello masked');
             (c as any).onSaveCaption();
             expect(events.length).toBe(1);
-            expect(events[0].isMasked).toBeTrue();
+            expect(events[0].isMasked).toBe(true);
             expect(events[0].content).toBe('hello masked');
         });
 
@@ -88,7 +91,7 @@ describe('DetailsMode', () => {
             c.saveCaption.subscribe(e => events.push(e));
             (c as any).captionText.set('hello plain');
             (c as any).onSaveCaption();
-            expect(events[0].isMasked).toBeFalse();
+            expect(events[0].isMasked).toBe(false);
         });
     });
 
@@ -101,7 +104,7 @@ describe('DetailsMode', () => {
         // exercised by the build's template type-checker.
         function makeEvent(ctrl: boolean, key: string): KeyboardEvent {
             const ev = new KeyboardEvent('keydown', { ctrlKey: ctrl, key });
-            spyOn(ev, 'preventDefault');
+            vi.spyOn(ev, 'preventDefault');
             return ev;
         }
         function newFixture() {
@@ -116,7 +119,7 @@ describe('DetailsMode', () => {
         it('Ctrl+Enter calls onSaveCaption AND preventDefault', () => {
             const f = newFixture();
             const c = f.componentInstance;
-            const spy = spyOn(c as any, 'onSaveCaption');
+            const spy = vi.spyOn(c as any, 'onSaveCaption');
             const ev = makeEvent(true, 'Enter');
             (c as any).onDocumentKeydown(ev);
             expect(spy).toHaveBeenCalledTimes(1);
@@ -126,7 +129,7 @@ describe('DetailsMode', () => {
         it('plain Enter does NOT save and does NOT preventDefault', () => {
             const f = newFixture();
             const c = f.componentInstance;
-            const spy = spyOn(c as any, 'onSaveCaption');
+            const spy = vi.spyOn(c as any, 'onSaveCaption');
             const ev = makeEvent(false, 'Enter');
             (c as any).onDocumentKeydown(ev);
             expect(spy).not.toHaveBeenCalled();
@@ -136,7 +139,7 @@ describe('DetailsMode', () => {
         it('Ctrl+other-key does NOT save', () => {
             const f = newFixture();
             const c = f.componentInstance;
-            const spy = spyOn(c as any, 'onSaveCaption');
+            const spy = vi.spyOn(c as any, 'onSaveCaption');
             const ev = makeEvent(true, 'S');
             (c as any).onDocumentKeydown(ev);
             expect(spy).not.toHaveBeenCalled();
@@ -147,7 +150,7 @@ describe('DetailsMode', () => {
             f.componentRef.setInput('datasetId', 'd1');
             f.componentRef.setInput('datasetName', 'alpha');
             f.componentRef.setInput('imageIndex', 0);
-            f.componentRef.setInput('pairs', []);    // empty list
+            f.componentRef.setInput('pairs', []); // empty list
             const c = f.componentInstance;
             const events: any[] = [];
             c.saveCaption.subscribe(e => events.push(e));
@@ -172,17 +175,17 @@ describe('DetailsMode', () => {
             f.componentRef.setInput('datasetName', 'alpha');
             f.componentRef.setInput('imageIndex', 0);
             f.componentRef.setInput('pairs', [makePair({
-                caption_content: 'old plain',
-                masked_caption_content: 'new masked',
-            })]);
+                    caption_content: 'old plain',
+                    masked_caption_content: 'new masked',
+                })]);
             f.componentRef.setInput('showMasked', true);
             const c = f.componentInstance;
             // Pretend the user finished a masked save — textarea now shows
             // the saved masked text.
             (c as any).captionText.set('new masked');
             (c as any).isDirty.set(true);
-            f.detectChanges();    // run the effect
-            expect((c as any).isDirty()).toBeFalse();
+            f.detectChanges(); // run the effect
+            expect((c as any).isDirty()).toBe(false);
         });
 
         it('does NOT clear isDirty when textarea differs from masked_caption_content (showMasked=true)', () => {
@@ -191,9 +194,9 @@ describe('DetailsMode', () => {
             f.componentRef.setInput('datasetName', 'alpha');
             f.componentRef.setInput('imageIndex', 0);
             f.componentRef.setInput('pairs', [makePair({
-                caption_content: 'plain',
-                masked_caption_content: 'saved masked',
-            })]);
+                    caption_content: 'plain',
+                    masked_caption_content: 'saved masked',
+                })]);
             f.componentRef.setInput('showMasked', true);
             const c = f.componentInstance;
             // Initial render: the sidebar's pair-sync effect seeds captionText
@@ -206,7 +209,7 @@ describe('DetailsMode', () => {
             (c as any).captionText.set('in-progress masked edit');
             (c as any).isDirty.set(true);
             f.detectChanges();
-            expect((c as any).isDirty()).toBeTrue();
+            expect((c as any).isDirty()).toBe(true);
         });
 
         it('clears isDirty when captionText matches caption_content (showMasked=false, regression guard)', () => {
@@ -215,15 +218,15 @@ describe('DetailsMode', () => {
             f.componentRef.setInput('datasetName', 'alpha');
             f.componentRef.setInput('imageIndex', 0);
             f.componentRef.setInput('pairs', [makePair({
-                caption_content: 'saved plain',
-                masked_caption_content: 'masked',
-            })]);
+                    caption_content: 'saved plain',
+                    masked_caption_content: 'masked',
+                })]);
             // showMasked omitted → defaults to false
             const c = f.componentInstance;
             (c as any).captionText.set('saved plain');
             (c as any).isDirty.set(true);
             f.detectChanges();
-            expect((c as any).isDirty()).toBeFalse();
+            expect((c as any).isDirty()).toBe(false);
         });
 
         it('falls back to caption_content when masked_caption_content is null and showMasked=true', () => {
@@ -236,15 +239,15 @@ describe('DetailsMode', () => {
             f.componentRef.setInput('datasetName', 'alpha');
             f.componentRef.setInput('imageIndex', 0);
             f.componentRef.setInput('pairs', [makePair({
-                caption_content: 'plain',
-                masked_caption_content: null,
-            })]);
+                    caption_content: 'plain',
+                    masked_caption_content: null,
+                })]);
             f.componentRef.setInput('showMasked', true);
             const c = f.componentInstance;
             (c as any).captionText.set('plain');
             (c as any).isDirty.set(true);
             f.detectChanges();
-            expect((c as any).isDirty()).toBeFalse();
+            expect((c as any).isDirty()).toBe(false);
         });
     });
 });

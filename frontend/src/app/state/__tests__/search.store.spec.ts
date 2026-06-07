@@ -1,11 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { Subject } from 'rxjs';
 import { NavigationEnd, Router } from '@angular/router';
-import {
-    ALL_DATASET_SEARCH_FIELDS,
-    SearchStore,
-    type DatasetSearchField,
-} from '../search.store';
+import { ALL_DATASET_SEARCH_FIELDS, SearchStore, type DatasetSearchField, } from '../search.store';
 
 class RouterStub {
     events = new Subject<unknown>();
@@ -30,20 +26,20 @@ describe('SearchStore', () => {
         expect(store.query()).toBe('');
         expect(store.fields().size).toBe(ALL_DATASET_SEARCH_FIELDS.length);
         for (const f of ALL_DATASET_SEARCH_FIELDS) {
-            expect(store.fields().has(f)).toBeTrue();
+            expect(store.fields().has(f)).toBe(true);
         }
     });
 
     it('setField removes a field when disabled', () => {
         store.setField('tags', false);
-        expect(store.fields().has('tags')).toBeFalse();
+        expect(store.fields().has('tags')).toBe(false);
         expect(store.fields().size).toBe(ALL_DATASET_SEARCH_FIELDS.length - 1);
     });
 
     it('setField adds a field back when enabled', () => {
         store.setField('tags', false);
         store.setField('tags', true);
-        expect(store.fields().has('tags')).toBeTrue();
+        expect(store.fields().has('tags')).toBe(true);
     });
 
     it('resetFields restores the full default set', () => {
@@ -68,7 +64,7 @@ describe('SearchStore', () => {
     it('preserves field selection across route changes', () => {
         store.setField('tags', false);
         router.events.next(makeNavEnd('/projects'));
-        expect(store.fields().has('tags')).toBeFalse();
+        expect(store.fields().has('tags')).toBe(false);
     });
 });
 

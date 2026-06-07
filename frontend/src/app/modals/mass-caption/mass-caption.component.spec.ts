@@ -29,17 +29,17 @@ describe('MassCaptionComponent launcher', () => {
 
     beforeEach(() => {
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
-                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: jasmine.createSpy() } },
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn() } },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: vi.fn() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
@@ -52,7 +52,7 @@ describe('MassCaptionComponent launcher', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([{ media_file: 'a.png', caption_file: null, caption_content: '' }]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchCaption).toHaveBeenCalled();
         expect(comp.taskId()).toBe('t1');
@@ -64,7 +64,7 @@ describe('MassCaptionComponent launcher', () => {
         comp.currentSettings = { resolvedModelId: 'm2', params: { steps: 10 }, resolvedSystemPrompt: 'describe' };
         comp.target.set('original');
         comp.pairs.set([makePair('b.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(comp.running()).toBe(true);
         expect(comp.taskId()).toBe('t1');
@@ -78,9 +78,9 @@ describe('MassCaptionComponent launcher', () => {
         comp.pairs.set([
             { media_file: 'img1.png', caption_file: null, caption_content: '', metadata: { has_mask: true } },
         ]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
-        expect(api.batchCaption).toHaveBeenCalledWith(jasmine.objectContaining({
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
             dataset_name: 'ds1',
             image_rel_paths: ['img1.png'],
             model_id: 'flux-1',
@@ -106,7 +106,7 @@ describe('MassCaptionComponent launcher', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('c.png')]);
-        spyOn(window, 'confirm').and.returnValue(false);
+        vi.spyOn(window, 'confirm').mockReturnValue(false);
         comp.start();
         expect(api.batchCaption).not.toHaveBeenCalled();
     });
@@ -118,7 +118,7 @@ describe('MassCaptionComponent launcher', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('d.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(comp.taskId()).toBe('t1');
         comp.cancel();
@@ -135,27 +135,27 @@ describe('MassCaptionComponent completion effect', () => {
     beforeEach(() => {
         taskSig = signal<any>(makeTask('running'));
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn() } },
                 // Mutable TaskStore: byId returns our controllable signal
-                { provide: TaskStore, useValue: { byId: () => taskSig, active: signal([]), cancel: jasmine.createSpy() } },
+                { provide: TaskStore, useValue: { byId: () => taskSig, active: signal([]), cancel: vi.fn() } },
                 // Mock the sync collaborator at the boundary — the modal should
                 // funnel completion through DatasetSyncService.refreshDataset.
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
     });
 
     it('on task completion: reconciles the dataset and fires onCompleted once', async () => {
-        const onCompleted = jasmine.createSpy('onCompleted');
+        const onCompleted = vi.fn();
         overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
 
         const sync = TestBed.inject(DatasetSyncService) as any;
@@ -165,8 +165,8 @@ describe('MassCaptionComponent completion effect', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
-        comp.start();           // sets _taskView = byId('t1') = taskSig
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.start(); // sets _taskView = byId('t1') = taskSig
 
         // Transition to completed
         taskSig.set(makeTask('completed'));
@@ -184,7 +184,7 @@ describe('MassCaptionComponent completion effect', () => {
     });
 
     it('on task failure: reconciles but does NOT fire onCompleted', () => {
-        const onCompleted = jasmine.createSpy('onCompleted');
+        const onCompleted = vi.fn();
         overlay.openModal('mass-caption', { datasetName: 'ds1', onCompleted });
 
         const sync = TestBed.inject(DatasetSyncService) as any;
@@ -194,7 +194,7 @@ describe('MassCaptionComponent completion effect', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('b.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
 
         taskSig.set(makeTask('failed'));

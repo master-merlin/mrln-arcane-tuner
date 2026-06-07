@@ -18,26 +18,29 @@ import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 
 class StubOverlay {
-    private _modal = signal<{ kind: string; data: any } | null>({
+    private _modal = signal<{
+        kind: string;
+        data: any;
+    } | null>({
         kind: 'version-edit',
         data: {
             datasetName: 'alpha',
             currentVersion: '1.0.0',
-            onSaved: jasmine.createSpy('onSaved'),
+            onSaved: vi.fn(),
         },
     });
     topModal = this._modal;
-    closeModal = jasmine.createSpy('closeModal');
+    closeModal = vi.fn();
 }
 
 class StubDatasetService {
-    setVersion = jasmine.createSpy('setVersion');
+    setVersion = vi.fn();
 }
 
 class StubToast {
-    success = jasmine.createSpy('success');
-    error = jasmine.createSpy('error');
-    info = jasmine.createSpy('info');
+    success = vi.fn();
+    error = vi.fn();
+    info = vi.fn();
 }
 
 function bed(): {
@@ -65,7 +68,7 @@ function bed(): {
 describe('VersionEditModalComponent.save', () => {
     it('on success: calls onSaved, toasts success, closes the modal', async () => {
         const { cmp, overlay, api, toast } = bed();
-        api.setVersion.and.returnValue(of({ version: '2.0.0' }));
+        api.setVersion.mockReturnValue(of({ version: '2.0.0' }));
         (cmp as any).versionInput.set('2.0.0');
 
         await (cmp as any).save();
@@ -79,7 +82,7 @@ describe('VersionEditModalComponent.save', () => {
 
     it('on error: keeps modal open, sets errorMessage, toasts error, does NOT call onSaved', async () => {
         const { cmp, overlay, api, toast } = bed();
-        api.setVersion.and.returnValue(throwError(() => ({ error: { detail: 'bad semver' } })));
+        api.setVersion.mockReturnValue(throwError(() => ({ error: { detail: 'bad semver' } })));
         (cmp as any).versionInput.set('2.0.0');
 
         await (cmp as any).save();
@@ -97,7 +100,7 @@ describe('VersionEditModalComponent.save', () => {
 describe('VersionEditModalComponent.isValid', () => {
     it('Save disabled when input matches currentVersion', () => {
         const { cmp } = bed();
-        (cmp as any).versionInput.set('1.0.0');  // matches currentVersion seed
+        (cmp as any).versionInput.set('1.0.0'); // matches currentVersion seed
         expect((cmp as any).isValid()).toBe(false);
     });
 

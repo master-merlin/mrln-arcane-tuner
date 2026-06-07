@@ -1,3 +1,4 @@
+import type { Mock } from "vitest";
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
@@ -14,40 +15,34 @@ function makeBlock(type: string, enabled: boolean = true): PipelineBlock {
 describe('OverlayStore', () => {
     let store: OverlayStore;
     let api: {
-        getOverlayRecipe: jasmine.Spy,
-        renderPipeline: jasmine.Spy,
-        commitOverlay: jasmine.Spy,
-        deleteOverlay: jasmine.Spy,
+        getOverlayRecipe: Mock;
+        renderPipeline: Mock;
+        commitOverlay: Mock;
+        deleteOverlay: Mock;
     };
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
     };
-    let toastMock: { error: jasmine.Spy };
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            getOverlayRecipe: jasmine.createSpy('getOverlayRecipe').and.returnValue(
-                of({
-                    image_path: 'a.png',
-                    recipe: {
-                        overlay_file: 'overlays/a.png',
-                        operations: [{ type: 'denoise', enabled: true, params: {} }],
-                    },
-                }),
-            ),
-            renderPipeline: jasmine.createSpy('renderPipeline').and.returnValue(
-                of({ status: 'overlay_saved' }),
-            ),
-            commitOverlay: jasmine.createSpy('commitOverlay').and.returnValue(
-                of({ status: 'committed' }),
-            ),
-            deleteOverlay: jasmine.createSpy('deleteOverlay').and.returnValue(
-                of({ status: 'reverted' }),
-            ),
+            getOverlayRecipe: vi.fn().mockReturnValue(of({
+                image_path: 'a.png',
+                recipe: {
+                    overlay_file: 'overlays/a.png',
+                    operations: [{ type: 'denoise', enabled: true, params: {} }],
+                },
+            })),
+            renderPipeline: vi.fn().mockReturnValue(of({ status: 'overlay_saved' })),
+            commitOverlay: vi.fn().mockReturnValue(of({ status: 'committed' })),
+            deleteOverlay: vi.fn().mockReturnValue(of({ status: 'reverted' })),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
 
         TestBed.configureTestingModule({
             providers: [
@@ -76,7 +71,7 @@ describe('OverlayStore', () => {
         // Seed a row, then have loadFor fail — it should be removed.
         await store.loadFor('ds1', 'a.png');
         expect(store.byId(overlayKey('ds1', 'a.png'))()).toBeDefined();
-        api.getOverlayRecipe.and.returnValue(throwError(() => new Error('404')));
+        api.getOverlayRecipe.mockReturnValue(throwError(() => new Error('404')));
         await store.loadFor('ds1', 'a.png');
         expect(store.byId(overlayKey('ds1', 'a.png'))()).toBeUndefined();
     });
@@ -89,16 +84,14 @@ describe('OverlayStore', () => {
         expect(optimistic?.operations?.length).toBe(1);
         expect(optimistic?.operations?.[0]?.type).toBe('denoise');
         await p;
-        expect(api.renderPipeline).toHaveBeenCalledWith(
-            'ds1', 'a.png', blocks, 512, 32, false,
-        );
+        expect(api.renderPipeline).toHaveBeenCalledWith('ds1', 'a.png', blocks, 512, 32, false);
     });
 
     it('deleteOverlay removes optimistically and rolls back on failure', async () => {
         await store.loadFor('ds1', 'a.png');
         expect(store.byId(overlayKey('ds1', 'a.png'))()).toBeDefined();
 
-        api.deleteOverlay.and.returnValue(throwError(() => new Error('boom')));
+        api.deleteOverlay.mockReturnValue(throwError(() => new Error('boom')));
         await store.deleteOverlay('ds1', 'a.png');
 
         // Rolled back.

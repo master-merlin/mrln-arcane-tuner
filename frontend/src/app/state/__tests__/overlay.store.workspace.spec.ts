@@ -24,7 +24,7 @@ describe('OverlayStore — workspace + modal stack extension', () => {
             entityChanged: WritableSignal<EntityChangedMessage | null>;
             reconnected: WritableSignal<number>;
         } = { entityChanged: signal(null), reconnected: signal(0) };
-        const toastStub = { error: jasmine.createSpy('error') };
+        const toastStub = { error: vi.fn() };
         const apiStub = {};
 
         TestBed.configureTestingModule({

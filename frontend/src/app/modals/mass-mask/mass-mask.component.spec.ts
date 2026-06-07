@@ -1,3 +1,4 @@
+import type { Mock } from "vitest";
 /**
  * Mass-mask modal — launcher contract + completion handler spec.
  *
@@ -28,28 +29,32 @@ function makePair(media: string, extra: any = {}) {
 
 describe('MassMaskModalComponent — launcher contract', () => {
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
+    let taskStoreSpy: {
+        byId: Mock;
+        active: ReturnType<typeof signal>;
+        cancel: Mock;
+    };
     let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
 
     beforeEach(() => {
         fixture = null;
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            batchGenerateMasks: jasmine.createSpy('batchGenerateMasks').and.returnValue(of({ task_id: 't1' })),
-            batchApplyMasks: jasmine.createSpy('batchApplyMasks').and.returnValue(of({ task_id: 't1' })),
-            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchGenerateMasks: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            batchApplyMasks: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
         taskStoreSpy = {
-            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            byId: vi.fn().mockReturnValue(signal(undefined)),
             active: signal([]),
-            cancel: jasmine.createSpy('cancel'),
+            cancel: vi.fn(),
         };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy(), warning: jasmine.createSpy() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
             ],
         });
@@ -70,7 +75,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
     it('canStart() flips true when the settings child emits, without a tab switch', () => {
         const { comp } = make();
         expect(comp.tab()).toBe('generate');
-        expect(comp.canStart()).toBe(false);          // no settings yet
+        expect(comp.canStart()).toBe(false); // no settings yet
         comp.onMaskingSettingsChange({ modelId: 'rembg', params: {} });
         // Must react on the settings signal alone — no tab change forced it.
         expect(comp.canStart()).toBe(true);
@@ -82,7 +87,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.tab.set('generate');
         comp.strategy.set('overwrite');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchGenerateMasks).toHaveBeenCalled();
         expect(comp.taskId()).toBe('t1');
@@ -95,7 +100,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
         comp.applyOpacity.set(0.25);
         comp.applyOverwrite.set(true);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchApplyMasks).toHaveBeenCalledWith('ds1', 0.25, true);
         expect(comp.taskId()).toBe('t1');
@@ -107,10 +112,10 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.tab.set('caption');
         comp.captionStrategy.set('overwrite');
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchCaption).toHaveBeenCalled();
-        const arg = api.batchCaption.calls.mostRecent().args[0];
+        const arg = vi.mocked(api.batchCaption).mock.lastCall[0];
         expect(arg.target).toBe('masked');
         expect(comp.taskId()).toBe('t1');
     });
@@ -121,7 +126,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.tab.set('generate');
         comp.strategy.set('overwrite');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         comp.cancel();
         expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
@@ -130,13 +135,13 @@ describe('MassMaskModalComponent — launcher contract', () => {
 
     it('pct() reflects task progress from TaskStore', () => {
         const taskSignal = signal<any>({ current: 2, total: 8, current_item: 'a.png' });
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
         comp.maskingSettings.set({ modelId: 'rembg', params: {} });
         comp.tab.set('generate');
         comp.strategy.set('overwrite');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(comp.pct()).toBe(25);
     });
@@ -145,12 +150,12 @@ describe('MassMaskModalComponent — launcher contract', () => {
         taskStoreSpy.active = signal([
             { id: 'live', type: 'mask_apply_batch', dataset_name: 'ds1', status: 'running' },
         ]);
-        taskStoreSpy.byId.and.returnValue(signal({ current: 4, total: 8 }));
+        taskStoreSpy.byId.mockReturnValue(signal({ current: 4, total: 8 }));
         const { comp, fixture } = make();
         fixture.detectChanges();
         expect(comp.running()).toBe(true);
         expect(comp.taskId()).toBe('live');
-        expect(comp.tab()).toBe('apply');     // mapped from mask_apply_batch
+        expect(comp.tab()).toBe('apply'); // mapped from mask_apply_batch
         expect(comp.pct()).toBe(50);
     });
 
@@ -168,7 +173,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         taskStoreSpy.active = signal([
             { id: 'mc', type: 'caption_batch', dataset_name: 'ds1', target: 'masked', status: 'running' },
         ]);
-        taskStoreSpy.byId.and.returnValue(signal({ current: 1, total: 4 }));
+        taskStoreSpy.byId.mockReturnValue(signal({ current: 1, total: 4 }));
         const { comp, fixture } = make();
         fixture.detectChanges();
         expect(comp.running()).toBe(true);
@@ -191,32 +196,38 @@ describe('MassMaskModalComponent — launcher contract', () => {
 
 describe('MassMaskModalComponent — completion handler', () => {
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
-    let sync: { refreshDataset: jasmine.Spy };
-    let onCompleted: jasmine.Spy;
+    let taskStoreSpy: {
+        byId: Mock;
+        active: ReturnType<typeof signal>;
+        cancel: Mock;
+    };
+    let sync: {
+        refreshDataset: Mock;
+    };
+    let onCompleted: Mock;
     let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
 
     beforeEach(() => {
         fixture = null;
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            batchGenerateMasks: jasmine.createSpy('batchGenerateMasks').and.returnValue(of({ task_id: 'tg' })),
-            batchApplyMasks: jasmine.createSpy('batchApplyMasks').and.returnValue(of({ task_id: 'ta' })),
-            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 'tc' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchGenerateMasks: vi.fn().mockReturnValue(of({ task_id: 'tg' })),
+            batchApplyMasks: vi.fn().mockReturnValue(of({ task_id: 'ta' })),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 'tc' })),
         };
         taskStoreSpy = {
-            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            byId: vi.fn().mockReturnValue(signal(undefined)),
             active: signal([]),
-            cancel: jasmine.createSpy('cancel'),
+            cancel: vi.fn(),
         };
-        sync = { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) };
-        onCompleted = jasmine.createSpy('onCompleted');
+        sync = { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) };
+        onCompleted = vi.fn();
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
                 { provide: DatasetSyncService, useValue: sync },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy(), warning: jasmine.createSpy() } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
             ],
         });
@@ -240,17 +251,18 @@ describe('MassMaskModalComponent — completion handler', () => {
 
     it('completed task fires onCompleted + refreshDataset + running=false', fakeAsync(() => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
         comp.tab.set('apply');
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         // start() → running=true; detectChanges() after the signal change flushes
         // the _completion effect without rendering the child settings components.
         comp.start();
         taskSignal.set({ status: 'completed', current: 1, total: 1, current_item: null, error: null });
-        fixture!.detectChanges();  // flush the _completion effect
-        tick(); tick();            // drain refreshDataset + loadPairs Promise microtasks
+        fixture!.detectChanges(); // flush the _completion effect
+        tick();
+        tick(); // drain refreshDataset + loadPairs Promise microtasks
         expect(onCompleted).toHaveBeenCalledTimes(1);
         expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
         expect(comp.running()).toBe(false);
@@ -259,15 +271,16 @@ describe('MassMaskModalComponent — completion handler', () => {
     it('failed task fires toast.error, does NOT fire onCompleted, running=false', fakeAsync(() => {
         const toast = TestBed.inject(ToastService) as any;
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
         comp.tab.set('apply');
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         taskSignal.set({ status: 'failed', current: 0, total: 1, current_item: null, error: 'boom' });
         fixture!.detectChanges();
-        tick(); tick();
+        tick();
+        tick();
         expect(toast.error).toHaveBeenCalledWith('boom');
         expect(onCompleted).not.toHaveBeenCalled();
         expect(comp.running()).toBe(false);
@@ -275,17 +288,18 @@ describe('MassMaskModalComponent — completion handler', () => {
 
     it('cancelled task — onCompleted does NOT fire (explicit cancel sets _finalized)', fakeAsync(() => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
         // Use 'apply' tab: avoids DatasetMaskingSettingsComponent XHR in fakeAsync.
         comp.tab.set('apply');
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
-        comp.cancel();   // arms _finalized before the status arrives
+        comp.cancel(); // arms _finalized before the status arrives
         taskSignal.set({ status: 'cancelled', current: 0, total: 1, current_item: null, error: null });
         fixture!.detectChanges();
-        tick(); tick();
+        tick();
+        tick();
         expect(onCompleted).not.toHaveBeenCalled();
     }));
 });

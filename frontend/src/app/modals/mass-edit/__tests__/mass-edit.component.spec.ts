@@ -32,22 +32,22 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
     beforeEach(() => {
         fixture = null;
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            getOverlayRecipe: jasmine.createSpy('getOverlayRecipe').and.returnValue(of({ recipe: { operations: [] } })),
-            batchRenderPipeline: jasmine.createSpy('batchRenderPipeline').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            getOverlayRecipe: vi.fn().mockReturnValue(of({ recipe: { operations: [] } })),
+            batchRenderPipeline: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: {
-                    success: jasmine.createSpy(),
-                    error: jasmine.createSpy(),
-                    info: jasmine.createSpy(),
-                    warning: jasmine.createSpy(),
-                } },
-                { provide: TaskStore, useValue: { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') } },
+                        success: vi.fn(),
+                        error: vi.fn(),
+                        info: vi.fn(),
+                        warning: vi.fn(),
+                    } },
+                { provide: TaskStore, useValue: { byId: vi.fn().mockReturnValue(signal(undefined)), cancel: vi.fn() } },
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: '/media' } },
             ],
         });

@@ -26,29 +26,35 @@ import { ToastService } from '../../services/toast';
 import { MediaItemStore } from '../../state/media-item.store';
 
 class StubOverlay {
-    private _modal = signal<{ kind: string; data: any } | null>({
+    private _modal = signal<{
+        kind: string;
+        data: any;
+    } | null>({
         kind: 'crop-preview',
         data: { datasetName: 'alpha', path: 'img.jpg', width: 1024, height: 1024 },
     });
     topModal = this._modal;
-    closeModal = jasmine.createSpy('closeModal');
+    closeModal = vi.fn();
 }
 
-class StubRtc { apiUrl = '/api'; mediaBaseUrl = '/media'; }
+class StubRtc {
+    apiUrl = '/api';
+    mediaBaseUrl = '/media';
+}
 
 class StubDatasetService {
-    cropImage = jasmine.createSpy('cropImage');
-    calcCropTargets = jasmine.createSpy('calcCropTargets').and.returnValue(of({}));
+    cropImage = vi.fn();
+    calcCropTargets = vi.fn().mockReturnValue(of({}));
 }
 
 class StubToast {
-    success = jasmine.createSpy('success');
-    error = jasmine.createSpy('error');
-    info = jasmine.createSpy('info');
+    success = vi.fn();
+    error = vi.fn();
+    info = vi.fn();
 }
 
 class StubMediaItems {
-    bumpMedia = jasmine.createSpy('bumpMedia');
+    bumpMedia = vi.fn();
 }
 
 describe('CropPreviewModalComponent.applyCrop', () => {
@@ -77,7 +83,7 @@ describe('CropPreviewModalComponent.applyCrop', () => {
     });
 
     it('on success: bumps mediaRev, toasts, closes the modal', () => {
-        dsApi.cropImage.and.returnValue(of({ status: 'cropped', file: 'img.jpg' }));
+        dsApi.cropImage.mockReturnValue(of({ status: 'cropped', file: 'img.jpg' }));
         (cmp as any).applyCrop();
         expect(mediaItems.bumpMedia).toHaveBeenCalledTimes(1);
         expect(toast.success).toHaveBeenCalled();
@@ -85,7 +91,7 @@ describe('CropPreviewModalComponent.applyCrop', () => {
     });
 
     it('on error: does NOT bump mediaRev — pre-crop bytes are still on disk', () => {
-        dsApi.cropImage.and.returnValue(throwError(() => ({ error: { detail: 'boom' } })));
+        dsApi.cropImage.mockReturnValue(throwError(() => ({ error: { detail: 'boom' } })));
         (cmp as any).applyCrop();
         expect(mediaItems.bumpMedia).not.toHaveBeenCalled();
         expect(toast.error).toHaveBeenCalled();

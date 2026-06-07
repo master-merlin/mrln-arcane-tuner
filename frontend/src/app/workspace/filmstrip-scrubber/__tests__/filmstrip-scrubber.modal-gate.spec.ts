@@ -1,4 +1,4 @@
-import type { MockInstance } from "vitest";
+import type { MockInstance } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { FilmstripScrubberComponent } from '../filmstrip-scrubber.component';

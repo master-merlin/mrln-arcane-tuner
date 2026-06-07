@@ -21,6 +21,10 @@ export interface TemplateJsonData {
 export function buildEditablePayload(t: Template): Record<string, unknown> {
     const out: Record<string, unknown> = { name: t.name, config: t.config ?? {} };
     if (t.system_prompt !== undefined) out['system_prompt'] = t.system_prompt;
+    // Captioning sibling of system_prompt: the {wildcard} substitution value.
+    // Must be surfaced here too, else the JSON editor silently drops it on save
+    // (the structured modal keeps it, hence the asymmetry the user saw).
+    if (t.wildcard !== undefined) out['wildcard'] = t.wildcard;
     if (t.model_id !== undefined) out['model_id'] = t.model_id;
     if (t.definition_id !== undefined) out['definition_id'] = t.definition_id;
     return out;

@@ -83,3 +83,9 @@ class JobCheckpointResponse(BaseModel):
     is_final: bool
     size_bytes: int
     created_at: float
+    # Whether a resumable training-state folder (checkpoint-NNNNNN/ or final/)
+    # exists for this step — drives the "download .zip checkpoint" affordance.
+    resumable: bool = False
+    # Name of that folder, or None when only the distribution LoRA remains
+    # (e.g. the training-state was pruned by keep_last_checkpoints).
+    checkpoint_dir: str | None = None

@@ -746,6 +746,11 @@ export class JobsScreen {
         return this.jobService.checkpointDownloadUrl(jobId, filename);
     }
 
+    /** Absolute URL for a resumable training-state checkpoint `.zip`. */
+    protected checkpointZipUrl(jobId: string, folder: string): string {
+        return this.jobService.checkpointZipDownloadUrl(jobId, folder);
+    }
+
     /** Human-readable file size — "1.5 GB", "149.6 MB", "0 B". */
     protected formatBytes(n: number): string {
         if (!Number.isFinite(n) || n <= 0) return '0 B';

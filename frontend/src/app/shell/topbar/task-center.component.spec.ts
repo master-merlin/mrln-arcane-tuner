@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { TaskCenterComponent } from './task-center.component';
 import { TaskStore } from '../../state/task.store';
+import { byTestId } from '../../../testing/by-test-id';
 
 describe('TaskCenterComponent', () => {
     let cancel: Mock;
@@ -81,11 +82,10 @@ describe('TaskCenterComponent done-row summary', () => {
         const f = TestBed.createComponent(TaskCenterComponent);
         (f.componentInstance as any).toggle();
         f.detectChanges();
-        const el = f.nativeElement as HTMLElement;
-        expect(el.querySelector('.tc-kind')?.textContent).toContain('Captioning');
-        expect(el.querySelector('.tc-subject')?.textContent).toContain('Mitsubishi 3000GT - 1990');
+        expect(byTestId(f, 'task-center-kind').nativeElement.textContent).toContain('Captioning');
+        expect(byTestId(f, 'task-center-subject').nativeElement.textContent).toContain('Mitsubishi 3000GT - 1990');
         // Accent token reused from the KPI rails, bound as a CSS custom prop.
         // Captioning maps to brand (matching its buttons elsewhere in the app).
-        expect(el.querySelector('.tc-row')?.getAttribute('style')).toContain('--color-brand');
+        expect(byTestId(f, 'task-center-row').nativeElement.getAttribute('style')).toContain('--color-brand');
     });
 });

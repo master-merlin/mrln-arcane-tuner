@@ -357,6 +357,93 @@ def test_get_sample_image_not_found(mock_to_thread, mock_jm, client):
     assert response.status_code == 404
 
 
+# ── Resumable checkpoint .zip download ──────────────────────────────────
+
+
+def _make_checkpoint_dir(run_dir, folder="checkpoint-000100"):
+    ck = run_dir / folder
+    (ck / "unet").mkdir(parents=True)
+    (ck / "training_state.json").write_text('{"global_step": 100}')
+    (ck / "optimizer.pt").write_bytes(b"x" * 32)
+    (ck / "unet" / "adapter_model.safetensors").write_bytes(b"y" * 16)
+    return ck
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_download_checkpoint_zip_bundles_resumable_state(mock_to_thread, mock_jm, client, tmp_path):
+    import io
+    import zipfile
+
+    async def run_sync(func, *a, **k):
+        return func(*a, **k)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.get_job.return_value = MagicMock()
+    _make_checkpoint_dir(tmp_path)
+
+    with patch("app.api.training.job_routes._resolve_run_dir", return_value=tmp_path):
+        resp = client.get("/api/jobs/job-1/checkpoints/checkpoint-000100/zip")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    assert ".zip" in resp.headers.get("content-disposition", "")
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    names = set(zf.namelist())
+    assert "training_state.json" in names
+    assert "optimizer.pt" in names
+    # Nested adapter, POSIX-separated so it extracts on a Linux pod.
+    assert "unet/adapter_model.safetensors" in names
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_download_checkpoint_zip_rejects_bad_folder(mock_to_thread, mock_jm, client):
+    async def run_sync(func, *a, **k):
+        return func(*a, **k)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.get_job.return_value = MagicMock()
+    # Not a checkpoint-NNNNNN / final folder name → 400, never touches disk.
+    resp = client.get("/api/jobs/job-1/checkpoints/secrets/zip")
+    assert resp.status_code == 400
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_download_checkpoint_zip_missing_dir_404(mock_to_thread, mock_jm, client, tmp_path):
+    async def run_sync(func, *a, **k):
+        return func(*a, **k)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.get_job.return_value = MagicMock()
+    with patch("app.api.training.job_routes._resolve_run_dir", return_value=tmp_path):
+        resp = client.get("/api/jobs/job-1/checkpoints/checkpoint-000999/zip")
+    assert resp.status_code == 404
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_checkpoints_flags_resumable(mock_to_thread, mock_jm, client, tmp_path):
+    """A distribution LoRA with a matching training-state folder is resumable;
+    one without (folder pruned) is not."""
+    async def run_sync(func, *a, **k):
+        return func(*a, **k)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.get_job.return_value = MagicMock()
+    # Step 100 has a checkpoint dir; step 200 only has the LoRA (pruned state).
+    (tmp_path / "mylora_000100.safetensors").write_bytes(b"a" * 8)
+    (tmp_path / "mylora_000200.safetensors").write_bytes(b"b" * 8)
+    _make_checkpoint_dir(tmp_path, "checkpoint-000100")
+
+    with patch("app.api.training.job_routes._resolve_run_dir", return_value=tmp_path):
+        resp = client.get("/api/jobs/job-1/checkpoints")
+
+    assert resp.status_code == 200
+    by_step = {c["step"]: c for c in resp.json()}
+    assert by_step[100]["resumable"] is True
+    assert by_step[100]["checkpoint_dir"] == "checkpoint-000100"
+    assert by_step[200]["resumable"] is False
+    assert by_step[200]["checkpoint_dir"] is None
+
+
 # ── LoRA Tooling Routes ─────────────────────────────────────────────────
 
 

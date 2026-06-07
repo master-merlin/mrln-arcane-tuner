@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.api._path_guard import validate_path_within
 from app.core.job import Job
@@ -345,6 +349,19 @@ def _resolve_run_dir(job: Job) -> Path:
     return _resolve_sample_dir(job).parent
 
 
+def _checkpoint_dir_name(step: int, is_final: bool) -> str:
+    """Training-state folder name paired with a distribution LoRA at ``step``.
+
+    Mirrors the checkpoint saver: ``final`` for the final save, else the
+    zero-padded ``checkpoint-NNNNNN``.
+    """
+    return "final" if is_final else f"checkpoint-{step:06d}"
+
+
+# Folder names accepted by the zipped-checkpoint endpoint.
+_CHECKPOINT_DIR_RE = re.compile(r"^(final|checkpoint-\d{3,})$")
+
+
 @router.get("/jobs/{job_id}/checkpoints", response_model=list[JobCheckpointResponse])
 async def list_job_checkpoints(job_id: str):
     """List the LoRA ``.safetensors`` artifacts a job has saved.
@@ -375,12 +392,19 @@ async def list_job_checkpoints(job_id: str):
             if m:
                 step = int(m.group(1))
             stat = fpath.stat()
+            # A resumable training-state folder exists when its
+            # training_state.json is present (it may have been pruned by
+            # keep_last_checkpoints, leaving only the distribution LoRA).
+            ckpt_name = _checkpoint_dir_name(step, is_final)
+            resumable = (run_dir / ckpt_name / "training_state.json").is_file()
             items.append({
                 "filename": fpath.name,
                 "step": 999999 if is_final else step,
                 "is_final": is_final,
                 "size_bytes": stat.st_size,
                 "created_at": stat.st_mtime,
+                "resumable": resumable,
+                "checkpoint_dir": ckpt_name if resumable else None,
             })
         return items
 
@@ -408,4 +432,46 @@ async def download_job_checkpoint(job_id: str, filename: str):
         str(fpath),
         media_type="application/octet-stream",
         filename=fpath.name,
+    )
+
+
+@router.get("/jobs/{job_id}/checkpoints/{folder}/zip")
+async def download_checkpoint_zip(job_id: str, folder: str):
+    """Download a resumable training-state checkpoint as a ``.zip``.
+
+    Bundles the whole ``checkpoint-NNNNNN/`` (or ``final/``) folder — adapters,
+    optimizer/scheduler/scaler/EMA state and ``training_state.json`` — so it can
+    be moved to another pod and used to resume via ``resume_from_checkpoint``
+    (manual import for now). Stored uncompressed (the contents are dense tensor
+    blobs that barely deflate) and streamed from a temp file so a multi-GB
+    checkpoint never sits in memory.
+    """
+    job = await asyncio.to_thread(job_manager.get_job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not _CHECKPOINT_DIR_RE.match(folder):
+        raise HTTPException(status_code=400, detail="Invalid checkpoint folder")
+
+    run_dir = _resolve_run_dir(job)
+    ckpt_dir = validate_path_within(run_dir / folder, run_dir)
+    if not ckpt_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    def _build_zip() -> str:
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="ckpt_")
+        os.close(fd)
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for p in sorted(ckpt_dir.rglob("*")):
+                if p.is_file():
+                    # POSIX arcnames so the archive extracts cleanly on a Linux pod.
+                    zf.write(p, p.relative_to(ckpt_dir).as_posix())
+        return tmp_path
+
+    tmp_path = await asyncio.to_thread(_build_zip)
+    zip_name = f"{run_dir.name}_{folder}.zip"
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=zip_name,
+        background=BackgroundTask(os.remove, tmp_path),
     )

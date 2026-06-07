@@ -87,6 +87,10 @@ export interface JobCheckpointMeta {
   size_bytes: number;
   /** Unix seconds (file mtime). */
   created_at: number;
+  /** A resumable training-state folder exists for this step (zip downloadable). */
+  resumable: boolean;
+  /** That folder's name (`checkpoint-NNNNNN` / `final`), or null if pruned. */
+  checkpoint_dir: string | null;
 }
 
 /** Echo ack for a job lifecycle action (mirrors backend JobActionResponse). */
@@ -204,6 +208,12 @@ export class JobService {
   /** Absolute download URL for a job's LoRA checkpoint file. */
   checkpointDownloadUrl(jobId: string, filename: string): string {
     return `${this.apiUrl}/${jobId}/checkpoints/${encodeURIComponent(filename)}`;
+  }
+
+  /** Absolute URL for a resumable training-state checkpoint as a `.zip`
+   *  (full state — move to another pod to resume). */
+  checkpointZipDownloadUrl(jobId: string, folder: string): string {
+    return `${this.apiUrl}/${jobId}/checkpoints/${encodeURIComponent(folder)}/zip`;
   }
 
   pauseSampling(jobId: string): Observable<JobActionResponse> {

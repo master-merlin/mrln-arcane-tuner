@@ -171,6 +171,15 @@ class DatasetManager:
                     conn, ds.id,
                     [{"rel_path": k, **v} for k, v in media_meta.items()],
                 )
+                # Authoritative sync: `media_metadata` is the full current set
+                # (post-scan it mirrors disk), so evict any DB rows for files
+                # that no longer exist — renamed/converted by harmonize, or
+                # deleted. Without this, ghost rows keep stale hashes that
+                # resurface in Dataset Analysis after a restart. Guarded by
+                # `if media_meta` so a media-less persist never wipes rows.
+                self._media_repo.prune_missing_with_conn(
+                    conn, ds.id, media_meta.keys()
+                )
 
     def _persist_media_item(self, dataset: "Dataset", rel_path: str) -> None:
         """Persist only a single media item to SQLite (fast path).

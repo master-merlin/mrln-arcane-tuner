@@ -1,4 +1,4 @@
-import type { Mock } from "vitest";
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 

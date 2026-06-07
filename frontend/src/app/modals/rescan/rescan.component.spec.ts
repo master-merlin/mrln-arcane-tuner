@@ -1,4 +1,3 @@
-import type { Mock } from "vitest";
 /**
  * Rescan modal — launcher behaviour spec.
  *
@@ -7,6 +6,7 @@ import type { Mock } from "vitest";
  * via TaskStore.byId. Closing the modal does NOT cancel the task. On terminal
  * status the modal reconciles datasets and auto-closes.
  */
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';

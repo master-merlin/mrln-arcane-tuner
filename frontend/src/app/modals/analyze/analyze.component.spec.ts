@@ -1,4 +1,3 @@
-import type { Mock } from "vitest";
 /**
  * AnalyzeModalComponent — UI-context persistence + crop-all launcher specs.
  *
@@ -15,6 +14,7 @@ import type { Mock } from "vitest";
  * This prevents signal effect teardown from leaking across specs and triggering
  * NG0101 (ApplicationRef.tick called recursively).
  */
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { signal } from '@angular/core';

@@ -1,4 +1,3 @@
-import type { Mock } from "vitest";
 /**
  * Mass-mask modal — launcher contract + completion handler spec.
  *
@@ -11,6 +10,7 @@ import type { Mock } from "vitest";
  * afterEach. This prevents signal effect teardown from leaking across specs and
  * triggering NG0101 (ApplicationRef.tick called recursively).
  */
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';

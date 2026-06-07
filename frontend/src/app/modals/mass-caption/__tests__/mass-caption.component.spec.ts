@@ -1,4 +1,3 @@
-import type { Mock } from "vitest";
 /**
  * Mass-caption modal — launcher behaviour spec.
  *
@@ -7,6 +6,7 @@ import type { Mock } from "vitest";
  * removed in Task 9). The per-image processQueue store writes are gone —
  * the backend owns the loop now.
  */
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';

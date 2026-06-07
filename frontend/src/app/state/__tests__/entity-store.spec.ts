@@ -1,4 +1,4 @@
-import type { Mock } from "vitest";
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { Injectable, signal, WritableSignal } from '@angular/core';
 import { EntityStore } from '../entity-store';

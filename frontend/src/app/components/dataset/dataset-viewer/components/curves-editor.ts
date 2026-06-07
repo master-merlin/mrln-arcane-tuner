@@ -1,5 +1,4 @@
 import { Component, input, output, signal, computed, ElementRef, ViewChild, effect, AfterViewInit, ChangeDetectionStrategy } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { CurvePoint, HistogramData } from '../../../../services/dataset';
 
 type ChannelKey = 'master' | 'r' | 'g' | 'b';
@@ -23,7 +22,6 @@ const PRESETS: CurvePreset[] = [
     selector: 'app-curves-editor',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
-    imports: [FormsModule],
     template: `
     <div class="flex flex-col gap-3">
         <!-- Channel Selector -->
@@ -62,8 +60,12 @@ const PRESETS: CurvePreset[] = [
         <!-- Presets & Reset -->
         <div class="flex flex-col gap-1.5">
             <div class="flex items-center gap-2">
-                <select [ngModel]="selectedPreset()"
-                    (ngModelChange)="onPresetChange($event)"
+                <!-- Momentary action menu: apply the picked preset, then snap
+                     the native control back to the placeholder synchronously.
+                     (A persistent [ngModel] bound to '' won't write back after a
+                     manual pick — '' → '' is a no-change — leaving it stuck.) -->
+                <select #presetSelect
+                    (change)="onPresetChange(presetSelect.value); presetSelect.value = ''"
                     class="flex-1 bg-surface-low border border-surface-high/30 rounded-theme-lg px-2 py-1.5 text-xs text-text outline-none focus:border-brand transition-colors"
                     data-testid="curves-preset-select">
                     <option value="">Preset…</option>
@@ -97,7 +99,6 @@ export class CurvesEditorComponent implements AfterViewInit {
 
     activeChannel = signal<ChannelKey>('master');
     showGrid = signal(false);
-    selectedPreset = signal<string>('');
     hoverInput = signal(0);
     hoverOutput = signal(0);
 
@@ -151,12 +152,10 @@ export class CurvesEditorComponent implements AfterViewInit {
         if (preset) {
             this.applyPreset(preset);
         }
-        // Reset dropdown to placeholder after applying
-        this.selectedPreset.set('');
+        // The template resets the <select> back to the placeholder inline.
     }
 
     resetChannel(): void {
-        this.selectedPreset.set('');
         this.curveChanged.emit({ channel: this.activeChannel(), points: [...IDENTITY] });
     }
 

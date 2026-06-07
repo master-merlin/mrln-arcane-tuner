@@ -53,14 +53,23 @@ def _emit_harmonize_summary(*, dataset_name: str, processed: int, converted: int
 def run_harmonize_batch(task_id: str, *, dataset_name: str) -> None:
     """Synchronous worker — gpu lane thread. Drives task progress from
     harmonize_files' per-file callback, then emits a summary and completes."""
+    # Mirror `current` into `ok` so the Task Center's "<n> done" tracks live —
+    # harmonize has no failure-per-file branch that completes the task, so every
+    # processed pair is a success. (Without this, `ok` stayed 0 and the row read
+    # "0 done" even after all files were harmonized.)
     def progress_cb(current, total, fname):
-        task_manager.update(task_id, current=current, item=fname)
+        task_manager.update(task_id, current=current, item=fname, ok=current)
 
     try:
         result = _harmonize(dataset_name, progress_cb)
     except Exception as exc:  # noqa: BLE001
         task_manager.fail(task_id, str(exc))
         return
+
+    # Reconcile to the authoritative processed count: progress counts every pair
+    # visited (a conversion error skips a pair without appending it), whereas
+    # `processed` is the number actually harmonized.
+    task_manager.update(task_id, ok=result["processed"])
 
     _emit_harmonize_summary(
         dataset_name=dataset_name,

@@ -113,10 +113,14 @@ def run_mask_apply_batch(
     try:
         path = _dataset_path(dataset_name)
 
+        # Mirror `current` into `ok` so the Task Center's "<n> done" tracks live
+        # (without this it stayed 0 — same gap harmonize had); reconciled to the
+        # authoritative `applied` count once mass_apply returns.
         def progress_cb(current, total, stem):
-            task_manager.update(task_id, current=current, item=stem)
+            task_manager.update(task_id, current=current, item=stem, ok=current)
 
         result = _mass_apply(path, opacity, overwrite, progress_cb)
+        task_manager.update(task_id, ok=result["applied"])
         _reconcile_has_masked(dataset_name)
         _emit_apply_summary(
             dataset_name=dataset_name,

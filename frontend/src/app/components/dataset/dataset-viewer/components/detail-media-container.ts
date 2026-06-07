@@ -8,7 +8,7 @@ import type { DatasetPair } from '../../../../services/dataset';
     host: { class: 'flex-1 flex flex-col overflow-hidden bg-base' },
     imports: [PanZoomDirective],
     template: `
-    <div class="w-full h-full flex flex-col relative min-h-0 items-center justify-center">
+    <div class="group w-full h-full flex flex-col relative min-h-0 items-center justify-center">
         @if (currentPair(); as pair) {
             <div class="relative w-full flex-1 min-h-0 p-4 flex items-center justify-center overflow-hidden"
                  appPanZoom [zoom]="zoom()" (zoomChange)="zoomChange.emit($event)">

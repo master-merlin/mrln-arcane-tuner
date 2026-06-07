@@ -1,4 +1,3 @@
-import 'zone.js';
 console.log('Bootstrapping application...');
 import { bootstrapApplication } from '@angular/platform-browser';
 import { appConfig } from './app/app.config';

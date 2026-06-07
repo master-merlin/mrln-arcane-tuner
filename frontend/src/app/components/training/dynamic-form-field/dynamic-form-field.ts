@@ -58,7 +58,7 @@ interface CheckpointInspectResponse {
                       [type]="'number'"
                       [formControl]="control()"
                       [attr.data-testid]="'config-input-' + fieldKey()"
-                      [attr.min]="schema().min ?? null"
+                      [attr.min]="stepMin()"
                       [attr.max]="schema().max ?? null"
                       [attr.step]="schema().step ?? null"
                       class="input mono pr-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none disabled:opacity-50 disabled:cursor-not-allowed">
@@ -72,7 +72,7 @@ interface CheckpointInspectResponse {
                     [type]="'number'"
                     [formControl]="control()"
                     [attr.data-testid]="'config-input-' + fieldKey()"
-                    [attr.min]="schema().min ?? null"
+                    [attr.min]="stepMin()"
                     [attr.max]="schema().max ?? null"
                     [attr.step]="schema().step ?? null"
                     class="input mono disabled:opacity-50 disabled:cursor-not-allowed">
@@ -273,6 +273,26 @@ export class DynamicFormFieldComponent implements OnInit {
 
   isNumber(): boolean {
     return this.schema().type === 'integer' || this.schema().type === 'number';
+  }
+
+  /**
+   * The `min` attribute for a number spinner, aligned to the step grid.
+   *
+   * A native number spinner anchors its step grid to `min`: with `min: 1,
+   * step: 100` (max_train_steps) the only reachable values are 1, 101, … 5901,
+   * 6001 — so the arrows snap to off-round "…01" numbers. Anchoring the grid to
+   * the largest step-multiple ≤ `min` makes the arrows land on clean multiples
+   * (…900 → …000). Mins already on the grid (e.g. resolution min 256 / step 64,
+   * weight min 0.50 / step 0.05) are returned unchanged. No reactive min
+   * validator exists, so this only affects the spinner anchor + HTML5 floor.
+   */
+  stepMin(): number | null {
+    const min = this.schema().min ?? null;
+    const step = this.schema().step;
+    if (min == null || !step) return min;
+    const ratio = min / step;
+    if (Math.abs(ratio - Math.round(ratio)) < 1e-9) return min; // already on the grid
+    return Math.floor(ratio) * step;
   }
 
   isBoolean(): boolean {

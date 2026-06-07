@@ -43,7 +43,7 @@ function ds(over: Partial<Dataset>): Dataset {
     } as Dataset;
 }
 
-describe('DatasetStore.bumpFileCounts', () => {
+describe('DatasetStore.applyOptimisticUpload', () => {
     let store: DatasetStore;
 
     beforeEach(() => {
@@ -63,18 +63,34 @@ describe('DatasetStore.bumpFileCounts', () => {
         (store as any).setAll(rows);
     }
 
-    it('bumps multimedia_count + file_count on the matching row', () => {
-        seed([ds({ id: 'a', name: 'alpha', multimedia_count: 3, file_count: 5 })]);
-        store.bumpFileCounts('alpha', 1);
+    it('routes media to multimedia_count and captions to caption_count', () => {
+        seed([ds({ id: 'a', name: 'alpha', multimedia_count: 3, caption_count: 1, file_count: 4 })]);
+        // 10 images + 10 caption files — the classic drop the old bumper got wrong.
+        store.applyOptimisticUpload('alpha', { media: 10, caption: 10 });
         const row = store.entities().find(d => d.name === 'alpha')!;
-        expect(row.multimedia_count).toBe(4);
-        expect(row.file_count).toBe(6);
+        expect(row.multimedia_count).toBe(13);  // captions must NOT inflate this
+        expect(row.caption_count).toBe(11);
+        expect(row.file_count).toBe(24);        // all 20 files
     });
 
-    it('is a no-op when delta is 0', () => {
+    it('seeds preview_image from the candidate when the row has none', () => {
+        seed([ds({ id: 'a', name: 'alpha', preview_image: undefined })]);
+        store.applyOptimisticUpload('alpha', { media: 1, caption: 0 }, 'first.jpg');
+        const row = store.entities().find(d => d.name === 'alpha')!;
+        expect(row.preview_image).toBe('first.jpg');
+    });
+
+    it('keeps an existing preview_image rather than overwriting it', () => {
+        seed([ds({ id: 'a', name: 'alpha', preview_image: 'existing.png' })]);
+        store.applyOptimisticUpload('alpha', { media: 1, caption: 0 }, 'first.jpg');
+        const row = store.entities().find(d => d.name === 'alpha')!;
+        expect(row.preview_image).toBe('existing.png');
+    });
+
+    it('is a no-op when nothing was uploaded', () => {
         seed([ds({ id: 'a', name: 'alpha', multimedia_count: 3, file_count: 5 })]);
         const before = store.entities().find(d => d.name === 'alpha')!;
-        store.bumpFileCounts('alpha', 0);
+        store.applyOptimisticUpload('alpha', { media: 0, caption: 0 });
         const after = store.entities().find(d => d.name === 'alpha')!;
         // Same reference — no upsert fired.
         expect(after).toBe(before);
@@ -82,7 +98,7 @@ describe('DatasetStore.bumpFileCounts', () => {
 
     it('is a no-op for an unknown dataset name', () => {
         seed([ds({ id: 'a', name: 'alpha', multimedia_count: 3, file_count: 5 })]);
-        store.bumpFileCounts('ghost', 1);
+        store.applyOptimisticUpload('ghost', { media: 1, caption: 0 });
         const row = store.entities().find(d => d.name === 'alpha')!;
         expect(row.multimedia_count).toBe(3);
         expect(row.file_count).toBe(5);
@@ -93,7 +109,7 @@ describe('DatasetStore.bumpFileCounts', () => {
             ds({ id: 'a', name: 'alpha', multimedia_count: 3, file_count: 5 }),
             ds({ id: 'b', name: 'beta',  multimedia_count: 7, file_count: 9 }),
         ]);
-        store.bumpFileCounts('alpha', 2);
+        store.applyOptimisticUpload('alpha', { media: 2, caption: 0 });
         const a = store.entities().find(d => d.name === 'alpha')!;
         const b = store.entities().find(d => d.name === 'beta')!;
         expect(a.multimedia_count).toBe(5);
@@ -103,11 +119,17 @@ describe('DatasetStore.bumpFileCounts', () => {
     });
 
     it('handles missing counter fields as 0', () => {
-        seed([ds({ id: 'a', name: 'alpha', multimedia_count: undefined as any, file_count: undefined as any })]);
-        store.bumpFileCounts('alpha', 1);
+        seed([ds({
+            id: 'a', name: 'alpha',
+            multimedia_count: undefined as any,
+            caption_count: undefined as any,
+            file_count: undefined as any,
+        })]);
+        store.applyOptimisticUpload('alpha', { media: 1, caption: 1 });
         const row = store.entities().find(d => d.name === 'alpha')!;
         expect(row.multimedia_count).toBe(1);
-        expect(row.file_count).toBe(1);
+        expect(row.caption_count).toBe(1);
+        expect(row.file_count).toBe(2);
     });
 });
 

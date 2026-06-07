@@ -77,23 +77,41 @@ export class DatasetStore extends EntityStore<Dataset> {
     }
 
     /**
-     * Optimistically bumps `multimedia_count` + `file_count` on the named
-     * dataset row by `delta`. Used by the upload-drop path so the card
-     * surfaces the new image immediately rather than waiting for the
-     * post-upload rescan (which can take seconds: hashing, thumbnailing,
-     * HPS scoring). The follow-up `loadAll()` once scan completes resets
-     * both counters to backend-authoritative values, including
-     * deduplication if the dropped file shared a stem with an existing
-     * media item. No-op if the dataset isn't loaded into the store.
+     * Optimistically reflects a finished upload batch on the named row so the
+     * Library card surfaces the new files immediately, rather than waiting for
+     * the post-upload rescan (hashing, thumbnailing, HPS scoring can take many
+     * seconds). Counts are classified by `kind` so caption files don't inflate
+     * the image count — the bug this replaces bumped `multimedia_count` for
+     * EVERY dropped file, so 10 images + 10 caption `.txt` files surfaced as
+     * "20 images / 0 captioned" until a rescan landed.
+     *
+     * - `media`   → added to `multimedia_count`
+     * - `caption` → added to `caption_count`
+     * - both      → added to `file_count` (every uploaded file is a file)
+     *
+     * `previewCandidate` (a just-uploaded image's filename) seeds `preview_image`
+     * ONLY when the row has none yet, so a freshly-populated card shows a
+     * thumbnail instead of the empty-state glyph. The follow-up rescan's
+     * `dataset.invalidated` broadcast re-fetches the row (see constructor),
+     * resetting every field to backend-authoritative values — including stem
+     * dedupe and the backend's own preview choice. No-op if the dataset isn't
+     * loaded into the store, or if nothing was uploaded.
      */
-    bumpFileCounts(name: string, delta: number): void {
-        if (delta === 0) return;
+    applyOptimisticUpload(
+        name: string,
+        counts: { media: number; caption: number },
+        previewCandidate?: string,
+    ): void {
+        const fileDelta = counts.media + counts.caption;
+        if (fileDelta === 0) return;
         for (const ds of this.entities()) {
             if (ds.name === name) {
                 this.upsert({
                     ...ds,
-                    multimedia_count: (ds.multimedia_count ?? 0) + delta,
-                    file_count: (ds.file_count ?? 0) + delta,
+                    multimedia_count: (ds.multimedia_count ?? 0) + counts.media,
+                    caption_count: (ds.caption_count ?? 0) + counts.caption,
+                    file_count: (ds.file_count ?? 0) + fileDelta,
+                    preview_image: ds.preview_image || previewCandidate,
                 });
                 return;
             }

@@ -123,3 +123,192 @@ export const mpxDistribution = {
         { range_mp_min: 9, range_mp_max: 10, count: 0 },
     ],
 };
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Training screen (Flow B) fixtures.
+ *
+ * Shapes mirror the REAL interfaces the training form consumes so the dynamic
+ * config renderer actually builds the asserted `config-*` controls:
+ *   - ModelDefinition  → src/app/screens/training-screen/training-screen.ts
+ *   - SchemaNode       → src/app/components/training/schema-node.ts (custom
+ *                        JSON-Schema dialect read by training-dynamic-config)
+ *   - TrainingEstimate → src/app/services/job.ts (POST /jobs/estimate)
+ *   - VRAMReport       → src/app/services/system.service.ts (estimate.vram)
+ *   - ModelCapabilities→ src/app/services/model-capabilities.service.ts
+ *   - Template         → src/app/services/template.service.ts
+ *
+ * The training screen, on mount:
+ *   GET /api/models/definitions            → trainingModels
+ *   GET /api/plugins/standard/schema?t=…   → trainingSchema (defs.length > 0)
+ *   GET /api/models/settings               → modelSettings (browse default path)
+ *   GET /api/templates/training            → trainingTemplates (empty → Default)
+ *   GET /api/models/capabilities/{id}      → modelCapabilities (×2: form + card)
+ *   GET /api/models/definitions/{id}/source→ modelSource (badge)
+ *   POST /api/jobs/estimate                → trainingEstimate (debounced VRAM)
+ *   GET  /config_help.json                 → served by ng (not /api), 200 [] ok
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * GET /api/models/definitions — the training model picker list. Two defs in one
+ * family; the form auto-selects the first (`flux-dev`) on load.
+ */
+export const trainingModels = [
+    { id: 'flux-dev', name: 'FLUX.1 Dev', family: 'flux', architecture_params: {} },
+    { id: 'flux-schnell', name: 'FLUX.1 Schnell', family: 'flux', architecture_params: {} },
+];
+
+/**
+ * GET /api/plugins/standard/schema — a small but representative training schema.
+ *
+ * The dynamic form (training-dynamic-config) groups properties by their `group`
+ * key (MODEL_SELECTION → hardcoded section; BASE/STRATEGY/NETWORK/OPTIMIZER →
+ * collapsible cards) and renders one control per field keyed by `type`:
+ *   - string + enum → <select data-testid="config-select-{key}">
+ *   - string        → <input  data-testid="config-input-{key}">
+ *   - integer/number→ <input  data-testid="config-input-{key}"> (number)
+ *   - boolean       → <input  data-testid="config-checkbox-{key}">
+ *   - array (prim.) → app-dynamic-form-group list editor
+ *                     (`config-array-input-{key}-{index}`)
+ *
+ * `definition_id` lives in MODEL_SELECTION so the screen can set the active
+ * model on the real form control. STRATEGY is rendered un-collapsed by default
+ * (only Advanced Engine / Sampling / Expert Features start collapsed), so its
+ * fields are immediately visible to assert against.
+ */
+export const trainingSchema = {
+    type: 'object',
+    title: 'Standard Training',
+    properties: {
+        // MODEL_SELECTION (hardcoded, always-open section)
+        definition_id: {
+            type: 'string',
+            title: 'Model Definition',
+            group: 'MODEL_SELECTION',
+            enum: ['flux-dev', 'flux-schnell'],
+            enum_labels: { 'flux-dev': 'FLUX.1 Dev', 'flux-schnell': 'FLUX.1 Schnell' },
+            default: 'flux-dev',
+        },
+        // BASE → "General Settings"
+        lora_name: {
+            type: 'string',
+            title: 'LoRA Name',
+            group: 'BASE',
+            default: 'my_lora',
+        },
+        // STRATEGY → "Training Dynamics" (open by default)
+        max_train_steps: {
+            type: 'integer',
+            title: 'Max Train Steps',
+            group: 'STRATEGY',
+            default: 1000,
+            min: 1,
+            step: 100,
+        },
+        gradient_checkpointing: {
+            type: 'boolean',
+            title: 'Gradient Checkpointing',
+            group: 'STRATEGY',
+            default: false,
+        },
+        // Generic primitive (string) array — renders the standard list editor
+        // (`config-array-input-{key}-{index}`), NOT the special-cased
+        // `resolutions` preset grid, so the array assertion is straightforward.
+        trigger_words: {
+            type: 'array',
+            title: 'Trigger Words',
+            group: 'STRATEGY',
+            items: { type: 'string' },
+            default: ['ohwx'],
+        },
+        // OPTIMIZER → "Optimizer Settings"
+        optimizer_type: {
+            type: 'string',
+            title: 'Optimizer',
+            group: 'OPTIMIZER',
+            enum: ['AdamW', 'AdamW8bit', 'Prodigy'],
+            default: 'AdamW',
+        },
+    },
+    required: ['definition_id'],
+};
+
+/**
+ * GET /api/models/capabilities/{id} — capability descriptor. `enriched: false`
+ * keeps the advanced-vram-card in its "not enriched" state (no extra fetches);
+ * an empty `field_visibility` hides nothing, so every schema field renders.
+ */
+export const modelCapabilities = {
+    enriched: false,
+    block_topology: [] as unknown[],
+    lora_targetable_modules: [] as string[],
+    trainable_layers: [] as string[],
+    archetype: 'diffusion',
+    capabilities: {
+        has_vae: true,
+        has_external_te: true,
+        latent_cache: true,
+        te_cache: true,
+        supports_train_te: false,
+        supports_te_quantization: false,
+        supports_block_swap: false,
+    },
+    field_visibility: {} as Record<string, { supported: boolean }>,
+    defaults: {} as Record<string, unknown>,
+};
+
+/** GET /api/models/settings — global model settings (browse default path). */
+export const modelSettings = {
+    global_offline_mode: false,
+    default_model_path: '/models',
+};
+
+/**
+ * GET /api/models/definitions/{id}/source — per-definition source override.
+ * `hf_hub` (no override) keeps the source badge in its default state.
+ */
+export const modelSource = {
+    source_type: 'hf_hub',
+    local_path: null as string | null,
+    skip_update: false,
+};
+
+/** GET /api/templates/training — empty list, so the selector synthesizes its
+ *  built-in "Default" entry (no real template to auto-apply). */
+export const trainingTemplates: unknown[] = [];
+
+/**
+ * POST /api/jobs/estimate — full calibrated training estimate. The VRAM report
+ * feeds both vram-budget-card and the shell rail; `fits: true` shows the FITS
+ * chip. peak 18.0 GB / available 24.0 GB are the asserted fixture numbers.
+ */
+export const trainingEstimate = {
+    definition_id: 'flux-dev',
+    stats_available: false,
+    samples: 0,
+    updated_at: null as number | null,
+    wall_time: { display: '12m 30s', samples: 0, calibrated: false, seconds: 750 },
+    output_size: { display: '320 MB', samples: 0, calibrated: false, bytes: 335_544_320 },
+    throughput: { display: '1.33 it/s', samples: 0, calibrated: false, steps_per_sec: 1.33 },
+    disk_footprint: { display: '1.2 GB', samples: 0, calibrated: false, bytes: 1_288_490_188 },
+    vram: {
+        model_weights_mb: 11_500,
+        lora_adapters_mb: 200,
+        optimizer_states_mb: 800,
+        gradients_mb: 400,
+        activations_mb: 3_500,
+        overhead_mb: 1_024,
+        caching_peak_mb: 6_000,
+        training_peak_mb: 18_432,
+        peak_mb: 18_432,
+        available_mb: 24_576,
+        total_mb: 24_576,
+        used_mb: 0,
+        fits: true,
+        warnings: [] as string[],
+        calibrated: false,
+        calibrated_components: [] as string[],
+    },
+};
+
+/** POST /api/jobs — queue ack returned when the submit path is exercised. */
+export const queuedJob = { id: 'job-e2e-1', status: 'pending' };

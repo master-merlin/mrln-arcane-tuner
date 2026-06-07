@@ -8,6 +8,14 @@ import {
     cacheStats,
     mpxDistribution,
     tasks,
+    trainingModels,
+    trainingSchema,
+    modelCapabilities,
+    modelSettings,
+    modelSource,
+    trainingTemplates,
+    trainingEstimate,
+    queuedJob,
 } from './api-data';
 
 /**
@@ -81,6 +89,55 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'GET',
         test: (p) => p.endsWith('/api/tasks'),
         handler: (route) => json(route, tasks),
+    },
+
+    // ── Training screen (Flow B) ──────────────────────────────────────────
+    // Models sub-resources: capabilities + per-definition source are
+    // parameterized, so match on the path SEGMENT before the bare
+    // `/api/models/definitions` collection route below.
+    {
+        method: 'GET',
+        test: (p) => p.includes('/api/models/capabilities/'),
+        handler: (route) => json(route, modelCapabilities),
+    },
+    {
+        method: 'GET',
+        test: (p) => /\/api\/models\/definitions\/[^/]+\/source$/.test(p),
+        handler: (route) => json(route, modelSource),
+    },
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/models/definitions'),
+        handler: (route) => json(route, trainingModels),
+    },
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/models/settings'),
+        handler: (route) => json(route, modelSettings),
+    },
+    // Plugin-scoped training schema (the path carries a cache-busting `?t=…`
+    // query, already stripped by the time `test` runs).
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/plugins/standard/schema'),
+        handler: (route) => json(route, trainingSchema),
+    },
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/templates/training'),
+        handler: (route) => json(route, trainingTemplates),
+    },
+    // Estimate POST is more-specific than the bare `/api/jobs` collection, so
+    // it is listed first; the queue POST handles the submit path.
+    {
+        method: 'POST',
+        test: (p) => p.endsWith('/api/jobs/estimate'),
+        handler: (route) => json(route, trainingEstimate),
+    },
+    {
+        method: 'POST',
+        test: (p) => p.endsWith('/api/jobs'),
+        handler: (route) => json(route, queuedJob),
     },
 ];
 

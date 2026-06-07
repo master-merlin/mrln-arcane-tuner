@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 
 import { DynamicFormFieldComponent } from './dynamic-form-field';
 import { ToastService } from '../../../services/toast';
@@ -12,7 +12,7 @@ describe('DynamicFormFieldComponent — sciHint() scientific-notation overlay', 
     TestBed.configureTestingModule({
       imports: [DynamicFormFieldComponent],
       providers: [
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         { provide: ToastService, useValue: {} },
         { provide: RuntimeConfigService, useValue: { apiUrl: '', mediaBaseUrl: '' } },
       ],

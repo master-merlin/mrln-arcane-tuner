@@ -13,6 +13,7 @@
 import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { of } from 'rxjs';
 import { MassMaskModalComponent } from './mass-mask.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -51,6 +52,11 @@ describe('MassMaskModalComponent — launcher contract', () => {
         };
         TestBed.configureTestingModule({
             providers: [
+                // v22's default HttpClient backend is Fetch, which can't resolve the
+                // app-relative URL the rendered masking/caption-settings children
+                // request under jsdom; XHR (the pre-v22 default) resolves it so the
+                // call fails gracefully instead of throwing an unhandled URL-parse error.
+                provideHttpClient(withXhr()),
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
                 { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
@@ -224,6 +230,11 @@ describe('MassMaskModalComponent — completion handler', () => {
         onCompleted = vi.fn();
         TestBed.configureTestingModule({
             providers: [
+                // v22's default HttpClient backend is Fetch, which can't resolve the
+                // app-relative URL the rendered masking/caption-settings children
+                // request under jsdom; XHR (the pre-v22 default) resolves it so the
+                // call fails gracefully instead of throwing an unhandled URL-parse error.
+                provideHttpClient(withXhr()),
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
                 { provide: DatasetSyncService, useValue: sync },

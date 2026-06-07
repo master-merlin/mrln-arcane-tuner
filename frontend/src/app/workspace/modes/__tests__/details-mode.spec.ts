@@ -11,6 +11,7 @@
  */
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { DetailsMode } from '../details-mode';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
@@ -48,6 +49,12 @@ describe('DetailsMode', () => {
     beforeEach(() => {
         TestBed.configureTestingModule({
             providers: [
+                // The real template mounts the caption/masking sidebars, whose
+                // settings children fire an app-relative preferences request via an
+                // effect. v22's default Fetch HttpClient backend can't resolve that
+                // URL under jsdom; XHR (the pre-v22 default) does, so the request
+                // fails gracefully rather than throwing an unhandled URL-parse error.
+                provideHttpClient(withXhr()),
                 { provide: OverlayStore, useClass: StubOverlay },
                 { provide: MediaItemStore, useClass: StubMediaItems },
                 { provide: RuntimeConfigService, useClass: StubRtc },

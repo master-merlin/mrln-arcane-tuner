@@ -1,7 +1,7 @@
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { of, Subject, throwError } from 'rxjs';
 
 import { TrainingJobQueueComponent } from './training-job-queue';
@@ -43,7 +43,7 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
 
         TestBed.configureTestingModule({
             providers: [
-                provideHttpClient(),
+                provideHttpClient(withXhr()),
                 TrainingJobQueueComponent,
                 { provide: JobService, useValue: api },
                 { provide: WebSocketService, useValue: wsStub },

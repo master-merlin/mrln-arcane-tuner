@@ -52,6 +52,7 @@
     "@types/jasmine": "^6.0.0",
     "browser-sync": "^3.0.4",
     "jasmine-core": "^6.0.1",
+    "jsdom": "^29.1.1",
     "karma": "^6.4.4",
     "karma-chrome-launcher": "^3.2.0",
     "karma-coverage": "^2.2.1",
@@ -60,6 +61,7 @@
     "postcss": "^8.4.35",
     "source-map-support": "^0.5.21",
     "tailwindcss": "^4.2.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vitest": "^4.1.8"
   }
 }

@@ -8,6 +8,7 @@ import { ShellComponent } from './shell/shell.component';
 import { SystemStore } from './state/system.store';
 import { KpiTileComponent } from './ui/kpi-tile/kpi-tile.component';
 import { StatePillsComponent } from './ui/state-pills/state-pills.component';
+import { byTestId } from '../testing/by-test-id';
 
 describe('Smoke Test', () => {
     it('should pass a basic assertion', () => {
@@ -69,18 +70,21 @@ describe('UI primitives — smoke', () => {
         f.componentRef.setInput('label', 'Datasets');
         f.componentRef.setInput('value', 79);
         f.detectChanges();
-        expect(f.nativeElement.querySelector('.kpi')).toBeTruthy();
-        expect(f.nativeElement.querySelector('.kpi-label')?.textContent).toContain('Datasets');
-        expect(f.nativeElement.querySelector('.kpi-value')?.textContent).toContain('79');
+        expect(byTestId(f, 'kpi-tile')).toBeTruthy();
+        expect(byTestId(f, 'kpi-tile-label').nativeElement.textContent).toContain('Datasets');
+        expect(byTestId(f, 'kpi-tile-value').nativeElement.textContent).toContain('79');
     });
 
     it('StatePills renders 3 pills with correct on-state', () => {
         const f = TestBed.createComponent(StatePillsComponent);
         f.componentRef.setInput('state', { harmonized: true, captioned: false, masked: true });
         f.detectChanges();
-        expect(f.nativeElement.querySelectorAll('.state-pill').length).toBe(3);
-        expect(f.nativeElement.querySelector('.state-pill.H.on')).toBeTruthy();
-        expect(f.nativeElement.querySelector('.state-pill.C.on')).toBeFalsy();
-        expect(f.nativeElement.querySelector('.state-pill.M.on')).toBeTruthy();
+        const pills = ['state-pill-H', 'state-pill-C', 'state-pill-M'].map((id) => byTestId(f, id));
+        expect(pills.every((p) => p !== null)).toBe(true);
+        expect(pills.length).toBe(3);
+        // H on, C off, M on — read the on-state off each pill rather than encoding it in the selector.
+        expect(byTestId(f, 'state-pill-H').classes['on']).toBe(true);
+        expect(byTestId(f, 'state-pill-C').classes['on']).toBeFalsy();
+        expect(byTestId(f, 'state-pill-M').classes['on']).toBe(true);
     });
 });

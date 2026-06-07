@@ -82,19 +82,19 @@ export function datasetStatePills(input: {
     host: { style: 'display: inline-flex;' },
     template: `
         <span class="state-pills">
-            <span class="state-pill H"
+            <span class="state-pill H" data-testid="state-pill-H"
                   [class.on]="isOn('harmonized')"
                   [class.lvl-full]="state().levels?.harmonized === 'full'"
                   [class.lvl-mid]="state().levels?.harmonized === 'mid'"
                   [class.lvl-low]="state().levels?.harmonized === 'low'"
                   [attr.title]="state().titles?.harmonized ?? null">H</span>
-            <span class="state-pill C"
+            <span class="state-pill C" data-testid="state-pill-C"
                   [class.on]="isOn('captioned')"
                   [class.lvl-full]="state().levels?.captioned === 'full'"
                   [class.lvl-mid]="state().levels?.captioned === 'mid'"
                   [class.lvl-low]="state().levels?.captioned === 'low'"
                   [attr.title]="state().titles?.captioned ?? null">C</span>
-            <span class="state-pill M"
+            <span class="state-pill M" data-testid="state-pill-M"
                   [class.on]="isOn('masked')"
                   [class.lvl-full]="state().levels?.masked === 'full'"
                   [class.lvl-mid]="state().levels?.masked === 'mid'"

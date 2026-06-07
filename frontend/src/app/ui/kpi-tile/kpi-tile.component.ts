@@ -17,12 +17,12 @@ export type KpiAccent = 'brand' | 'success' | 'warning' | 'danger' | 'teal' | 'v
     // (e.g. corner indicators) absolute-position against the tile.
     styles: [`.kpi { height: 100%; position: relative; }`],
     template: `
-        <div class="kpi" [class.compact]="compact()">
+        <div class="kpi" data-testid="kpi-tile" [class.compact]="compact()">
             @if (accent(); as a) {
                 <div class="kpi-accent" [class]="a"></div>
             }
-            <div class="kpi-label">{{ label() }}</div>
-            <div class="kpi-value">
+            <div class="kpi-label" data-testid="kpi-tile-label">{{ label() }}</div>
+            <div class="kpi-value" data-testid="kpi-tile-value">
                 {{ value() }}@if (unit(); as u) {<span class="unit">{{ u }}</span>}
             </div>
             @if (sub(); as s) { <div class="kpi-sub">{{ s }}</div> }

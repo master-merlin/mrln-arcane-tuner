@@ -10,6 +10,7 @@ import {
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
+import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService, type DatasetPair } from '../../services/dataset';
@@ -42,7 +43,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
 @Component({
     selector: 'app-modal-mass-caption',
     standalone: true,
-    imports: [FormsModule, IcoComponent, DatasetCaptionSettingsComponent],
+    imports: [FormsModule, IcoComponent, TaskQueueHintComponent, DatasetCaptionSettingsComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -60,6 +61,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
                     Open a dataset workspace first — mass captioning is per-dataset.
                 </div>
             } @else if (running()) {
+                <app-task-queue-hint [task]="task()"/>
                 <div class="mc-progress">
                     <div class="mc-progress-head">
                         <div>

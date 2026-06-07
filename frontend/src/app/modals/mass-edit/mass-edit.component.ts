@@ -9,6 +9,7 @@ import {
 } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
+import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService, type PipelineBlock, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
@@ -46,7 +47,7 @@ interface RecipeOperation {
 @Component({
     selector: 'app-modal-mass-edit',
     standalone: true,
-    imports: [IcoComponent],
+    imports: [IcoComponent, TaskQueueHintComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -64,6 +65,7 @@ interface RecipeOperation {
                     Open a dataset workspace first — mass edit is per-dataset.
                 </div>
             } @else if (running()) {
+                <app-task-queue-hint [task]="task()"/>
                 <div class="me-progress">
                     <div class="me-progress-head">
                         <div>
@@ -370,6 +372,8 @@ export class MassEditModalComponent implements OnInit {
         this.taskId();
         return this._taskView?.() ?? undefined;
     });
+    /** Public-to-template alias so the queued-task hint can bind the live task. */
+    protected task = this._task;
 
     protected pct = computed(() => {
         const t = this._task();

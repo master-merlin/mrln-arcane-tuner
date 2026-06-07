@@ -6,6 +6,7 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ToastService } from '../../services/toast';
 import { SegmentedComponent } from '../../ui/segmented/segmented.component';
+import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import { CropAllItem } from './crop-all';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { TaskStore } from '../../state/task.store';
@@ -161,7 +162,7 @@ const THUMB_FALLBACK_DATA_URI =
 @Component({
     selector: 'app-modal-analyze',
     standalone: true,
-    imports: [IcoComponent, SegmentedComponent],
+    imports: [IcoComponent, SegmentedComponent, TaskQueueHintComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -181,6 +182,7 @@ const THUMB_FALLBACK_DATA_URI =
                 </div>
             } @else {
                 @if (cropAllRunning()) {
+                    <app-task-queue-hint [task]="cropTask()"/>
                     <div class="card an-cropall-progress">
                         <div class="card-head">
                             <div class="card-title"><app-ico name="Crop" [size]="11"/> Cropping {{ cropAllPercent() }}%</div>
@@ -952,6 +954,8 @@ export class AnalyzeModalComponent implements OnInit {
         this.cropTaskId();                       // re-bind when a new task starts
         return this._cropTaskView?.() ?? null;
     });
+    /** Template alias so the queued-task hint can bind the live crop task. */
+    protected cropTask = this._cropTask;
     private _cropFinalized = false;
 
     protected harmonizeTaskId = signal<string | null>(null);

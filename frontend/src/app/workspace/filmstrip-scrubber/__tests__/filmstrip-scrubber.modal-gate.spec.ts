@@ -1,4 +1,4 @@
-import type { Mock } from "vitest";
+import type { MockInstance } from "vitest";
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { FilmstripScrubberComponent } from '../filmstrip-scrubber.component';
@@ -11,7 +11,7 @@ class StubOverlay {
 describe('FilmstripScrubberComponent — arrow nav suppression', () => {
     let cmp: FilmstripScrubberComponent;
     let overlay: StubOverlay;
-    let seekSpy: Mock;
+    let seekSpy: MockInstance;
 
     beforeEach(() => {
         TestBed.configureTestingModule({

@@ -41,7 +41,7 @@
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
     "uplot": "^1.6.32",
-    "zone.js": "^0.16.0"
+    "zone.js": "^0.16.2"
   },
   "devDependencies": {
     "@angular-devkit/build-angular": "21.1.2",

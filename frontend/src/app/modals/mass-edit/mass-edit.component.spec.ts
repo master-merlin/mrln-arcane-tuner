@@ -58,7 +58,7 @@ describe('MassEditModalComponent — launcher contract', () => {
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchRenderPipeline).toHaveBeenCalled();
-        const [name, paths, blocks] = vi.mocked(api.batchRenderPipeline).mock.lastCall;
+        const [name, paths, blocks] = vi.mocked(api.batchRenderPipeline).mock.lastCall!;
         expect(name).toBe('ds1');
         expect(paths).toEqual(['a.png', 'b.png']);
         expect(blocks[0].type).toBe('contrast');

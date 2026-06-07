@@ -157,7 +157,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         comp.cropAllOrigin.set('top');
         comp.startCropAll();
         expect(api.batchCrop).toHaveBeenCalled();
-        const [, items, origin] = vi.mocked(api.batchCrop).mock.lastCall;
+        const [, items, origin] = vi.mocked(api.batchCrop).mock.lastCall!;
         expect(origin).toBe('top');
         expect(items[0]).toEqual({ path: 'a.png', target_width: 512, target_height: 512 });
         expect(comp.cropTaskId()).toBe('t1');

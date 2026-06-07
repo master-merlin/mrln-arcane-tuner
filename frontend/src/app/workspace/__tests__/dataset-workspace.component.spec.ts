@@ -262,7 +262,7 @@ describe('DatasetWorkspaceComponent.editVersion', () => {
         (cmp as any).editVersion();
 
         // Pull onSaved from the captured openModal payload (third tuple slot in args).
-        const payload = vi.mocked((overlay.openModal as Mock)).mock.lastCall[1];
+        const payload = vi.mocked((overlay.openModal as Mock)).mock.lastCall![1];
         payload.onSaved('9.9.9');
 
         expect(datasets.upsertLocal).toHaveBeenCalledWith(expect.objectContaining({ name: 'alpha', version: '9.9.9' }));
@@ -450,7 +450,7 @@ describe('DatasetWorkspaceComponent.openMass — completion callback', () => {
         (cmp as any).openMass('mass-caption');
 
         expect(overlay.openModal).toHaveBeenCalled();
-        const [kind, data] = vi.mocked(overlay.openModal).mock.lastCall;
+        const [kind, data] = vi.mocked(overlay.openModal).mock.lastCall!;
         expect(kind).toBe('mass-caption');
         expect(typeof data.onCompleted).toBe('function');
         expect(data.datasetName).toBe('alpha');
@@ -466,7 +466,7 @@ describe('DatasetWorkspaceComponent.openMass — completion callback', () => {
         datasets.upsertLocal = vi.fn();
 
         (cmp as any).openMass('mass-mask');
-        const [, data] = vi.mocked(overlay.openModal).mock.lastCall;
+        const [, data] = vi.mocked(overlay.openModal).mock.lastCall!;
 
         data.onCompleted();
         data.onCompleted(); // idempotent — second call should NOT bump again
@@ -482,7 +482,7 @@ describe('DatasetWorkspaceComponent.openMass — completion callback', () => {
 
         for (const kind of ['mass-caption', 'mass-mask', 'mass-edit'] as const) {
             (cmp as any).openMass(kind);
-            const [openedKind, data] = vi.mocked(overlay.openModal).mock.lastCall;
+            const [openedKind, data] = vi.mocked(overlay.openModal).mock.lastCall!;
             expect(openedKind).toBe(kind);
             expect(typeof data.onCompleted).toBe('function');
         }

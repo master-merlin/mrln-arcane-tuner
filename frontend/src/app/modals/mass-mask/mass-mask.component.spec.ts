@@ -115,7 +115,7 @@ describe('MassMaskModalComponent — launcher contract', () => {
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchCaption).toHaveBeenCalled();
-        const arg = vi.mocked(api.batchCaption).mock.lastCall[0];
+        const arg = vi.mocked(api.batchCaption).mock.lastCall![0];
         expect(arg.target).toBe('masked');
         expect(comp.taskId()).toBe('t1');
     });

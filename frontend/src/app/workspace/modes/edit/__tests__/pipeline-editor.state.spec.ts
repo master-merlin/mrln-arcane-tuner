@@ -214,7 +214,7 @@ describe('PipelineEditorState.applyAndSave — task routing', () => {
         state.upscale.update(o => ({ ...o, enabled: true }));
         await state.applyAndSave();
         expect(api.taskRenderPipeline).toHaveBeenCalled();
-        const [name, file] = vi.mocked(api.taskRenderPipeline).mock.lastCall;
+        const [name, file] = vi.mocked(api.taskRenderPipeline).mock.lastCall!;
         expect(name).toBe('ds1');
         expect(file).toBe('a.png');
         expect(inlineSpy).not.toHaveBeenCalled();

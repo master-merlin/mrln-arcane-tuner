@@ -141,6 +141,30 @@ class MediaItemRepository:
             )
             return cursor.rowcount
 
+    def prune_missing_with_conn(
+        self, conn, dataset_id: str, keep_rel_paths
+    ) -> int:
+        """Delete rows whose ``rel_path`` is not in ``keep_rel_paths``.
+
+        Makes the table mirror the authoritative in-memory metadata after a
+        scan/harmonize: files that were renamed, converted or removed leave
+        behind ghost rows (with stale hashes/thumbnails) that otherwise persist
+        across restarts and resurface in Dataset Analysis as near-duplicates
+        against filenames no longer on disk. Computes the diff in Python to
+        avoid the SQLite ``IN (...)`` parameter limit. Returns rows deleted.
+        """
+        keep = set(keep_rel_paths)
+        existing = conn.execute(
+            "SELECT rel_path FROM media_items WHERE dataset_id = ?", (dataset_id,)
+        ).fetchall()
+        stale = [r["rel_path"] for r in existing if r["rel_path"] not in keep]
+        for rel_path in stale:
+            conn.execute(
+                "DELETE FROM media_items WHERE dataset_id = ? AND rel_path = ?",
+                (dataset_id, rel_path),
+            )
+        return len(stale)
+
     # ── Bulk operations ──────────────────────────────────────────────
 
     def bulk_upsert(self, dataset_id: str, items: list[dict[str, Any]]) -> int:

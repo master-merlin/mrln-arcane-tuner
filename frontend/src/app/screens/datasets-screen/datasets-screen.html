@@ -239,6 +239,7 @@
     <div class="ds-grid">
         @for (d of visibleDatasets(); track trackById($index, d)) {
             <div class="card lift hover-host ds-card"
+                 [attr.data-testid]="'dataset-card-' + d.name"
                  [class.ds-card-dragover]="isDragOver(d.name)"
                  (click)="openCard(d)"
                  (dragover)="onCardDragOver(d.name, $event)"

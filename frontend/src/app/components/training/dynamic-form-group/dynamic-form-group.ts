@@ -178,7 +178,7 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                                       <span class="flex items-center gap-2 ml-auto pr-7">
                                         @if (excludedCountFor(dsIdx) > 0) {
                                           <span class="chip warning"
-                                                [title]="excludedCountFor(dsIdx) + ' image(s) currently excluded from training. Use the override toggle to include them this run.'">
+                                                [title]="excludedCountFor(dsIdx) + ' image(s) currently excluded from training. Use the toggle below to include them this run.'">
                                             {{ excludedCountFor(dsIdx) }} suppressed
                                           </span>
                                         }
@@ -277,7 +277,10 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                                 <input type="checkbox" formControlName="ignore_filter"
                                        [attr.data-testid]="'config-ignore-filter-' + dsIdx"
                                        class="sr-only peer">
-                                <div class="w-9 h-5 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-[16px] after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-warning group-hover:bg-surface-mid transition-all relative"></div>
+                                <!-- Geometry matches the standard config toggle
+                                     (dynamic-form-field); only the checked accent
+                                     differs (warning, for the suppressed theme). -->
+                                <div class="w-7 h-4 bg-surface-high peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-warning group-hover:bg-surface-mid transition-all relative"></div>
                               </label>
                               <div class="flex flex-col gap-0.5">
                                 <span class="text-[11px] font-bold text-text-secondary">Use suppressed images this run</span>

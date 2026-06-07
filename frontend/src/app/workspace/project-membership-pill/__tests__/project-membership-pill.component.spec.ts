@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
@@ -10,19 +11,22 @@ describe('ProjectMembershipPillComponent', () => {
     let fixture: ComponentFixture<ProjectMembershipPillComponent>;
     let component: ProjectMembershipPillComponent;
     let projectId: WritableSignal<string | null>;
-    let getProjectDatasets: jasmine.Spy;
-    let addProjectDataset: jasmine.Spy;
-    let removeProjectDataset: jasmine.Spy;
-    let loadProjects: jasmine.Spy;
-    let toast: { success: jasmine.Spy; error: jasmine.Spy };
+    let getProjectDatasets: Mock;
+    let addProjectDataset: Mock;
+    let removeProjectDataset: Mock;
+    let loadProjects: Mock;
+    let toast: {
+        success: Mock;
+        error: Mock;
+    };
 
     beforeEach(() => {
         projectId = signal<string | null>(null);
-        getProjectDatasets = jasmine.createSpy('getProjectDatasets').and.returnValue(of([]));
-        addProjectDataset = jasmine.createSpy('addProjectDataset').and.returnValue(of({}));
-        removeProjectDataset = jasmine.createSpy('removeProjectDataset').and.returnValue(of(undefined));
-        loadProjects = jasmine.createSpy('loadProjects');
-        toast = { success: jasmine.createSpy('success'), error: jasmine.createSpy('error') };
+        getProjectDatasets = vi.fn().mockReturnValue(of([]));
+        addProjectDataset = vi.fn().mockReturnValue(of({}));
+        removeProjectDataset = vi.fn().mockReturnValue(of(undefined));
+        loadProjects = vi.fn();
+        toast = { success: vi.fn(), error: vi.fn() };
 
         TestBed.configureTestingModule({
             imports: [ProjectMembershipPillComponent],
@@ -46,7 +50,10 @@ describe('ProjectMembershipPillComponent', () => {
         component = fixture.componentInstance;
     });
 
-    function setDataset(ds: { id?: string; name: string } | null) {
+    function setDataset(ds: {
+        id?: string;
+        name: string;
+    } | null) {
         fixture.componentRef.setInput('dataset', ds);
     }
 
@@ -63,7 +70,7 @@ describe('ProjectMembershipPillComponent', () => {
     });
 
     it('shows "add" when the dataset is not a member of the scoped project', () => {
-        getProjectDatasets.and.returnValue(of([{ id: 'other', name: 'other' }]));
+        getProjectDatasets.mockReturnValue(of([{ id: 'other', name: 'other' }]));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
         fixture.detectChanges();
@@ -72,7 +79,7 @@ describe('ProjectMembershipPillComponent', () => {
     });
 
     it('shows "member" when the dataset is already in the scoped project', () => {
-        getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
+        getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
         fixture.detectChanges();
@@ -91,7 +98,7 @@ describe('ProjectMembershipPillComponent', () => {
     });
 
     it('add() error path toasts and stays "add"', () => {
-        addProjectDataset.and.returnValue(throwError(() => ({ error: { detail: 'boom' } })));
+        addProjectDataset.mockReturnValue(throwError(() => ({ error: { detail: 'boom' } })));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
         fixture.detectChanges();
@@ -101,7 +108,7 @@ describe('ProjectMembershipPillComponent', () => {
     });
 
     it('remove() calls the service, flips to add, toasts, refreshes projects', () => {
-        getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
+        getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
         fixture.detectChanges();
@@ -114,8 +121,8 @@ describe('ProjectMembershipPillComponent', () => {
     });
 
     it('remove() error path toasts and stays "member"', () => {
-        getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
-        removeProjectDataset.and.returnValue(throwError(() => ({ error: { detail: 'boom' } })));
+        getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
+        removeProjectDataset.mockReturnValue(throwError(() => ({ error: { detail: 'boom' } })));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
         fixture.detectChanges();
@@ -134,8 +141,7 @@ describe('ProjectMembershipPillComponent', () => {
     });
 
     it('refetches membership when scope switches to another project', () => {
-        getProjectDatasets.and.callFake((pid: string) =>
-            pid === 'p1' ? of([{ id: 'd1', name: 'ds-1' }]) : of([]));
+        getProjectDatasets.mockImplementation((pid: string) => pid === 'p1' ? of([{ id: 'd1', name: 'ds-1' }]) : of([]));
         setDataset({ id: 'd1', name: 'ds-1' });
         projectId.set('p1');
         fixture.detectChanges();

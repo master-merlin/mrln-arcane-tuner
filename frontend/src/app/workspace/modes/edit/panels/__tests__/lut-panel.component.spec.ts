@@ -9,11 +9,11 @@ import { ToastService } from '../../../../../services/toast';
 import { WebSocketService } from '../../../../../services/websocket.service';
 
 class StubDatasetService {
-    exportCube = jasmine.createSpy('exportCube');
+    exportCube = vi.fn();
 }
 class StubToastService {
-    success = jasmine.createSpy('success');
-    error   = jasmine.createSpy('error');
+    success = vi.fn();
+    error = vi.fn();
 }
 function makeWsMock() {
     // `on()` is needed because this spec builds a component tree that
@@ -50,30 +50,38 @@ describe('LutPanelComponent.exportStack', () => {
 
     it('passes the current curves to DatasetService.exportCube and toasts on success', () => {
         const blob = new Blob(['LUT body'], { type: 'application/octet-stream' });
-        datasetSvc.exportCube.and.returnValue(of(blob));
-        const clickSpy = jasmine.createSpy('click');
-        spyOn(document, 'createElement').and.returnValue({
+        datasetSvc.exportCube.mockReturnValue(of(blob));
+        const clickSpy = vi.fn();
+        vi.spyOn(document, 'createElement').mockReturnValue({
             href: '', download: '', click: clickSpy,
         } as unknown as HTMLAnchorElement);
-        spyOn(URL, 'createObjectURL').and.returnValue('blob://stub');
-        spyOn(URL, 'revokeObjectURL');
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob://stub');
+        vi.spyOn(URL, 'revokeObjectURL');
 
         component.exportStack();
 
-        expect(datasetSvc.exportCube).toHaveBeenCalledOnceWith('My DS', state.curves().params);
-        expect(URL.createObjectURL).toHaveBeenCalledOnceWith(blob);
-        expect(clickSpy).toHaveBeenCalledOnceWith();
-        expect(URL.revokeObjectURL).toHaveBeenCalledOnceWith('blob://stub');
-        expect(toast.success).toHaveBeenCalledOnceWith('CUBE file exported');
+        expect(datasetSvc.exportCube).toHaveBeenCalledTimes(1);
+
+        expect(datasetSvc.exportCube).toHaveBeenCalledWith('My DS', state.curves().params);
+        expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+        expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+        expect(clickSpy).toHaveBeenCalledTimes(1);
+        expect(clickSpy).toHaveBeenCalledWith();
+        expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob://stub');
+        expect(toast.success).toHaveBeenCalledTimes(1);
+        expect(toast.success).toHaveBeenCalledWith('CUBE file exported');
         expect(toast.error).not.toHaveBeenCalled();
     });
 
     it('toasts an error message when exportCube fails', () => {
-        datasetSvc.exportCube.and.returnValue(throwError(() => new Error('boom')));
+        datasetSvc.exportCube.mockReturnValue(throwError(() => new Error('boom')));
 
         component.exportStack();
 
-        expect(toast.error).toHaveBeenCalledOnceWith('Failed to export CUBE file');
+        expect(toast.error).toHaveBeenCalledTimes(1);
+
+        expect(toast.error).toHaveBeenCalledWith('Failed to export CUBE file');
         expect(toast.success).not.toHaveBeenCalled();
     });
 
@@ -83,7 +91,8 @@ describe('LutPanelComponent.exportStack', () => {
         component.exportStack();
 
         expect(datasetSvc.exportCube).not.toHaveBeenCalled();
-        expect(toast.error).toHaveBeenCalledOnceWith('Open an image before exporting a LUT');
+        expect(toast.error).toHaveBeenCalledTimes(1);
+        expect(toast.error).toHaveBeenCalledWith('Open an image before exporting a LUT');
         expect(toast.success).not.toHaveBeenCalled();
     });
 });

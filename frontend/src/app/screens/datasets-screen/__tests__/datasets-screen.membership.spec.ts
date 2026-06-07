@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, flushMicrotasks } from '@angular/core/testing';
 import { ApplicationRef, signal, WritableSignal } from '@angular/core';
 import { of } from 'rxjs';
@@ -25,11 +26,15 @@ import { SearchStore } from '../../../state/search.store';
 describe('DatasetsScreen — project membership refresh', () => {
     let projectId: WritableSignal<string | null>;
     let workspace: WritableSignal<WorkspaceState | null>;
-    let getProjectDatasets: jasmine.Spy;
+    let getProjectDatasets: Mock;
     let appRef: ApplicationRef;
 
     function ids(comp: DatasetsScreen): string[] {
-        return (comp as unknown as { visibleDatasets: () => { id: string }[] })
+        return (comp as unknown as {
+            visibleDatasets: () => {
+                id: string;
+            }[];
+        })
             .visibleDatasets()
             .map(d => d.id);
     }
@@ -37,9 +42,7 @@ describe('DatasetsScreen — project membership refresh', () => {
     beforeEach(() => {
         projectId = signal<string | null>(null);
         workspace = signal<WorkspaceState | null>(null);
-        getProjectDatasets = jasmine
-            .createSpy('getProjectDatasets')
-            .and.returnValue(of([]));
+        getProjectDatasets = vi.fn().mockReturnValue(of([]));
 
         TestBed.configureTestingModule({
             providers: [
@@ -59,7 +62,7 @@ describe('DatasetsScreen — project membership refresh', () => {
                 },
                 { provide: ProjectService, useValue: { getProjectDatasets } },
                 { provide: RuntimeConfigService, useValue: { mediaBaseUrl: '' } },
-                { provide: ToastService, useValue: { success: () => {}, error: () => {} } },
+                { provide: ToastService, useValue: { success: () => { }, error: () => { } } },
                 { provide: ScopeStore, useValue: { projectId } },
                 { provide: OverlayStore, useValue: { workspace } },
                 {
@@ -74,7 +77,7 @@ describe('DatasetsScreen — project membership refresh', () => {
     // Baseline: proves the harness flushes the membership effect at all.
     it('shows datasets that belong to the scoped project', fakeAsync(() => {
         projectId.set('p1');
-        getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
+        getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
         const comp = TestBed.runInInjectionContext(() => new DatasetsScreen());
         appRef.tick();
         flushMicrotasks();
@@ -85,14 +88,14 @@ describe('DatasetsScreen — project membership refresh', () => {
     // pill must appear in the library after the workspace closes.
     it('re-syncs membership when the workspace closes (newly-added dataset appears)', fakeAsync(() => {
         projectId.set('p1');
-        getProjectDatasets.and.returnValue(of([])); // p1 has no datasets yet
+        getProjectDatasets.mockReturnValue(of([])); // p1 has no datasets yet
         const comp = TestBed.runInInjectionContext(() => new DatasetsScreen());
         appRef.tick();
         flushMicrotasks();
         expect(ids(comp)).toEqual([]); // d1 not in p1 → filtered out
 
         // Pill adds d1 to p1 from inside the workspace, then the user returns.
-        getProjectDatasets.and.returnValue(of([{ id: 'd1', name: 'ds-1' }]));
+        getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
         workspace.set({ datasetId: 'd1', mode: 'browse', imageIndex: 0 }); // open
         appRef.tick();
         flushMicrotasks();

@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { Subject, of, EMPTY } from 'rxjs';
@@ -23,12 +24,14 @@ describe('DatasetSyncService', () => {
     let sync: DatasetSyncService;
     let media: MediaItemStore;
     let captions: CaptionCacheStore;
-    let getPairs: jasmine.Spy;
-    let invalidated$: Subject<{ name: string }>;
+    let getPairs: Mock;
+    let invalidated$: Subject<{
+        name: string;
+    }>;
     let reconnected$: Subject<void>;
 
     beforeEach(() => {
-        getPairs = jasmine.createSpy('getDatasetPairs');
+        getPairs = vi.fn();
         invalidated$ = new Subject();
         reconnected$ = new Subject();
         const wsMock = {
@@ -44,7 +47,7 @@ describe('DatasetSyncService', () => {
                 CaptionCacheStore,
                 { provide: DatasetService, useValue: { getDatasetPairs: getPairs } },
                 { provide: WebSocketService, useValue: wsMock },
-                { provide: ToastService, useValue: { error: jasmine.createSpy() } },
+                { provide: ToastService, useValue: { error: vi.fn() } },
             ],
         });
         media = TestBed.inject(MediaItemStore);
@@ -54,13 +57,13 @@ describe('DatasetSyncService', () => {
 
     it('refreshDataset reconciles media items (evicts ghosts) and reseeds captions', async () => {
         // Seed an initial state with a file that will be "renamed away".
-        getPairs.and.returnValue(of([pair('old.png', 'cap')]));
+        getPairs.mockReturnValue(of([pair('old.png', 'cap')]));
         await sync.refreshDataset('ds1');
         expect(media.byId(mediaKey('ds1', 'old.png'))()).toBeDefined();
         expect(captions.get('ds1').has('old.png')).toBe(true);
 
         // Server now reports only the renamed file.
-        getPairs.and.returnValue(of([pair('new_0001.jpg', 'cap')]));
+        getPairs.mockReturnValue(of([pair('new_0001.jpg', 'cap')]));
         await sync.refreshDataset('ds1');
 
         const ids = media.entities().map(m => m.id).sort();
@@ -70,23 +73,23 @@ describe('DatasetSyncService', () => {
     });
 
     it('refreshDataset swallows fetch errors (leaves state intact)', async () => {
-        getPairs.and.returnValue(of([pair('a.png')]));
+        getPairs.mockReturnValue(of([pair('a.png')]));
         await sync.refreshDataset('ds1');
-        getPairs.and.returnValue(new Subject()); // never emits → simulate via throw below
-        getPairs.and.callFake(() => { throw new Error('boom'); });
+        getPairs.mockReturnValue(new Subject()); // never emits → simulate via throw below
+        getPairs.mockImplementation(() => { throw new Error('boom'); });
         await sync.refreshDataset('ds1');
         // Prior state preserved.
         expect(media.byId(mediaKey('ds1', 'a.png'))()).toBeDefined();
     });
 
     it('dataset.invalidated triggers a refresh for a LOADED dataset', async () => {
-        getPairs.and.returnValue(of([pair('a.png')]));
-        await sync.refreshDataset('ds1');               // ds1 is now loaded
-        getPairs.calls.reset();
-        getPairs.and.returnValue(of([pair('a.png'), pair('b.png')]));
+        getPairs.mockReturnValue(of([pair('a.png')]));
+        await sync.refreshDataset('ds1'); // ds1 is now loaded
+        getPairs.mockClear();
+        getPairs.mockReturnValue(of([pair('a.png'), pair('b.png')]));
 
         invalidated$.next({ name: 'ds1' });
-        await Promise.resolve();                         // let the async refresh run
+        await Promise.resolve(); // let the async refresh run
         await Promise.resolve();
 
         expect(getPairs).toHaveBeenCalledWith('ds1');
@@ -94,17 +97,17 @@ describe('DatasetSyncService', () => {
     });
 
     it('dataset.invalidated is a no-op for an UNLOADED dataset', async () => {
-        getPairs.and.returnValue(of([pair('a.png')]));
+        getPairs.mockReturnValue(of([pair('a.png')]));
         invalidated$.next({ name: 'never-opened' });
         await Promise.resolve();
         expect(getPairs).not.toHaveBeenCalled();
     });
 
     it('reconnect re-reconciles every loaded dataset', async () => {
-        getPairs.and.returnValue(of([pair('a.png')]));
+        getPairs.mockReturnValue(of([pair('a.png')]));
         await sync.refreshDataset('ds1');
-        getPairs.calls.reset();
-        getPairs.and.returnValue(of([pair('a.png')]));
+        getPairs.mockClear();
+        getPairs.mockReturnValue(of([pair('a.png')]));
 
         reconnected$.next();
         await Promise.resolve();

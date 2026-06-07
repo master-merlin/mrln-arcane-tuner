@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { FilmstripScrubberComponent } from '../filmstrip-scrubber.component';
@@ -10,7 +11,7 @@ class StubOverlay {
 describe('FilmstripScrubberComponent — arrow nav suppression', () => {
     let cmp: FilmstripScrubberComponent;
     let overlay: StubOverlay;
-    let seekSpy: jasmine.Spy;
+    let seekSpy: MockInstance;
 
     beforeEach(() => {
         TestBed.configureTestingModule({
@@ -26,7 +27,7 @@ describe('FilmstripScrubberComponent — arrow nav suppression', () => {
             { media_file: 'a' }, { media_file: 'b' }, { media_file: 'c' },
         ];
         (cmp as any).activeIndex = () => 1;
-        seekSpy = spyOn((cmp as any).seek, 'emit');
+        seekSpy = vi.spyOn((cmp as any).seek, 'emit');
     });
 
     it('emits seek on ArrowRight when no modal is open', () => {

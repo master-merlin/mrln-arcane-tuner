@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
@@ -22,26 +23,24 @@ function makePair(mediaFile: string, enabled: boolean = true): DatasetPair {
 describe('MediaItemStore', () => {
     let store: MediaItemStore;
     let api: {
-        getDatasetPairs: jasmine.Spy,
-        toggleImageEnabled: jasmine.Spy,
+        getDatasetPairs: Mock;
+        toggleImageEnabled: Mock;
     };
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
     };
-    let toastMock: { error: jasmine.Spy };
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(
-                of([makePair('a.png'), makePair('subdir/b.png', false)]),
-            ),
-            toggleImageEnabled: jasmine.createSpy('toggleImageEnabled').and.returnValue(
-                of({ media_file: 'a.png', enabled: false }),
-            ),
+            getDatasetPairs: vi.fn().mockReturnValue(of([makePair('a.png'), makePair('subdir/b.png', false)])),
+            toggleImageEnabled: vi.fn().mockReturnValue(of({ media_file: 'a.png', enabled: false })),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
 
         TestBed.configureTestingModule({
             providers: [
@@ -67,7 +66,7 @@ describe('MediaItemStore', () => {
 
     it('loadForDataset preserves entries from other datasets', async () => {
         await store.loadForDataset('ds1');
-        api.getDatasetPairs.and.returnValue(of([makePair('c.png')]));
+        api.getDatasetPairs.mockReturnValue(of([makePair('c.png')]));
         await store.loadForDataset('ds2');
         const ids = store.entities().map(m => m.id).sort();
         expect(ids).toEqual([
@@ -99,7 +98,7 @@ describe('MediaItemStore', () => {
 
         it('leaves OTHER datasets untouched', async () => {
             await store.loadForDataset('ds1');
-            api.getDatasetPairs.and.returnValue(of([makePair('c.png')]));
+            api.getDatasetPairs.mockReturnValue(of([makePair('c.png')]));
             await store.loadForDataset('ds2');
             store.reconcileDataset('ds1', [makePair('dataset_00001.jpg')]);
             const ids = store.entities().map(m => m.id).sort();
@@ -126,7 +125,7 @@ describe('MediaItemStore', () => {
     });
 
     it('toggleEnabled rolls back on API failure', async () => {
-        api.toggleImageEnabled.and.returnValue(throwError(() => new Error('boom')));
+        api.toggleImageEnabled.mockReturnValue(throwError(() => new Error('boom')));
         await store.loadForDataset('ds1');
         await store.toggleEnabled('ds1', 'a.png', false);
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.enabled).toBe(true);

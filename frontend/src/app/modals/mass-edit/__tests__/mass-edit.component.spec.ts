@@ -10,6 +10,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
+import { allByTestId } from '../../../../testing/by-test-id';
 import { MassEditModalComponent } from '../mass-edit.component';
 import { OverlayStore } from '../../../state/overlay.store';
 import { DatasetSyncService } from '../../../state/dataset-sync.service';
@@ -32,22 +33,22 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
     beforeEach(() => {
         fixture = null;
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            getOverlayRecipe: jasmine.createSpy('getOverlayRecipe').and.returnValue(of({ recipe: { operations: [] } })),
-            batchRenderPipeline: jasmine.createSpy('batchRenderPipeline').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            getOverlayRecipe: vi.fn().mockReturnValue(of({ recipe: { operations: [] } })),
+            batchRenderPipeline: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
                 { provide: ToastService, useValue: {
-                    success: jasmine.createSpy(),
-                    error: jasmine.createSpy(),
-                    info: jasmine.createSpy(),
-                    warning: jasmine.createSpy(),
-                } },
-                { provide: TaskStore, useValue: { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') } },
+                        success: vi.fn(),
+                        error: vi.fn(),
+                        info: vi.fn(),
+                        warning: vi.fn(),
+                    } },
+                { provide: TaskStore, useValue: { byId: vi.fn().mockReturnValue(signal(undefined)), cancel: vi.fn() } },
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: '/media' } },
             ],
         });
@@ -65,10 +66,8 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
             { media_file: 'dog.png', metadata: { has_overlay: false, width: 512, height: 512 } },
         ]);
         fixture.detectChanges();
-        const host: HTMLElement = fixture.nativeElement;
-        const badges = host.querySelectorAll('.me-tile .ovr-badge');
         // Only the tile for cat.png should have an OVR badge.
-        expect(badges.length).toBe(1);
+        expect(allByTestId(fixture, 'mass-edit-override-badge').length).toBe(1);
     });
 
     it('does NOT render OVR badges when no targets have has_overlay', () => {
@@ -79,7 +78,6 @@ describe('MassEditModalComponent — OVR badge on target tiles', () => {
             { media_file: 'dog.png', metadata: { width: 512, height: 512 } },
         ]);
         fixture.detectChanges();
-        const host: HTMLElement = fixture.nativeElement;
-        expect(host.querySelectorAll('.me-tile .ovr-badge').length).toBe(0);
+        expect(allByTestId(fixture, 'mass-edit-override-badge').length).toBe(0);
     });
 });

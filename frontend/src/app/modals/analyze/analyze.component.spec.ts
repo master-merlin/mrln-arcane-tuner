@@ -14,6 +14,7 @@
  * This prevents signal effect teardown from leaking across specs and triggering
  * NG0101 (ApplicationRef.tick called recursively).
  */
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { signal } from '@angular/core';
@@ -26,7 +27,10 @@ import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
 
 class StubOverlay {
-    private _modal = signal<{ kind: string; data: any } | null>({
+    private _modal = signal<{
+        kind: string;
+        data: any;
+    } | null>({
         kind: 'analyze',
         data: {
             datasetName: 'ds1',
@@ -39,20 +43,23 @@ class StubOverlay {
         },
     });
     topModal = this._modal;
-    patchModalData = jasmine.createSpy('patchModalData');
+    patchModalData = vi.fn();
 }
 
-class StubRtc { apiUrl = '/api'; mediaBaseUrl = '/media'; }
+class StubRtc {
+    apiUrl = '/api';
+    mediaBaseUrl = '/media';
+}
 
 class StubDatasetService {
-    analyzeDataset = jasmine.createSpy('analyzeDataset').and.returnValue(of({}));
-    getDatasetPairs = jasmine.createSpy('getDatasetPairs').and.returnValue(of([]));
+    analyzeDataset = vi.fn().mockReturnValue(of({}));
+    getDatasetPairs = vi.fn().mockReturnValue(of([]));
 }
 
 class StubToast {
-    success = jasmine.createSpy('success');
-    error   = jasmine.createSpy('error');
-    info    = jasmine.createSpy('info');
+    success = vi.fn();
+    error = vi.fn();
+    info = vi.fn();
 }
 
 describe('AnalyzeModalComponent — UI-context restore on re-mount', () => {
@@ -62,12 +69,12 @@ describe('AnalyzeModalComponent — UI-context restore on re-mount', () => {
         TestBed.configureTestingModule({
             providers: [
                 AnalyzeModalComponent,
-                { provide: OverlayStore,          useClass: StubOverlay },
-                { provide: RuntimeConfigService,  useClass: StubRtc },
-                { provide: DatasetService,        useClass: StubDatasetService },
-                { provide: ToastService,          useClass: StubToast },
-                { provide: DatasetSyncService,    useValue: { refreshDataset: jasmine.createSpy().and.returnValue(Promise.resolve()) } },
-                { provide: TaskStore,             useValue: { byId: jasmine.createSpy().and.returnValue(signal(undefined)), active: signal([]), cancel: jasmine.createSpy() } },
+                { provide: OverlayStore, useClass: StubOverlay },
+                { provide: RuntimeConfigService, useClass: StubRtc },
+                { provide: DatasetService, useClass: StubDatasetService },
+                { provide: ToastService, useClass: StubToast },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: TaskStore, useValue: { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() } },
             ],
         });
         cmp = TestBed.inject(AnalyzeModalComponent);
@@ -85,7 +92,7 @@ describe('AnalyzeModalComponent — UI-context restore on re-mount', () => {
     });
 
     it('calls fetch() when datasetName is present in modal data', () => {
-        const fetchSpy = spyOn(cmp as any, 'fetch').and.callThrough();
+        const fetchSpy = vi.spyOn(cmp as any, 'fetch');
         cmp.ngOnInit();
         expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
@@ -95,29 +102,33 @@ describe('AnalyzeModalComponent — UI-context restore on re-mount', () => {
 
 describe('AnalyzeModalComponent — crop-all launcher contract', () => {
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
+    let taskStoreSpy: {
+        byId: Mock;
+        active: ReturnType<typeof signal>;
+        cancel: Mock;
+    };
     let fixture: ReturnType<typeof TestBed.createComponent<AnalyzeModalComponent>> | null = null;
 
     beforeEach(() => {
         fixture = null;
         api = {
-            analyzeDataset: jasmine.createSpy('analyzeDataset').and.returnValue(of({ landscape: null, portrait: null, squared: null })),
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            batchCrop: jasmine.createSpy('batchCrop').and.returnValue(of({ task_id: 't1' })),
-            taskHarmonize: jasmine.createSpy('taskHarmonize').and.returnValue(of({ task_id: 'h1' })),
+            analyzeDataset: vi.fn().mockReturnValue(of({ landscape: null, portrait: null, squared: null })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCrop: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            taskHarmonize: vi.fn().mockReturnValue(of({ task_id: 'h1' })),
         };
         taskStoreSpy = {
-            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
+            byId: vi.fn().mockReturnValue(signal(undefined)),
             active: signal([]),
-            cancel: jasmine.createSpy('cancel'),
+            cancel: vi.fn(),
         };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
-                { provide: DatasetService,       useValue: api },
-                { provide: DatasetSyncService,   useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
-                { provide: ToastService,         useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy(), warning: jasmine.createSpy() } },
-                { provide: TaskStore,            useValue: taskStoreSpy },
+                { provide: DatasetService, useValue: api },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                { provide: TaskStore, useValue: taskStoreSpy },
                 { provide: RuntimeConfigService, useValue: { apiUrl: 'http://localhost:28000/api' } },
             ],
         });
@@ -142,11 +153,11 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
 
     it('startCropAll fires batchCrop and stores task id', () => {
         const { comp } = make();
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.cropAllOrigin.set('top');
         comp.startCropAll();
         expect(api.batchCrop).toHaveBeenCalled();
-        const [, items, origin] = api.batchCrop.calls.mostRecent().args;
+        const [, items, origin] = vi.mocked(api.batchCrop).mock.lastCall!;
         expect(origin).toBe('top');
         expect(items[0]).toEqual({ path: 'a.png', target_width: 512, target_height: 512 });
         expect(comp.cropTaskId()).toBe('t1');
@@ -155,7 +166,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
 
     it('cancelCropAll delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.startCropAll();
         comp.cancelCropAll();
         expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
@@ -164,19 +175,20 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
 
     it('cropAllPercent reflects task progress', () => {
         const taskSignal = signal<any>({ current: 1, total: 4, current_item: 'a.png', status: 'running' });
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.startCropAll();
         expect(comp.cropAllPercent()).toBe(25);
     });
 
     it('completed task clears running and refetches', fakeAsync(() => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { fixture: f, comp } = make();
-        spyOn(window, 'confirm').and.returnValue(true);
-        const fetchSpy = spyOn(comp as any, 'fetch').and.stub();
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const fetchSpy = vi.spyOn(comp as any, 'fetch').mockImplementation(() => {
+        });
         comp.startCropAll();
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         f.detectChanges();
@@ -187,7 +199,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
 
     it('harmonize() fires taskHarmonize and stores task id', () => {
         const { comp } = make();
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.harmonize();
         expect(api.taskHarmonize).toHaveBeenCalled();
         expect(comp.harmonizeTaskId()).toBe('h1');
@@ -196,10 +208,11 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
 
     it('harmonize completion clears harmonizing and refetches', fakeAsync(() => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
-        spyOn(window, 'confirm').and.returnValue(true);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         const { fixture: f, comp } = make();
-        const fetchSpy = spyOn(comp as any, 'fetch').and.stub();
+        const fetchSpy = vi.spyOn(comp as any, 'fetch').mockImplementation(() => {
+        });
         comp.harmonize();
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         f.detectChanges();

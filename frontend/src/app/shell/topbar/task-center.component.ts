@@ -61,10 +61,11 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
                         @if (recent().length > 0) { <div class="tc-sep"></div> }
                         @for (t of recent(); track t.id) {
                             @let v = view(t);
-                            <div class="tc-row done" [class.failed]="t.status !== 'completed'"
+                            <div class="tc-row done" data-testid="task-center-row"
+                                 [class.failed]="t.status !== 'completed'"
                                  [style.--accent]="v.accent">
-                                <div class="tc-kind">{{ v.kind }}</div>
-                                <div class="tc-subject" [title]="v.subject">{{ v.subject }}</div>
+                                <div class="tc-kind" data-testid="task-center-kind">{{ v.kind }}</div>
+                                <div class="tc-subject" data-testid="task-center-subject" [title]="v.subject">{{ v.subject }}</div>
                                 <div class="tc-detail mono">
                                     <app-ico class="tc-glyph"
                                         [name]="t.status === 'completed' ? 'Check' : 'X'" [size]="12"/>

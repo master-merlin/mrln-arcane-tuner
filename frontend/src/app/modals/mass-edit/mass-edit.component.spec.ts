@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
@@ -11,25 +12,30 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
 
 describe('MassEditModalComponent — launcher contract', () => {
     let api: any;
-    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
-    let sync: { refreshDataset: jasmine.Spy };
+    let taskStoreSpy: {
+        byId: Mock;
+        cancel: Mock;
+    };
+    let sync: {
+        refreshDataset: Mock;
+    };
     let fixture: ReturnType<typeof TestBed.createComponent<MassEditModalComponent>> | null = null;
 
     beforeEach(() => {
         fixture = null;
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            getOverlayRecipe: jasmine.createSpy('getOverlayRecipe').and.returnValue(of({ recipe: { operations: [] } })),
-            batchRenderPipeline: jasmine.createSpy('batchRenderPipeline').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            getOverlayRecipe: vi.fn().mockReturnValue(of({ recipe: { operations: [] } })),
+            batchRenderPipeline: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
-        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), cancel: jasmine.createSpy('cancel') };
-        sync = { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) };
+        taskStoreSpy = { byId: vi.fn().mockReturnValue(signal(undefined)), cancel: vi.fn() };
+        sync = { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore,
                 { provide: DatasetService, useValue: api },
                 { provide: DatasetSyncService, useValue: sync },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy(), warning: jasmine.createSpy() } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
                 { provide: RuntimeConfigService, useValue: { apiUrl: 'http://x' } },
             ],
@@ -49,10 +55,10 @@ describe('MassEditModalComponent — launcher contract', () => {
         const { comp } = make();
         comp.recipe.set({ operations: [{ type: 'contrast', enabled: true, params: { factor: 1.1 } }] });
         comp.selectedTargets.set(new Set(['a.png', 'b.png']));
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchRenderPipeline).toHaveBeenCalled();
-        const [name, paths, blocks] = api.batchRenderPipeline.calls.mostRecent().args;
+        const [name, paths, blocks] = vi.mocked(api.batchRenderPipeline).mock.lastCall!;
         expect(name).toBe('ds1');
         expect(paths).toEqual(['a.png', 'b.png']);
         expect(blocks[0].type).toBe('contrast');
@@ -64,7 +70,7 @@ describe('MassEditModalComponent — launcher contract', () => {
         const { comp } = make();
         comp.recipe.set({ operations: [{ type: 'contrast', enabled: true, params: {} }] });
         comp.selectedTargets.set(new Set(['a.png']));
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         comp.cancel();
         expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
@@ -73,23 +79,23 @@ describe('MassEditModalComponent — launcher contract', () => {
 
     it('pct() reflects task progress', () => {
         const taskSignal = signal<any>({ current: 1, total: 4, current_item: 'a.png', status: 'running' });
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
         comp.recipe.set({ operations: [{ type: 'contrast', enabled: true, params: {} }] });
         comp.selectedTargets.set(new Set(['a.png']));
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(comp.pct()).toBe(25);
     });
 
     it('completed task closes modal + refreshes; failed does not close', fakeAsync(() => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
-        const closeSpy = spyOn(comp.overlay, 'closeModal').and.callThrough();
+        const closeSpy = vi.spyOn(comp.overlay, 'closeModal');
         comp.recipe.set({ operations: [{ type: 'contrast', enabled: true, params: {} }] });
         comp.selectedTargets.set(new Set(['a.png']));
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         fixture!.detectChanges();

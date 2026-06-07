@@ -6,6 +6,7 @@
  * removed in Task 9). The per-image processQueue store writes are gone —
  * the backend owns the loop now.
  */
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
@@ -30,22 +31,26 @@ function makePair(mediaFile: string) {
 describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
     let api: any;
     let overlay: OverlayStore;
-    let taskStoreSpy: { byId: jasmine.Spy; active: ReturnType<typeof signal>; cancel: jasmine.Spy };
+    let taskStoreSpy: {
+        byId: Mock;
+        active: ReturnType<typeof signal>;
+        cancel: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            getDatasetPairs: jasmine.createSpy('getDatasetPairs').and.returnValue(of([])),
-            batchCaption: jasmine.createSpy('batchCaption').and.returnValue(of({ task_id: 't1' })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
-        taskStoreSpy = { byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)), active: signal([]), cancel: jasmine.createSpy('cancel') };
+        taskStoreSpy = { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() };
         TestBed.configureTestingModule({
             providers: [
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
             ],
         });
         overlay = TestBed.inject(OverlayStore);
@@ -58,20 +63,20 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.batchCaption).toHaveBeenCalled();
         expect(comp.taskId()).toBe('t1');
     });
 
     it('does NOT run a client-side processQueue loop (no generateCaption call)', () => {
-        api.generateCaption = jasmine.createSpy('generateCaption').and.returnValue(of({ caption: 'x' }));
+        api.generateCaption = vi.fn().mockReturnValue(of({ caption: 'x' }));
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('a.png'), makePair('b.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(api.generateCaption).not.toHaveBeenCalled();
     });
@@ -82,7 +87,7 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         expect(comp.running()).toBe(true);
         // Simulate the component being destroyed (modal close)
@@ -97,7 +102,7 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         comp.cancel();
         expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
@@ -110,7 +115,7 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
             { id: 'live', type: 'caption_batch', dataset_name: 'ds1', target: 'original', status: 'running' },
         ]);
         const live = signal<any>({ current: 12, total: 36, ok: 12, failed: 0 });
-        taskStoreSpy.byId.and.returnValue(live);
+        taskStoreSpy.byId.mockReturnValue(live);
 
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
@@ -138,14 +143,14 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
 
     it('pct() reflects task progress from TaskStore', () => {
         const taskSignal = signal<any>({ current: 3, total: 10, current_item: 'img.png', title: 'Captioning' });
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
 
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('a.png')]);
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.start();
         // After taskId is set, task() resolves via byId
         expect(comp.pct()).toBe(30);

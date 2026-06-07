@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
@@ -20,24 +21,26 @@ function makeJob(id: string): Job {
 describe('JobStore', () => {
     let store: JobStore;
     let api: {
-        listJobs: jasmine.Spy,
-        listJobHistory: jasmine.Spy,
-        deleteJob: jasmine.Spy,
+        listJobs: Mock;
+        listJobHistory: Mock;
+        deleteJob: Mock;
     };
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
     };
-    let toastMock: { error: jasmine.Spy };
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            listJobs: jasmine.createSpy('listJobs').and.returnValue(of([makeJob('a'), makeJob('b')])),
-            listJobHistory: jasmine.createSpy('listJobHistory').and.returnValue(of([])),
-            deleteJob: jasmine.createSpy('deleteJob').and.returnValue(of({ status: 'deleted', job_id: 'a' })),
+            listJobs: vi.fn().mockReturnValue(of([makeJob('a'), makeJob('b')])),
+            listJobHistory: vi.fn().mockReturnValue(of([])),
+            deleteJob: vi.fn().mockReturnValue(of({ status: 'deleted', job_id: 'a' })),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
 
         TestBed.configureTestingModule({
             providers: [
@@ -67,7 +70,7 @@ describe('JobStore', () => {
     });
 
     it('deleteJob rolls back on API failure', async () => {
-        api.deleteJob.and.returnValue(throwError(() => new Error('boom')));
+        api.deleteJob.mockReturnValue(throwError(() => new Error('boom')));
         await store.loadAll();
         await store.deleteJob('a');
         expect(store.entities().map(j => j.id).sort()).toEqual(['a', 'b']);
@@ -75,9 +78,9 @@ describe('JobStore', () => {
     });
 
     it('loadHistory merges historical jobs into the store', async () => {
-        api.listJobHistory.and.returnValue(of([makeJob('h1'), makeJob('h2')]));
-        await store.loadAll();      // seeds a, b
-        await store.loadHistory();  // adds h1, h2
+        api.listJobHistory.mockReturnValue(of([makeJob('h1'), makeJob('h2')]));
+        await store.loadAll(); // seeds a, b
+        await store.loadHistory(); // adds h1, h2
         const ids = store.entities().map(j => j.id).sort();
         expect(ids).toEqual(['a', 'b', 'h1', 'h2']);
     });

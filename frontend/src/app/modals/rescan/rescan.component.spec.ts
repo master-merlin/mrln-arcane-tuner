@@ -6,6 +6,7 @@
  * via TaskStore.byId. Closing the modal does NOT cancel the task. On terminal
  * status the modal reconciles datasets and auto-closes.
  */
+import type { Mock } from 'vitest';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
@@ -20,25 +21,32 @@ import { TaskStore } from '../../state/task.store';
 
 describe('RescanModalComponent — launcher contract', () => {
     let api: any;
-    let datasets: { loadAll: jasmine.Spy; entities: any; deleteDataset: jasmine.Spy };
-    let taskStoreSpy: { byId: jasmine.Spy; cancel: jasmine.Spy };
+    let datasets: {
+        loadAll: Mock;
+        entities: any;
+        deleteDataset: Mock;
+    };
+    let taskStoreSpy: {
+        byId: Mock;
+        cancel: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            rescanDataset: jasmine.createSpy('rescanDataset').and.returnValue(of({ task_id: 't1' })),
-            rescanLibrary: jasmine.createSpy('rescanLibrary').and.returnValue(of({ task_id: 't1' })),
+            rescanDataset: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            rescanLibrary: vi.fn().mockReturnValue(of({ task_id: 't1' })),
         };
         datasets = {
-            loadAll: jasmine.createSpy('loadAll').and.returnValue(Promise.resolve()),
+            loadAll: vi.fn().mockReturnValue(Promise.resolve()),
             entities: signal([
                 { id: 'a', name: 'alpha', missing: false },
                 { id: 'b', name: 'beta', missing: true },
             ] as any),
-            deleteDataset: jasmine.createSpy('deleteDataset').and.returnValue(Promise.resolve()),
+            deleteDataset: vi.fn().mockReturnValue(Promise.resolve()),
         };
         taskStoreSpy = {
-            byId: jasmine.createSpy('byId').and.returnValue(signal(undefined)),
-            cancel: jasmine.createSpy('cancel'),
+            byId: vi.fn().mockReturnValue(signal(undefined)),
+            cancel: vi.fn(),
         };
         TestBed.configureTestingModule({
             providers: [
@@ -46,8 +54,8 @@ describe('RescanModalComponent — launcher contract', () => {
                 { provide: DatasetStore, useValue: datasets },
                 { provide: MediaItemStore, useValue: { entities: signal([]) } },
                 { provide: DatasetService, useValue: api },
-                { provide: DatasetSyncService, useValue: { refreshDataset: jasmine.createSpy('refreshDataset').and.returnValue(Promise.resolve()) } },
-                { provide: ToastService, useValue: { success: jasmine.createSpy(), error: jasmine.createSpy(), info: jasmine.createSpy() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
             ],
         });
@@ -93,7 +101,7 @@ describe('RescanModalComponent — launcher contract', () => {
 
     it('pct() reflects task progress from TaskStore', () => {
         const taskSignal = signal<any>({ current: 3, total: 10, current_item: 'alpha → img.png' });
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         TestBed.inject(OverlayStore).openModal('rescan', { datasetName: 'alpha' });
         const comp = TestBed.createComponent(RescanModalComponent).componentInstance as any;
         comp.start();
@@ -101,19 +109,20 @@ describe('RescanModalComponent — launcher contract', () => {
     });
 
     it('on completion: reconciles, prunes missing (library), and auto-closes', fakeAsync(() => {
-        spyOn(window, 'confirm').and.returnValue(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const overlay = TestBed.inject(OverlayStore);
-        overlay.openModal('rescan');                         // library
-        const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
+        overlay.openModal('rescan'); // library
+        const closeSpy = vi.spyOn(overlay, 'closeModal');
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
         fixture.detectChanges();
         comp.start();
         taskSignal.set({ id: 't1', status: 'completed', total: 4, current: 4 });
-        fixture.detectChanges();                             // flush completion effect
-        tick(); tick();                                      // loadAll + deleteDataset microtasks
+        fixture.detectChanges(); // flush completion effect
+        tick();
+        tick(); // loadAll + deleteDataset microtasks
         expect(datasets.loadAll).toHaveBeenCalled();
         expect(datasets.deleteDataset).toHaveBeenCalledWith('b', false);
         expect(closeSpy).toHaveBeenCalled();
@@ -122,36 +131,38 @@ describe('RescanModalComponent — launcher contract', () => {
     it('on failure: toasts the error and auto-closes', fakeAsync(() => {
         const toast = TestBed.inject(ToastService) as any;
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const overlay = TestBed.inject(OverlayStore);
         overlay.openModal('rescan', { datasetName: 'alpha' });
-        const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
+        const closeSpy = vi.spyOn(overlay, 'closeModal');
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
         fixture.detectChanges();
         comp.start();
         taskSignal.set({ id: 't1', status: 'failed', total: 4, current: 1, error: 'boom' });
         fixture.detectChanges();
-        tick(); tick();
+        tick();
+        tick();
         expect(toast.error).toHaveBeenCalledWith('boom');
         expect(closeSpy).toHaveBeenCalled();
     }));
 
     it('after Stop, a late "cancelled" update does NOT reconcile or auto-close', fakeAsync(() => {
         const taskSignal = signal<any>(undefined);
-        taskStoreSpy.byId.and.returnValue(taskSignal);
+        taskStoreSpy.byId.mockReturnValue(taskSignal);
         const overlay = TestBed.inject(OverlayStore);
-        overlay.openModal('rescan');                         // library
-        const closeSpy = spyOn(overlay, 'closeModal').and.callThrough();
+        overlay.openModal('rescan'); // library
+        const closeSpy = vi.spyOn(overlay, 'closeModal');
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
         fixture.detectChanges();
         comp.start();
-        comp.cancel();                                       // explicit Stop arms _finalized
+        comp.cancel(); // explicit Stop arms _finalized
         taskSignal.set({ id: 't1', status: 'cancelled', total: 4, current: 2 });
         fixture.detectChanges();
-        tick(); tick();
-        expect(datasets.loadAll).not.toHaveBeenCalled();     // no reconcile after user stop
-        expect(closeSpy).not.toHaveBeenCalled();             // launcher stays open
+        tick();
+        tick();
+        expect(datasets.loadAll).not.toHaveBeenCalled(); // no reconcile after user stop
+        expect(closeSpy).not.toHaveBeenCalled(); // launcher stays open
     }));
 });

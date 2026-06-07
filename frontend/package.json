@@ -41,7 +41,7 @@
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
     "uplot": "^1.6.32",
-    "zone.js": "^0.16.0"
+    "zone.js": "^0.16.2"
   },
   "devDependencies": {
     "@angular-devkit/build-angular": "21.1.2",
@@ -49,17 +49,12 @@
     "@angular/cli": "21.1.2",
     "@angular/compiler-cli": "21.1.2",
     "@tailwindcss/postcss": "^4.2.0",
-    "@types/jasmine": "^6.0.0",
     "browser-sync": "^3.0.4",
-    "jasmine-core": "^6.0.1",
-    "karma": "^6.4.4",
-    "karma-chrome-launcher": "^3.2.0",
-    "karma-coverage": "^2.2.1",
-    "karma-jasmine": "^5.1.0",
-    "karma-jasmine-html-reporter": "^2.2.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.35",
     "source-map-support": "^0.5.21",
     "tailwindcss": "^4.2.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vitest": "^4.1.8"
   }
 }

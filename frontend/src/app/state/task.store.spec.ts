@@ -22,17 +22,17 @@ describe('TaskStore', () => {
     beforeEach(() => {
         updates$ = new Subject();
         api = {
-            getTasks: jasmine.createSpy('getTasks').and.returnValue(of([])),
-            cancelTask: jasmine.createSpy('cancelTask').and.returnValue(of({})),
+            getTasks: vi.fn().mockReturnValue(of([])),
+            cancelTask: vi.fn().mockReturnValue(of({})),
         };
         TestBed.configureTestingModule({
             providers: [
                 TaskStore,
                 { provide: DatasetService, useValue: api },
                 { provide: WebSocketService, useValue: {
-                    reconnected: signal(0),
-                    on: (e: string) => e === 'task_update' ? updates$.asObservable() : of(),
-                } },
+                        reconnected: signal(0),
+                        on: (e: string) => e === 'task_update' ? updates$.asObservable() : of(),
+                    } },
             ],
         });
         store = TestBed.inject(TaskStore);

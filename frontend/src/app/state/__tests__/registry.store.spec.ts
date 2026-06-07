@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
@@ -19,30 +20,26 @@ function makeOverride(overrides: Partial<ModelSourceOverride> = {}): ModelSource
 describe('RegistryStore', () => {
     let store: RegistryStore;
     let api: {
-        getModelSource: jasmine.Spy,
-        setModelSource: jasmine.Spy,
-        deleteModelSource: jasmine.Spy,
+        getModelSource: Mock;
+        setModelSource: Mock;
+        deleteModelSource: Mock;
     };
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
     };
-    let toastMock: { error: jasmine.Spy };
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            getModelSource: jasmine.createSpy('getModelSource').and.returnValue(
-                of(makeOverride({ skip_update: true })),
-            ),
-            setModelSource: jasmine.createSpy('setModelSource').and.callFake(
-                (_id: string, override: ModelSourceOverride) => of(override),
-            ),
-            deleteModelSource: jasmine.createSpy('deleteModelSource').and.returnValue(
-                of({ status: 'removed' }),
-            ),
+            getModelSource: vi.fn().mockReturnValue(of(makeOverride({ skip_update: true }))),
+            setModelSource: vi.fn().mockImplementation((_id: string, override: ModelSourceOverride) => of(override)),
+            deleteModelSource: vi.fn().mockReturnValue(of({ status: 'removed' })),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
 
         TestBed.configureTestingModule({
             providers: [
@@ -80,14 +77,12 @@ describe('RegistryStore', () => {
 
     it('setOverride rolls back on API failure', async () => {
         await store.loadFor('flux2-dev');
-        api.setModelSource.and.returnValue(throwError(() => new Error('boom')));
+        api.setModelSource.mockReturnValue(throwError(() => new Error('boom')));
         const original = store.byId('flux2-dev')();
         await store.setOverride('flux2-dev', makeOverride({ skip_update: false }));
         // Should be restored to the loaded value (skip_update: true).
         expect(store.byId('flux2-dev')()?.skip_update).toBe(original?.skip_update);
-        expect(toastMock.error).toHaveBeenCalledWith(
-            `Couldn't save model source — reverted.`,
-        );
+        expect(toastMock.error).toHaveBeenCalledWith(`Couldn't save model source — reverted.`);
     });
 
     it('clearOverride removes optimistically and calls the API', async () => {
@@ -101,12 +96,10 @@ describe('RegistryStore', () => {
 
     it('clearOverride rolls back on API failure', async () => {
         await store.loadFor('flux2-dev');
-        api.deleteModelSource.and.returnValue(throwError(() => new Error('boom')));
+        api.deleteModelSource.mockReturnValue(throwError(() => new Error('boom')));
         await store.clearOverride('flux2-dev');
         expect(store.byId('flux2-dev')()).toBeDefined();
-        expect(toastMock.error).toHaveBeenCalledWith(
-            `Couldn't clear model source — restored.`,
-        );
+        expect(toastMock.error).toHaveBeenCalledWith(`Couldn't clear model source — restored.`);
     });
 
     it('server-pushed entity.changed:updated upserts the row', () => {

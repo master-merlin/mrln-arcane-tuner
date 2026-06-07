@@ -1,21 +1,38 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { TaskCenterComponent } from './task-center.component';
 import { TaskStore } from '../../state/task.store';
+import { byTestId } from '../../../testing/by-test-id';
 
 describe('TaskCenterComponent', () => {
-    let cancel: jasmine.Spy;
+    let cancel: Mock;
     beforeEach(() => {
-        cancel = jasmine.createSpy('cancel');
+        cancel = vi.fn();
         TestBed.configureTestingModule({
             imports: [TaskCenterComponent],
-            providers: [{ provide: TaskStore, useValue: {
-                active: signal([{ id: 't1', title: 'Captioning · ds', status: 'running',
-                    total: 4, current: 2, current_item: 'a.png', ok: 2, failed: 0 }]),
-                activeCount: signal(1),
-                recent: signal([]),
-                cancel,
-            } }],
+            providers: [
+                {
+                    provide: TaskStore,
+                    useValue: {
+                        active: signal([
+                            {
+                                id: 't1',
+                                title: 'Captioning · ds',
+                                status: 'running',
+                                total: 4,
+                                current: 2,
+                                current_item: 'a.png',
+                                ok: 2,
+                                failed: 0,
+                            },
+                        ]),
+                        activeCount: signal(1),
+                        recent: signal([]),
+                        cancel,
+                    },
+                },
+            ],
         });
     });
 
@@ -39,12 +56,17 @@ describe('TaskCenterComponent done-row summary', () => {
         TestBed.resetTestingModule();
         TestBed.configureTestingModule({
             imports: [TaskCenterComponent],
-            providers: [{ provide: TaskStore, useValue: {
-                active: signal([]),
-                activeCount: signal(0),
-                recent: signal(recent),
-                cancel: () => undefined,
-            } }],
+            providers: [
+                {
+                    provide: TaskStore,
+                    useValue: {
+                        active: signal([]),
+                        activeCount: signal(0),
+                        recent: signal(recent),
+                        cancel: () => undefined,
+                    },
+                },
+            ],
         });
         const f = TestBed.createComponent(TaskCenterComponent);
         (f.componentInstance as any).toggle();
@@ -53,15 +75,23 @@ describe('TaskCenterComponent done-row summary', () => {
     }
 
     it('shows "done" but never "failed" for a clean run', () => {
-        const txt = mount([{ id: 'r1', title: 'Captioning · Mitsubishi 3000GT - 1990',
-            status: 'completed', ok: 33, failed: 0 }]);
+        const txt = mount([
+            {
+                id: 'r1',
+                title: 'Captioning · Mitsubishi 3000GT - 1990',
+                status: 'completed',
+                ok: 33,
+                failed: 0,
+            },
+        ]);
         expect(txt).toContain('33 done');
         expect(txt).not.toContain('failed');
     });
 
     it('surfaces the failed count when something failed', () => {
-        const txt = mount([{ id: 'r2', title: 'Captioning · ds',
-            status: 'completed', ok: 30, failed: 3 }]);
+        const txt = mount([
+            { id: 'r2', title: 'Captioning · ds', status: 'completed', ok: 30, failed: 3 },
+        ]);
         expect(txt).toContain('30 ok');
         expect(txt).toContain('3 failed');
     });
@@ -70,21 +100,39 @@ describe('TaskCenterComponent done-row summary', () => {
         TestBed.resetTestingModule();
         TestBed.configureTestingModule({
             imports: [TaskCenterComponent],
-            providers: [{ provide: TaskStore, useValue: {
-                active: signal([]), activeCount: signal(0),
-                recent: signal([{ id: 'r3', type: 'caption_batch', title: 'Captioning · X',
-                    dataset_name: 'Mitsubishi 3000GT - 1990', status: 'completed', ok: 5, failed: 0 }]),
-                cancel: () => undefined,
-            } }],
+            providers: [
+                {
+                    provide: TaskStore,
+                    useValue: {
+                        active: signal([]),
+                        activeCount: signal(0),
+                        recent: signal([
+                            {
+                                id: 'r3',
+                                type: 'caption_batch',
+                                title: 'Captioning · X',
+                                dataset_name: 'Mitsubishi 3000GT - 1990',
+                                status: 'completed',
+                                ok: 5,
+                                failed: 0,
+                            },
+                        ]),
+                        cancel: () => undefined,
+                    },
+                },
+            ],
         });
         const f = TestBed.createComponent(TaskCenterComponent);
         (f.componentInstance as any).toggle();
         f.detectChanges();
-        const el = f.nativeElement as HTMLElement;
-        expect(el.querySelector('.tc-kind')?.textContent).toContain('Captioning');
-        expect(el.querySelector('.tc-subject')?.textContent).toContain('Mitsubishi 3000GT - 1990');
+        expect(byTestId(f, 'task-center-kind')!.nativeElement.textContent).toContain('Captioning');
+        expect(byTestId(f, 'task-center-subject')!.nativeElement.textContent).toContain(
+            'Mitsubishi 3000GT - 1990',
+        );
         // Accent token reused from the KPI rails, bound as a CSS custom prop.
         // Captioning maps to brand (matching its buttons elsewhere in the app).
-        expect(el.querySelector('.tc-row')?.getAttribute('style')).toContain('--color-brand');
+        expect(byTestId(f, 'task-center-row')!.nativeElement.getAttribute('style')).toContain(
+            '--color-brand',
+        );
     });
 });

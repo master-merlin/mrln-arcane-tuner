@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { of, throwError } from 'rxjs';
@@ -10,26 +11,24 @@ import type { EntityChangedMessage } from '../entity-events';
 describe('SettingsStore', () => {
     let store: SettingsStore;
     let api: {
-        getModule: jasmine.Spy,
-        updateModule: jasmine.Spy,
+        getModule: Mock;
+        updateModule: Mock;
     };
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
     };
-    let toastMock: { error: jasmine.Spy };
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         api = {
-            getModule: jasmine.createSpy('getModule').and.returnValue(
-                of({ backend_port: 8000, log_level: 'INFO' }),
-            ),
-            updateModule: jasmine.createSpy('updateModule').and.callFake(
-                (_m: string, settings: Record<string, unknown>) => of(settings),
-            ),
+            getModule: vi.fn().mockReturnValue(of({ backend_port: 8000, log_level: 'INFO' })),
+            updateModule: vi.fn().mockImplementation((_m: string, settings: Record<string, unknown>) => of(settings)),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
 
         TestBed.configureTestingModule({
             providers: [
@@ -68,13 +67,11 @@ describe('SettingsStore', () => {
 
     it('updateModule rolls back on API failure', async () => {
         await store.loadModule('application');
-        api.updateModule.and.returnValue(throwError(() => new Error('boom')));
+        api.updateModule.mockReturnValue(throwError(() => new Error('boom')));
         await store.updateModule('application', { log_level: 'ERROR' });
         // Should be restored to the loaded value (log_level: 'INFO').
         expect(store.byId('application')()?.settings['log_level']).toBe('INFO');
-        expect(toastMock.error).toHaveBeenCalledWith(
-            `Couldn't save application settings — reverted.`,
-        );
+        expect(toastMock.error).toHaveBeenCalledWith(`Couldn't save application settings — reverted.`);
     });
 
     it('server-pushed entity.changed:updated upserts the row', () => {

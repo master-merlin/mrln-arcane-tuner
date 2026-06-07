@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { Injectable, signal, WritableSignal } from '@angular/core';
 import { EntityStore } from '../entity-store';
@@ -5,13 +6,16 @@ import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
 import type { EntityChangedMessage } from '../entity-events';
 
-interface Foo { id: string; name: string; }
+interface Foo {
+    id: string;
+    name: string;
+}
 
 @Injectable({ providedIn: 'root' })
 class FooStore extends EntityStore<Foo> {
     protected entityName = 'foo';
     constructor(ws: WebSocketService, toast: ToastService) { super(ws, toast); }
-    protected async loadAll(): Promise<void> { /* no-op for tests */ }
+    protected async loadAll(): Promise<void> { }
 
     // Test helpers — call protected methods directly, no `as any` casts.
     public async _runOptimistic(args: Parameters<EntityStore<Foo>['runOptimistic']>[0]) {
@@ -26,14 +30,16 @@ class FooStore extends EntityStore<Foo> {
 describe('EntityStore', () => {
     let store: FooStore;
     let wsMock: {
-        entityChanged: WritableSignal<EntityChangedMessage | null>,
-        reconnected: WritableSignal<number>,
+        entityChanged: WritableSignal<EntityChangedMessage | null>;
+        reconnected: WritableSignal<number>;
     };
-    let toastMock: { error: jasmine.Spy };
+    let toastMock: {
+        error: Mock;
+    };
 
     beforeEach(() => {
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
-        toastMock = { error: jasmine.createSpy('error') };
+        toastMock = { error: vi.fn() };
         TestBed.configureTestingModule({
             providers: [
                 FooStore,
@@ -42,7 +48,7 @@ describe('EntityStore', () => {
             ],
         });
         store = TestBed.inject(FooStore);
-        TestBed.tick();   // ensure constructor-side effects register
+        TestBed.tick(); // ensure constructor-side effects register
     });
 
     it('applies optimistic update synchronously', () => {
@@ -63,7 +69,8 @@ describe('EntityStore', () => {
             errorMessage: 'reverted',
         });
         expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.error).toEqual(new Error('boom'));
+        if (!result.ok)
+            expect(result.error).toEqual(new Error('boom'));
         expect(store.entities()).toEqual([{ id: '1', name: 'one' }]);
         expect(toastMock.error).toHaveBeenCalledWith('reverted');
     });
@@ -106,7 +113,7 @@ describe('EntityStore', () => {
     });
 
     it('refetches on WS reconnect', () => {
-        const loadAll = spyOn(store as any, 'loadAll');
+        const loadAll = vi.spyOn(store as any, 'loadAll');
         wsMock.reconnected.update(n => n + 1);
         TestBed.tick();
         expect(loadAll).toHaveBeenCalled();
@@ -115,6 +122,6 @@ describe('EntityStore', () => {
     it('byId returns the same computed signal for the same id', () => {
         const a = store.byId('1');
         const b = store.byId('1');
-        expect(a).toBe(b);  // identity check — same signal instance
+        expect(a).toBe(b); // identity check — same signal instance
     });
 });

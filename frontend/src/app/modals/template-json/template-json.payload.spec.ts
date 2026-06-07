@@ -34,6 +34,23 @@ describe('buildEditablePayload', () => {
         });
     });
 
+    it('includes wildcard for captioning templates so the JSON editor can edit it', () => {
+        const out = buildEditablePayload(tpl({
+            name: 'Cap', config: { temperature: 0.7 },
+            system_prompt: 'Describe {wildcard}.', wildcard: 'a Porsche', model_id: 'qwen3-vl',
+        }));
+        expect(out['wildcard']).toBe('a Porsche');
+        expect(out).toEqual({
+            name: 'Cap', config: { temperature: 0.7 },
+            system_prompt: 'Describe {wildcard}.', wildcard: 'a Porsche', model_id: 'qwen3-vl',
+        });
+    });
+
+    it('omits wildcard when the template has none (training templates)', () => {
+        const out = buildEditablePayload(tpl({ name: 'Train', config: {}, definition_id: 'd' }));
+        expect(out['wildcard']).toBeUndefined();
+    });
+
     it('includes definition_id for training templates', () => {
         const out = buildEditablePayload(tpl({
             name: 'Train', config: { max_train_steps: 1000 }, definition_id: 'flux2-lora',

@@ -345,9 +345,20 @@ export const queuedJob = { id: 'job-e2e-1', status: 'pending' };
  * ════════════════════════════════════════════════════════════════════════ */
 
 /**
- * GET /api/datasets/{name}/pairs — a single image-caption pair. The workspace
- * (via DatasetSyncService.refreshDataset) and both mass-* modals fetch this on
- * open; one ready pair is enough to render the filmstrip + let the modals open.
+ * GET /api/datasets/{name}/pairs — image-caption pairs for dataset `alpha`.
+ *
+ * The first pair (`img001.png`, no overlay) is the original Flow C/D fixture:
+ * the workspace lands on it as the edit-mode cursor and both mass-caption /
+ * mass-mask modals open against it. Flow D's editor enters EDIT mode on this
+ * pair, so it is kept first and unchanged.
+ *
+ * The remaining three pairs feed the mass-edit modal (Flow E):
+ *   - `img002.png` has `metadata.has_overlay === true` → the SINGLE valid
+ *     SOURCE candidate (the modal's `sourceCandidates` filters on `has_overlay`),
+ *     whose recipe is cloned. It is excluded from the target grid once picked.
+ *   - `img003.png` is a plain TARGET candidate (no overlay).
+ *   - `img004.png` is a TARGET candidate that ALSO has an overlay, so the
+ *     `mass-edit-override-badge` "OVR" renders on its tile (asserted in Flow E).
  */
 export const datasetPairs = [
     {
@@ -368,6 +379,66 @@ export const datasetPairs = [
             height: 1024,
             aspect_ratio: 1.0,
             quality_score: 0.31,
+        },
+    },
+    {
+        stem: 'img002',
+        media_file: 'img002.png',
+        media_type: 'image' as const,
+        caption_file: 'img002.txt',
+        size_bytes: 1_300_000,
+        caption_content: 'a graded portrait',
+        masked_caption_content: null as string | null,
+        metadata: {
+            enabled: true,
+            has_mask: true,
+            has_masked: false,
+            has_masked_caption: false,
+            has_overlay: true,
+            width: 1024,
+            height: 1024,
+            aspect_ratio: 1.0,
+            quality_score: 0.42,
+        },
+    },
+    {
+        stem: 'img003',
+        media_file: 'img003.png',
+        media_type: 'image' as const,
+        caption_file: 'img003.txt',
+        size_bytes: 1_100_000,
+        caption_content: 'an outdoor shot',
+        masked_caption_content: null as string | null,
+        metadata: {
+            enabled: true,
+            has_mask: false,
+            has_masked: false,
+            has_masked_caption: false,
+            has_overlay: false,
+            width: 1024,
+            height: 768,
+            aspect_ratio: 1.333,
+            quality_score: 0.28,
+        },
+    },
+    {
+        stem: 'img004',
+        media_file: 'img004.png',
+        media_type: 'image' as const,
+        caption_file: 'img004.txt',
+        size_bytes: 1_400_000,
+        caption_content: 'a studio shot',
+        masked_caption_content: null as string | null,
+        metadata: {
+            enabled: true,
+            has_mask: true,
+            has_masked: false,
+            has_masked_caption: false,
+            has_overlay: true,
+            width: 1024,
+            height: 1024,
+            aspect_ratio: 1.0,
+            quality_score: 0.36,
         },
     },
 ];
@@ -459,3 +530,38 @@ export const renderPipelineResponse = {
     dimensions: [64, 64] as number[],
     hash: 'e2eovhash',
 };
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Mass-apply overlays (Flow E) fixtures.
+ *
+ * Flow E opens the mass-edit modal ("Apply one image's overlay recipe to
+ * many"), picks the SOURCE image whose overlay recipe to clone, selects
+ * TARGET images, then submits. Two backend round-trips drive the assertions:
+ *   - GET  /api/datasets/{name}/overlay-recipe/{imagePath}
+ *       → OverlayRecipeResponse (src/app/services/dataset.ts):
+ *         { image_path, recipe: Record<string, unknown> }
+ *       The modal reads `res.recipe.operations` (a list of
+ *       { type, params?, enabled? }) and renders one "RECIPE SUMMARY" row per
+ *       op. A non-empty `operations` list is REQUIRED — an empty list makes the
+ *       modal clear the recipe + toast "No pipeline operations found", leaving
+ *       Apply disabled. Three ops keep the summary populated.
+ *   - POST /api/datasets/{name}/render-pipeline/batch
+ *       → { task_id } (the modal then tracks progress via TaskStore/WS). The
+ *         e2e flow asserts the POST fires; it does NOT drive task completion.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/** GET /api/datasets/{name}/overlay-recipe/{imagePath} — the source image's
+ *  cloned overlay recipe. `recipe.operations` is what the modal consumes. */
+export const overlayRecipe = {
+    image_path: 'img002.png',
+    recipe: {
+        operations: [
+            { type: 'curves', enabled: true, params: { channel: 'master', points: 5 } },
+            { type: 'hsl_selective', enabled: true, params: { range: 'reds', sat: 40 } },
+            { type: 'white_balance', enabled: true, params: { temp: 12, tint: -4 } },
+        ],
+    },
+};
+
+/** POST /api/datasets/{name}/render-pipeline/batch — the batch-apply task ack. */
+export const batchRenderResponse = { task_id: 'task-e2e' };

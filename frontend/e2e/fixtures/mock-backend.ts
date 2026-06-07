@@ -21,6 +21,8 @@ import {
     captionTemplates,
     maskingTemplates,
     renderPipelineResponse,
+    overlayRecipe,
+    batchRenderResponse,
 } from './api-data';
 
 /**
@@ -221,6 +223,37 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'PUT',
         test: (p) => /\/api\/templates\/masking\/[^/]+$/.test(p),
         handler: (route) => json(route, maskingTemplates[0]),
+    },
+
+    // ── Mass-apply overlays (Flow E) ──────────────────────────────────────
+    // Source recipe load: the modal GETs the picked source image's overlay
+    // recipe. The image path is encoded into the URL after the `/overlay-recipe/`
+    // segment, so match on that substring (the dataset segment precedes it).
+    {
+        method: 'GET',
+        test: (p) => /\/api\/datasets\/[^/]+\/overlay-recipe\//.test(p),
+        handler: (route) => json(route, overlayRecipe),
+    },
+    // Rendered overlay IMAGE: the workspace browse grid (viewer-grid-view) and
+    // the mass-edit OVR tiles request `/overlay/{path}` for any pair with
+    // `metadata.has_overlay` (Flow E fixtures add two). Serve the 64×64 PNG —
+    // it falls under `/api/` so it doesn't hit the `/media/**` branch. Listed
+    // before `/overlay/commit` (POST) so the GET image fetch isn't confused.
+    {
+        method: 'GET',
+        test: (p) => /\/api\/datasets\/[^/]+\/overlay\//.test(p),
+        handler: (route) =>
+            route.fulfill({ status: 200, contentType: 'image/png', body: PNG_64 }),
+    },
+    // Batch apply: "Apply to N images" POSTs the cloned recipe to the BATCH
+    // endpoint, returning a task_id (progress is then tracked via TaskStore/WS).
+    // MUST be listed BEFORE the single `/render-pipeline` route below — its
+    // `/batch` suffix would otherwise be shadowed by `endsWith('/render-pipeline')`
+    // (here the single route uses an anchored regex, but order keeps it safe).
+    {
+        method: 'POST',
+        test: (p) => p.endsWith('/render-pipeline/batch'),
+        handler: (route) => json(route, batchRenderResponse),
     },
 
     // ── Dataset-viewer editors (Flow D / E5) ──────────────────────────────

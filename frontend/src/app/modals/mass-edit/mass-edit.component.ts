@@ -57,7 +57,7 @@ interface RecipeOperation {
             <button class="icon-btn" type="button" (click)="overlay.closeModal()" aria-label="Close">×</button>
         </div>
 
-        <div class="modal-body me-body">
+        <div class="modal-body me-body" data-testid="mass-edit-modal">
             @if (!data.datasetName) {
                 <div class="me-empty">
                     <app-ico name="Info" [size]="18"/>
@@ -100,6 +100,7 @@ interface RecipeOperation {
                             @for (p of sourceCandidates(); track p.media_file) {
                                 <button type="button"
                                         class="me-tile"
+                                        [attr.data-testid]="'mass-edit-source-' + p.media_file"
                                         [style.aspect-ratio]="aspectRatio(p)"
                                         [class.active]="source()?.media_file === p.media_file"
                                         (click)="pickSource(p)"
@@ -115,7 +116,7 @@ interface RecipeOperation {
                 </section>
 
                 @if (recipe(); as r) {
-                    <section class="me-recipe">
+                    <section class="me-recipe" data-testid="mass-edit-recipe">
                         <div class="me-section-head">
                             <span class="me-section-bar"></span>
                             <span class="eyebrow">RECIPE SUMMARY · {{ r.operations.length }} OPS</span>
@@ -146,6 +147,7 @@ interface RecipeOperation {
                             @let on = selectedTargets().has(p.media_file);
                             <button type="button"
                                     class="me-tile"
+                                    [attr.data-testid]="'mass-edit-target-' + p.media_file"
                                     [style.aspect-ratio]="aspectRatio(p)"
                                     [class.active]="on"
                                     (click)="toggleTarget(p.media_file)"
@@ -170,6 +172,7 @@ interface RecipeOperation {
                 <span class="muted me-foot-hint">Will create or overwrite overlays on selected images.</span>
                 <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
                 <button class="btn cta violet" type="button"
+                        data-testid="mass-edit-apply-btn"
                         [disabled]="!recipe() || selectedTargets().size === 0"
                         (click)="start()">
                     <app-ico name="Sparkles" [size]="12"/>

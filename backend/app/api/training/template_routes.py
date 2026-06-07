@@ -35,6 +35,11 @@ class CaptioningTemplate(BaseModel):
     is_default: bool = False
     readonly: bool = False
     system_prompt: str = "Describe this image in detail."
+    # Per-template wildcard substituted into {wildcard} tokens before captioning.
+    # MUST be in the response model — without it FastAPI strips the field from
+    # every GET/list/update response, so a saved wildcard never reads back and
+    # the UI looks like it didn't persist (system_prompt did, hence the asymmetry).
+    wildcard: str = ""
     config: dict[str, Any] | str | None = None
     created_at: float
     updated_at: float | None = None

@@ -16,6 +16,10 @@ import {
     trainingTemplates,
     trainingEstimate,
     queuedJob,
+    datasetPairs,
+    projectPreferences,
+    captionTemplates,
+    maskingTemplates,
 } from './api-data';
 
 /**
@@ -64,6 +68,23 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'GET',
         test: (p) => p.endsWith('/api/datasets/cache/stats'),
         handler: (route) => json(route, cacheStats),
+    },
+    // Dataset workspace + mass-* modals (Flow C): the per-dataset `/pairs`
+    // list. The workspace's refreshDataset and each mass-* modal's ngOnInit
+    // fetch it on open. Listed before the bare `/api/datasets` collection.
+    {
+        method: 'GET',
+        test: (p) => /\/api\/datasets\/[^/]+\/pairs$/.test(p),
+        handler: (route) => json(route, datasetPairs),
+    },
+    // Filmstrip thumbnails — the workspace's filmstrip-scrubber loads a 256px
+    // WebP per pair from the dataset `/thumbnail` endpoint (under `/api/`, NOT
+    // `/media/`, so it falls through to this table). Serve the 1×1 PNG.
+    {
+        method: 'GET',
+        test: (p) => /\/api\/datasets\/[^/]+\/thumbnail$/.test(p),
+        handler: (route) =>
+            route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1x1 }),
     },
     {
         method: 'GET',
@@ -138,6 +159,63 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'POST',
         test: (p) => p.endsWith('/api/jobs'),
         handler: (route) => json(route, queuedJob),
+    },
+
+    // ── Caption / masking settings (Flow C) ───────────────────────────────
+    // Project preferences — both settings components read this on init
+    // (Global scope → keyed as `general`). The debounced PUT echoes the body
+    // back so a model/prompt edit that triggers a persist doesn't 500.
+    {
+        method: 'GET',
+        test: (p) => /\/api\/projects\/[^/]+\/preferences$/.test(p),
+        handler: (route) => json(route, projectPreferences),
+    },
+    {
+        method: 'PUT',
+        test: (p) => /\/api\/projects\/[^/]+\/preferences$/.test(p),
+        handler: (route, request) =>
+            json(route, { ...projectPreferences, ...(request.postDataJSON() ?? {}) }),
+    },
+    // Caption-model swap calls DELETE /api/captions/unload to free the prior
+    // model before loading the next one.
+    {
+        method: 'DELETE',
+        test: (p) => p.endsWith('/api/captions/unload'),
+        handler: (route) => json(route, { status: 'ok' }),
+    },
+    // Template lists drive the caption/masking `Settings Template` selects. The
+    // `?model_id=…` query is stripped before `test` runs, so a bare endsWith
+    // suffices. PUT/POST (template edit/clone) echo a row so any settings edit
+    // that persists a template doesn't 500.
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/templates/captioning'),
+        handler: (route) => json(route, captionTemplates),
+    },
+    {
+        method: 'POST',
+        test: (p) => p.endsWith('/api/templates/captioning'),
+        handler: (route) => json(route, captionTemplates[0]),
+    },
+    {
+        method: 'PUT',
+        test: (p) => /\/api\/templates\/captioning\/[^/]+$/.test(p),
+        handler: (route) => json(route, captionTemplates[0]),
+    },
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/templates/masking'),
+        handler: (route) => json(route, maskingTemplates),
+    },
+    {
+        method: 'POST',
+        test: (p) => p.endsWith('/api/templates/masking'),
+        handler: (route) => json(route, maskingTemplates[0]),
+    },
+    {
+        method: 'PUT',
+        test: (p) => /\/api\/templates\/masking\/[^/]+$/.test(p),
+        handler: (route) => json(route, maskingTemplates[0]),
     },
 ];
 

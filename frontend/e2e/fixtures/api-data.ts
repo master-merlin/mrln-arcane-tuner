@@ -312,3 +312,126 @@ export const trainingEstimate = {
 
 /** POST /api/jobs — queue ack returned when the submit path is exercised. */
 export const queuedJob = { id: 'job-e2e-1', status: 'pending' };
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Dataset workspace + caption/masking settings (Flow C) fixtures.
+ *
+ * Flow C opens the fullscreen dataset workspace over a dataset card and drives
+ * the shared caption/masking settings UIs hosted by the mass-caption /
+ * mass-mask modals. Shapes mirror the REAL interfaces the path consumes:
+ *   - DatasetPair        → src/app/services/dataset.ts (GET /datasets/{n}/pairs)
+ *   - ProjectPreferences → src/app/services/project.service.ts
+ *   - Template           → src/app/services/template.service.ts
+ *
+ * The open + modal path, in order:
+ *   click dataset-card-alpha → overlay.openWorkspace(alpha)
+ *     workspace.ensurePairsLoaded → GET /api/datasets/alpha/pairs (refreshDataset)
+ *   click ws-mass-caption-btn → mass-caption modal
+ *     ngOnInit         → GET /api/datasets/alpha/pairs
+ *     caption-settings → GET /api/projects/general/preferences
+ *                        GET /api/templates/captioning?model_id=florence-2
+ *   click ws-mass-mask-btn → mass-mask modal (Generate tab → masking-settings)
+ *     ngOnInit         → GET /api/datasets/alpha/pairs
+ *     masking-settings → GET /api/projects/general/preferences
+ *                        GET /api/templates/masking?model_id=sam3
+ *
+ * The model `<select>`s in both settings components are populated from a
+ * HARDCODED in-component list (florence-2 / qwen3-vl / … and sam3 / rembg), so
+ * `caption-model-select` / `masking-model-select` render regardless of the API.
+ * The template `<select>`s and the masking `masking-param-*` rows DO depend on
+ * the mocked responses below — a non-empty template list keeps each template
+ * select populated, and `selected_mask_model: 'sam3'` keeps the sam3 params
+ * (e.g. `masking-param-text_prompt`) rendered.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * GET /api/datasets/{name}/pairs — a single image-caption pair. The workspace
+ * (via DatasetSyncService.refreshDataset) and both mass-* modals fetch this on
+ * open; one ready pair is enough to render the filmstrip + let the modals open.
+ */
+export const datasetPairs = [
+    {
+        stem: 'img001',
+        media_file: 'img001.png',
+        media_type: 'image' as const,
+        caption_file: 'img001.txt',
+        size_bytes: 1_200_000,
+        caption_content: 'a portrait photo',
+        masked_caption_content: null as string | null,
+        metadata: {
+            enabled: true,
+            has_mask: true,
+            has_masked: false,
+            has_masked_caption: false,
+            has_overlay: false,
+            width: 1024,
+            height: 1024,
+            aspect_ratio: 1.0,
+            quality_score: 0.31,
+        },
+    },
+];
+
+/**
+ * GET /api/projects/general/preferences — the Global-scope preference row both
+ * settings components read on init (projects fixture is empty → scope stays
+ * Global → effectiveProjectId() is null → backend keys it as 'general').
+ * `selected_caption_model` / `selected_mask_model` are in-list ids so the
+ * components honor them; the `active_*_template` ids match the templates below
+ * so each template select auto-selects a real entry.
+ */
+export const projectPreferences = {
+    id: 'prefs-general',
+    project_id: null as string | null,
+    selected_caption_model: 'florence-2',
+    active_caption_template: 'cap-tpl-1',
+    qwen3_variant: '4B-Instruct',
+    selected_mask_model: 'sam3',
+    active_mask_template: 'mask-tpl-1',
+    training_selections: {} as Record<string, unknown>,
+};
+
+const TPL_NOW = Math.floor(Date.now() / 1000);
+
+/**
+ * GET /api/templates/captioning?model_id=florence-2 — one default template so
+ * the `caption-template-select` renders a populated option list and
+ * `applyActiveTemplate` seeds the system prompt.
+ */
+export const captionTemplates = [
+    {
+        id: 'cap-tpl-1',
+        name: 'Default Caption',
+        project_id: null as string | null,
+        config: {} as Record<string, unknown>,
+        created_at: TPL_NOW,
+        updated_at: TPL_NOW,
+        used_count: 0,
+        is_default: true,
+        readonly: false,
+        model_id: 'florence-2',
+        system_prompt: 'Describe this image in detail.',
+        wildcard: '',
+    },
+];
+
+/**
+ * GET /api/templates/masking?model_id=sam3 — one default template so the
+ * `masking-template-select` renders a populated option list. The sam3 model's
+ * params (text_prompt / multimask_output / …) render from the component's
+ * hardcoded config once `activeModelConfig()` resolves to sam3.
+ */
+export const maskingTemplates = [
+    {
+        id: 'mask-tpl-1',
+        name: 'Default Mask',
+        project_id: null as string | null,
+        config: {} as Record<string, unknown>,
+        created_at: TPL_NOW,
+        updated_at: TPL_NOW,
+        used_count: 0,
+        is_default: true,
+        readonly: false,
+        model_id: 'sam3',
+    },
+];

@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { IcoComponent } from '../../icons/ico.component';
+import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import { DatasetService } from '../../services/dataset';
 import { DatasetStore } from '../../state/dataset.store';
 import { MediaItemStore } from '../../state/media-item.store';
@@ -24,7 +25,7 @@ interface RescanModalData {
 @Component({
     selector: 'app-modal-rescan',
     standalone: true,
-    imports: [IcoComponent],
+    imports: [IcoComponent, TaskQueueHintComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -66,6 +67,7 @@ interface RescanModalData {
                 </div>
             } @else {
                 <section class="rs-progress">
+                    <app-task-queue-hint [task]="task()"/>
                     <div class="rs-current">
                         <div class="rs-cur-head">
                             <div>

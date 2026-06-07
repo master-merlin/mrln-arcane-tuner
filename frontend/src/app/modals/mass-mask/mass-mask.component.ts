@@ -15,6 +15,7 @@ import { DatasetService, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { Task, TaskStore } from '../../state/task.store';
+import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import {
     DatasetMaskingSettingsComponent,
     MaskingSettingsState,
@@ -65,6 +66,7 @@ function tabForTask(t: Task): Tab | null {
     imports: [
         FormsModule,
         IcoComponent,
+        TaskQueueHintComponent,
         DatasetMaskingSettingsComponent,
         DatasetCaptionSettingsComponent,
     ],
@@ -101,6 +103,7 @@ function tabForTask(t: Task): Tab | null {
 
             <div class="modal-body mm-body">
                 @if (running()) {
+                    <app-task-queue-hint [task]="task()"/>
                     <div class="mm-progress">
                         <div class="mm-progress-head">
                             <div>

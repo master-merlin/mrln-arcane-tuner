@@ -49,6 +49,21 @@ type FilterPickerTier = 'dimensions' | 'category' | 'tags';
 /** Sort keys for the Sort dropdown — Name / Created / Images / HPS. */
 type SortKey = 'name' | 'created' | 'images' | 'hps';
 
+/** Caption file extensions (mirrors the backend `CAPTION_EXTS`). Anything else
+ *  uploaded is treated as a media file for the optimistic count. */
+const CAPTION_EXTS = ['.txt', '.caption'];
+
+/** Image extensions eligible to seed an optimistic card preview. Videos still
+ *  count as media but aren't used as a thumbnail (the backend picks one on
+ *  rescan once dimensions are known). */
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif'];
+
+/** Lower-cased extension including the leading dot, or '' when none. */
+function extOf(filename: string): string {
+    const dot = filename.lastIndexOf('.');
+    return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+}
+
 /**
  * Threshold below which a dataset's median HPSv2 quality score is "low".
  * The plan suggested 5; the actual scores on `Dataset.median_quality_score`
@@ -865,39 +880,53 @@ export class DatasetsScreen {
     }
 
     /**
-     * Uploads a FileList into the given dataset, then triggers a single-dataset
-     * (incremental) rescan so the new files surface in the grid + workspace.
+     * Uploads a FileList into the given dataset, then kicks off a backgrounded
+     * rescan so the new files are hashed/thumbnailed/scored and surface in the
+     * grid + workspace.
      *
-     * No progress UI — uploads run in parallel; the auto-rescan that follows
-     * has its own progress modal (via the rescan modal's WS subscriptions)
-     * if the user opens it. We toast success and failure but don't block.
+     * Uploads run in parallel. Once they all settle we apply ONE optimistic
+     * count update — classified by extension so caption `.txt` files land on
+     * `caption_count`, not `multimedia_count` — plus an optimistic card preview
+     * from the first uploaded image. The backgrounded rescan ({@link finalizeUpload})
+     * then emits `dataset.invalidated`, and {@link DatasetStore} re-fetches the
+     * row to replace those optimistic values with backend-authoritative ones.
      */
     protected onUploadFiles(name: string, files: FileList | null): void {
         if (!name || !files || files.length === 0) return;
         const list = Array.from(files);
         let completed = 0;
         let failed = 0;
+        let media = 0;
+        let caption = 0;
+        let firstImage: string | undefined;
+        const settle = () => {
+            if (completed + failed < list.length) return;
+            // Apply the classified optimistic counts in one shot so the card
+            // reflects the drop immediately, before the background rescan lands.
+            this.datasets.applyOptimisticUpload(name, { media, caption }, firstImage);
+            this.finalizeUpload(name, completed, failed);
+        };
         for (const file of list) {
             this.datasetsApi.uploadFile(name, file).subscribe({
-                next: () => {
+                next: (res) => {
                     completed++;
-                    // Optimistic bump per file so the card surfaces the new
-                    // image immediately. The post-upload rescan hashes +
-                    // thumbnails + scores each new file (seconds per file),
-                    // and the user perceives "drop did nothing" while it
-                    // runs. ``finalizeUpload``'s ``loadAll`` resets these
-                    // to backend-authoritative values when scan completes.
-                    this.datasets.bumpFileCounts(name, 1);
-                    if (completed + failed === list.length) {
-                        this.finalizeUpload(name, completed, failed);
+                    // Classify by the SERVER-RETURNED filename so sanitization
+                    // (Path(raw).name) can't drift the optimistic preview path
+                    // from what the media endpoint will actually serve.
+                    const fname = res?.filename ?? file.name;
+                    const ext = extOf(fname);
+                    if (CAPTION_EXTS.includes(ext)) {
+                        caption++;
+                    } else {
+                        media++;
+                        if (!firstImage && IMAGE_EXTS.includes(ext)) firstImage = fname;
                     }
+                    settle();
                 },
                 error: (err: unknown) => {
                     failed++;
                     console.error('[datasets-screen] upload failed', file.name, err);
-                    if (completed + failed === list.length) {
-                        this.finalizeUpload(name, completed, failed);
-                    }
+                    settle();
                 },
             });
         }
@@ -905,11 +934,15 @@ export class DatasetsScreen {
 
     private finalizeUpload(name: string, ok: number, failed: number): void {
         if (ok > 0) {
-            this.toast.success(`${ok} file${ok === 1 ? '' : 's'} uploaded.`);
-            // Trigger incremental rescan so backend re-indexes the new files
-            // and the grid + workspace pick them up.
-            this.datasetsApi.scanDataset(name, false).subscribe({
-                next: () => void this.datasets.loadAll().catch(() => undefined),
+            this.toast.success(`${ok} file${ok === 1 ? '' : 's'} uploaded — rescanning in the background.`);
+            // Backgrounded rescan (incremental) instead of the old blocking
+            // synchronous scan: hashing + thumbnailing + HPS scoring each new
+            // file can take many seconds, which previously froze the card on
+            // stale/optimistic numbers. Progress shows in the Task Center; on
+            // completion the worker emits `dataset.invalidated`, and DatasetStore
+            // re-fetches this row — replacing the optimistic counts/preview with
+            // backend-authoritative values. No explicit refresh needed here.
+            this.datasetsApi.rescanDataset(name, 'safe').subscribe({
                 error: (err: unknown) => {
                     const e = err as { error?: { detail?: string }; message?: string };
                     this.toast.error('Rescan after upload failed: ' + (e.error?.detail || e.message));

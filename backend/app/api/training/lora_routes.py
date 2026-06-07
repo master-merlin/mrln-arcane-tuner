@@ -23,9 +23,12 @@ def _check_lora_path(raw_path: str) -> Path:
     """Resolve and validate a LoRA file path."""
     resolved = Path(raw_path).resolve()
     if not any(resolved.is_relative_to(root) for root in _ALLOWED_ROOTS):
+        # Surface the allowed roots so the user knows where to move the file —
+        # a bare "outside allowed directories" leaves them with no way to fix it.
+        allowed = ", ".join(str(root) for root in _ALLOWED_ROOTS)
         raise HTTPException(
             status_code=403,
-            detail="Access denied: path is outside allowed directories.",
+            detail=f"Access denied: path is outside allowed directories. Allowed: {allowed}",
         )
     return resolved
 

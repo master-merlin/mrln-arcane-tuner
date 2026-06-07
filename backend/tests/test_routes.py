@@ -362,6 +362,19 @@ def test_inspect_lora_not_found(mock_to_thread, mock_inspect, mock_check, client
     assert response.status_code == 404
 
 
+def test_inspect_lora_outside_allowed_lists_allowed_roots(client):
+    # A path outside every allowed root is rejected (correct) AND the error must
+    # name the allowed directories so the user can move the file to fix it.
+    from app.api.training import lora_routes
+    outside = "/definitely/not/allowed/lora.safetensors"
+    response = client.get(f"/api/tools/lora/inspect?path={outside}")
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "Allowed:" in detail
+    for root in lora_routes._ALLOWED_ROOTS:
+        assert str(root) in detail
+
+
 @patch("app.api.training.lora_routes._check_lora_path", side_effect=lambda p: Path(p))
 @patch("app.engine.utils.lora_tools.resize_lora")
 @patch("app.api.training.lora_routes.asyncio.to_thread")

@@ -2,8 +2,11 @@ import { DebugElement } from '@angular/core';
 import { ComponentFixture } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
-/** Canonical C6 selector: query a single element by its data-testid. */
-export function byTestId<T>(fixture: ComponentFixture<T>, id: string): DebugElement {
+/**
+ * Canonical C6 selector: query a single element by its data-testid.
+ * Returns `null` when no element matches (mirrors `DebugElement.query`).
+ */
+export function byTestId<T>(fixture: ComponentFixture<T>, id: string): DebugElement | null {
   return fixture.debugElement.query(By.css(`[data-testid="${id}"]`));
 }
 

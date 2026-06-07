@@ -33,9 +33,34 @@ def test_apply_runs_mass_apply_reconciles_and_summarizes(monkeypatch):
     task = task_manager.get(t.id)
     assert task.status.value == "completed"
     assert task.current == 2
+    # "<n> done" reads task.ok — must reflect applied, not stay 0 (regression).
+    assert task.ok == 2
     assert calls["reconciled"] == "ds"
     assert calls["summary"]["applied"] == 2
     assert calls["summary"]["missing_masks_count"] == 1
+
+
+def test_apply_ok_reconciles_to_applied_not_visited(monkeypatch):
+    """When some pairs are skipped, "done" shows the applied count, not the
+    number of pairs visited by the progress bar."""
+    def fake_mass_apply(path, opacity, overwrite, progress_callback):
+        progress_callback(1, 3, "a")
+        progress_callback(2, 3, "b")
+        progress_callback(3, 3, "c")            # visited 3...
+        return {"applied": 2, "skipped": 1, "missing_masks": []}  # ...applied 2
+
+    monkeypatch.setattr(mask_apply_batch, "_dataset_path", lambda n: "/ds")
+    monkeypatch.setattr(mask_apply_batch, "_mass_apply", fake_mass_apply)
+    monkeypatch.setattr(mask_apply_batch, "_reconcile_has_masked", lambda n: None)
+    monkeypatch.setattr(mask_apply_batch, "_emit_apply_summary", lambda **kw: None)
+
+    t = task_manager.create(type="mask_apply_batch", title="x", total=3, dataset_name="ds")
+    mask_apply_batch.run_mask_apply_batch(
+        t.id, dataset_name="ds", opacity=0.0, overwrite=False,
+    )
+    task = task_manager.get(t.id)
+    assert task.current == 3
+    assert task.ok == 2
 
 
 def test_apply_setup_error_fails(monkeypatch):

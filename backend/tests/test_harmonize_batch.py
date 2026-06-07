@@ -18,8 +18,30 @@ def test_harmonize_completes_and_emits_summary(monkeypatch):
                         lambda **kw: summaries.append(kw))
     t = task_manager.create(type="harmonize", title="x", total=3, dataset_name="ds")
     harmonize_batch.run_harmonize_batch(t.id, dataset_name="ds")
-    assert task_manager.get(t.id).status.value == "completed"
+    task = task_manager.get(t.id)
+    assert task.status.value == "completed"
+    # The Task Center's "<n> done" reads task.ok — it must reflect the processed
+    # count, not stay at 0 (regression: harmonize only set `current`).
+    assert task.ok == 3
     assert summaries == [{"dataset_name": "ds", "processed": 3, "converted": 1, "renamed": 3}]
+
+
+def test_harmonize_progress_cb_sets_ok(monkeypatch):
+    """Per-file progress mirrors `current` into `ok` so "done" tracks live, and
+    the final count reconciles to `processed` (which can be < pairs visited)."""
+    def fake_harmonize(name, cb):
+        cb(1, 3, "a.jpg")
+        cb(2, 3, "b.jpg")
+        cb(3, 3, "c.jpg")  # a visited pair errored out → processed (2) < visited (3)
+        return {"processed": 2, "converted": 0, "renamed": 2}
+
+    monkeypatch.setattr(harmonize_batch, "_harmonize", fake_harmonize)
+    monkeypatch.setattr(harmonize_batch, "_emit_harmonize_summary", lambda **kw: None)
+    t = task_manager.create(type="harmonize", title="x", total=3, dataset_name="ds")
+    harmonize_batch.run_harmonize_batch(t.id, dataset_name="ds")
+    task = task_manager.get(t.id)
+    assert task.current == 3          # bar reached 100%
+    assert task.ok == 2               # reconciled to processed, not the 3 visited
 
 
 def test_harmonize_failure_marks_failed(monkeypatch):

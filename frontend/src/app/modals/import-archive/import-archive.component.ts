@@ -95,7 +95,7 @@ type ArchiveKind = 'dataset' | 'template' | 'project';
                                         }
                                     }
                                     @if (e.duplicate_name) {
-                                        <input class="ia-input" type="text" placeholder="New name"
+                                        <input class="ia-input" type="text" placeholder="New name" aria-label="New template name"
                                                [ngModel]="templateRes()[e.index]?.name"
                                                (ngModelChange)="setTemplateRes(e.index, { name: $event })">
                                     }
@@ -131,7 +131,7 @@ type ArchiveKind = 'dataset' | 'template' | 'project';
                     @if (kind() === 'project' && projectPlan()) {
                         <div class="eo-group">
                             <div class="eo-group-label">Project</div>
-                            <input class="ia-input" type="text" [(ngModel)]="projectNameModel">
+                            <input class="ia-input" type="text" aria-label="Project name" [(ngModel)]="projectNameModel">
                             @if (projectPlan()!.project.conflict) {
                                 <div class="ia-amber">A project with this name already exists.</div>
                                 <div class="seg">
@@ -163,7 +163,7 @@ type ArchiveKind = 'dataset' | 'template' | 'project';
                                             }
                                         }
                                         @if (e.duplicate_name) {
-                                            <input class="ia-input" type="text" placeholder="New name"
+                                            <input class="ia-input" type="text" placeholder="New name" aria-label="New template name"
                                                    [ngModel]="projectTemplateRes()[e.index]?.name"
                                                    (ngModelChange)="setProjectTemplateRes(e.index, { name: $event })">
                                         }

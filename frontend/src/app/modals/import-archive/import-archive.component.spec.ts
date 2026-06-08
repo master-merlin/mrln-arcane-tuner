@@ -104,6 +104,37 @@ describe('ImportArchiveModalComponent', () => {
         expect(cmp.templateRes()[1].action).toBe('skip');
     });
 
+    it('blocker entry stays skip — locked in seeding, toggle, and apply payload', async () => {
+        const plan = {
+            project_id: null, importable_count: 1,
+            entries: [
+                {
+                    index: 0, domain: 'training', name: 'A', config_warning: null,
+                    duplicate_name: false, blocker: false, definition_status: 'present',
+                },
+                {
+                    index: 1, domain: 'captioning', name: 'B', config_warning: null,
+                    duplicate_name: false, blocker: true, model_id: 'm', model_available: false,
+                },
+            ],
+        };
+        const result = { created: [{ index: 0, id: 'x', name: 'A' }], skipped: [], installed_definitions: [] };
+        const { cmp, stubs } = mount({
+            peek: vi.fn().mockReturnValue(of({ kind: 'template' })),
+            planTemplate: vi.fn().mockReturnValue(of(plan)),
+            applyTemplate: vi.fn().mockReturnValue(of(result)),
+        });
+        await cmp.onFile(fileEvent(fakeFile()));
+        // The blocker is seeded skip and excluded from the create count …
+        expect(cmp.templateRes()[1].action).toBe('skip');
+        expect(cmp.createCount()).toBe(1);
+        // … and the apply payload never marks the blocker as create.
+        cmp.applyTemplate();
+        const sent = stubs.applyTemplate.mock.calls[0][1].entries;
+        expect(sent['1'].action).toBe('skip');
+        expect(sent['0'].action).toBe('create');
+    });
+
     it('applyTemplate sends stringified-index entries and finishes', async () => {
         const plan = {
             project_id: null, importable_count: 1,

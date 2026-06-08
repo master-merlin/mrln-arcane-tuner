@@ -21,8 +21,9 @@ describe('TemplatesScreen.filterRows', () => {
     expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'p1', search: '', flag: 'all' })).toHaveLength(2);
   });
   it('search matches name, definition_id and model_id', () => {
-    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: 'flux', flag: 'all' })).toHaveLength(1);
-    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: 'qwen', flag: 'all' })).toHaveLength(1);
+    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: 'anime', flag: 'all' })).toHaveLength(1); // name
+    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: 'flux', flag: 'all' })).toHaveLength(1); // definition_id
+    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: 'qwen', flag: 'all' })).toHaveLength(1); // model_id
   });
   it('filters by default/system flag', () => {
     expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: '', flag: 'default' })).toHaveLength(1);

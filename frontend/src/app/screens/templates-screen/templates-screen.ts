@@ -6,15 +6,17 @@ import {
     inject,
     signal,
 } from '@angular/core';
+import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { SegmentedComponent, SegOption } from '../../ui/segmented/segmented.component';
 import { TemplateService, Template } from '../../services/template.service';
-import { ProjectService } from '../../services/project.service';
+import { ProjectService, Project } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ImportArchiveService } from '../../services/import-archive.service';
 import { ScopeStore } from '../../state/scope.store';
+import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { ToastService } from '../../services/toast';
 
 type Domain = 'captioning' | 'masking' | 'training';
@@ -99,7 +101,7 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
                 (changed)="flag.set($event)"/>
             <div class="ts-search">
                 <app-ico name="Search" [size]="14"/>
-                <input class="input" type="text"
+                <input class="input" type="text" aria-label="Search templates"
                        placeholder="Search name, definition or model…"
                        [ngModel]="search()"
                        (ngModelChange)="search.set($event)"/>
@@ -273,6 +275,8 @@ export class TemplatesScreen implements OnInit {
     private overlay = inject(OverlayStore);
     private archive = inject(ImportArchiveService);
     protected scope = inject(ScopeStore);
+    private handoff = inject(TrainingHandoffService);
+    private router = inject(Router);
     private toast = inject(ToastService);
 
     protected readonly domainOptions = DOMAIN_OPTIONS;
@@ -319,7 +323,16 @@ export class TemplatesScreen implements OnInit {
     async load(): Promise<void> {
         this.loading.set(true);
         try {
-            const projects = this.projects.allProjects();
+            // Fetch the project list fresh so a cold load (projects not yet
+            // hydrated into the signal) still surfaces project-scoped templates,
+            // and a Refresh picks up newly-created projects. Falls back to the
+            // cached signal if the list call fails.
+            let projects: Project[];
+            try {
+                projects = await firstValueFrom(this.projects.listProjects());
+            } catch {
+                projects = this.projects.allProjects();
+            }
             // Global (project_id null) for each domain, plus each project's three domains.
             const globalCalls = [
                 firstValueFrom(this.templates.listCaptioningTemplates(null, null)),
@@ -343,14 +356,20 @@ export class TemplatesScreen implements OnInit {
             add('training', null, 'General', (trainG ?? []).filter(t => !t.project_id));
 
             for (const p of projects) {
-                const [cap, mask, train] = await Promise.all([
-                    firstValueFrom(this.templates.listCaptioningTemplates(null, p.id)),
-                    firstValueFrom(this.templates.listMaskingTemplates(null, p.id)),
-                    firstValueFrom(this.templates.listTrainingTemplates(undefined, p.id)),
-                ]);
-                add('captioning', p.id, p.name, (cap ?? []).filter(t => t.project_id === p.id));
-                add('masking', p.id, p.name, (mask ?? []).filter(t => t.project_id === p.id));
-                add('training', p.id, p.name, (train ?? []).filter(t => t.project_id === p.id));
+                // Per-project resilience: one project's failed list call must not
+                // blank the whole library — skip it and keep the rest.
+                try {
+                    const [cap, mask, train] = await Promise.all([
+                        firstValueFrom(this.templates.listCaptioningTemplates(null, p.id)),
+                        firstValueFrom(this.templates.listMaskingTemplates(null, p.id)),
+                        firstValueFrom(this.templates.listTrainingTemplates(undefined, p.id)),
+                    ]);
+                    add('captioning', p.id, p.name, (cap ?? []).filter(t => t.project_id === p.id));
+                    add('masking', p.id, p.name, (mask ?? []).filter(t => t.project_id === p.id));
+                    add('training', p.id, p.name, (train ?? []).filter(t => t.project_id === p.id));
+                } catch {
+                    this.toast.warning(`Could not load templates for project "${p.name}".`);
+                }
             }
             this.rows.set(rows);
         } catch (err) {
@@ -382,11 +401,33 @@ export class TemplatesScreen implements OnInit {
 
     edit(r: TemplateRow): void {
         this.templates.getTemplate(r.domain, r.tpl.id).subscribe({
-            next: full => this.overlay.openModal('template-edit', {
-                domain: r.domain, template: full, onSaved: () => void this.load(),
-            }),
+            next: full => {
+                // `template-edit` only handles captioning/masking — a training row
+                // there would render the mask UI and save a mask-shaped payload.
+                // Training templates are edited on the Training screen (same path
+                // project-detail uses), so hand the config off and navigate there.
+                if (r.domain === 'training') { this.openTrainingTemplate(full); return; }
+                this.overlay.openModal('template-edit', {
+                    domain: r.domain, template: full, onSaved: () => void this.load(),
+                });
+            },
             error: err => this.toast.error('Could not load template: ' + this.msg(err)),
         });
+    }
+
+    /** Switch scope to the template's project (so a Training-screen save lands
+     *  there) and hand the config to /training, which auto-applies it. Mirrors
+     *  project-detail.openTrainingTemplate. */
+    private openTrainingTemplate(t: Template): void {
+        if (t.project_id) this.scope.setProject(t.project_id); else this.scope.setGlobal();
+        this.handoff.set({
+            config: (t.config ?? {}) as Record<string, unknown>,
+            mode: 'template',
+            templateId: t.id,
+            templateName: t.name,
+            definitionId: t.definition_id,
+        });
+        void this.router.navigate(['/training']);
     }
 
     editJson(r: TemplateRow): void {

@@ -49,17 +49,18 @@ type ArchiveKind = 'dataset' | 'template' | 'project';
         <div class="modal-body">
             @switch (phase()) {
                 @case ('pick') {
-                    <div class="ia-drop">
-                        <app-ico name="FileUp" [size]="28"/>
-                        <div class="ia-drop-text">Choose a <strong>.zip</strong> archive to import</div>
-                        <label class="btn primary ia-pick-btn">
-                            <app-ico name="Upload" [size]="14"/> Choose file
-                            <input type="file" accept=".zip" hidden (change)="onFile($event)">
-                        </label>
-                        @if (file()) { <div class="ia-file">{{ file()!.name }}</div> }
-                        @if (busy()) { <div class="ia-muted">Inspecting archive…</div> }
-                        @if (error()) { <div class="ia-error">{{ error() }}</div> }
-                    </div>
+                    <label class="dropzone" [class.dz-drag]="dragOver()" [class.dz-has]="!!file()"
+                           (dragover)="onDragOver($event)" (dragleave)="onDragLeave()" (drop)="onDrop($event)">
+                        <app-ico [name]="file() ? 'FileCheck' : 'FileUp'" [size]="26"/>
+                        <div class="dz-title">
+                            @if (file(); as f) { {{ f.name }} }
+                            @else { Drop a <strong>.zip</strong> here, or click to browse }
+                        </div>
+                        <div class="dz-sub">{{ file() ? 'Click or drop to replace' : 'dataset, template or project archive' }}</div>
+                        <input type="file" accept=".zip" hidden (change)="onFile($event)">
+                    </label>
+                    @if (busy()) { <div class="ia-muted ia-center">Inspecting archive…</div> }
+                    @if (error()) { <div class="ia-error ia-center">{{ error() }}</div> }
                 }
 
                 @case ('applying') {
@@ -320,12 +321,8 @@ type ArchiveKind = 'dataset' | 'template' | 'project';
         </div>
     `,
     styles: [`
-        .ia-drop { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 12px; text-align: center; }
-        .ia-drop-text { font-size: 14px; opacity: .8; }
-        .ia-pick-btn { cursor: pointer; }
-        .ia-file { font-size: 12px; opacity: .7; }
         .ia-muted { opacity: .6; font-size: 13px; }
-        .ia-center { padding: 40px; text-align: center; }
+        .ia-center { padding: 16px; text-align: center; }
         .ia-error { color: var(--color-danger, #ef4444); font-size: 13px; }
         .ia-warn { font-size: 13px; margin-bottom: 8px; }
         .ia-amber { color: var(--color-warning, #f59e0b); font-size: 12px; margin-top: 4px; }
@@ -373,6 +370,7 @@ export class ImportArchiveModalComponent {
     kind = signal<ArchiveKind | null>(null);
     error = signal<string | null>(null);
     busy = signal(false);
+    dragOver = signal(false);
 
     // Template flow
     templatePlan = signal<TemplateImportPlan | null>(null);
@@ -415,8 +413,28 @@ export class ImportArchiveModalComponent {
 
     // ── pick ────────────────────────────────────────────────────────────
     async onFile(e: Event): Promise<void> {
-        const f = (e.target as HTMLInputElement).files?.[0];
-        if (!f) return;
+        const f = (e.target as HTMLInputElement).files?.[0] ?? null;
+        if (f) await this.ingest(f);
+    }
+
+    onDragOver(e: DragEvent): void {
+        e.preventDefault();
+        this.dragOver.set(true);
+    }
+
+    onDragLeave(): void {
+        this.dragOver.set(false);
+    }
+
+    async onDrop(e: DragEvent): Promise<void> {
+        e.preventDefault();
+        this.dragOver.set(false);
+        const f = e.dataTransfer?.files?.[0] ?? null;
+        if (f) await this.ingest(f);
+    }
+
+    /** Peek the dropped/picked archive and route to its plan→apply flow. */
+    private async ingest(f: File): Promise<void> {
         this.file.set(f);
         this.busy.set(true);
         this.error.set(null);

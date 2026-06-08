@@ -54,18 +54,14 @@ type ConflictChoice = 'rename' | 'overwrite';
                 </div>
 
                 @if (transport() === 'file') {
-                    <label class="id-drop" [class.drag]="dragOver()" [class.has-file]="!!file()"
+                    <label class="dropzone" [class.dz-drag]="dragOver()" [class.dz-has]="!!file()"
                            (dragover)="onDragOver($event)" (dragleave)="onDragLeave()" (drop)="onDrop($event)">
-                        <app-ico [name]="file() ? 'FileCheck' : 'Upload'" [size]="22"/>
-                        <div class="id-drop-text">
-                            @if (file(); as f) {
-                                <div class="id-drop-name">{{ f.name }}</div>
-                                <div class="id-drop-hint">Click or drop to choose a different file</div>
-                            } @else {
-                                <div class="id-drop-name">Click to choose a <strong>.zip</strong> archive</div>
-                                <div class="id-drop-hint">or drag &amp; drop it here</div>
-                            }
+                        <app-ico [name]="file() ? 'FileCheck' : 'FileUp'" [size]="26"/>
+                        <div class="dz-title">
+                            @if (file(); as f) { {{ f.name }} }
+                            @else { Drop a <strong>.zip</strong> here, or click to browse }
                         </div>
+                        <div class="dz-sub">{{ file() ? 'Click or drop to replace' : 'dataset archive (.zip)' }}</div>
                         <input type="file" accept=".zip" hidden (change)="onFile($event)">
                     </label>
                 } @else {
@@ -118,28 +114,6 @@ type ConflictChoice = 'rename' | 'overwrite';
             color: inherit;
             border-radius: 6px;
         }
-        .id-drop {
-            display: flex; align-items: center; gap: 14px;
-            padding: 22px 18px;
-            border: 1.5px dashed var(--color-border-default, var(--color-border-subtle));
-            border-radius: 12px;
-            background: var(--color-surface-low);
-            color: var(--color-text-muted);
-            cursor: pointer;
-            transition: border-color .15s, background .15s, color .15s;
-        }
-        .id-drop:hover, .id-drop.drag {
-            border-color: var(--color-brand);
-            background: var(--color-surface-mid);
-            color: var(--color-text-primary);
-        }
-        .id-drop.has-file { border-style: solid; border-color: var(--color-brand); color: var(--color-text-primary); }
-        .id-drop-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-        .id-drop-name {
-            font-size: 13px; font-weight: 600;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
-        .id-drop-hint { font-size: 11px; color: var(--color-text-muted); }
         .conflict p { margin: 0 0 12px; }
     `],
 })

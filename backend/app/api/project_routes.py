@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import zipfile
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -228,3 +230,55 @@ async def export_project(project_id: str, req: ExportProjectRequest) -> Streamin
             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     return await asyncio.to_thread(_build)
+
+
+# ── Import: plan ─────────────────────────────────────────────────────────
+
+
+@router.post("/import/plan")
+async def plan_project_import(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Read a project archive and return a dry-run plan (read-only)."""
+    from app.api.training.template_routes import plan_template_entries
+    from app.core.dataset_manager import dataset_manager
+    from app.core.portable.envelope import ManifestError
+    from app.core.project import portable as pportable
+    from app.core.template import portable as tportable
+
+    data = await file.read()
+
+    def _plan() -> dict[str, Any]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                manifest = pportable.read_project_manifest(zf)
+                proj = manifest["project"]
+
+                templates: list[dict[str, Any]] = []
+                for tref in manifest["templates"]:
+                    nested = zf.read(tref["archive"])
+                    with zipfile.ZipFile(io.BytesIO(nested)) as nzf:
+                        tmanifest = tportable.read_template_manifest(nzf)
+                    templates.extend(plan_template_entries(tmanifest, None))
+
+                datasets: list[dict[str, Any]] = []
+                for dref in manifest["datasets"]:
+                    item = {"name": dref["name"], "mode": dref["mode"]}
+                    if dref["mode"] == "reference":
+                        item["reference_present"] = (
+                            dataset_manager.get_dataset(dref["name"]) is not None)
+                    elif dref["mode"] == "embed":
+                        item["embed_conflict"] = (
+                            dataset_manager.get_dataset(dref["name"]) is not None)
+                    datasets.append(item)
+        except ManifestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+
+        return {
+            "project": {"name": proj.get("name"),
+                        "conflict": _projects.get_by_name(proj.get("name")) is not None},
+            "templates": templates,
+            "datasets": datasets,
+        }
+
+    return await asyncio.to_thread(_plan)

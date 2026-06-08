@@ -44,6 +44,7 @@ def test_build_manifest_carries_dataset_and_media_but_not_id_or_path():
     m = build_manifest(_make_dataset(), app_version="0.4.0-alpha")
     assert m["format_version"] == MANIFEST_VERSION
     assert m["app_version"] == "0.4.0-alpha"
+    assert m["kind"] == "dataset"
     assert m["dataset"]["trigger_word"] == "mrln_style"
     assert m["dataset"]["tags"] == ["face", "studio"]
     assert m["dataset"]["version"] == "1.2.0"
@@ -99,7 +100,8 @@ def test_read_manifest_rejects_missing_and_future_version(tmp_path):
     buf2 = io.BytesIO()
     with zipfile.ZipFile(buf2, "w") as zf:
         zf.writestr("manifest.json", json.dumps(
-            {"format_version": MANIFEST_VERSION + 1, "dataset": {}, "media": {}}))
+            {"format_version": MANIFEST_VERSION + 1, "kind": "dataset",
+             "dataset": {}, "media": {}}))
     buf2.seek(0)
     with zipfile.ZipFile(buf2) as zf:
         with pytest.raises(ManifestError):

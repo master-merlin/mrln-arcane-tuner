@@ -29,6 +29,55 @@ export interface Template {
   definition_id?: string;
 }
 
+// ── Import plan / apply DTOs (shared by template + project import) ─────────
+
+export interface LocalComponentPlan {
+  component: string;
+  local_path: string;
+  hf_substitute: string | null;
+}
+
+export interface TemplatePlanEntry {
+  index: number;
+  domain: TemplateDomain;
+  name: string;
+  config_warning: string | null;
+  duplicate_name: boolean;
+  blocker: boolean;
+  model_id?: string;
+  model_available?: boolean;
+  definition_id?: string;
+  definition_status?: 'present' | 'missing' | 'invalid' | 'installable';
+  definition_error?: string;
+  local_components?: LocalComponentPlan[];
+}
+
+export interface TemplateImportPlan {
+  project_id: string | null;
+  importable_count: number;
+  entries: TemplatePlanEntry[];
+}
+
+export interface TemplateEntryResolution {
+  action: 'create' | 'skip';
+  name?: string;
+  install_definition?: boolean;
+  use_hf_substitution?: boolean;
+}
+
+export interface TemplateImportResolutions {
+  entries: Record<string, TemplateEntryResolution>;
+}
+
+export interface ImportSkip { index: number; name: string; reason: string; }
+export interface ImportCreated { index: number; id: string; name: string; }
+
+export interface TemplateImportResult {
+  created: ImportCreated[];
+  skipped: ImportSkip[];
+  installed_definitions: string[];
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -107,5 +156,33 @@ export class TemplateService {
 
   useTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<{ status: string }> {
     return this.http.post<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}/use`, {});
+  }
+
+  // Export / Import
+  getTemplateExportUrl(domain: 'captioning' | 'masking' | 'training', templateId: string): string {
+    return `${this.apiUrl}/${domain}/${templateId}/export`;
+  }
+
+  exportTemplatesBundle(
+    items: { domain: 'captioning' | 'masking' | 'training'; id: string }[],
+  ): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/export`, { items }, { responseType: 'blob' });
+  }
+
+  planImportTemplate(file: File, projectId?: string): Observable<TemplateImportPlan> {
+    const form = new FormData();
+    form.append('file', file);
+    if (projectId) form.append('project_id', projectId);
+    return this.http.post<TemplateImportPlan>(`${this.apiUrl}/import/plan`, form);
+  }
+
+  applyImportTemplate(
+    file: File, resolutions: TemplateImportResolutions, projectId?: string,
+  ): Observable<TemplateImportResult> {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('resolutions', JSON.stringify(resolutions ?? { entries: {} }));
+    if (projectId) form.append('project_id', projectId);
+    return this.http.post<TemplateImportResult>(`${this.apiUrl}/import/apply`, form);
   }
 }

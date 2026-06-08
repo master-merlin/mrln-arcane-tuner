@@ -23,6 +23,12 @@
                     </div>
                 </div>
                 <div class="pd-header-actions">
+                    <button class="btn sm" type="button" (click)="exportThisProject()" title="Export project">
+                        <app-ico name="Download" [size]="13"/>
+                    </button>
+                    <button class="btn sm" type="button" (click)="importIntoProject()" title="Import into project">
+                        <app-ico name="Upload" [size]="13"/>
+                    </button>
                     <button class="btn sm" type="button" (click)="editProject()" title="Edit project">
                         <app-ico name="Pencil" [size]="13"/>
                     </button>
@@ -250,11 +256,20 @@
                                         <div class="card-title">
                                             <app-ico name="Files" [size]="11"/> {{ s.label }} · {{ s.items.length }}
                                         </div>
-                                        <button class="btn sm" type="button"
-                                                (click)="openBranchPicker(s.domain)"
-                                                title="Branch a global template into this project">
-                                            <app-ico name="Plus" [size]="12"/> Branch
-                                        </button>
+                                        <div class="pd-section-actions">
+                                            @if (s.items.length > 0) {
+                                                <button class="btn sm" type="button"
+                                                        (click)="exportDomain(s)"
+                                                        title="Export all templates in this section">
+                                                    <app-ico name="Download" [size]="12"/> Export all
+                                                </button>
+                                            }
+                                            <button class="btn sm" type="button"
+                                                    (click)="openBranchPicker(s.domain)"
+                                                    title="Branch a global template into this project">
+                                                <app-ico name="Plus" [size]="12"/> Branch
+                                            </button>
+                                        </div>
                                     </div>
 
                                     @if (branchPickerDomain() === s.domain) {
@@ -299,6 +314,11 @@
                                                         </div>
                                                         <div class="pd-template-sub">{{ t.definition_id || t.model_id || 'all models' }}</div>
                                                     </div>
+                                                    <button class="icon-btn" type="button"
+                                                            (click)="exportTemplate(s.domain, t)"
+                                                            title="Export this template">
+                                                        <app-ico name="Download" [size]="13"/>
+                                                    </button>
                                                     <button class="icon-btn" type="button"
                                                             (click)="editTemplate(s.domain, t)"
                                                             [title]="s.domain === 'training' ? 'Open in Training screen' : 'Edit template settings'">

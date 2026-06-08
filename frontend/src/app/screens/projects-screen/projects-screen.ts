@@ -6,6 +6,7 @@ import { ScopeStore } from '../../state/scope.store';
 import { IcoComponent } from '../../icons/ico.component';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { ToastService } from '../../services/toast';
+import { ProjectExportService } from '../../services/project-export.service';
 
 interface ProjectCard {
     project: Project;
@@ -74,6 +75,12 @@ interface ProjectCard {
             align-items: center;
             gap: 10px;
             min-width: 0;
+        }
+        .ps-card-head-actions {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
         }
         .ps-card-badge {
             width: 32px;
@@ -203,6 +210,7 @@ export class ProjectsScreen implements OnInit {
     private overlay = inject(OverlayStore);
     protected projects = inject(ProjectService);
     private toast = inject(ToastService);
+    private projectExport = inject(ProjectExportService);
 
     /** Total datasets that are members of at least one project. */
     private datasetsInProjects = computed(() => {
@@ -265,7 +273,18 @@ export class ProjectsScreen implements OnInit {
     }
 
     protected openTemplatesLibrary(): void {
-        this.overlay.openModal('templates-library');
+        void this.router.navigate(['/templates']);
+    }
+
+    protected importArchive(): void {
+        this.overlay.openModal('import-archive', {
+            onImported: () => this.projects.loadProjects(),
+        });
+    }
+
+    protected exportProject(p: Project, event: Event): void {
+        event.stopPropagation();
+        void this.projectExport.open(p.id, p.name);
     }
 
     protected editProject(p: Project, event: Event): void {

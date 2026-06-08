@@ -411,19 +411,24 @@ class DatasetManager:
         tags: list[str] | None = None,
         notes: str = "",
     ) -> Dataset:
+        if path is None:
+            # Auto-created folder: the stored name MUST equal the folder basename.
+            # The frontend serves media statically as ``/media/<name>/...``, so a
+            # name that diverges from its folder (e.g. a "(v2)" the sanitizer
+            # strips) shows captions but blank images. When a path is supplied
+            # explicitly (auto-discovery), the caller already aligns the two.
+            safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip()
+            if not safe_name:
+                safe_name = f"dataset_{int(time.time())}"
+            name = safe_name
+            path = os.path.join(self.default_root, safe_name)
+
         if name in self.datasets:
             if self.datasets[name].missing and os.path.exists(self.datasets[name].path):
                  self.datasets[name].missing = False
                  self._persist_dataset(self.datasets[name])
                  return self.datasets[name]
             raise ValueError(f"Dataset '{name}' already exists.")
-
-        if path is None:
-            # Sanitize name for path
-            safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip()
-            if not safe_name:
-                safe_name = f"dataset_{int(time.time())}"
-            path = os.path.join(self.default_root, safe_name)
 
         if not os.path.exists(path):
             os.makedirs(path)
@@ -1279,37 +1284,45 @@ class DatasetManager:
         
         # If name is changing, handle rename
         if new_name != current_name:
-            if new_name in self.datasets:
-                raise ValueError(f"Dataset '{new_name}' already exists.")
-            
             if not new_name.strip():
                 raise ValueError("Dataset name cannot be empty.")
-                
-            # Sanitize new name for path
+
+            # Sanitize so the stored name matches its on-disk folder. The frontend
+            # serves media as ``/media/<name>/...``; a name that diverges from the
+            # folder basename (e.g. parens the sanitizer strips) renders captions
+            # but blank images. The rename already sanitizes the FOLDER — applying
+            # the same cleanup to the NAME keeps the two in lock-step.
             safe_name = "".join([c for c in new_name if c.isalnum() or c in (' ', '-', '_')]).strip()
             if not safe_name:
                 safe_name = f"dataset_{int(time.time())}"
-                
-            new_path = os.path.join(self.default_root, safe_name)
-            
-            # Rename physical folder if it exists
-            if os.path.exists(dataset.path):
-                if os.path.exists(new_path):
-                     # Collision on disk but not in DB? or just same folder?
-                     # If same folder (case insensitive OS potentially), be careful
-                     if os.path.abspath(dataset.path) != os.path.abspath(new_path):
-                         raise ValueError(f"Target path '{new_path}' already exists.")
-                
-                os.rename(dataset.path, new_path)
-            else:
-                # Old path doesn't exist — just update the path reference.
-                pass
-            dataset.name = new_name
-            dataset.path = new_path
-            
-            # Update dictionary key
-            del self.datasets[current_name]
-            self.datasets[new_name] = dataset
+
+            # Only perform the physical/DB rename when the sanitized name actually
+            # differs from the current one (e.g. "Foo" -> "Foo!" sanitizes back to
+            # "Foo" — a no-op for name/folder, other fields still update below).
+            if safe_name != current_name:
+                if safe_name in self.datasets:
+                    raise ValueError(f"Dataset '{safe_name}' already exists.")
+
+                new_path = os.path.join(self.default_root, safe_name)
+
+                # Rename physical folder if it exists
+                if os.path.exists(dataset.path):
+                    if os.path.exists(new_path):
+                        # Collision on disk but not in DB? or just same folder?
+                        # If same folder (case insensitive OS potentially), be careful
+                        if os.path.abspath(dataset.path) != os.path.abspath(new_path):
+                            raise ValueError(f"Target path '{new_path}' already exists.")
+
+                    os.rename(dataset.path, new_path)
+                else:
+                    # Old path doesn't exist — just update the path reference.
+                    pass
+                dataset.name = safe_name
+                dataset.path = new_path
+
+                # Update dictionary key
+                del self.datasets[current_name]
+                self.datasets[safe_name] = dataset
             
         dataset.description = new_description
         dataset.classifier = new_classifier

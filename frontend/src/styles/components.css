@@ -259,23 +259,26 @@
         transition: 120ms;
         white-space: nowrap;
     }
-    .btn:hover { background: var(--color-surface-high); color: var(--color-text-primary); border-color: var(--color-border-bright); }
+    .btn:not(:disabled):hover { background: var(--color-surface-high); color: var(--color-text-primary); border-color: var(--color-border-bright); }
+    /* Disabled buttons read as inert: dimmed, no shadow, not-allowed cursor, and
+       no hover response (the :not(:disabled) guards above/below suppress it). */
+    .btn:disabled, .btn[disabled] { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
     .btn.primary {
         background: var(--color-brand); color: white;
         border-color: oklch(0.55 0.13 55);
         font-weight: 600;
         box-shadow: var(--shadow-brand);
     }
-    .btn.primary:hover { background: var(--color-brand-hover); }
+    .btn.primary:not(:disabled):hover { background: var(--color-brand-hover); }
     .btn.success { background: var(--color-success); color: oklch(0.10 0.05 155); border-color: oklch(0.55 0.14 155); font-weight: 600; }
-    .btn.success:hover { background: oklch(0.74 0.14 155); }
+    .btn.success:not(:disabled):hover { background: oklch(0.74 0.14 155); }
     .btn.ghost { background: transparent; border-color: transparent; }
-    .btn.ghost:hover { background: var(--color-surface-mid); }
+    .btn.ghost:not(:disabled):hover { background: var(--color-surface-mid); }
     .btn.sm { padding: 4px 9px; font-size: 11.5px; gap: 4px; }
     .btn.icon-only { padding: 6px 7px; }
     .btn .ico { width: 14px; height: 14px; }
     .btn.danger-out { color: var(--color-danger); border-color: oklch(0.40 0.12 25); }
-    .btn.danger-out:hover { background: oklch(0.20 0.08 25); color: var(--color-danger); }
+    .btn.danger-out:not(:disabled):hover { background: oklch(0.20 0.08 25); color: var(--color-danger); }
 
     /* chips & tags */
     .chip {
@@ -686,6 +689,30 @@
     }
     .modal-body { flex: 1; overflow-y: auto; padding: 18px 22px; }
     .modal-foot { padding: 14px 22px; border-top: 1px solid var(--color-border-subtle); display: flex; gap: 8px; justify-content: flex-end; background: var(--color-surface-mid); }
+
+    /* Shared file drop zone — click to browse + drag-and-drop. Used by every
+       import surface (dataset / template / project) so they stay consistent. */
+    .dropzone {
+        display: flex; flex-direction: column; align-items: center; gap: 8px;
+        padding: 30px 18px; text-align: center; cursor: pointer;
+        border: 1.5px dashed var(--color-border-default);
+        border-radius: 12px;
+        background: var(--color-surface-low);
+        color: var(--color-text-muted);
+        transition: border-color .15s ease, background .15s ease, color .15s ease;
+    }
+    .dropzone:hover, .dropzone.dz-drag {
+        border-color: var(--color-brand);
+        background: var(--color-surface-mid);
+        color: var(--color-text-primary);
+    }
+    .dropzone.dz-has { border-style: solid; border-color: var(--color-brand); color: var(--color-text-primary); }
+    .dropzone .dz-title {
+        font-size: 13.5px; font-weight: 600; max-width: 100%;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .dropzone .dz-title strong { color: var(--color-text-primary); }
+    .dropzone .dz-sub { font-size: 11.5px; color: var(--color-text-muted); }
 
     /* table */
     .tbl { width: 100%; border-collapse: collapse; }

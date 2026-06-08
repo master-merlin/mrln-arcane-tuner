@@ -26,6 +26,8 @@ import { TemplateEditModalComponent } from '../../modals/template-edit/template-
 import { TemplateJsonEditModalComponent } from '../../modals/template-json/template-json.component';
 import { JobConfigModalComponent } from '../../modals/job-config/job-config.component';
 import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-dataset.component';
+import { ExportOptionsModalComponent } from '../../modals/export-options/export-options.component';
+import { ImportArchiveModalComponent } from '../../modals/import-archive/import-archive.component';
 
 /**
  * Modal stack renderer.
@@ -63,6 +65,8 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
         TemplateJsonEditModalComponent,
         JobConfigModalComponent,
         ImportDatasetModalComponent,
+        ExportOptionsModalComponent,
+        ImportArchiveModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -152,6 +156,12 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
                             }
                             @case ('import-dataset') {
                                 @defer { <app-modal-import-dataset/> }
+                            }
+                            @case ('export-options') {
+                                @defer { <app-modal-export-options/> }
+                            }
+                            @case ('import-archive') {
+                                @defer { <app-modal-import-archive/> }
                             }
                             @default {
                                 <div class="modal-head">

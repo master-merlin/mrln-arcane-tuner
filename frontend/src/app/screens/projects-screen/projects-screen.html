@@ -12,6 +12,9 @@
             <button class="btn" type="button" (click)="openTemplatesLibrary()">
                 <app-ico name="Files" [size]="14"/> Templates library
             </button>
+            <button class="btn" type="button" (click)="importArchive()">
+                <app-ico name="Upload" [size]="14"/> Import
+            </button>
             <button class="btn primary" type="button" (click)="newProject()">
                 <app-ico name="Plus" [size]="14"/> New project
             </button>
@@ -54,11 +57,18 @@
                                 <div class="ps-card-updated">updated {{ c.updatedLabel }}</div>
                             </div>
                         </div>
-                        <button class="icon-btn" type="button"
-                                (click)="editProject(c.project, $event)"
-                                title="Edit project">
-                            <app-ico name="Settings" [size]="13"/>
-                        </button>
+                        <div class="ps-card-head-actions">
+                            <button class="icon-btn" type="button"
+                                    (click)="exportProject(c.project, $event)"
+                                    title="Export project">
+                                <app-ico name="Download" [size]="13"/>
+                            </button>
+                            <button class="icon-btn" type="button"
+                                    (click)="editProject(c.project, $event)"
+                                    title="Edit project">
+                                <app-ico name="Settings" [size]="13"/>
+                            </button>
+                        </div>
                     </div>
 
                     <div class="ps-card-desc">

@@ -67,6 +67,7 @@ export class TopbarComponent {
         const scopeLabel = this.scopeLabel();
         if (path.startsWith('/datasets')) return [{ label: scopeLabel, muted: true }, { label: 'Datasets', last: true }];
         if (path.startsWith('/projects')) return [{ label: scopeLabel, muted: true }, { label: 'Projects', last: true }];
+        if (path.startsWith('/templates')) return [{ label: scopeLabel, muted: true }, { label: 'Templates', last: true }];
         if (path.startsWith('/training')) return [{ label: scopeLabel, muted: true }, { label: 'Training', last: true }];
         if (path.startsWith('/jobs'))     return [{ label: scopeLabel, muted: true }, { label: 'Jobs', last: true }];
         if (path.startsWith('/tools'))    return [{ label: 'Utilities', muted: true }, { label: 'LoRA Tools', last: true }];
@@ -77,6 +78,6 @@ export class TopbarComponent {
     protected showScope = computed(() => {
         void this.url();
         const path = this.router.url.split('?')[0];
-        return ['/datasets', '/projects', '/training', '/jobs'].some(p => path.startsWith(p));
+        return ['/datasets', '/projects', '/templates', '/training', '/jobs'].some(p => path.startsWith(p));
     });
 }

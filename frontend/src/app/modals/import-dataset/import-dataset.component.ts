@@ -54,9 +54,15 @@ type ConflictChoice = 'rename' | 'overwrite';
                 </div>
 
                 @if (transport() === 'file') {
-                    <label class="field">
-                        <span>Archive (.zip)</span>
-                        <input type="file" accept=".zip" (change)="onFile($event)">
+                    <label class="dropzone" [class.dz-drag]="dragOver()" [class.dz-has]="!!file()"
+                           (dragover)="onDragOver($event)" (dragleave)="onDragLeave()" (drop)="onDrop($event)">
+                        <app-ico [name]="file() ? 'FileCheck' : 'FileUp'" [size]="26"/>
+                        <div class="dz-title">
+                            @if (file(); as f) { {{ f.name }} }
+                            @else { Drop a <strong>.zip</strong> here, or click to browse }
+                        </div>
+                        <div class="dz-sub">{{ file() ? 'Click or drop to replace' : 'dataset archive (.zip)' }}</div>
+                        <input type="file" accept=".zip" hidden (change)="onFile($event)">
                     </label>
                 } @else {
                     <label class="field">
@@ -122,12 +128,38 @@ export class ImportDatasetModalComponent {
     protected renameValue = '';
     protected submitting = signal(false);
 
-    private file = signal<File | null>(null);
+    protected file = signal<File | null>(null);
     protected conflictName = signal<string | null>(null);
+    protected dragOver = signal(false);
 
     protected onFile(event: Event): void {
         const files = (event.target as HTMLInputElement).files;
-        this.file.set(files && files.length ? files[0] : null);
+        this.setFile(files && files.length ? files[0] : null);
+    }
+
+    protected onDragOver(event: DragEvent): void {
+        event.preventDefault();
+        this.dragOver.set(true);
+    }
+
+    protected onDragLeave(): void {
+        this.dragOver.set(false);
+    }
+
+    protected onDrop(event: DragEvent): void {
+        event.preventDefault();
+        this.dragOver.set(false);
+        const f = event.dataTransfer?.files?.[0] ?? null;
+        this.setFile(f);
+    }
+
+    /** Accept a dropped/picked file, rejecting anything that isn't a `.zip`. */
+    private setFile(f: File | null): void {
+        if (f && !f.name.toLowerCase().endsWith('.zip')) {
+            this.toast.warning('Please choose a .zip archive.');
+            return;
+        }
+        this.file.set(f);
     }
 
     protected canSubmit(): boolean {

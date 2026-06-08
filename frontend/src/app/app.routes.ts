@@ -18,6 +18,11 @@ export const routes: Routes = [
             import('./screens/projects-screen/project-detail').then(m => m.ProjectDetail),
     },
     {
+        path: 'templates',
+        loadComponent: () =>
+            import('./screens/templates-screen/templates-screen').then(m => m.TemplatesScreen),
+    },
+    {
         path: 'training',
         loadComponent: () =>
             import('./screens/training-screen/training-screen').then(m => m.TrainingScreen),

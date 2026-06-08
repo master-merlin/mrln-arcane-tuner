@@ -15,6 +15,16 @@ const NAME_FORBIDDEN = /[<>:"/\\|?*]/;
 /** Sentinel select-option value that switches the category control into inline-text-entry mode. */
 const CUSTOM_CLASSIFIER_KEY = '__custom__';
 
+/**
+ * Mirror of the backend dataset-name sanitizer (DatasetManager / import): keep
+ * letters, digits, space, hyphen and underscore. The stored name equals its
+ * on-disk folder, so collision detection must compare the SANITIZED form —
+ * "Foo (bar)" and "Foo bar" both resolve to the same dataset/folder.
+ */
+function sanitizeDatasetName(raw: string): string {
+    return Array.from(raw).filter(c => /[\p{L}\p{N} _-]/u.test(c)).join('').trim();
+}
+
 /** Rejects null/empty/whitespace-only values. `Validators.required` accepts "   " — this does not. */
 function nonEmptyTrimmed(c: AbstractControl): { required: true } | null {
     const v = c.value as string | null;
@@ -59,9 +69,12 @@ interface DatasetFormModalData {
             <form [formGroup]="form" (ngSubmit)="submit()">
                 <label class="field-label">Name</label>
                 <input class="input" type="text" formControlName="name" autocomplete="off"
+                       [class.df-invalid]="nameInvalid() || nameCollision()"
                        placeholder="My_New_Concept" autofocus/>
                 @if (nameInvalid()) {
                     <div class="field-error">Name contains forbidden characters (&lt; &gt; : " / \\ | ? *)</div>
+                } @else if (nameCollision()) {
+                    <div class="field-error">A dataset named "{{ sanitizedName() }}" already exists.</div>
                 }
 
                 <label class="field-label df-mt">Category</label>
@@ -140,7 +153,7 @@ interface DatasetFormModalData {
         <div class="modal-foot">
             <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
             <button class="btn primary" type="button"
-                    [disabled]="form.invalid || nameInvalid() || submitting()"
+                    [disabled]="form.invalid || nameInvalid() || nameCollision() || submitting()"
                     (click)="submit()">
                 @if (isEdit()) {
                     <app-ico name="Check" [size]="14"/>
@@ -161,6 +174,10 @@ interface DatasetFormModalData {
             color: var(--color-danger);
             font-size: 11px;
             margin-top: 4px;
+        }
+        .input.df-invalid {
+            border-color: var(--color-danger);
+            box-shadow: 0 0 0 1px var(--color-danger);
         }
         .field-hint {
             color: var(--color-text-muted);
@@ -329,6 +346,34 @@ export class DatasetFormModalComponent {
         return NAME_FORBIDDEN.test(v);
     });
 
+    /** The sanitized name that would actually be stored (for the collision message). */
+    protected sanitizedName = computed<string>(() => sanitizeDatasetName(this.nameValue() ?? ''));
+
+    /**
+     * True when the (sanitized) name collides with a *different* existing
+     * dataset — blocks Save so the rename can't clobber another dataset's
+     * name/folder. Pure logic lives in {@link nameCollides} for testability.
+     */
+    protected nameCollision = computed<boolean>(() =>
+        DatasetFormModalComponent.nameCollides(
+            this.nameValue() ?? '',
+            this.datasets.entities(),
+            this.editingDataset()?.id ?? null,
+        ),
+    );
+
+    /** Does *rawName* (after sanitization) match an existing dataset other than
+     *  the one being edited? */
+    static nameCollides(
+        rawName: string,
+        datasets: ReadonlyArray<{ id?: string; name: string }>,
+        editingId: string | null,
+    ): boolean {
+        const sanitized = sanitizeDatasetName(rawName);
+        if (!sanitized) return false;
+        return datasets.some(d => d.name === sanitized && d.id !== editingId);
+    }
+
     protected canGenerateTrigger = computed<boolean>(() => {
         const v = (this.nameValue() ?? '').trim();
         return v.length > 0 && !NAME_FORBIDDEN.test(v);
@@ -474,7 +519,7 @@ export class DatasetFormModalComponent {
     // ── Submit ─────────────────────────────────────────────────────────
 
     async submit(): Promise<void> {
-        if (this.form.invalid || this.nameInvalid() || this.submitting()) return;
+        if (this.form.invalid || this.nameInvalid() || this.nameCollision() || this.submitting()) return;
 
         // Flush any uncommitted tag draft before reading the form.
         if (this.tagDraft().trim()) this.commitDraftTag();

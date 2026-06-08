@@ -3,6 +3,9 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
 import { ScopeStore } from '../state/scope.store';
+import type {
+  TemplatePlanEntry, TemplateEntryResolution, ImportCreated, ImportSkip,
+} from './template.service';
 
 export interface ProjectStats {
   captioning_templates: number;
@@ -38,6 +41,37 @@ export interface Dataset {
   id: string;
   name: string;
   [key: string]: unknown;
+}
+
+// ── Project import plan / apply DTOs ──────────────────────────────────────
+
+export interface ProjectDatasetPlan {
+  name: string;
+  mode: 'embed' | 'reference' | 'exclude';
+  reference_present?: boolean;
+  embed_conflict?: boolean;
+}
+
+export interface ProjectImportPlan {
+  project: { name: string; conflict: boolean };
+  templates: TemplatePlanEntry[];
+  datasets: ProjectDatasetPlan[];
+}
+
+export interface ProjectImportResolutions {
+  project: { name?: string; on_conflict?: 'rename' | 'overwrite' };
+  datasets: Record<string, { on_conflict: 'rename' | 'overwrite' }>;
+  templates: Record<string, TemplateEntryResolution>;
+}
+
+export interface ProjectImportResult {
+  project_id: string;
+  project_name: string;
+  imported_datasets: string[];
+  linked_references: string[];
+  missing_references: string[];
+  templates: { created: ImportCreated[]; skipped: ImportSkip[] };
+  installed_definitions: string[];
 }
 
 @Injectable({
@@ -148,5 +182,41 @@ export class ProjectService {
   updatePreferences(projectId: string | null, updates: Partial<ProjectPreferences>): Observable<ProjectPreferences> {
     const pid = projectId ? projectId : 'general';
     return this.http.put<ProjectPreferences>(`${this.apiUrl}/${pid}/preferences`, updates);
+  }
+
+  // Export / Import
+
+  exportProject(
+    projectId: string,
+    selection: {
+      templates: { domain: string; id: string }[];
+      datasets: { name: string; mode: string }[];
+    },
+  ): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/${projectId}/export`, selection, {
+      responseType: 'blob',
+    });
+  }
+
+  planImportProject(file: File): Observable<ProjectImportPlan> {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.post<ProjectImportPlan>(`${this.apiUrl}/import/plan`, form);
+  }
+
+  applyImportProject(file: File, resolutions: ProjectImportResolutions): Observable<ProjectImportResult> {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('resolutions', JSON.stringify(resolutions ?? {}));
+    return this.http.post<ProjectImportResult>(`${this.apiUrl}/import/apply`, form);
+  }
+
+  rollbackImport(body: {
+    project_id: string;
+    imported_datasets: string[];
+    installed_definitions: string[];
+  }): Observable<{ status: string; project_id: string }> {
+    return this.http.post<{ status: string; project_id: string }>(
+      `${this.apiUrl}/import/rollback`, body);
   }
 }

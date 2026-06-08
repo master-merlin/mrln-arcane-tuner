@@ -383,14 +383,32 @@ async def export_dataset(name: str):
     )
 
 
+def _sanitize_ds_name(name: str) -> str:
+    """Folder-safe dataset name.
+
+    The on-disk folder is named after the dataset name, and the frontend serves
+    media statically as ``/media/<name>/...`` — so the stored name MUST equal
+    its folder basename, or images 404 while captions (loaded via the API) still
+    work. Strips everything except alphanumerics, space, hyphen and underscore,
+    matching the folder sanitizer in ``DatasetManager.create_dataset``/rename.
+    """
+    cleaned = "".join(c for c in name if c.isalnum() or c in (" ", "-", "_")).strip()
+    return cleaned or f"dataset_{int(time.time())}"
+
+
 def _resolve_import_name(name: str, on_conflict: str | None, new_name: str | None) -> str:
     """Decide the final dataset name, applying the collision directive.
 
+    The returned name is sanitized so it matches its on-disk folder — the import
+    cleanup that renames the folder must apply to the name too, else the name and
+    folder diverge and ``/media/<name>`` can't find the files.
+
     Raises HTTPException(409) when the name is taken and no directive is given.
     """
-    existing = dataset_manager.get_dataset(name)
+    base = _sanitize_ds_name(name)
+    existing = dataset_manager.get_dataset(base)
     if existing is None:
-        return name
+        return base
     if on_conflict == "overwrite":
         # v1 limitation: the existing dataset is deleted here, before extraction.
         # Callers reach this only after read_manifest() succeeds, so a corrupt
@@ -398,39 +416,46 @@ def _resolve_import_name(name: str, on_conflict: str | None, new_name: str | Non
         # register afterwards leaves neither old nor new. Acceptable for the
         # local export -> delete -> re-import flow; revisit (import-to-temp,
         # swap on success) if this becomes a real risk.
-        dataset_manager.delete_dataset(name, delete_files=True)
-        return name
+        dataset_manager.delete_dataset(base, delete_files=True)
+        return base
     if on_conflict == "rename":
         # Suffix from the resolved base (the user's new_name when given, else
         # "<name> (imported)") — NOT the original name, or a colliding custom
-        # rename would be silently discarded.
-        base = (new_name or "").strip() or f"{name} (imported)"
-        candidate = base
+        # rename would be silently discarded. Every candidate is sanitized so the
+        # final name stays folder-safe (the parens in "(imported)" are stripped).
+        rename_base = (
+            _sanitize_ds_name(new_name) if (new_name or "").strip()
+            else _sanitize_ds_name(f"{base} (imported)")
+        )
+        candidate = rename_base
         i = 2
         while dataset_manager.get_dataset(candidate) is not None:
-            candidate = f"{base} ({i})"
+            candidate = _sanitize_ds_name(f"{rename_base} {i}")
             i += 1
         return candidate
     # No directive -> tell the client to prompt.
     raise HTTPException(
         status_code=409,
-        detail={"conflict": True, "name": name,
-                "message": f"A dataset named '{name}' already exists."},
+        detail={"conflict": True, "name": base,
+                "message": f"A dataset named '{base}' already exists."},
     )
 
 
 def _import_from_zip_path(zip_path: Path, on_conflict: str | None, new_name: str | None):
-    """Validate, extract, and register a dataset from a zip already on disk."""
+    """Validate, extract, and register a dataset from a zip already on disk.
+
+    The dataset name and its on-disk folder are kept identical (both the
+    sanitized ``final_name``) so the static ``/media/<name>`` route resolves — a
+    divergence here surfaces as captions present but images blank.
+    """
     try:
         with zipfile.ZipFile(zip_path) as zf:
             manifest = portable.read_manifest(zf)
             source_name = str(manifest.get("dataset", {}).get("name") or "Imported")
+            # Already filesystem-safe → folder basename == stored name.
             final_name = _resolve_import_name(source_name, on_conflict, new_name)
 
-            safe = "".join(
-                c for c in final_name if c.isalnum() or c in (" ", "-", "_")
-            ).strip() or f"dataset_{int(time.time())}"
-            target = Path(dataset_manager.default_root) / safe
+            target = Path(dataset_manager.default_root) / final_name
             target.mkdir(parents=True, exist_ok=True)
             try:
                 portable.safe_extract(zf, target)

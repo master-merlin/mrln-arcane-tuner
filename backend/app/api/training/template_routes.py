@@ -7,9 +7,11 @@ masking, training) has its own repository and scoping rules.
 from __future__ import annotations
 
 import asyncio
+import io
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -123,6 +125,22 @@ class CreateFromJobRequest(BaseModel):
     job_id: str
     name: str
     project_id: str | None = None
+
+
+class ExportBundleItem(BaseModel):
+    domain: str
+    id: str
+
+
+class ExportBundleRequest(BaseModel):
+    items: list[ExportBundleItem]
+
+
+class ImportEntryResolution(BaseModel):
+    action: str = "create"          # "create" | "skip"
+    name: str | None = None         # rename override
+    install_definition: bool = False
+    use_hf_substitution: bool = True
 
 
 # ── Captioning templates ─────────────────────────────────────────────────
@@ -293,3 +311,421 @@ async def use_template(domain: str, template_id: str) -> dict[str, str]:
     repo = _get_repo(domain)
     await asyncio.to_thread(repo.increment_usage, template_id)
     return {"status": "recorded"}
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+def _safe_filename(name: str | None) -> str:
+    # ASCII-only: the Content-Disposition header is encoded as latin-1, so a
+    # Unicode letter (CJK/Cyrillic/accented) — which str.isalnum() accepts —
+    # would crash the response. Non-ASCII names fall back to "template".
+    cleaned = "".join(
+        c for c in (name or "")
+        if c.isascii() and (c.isalnum() or c in (" ", "-", "_"))
+    ).strip()
+    return cleaned or "template"
+
+
+def _export_entry(domain: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Build a carried template entry; embed the definition for training rows."""
+    from app.core.template import portable
+
+    definition = None
+    if domain == "training":
+        from app.engine.models.registry import registry
+
+        defn = registry.get_definition(row.get("definition_id") or "")
+        definition = defn.model_dump() if defn is not None else None
+    return portable.build_template_entry(domain, row, definition)
+
+
+def _template_zip_response(
+    entries: list[dict[str, Any]], filename: str
+) -> StreamingResponse:
+    from app import __version__ as APP_VERSION
+    from app.core.portable.archive import write_manifest_zip
+    from app.core.template import portable
+
+    manifest = portable.build_template_manifest(entries, APP_VERSION)
+    buf = write_manifest_zip(manifest)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def export_template_archive_bytes(domain: str, template_id: str) -> bytes | None:
+    """Build a single-template ``kind='template'`` archive and return its bytes,
+    or None if the template doesn't exist. Reused by project export."""
+    from app import __version__ as APP_VERSION
+    from app.core.portable.archive import write_manifest_zip
+    from app.core.template import portable
+
+    repo = _get_repo(domain)  # raises 400 for an unknown domain
+    row = repo.get_by_id(template_id)
+    if not row:
+        return None
+    entry = _export_entry(domain, row)
+    manifest = portable.build_template_manifest([entry], APP_VERSION)
+    return write_manifest_zip(manifest).getvalue()
+
+
+@router.get("/templates/{domain}/{template_id}/export")
+async def export_template(domain: str, template_id: str) -> StreamingResponse:
+    """Export a single template as a ``kind='template'`` archive."""
+    repo = _get_repo(domain)  # raises 400 for an unknown domain
+    row = await asyncio.to_thread(repo.get_by_id, template_id)
+    if not row:
+        raise HTTPException(404, "Template not found")
+    entry = await asyncio.to_thread(_export_entry, domain, row)
+    return _template_zip_response(
+        [entry], f"{_safe_filename(row.get('name'))}.template.zip"
+    )
+
+
+@router.post("/templates/export")
+async def export_templates_bundle(req: ExportBundleRequest) -> StreamingResponse:
+    """Export 1..N selected templates (any mix of domains) as one archive."""
+    if not req.items:
+        raise HTTPException(400, "No templates selected for export.")
+
+    def _collect() -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for item in req.items:
+            repo = _get_repo(item.domain)  # raises 400 for an unknown domain
+            row = repo.get_by_id(item.id)
+            if not row:
+                raise HTTPException(404, f"Template not found: {item.domain}/{item.id}")
+            entries.append(_export_entry(item.domain, row))
+        return entries
+
+    entries = await asyncio.to_thread(_collect)
+    if len(entries) == 1:
+        filename = f"{_safe_filename(entries[0].get('name'))}.template.zip"
+    else:
+        filename = "templates-bundle.zip"
+    return _template_zip_response(entries, filename)
+
+
+# ── Import: helpers ──────────────────────────────────────────────────────
+
+
+def _families_dir():
+    from pathlib import Path
+
+    import app.engine.models.registry as _reg_mod
+
+    return Path(_reg_mod.__file__).resolve().parent / "families"
+
+
+def _find_family_hf_source(family: str, component: str) -> str | None:
+    """Return an ``huggingface:`` path for *component* from any present
+    definition of the same *family*, or None."""
+    from app.core.template import portable
+    from app.engine.models.registry import registry
+
+    for did in registry.list_models():
+        defn = registry.get_definition(did)
+        if defn is None or defn.family != family:
+            continue
+        comp = defn.components.get(component)
+        path = getattr(comp, "path", None)
+        if path and not portable.is_local_component_path(path):
+            return path
+    return None
+
+
+def _plan_training_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Compute the definition status + local-component substitution plan."""
+    from app.core.template import import_service, portable
+    from app.engine.models.registry import registry
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+
+    definition_id = entry.get("definition_id") or ""
+    out: dict[str, Any] = {"definition_id": definition_id, "local_components": []}
+
+    if registry.get_definition(definition_id) is not None:
+        out["definition_status"] = "present"
+        return out
+
+    carried = entry.get("definition")
+    if not isinstance(carried, dict):
+        out["definition_status"] = "missing"
+        return out
+
+    err = import_service.validate_carried_definition(carried)
+    if err is not None:
+        out["definition_status"] = "invalid"
+        out["definition_error"] = err
+        return out
+
+    out["definition_status"] = "installable"
+    offline = ModelOverrideManager.is_offline(definition_id)
+    family = carried.get("family") or ""
+    for comp in portable.scan_local_component_paths(carried):
+        hf = None if offline else _find_family_hf_source(family, comp["component"])
+        out["local_components"].append(
+            {"component": comp["component"], "local_path": comp["path"],
+             "hf_substitute": hf}
+        )
+    return out
+
+
+def _plan_entry(entry: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+    from app.core.template import import_service
+
+    domain = entry["domain"]
+    name = entry.get("name") or ""
+    item: dict[str, Any] = {
+        "domain": domain, "name": name,
+        "config_warning": import_service.validate_config(
+            domain, entry.get("model_id"), entry.get("config")),
+        "duplicate_name": _name_exists(domain, name, project_id),
+        "blocker": False,
+    }
+    if domain in ("captioning", "masking"):
+        model_id = entry.get("model_id") or ""
+        available = import_service.model_available(domain, model_id)
+        item["model_id"] = model_id
+        item["model_available"] = available
+        item["blocker"] = not available
+    else:  # training
+        info = _plan_training_entry(entry)
+        item.update(info)
+        item["blocker"] = info["definition_status"] in ("missing", "invalid")
+    return item
+
+
+def _name_exists(domain: str, name: str, project_id: str | None) -> bool:
+    repo = _get_repo(domain)
+    rows = repo.list_for_project(None, project_id)
+    return any((r.get("name") or "") == name for r in rows)
+
+
+# ── Import: reusable composition seams ───────────────────────────────────
+
+
+def plan_template_entries(
+    manifest: dict[str, Any], project_id: str | None
+) -> list[dict[str, Any]]:
+    """Per-entry import plan for a parsed template manifest. Reused by the
+    template plan route and by project import."""
+    return [
+        {**_plan_entry(entry, project_id), "index": i}
+        for i, entry in enumerate(manifest["templates"])
+    ]
+
+
+def import_template_entries(
+    manifest: dict[str, Any], res_map: dict[str, Any], project_id: str | None
+) -> dict[str, Any]:
+    """Create template rows (and install confirmed definitions) for a parsed
+    template manifest. Per-entry best-effort. Reused by the template apply route
+    and by project import. Returns ``{created, skipped, installed_definitions}``."""
+    from app.core.template import import_service
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    installed: list[str] = []
+
+    for i, entry in enumerate(manifest["templates"]):
+        res = ImportEntryResolution(**(res_map.get(str(i)) or {}))
+        domain = entry["domain"]
+        name = res.name or entry.get("name") or "Imported"
+        if res.action == "skip":
+            skipped.append({"index": i, "name": name, "reason": "skipped by user"})
+            continue
+        try:
+            if domain in ("captioning", "masking"):
+                if not import_service.model_available(domain, entry.get("model_id") or ""):
+                    skipped.append({"index": i, "name": name,
+                                    "reason": f"model '{entry.get('model_id')}' not available in this build"})
+                    continue
+            else:  # training
+                ok, inst_id, reason = _resolve_training_definition(entry, res)
+                if not ok:
+                    skipped.append({"index": i, "name": name, "reason": reason})
+                    continue
+                if inst_id:
+                    installed.append(inst_id)
+            row = _create_row(domain, entry, name, project_id)
+        except HTTPException as exc:
+            skipped.append({"index": i, "name": name,
+                            "reason": f"import failed: {exc.detail}"})
+            continue
+        except Exception as exc:  # noqa: BLE001 — one bad entry must not abort the bundle
+            skipped.append({"index": i, "name": name, "reason": f"import failed: {exc}"})
+            continue
+        created.append({"index": i, "id": row.get("id"), "name": row.get("name") or name})
+
+    return {"created": created, "skipped": skipped, "installed_definitions": installed}
+
+
+# ── Import: plan endpoint ────────────────────────────────────────────────
+
+
+@router.post("/templates/import/plan")
+async def plan_template_import(
+    file: UploadFile = File(...),
+    project_id: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Read a template archive and return a per-entry import plan (read-only)."""
+    import zipfile
+
+    from app.core.portable.envelope import ManifestError
+    from app.core.template import portable
+
+    data = await file.read()
+
+    def _build_plan() -> dict[str, Any]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                manifest = portable.read_template_manifest(zf)
+        except ManifestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+        entries = plan_template_entries(manifest, project_id)
+        return {
+            "project_id": project_id,
+            "entries": entries,
+            "importable_count": sum(1 for e in entries if not e["blocker"]),
+        }
+
+    return await asyncio.to_thread(_build_plan)
+
+
+# ── Import: apply ────────────────────────────────────────────────────────
+
+
+def _install_definition(definition: dict[str, Any]) -> None:
+    """Persist a carried definition to its family dir and register it.
+
+    ``family`` and ``id`` come from the uploaded archive (untrusted), so both
+    are sanitized and the resolved target is confirmed to stay inside the
+    families directory before any write — otherwise a crafted ``family`` (e.g.
+    ``..`` or an absolute path) could write outside the source tree.
+    """
+    import re
+
+    import yaml
+
+    from app.engine.models.registry import registry
+
+    family = definition.get("family") or "unknown"
+    def_id = definition.get("id") or "imported"
+    safe_family = family.replace("/", "_").replace("\\", "_")
+    if safe_family in (".", "..") or not re.fullmatch(r"[A-Za-z0-9._-]+", safe_family):
+        raise HTTPException(400, f"Invalid family in carried definition: {family!r}")
+    safe_id = def_id.replace("/", "_").replace("\\", "_")
+    families_root = _families_dir().resolve()
+    family_dir = (families_root / safe_family / "definitions").resolve()
+    if not family_dir.is_relative_to(families_root):
+        raise HTTPException(400, "Carried definition resolves outside the families directory.")
+    family_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = family_dir / f"{safe_id}.yaml"
+    yaml_path.write_text(yaml.dump(definition, sort_keys=False), encoding="utf-8")
+    registry.load_definition(str(yaml_path))
+
+
+def _apply_hf_substitutions(definition: dict[str, Any]) -> dict[str, Any]:
+    """Replace local component paths with a same-family HF source when the
+    machine is online and one is found. Returns the (possibly modified) dict."""
+    from app.core.template import portable
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+
+    if ModelOverrideManager.is_offline(definition.get("id") or ""):
+        return definition
+    family = definition.get("family") or ""
+    components = definition.get("components") or {}
+    for comp in portable.scan_local_component_paths(definition):
+        hf = _find_family_hf_source(family, comp["component"])
+        if hf:
+            node = components[comp["component"]]
+            if isinstance(node, dict):
+                node["path"] = hf
+            else:
+                components[comp["component"]] = {"path": hf}
+    return definition
+
+
+def _resolve_training_definition(
+    entry: dict[str, Any], res: "ImportEntryResolution"
+) -> tuple[bool, str | None, str | None]:
+    """Ensure the training definition is usable.
+
+    Returns ``(ok, installed_definition_id, skip_reason)``.
+    """
+    from app.core.template import import_service
+    from app.engine.models.registry import registry
+
+    definition_id = entry.get("definition_id") or ""
+    if registry.get_definition(definition_id) is not None:
+        return True, None, None  # present → use machine's
+
+    carried = entry.get("definition")
+    if not isinstance(carried, dict):
+        return False, None, "definition missing and not carried — install it first"
+    if import_service.validate_carried_definition(carried) is not None:
+        return False, None, "carried definition is invalid"
+    if not res.install_definition:
+        return False, None, "definition not present and install was declined"
+
+    import copy
+
+    to_install = copy.deepcopy(carried)
+    if res.use_hf_substitution:
+        to_install = _apply_hf_substitutions(to_install)
+    _install_definition(to_install)
+    return True, definition_id, None
+
+
+def _create_row(domain: str, entry: dict[str, Any], name: str,
+                project_id: str | None) -> dict[str, Any]:
+    repo = _get_repo(domain)
+    data: dict[str, Any] = {"name": name, "config": entry.get("config") or {}}
+    if project_id is not None:
+        data["project_id"] = project_id
+    if domain == "training":
+        data["definition_id"] = entry.get("definition_id") or ""
+    else:
+        data["model_id"] = entry.get("model_id") or ""
+    if domain == "captioning":
+        data["system_prompt"] = entry.get("system_prompt") or "Describe this image in detail."
+        data["wildcard"] = entry.get("wildcard") or ""
+    return repo.create(data)
+
+
+@router.post("/templates/import/apply")
+async def apply_template_import(
+    file: UploadFile = File(...),
+    resolutions: str = Form(default="{}"),
+    project_id: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Create templates (and install confirmed definitions) from an archive."""
+    import json
+    import zipfile
+
+    from app.core.portable.envelope import ManifestError
+    from app.core.template import portable
+
+    data = await file.read()
+    try:
+        res_map = json.loads(resolutions or "{}").get("entries", {})
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid resolutions JSON: {exc}") from exc
+
+    def _apply() -> dict[str, Any]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                manifest = portable.read_template_manifest(zf)
+        except ManifestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+
+        return import_template_entries(manifest, res_map, project_id)
+
+    return await asyncio.to_thread(_apply)

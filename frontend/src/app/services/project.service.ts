@@ -159,7 +159,7 @@ export class ProjectService {
       datasets: { name: string; mode: string }[];
     },
   ): Observable<Blob> {
-    return this.http.post(`${this.rtc.apiUrl}/projects/${projectId}/export`, selection, {
+    return this.http.post(`${this.apiUrl}/${projectId}/export`, selection, {
       responseType: 'blob',
     });
   }
@@ -167,14 +167,14 @@ export class ProjectService {
   planImportProject(file: File): Observable<unknown> {
     const form = new FormData();
     form.append('file', file);
-    return this.http.post(`${this.rtc.apiUrl}/projects/import/plan`, form);
+    return this.http.post(`${this.apiUrl}/import/plan`, form);
   }
 
   applyImportProject(file: File, resolutions: unknown): Observable<unknown> {
     const form = new FormData();
     form.append('file', file);
     form.append('resolutions', JSON.stringify(resolutions ?? {}));
-    return this.http.post(`${this.rtc.apiUrl}/projects/import/apply`, form);
+    return this.http.post(`${this.apiUrl}/import/apply`, form);
   }
 
   rollbackImport(body: {
@@ -183,6 +183,6 @@ export class ProjectService {
     installed_definitions: string[];
   }): Observable<{ status: string; project_id: string }> {
     return this.http.post<{ status: string; project_id: string }>(
-      `${this.rtc.apiUrl}/projects/import/rollback`, body);
+      `${this.apiUrl}/import/rollback`, body);
   }
 }

@@ -42,6 +42,19 @@ def write_zip(
     return buf
 
 
+def write_manifest_zip(manifest: dict[str, Any]) -> io.BytesIO:
+    """Build a manifest-only archive (no file tree).
+
+    Used by template archives (which carry no on-disk files) and by the
+    project archive's top-level envelope. Returns a seeked-to-zero ``BytesIO``.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2))
+    buf.seek(0)
+    return buf
+
+
 def safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
     """Extract every entry except ``manifest.json`` into *dest*, safely.
 

@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 
-from app.core.portable.archive import safe_extract, write_zip
+from app.core.portable.archive import safe_extract, write_manifest_zip, write_zip
 from app.core.portable.envelope import (
     ManifestError,
     build_manifest_header,
@@ -116,3 +116,12 @@ def test_safe_extract_writes_files_and_skips_manifest(tmp_path):
     assert (dest / "a.jpg").read_bytes() == b"img"
     assert (dest / "masks" / "a.png").read_bytes() == b"mask"
     assert not (dest / "manifest.json").exists()
+
+
+def test_write_manifest_zip_contains_only_manifest():
+    buf = write_manifest_zip({"kind": "template", "format_version": 1, "templates": []})
+    with zipfile.ZipFile(buf) as zf:
+        names = zf.namelist()
+        loaded = json.loads(zf.read("manifest.json"))
+    assert names == ["manifest.json"]
+    assert loaded["kind"] == "template"

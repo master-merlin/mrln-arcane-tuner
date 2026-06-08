@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core.db.repositories.project_repo import ProjectRepository
@@ -50,6 +52,21 @@ class DatasetAssociationResponse(BaseModel):
     """Ack for associating a dataset with a project."""
 
     status: str = "added"
+
+
+class ExportTemplateRef(BaseModel):
+    domain: str
+    id: str
+
+
+class ExportDatasetChoice(BaseModel):
+    name: str
+    mode: str  # "embed" | "reference" | "exclude"
+
+
+class ExportProjectRequest(BaseModel):
+    templates: list[ExportTemplateRef] = []
+    datasets: list[ExportDatasetChoice] = []
 
 
 # ── Project CRUD ─────────────────────────────────────────────────────────
@@ -148,3 +165,63 @@ async def update_preferences(
     pid = project_id if project_id != "general" else None
     updates = req.model_dump(exclude_none=True)
     return _prefs.upsert(pid, updates)
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+@router.post("/{project_id}/export")
+async def export_project(project_id: str, req: ExportProjectRequest) -> StreamingResponse:
+    """Assemble a kind='project' archive: metadata + preferences + selected
+    templates (nested template archives) + datasets (embed/reference/exclude)."""
+    from pathlib import Path
+
+    from app import __version__ as APP_VERSION
+    from app.api.training.template_routes import export_template_archive_bytes
+    from app.core.dataset import portable as dportable
+    from app.core.dataset_manager import dataset_manager
+    from app.core.portable.archive import write_bundle_zip
+    from app.core.project import portable as pportable
+
+    def _build() -> StreamingResponse:
+        project = _projects.get_by_id(project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        prefs = _prefs.get(project_id)
+
+        entries: dict[str, bytes] = {}
+        template_refs: list[dict[str, Any]] = []
+        for t in req.templates:
+            payload = export_template_archive_bytes(t.domain, t.id)
+            if payload is None:
+                raise HTTPException(404, f"Template not found: {t.domain}/{t.id}")
+            arcname = f"templates/{t.domain}-{pportable.slugify(t.id)}.zip"
+            entries[arcname] = payload
+            template_refs.append({"domain": t.domain, "archive": arcname})
+
+        dataset_refs: list[dict[str, Any]] = []
+        for d in req.datasets:
+            if d.mode == "exclude":
+                continue
+            if d.mode == "reference":
+                dataset_refs.append({"mode": "reference", "name": d.name})
+                continue
+            # embed
+            ds = dataset_manager.get_dataset(d.name)
+            if ds is None:
+                raise HTTPException(404, f"Dataset not found: {d.name}")
+            manifest_d = dportable.build_manifest(ds, app_version=APP_VERSION)
+            payload = dportable.write_export_zip(Path(ds.path), manifest_d).getvalue()
+            arcname = f"datasets/{pportable.slugify(d.name)}.zip"
+            entries[arcname] = payload
+            dataset_refs.append({"mode": "embed", "name": d.name, "archive": arcname})
+
+        manifest = pportable.build_project_manifest(
+            project, prefs, template_refs, dataset_refs, APP_VERSION)
+        buf = write_bundle_zip(manifest, entries)
+        filename = f"{pportable.slugify(project.get('name'))}.project.zip"
+        return StreamingResponse(
+            buf, media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    return await asyncio.to_thread(_build)

@@ -46,6 +46,9 @@ def safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
     """Extract every entry except ``manifest.json`` into *dest*, safely.
 
     Rejects absolute paths and ``..`` traversal (raises ``ManifestError``).
+    Symlink members are not a redirect risk here: ``zf.open`` + ``copyfileobj``
+    writes the link's target *text* as an inert regular file, never restoring
+    a real symlink, so a later member cannot be redirected outside *dest*.
     """
     dest = Path(dest).resolve()
     for member in zf.infolist():

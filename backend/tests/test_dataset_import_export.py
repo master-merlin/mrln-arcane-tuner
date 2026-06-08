@@ -185,7 +185,31 @@ def test_import_conflict_rename_creates_suffixed_dataset(client, tmp_path):
         data={"on_conflict": "rename"},
     )
     assert ok.status_code == 200
-    assert ok.json()["name"] == "Solo (imported)"
+    # The "(imported)" suffix is sanitized (parens stripped) so the stored name
+    # stays equal to its on-disk folder — see the name==folder regression below.
+    assert ok.json()["name"] == "Solo imported"
+
+
+def test_import_rename_name_equals_folder_so_media_resolves(client, tmp_path):
+    """Regression: a renamed import must store a name equal to its on-disk folder
+    basename. Otherwise /media/<name> 404s — images blank while captions (loaded
+    via the API) still work."""
+    import io
+    import os
+
+    dm, root, ds = _seed_dataset_on_disk_and_db(tmp_path, "Pix")
+    export = client.get("/api/datasets/Pix/export").content
+    ok = client.post(
+        "/api/datasets/import",
+        files={"file": ("Pix.zip", io.BytesIO(export), "application/zip")},
+        data={"on_conflict": "rename"},
+    )
+    assert ok.status_code == 200
+    name = ok.json()["name"]
+    imported = dm.get_dataset(name)
+    assert imported is not None
+    assert os.path.basename(imported.path) == name  # name and folder agree
+    assert os.path.isdir(imported.path)
 
 
 def test_import_rename_with_colliding_custom_name_suffixes_from_base(client, tmp_path):
@@ -207,8 +231,9 @@ def test_import_rename_with_colliding_custom_name_suffixes_from_base(client, tmp
         data={"on_conflict": "rename", "new_name": "Target"},
     )
     assert ok.status_code == 200
-    # Suffix derives from the custom base "Target", NOT from "Orig".
-    assert ok.json()["name"] == "Target (2)"
+    # Suffix derives from the custom base "Target", NOT from "Orig" — and stays
+    # folder-safe (no parens), so the name equals its on-disk folder.
+    assert ok.json()["name"] == "Target 2"
 
 
 def test_import_path_roundtrip(client, tmp_path):

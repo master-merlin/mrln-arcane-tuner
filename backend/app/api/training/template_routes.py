@@ -7,9 +7,10 @@ masking, training) has its own repository and scoping rules.
 from __future__ import annotations
 
 import asyncio
+import io
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -133,6 +134,13 @@ class ExportBundleItem(BaseModel):
 
 class ExportBundleRequest(BaseModel):
     items: list[ExportBundleItem]
+
+
+class ImportEntryResolution(BaseModel):
+    action: str = "create"          # "create" | "skip"
+    name: str | None = None         # rename override
+    install_definition: bool = False
+    use_hf_substitution: bool = True
 
 
 # ── Captioning templates ─────────────────────────────────────────────────
@@ -383,3 +391,135 @@ async def export_templates_bundle(req: ExportBundleRequest) -> StreamingResponse
     else:
         filename = "templates-bundle.zip"
     return _template_zip_response(entries, filename)
+
+
+# ── Import: helpers ──────────────────────────────────────────────────────
+
+
+def _families_dir():
+    from pathlib import Path
+
+    import app.engine.models.registry as _reg_mod
+
+    return Path(_reg_mod.__file__).resolve().parent / "families"
+
+
+def _find_family_hf_source(family: str, component: str) -> str | None:
+    """Return an ``huggingface:`` path for *component* from any present
+    definition of the same *family*, or None."""
+    from app.core.template import portable
+    from app.engine.models.registry import registry
+
+    for did in registry.list_models():
+        defn = registry.get_definition(did)
+        if defn is None or defn.family != family:
+            continue
+        comp = defn.components.get(component)
+        path = getattr(comp, "path", None)
+        if path and not portable.is_local_component_path(path):
+            return path
+    return None
+
+
+def _plan_training_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Compute the definition status + local-component substitution plan."""
+    from app.core.template import import_service, portable
+    from app.engine.models.registry import registry
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+
+    definition_id = entry.get("definition_id") or ""
+    out: dict[str, Any] = {"definition_id": definition_id, "local_components": []}
+
+    if registry.get_definition(definition_id) is not None:
+        out["definition_status"] = "present"
+        return out
+
+    carried = entry.get("definition")
+    if not isinstance(carried, dict):
+        out["definition_status"] = "missing"
+        return out
+
+    err = import_service.validate_carried_definition(carried)
+    if err is not None:
+        out["definition_status"] = "invalid"
+        out["definition_error"] = err
+        return out
+
+    out["definition_status"] = "installable"
+    offline = ModelOverrideManager.is_offline(definition_id)
+    family = carried.get("family") or ""
+    for comp in portable.scan_local_component_paths(carried):
+        hf = None if offline else _find_family_hf_source(family, comp["component"])
+        out["local_components"].append(
+            {"component": comp["component"], "local_path": comp["path"],
+             "hf_substitute": hf}
+        )
+    return out
+
+
+def _plan_entry(entry: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+    from app.core.template import import_service
+
+    domain = entry["domain"]
+    name = entry.get("name") or ""
+    item: dict[str, Any] = {
+        "domain": domain, "name": name,
+        "config_warning": import_service.validate_config(
+            domain, entry.get("model_id"), entry.get("config")),
+        "duplicate_name": _name_exists(domain, name, project_id),
+        "blocker": False,
+    }
+    if domain in ("captioning", "masking"):
+        model_id = entry.get("model_id") or ""
+        available = import_service.model_available(domain, model_id)
+        item["model_id"] = model_id
+        item["model_available"] = available
+        item["blocker"] = not available
+    else:  # training
+        info = _plan_training_entry(entry)
+        item.update(info)
+        item["blocker"] = info["definition_status"] in ("missing", "invalid")
+    return item
+
+
+def _name_exists(domain: str, name: str, project_id: str | None) -> bool:
+    repo = _get_repo(domain)
+    rows = repo.list_for_project(None, project_id)
+    return any((r.get("name") or "") == name for r in rows)
+
+
+# ── Import: plan endpoint ────────────────────────────────────────────────
+
+
+@router.post("/templates/import/plan")
+async def plan_template_import(
+    file: UploadFile = File(...),
+    project_id: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Read a template archive and return a per-entry import plan (read-only)."""
+    import zipfile
+
+    from app.core.portable.envelope import ManifestError
+    from app.core.template import portable
+
+    data = await file.read()
+
+    def _build_plan() -> dict[str, Any]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                manifest = portable.read_template_manifest(zf)
+        except ManifestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+        entries = [
+            {**_plan_entry(e, project_id), "index": i}
+            for i, e in enumerate(manifest["templates"])
+        ]
+        return {
+            "project_id": project_id,
+            "entries": entries,
+            "importable_count": sum(1 for e in entries if not e["blocker"]),
+        }
+
+    return await asyncio.to_thread(_build_plan)

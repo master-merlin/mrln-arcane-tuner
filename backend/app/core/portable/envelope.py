@@ -65,3 +65,25 @@ def read_manifest(
             f"Archive kind {kind!r} does not match expected {expected_kind!r}."
         )
     return manifest
+
+
+def peek_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:
+    """Read ``manifest.json`` and return its header (``kind`` + versions) WITHOUT
+    enforcing a specific kind. Used by the generic import-peek route so the UI
+    can route a dropped archive to the right importer.
+    """
+    if MANIFEST_NAME not in zf.namelist():
+        raise ManifestError(
+            "Archive is missing manifest.json — not an exported archive."
+        )
+    try:
+        manifest = json.loads(zf.read(MANIFEST_NAME))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ManifestError(f"manifest.json is not valid JSON: {exc}") from exc
+    if not isinstance(manifest, dict) or not manifest.get("kind"):
+        raise ManifestError("manifest.json is missing a 'kind'.")
+    return {
+        "kind": manifest.get("kind"),
+        "format_version": manifest.get("format_version"),
+        "app_version": manifest.get("app_version"),
+    }

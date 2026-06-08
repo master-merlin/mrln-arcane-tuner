@@ -143,3 +143,29 @@ def test_write_bundle_zip_writes_manifest_and_named_entries():
         loaded = json.loads(zf.read("manifest.json"))
     assert names == {"manifest.json", "templates/a.zip", "datasets/b.zip"}
     assert loaded["kind"] == "project"
+
+
+def test_peek_manifest_returns_kind_without_enforcing():
+    from app.core.portable.envelope import peek_manifest
+
+    buf = write_manifest_zip({"kind": "project", "format_version": 1, "app_version": "x"})
+    with zipfile.ZipFile(buf) as zf:
+        out = peek_manifest(zf)
+    assert out == {"kind": "project", "format_version": 1, "app_version": "x"}
+
+
+def test_peek_manifest_rejects_missing_or_kindless():
+    from app.core.portable.envelope import ManifestError, peek_manifest
+
+    nomani = io.BytesIO()
+    with zipfile.ZipFile(nomani, "w") as zf:
+        zf.writestr("a.txt", b"x")
+    nomani.seek(0)
+    with zipfile.ZipFile(nomani) as zf:
+        with pytest.raises(ManifestError):
+            peek_manifest(zf)
+
+    nokind = write_manifest_zip({"format_version": 1})
+    with zipfile.ZipFile(nokind) as zf:
+        with pytest.raises(ManifestError):
+            peek_manifest(zf)

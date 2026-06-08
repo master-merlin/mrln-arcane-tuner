@@ -33,6 +33,12 @@ class HealthResponse(BaseModel):
     model_count: int
     active_jobs: int
 
+
+class VersionResponse(BaseModel):
+    """Backend application version (shown in the sidebar footer)."""
+
+    version: str
+
 _LOG_FILE = SERVER_LOG_PATH
 
 # Captured at import (≈ process start). A graceful restart spawns a fresh
@@ -107,6 +113,19 @@ async def get_logs(lines: int = 100):
 
 
 # ── System & GPU Status ─────────────────────────────────────────────────
+
+
+@router.get("/version", response_model=VersionResponse)
+async def get_version():
+    """Backend application version for the sidebar footer.
+
+    Lives under ``/api`` so it is reachable through the dev-server proxy and
+    the production SPA mount alike — unlike the backend root ``/``, which both
+    of those serve as ``index.html``.
+    """
+    from app import __version__
+
+    return {"version": __version__}
 
 
 @router.get("/health", response_model=HealthResponse)

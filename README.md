@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.5.0-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 21 · FastAPI
+`v0.5.0-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 22 · Node 24 · FastAPI
 
 ---
 
@@ -38,7 +38,7 @@ This project wouldn't exist without the incredible open-source community that pi
 | ------------- | -------------------- | ------------------------- |
 | Python        | 3.12+                | With `venv` support       |
 | NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.0 required        |
-| Node.js       | 20+                  | For the Angular frontend  |
+| Node.js       | 24+ (LTS)            | Required by Angular 22 / TS 6 |
 | npm           | 10+                  | Comes with Node.js        |
 
 ### Scripted Install (Recommended)
@@ -132,13 +132,19 @@ The published image is on Docker Hub — you can use it directly, no build
 required:
 
 ```
-mastermerlin/mrln-arcane-tuner:latest
+mastermerlin/mrln-arcane-tuner:latest          # rolling latest
+mastermerlin/mrln-arcane-tuner:0.5.0-alpha     # pinned version
 ```
+
+The image bundles **CUDA 13.0 · PyTorch 2.10 · Python 3.12** (runtime) and a
+**Node 24 / Angular 22** production build of the UI.
 
 **Building your own** (only needed if you've modified the code):
 
 ```bash
-docker build -t mastermerlin/mrln-arcane-tuner:latest .
+# Tag with both the version and latest so pods can pin or float.
+docker build -t mastermerlin/mrln-arcane-tuner:0.5.0-alpha -t mastermerlin/mrln-arcane-tuner:latest .
+docker push mastermerlin/mrln-arcane-tuner:0.5.0-alpha
 docker push mastermerlin/mrln-arcane-tuner:latest
 ```
 
@@ -148,10 +154,11 @@ docker push mastermerlin/mrln-arcane-tuner:latest
   (PyTorch 2.10).
 - **Container image:** `mastermerlin/mrln-arcane-tuner:latest`
 - **Volume (strongly recommended):** attach a **network volume mounted at
-  `/workspace`**. The DB, `datasets/`, `models/`, and `outputs/` are stored
-  there, so models download only once and your work survives restarts.
-  *Without a volume the container runs but all data is lost when the pod
-  stops.*
+  `/workspace`**. The SQLite DB, `datasets/`, `models/`, `outputs/`, **and the
+  Hugging Face cache** (`hf-cache/`) are stored there, so base models /
+  encoders download only once and your work survives restarts. *Without a
+  volume the container runs but all data — including multi-GB model downloads —
+  is lost when the pod stops.*
 - **Expose HTTP port:** add `8000` to the pod's **Expose HTTP Ports** field.
 - **Environment variables:**
 
@@ -159,7 +166,10 @@ docker push mastermerlin/mrln-arcane-tuner:latest
   |---|---|---|
   | `MRLN_AUTH_TOKEN` | Require this token to access the app (recommended — the proxy URL is public). | _unset = open_ |
   | `PORT` | Internal port (match the exposed HTTP port). | `8000` |
-  | `MRLN_DATA_DIR` | Persistence root. | `/workspace` |
+  | `MRLN_DATA_DIR` | Persistence root (DB, datasets, models, outputs, HF cache). | `/workspace` |
+  | `HF_TOKEN` | Hugging Face token — set it if you train/pull **gated** models (e.g. some FLUX weights). | _unset_ |
+  | `HF_HOME` | Hugging Face cache location. Auto-set to `$MRLN_DATA_DIR/hf-cache` so downloads persist on the volume — only override to relocate the cache. | `/workspace/hf-cache` |
+  | `CUDA_VISIBLE_DEVICES` | Pin a specific GPU on multi-GPU pods. | _all_ |
 
 ### 3. Open the app
 

@@ -13,7 +13,8 @@ if [ ! -d "$DATA_DIR" ]; then
     echo "[entrypoint] WARNING: '$DATA_DIR' not found — using ephemeral /tmp/mrln-data (lost on stop). Attach a network volume for persistence."
     DATA_DIR="/tmp/mrln-data"
 fi
-mkdir -p "$DATA_DIR/datasets" "$DATA_DIR/models/upscale" "$DATA_DIR/outputs"
+mkdir -p "$DATA_DIR/datasets" "$DATA_DIR/models/upscale" "$DATA_DIR/outputs" \
+         "$DATA_DIR/hf-cache"
 
 BACKEND_DIR="/app/backend"
 
@@ -34,8 +35,15 @@ export MRLN_FRONTEND_DIST="${MRLN_FRONTEND_DIST:-/app/frontend/browser}"
 PORT="${PORT:-8000}"
 export PORT
 
+# Hugging Face cache → persistent volume so downloaded base models / encoders
+# survive pod restarts and download only once. HF_HOME is the umbrella var that
+# huggingface_hub, transformers, and diffusers all honour (hub/ lives under it).
+# Respect an explicit HF_HOME if the operator set one; otherwise default to the
+# data volume.
+export HF_HOME="${HF_HOME:-$DATA_DIR/hf-cache}"
+
 AUTH_STATE="off"; [ -n "${MRLN_AUTH_TOKEN:-}" ] && AUTH_STATE="on"
-echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE dist=$MRLN_FRONTEND_DIST"
+echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE dist=$MRLN_FRONTEND_DIST hf_home=$HF_HOME"
 
 cd "$BACKEND_DIR"
 exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"

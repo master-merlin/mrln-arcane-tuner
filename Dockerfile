@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # ── Stage 1: build the Angular SPA ───────────────────────────────────────
-FROM node:20-bookworm AS frontend
+FROM node:24-bookworm AS frontend
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+# --legacy-peer-deps: @lucide/angular@1.16.0 still pins its peer range to
+# @angular/common 17–21, but the project runs Angular 22. This matches the
+# local install that produced package-lock.json.
+RUN npm ci --legacy-peer-deps
 COPY frontend/ ./
 RUN npm run build -- --configuration production
 

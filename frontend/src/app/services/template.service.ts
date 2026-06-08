@@ -108,4 +108,30 @@ export class TemplateService {
   useTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<{ status: string }> {
     return this.http.post<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}/use`, {});
   }
+
+  // Export / Import
+  getTemplateExportUrl(domain: 'captioning' | 'masking' | 'training', templateId: string): string {
+    return `${this.apiUrl}/${domain}/${templateId}/export`;
+  }
+
+  exportTemplatesBundle(
+    items: { domain: 'captioning' | 'masking' | 'training'; id: string }[],
+  ): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/export`, { items }, { responseType: 'blob' });
+  }
+
+  planImportTemplate(file: File, projectId?: string): Observable<unknown> {
+    const form = new FormData();
+    form.append('file', file);
+    if (projectId) form.append('project_id', projectId);
+    return this.http.post(`${this.apiUrl}/import/plan`, form);
+  }
+
+  applyImportTemplate(file: File, resolutions: unknown, projectId?: string): Observable<unknown> {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('resolutions', JSON.stringify(resolutions ?? {}));
+    if (projectId) form.append('project_id', projectId);
+    return this.http.post(`${this.apiUrl}/import/apply`, form);
+  }
 }

@@ -54,9 +54,19 @@ type ConflictChoice = 'rename' | 'overwrite';
                 </div>
 
                 @if (transport() === 'file') {
-                    <label class="field">
-                        <span>Archive (.zip)</span>
-                        <input type="file" accept=".zip" (change)="onFile($event)">
+                    <label class="id-drop" [class.drag]="dragOver()" [class.has-file]="!!file()"
+                           (dragover)="onDragOver($event)" (dragleave)="onDragLeave()" (drop)="onDrop($event)">
+                        <app-ico [name]="file() ? 'FileCheck' : 'Upload'" [size]="22"/>
+                        <div class="id-drop-text">
+                            @if (file(); as f) {
+                                <div class="id-drop-name">{{ f.name }}</div>
+                                <div class="id-drop-hint">Click or drop to choose a different file</div>
+                            } @else {
+                                <div class="id-drop-name">Click to choose a <strong>.zip</strong> archive</div>
+                                <div class="id-drop-hint">or drag &amp; drop it here</div>
+                            }
+                        </div>
+                        <input type="file" accept=".zip" hidden (change)="onFile($event)">
                     </label>
                 } @else {
                     <label class="field">
@@ -108,6 +118,28 @@ type ConflictChoice = 'rename' | 'overwrite';
             color: inherit;
             border-radius: 6px;
         }
+        .id-drop {
+            display: flex; align-items: center; gap: 14px;
+            padding: 22px 18px;
+            border: 1.5px dashed var(--color-border-default, var(--color-border-subtle));
+            border-radius: 12px;
+            background: var(--color-surface-low);
+            color: var(--color-text-muted);
+            cursor: pointer;
+            transition: border-color .15s, background .15s, color .15s;
+        }
+        .id-drop:hover, .id-drop.drag {
+            border-color: var(--color-brand);
+            background: var(--color-surface-mid);
+            color: var(--color-text-primary);
+        }
+        .id-drop.has-file { border-style: solid; border-color: var(--color-brand); color: var(--color-text-primary); }
+        .id-drop-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .id-drop-name {
+            font-size: 13px; font-weight: 600;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .id-drop-hint { font-size: 11px; color: var(--color-text-muted); }
         .conflict p { margin: 0 0 12px; }
     `],
 })
@@ -122,12 +154,38 @@ export class ImportDatasetModalComponent {
     protected renameValue = '';
     protected submitting = signal(false);
 
-    private file = signal<File | null>(null);
+    protected file = signal<File | null>(null);
     protected conflictName = signal<string | null>(null);
+    protected dragOver = signal(false);
 
     protected onFile(event: Event): void {
         const files = (event.target as HTMLInputElement).files;
-        this.file.set(files && files.length ? files[0] : null);
+        this.setFile(files && files.length ? files[0] : null);
+    }
+
+    protected onDragOver(event: DragEvent): void {
+        event.preventDefault();
+        this.dragOver.set(true);
+    }
+
+    protected onDragLeave(): void {
+        this.dragOver.set(false);
+    }
+
+    protected onDrop(event: DragEvent): void {
+        event.preventDefault();
+        this.dragOver.set(false);
+        const f = event.dataTransfer?.files?.[0] ?? null;
+        this.setFile(f);
+    }
+
+    /** Accept a dropped/picked file, rejecting anything that isn't a `.zip`. */
+    private setFile(f: File | null): void {
+        if (f && !f.name.toLowerCase().endsWith('.zip')) {
+            this.toast.warning('Please choose a .zip archive.');
+            return;
+        }
+        this.file.set(f);
     }
 
     protected canSubmit(): boolean {

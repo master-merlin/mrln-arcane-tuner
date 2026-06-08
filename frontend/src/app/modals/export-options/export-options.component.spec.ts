@@ -50,6 +50,32 @@ describe('ExportOptionsModalComponent', () => {
         expect(cmp.isChecked('g', 'x')).toBe(false);
     });
 
+    it('select all / none toggles every item in a group', () => {
+        const group = {
+            key: 'g', label: 'G',
+            items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }],
+        };
+        const { cmp } = mount({ title: 'Export', groups: [group], onExport: () => undefined });
+        expect(cmp.checkedCount('g')).toBe(0);
+        cmp.setAll(group, true);
+        expect(cmp.checkedCount('g')).toBe(3);
+        expect(cmp.isChecked('g', 'b')).toBe(true);
+        cmp.setAll(group, false);
+        expect(cmp.checkedCount('g')).toBe(0);
+    });
+
+    it('summary counts selected templates and non-excluded datasets', () => {
+        const { cmp } = mount({
+            title: 'Export',
+            groups: [{ key: 'g', label: 'G', items: [{ id: 'a', label: 'A', checked: true }, { id: 'b', label: 'B' }] }],
+            datasets: [{ name: 'd1', mode: 'reference' }, { name: 'd2', mode: 'embed' }],
+            onExport: () => undefined,
+        });
+        expect(cmp['summary']()).toBe('1 template · 2 datasets');
+        cmp.setMode('d2', 'exclude');
+        expect(cmp['summary']()).toBe('1 template · 1 dataset');
+    });
+
     it('initializes and updates per-dataset mode (tri-state)', () => {
         const { cmp } = mount({
             title: 'Export',

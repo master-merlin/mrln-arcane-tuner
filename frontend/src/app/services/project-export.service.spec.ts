@@ -5,12 +5,13 @@ import { OverlayStore } from '../state/overlay.store';
 import { ProjectService } from './project.service';
 import { TemplateService } from './template.service';
 import { ImportArchiveService } from './import-archive.service';
+import { RuntimeConfigService } from './runtime-config.service';
 import { ToastService } from './toast';
 
-function tpl(id: string, project_id: string | null) {
+function tpl(id: string, project_id: string | null, extra: Record<string, unknown> = {}) {
     return {
         id, name: id, project_id, config: {}, created_at: 0, updated_at: 0,
-        used_count: 0, is_default: false, readonly: false,
+        used_count: 0, is_default: false, readonly: false, ...extra,
     };
 }
 
@@ -31,19 +32,20 @@ describe('ProjectExportService', () => {
                 {
                     provide: ProjectService,
                     useValue: {
-                        getProjectDatasets: () => of([{ id: 'd1', name: 'ds-one' }]),
+                        getProjectDatasets: () => of([{ id: 'd1', name: 'ds-one', preview_image: 'p.jpg' }]),
                         exportProject,
                     },
                 },
                 {
                     provide: TemplateService,
                     useValue: {
-                        listCaptioningTemplates: () => of([tpl('c1', 'p1'), tpl('cg', null)]),
+                        listCaptioningTemplates: () => of([tpl('c1', 'p1', { model_id: 'qwen3-vl' }), tpl('cg', null)]),
                         listMaskingTemplates: () => of([]),
-                        listTrainingTemplates: () => of([tpl('t1', 'p1')]),
+                        listTrainingTemplates: () => of([tpl('t1', 'p1', { definition_id: 'flux-dev' })]),
                     },
                 },
                 { provide: ImportArchiveService, useValue: { downloadBlob } },
+                { provide: RuntimeConfigService, useValue: { mediaBaseUrl: 'http://m' } },
                 { provide: ToastService, useValue: { error: vi.fn(), success: vi.fn() } },
             ],
         });
@@ -61,7 +63,12 @@ describe('ProjectExportService', () => {
         expect(keys).not.toContain('masking'); // empty domain dropped
         const cap = data.groups.find((g: { key: string }) => g.key === 'captioning');
         expect(cap.items.map((i: { id: string }) => i.id)).toEqual(['c1']); // global 'cg' excluded
-        expect(data.datasets).toEqual([{ name: 'ds-one', mode: 'reference' }]);
+        expect(cap.items[0].sub).toBe('qwen3-vl'); // model_id subline
+        const train = data.groups.find((g: { key: string }) => g.key === 'training');
+        expect(train.items[0].sub).toBe('flux-dev'); // definition_id subline
+        expect(data.datasets).toEqual([
+            { name: 'ds-one', thumbUrl: 'http://m/ds-one/p.jpg', mode: 'reference' },
+        ]);
     });
 
     it('onExport flattens groups, exports, and downloads', async () => {

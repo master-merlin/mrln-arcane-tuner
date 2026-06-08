@@ -4,6 +4,7 @@ import { OverlayStore } from '../state/overlay.store';
 import { ProjectService } from './project.service';
 import { TemplateService, Template, TemplateDomain } from './template.service';
 import { ImportArchiveService } from './import-archive.service';
+import { RuntimeConfigService } from './runtime-config.service';
 import { ToastService } from './toast';
 import type {
   ExportGroup, ExportDatasetChoice, ExportSelection,
@@ -28,6 +29,7 @@ export class ProjectExportService {
   private projects = inject(ProjectService);
   private templates = inject(TemplateService);
   private archive = inject(ImportArchiveService);
+  private rtc = inject(RuntimeConfigService);
   private toast = inject(ToastService);
 
   async open(projectId: string, projectName: string): Promise<void> {
@@ -48,11 +50,23 @@ export class ProjectExportService {
         .map(d => ({
           key: d.domain,
           label: d.label,
-          items: byDomain[d.domain].map(t => ({ id: t.id, label: t.name, checked: true })),
+          // Subline disambiguates same-named templates: definition_id for
+          // training, model_id for caption/mask.
+          items: byDomain[d.domain].map(t => ({
+            id: t.id,
+            label: t.name,
+            sub: t.definition_id || t.model_id || undefined,
+            checked: true,
+          })),
         }));
-      const dsChoices: ExportDatasetChoice[] = (datasets ?? []).map(
-        d => ({ name: (d as { name: string }).name, mode: 'reference' as const }),
-      );
+      const dsChoices: ExportDatasetChoice[] = (datasets ?? []).map(d => {
+        const row = d as { name: string; preview_image?: string; missing?: boolean };
+        return {
+          name: row.name,
+          thumbUrl: this.thumbUrl(row),
+          mode: 'reference' as const,
+        };
+      });
 
       this.overlay.openModal('export-options', {
         title: `Export "${projectName}"`,
@@ -75,6 +89,13 @@ export class ProjectExportService {
       next: blob => this.archive.downloadBlob(blob, `${this.safe(projectName)}.project.zip`),
       error: err => this.toast.error('Export failed: ' + this.msg(err)),
     });
+  }
+
+  /** Dataset preview thumbnail URL (same shape as the datasets/project-detail
+   *  grids), or undefined when the dataset has no preview or is missing. */
+  private thumbUrl(row: { name: string; preview_image?: string; missing?: boolean }): string | undefined {
+    if (!row.preview_image || row.missing) return undefined;
+    return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(row.name)}/${row.preview_image}`;
   }
 
   private safe(name: string): string {

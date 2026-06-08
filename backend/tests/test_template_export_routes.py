@@ -35,6 +35,22 @@ def test_export_single_captioning_template(MockRepo, client):
     assert "id" not in entry and "project_id" not in entry
 
 
+@patch(_MASK_REPO)
+def test_export_non_ascii_template_name_does_not_crash(MockRepo, client):
+    # A Unicode name must not crash the latin-1-encoded Content-Disposition header.
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "mask_1", "name": "日本語のマスク", "model_id": "sam3",
+        "config": {}, "created_at": 1.0,
+    }
+    resp = client.get("/api/templates/masking/mask_1/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    # ASCII-only fallback filename in the header (no crash).
+    assert "template.zip" in resp.headers["content-disposition"]
+    entry = _manifest_from_response(resp)["templates"][0]
+    assert entry["name"] == "日本語のマスク"  # the real name still travels in the manifest
+
+
 @patch(_REGISTRY)
 @patch(_TRAIN_REPO)
 def test_export_single_training_template_embeds_definition(MockRepo, mock_registry, client):

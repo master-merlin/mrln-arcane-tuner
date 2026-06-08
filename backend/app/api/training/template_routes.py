@@ -309,8 +309,12 @@ async def use_template(domain: str, template_id: str) -> dict[str, str]:
 
 
 def _safe_filename(name: str | None) -> str:
+    # ASCII-only: the Content-Disposition header is encoded as latin-1, so a
+    # Unicode letter (CJK/Cyrillic/accented) — which str.isalnum() accepts —
+    # would crash the response. Non-ASCII names fall back to "template".
     cleaned = "".join(
-        c for c in (name or "") if c.isalnum() or c in (" ", "-", "_")
+        c for c in (name or "")
+        if c.isascii() and (c.isalnum() or c in (" ", "-", "_"))
     ).strip()
     return cleaned or "template"
 

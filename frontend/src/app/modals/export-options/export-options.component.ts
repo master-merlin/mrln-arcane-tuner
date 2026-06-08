@@ -76,7 +76,7 @@ const MODES: DatasetMode[] = ['embed', 'reference', 'exclude'];
                             </div>
                             <div class="seg eo-modes">
                                 @for (m of modes; track m) {
-                                    <button type="button" [class.on]="modeOf(d.name) === m"
+                                    <button type="button" [class.active]="modeOf(d.name) === m"
                                             (click)="setMode(d.name, m)">{{ m }}</button>
                                 }
                             </div>

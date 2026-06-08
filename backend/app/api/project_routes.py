@@ -190,12 +190,14 @@ async def export_project(project_id: str, req: ExportProjectRequest) -> Streamin
         prefs = _prefs.get(project_id)
 
         entries: dict[str, bytes] = {}
+        seen_arcnames: set[str] = set()
         template_refs: list[dict[str, Any]] = []
         for t in req.templates:
             payload = export_template_archive_bytes(t.domain, t.id)
             if payload is None:
                 raise HTTPException(404, f"Template not found: {t.domain}/{t.id}")
-            arcname = f"templates/{t.domain}-{pportable.slugify(t.id)}.zip"
+            arcname = pportable.unique_arcname(
+                f"templates/{t.domain}-{pportable.slugify(t.id)}.zip", seen_arcnames)
             entries[arcname] = payload
             template_refs.append({"domain": t.domain, "archive": arcname})
 
@@ -212,7 +214,8 @@ async def export_project(project_id: str, req: ExportProjectRequest) -> Streamin
                 raise HTTPException(404, f"Dataset not found: {d.name}")
             manifest_d = dportable.build_manifest(ds, app_version=APP_VERSION)
             payload = dportable.write_export_zip(Path(ds.path), manifest_d).getvalue()
-            arcname = f"datasets/{pportable.slugify(d.name)}.zip"
+            arcname = pportable.unique_arcname(
+                f"datasets/{pportable.slugify(d.name)}.zip", seen_arcnames)
             entries[arcname] = payload
             dataset_refs.append({"mode": "embed", "name": d.name, "archive": arcname})
 

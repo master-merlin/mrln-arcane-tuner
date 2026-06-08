@@ -63,3 +63,15 @@ def test_slugify_ascii_only():
     assert portable.slugify("a/b\\c") == "a_b_c"
     assert portable.slugify("日本語") == "project"
     assert portable.slugify("") == "project"
+
+
+def test_unique_arcname_suffixes_collisions():
+    seen: set[str] = set()
+    assert portable.unique_arcname("datasets/project.zip", seen) == "datasets/project.zip"
+    assert portable.unique_arcname("datasets/project.zip", seen) == "datasets/project-2.zip"
+    assert portable.unique_arcname("datasets/project.zip", seen) == "datasets/project-3.zip"
+    # a different base is untouched
+    assert portable.unique_arcname("templates/a.zip", seen) == "templates/a.zip"
+    # no-extension base still suffixes
+    assert portable.unique_arcname("noext", seen) == "noext"
+    assert portable.unique_arcname("noext", seen) == "noext-2"

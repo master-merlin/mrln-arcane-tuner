@@ -117,3 +117,45 @@ def test_export_project_404_when_embed_dataset_missing(MockProjects, MockPrefs, 
     resp = client.post("/api/projects/p1/export", json={
         "templates": [], "datasets": [{"name": "gone", "mode": "embed"}]})
     assert resp.status_code == 404
+
+
+@patch(_DSMGR)
+@patch(_PREFS)
+@patch(_PROJECTS)
+def test_export_project_colliding_slugs_get_distinct_arcnames(
+        MockProjects, MockPrefs, mock_dsmgr, client):
+    # Two distinct non-ASCII dataset names both slugify to "project" — they must
+    # NOT overwrite each other's bytes in the bundle.
+    MockProjects.get_by_id.return_value = {
+        "id": "p1", "name": "P", "description": "", "color": "",
+        "created_at": 1.0, "updated_at": 2.0}
+    MockPrefs.get.return_value = {}
+    mock_dsmgr.get_dataset.side_effect = lambda name: SimpleNamespace(
+        id=name, name=name, path=f"/tmp/{name}")
+    payloads = iter([io.BytesIO(b"FIRST"), io.BytesIO(b"SECOND")])
+    with patch("app.core.dataset.portable.build_manifest", return_value={"kind": "dataset"}), \
+         patch("app.core.dataset.portable.write_export_zip", side_effect=lambda *a, **k: next(payloads)):
+        resp = client.post("/api/projects/p1/export", json={
+            "templates": [],
+            "datasets": [{"name": "日本", "mode": "embed"},
+                         {"name": "中文", "mode": "embed"}]})
+    assert resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        m = json.loads(zf.read("manifest.json"))
+        arcs = [d["archive"] for d in m["datasets"] if d["mode"] == "embed"]
+        assert len(arcs) == 2 and len(set(arcs)) == 2  # distinct arcnames
+        assert zf.read(arcs[0]) == b"FIRST"
+        assert zf.read(arcs[1]) == b"SECOND"
+
+
+@patch(_PREFS)
+@patch(_PROJECTS)
+def test_export_project_unknown_template_domain_400(MockProjects, MockPrefs, client):
+    # A bad template domain propagates the 400 from _get_repo (client error).
+    MockProjects.get_by_id.return_value = {
+        "id": "p1", "name": "P", "description": "", "color": "",
+        "created_at": 1.0, "updated_at": 2.0}
+    MockPrefs.get.return_value = {}
+    resp = client.post("/api/projects/p1/export", json={
+        "templates": [{"domain": "bogus", "id": "x"}], "datasets": []})
+    assert resp.status_code == 400

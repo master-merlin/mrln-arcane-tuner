@@ -33,6 +33,31 @@ def slugify(name: str | None) -> str:
     return cleaned or "project"
 
 
+def unique_arcname(base: str, seen: set[str]) -> str:
+    """Return *base*, or a ``-2``/``-3``/… suffixed variant if it collides with
+    a name already in *seen*. Adds the chosen name to *seen* and returns it.
+
+    Guards the bundle against slug collisions — e.g. two distinct dataset names
+    that slugify identically (``My Set`` and ``My/Set`` → ``My_Set``, or any two
+    non-ASCII names → the ``project`` fallback) would otherwise overwrite each
+    other's bytes silently.
+    """
+    if base not in seen:
+        seen.add(base)
+        return base
+    stem, dot, ext = base.rpartition(".")
+    if not dot:  # no extension
+        stem, ext = base, ""
+    else:
+        ext = f".{ext}"
+    i = 2
+    while f"{stem}-{i}{ext}" in seen:
+        i += 1
+    chosen = f"{stem}-{i}{ext}"
+    seen.add(chosen)
+    return chosen
+
+
 def _clean(d: dict[str, Any], drop: tuple[str, ...]) -> dict[str, Any]:
     return {k: v for k, v in (d or {}).items() if k not in drop}
 

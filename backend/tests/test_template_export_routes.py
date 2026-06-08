@@ -121,3 +121,26 @@ def test_export_bundle_collects_multiple_domains(MockCap, MockMask, client):
 def test_export_bundle_empty_400(client):
     resp = client.post("/api/templates/export", json={"items": []})
     assert resp.status_code == 400
+
+
+@patch(_MASK_REPO)
+def test_export_template_archive_bytes_returns_zip_bytes(MockRepo, client):
+    from app.api.training.template_routes import export_template_archive_bytes
+
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "mask_1", "name": "M", "model_id": "sam3", "config": {}, "created_at": 1.0,
+    }
+    payload = export_template_archive_bytes("masking", "mask_1")
+    assert isinstance(payload, bytes)
+    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+        manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["kind"] == "template"
+    assert manifest["templates"][0]["model_id"] == "sam3"
+
+
+@patch(_MASK_REPO)
+def test_export_template_archive_bytes_none_when_missing(MockRepo, client):
+    from app.api.training.template_routes import export_template_archive_bytes
+
+    MockRepo.return_value.get_by_id.return_value = None
+    assert export_template_archive_bytes("masking", "nope") is None

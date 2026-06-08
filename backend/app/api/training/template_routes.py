@@ -356,6 +356,22 @@ def _template_zip_response(
     )
 
 
+def export_template_archive_bytes(domain: str, template_id: str) -> bytes | None:
+    """Build a single-template ``kind='template'`` archive and return its bytes,
+    or None if the template doesn't exist. Reused by project export."""
+    from app import __version__ as APP_VERSION
+    from app.core.portable.archive import write_manifest_zip
+    from app.core.template import portable
+
+    repo = _get_repo(domain)  # raises 400 for an unknown domain
+    row = repo.get_by_id(template_id)
+    if not row:
+        return None
+    entry = _export_entry(domain, row)
+    manifest = portable.build_template_manifest([entry], APP_VERSION)
+    return write_manifest_zip(manifest).getvalue()
+
+
 @router.get("/templates/{domain}/{template_id}/export")
 async def export_template(domain: str, template_id: str) -> StreamingResponse:
     """Export a single template as a ``kind='template'`` archive."""

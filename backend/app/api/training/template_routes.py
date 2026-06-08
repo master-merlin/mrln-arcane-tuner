@@ -504,6 +504,65 @@ def _name_exists(domain: str, name: str, project_id: str | None) -> bool:
     return any((r.get("name") or "") == name for r in rows)
 
 
+# ── Import: reusable composition seams ───────────────────────────────────
+
+
+def plan_template_entries(
+    manifest: dict[str, Any], project_id: str | None
+) -> list[dict[str, Any]]:
+    """Per-entry import plan for a parsed template manifest. Reused by the
+    template plan route and by project import."""
+    return [
+        {**_plan_entry(entry, project_id), "index": i}
+        for i, entry in enumerate(manifest["templates"])
+    ]
+
+
+def import_template_entries(
+    manifest: dict[str, Any], res_map: dict[str, Any], project_id: str | None
+) -> dict[str, Any]:
+    """Create template rows (and install confirmed definitions) for a parsed
+    template manifest. Per-entry best-effort. Reused by the template apply route
+    and by project import. Returns ``{created, skipped, installed_definitions}``."""
+    from app.core.template import import_service
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    installed: list[str] = []
+
+    for i, entry in enumerate(manifest["templates"]):
+        res = ImportEntryResolution(**(res_map.get(str(i)) or {}))
+        domain = entry["domain"]
+        name = res.name or entry.get("name") or "Imported"
+        if res.action == "skip":
+            skipped.append({"index": i, "name": name, "reason": "skipped by user"})
+            continue
+        try:
+            if domain in ("captioning", "masking"):
+                if not import_service.model_available(domain, entry.get("model_id") or ""):
+                    skipped.append({"index": i, "name": name,
+                                    "reason": f"model '{entry.get('model_id')}' not available in this build"})
+                    continue
+            else:  # training
+                ok, inst_id, reason = _resolve_training_definition(entry, res)
+                if not ok:
+                    skipped.append({"index": i, "name": name, "reason": reason})
+                    continue
+                if inst_id:
+                    installed.append(inst_id)
+            row = _create_row(domain, entry, name, project_id)
+        except HTTPException as exc:
+            skipped.append({"index": i, "name": name,
+                            "reason": f"import failed: {exc.detail}"})
+            continue
+        except Exception as exc:  # noqa: BLE001 — one bad entry must not abort the bundle
+            skipped.append({"index": i, "name": name, "reason": f"import failed: {exc}"})
+            continue
+        created.append({"index": i, "id": row.get("id"), "name": row.get("name") or name})
+
+    return {"created": created, "skipped": skipped, "installed_definitions": installed}
+
+
 # ── Import: plan endpoint ────────────────────────────────────────────────
 
 
@@ -528,10 +587,7 @@ async def plan_template_import(
             raise HTTPException(400, str(exc)) from exc
         except zipfile.BadZipFile as exc:
             raise HTTPException(400, "Archive is not a valid zip file.") from exc
-        entries = [
-            {**_plan_entry(e, project_id), "index": i}
-            for i, e in enumerate(manifest["templates"])
-        ]
+        entries = plan_template_entries(manifest, project_id)
         return {
             "project_id": project_id,
             "entries": entries,
@@ -653,7 +709,7 @@ async def apply_template_import(
     import zipfile
 
     from app.core.portable.envelope import ManifestError
-    from app.core.template import import_service, portable
+    from app.core.template import portable
 
     data = await file.read()
     try:
@@ -670,45 +726,6 @@ async def apply_template_import(
         except zipfile.BadZipFile as exc:
             raise HTTPException(400, "Archive is not a valid zip file.") from exc
 
-        created: list[dict[str, Any]] = []
-        skipped: list[dict[str, Any]] = []
-        installed: list[str] = []
-
-        for i, entry in enumerate(manifest["templates"]):
-            res = ImportEntryResolution(**(res_map.get(str(i)) or {}))
-            domain = entry["domain"]
-            name = res.name or entry.get("name") or "Imported"
-            if res.action == "skip":
-                skipped.append({"index": i, "name": name, "reason": "skipped by user"})
-                continue
-
-            try:
-                if domain in ("captioning", "masking"):
-                    if not import_service.model_available(domain, entry.get("model_id") or ""):
-                        skipped.append({"index": i, "name": name,
-                                        "reason": f"model '{entry.get('model_id')}' not available in this build"})
-                        continue
-                else:  # training
-                    ok, inst_id, reason = _resolve_training_definition(entry, res)
-                    if not ok:
-                        skipped.append({"index": i, "name": name, "reason": reason})
-                        continue
-                    if inst_id:
-                        installed.append(inst_id)
-
-                row = _create_row(domain, entry, name, project_id)
-            except HTTPException as exc:
-                # e.g. a crafted family that fails the path-traversal guard —
-                # skip this entry, don't abort the rest of the bundle.
-                skipped.append({"index": i, "name": name,
-                                "reason": f"import failed: {exc.detail}"})
-                continue
-            except Exception as exc:  # noqa: BLE001 — one bad entry must not abort the bundle
-                skipped.append({"index": i, "name": name, "reason": f"import failed: {exc}"})
-                continue
-            created.append({"index": i, "id": row.get("id"), "name": row.get("name") or name})
-
-        return {"created": created, "skipped": skipped,
-                "installed_definitions": installed}
+        return import_template_entries(manifest, res_map, project_id)
 
     return await asyncio.to_thread(_apply)

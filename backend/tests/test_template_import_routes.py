@@ -277,3 +277,35 @@ def test_apply_one_create_failure_does_not_abort_bundle(MockRepo, client):
     body = resp.json()
     assert len(body["created"]) == 1 and body["created"][0]["name"] == "Good"
     assert len(body["skipped"]) == 1 and "db boom" in body["skipped"][0]["reason"]
+
+
+@patch(_CAP_REPO)
+def test_import_template_entries_creates_and_reports(MockRepo):
+    from app.api.training.template_routes import import_template_entries
+
+    MockRepo.return_value.create.return_value = {"id": "c1", "name": "Cap"}
+    manifest = {"templates": [
+        {"domain": "captioning", "name": "Cap", "model_id": "qwen3-vl",
+         "system_prompt": "d", "wildcard": "", "config": {}},
+        {"domain": "captioning", "name": "Bad", "model_id": "ghost", "config": {}},
+    ]}
+    out = import_template_entries(manifest, {}, project_id="p1")
+    assert len(out["created"]) == 1
+    assert out["created"][0]["name"] == "Cap"
+    assert len(out["skipped"]) == 1  # ghost model unavailable
+    # project scoping threaded through
+    assert MockRepo.return_value.create.call_args[0][0]["project_id"] == "p1"
+
+
+@patch(_CAP_REPO)
+def test_plan_template_entries_flags_availability(MockRepo):
+    from app.api.training.template_routes import plan_template_entries
+
+    MockRepo.return_value.list_for_project.return_value = []
+    manifest = {"templates": [
+        {"domain": "captioning", "name": "Cap", "model_id": "qwen3-vl", "config": {}},
+        {"domain": "captioning", "name": "Bad", "model_id": "ghost", "config": {}},
+    ]}
+    items = plan_template_entries(manifest, project_id="p1")
+    assert items[0]["index"] == 0 and items[0]["model_available"] is True
+    assert items[1]["model_available"] is False and items[1]["blocker"] is True

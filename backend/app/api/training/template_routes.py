@@ -529,15 +529,29 @@ async def plan_template_import(
 
 
 def _install_definition(definition: dict[str, Any]) -> None:
-    """Persist a carried definition to its family dir and register it."""
+    """Persist a carried definition to its family dir and register it.
+
+    ``family`` and ``id`` come from the uploaded archive (untrusted), so both
+    are sanitized and the resolved target is confirmed to stay inside the
+    families directory before any write — otherwise a crafted ``family`` (e.g.
+    ``..`` or an absolute path) could write outside the source tree.
+    """
+    import re
+
     import yaml
 
     from app.engine.models.registry import registry
 
     family = definition.get("family") or "unknown"
     def_id = definition.get("id") or "imported"
+    safe_family = family.replace("/", "_").replace("\\", "_")
+    if safe_family in (".", "..") or not re.fullmatch(r"[A-Za-z0-9._-]+", safe_family):
+        raise HTTPException(400, f"Invalid family in carried definition: {family!r}")
     safe_id = def_id.replace("/", "_").replace("\\", "_")
-    family_dir = _families_dir() / family / "definitions"
+    families_root = _families_dir().resolve()
+    family_dir = (families_root / safe_family / "definitions").resolve()
+    if not family_dir.is_relative_to(families_root):
+        raise HTTPException(400, "Carried definition resolves outside the families directory.")
     family_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = family_dir / f"{safe_id}.yaml"
     yaml_path.write_text(yaml.dump(definition, sort_keys=False), encoding="utf-8")
@@ -582,12 +596,14 @@ def _resolve_training_definition(
     carried = entry.get("definition")
     if not isinstance(carried, dict):
         return False, None, "definition missing and not carried — install it first"
-    if not res.install_definition:
-        return False, None, "definition not present and install was declined"
     if import_service.validate_carried_definition(carried) is not None:
         return False, None, "carried definition is invalid"
+    if not res.install_definition:
+        return False, None, "definition not present and install was declined"
 
-    to_install = dict(carried)
+    import copy
+
+    to_install = copy.deepcopy(carried)
     if res.use_hf_substitution:
         to_install = _apply_hf_substitutions(to_install)
     _install_definition(to_install)
@@ -650,20 +666,30 @@ async def apply_template_import(
                 skipped.append({"index": i, "name": name, "reason": "skipped by user"})
                 continue
 
-            if domain in ("captioning", "masking"):
-                if not import_service.model_available(domain, entry.get("model_id") or ""):
-                    skipped.append({"index": i, "name": name,
-                                    "reason": f"model '{entry.get('model_id')}' not available in this build"})
-                    continue
-            else:  # training
-                ok, inst_id, reason = _resolve_training_definition(entry, res)
-                if not ok:
-                    skipped.append({"index": i, "name": name, "reason": reason})
-                    continue
-                if inst_id:
-                    installed.append(inst_id)
+            try:
+                if domain in ("captioning", "masking"):
+                    if not import_service.model_available(domain, entry.get("model_id") or ""):
+                        skipped.append({"index": i, "name": name,
+                                        "reason": f"model '{entry.get('model_id')}' not available in this build"})
+                        continue
+                else:  # training
+                    ok, inst_id, reason = _resolve_training_definition(entry, res)
+                    if not ok:
+                        skipped.append({"index": i, "name": name, "reason": reason})
+                        continue
+                    if inst_id:
+                        installed.append(inst_id)
 
-            row = _create_row(domain, entry, name, project_id)
+                row = _create_row(domain, entry, name, project_id)
+            except HTTPException as exc:
+                # e.g. a crafted family that fails the path-traversal guard —
+                # skip this entry, don't abort the rest of the bundle.
+                skipped.append({"index": i, "name": name,
+                                "reason": f"import failed: {exc.detail}"})
+                continue
+            except Exception as exc:  # noqa: BLE001 — one bad entry must not abort the bundle
+                skipped.append({"index": i, "name": name, "reason": f"import failed: {exc}"})
+                continue
             created.append({"index": i, "id": row.get("id"), "name": row.get("name") or name})
 
         return {"created": created, "skipped": skipped,

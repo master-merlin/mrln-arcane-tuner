@@ -234,3 +234,46 @@ def test_apply_training_missing_confirmed_installs_and_creates(
     assert "flux2-x" in body["installed_definitions"]
     assert len(body["created"]) == 1
     mock_install.assert_called_once()
+
+
+@patch(_OVERRIDE)
+@patch(_REGISTRY)
+@patch(_TRAIN_REPO)
+def test_apply_rejects_traversal_family_as_skip_not_crash(
+        MockRepo, mock_registry, mock_override, client):
+    # A crafted ``family`` must not write outside the families dir, and must
+    # skip the entry (not 500 the whole request).
+    mock_registry.get_definition.return_value = None
+    mock_override.is_offline.return_value = True
+    carried = {"id": "evil", "family": "..", "name": "X",
+               "components": {"repo": {"path": "huggingface:o/r"}}}
+    entry = portable.build_template_entry(
+        "training", {"name": "Evil", "definition_id": "evil", "config": {}}, carried)
+    resp = _apply(client, _zip_bytes([entry]),
+                  {"entries": {"0": {"action": "create", "install_definition": True}}})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["created"] == []
+    assert "family" in body["skipped"][0]["reason"].lower()
+    MockRepo.return_value.create.assert_not_called()
+
+
+@patch(_CAP_REPO)
+def test_apply_one_create_failure_does_not_abort_bundle(MockRepo, client):
+    # Best-effort: a repo.create exception on one entry skips it, the other
+    # entry still imports.
+    MockRepo.return_value.create.side_effect = [
+        RuntimeError("db boom"),
+        {"id": "c2", "name": "Good"},
+    ]
+    e1 = portable.build_template_entry(
+        "captioning", {"name": "Bad", "model_id": "qwen3-vl",
+                       "system_prompt": "d", "wildcard": "", "config": {}}, None)
+    e2 = portable.build_template_entry(
+        "captioning", {"name": "Good", "model_id": "qwen3-vl",
+                       "system_prompt": "d", "wildcard": "", "config": {}}, None)
+    resp = _apply(client, _zip_bytes([e1, e2]), {"entries": {}})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["created"]) == 1 and body["created"][0]["name"] == "Good"
+    assert len(body["skipped"]) == 1 and "db boom" in body["skipped"][0]["reason"]

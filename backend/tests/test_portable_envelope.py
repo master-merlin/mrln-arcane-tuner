@@ -6,6 +6,7 @@ import zipfile
 
 import pytest
 
+from app.core.portable.archive import safe_extract, write_zip
 from app.core.portable.envelope import (
     ManifestError,
     build_manifest_header,
@@ -68,9 +69,6 @@ def test_read_manifest_rejects_malformed_json():
     with zipfile.ZipFile(buf) as zf:
         with pytest.raises(ManifestError):
             read_manifest(zf, expected_kind="template", max_version=1)
-
-
-from app.core.portable.archive import safe_extract, write_zip
 
 
 def test_write_zip_includes_manifest_and_files_and_honors_skip_dirs(tmp_path):

@@ -10,6 +10,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -123,6 +124,15 @@ class CreateFromJobRequest(BaseModel):
     job_id: str
     name: str
     project_id: str | None = None
+
+
+class ExportBundleItem(BaseModel):
+    domain: str
+    id: str
+
+
+class ExportBundleRequest(BaseModel):
+    items: list[ExportBundleItem]
 
 
 # ── Captioning templates ─────────────────────────────────────────────────
@@ -293,3 +303,79 @@ async def use_template(domain: str, template_id: str) -> dict[str, str]:
     repo = _get_repo(domain)
     await asyncio.to_thread(repo.increment_usage, template_id)
     return {"status": "recorded"}
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+def _safe_filename(name: str | None) -> str:
+    cleaned = "".join(
+        c for c in (name or "") if c.isalnum() or c in (" ", "-", "_")
+    ).strip()
+    return cleaned or "template"
+
+
+def _export_entry(domain: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Build a carried template entry; embed the definition for training rows."""
+    from app.core.template import portable
+
+    definition = None
+    if domain == "training":
+        from app.engine.models.registry import registry
+
+        defn = registry.get_definition(row.get("definition_id") or "")
+        definition = defn.model_dump() if defn is not None else None
+    return portable.build_template_entry(domain, row, definition)
+
+
+def _template_zip_response(
+    entries: list[dict[str, Any]], filename: str
+) -> StreamingResponse:
+    from app import __version__ as APP_VERSION
+    from app.core.portable.archive import write_manifest_zip
+    from app.core.template import portable
+
+    manifest = portable.build_template_manifest(entries, APP_VERSION)
+    buf = write_manifest_zip(manifest)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/templates/{domain}/{template_id}/export")
+async def export_template(domain: str, template_id: str) -> StreamingResponse:
+    """Export a single template as a ``kind='template'`` archive."""
+    repo = _get_repo(domain)  # raises 400 for an unknown domain
+    row = await asyncio.to_thread(repo.get_by_id, template_id)
+    if not row:
+        raise HTTPException(404, "Template not found")
+    entry = await asyncio.to_thread(_export_entry, domain, row)
+    return _template_zip_response(
+        [entry], f"{_safe_filename(row.get('name'))}.template.zip"
+    )
+
+
+@router.post("/templates/export")
+async def export_templates_bundle(req: ExportBundleRequest) -> StreamingResponse:
+    """Export 1..N selected templates (any mix of domains) as one archive."""
+    if not req.items:
+        raise HTTPException(400, "No templates selected for export.")
+
+    def _collect() -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for item in req.items:
+            repo = _get_repo(item.domain)  # raises 400 for an unknown domain
+            row = repo.get_by_id(item.id)
+            if not row:
+                raise HTTPException(404, f"Template not found: {item.domain}/{item.id}")
+            entries.append(_export_entry(item.domain, row))
+        return entries
+
+    entries = await asyncio.to_thread(_collect)
+    if len(entries) == 1:
+        filename = f"{_safe_filename(entries[0].get('name'))}.template.zip"
+    else:
+        filename = "templates-bundle.zip"
+    return _template_zip_response(entries, filename)

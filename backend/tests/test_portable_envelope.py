@@ -6,7 +6,12 @@ import zipfile
 
 import pytest
 
-from app.core.portable.archive import safe_extract, write_manifest_zip, write_zip
+from app.core.portable.archive import (
+    safe_extract,
+    write_bundle_zip,
+    write_manifest_zip,
+    write_zip,
+)
 from app.core.portable.envelope import (
     ManifestError,
     build_manifest_header,
@@ -125,3 +130,16 @@ def test_write_manifest_zip_contains_only_manifest():
         loaded = json.loads(zf.read("manifest.json"))
     assert names == ["manifest.json"]
     assert loaded["kind"] == "template"
+
+
+def test_write_bundle_zip_writes_manifest_and_named_entries():
+    buf = write_bundle_zip(
+        {"kind": "project", "format_version": 1},
+        {"templates/a.zip": b"AAA", "datasets/b.zip": b"BBB"})
+    with zipfile.ZipFile(buf) as zf:
+        names = set(zf.namelist())
+        assert zf.read("templates/a.zip") == b"AAA"
+        assert zf.read("datasets/b.zip") == b"BBB"
+        loaded = json.loads(zf.read("manifest.json"))
+    assert names == {"manifest.json", "templates/a.zip", "datasets/b.zip"}
+    assert loaded["kind"] == "project"

@@ -55,6 +55,22 @@ def write_manifest_zip(manifest: dict[str, Any]) -> io.BytesIO:
     return buf
 
 
+def write_bundle_zip(
+    manifest: dict[str, Any], entries: dict[str, bytes]
+) -> io.BytesIO:
+    """Build a bundle archive: ``manifest.json`` first, then each named entry
+    (``arcname -> bytes``). Used for the project archive, whose entries are
+    nested template/dataset ``.zip`` payloads. Returns a seeked-to-zero buffer.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2))
+        for arcname, payload in entries.items():
+            zf.writestr(arcname, payload)
+    buf.seek(0)
+    return buf
+
+
 def safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
     """Extract every entry except ``manifest.json`` into *dest*, safely.
 

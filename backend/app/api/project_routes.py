@@ -297,7 +297,12 @@ def _unique_project_name(base: str) -> str:
 
 
 def _uninstall_definition(definition_id: str) -> None:
-    """Undo a definition install (mirror of the definitions DELETE route)."""
+    """Undo a definition install (mirror of the definitions DELETE route).
+
+    Note: unlike the DELETE route this does NOT cascade a source-override
+    removal, because import-time install never writes an override. Revisit if
+    definition install ever starts persisting overrides.
+    """
     from pathlib import Path
 
     from app.engine.models.registry import registry
@@ -316,7 +321,12 @@ async def apply_project_import(
     file: UploadFile = File(...),
     resolutions: str = Form(default="{}"),
 ) -> dict[str, Any]:
-    """Recreate a project from an archive, transactionally (rollback on error)."""
+    """Recreate a project from an archive, transactionally (rollback on error).
+
+    Caveat: ``on_conflict='overwrite'`` deletes the existing project before
+    creating the new one, so a later failure rolls back the *new* work but the
+    *old* project is already gone (mirrors the dataset-import overwrite).
+    """
     import json
     import tempfile
     from pathlib import Path
@@ -428,8 +438,19 @@ async def apply_project_import(
     return await asyncio.to_thread(_apply)
 
 
-def _rollback(project_id, imported_datasets, installed_defs):
-    """Best-effort undo of a project import (order: defs → datasets → project)."""
+def _rollback(
+    project_id: str | None,
+    imported_datasets: list[str],
+    installed_defs: list[str],
+) -> None:
+    """Best-effort undo of a project import (order: defs → datasets → project).
+
+    Project delete cascades the ``project_datasets`` association rows, so links
+    need no explicit cleanup; only the file-backed artifacts (imported dataset
+    folders, newly-installed definition YAMLs) are undone here.
+    """
+    from app.core.dataset_manager import dataset_manager
+
     for def_id in installed_defs:
         try:
             _uninstall_definition(def_id)
@@ -437,7 +458,6 @@ def _rollback(project_id, imported_datasets, installed_defs):
             pass
     for name in imported_datasets:
         try:
-            from app.core.dataset_manager import dataset_manager
             dataset_manager.delete_dataset(name, delete_files=True)
         except Exception:  # noqa: BLE001, S110
             pass

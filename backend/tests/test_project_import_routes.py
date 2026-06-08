@@ -183,3 +183,40 @@ def test_user_triggered_rollback_undoes_a_kept_import(MockProjects, mock_dsmgr, 
     assert resp.json()["status"] == "rolled_back"
     MockProjects.delete.assert_called_once_with("p_keep")
     mock_dsmgr.delete_dataset.assert_called_once_with("ds1", delete_files=True)
+
+
+@patch("app.api.project_routes._uninstall_definition")
+@patch("app.api.training.template_routes._install_definition")
+@patch("app.core.db.repositories.training_template_repo.TrainingTemplateRepository")
+@patch("app.engine.utils.model_override_manager.ModelOverrideManager")
+@patch("app.engine.models.registry.registry")
+@patch(_PREFS)
+@patch(_DSMGR)
+@patch(_PROJECTS)
+def test_apply_rolls_back_installed_definition_on_later_failure(
+        MockProjects, mock_dsmgr, MockPrefs, mock_registry, mock_override,
+        MockTrain, mock_install, mock_uninstall, client):
+    # A training template installs a definition, then a LATER step (prefs upsert)
+    # fails → rollback must uninstall the newly-installed definition.
+    MockProjects.get_by_name.return_value = None
+    MockProjects.create.return_value = {"id": "new_p", "name": "P"}
+    MockTrain.return_value.create.return_value = {"id": "t1", "name": "T"}
+    mock_registry.get_definition.return_value = None      # definition missing → install
+    mock_override.is_offline.return_value = True           # no HF substitution
+    MockPrefs.upsert.side_effect = RuntimeError("prefs boom")  # fail after template install
+
+    carried = {"id": "flux2-x", "family": "flux2", "name": "X",
+               "components": {"repo": {"path": "huggingface:o/r"}}}
+    entry = tportable.build_template_entry(
+        "training", {"name": "T", "definition_id": "flux2-x", "config": {}}, carried)
+    tbytes = write_manifest_zip(tportable.build_template_manifest([entry], "v")).getvalue()
+    zb = _project_zip(
+        {"name": "P", "preferences": {"selected_caption_model": "qwen3-vl"}},
+        templates=[{"domain": "training", "archive": "templates/t.zip"}],
+        entries={"templates/t.zip": tbytes})
+
+    resp = _apply(client, zb, {"templates": {"0": {"install_definition": True}}})
+    assert resp.status_code == 500
+    mock_install.assert_called_once()                     # definition was installed
+    mock_uninstall.assert_called_once_with("flux2-x")     # …then rolled back
+    MockProjects.delete.assert_called_once_with("new_p")

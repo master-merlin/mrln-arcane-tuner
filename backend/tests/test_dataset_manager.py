@@ -116,6 +116,14 @@ class TestDatasetCRUD:
         assert ds.path == custom
         assert os.path.isdir(custom)
 
+    def test_create_sanitizes_name_to_match_folder(self, manager):
+        """An auto-foldered create stores a name equal to its folder basename, so
+        /media/<name> resolves (parens etc. stripped from BOTH)."""
+        ds = manager.create_dataset("Car (v2)")
+        assert ds.name == "Car v2"
+        assert os.path.basename(ds.path) == ds.name
+        assert "Car v2" in manager.datasets
+
     def test_list_datasets(self, manager):
         """list_datasets returns all registered datasets."""
         manager.create_dataset("a")
@@ -173,6 +181,16 @@ class TestUpdateDataset:
         assert ds.name == "new_name"
         assert "new_name" in manager.datasets
         assert "old_name" not in manager.datasets
+
+    def test_rename_sanitizes_name_to_match_folder(self, manager):
+        """Renaming with special chars stores a name equal to its on-disk folder
+        basename (else /media/<name> 404s — captions show, images don't)."""
+        manager.create_dataset("plain")
+        ds = manager.update_dataset("plain", "Shiny (final)", "")
+        assert ds.name == "Shiny final"
+        assert os.path.basename(ds.path) == ds.name
+        assert os.path.isdir(ds.path)
+        assert "Shiny final" in manager.datasets and "plain" not in manager.datasets
 
     def test_rename_to_existing_raises(self, manager):
         """Renaming to an existing name should raise."""

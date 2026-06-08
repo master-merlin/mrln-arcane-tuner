@@ -26,7 +26,7 @@ export type ModalKind =
     | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
     | 'confirm' | 'version-edit'
     | 'templates-library' | 'template-edit' | 'template-json' | 'job-config'
-    | 'import-dataset' | 'export-options';
+    | 'import-dataset' | 'export-options' | 'import-archive';
 
 export interface ModalEntry {
     kind: ModalKind;

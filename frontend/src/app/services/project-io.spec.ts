@@ -42,11 +42,12 @@ describe('ProjectService export/import', () => {
 
     it('POSTs a multipart import apply with resolutions', () => {
         const file = new File(['x'], 'p.zip');
-        svc.applyImportProject(file, { project: { on_conflict: 'rename' } }).subscribe();
+        const resolutions = { project: { on_conflict: 'rename' as const }, datasets: {}, templates: {} };
+        svc.applyImportProject(file, resolutions).subscribe();
         const req = http.expectOne('http://test/api/projects/import/apply');
         const body = req.request.body as FormData;
         expect(body.get('file')).toBe(file);
-        expect(body.get('resolutions')).toBe(JSON.stringify({ project: { on_conflict: 'rename' } }));
+        expect(body.get('resolutions')).toBe(JSON.stringify(resolutions));
         req.flush({});
     });
 

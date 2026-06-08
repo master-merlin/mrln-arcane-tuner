@@ -68,3 +68,53 @@ def test_read_manifest_rejects_malformed_json():
     with zipfile.ZipFile(buf) as zf:
         with pytest.raises(ManifestError):
             read_manifest(zf, expected_kind="template", max_version=1)
+
+
+from app.core.portable.archive import safe_extract, write_zip
+
+
+def test_write_zip_includes_manifest_and_files_and_honors_skip_dirs(tmp_path):
+    root = tmp_path / "thing"
+    (root / "sub").mkdir(parents=True)
+    (root / ".cache").mkdir()
+    (root / "a.txt").write_text("a", encoding="utf-8")
+    (root / "sub" / "b.bin").write_bytes(b"b")
+    (root / ".cache" / "skip.bin").write_bytes(b"NOPE")
+
+    buf = write_zip(root, {"kind": "template", "format_version": 1}, skip_dirs=(".cache",))
+
+    with zipfile.ZipFile(buf) as zf:
+        names = set(zf.namelist())
+    assert "manifest.json" in names
+    assert "a.txt" in names
+    assert "sub/b.bin" in names
+    assert not any(n.startswith(".cache/") for n in names)
+
+
+def test_safe_extract_blocks_path_traversal(tmp_path):
+    dest = tmp_path / "out"
+    dest.mkdir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../escape.txt", b"evil")
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf:
+        with pytest.raises(ManifestError):
+            safe_extract(zf, dest)
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_safe_extract_writes_files_and_skips_manifest(tmp_path):
+    dest = tmp_path / "out"
+    dest.mkdir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", b"{}")
+        zf.writestr("a.jpg", b"img")
+        zf.writestr("masks/a.png", b"mask")
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf:
+        safe_extract(zf, dest)
+    assert (dest / "a.jpg").read_bytes() == b"img"
+    assert (dest / "masks" / "a.png").read_bytes() == b"mask"
+    assert not (dest / "manifest.json").exists()

@@ -26,6 +26,7 @@ import { TemplateEditModalComponent } from '../../modals/template-edit/template-
 import { TemplateJsonEditModalComponent } from '../../modals/template-json/template-json.component';
 import { JobConfigModalComponent } from '../../modals/job-config/job-config.component';
 import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-dataset.component';
+import { ExportOptionsModalComponent } from '../../modals/export-options/export-options.component';
 
 /**
  * Modal stack renderer.
@@ -63,6 +64,7 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
         TemplateJsonEditModalComponent,
         JobConfigModalComponent,
         ImportDatasetModalComponent,
+        ExportOptionsModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -152,6 +154,9 @@ import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-
                             }
                             @case ('import-dataset') {
                                 @defer { <app-modal-import-dataset/> }
+                            }
+                            @case ('export-options') {
+                                @defer { <app-modal-export-options/> }
                             }
                             @default {
                                 <div class="modal-head">

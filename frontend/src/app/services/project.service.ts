@@ -149,4 +149,40 @@ export class ProjectService {
     const pid = projectId ? projectId : 'general';
     return this.http.put<ProjectPreferences>(`${this.apiUrl}/${pid}/preferences`, updates);
   }
+
+  // Export / Import
+
+  exportProject(
+    projectId: string,
+    selection: {
+      templates: { domain: string; id: string }[];
+      datasets: { name: string; mode: string }[];
+    },
+  ): Observable<Blob> {
+    return this.http.post(`${this.rtc.apiUrl}/projects/${projectId}/export`, selection, {
+      responseType: 'blob',
+    });
+  }
+
+  planImportProject(file: File): Observable<unknown> {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.post(`${this.rtc.apiUrl}/projects/import/plan`, form);
+  }
+
+  applyImportProject(file: File, resolutions: unknown): Observable<unknown> {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('resolutions', JSON.stringify(resolutions ?? {}));
+    return this.http.post(`${this.rtc.apiUrl}/projects/import/apply`, form);
+  }
+
+  rollbackImport(body: {
+    project_id: string;
+    imported_datasets: string[];
+    installed_definitions: string[];
+  }): Observable<{ status: string; project_id: string }> {
+    return this.http.post<{ status: string; project_id: string }>(
+      `${this.rtc.apiUrl}/projects/import/rollback`, body);
+  }
 }

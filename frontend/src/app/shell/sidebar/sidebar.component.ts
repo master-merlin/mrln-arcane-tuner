@@ -54,8 +54,7 @@ export class SidebarComponent implements OnInit {
     protected appVersion = signal<string>('…');
 
     ngOnInit() {
-        const versionUrl = this.rtc.apiUrl.replace('/api', '/');
-        this.http.get<{ version: string }>(versionUrl).subscribe({
+        this.http.get<{ version: string }>(`${this.rtc.apiUrl}/system/version`).subscribe({
             next: (r) => this.appVersion.set(r.version),
             error: () => this.appVersion.set('?.?.?'),
         });

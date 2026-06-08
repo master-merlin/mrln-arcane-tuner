@@ -273,7 +273,7 @@ export class ProjectsScreen implements OnInit {
     }
 
     protected openTemplatesLibrary(): void {
-        this.overlay.openModal('templates-library');
+        void this.router.navigate(['/templates']);
     }
 
     protected importArchive(): void {

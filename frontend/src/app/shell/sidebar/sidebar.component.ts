@@ -19,13 +19,14 @@ interface NavItem {
     id: string;
     label: string;
     ico:
-        | 'Database' | 'Layers' | 'Sparkles' | 'Activity' | 'Wand' | 'Server';
+        | 'Database' | 'Layers' | 'Files' | 'Sparkles' | 'Activity' | 'Wand' | 'Server';
     path: string;
 }
 
 const NAV: ReadonlyArray<NavItem> = [
     { id: 'datasets', label: 'Datasets', ico: 'Database', path: '/datasets' },
     { id: 'projects', label: 'Projects', ico: 'Layers',   path: '/projects' },
+    { id: 'templates', label: 'Templates', ico: 'Files', path: '/templates' },
     { id: 'training', label: 'Training', ico: 'Sparkles', path: '/training' },
     { id: 'jobs',     label: 'Jobs',     ico: 'Activity', path: '/jobs' },
     { id: 'tools',    label: 'Tools',    ico: 'Wand',     path: '/tools' },

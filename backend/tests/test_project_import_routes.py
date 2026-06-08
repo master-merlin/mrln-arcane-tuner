@@ -1,5 +1,6 @@
 """Route tests for project import (plan + apply)."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -95,3 +96,90 @@ def test_plan_rejects_non_project_zip(client):
     bad = write_manifest_zip({"format_version": 1, "kind": "template"}).getvalue()
     resp = _upload(client, "/api/projects/import/plan", bad)
     assert resp.status_code == 400
+
+
+def _apply(client, zip_bytes, resolutions=None):
+    form = {}
+    if resolutions is not None:
+        form["resolutions"] = json.dumps(resolutions)
+    return client.post(
+        "/api/projects/import/apply",
+        files={"file": ("p.project.zip", zip_bytes, "application/zip")}, data=form)
+
+
+@patch(_PREFS)
+@patch(_DSMGR)
+@patch(_PROJECTS)
+def test_apply_creates_project_and_links_references(MockProjects, mock_dsmgr, MockPrefs, client):
+    MockProjects.get_by_name.return_value = None
+    MockProjects.create.return_value = {"id": "new_p", "name": "P"}
+    mock_dsmgr.get_dataset.side_effect = lambda n: SimpleNamespace(id="d_" + n) if n == "here" else None
+    zb = _project_zip({"name": "P", "preferences": {"selected_caption_model": "qwen3-vl"}},
+                      datasets=[{"mode": "reference", "name": "here"},
+                                {"mode": "reference", "name": "gone"}])
+    resp = _apply(client, zb)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_id"] == "new_p"
+    assert body["linked_references"] == ["here"]
+    assert body["missing_references"] == ["gone"]
+    MockProjects.add_dataset.assert_any_call("new_p", "d_here")
+    MockPrefs.upsert.assert_called_once()
+
+
+@patch(_PROJECTS)
+def test_apply_project_name_conflict_no_directive_409(MockProjects, client):
+    MockProjects.get_by_name.return_value = {"id": "existing"}
+    zb = _project_zip({"name": "Dup"})
+    resp = _apply(client, zb)
+    assert resp.status_code == 409
+
+
+@patch(_PREFS)
+@patch(_DSMGR)
+@patch("app.api.dataset.crud_routes._import_from_zip_path")
+@patch(_PROJECTS)
+def test_apply_embeds_dataset_and_links(MockProjects, mock_import, mock_dsmgr, MockPrefs, client):
+    MockProjects.get_by_name.return_value = None
+    MockProjects.create.return_value = {"id": "new_p", "name": "P"}
+    mock_import.return_value = SimpleNamespace(id="imp_d", name="ds (imported)")
+    zb = _project_zip({"name": "P"},
+                      datasets=[{"mode": "embed", "name": "ds", "archive": "datasets/ds.zip"}],
+                      entries={"datasets/ds.zip": b"DSZIP"})
+    resp = _apply(client, zb)
+    assert resp.status_code == 200
+    assert resp.json()["imported_datasets"] == ["ds (imported)"]
+    MockProjects.add_dataset.assert_any_call("new_p", "imp_d")
+
+
+@patch(_PREFS)
+@patch(_DSMGR)
+@patch("app.api.dataset.crud_routes._import_from_zip_path")
+@patch(_PROJECTS)
+def test_apply_rolls_back_on_dataset_import_failure(MockProjects, mock_import, mock_dsmgr, MockPrefs, client):
+    MockProjects.get_by_name.return_value = None
+    MockProjects.create.return_value = {"id": "new_p", "name": "P"}
+    # First embed imports OK, second blows up → must roll everything back.
+    good = SimpleNamespace(id="d1", name="one")
+    mock_import.side_effect = [good, RuntimeError("extract boom")]
+    zb = _project_zip({"name": "P"}, datasets=[
+        {"mode": "embed", "name": "one", "archive": "datasets/one.zip"},
+        {"mode": "embed", "name": "two", "archive": "datasets/two.zip"}],
+        entries={"datasets/one.zip": b"A", "datasets/two.zip": b"B"})
+    resp = _apply(client, zb)
+    assert resp.status_code == 500
+    # rollback: the created project deleted, the one imported dataset deleted
+    MockProjects.delete.assert_called_once_with("new_p")
+    mock_dsmgr.delete_dataset.assert_any_call("one", delete_files=True)
+
+
+@patch(_DSMGR)
+@patch(_PROJECTS)
+def test_user_triggered_rollback_undoes_a_kept_import(MockProjects, mock_dsmgr, client):
+    resp = client.post("/api/projects/import/rollback", json={
+        "project_id": "p_keep", "imported_datasets": ["ds1"],
+        "installed_definitions": []})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rolled_back"
+    MockProjects.delete.assert_called_once_with("p_keep")
+    mock_dsmgr.delete_dataset.assert_called_once_with("ds1", delete_files=True)

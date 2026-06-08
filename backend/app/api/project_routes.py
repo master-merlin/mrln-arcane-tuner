@@ -7,7 +7,7 @@ import io
 import zipfile
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -282,3 +282,182 @@ async def plan_project_import(file: UploadFile = File(...)) -> dict[str, Any]:
         }
 
     return await asyncio.to_thread(_plan)
+
+
+# ── Import: apply + rollback ─────────────────────────────────────────────
+
+
+def _unique_project_name(base: str) -> str:
+    candidate = base
+    i = 2
+    while _projects.get_by_name(candidate) is not None:
+        candidate = f"{base} ({i})"
+        i += 1
+    return candidate
+
+
+def _uninstall_definition(definition_id: str) -> None:
+    """Undo a definition install (mirror of the definitions DELETE route)."""
+    from pathlib import Path
+
+    from app.engine.models.registry import registry
+
+    path = registry._paths.get(definition_id)
+    if path:
+        p = Path(path)
+        if p.exists():
+            p.unlink()
+    registry._definitions.pop(definition_id, None)
+    registry._paths.pop(definition_id, None)
+
+
+@router.post("/import/apply")
+async def apply_project_import(
+    file: UploadFile = File(...),
+    resolutions: str = Form(default="{}"),
+) -> dict[str, Any]:
+    """Recreate a project from an archive, transactionally (rollback on error)."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from app.api.dataset.crud_routes import _import_from_zip_path
+    from app.api.training.template_routes import import_template_entries
+    from app.core.dataset_manager import dataset_manager
+    from app.core.portable.envelope import ManifestError
+    from app.core.project import portable as pportable
+    from app.core.template import portable as tportable
+
+    data = await file.read()
+    try:
+        res = json.loads(resolutions or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid resolutions JSON: {exc}") from exc
+    proj_res = res.get("project") or {}
+    ds_res = res.get("datasets") or {}
+    tpl_res = res.get("templates") or {}
+
+    def _apply() -> dict[str, Any]:
+        try:
+            outer = zipfile.ZipFile(io.BytesIO(data))
+            manifest = pportable.read_project_manifest(outer)
+        except ManifestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+
+        with outer:
+            proj = manifest["project"]
+            name = proj_res.get("name") or proj.get("name") or "Imported Project"
+            on_conflict = proj_res.get("on_conflict")
+            if _projects.get_by_name(name) is not None:
+                if on_conflict == "overwrite":
+                    _projects.delete(_projects.get_by_name(name)["id"])
+                elif on_conflict == "rename":
+                    name = _unique_project_name(name)
+                else:
+                    raise HTTPException(
+                        409, {"conflict": True, "name": name,
+                              "message": f"A project named '{name}' already exists."})
+
+            project_id: str | None = None
+            imported_datasets: list[str] = []
+            installed_defs: list[str] = []
+            try:
+                created = _projects.create({
+                    "name": name,
+                    "description": proj.get("description", ""),
+                    "color": proj.get("color") or "#6366f1"})
+                project_id = created["id"]
+
+                linked_refs: list[str] = []
+                missing_refs: list[str] = []
+                for dref in manifest["datasets"]:
+                    if dref["mode"] == "reference":
+                        ds = dataset_manager.get_dataset(dref["name"])
+                        if ds is not None:
+                            _projects.add_dataset(project_id, ds.id)
+                            linked_refs.append(dref["name"])
+                        else:
+                            missing_refs.append(dref["name"])
+                    elif dref["mode"] == "embed":
+                        nested = outer.read(dref["archive"])
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+                        try:
+                            tmp.write(nested)
+                            tmp.close()
+                            oc = (ds_res.get(dref["name"]) or {}).get("on_conflict") or "rename"
+                            ds = _import_from_zip_path(Path(tmp.name), oc, None)
+                        finally:
+                            Path(tmp.name).unlink(missing_ok=True)
+                        imported_datasets.append(ds.name)
+                        _projects.add_dataset(project_id, ds.id)
+
+                created_t: list[dict[str, Any]] = []
+                skipped_t: list[dict[str, Any]] = []
+                for i, tref in enumerate(manifest["templates"]):
+                    nested = outer.read(tref["archive"])
+                    with zipfile.ZipFile(io.BytesIO(nested)) as nzf:
+                        tmanifest = tportable.read_template_manifest(nzf)
+                    r = import_template_entries(
+                        tmanifest, {"0": tpl_res.get(str(i)) or {}}, project_id)
+                    created_t.extend(r["created"])
+                    skipped_t.extend(r["skipped"])
+                    installed_defs.extend(r["installed_definitions"])
+
+                prefs = proj.get("preferences") or {}
+                if prefs:
+                    _prefs.upsert(project_id, prefs)
+
+                return {
+                    "project_id": project_id,
+                    "project_name": name,
+                    "imported_datasets": imported_datasets,
+                    "linked_references": linked_refs,
+                    "missing_references": missing_refs,
+                    "templates": {"created": created_t, "skipped": skipped_t},
+                    "installed_definitions": installed_defs,
+                }
+            except HTTPException:
+                _rollback(project_id, imported_datasets, installed_defs)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _rollback(project_id, imported_datasets, installed_defs)
+                raise HTTPException(500, f"Project import failed and was rolled back: {exc}") from exc
+
+    return await asyncio.to_thread(_apply)
+
+
+def _rollback(project_id, imported_datasets, installed_defs):
+    """Best-effort undo of a project import (order: defs → datasets → project)."""
+    for def_id in installed_defs:
+        try:
+            _uninstall_definition(def_id)
+        except Exception:  # noqa: BLE001, S110
+            pass
+    for name in imported_datasets:
+        try:
+            from app.core.dataset_manager import dataset_manager
+            dataset_manager.delete_dataset(name, delete_files=True)
+        except Exception:  # noqa: BLE001, S110
+            pass
+    if project_id:
+        try:
+            _projects.delete(project_id)
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+
+class RollbackImportRequest(BaseModel):
+    project_id: str
+    imported_datasets: list[str] = []
+    installed_definitions: list[str] = []
+
+
+@router.post("/import/rollback")
+async def rollback_project_import(req: RollbackImportRequest) -> dict[str, str]:
+    """User-triggered undo of a *successful* import the user decided not to keep
+    (e.g. after reviewing soft skips). Reverses defs → datasets → project."""
+    await asyncio.to_thread(
+        _rollback, req.project_id, req.imported_datasets, req.installed_definitions)
+    return {"status": "rolled_back", "project_id": req.project_id}

@@ -11,6 +11,8 @@ import { JobService, type Job, type TrainingEstimate } from '../../services/job'
 import { ToastService } from '../../services/toast';
 import { ScopeStore } from '../../state/scope.store';
 import { OverlayStore } from '../../state/overlay.store';
+import { ProjectExportService } from '../../services/project-export.service';
+import { ImportArchiveService } from '../../services/import-archive.service';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { DatasetStore } from '../../state/dataset.store';
 import { IcoComponent } from '../../icons/ico.component';
@@ -66,6 +68,8 @@ export class ProjectDetail implements OnInit {
     private toast = inject(ToastService);
     private scope = inject(ScopeStore);
     private overlay = inject(OverlayStore);
+    private projectExport = inject(ProjectExportService);
+    private archive = inject(ImportArchiveService);
     private handoff = inject(TrainingHandoffService);
     private rtc = inject(RuntimeConfigService);
     private datasetStore = inject(DatasetStore);
@@ -909,6 +913,35 @@ export class ProjectDetail implements OnInit {
 
     protected back(): void {
         void this.router.navigate(['/projects']);
+    }
+
+    /** Open the export-options modal for this project (templates + datasets). */
+    protected exportThisProject(): void {
+        const p = this.project();
+        if (!p) return;
+        void this.projectExport.open(p.id, p.name);
+    }
+
+    /** Open the generic import wizard scoped to this project. */
+    protected importIntoProject(): void {
+        const id = this.projectId();
+        if (id) this.overlay.openModal('import-archive', { projectId: id });
+    }
+
+    /** Body-less GET export of a single template (opens the streaming zip). */
+    protected exportTemplate(domain: TemplateDomain, t: Template): void {
+        window.open(this.templates.getTemplateExportUrl(domain, t.id), '_blank');
+    }
+
+    /** Bundle-export every template in a domain section. */
+    protected exportDomain(s: TemplateSection): void {
+        if (s.items.length === 0) return;
+        const items = s.items.map(t => ({ domain: s.domain, id: t.id }));
+        this.templates.exportTemplatesBundle(items).subscribe({
+            next: blob => this.archive.downloadBlob(blob, `${s.domain}-templates.zip`),
+            error: (err: { error?: { detail?: string }; message?: string }) =>
+                this.toast.error('Export failed: ' + (err?.error?.detail || err?.message)),
+        });
     }
 
     protected editProject(): void {

@@ -5,6 +5,7 @@ import { catchError, switchMap } from 'rxjs/operators';
 import { ToastService } from '../../../services/toast';
 import { TemplateService, Template } from '../../../services/template.service';
 import { ProjectService } from '../../../services/project.service';
+import { OverlayStore } from '../../../state/overlay.store';
 import { TemplateInfoCardComponent, TemplateInfoRow } from '../../../ui/template-info-card/template-info-card.component';
 import type { TrainingConfig } from '../../../services/job';
 import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
@@ -65,6 +66,17 @@ const ACTIVE_TPL_PREF_KEY = 'active_training_template';
                   class="icon-btn text-danger shrink-0" title="Delete Template">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
           </button>
+          <button type="button" (click)="exportCurrentTemplate()"
+                  data-testid="export-training-template-btn"
+                  [disabled]="isDefaultTemplate()" [class.opacity-40]="isDefaultTemplate()"
+                  class="icon-btn shrink-0" title="Export current template">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"></path></svg>
+          </button>
+          <button type="button" (click)="importTemplate()"
+                  data-testid="import-training-template-btn"
+                  class="icon-btn shrink-0" title="Import template / project / dataset">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 8l5-5 5 5M12 3v12"></path></svg>
+          </button>
         </div>
         @if (activeTemplate(); as tpl) {
           <app-template-info-card class="block mt-2.5" [name]="tpl.name" [rows]="activeTemplateInfo()"></app-template-info-card>
@@ -87,6 +99,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   private templateService = inject(TemplateService);
   private projects = inject(ProjectService);
   private toast = inject(ToastService);
+  private overlay = inject(OverlayStore);
 
   allTemplates = signal<Template[]>([]);
   activeTemplateId = signal<string>('default');
@@ -413,6 +426,21 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     this.templateService.updateTemplate('training', id, { definition_id: currentDefId, config: newFormValue }).subscribe(updatedTpl => {
         this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
     });
+  }
+
+  /** Export the active training template as a `.template.zip` (body-less GET). */
+  exportCurrentTemplate(): void {
+    const id = this.activeTemplateId();
+    if (!id || id === 'default' || this.isDefaultTemplate()) {
+      this.toast.warning('Save the template before exporting.');
+      return;
+    }
+    window.open(this.templateService.getTemplateExportUrl('training', id), '_blank');
+  }
+
+  /** Open the generic import wizard (routes by the dropped archive's kind). */
+  importTemplate(): void {
+    this.overlay.openModal('import-archive', { projectId: this.projectId() ?? undefined });
   }
 
   public importExternalTemplate(name: string, config: TrainingConfig, definitionId: string) {

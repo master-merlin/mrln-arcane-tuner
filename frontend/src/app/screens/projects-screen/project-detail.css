@@ -17,6 +17,7 @@
 .pd-id { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-text-muted); margin-left: 8px; }
 .pd-desc { font-size: 13px; color: var(--color-text-muted); max-width: 760px; }
 .pd-header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.pd-section-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .pd-stat-strip {
     display: grid; grid-template-columns: repeat(5, 1fr); gap: 18px;
     margin-top: 18px; padding-top: 16px;

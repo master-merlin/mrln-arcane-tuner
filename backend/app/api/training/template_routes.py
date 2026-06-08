@@ -523,3 +523,150 @@ async def plan_template_import(
         }
 
     return await asyncio.to_thread(_build_plan)
+
+
+# ── Import: apply ────────────────────────────────────────────────────────
+
+
+def _install_definition(definition: dict[str, Any]) -> None:
+    """Persist a carried definition to its family dir and register it."""
+    import yaml
+
+    from app.engine.models.registry import registry
+
+    family = definition.get("family") or "unknown"
+    def_id = definition.get("id") or "imported"
+    safe_id = def_id.replace("/", "_").replace("\\", "_")
+    family_dir = _families_dir() / family / "definitions"
+    family_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = family_dir / f"{safe_id}.yaml"
+    yaml_path.write_text(yaml.dump(definition, sort_keys=False), encoding="utf-8")
+    registry.load_definition(str(yaml_path))
+
+
+def _apply_hf_substitutions(definition: dict[str, Any]) -> dict[str, Any]:
+    """Replace local component paths with a same-family HF source when the
+    machine is online and one is found. Returns the (possibly modified) dict."""
+    from app.core.template import portable
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+
+    if ModelOverrideManager.is_offline(definition.get("id") or ""):
+        return definition
+    family = definition.get("family") or ""
+    components = definition.get("components") or {}
+    for comp in portable.scan_local_component_paths(definition):
+        hf = _find_family_hf_source(family, comp["component"])
+        if hf:
+            node = components[comp["component"]]
+            if isinstance(node, dict):
+                node["path"] = hf
+            else:
+                components[comp["component"]] = {"path": hf}
+    return definition
+
+
+def _resolve_training_definition(
+    entry: dict[str, Any], res: "ImportEntryResolution"
+) -> tuple[bool, str | None, str | None]:
+    """Ensure the training definition is usable.
+
+    Returns ``(ok, installed_definition_id, skip_reason)``.
+    """
+    from app.core.template import import_service
+    from app.engine.models.registry import registry
+
+    definition_id = entry.get("definition_id") or ""
+    if registry.get_definition(definition_id) is not None:
+        return True, None, None  # present → use machine's
+
+    carried = entry.get("definition")
+    if not isinstance(carried, dict):
+        return False, None, "definition missing and not carried — install it first"
+    if not res.install_definition:
+        return False, None, "definition not present and install was declined"
+    if import_service.validate_carried_definition(carried) is not None:
+        return False, None, "carried definition is invalid"
+
+    to_install = dict(carried)
+    if res.use_hf_substitution:
+        to_install = _apply_hf_substitutions(to_install)
+    _install_definition(to_install)
+    return True, definition_id, None
+
+
+def _create_row(domain: str, entry: dict[str, Any], name: str,
+                project_id: str | None) -> dict[str, Any]:
+    repo = _get_repo(domain)
+    data: dict[str, Any] = {"name": name, "config": entry.get("config") or {}}
+    if project_id is not None:
+        data["project_id"] = project_id
+    if domain == "training":
+        data["definition_id"] = entry.get("definition_id") or ""
+    else:
+        data["model_id"] = entry.get("model_id") or ""
+    if domain == "captioning":
+        data["system_prompt"] = entry.get("system_prompt") or "Describe this image in detail."
+        data["wildcard"] = entry.get("wildcard") or ""
+    return repo.create(data)
+
+
+@router.post("/templates/import/apply")
+async def apply_template_import(
+    file: UploadFile = File(...),
+    resolutions: str = Form(default="{}"),
+    project_id: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Create templates (and install confirmed definitions) from an archive."""
+    import json
+    import zipfile
+
+    from app.core.portable.envelope import ManifestError
+    from app.core.template import import_service, portable
+
+    data = await file.read()
+    try:
+        res_map = json.loads(resolutions or "{}").get("entries", {})
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid resolutions JSON: {exc}") from exc
+
+    def _apply() -> dict[str, Any]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                manifest = portable.read_template_manifest(zf)
+        except ManifestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+
+        created: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        installed: list[str] = []
+
+        for i, entry in enumerate(manifest["templates"]):
+            res = ImportEntryResolution(**(res_map.get(str(i)) or {}))
+            domain = entry["domain"]
+            name = res.name or entry.get("name") or "Imported"
+            if res.action == "skip":
+                skipped.append({"index": i, "name": name, "reason": "skipped by user"})
+                continue
+
+            if domain in ("captioning", "masking"):
+                if not import_service.model_available(domain, entry.get("model_id") or ""):
+                    skipped.append({"index": i, "name": name,
+                                    "reason": f"model '{entry.get('model_id')}' not available in this build"})
+                    continue
+            else:  # training
+                ok, inst_id, reason = _resolve_training_definition(entry, res)
+                if not ok:
+                    skipped.append({"index": i, "name": name, "reason": reason})
+                    continue
+                if inst_id:
+                    installed.append(inst_id)
+
+            row = _create_row(domain, entry, name, project_id)
+            created.append({"index": i, "id": row.get("id"), "name": row.get("name") or name})
+
+        return {"created": created, "skipped": skipped,
+                "installed_definitions": installed}
+
+    return await asyncio.to_thread(_apply)

@@ -12,6 +12,7 @@ archive shape, fully unit-testable.
 
 from __future__ import annotations
 
+import re
 import zipfile
 from typing import Any
 
@@ -33,8 +34,10 @@ _CARRY: dict[str, tuple[str, ...]] = {
     "masking": ("name", "model_id", "config"),
 }
 
-# Component path prefixes that denote a remote/portable source (not local disk).
-_REMOTE_PREFIXES = ("huggingface:", "hf:", "http://", "https://")
+# Matches a URI scheme prefix like ``s3://``, ``https://`` — any remote source.
+_URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://")
+# Non-URI remote shorthands used in component paths.
+_REMOTE_SHORTHANDS = ("huggingface:", "hf:")
 
 
 def build_template_entry(
@@ -81,11 +84,17 @@ def read_template_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:
 
 
 def is_local_component_path(path: Any) -> bool:
-    """True if a component path points at the local filesystem (not HF/URL)."""
+    """True if a component path points at the local filesystem (not a remote
+    source). Remote = a ``scheme://`` URI or the ``huggingface:``/``hf:``
+    shorthands."""
     if not isinstance(path, str) or not path:
         return False
     lowered = path.lower()
-    return not lowered.startswith(_REMOTE_PREFIXES)
+    if lowered.startswith(_REMOTE_SHORTHANDS):
+        return False
+    if _URI_SCHEME_RE.match(lowered):
+        return False
+    return True
 
 
 def scan_local_component_paths(

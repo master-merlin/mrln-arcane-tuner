@@ -117,8 +117,12 @@ def test_read_template_manifest_rejects_wrong_kind():
 def test_is_local_component_path():
     assert portable.is_local_component_path("D:/models/foo") is True
     assert portable.is_local_component_path("/mnt/models/bar") is True
+    assert portable.is_local_component_path("relative/dir") is True
     assert portable.is_local_component_path("huggingface:org/repo") is False
+    assert portable.is_local_component_path("hf:org/repo") is False
     assert portable.is_local_component_path("https://example.com/x") is False
+    assert portable.is_local_component_path("s3://bucket/key") is False
+    assert portable.is_local_component_path("gs://bucket/key") is False
     assert portable.is_local_component_path("") is False
     assert portable.is_local_component_path(None) is False
 

@@ -23,8 +23,8 @@ type Domain = 'captioning' | 'masking' | 'training';
 
 interface TemplateRow {
     domain: Domain;
-    scopeId: string | null; // null = General
-    scopeLabel: string; // 'General' or project name
+    scopeId: string | null; // null = Global (project-unscoped)
+    scopeLabel: string; // 'Global' or project name
     tpl: Template;
 }
 
@@ -127,7 +127,7 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
                             <div class="tl-name">{{ r.tpl.name }}</div>
                             <div class="tl-model mono">{{ r.tpl.definition_id || r.tpl.model_id || 'all models' }}</div>
                             <div class="tl-badges">
-                                <span class="chip">{{ r.scopeLabel }}</span>
+                                <span class="chip" [class.scope-global]="r.scopeId === null">{{ r.scopeLabel }}</span>
                                 @switch (r.domain) {
                                     @case ('training') { <span class="chip violet">Training</span> }
                                     @case ('captioning') { <span class="chip brand">Caption</span> }
@@ -261,6 +261,14 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
             gap: 4px;
             margin-top: 5px;
         }
+        /* Allocation pill — marks a Global (project-unscoped) template distinctly
+           from the per-project scope chips that carry a project name. Teal keeps
+           it clear of the domain chips (violet / brand / success) beside it. */
+        .chip.scope-global {
+            background: oklch(0.72 0.12 185 / 0.14);
+            border-color: oklch(0.72 0.12 185 / 0.32);
+            color: var(--color-chart-lr);
+        }
         .tl-actions {
             display: flex;
             align-items: center;
@@ -292,7 +300,7 @@ export class TemplatesScreen implements OnInit {
 
     protected scopeOptions = computed(() => [
         { id: 'all', label: 'All scopes' },
-        { id: 'general', label: 'General' },
+        { id: 'general', label: 'Global' },
         ...this.projects.allProjects().map(p => ({ id: p.id, label: p.name })),
     ]);
 
@@ -351,9 +359,9 @@ export class TemplatesScreen implements OnInit {
                     rows.push({ domain, scopeId, scopeLabel, tpl: t });
                 }
             };
-            add('captioning', null, 'General', (capG ?? []).filter(t => !t.project_id));
-            add('masking', null, 'General', (maskG ?? []).filter(t => !t.project_id));
-            add('training', null, 'General', (trainG ?? []).filter(t => !t.project_id));
+            add('captioning', null, 'Global', (capG ?? []).filter(t => !t.project_id));
+            add('masking', null, 'Global', (maskG ?? []).filter(t => !t.project_id));
+            add('training', null, 'Global', (trainG ?? []).filter(t => !t.project_id));
 
             for (const p of projects) {
                 // Per-project resilience: one project's failed list call must not
@@ -396,7 +404,10 @@ export class TemplatesScreen implements OnInit {
     importArchive(): void {
         const scope = this.scopeFilter();
         const projectId = scope !== 'all' && scope !== 'general' ? scope : undefined;
-        this.overlay.openModal('import-archive', projectId ? { projectId } : undefined);
+        this.overlay.openModal('import-archive', {
+            ...(projectId ? { projectId } : {}),
+            onImported: () => void this.load(),
+        });
     }
 
     edit(r: TemplateRow): void {

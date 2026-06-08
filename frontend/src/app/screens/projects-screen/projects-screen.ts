@@ -277,7 +277,9 @@ export class ProjectsScreen implements OnInit {
     }
 
     protected importArchive(): void {
-        this.overlay.openModal('import-archive');
+        this.overlay.openModal('import-archive', {
+            onImported: () => this.projects.loadProjects(),
+        });
     }
 
     protected exportProject(p: Project, event: Event): void {

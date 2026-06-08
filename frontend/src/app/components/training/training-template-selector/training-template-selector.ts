@@ -440,7 +440,10 @@ export class TrainingTemplateSelectorComponent implements OnInit {
 
   /** Open the generic import wizard (routes by the dropped archive's kind). */
   importTemplate(): void {
-    this.overlay.openModal('import-archive', { projectId: this.projectId() ?? undefined });
+    this.overlay.openModal('import-archive', {
+      projectId: this.projectId() ?? undefined,
+      onImported: () => this.loadTrainingSettings(),
+    });
   }
 
   public importExternalTemplate(name: string, config: TrainingConfig, definitionId: string) {

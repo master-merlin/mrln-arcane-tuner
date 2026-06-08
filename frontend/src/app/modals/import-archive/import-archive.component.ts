@@ -365,6 +365,18 @@ export class ImportArchiveModalComponent {
         () => (this.overlay.topModal()?.data as { projectId?: string } | undefined)?.projectId,
     );
 
+    /** Optional refresh hook the opener passes so its list updates live once an
+     *  import succeeds (the modal stays open on its summary; the screen behind
+     *  it is already fresh by the time the user closes it). */
+    private onImported = computed<(() => void) | undefined>(
+        () => (this.overlay.topModal()?.data as { onImported?: () => void } | undefined)?.onImported,
+    );
+
+    /** Fire the opener's refresh hook, swallowing any error it throws. */
+    private fireImported(): void {
+        try { this.onImported()?.(); } catch { /* opener refresh is best-effort */ }
+    }
+
     phase = signal<'pick' | 'plan' | 'applying' | 'done'>('pick');
     file = signal<File | null>(null);
     kind = signal<ArchiveKind | null>(null);
@@ -489,6 +501,7 @@ export class ImportArchiveModalComponent {
             next: () => {
                 this.toast.success('Dataset imported.');
                 void this.datasetStore?.loadAll();
+                this.fireImported();
                 this.phase.set('done');
                 this.busy.set(false);
             },
@@ -537,6 +550,7 @@ export class ImportArchiveModalComponent {
         this.templates.applyImportTemplate(this.file()!, { entries }, this.projectId()).subscribe({
             next: (r) => {
                 this.templateResult.set(r);
+                this.fireImported();
                 this.phase.set('done');
                 this.busy.set(false);
                 this.toast.success(`Imported ${r.created.length} template(s).`);
@@ -571,6 +585,7 @@ export class ImportArchiveModalComponent {
         this.projects.applyImportProject(this.file()!, resolutions).subscribe({
             next: (r) => {
                 this.projectResult.set(r);
+                this.fireImported();
                 this.phase.set('done');
                 this.busy.set(false);
                 this.toast.success(`Imported project "${r.project_name}".`);

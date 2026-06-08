@@ -925,7 +925,14 @@ export class ProjectDetail implements OnInit {
     /** Open the generic import wizard scoped to this project. */
     protected importIntoProject(): void {
         const id = this.projectId();
-        if (id) this.overlay.openModal('import-archive', { projectId: id });
+        if (id) this.overlay.openModal('import-archive', {
+            projectId: id,
+            onImported: () => {
+                void this.loadTemplates(id);
+                void this.loadDatasets(id);
+                this.projects.loadProjects();
+            },
+        });
     }
 
     /** Body-less GET export of a single template (opens the streaming zip). */

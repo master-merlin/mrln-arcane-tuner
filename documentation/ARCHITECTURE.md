@@ -1,6 +1,6 @@
 # Architecture
 
-> Updated 2026-06-09 · App version `0.5.4-alpha`
+> Updated 2026-06-09 · App version `0.5.5-alpha`
 
 ## Overview
 
@@ -68,7 +68,7 @@ graph LR
 | File          | Purpose                                                                  |
 | ------------- | ------------------------------------------------------------------------ |
 | `main.py`     | FastAPI app, lifespan, CORS + optional token-auth + logging middleware, router mounts, `/media` + SPA static mounts |
-| `__init__.py` | Version (`0.5.4-alpha`); applies diffusers + HPS-v2 compat patches at import |
+| `__init__.py` | Version (`0.5.5-alpha`); applies diffusers + HPS-v2 compat patches at import |
 
 **Lifespan** wires the shared event loop into `dataset_manager` / `job_manager` / `task_manager`, hydrates jobs from the DB, discovers plugins + initializes the model registry, recovers jobs whose subprocess died during downtime, optionally launches the frontend dev server, and warms cache-stats aggregation on a non-GPU background lane.
 

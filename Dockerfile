@@ -11,8 +11,13 @@ RUN npm ci --legacy-peer-deps
 COPY frontend/ ./
 RUN npm run build -- --configuration production
 
-# ── Stage 2: runtime (CUDA 13.0 + Python 3.12) ──────────────────────────
-FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04 AS runtime
+# ── Stage 2: runtime (CUDA 12.6 + Python 3.12) ──────────────────────────
+# CUDA 12.6 (not 13.0): CUDA 13 needs an R580+ host driver for native support.
+# Common cloud GPU hosts (e.g. RunPod) still ship R565-class drivers (CUDA
+# 12.7), where CUDA 13 only works via a forward-compat layer that leaves cuBLAS
+# broken — every GEMM fails with CUBLAS_STATUS_INVALID_VALUE. 12.6 is supported
+# natively by R560+ and stays minor-version compatible across the 12.x fleet.
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -28,11 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app/backend
 
-# Install PyTorch (CUDA 13.0) first, then the rest — mirrors backend/install.sh.
+# Install PyTorch (CUDA 12.6) first, then the rest — mirrors backend/install.sh.
 COPY backend/requirements.txt ./requirements.txt
 RUN python -m pip install --break-system-packages \
         torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
-        --index-url https://download.pytorch.org/whl/cu130 \
+        --index-url https://download.pytorch.org/whl/cu126 \
     && python -m pip install --break-system-packages -r requirements.txt
 
 # Native shared libraries required by OpenCV (cv2) and friends at import time

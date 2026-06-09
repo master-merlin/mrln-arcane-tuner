@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.5.4-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 22 · Node 24 · FastAPI
+`v0.5.5-alpha` · PyTorch 2.10 · CUDA 12.6 · Angular 22 · Node 24 · FastAPI
 
 ---
 
@@ -37,7 +37,7 @@ This project wouldn't exist without the incredible open-source community that pi
 | Requirement   | Version              | Notes                     |
 | ------------- | -------------------- | ------------------------- |
 | Python        | 3.12+                | With `venv` support       |
-| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.0 required        |
+| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 12.6 (driver R560+)  |
 | Node.js       | 24+ (LTS)            | Required by Angular 22 / TS 6 |
 | npm           | 10+                  | Comes with Node.js        |
 
@@ -73,9 +73,9 @@ python -m venv venv
 # Windows: venv\Scripts\activate
 # Linux:   source venv/bin/activate
 
-# 2. Install PyTorch with CUDA 13.0
+# 2. Install PyTorch with CUDA 12.6
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
-    --index-url https://download.pytorch.org/whl/cu130
+    --index-url https://download.pytorch.org/whl/cu126
 
 # 3. Install remaining Python dependencies
 pip install -r requirements.txt
@@ -133,25 +133,26 @@ required:
 
 ```
 mastermerlin/mrln-arcane-tuner:latest          # rolling latest
-mastermerlin/mrln-arcane-tuner:0.5.4-alpha     # pinned version
+mastermerlin/mrln-arcane-tuner:0.5.5-alpha     # pinned version
 ```
 
-The image bundles **CUDA 13.0 · PyTorch 2.10 · Python 3.12** (runtime) and a
+The image bundles **CUDA 12.6 · PyTorch 2.10 · Python 3.12** (runtime) and a
 **Node 24 / Angular 22** production build of the UI.
 
 **Building your own** (only needed if you've modified the code):
 
 ```bash
 # Tag with both the version and latest so pods can pin or float.
-docker build -t mastermerlin/mrln-arcane-tuner:0.5.4-alpha -t mastermerlin/mrln-arcane-tuner:latest .
-docker push mastermerlin/mrln-arcane-tuner:0.5.4-alpha
+docker build -t mastermerlin/mrln-arcane-tuner:0.5.5-alpha -t mastermerlin/mrln-arcane-tuner:latest .
+docker push mastermerlin/mrln-arcane-tuner:0.5.5-alpha
 docker push mastermerlin/mrln-arcane-tuner:latest
 ```
 
 ### 2. Create the pod on RunPod
 
-- **GPU:** any NVIDIA Ampere+ GPU. The image is built for **CUDA 13.0**
-  (PyTorch 2.10).
+- **GPU:** any NVIDIA Ampere+ GPU. The image is built for **CUDA 12.6**
+  (PyTorch 2.10) — works on the R560+ host drivers common on cloud GPU hosts.
+  (CUDA 13 needs R580+, which most hosts don't ship yet.)
 - **Container image:** `mastermerlin/mrln-arcane-tuner:latest`
 - **Volume (strongly recommended):** attach a **network volume mounted at
   `/workspace`**. The SQLite DB, `datasets/`, `models/`, `outputs/`, **and the

@@ -57,5 +57,45 @@ def test_patchify_roundtrip():
     assert torch.allclose(back, x)
 
 
+def test_encode_text_concats_selected_layers():
+    from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+    from app.engine.models.families.ideogram4.utils import QWEN3VL_SELECTED_LAYERS
+
+    HID = 8  # tiny stand-in for Qwen3-VL hidden size
+
+    class _Tok:
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+            return messages[0]["content"]
+        def __call__(self, texts, **kw):
+            n = max(len(t.split()) for t in texts) or 1
+            import torch
+            return {
+                "input_ids": torch.ones(len(texts), n, dtype=torch.long),
+                "attention_mask": torch.ones(len(texts), n, dtype=torch.long),
+            }
+
+    class _Out:
+        def __init__(self, hs):
+            self.hidden_states = hs
+
+    import torch
+
+    class _TE(torch.nn.Module):
+        def forward(self, input_ids, attention_mask, output_hidden_states, **kw):
+            b, n = input_ids.shape
+            n_hs = max(QWEN3VL_SELECTED_LAYERS) + 1
+            return _Out([torch.randn(b, n, HID) for _ in range(n_hs)])
+
+    defn = ModelDefinition(id="x", family="ideogram4", name="X")
+    drv = IdeogramV4Driver(defn, torch.device("cpu"))
+    drv.text_encoder = _TE()
+    drv.tokenizer = _Tok()
+
+    out = drv.encode_text(["a cat sitting"], torch.float32)
+    assert out.embeddings.shape[-1] == len(QWEN3VL_SELECTED_LAYERS) * HID
+    assert out.embeddings.shape[0] == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

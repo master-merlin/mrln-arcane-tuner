@@ -259,5 +259,21 @@ def test_definition_yaml_loads():
     assert "o" in definition.lora_targetable_modules
 
 
+def test_asymmetric_cfg_helpers():
+    import torch
+    from app.engine.models.families.ideogram4.sampler import (
+        combine_asymmetric_cfg, zeroed_like_text,
+    )
+    cond = torch.full((1, 16, 128), 2.0)
+    uncond = torch.full((1, 16, 128), 1.0)
+    out = combine_asymmetric_cfg(cond, uncond, guidance_scale=3.0)
+    assert torch.allclose(out, torch.full((1, 16, 128), 4.0))  # 1 + 3*(2-1)
+
+    feats = torch.randn(1, 5, 104)
+    z = zeroed_like_text(feats)
+    assert z.shape == feats.shape
+    assert torch.count_nonzero(z) == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

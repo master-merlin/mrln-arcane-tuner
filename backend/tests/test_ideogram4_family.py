@@ -24,6 +24,34 @@ def test_family_returns_trainer_class():
     assert family.get_trainer_class() is IdeogramV4Trainer
 
 
+def test_training_uses_ideogram_flow_convention():
+    """Ideogram 4 DiT convention: t=0 -> noise, t=1 -> data, velocity = data - noise.
+
+    The pretrained DiT (proven by the upstream sampler) integrates z=randn at
+    t~0 up to data at t~1 with velocity = data - noise. The generic trainer's
+    default is the OPPOSITE (add_noise t=1->noise, target = noise - latents).
+    Training in the default convention trains the LoRA against a flipped-time,
+    sign-negated target vs the frozen base -> ~2-3 loss and white samples.
+    This pins the corrected convention.
+    """
+    from app.engine.models.families.ideogram4.trainer import IdeogramV4Trainer
+
+    tr = IdeogramV4Trainer(ModelDefinition(id="x", family="ideogram4", name="X"), {})
+    data = torch.full((1, 4, 8), 5.0)
+    noise = torch.full((1, 4, 8), -3.0)
+
+    # Target is the velocity data - noise (NOT the base default noise - latents).
+    tgt = tr.compute_target(data, noise, torch.tensor([500.0]))
+    assert torch.allclose(tgt, data - noise)
+
+    # add_noise: t=0 -> all noise; t=1000 -> all data; t=500 -> 50/50 blend.
+    assert torch.allclose(tr.add_noise(data, noise, torch.tensor([0.0])), noise)
+    assert torch.allclose(tr.add_noise(data, noise, torch.tensor([1000.0])), data)
+    assert torch.allclose(
+        tr.add_noise(data, noise, torch.tensor([500.0])), 0.5 * noise + 0.5 * data
+    )
+
+
 def test_registry_dispatches_to_trainer():
     from app.engine.core.definitions import ModelDefinition
     from app.engine.models.registry import ModelRegistry

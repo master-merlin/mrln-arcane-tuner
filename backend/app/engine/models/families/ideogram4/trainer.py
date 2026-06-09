@@ -86,6 +86,54 @@ class IdeogramV4Trainer(GenericTrainingPipeline):
         # docstring. Ideogram divides the [0,1000] timestep by 1000 inside the
         # driver's forward_pass; it does not use the flow-shift S-estimate.
 
+    # --- Flow-matching convention (Ideogram 4: t=0 noise, t=1 data) ---
+    #
+    # The pretrained Ideogram 4 DiT uses the convention ``t=0 -> noise``,
+    # ``t=1 -> data``, ``velocity = data - noise`` -- proven by the upstream
+    # sampler (``pipeline_ideogram4.py::__call__``): ``z = randn`` at ``t~0``,
+    # integrated ``z = z + v*delta`` walking ``t: ~0 -> ~1`` with the model
+    # output used directly as ``v``. This is the OPPOSITE of the generic
+    # trainer's defaults: ``NoiseInterpolation`` "linear" gives ``t=1 -> noise``
+    # and ``compute_target`` returns ``noise - latents``. Training in the default
+    # convention trains the LoRA against a flipped-time, SIGN-NEGATED target vs
+    # the frozen base, so the loss starts ~2-3 (~= ||2v||) instead of ~0.3 and
+    # the LoRA fights the base, yielding white/garbage samples. The sampler is
+    # already correct (it ports the upstream Convention-B loop), so the fix is
+    # to align TRAINING here. ``timesteps`` arrive in the shared [0, 1000] scale;
+    # ``tau = t/1000`` is the same value ``driver.forward_pass`` feeds the DiT,
+    # so the noise level the model is told matches the actual blend.
+
+    def add_noise(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """Ideogram-convention forward diffusion: ``(1-tau)*noise + tau*data``.
+
+        ``tau = timesteps / NUM_TRAIN_TIMESTEPS`` in ``[0, 1]``; ``tau=0`` is
+        pure noise and ``tau=1`` is the (normalized) data latent. Overrides the
+        generic ``NoiseInterpolation`` linear blend, which is the opposite
+        convention.
+        """
+        tau = timesteps.to(latents.dtype) / IdeogramV4Driver.NUM_TRAIN_TIMESTEPS
+        while tau.ndim < latents.ndim:
+            tau = tau.unsqueeze(-1)
+        return (1.0 - tau) * noise + tau * latents
+
+    def compute_target(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """Flow-matching velocity target in the Ideogram convention: ``data - noise``.
+
+        Overrides the generic default ``noise - latents`` (the opposite sign),
+        matching the velocity the frozen DiT was pretrained to predict.
+        """
+        return latents - noise
+
     def _create_sampler(self):
         interval = int(self.config.get("sample_every_n_steps", 0))
         if interval <= 0:

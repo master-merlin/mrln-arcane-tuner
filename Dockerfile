@@ -26,7 +26,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MRLN_FRONTEND_DIST=/app/frontend/browser \
     PORT=8000
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# apt-get upgrade patches base-OS CVEs (e.g. gnupg2 CVE-2025-68973) flagged by
+# Docker Scout that ship in the CUDA base image.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         python3.12 python3.12-venv python3-pip git ca-certificates \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*

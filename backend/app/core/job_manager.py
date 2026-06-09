@@ -27,6 +27,62 @@ from app.core.plugin_manager import plugin_manager
 logger = structlog.get_logger(__name__)
 
 
+def _parse_persisted_log_lines(log_path: str, limit: int = 1000) -> list[str]:
+    """Reconstruct a job's display log tail from its persisted ``job_log.jsonl``.
+
+    Lets a stopped/failed job (or one whose in-memory buffer was lost to a
+    backend restart) still show its tail. Returns the last *limit* renderable
+    lines: ``log`` data verbatim, ``warning``/``exit`` flagged inline. Per-step
+    metric entries are skipped — parity with the in-memory buffer, which only
+    stores ``log`` lines.
+    """
+    if not os.path.isfile(log_path):
+        return []
+    out: list[str] = []
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = _json.loads(raw)
+                except ValueError:
+                    continue
+                msg_type = entry.get("type")
+                data = entry.get("data")
+                if msg_type == "log":
+                    out.append(str(data))
+                elif msg_type == "warning":
+                    out.append(f"[WARNING] {data}")
+                elif msg_type == "exit" and isinstance(data, dict) and data.get("code"):
+                    err = data.get("error") or f"exited with code {data.get('code')}"
+                    out.append(f"[EXIT] {err}")
+    except OSError:
+        pass
+    return out[-limit:]
+
+
+_MIRROR_LEVEL = {"log": "info", "warning": "warning"}
+
+
+def _trainer_msg_for_server_log(msg_type: str, data: Any) -> tuple[str, str] | None:
+    """Map a trainer job-log entry to a ``(level, text)`` pair for the SERVER log.
+
+    Returns ``None`` for entry types that would only flood the server log
+    (per-step metrics, UI status labels, cache-ready, clean exits). The trainer
+    is a separate process, so mirroring these into the main logger is what makes
+    them visible in the Server log viewer (and its download) and persisted in
+    ``server.log``.
+    """
+    if msg_type in _MIRROR_LEVEL:
+        return (_MIRROR_LEVEL[msg_type], str(data))
+    if msg_type == "exit" and isinstance(data, dict) and data.get("code"):
+        err = data.get("error") or f"exited with code {data.get('code')}"
+        return ("error", f"trainer exited: {err}")
+    return None
+
+
 class JobManager:
     """Manages the lifecycle of training jobs (create → run → finish)."""
 
@@ -429,6 +485,18 @@ class JobManager:
         job = self.get_job(job_id)
         if not job:
             return
+
+        # Mirror trainer (side-process) messages into the MAIN server log so
+        # they appear in the Server log viewer + its download and persist in
+        # server.log. Independent of the broadcast loop below: even with no WS
+        # clients, the file write still happens. Noise types (step/status) are
+        # filtered out by _trainer_msg_for_server_log.
+        mirror = _trainer_msg_for_server_log(msg_type, data)
+        if mirror:
+            level, text = mirror
+            getattr(logger, level)(
+                "trainer_message", job_id=job_id, source="lora-worker", msg=text,
+            )
 
         loop = self._loop
         if not loop:
@@ -844,6 +912,15 @@ class JobManager:
                 self._stop_tailer(job_id)
             except OSError as e:
                 job.error = str(e)
+
+    def read_persisted_logs(self, job: Job, limit: int = 1000) -> list[str]:
+        """Read a job's log tail from its persisted ``job_log.jsonl`` on disk.
+
+        The source of truth for a finished job's logs: survives the in-memory
+        buffer being cleared and backend restarts.
+        """
+        log_path = os.path.join(self._get_job_output_dir(job), LOG_FILENAME)
+        return _parse_persisted_log_lines(log_path, limit=limit)
 
     def _get_job_output_dir(self, job: Job) -> str:
         """Resolve the output directory for a job from its config.

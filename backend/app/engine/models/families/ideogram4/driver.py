@@ -8,10 +8,14 @@ Key family characteristics:
 *  **Multi-layer Qwen3-VL conditioning**: the stock Qwen3-VL language model is
    run with ``output_hidden_states=True`` and the hidden states at
    :data:`~app.engine.models.families.ideogram4.utils.QWEN3VL_SELECTED_LAYERS`
-   (13 multi-scale slices: layers ``(0,3,6,9,12,15,18,21,24,27,30,33,35)`` --
-   the real upstream ``QWEN3_VL_ACTIVATION_LAYERS``) are concatenated on the
-   feature dimension.  The result is ``(B, L, 4096 * 13)`` raw hidden states;
-   the DiT projects them internally, so the driver supplies them unprojected.
+   (13 multi-scale slices: post-layer indices ``(0,3,...,35)`` -- the real
+   upstream ``QWEN3_VL_ACTIVATION_LAYERS``) are concatenated on the feature
+   dimension.  These are POST-LAYER indices (the output of decoder layer ``k``);
+   HF ``output_hidden_states`` prepends the embedding output at ``[0]``, so each
+   tap reads HF ``hidden_states[k+1]`` (mirrors ``microsoft_lens
+   lens_layers_to_hf_indices``).  The result is ``(B, L, 4096 * 13)`` raw hidden
+   states; the DiT projects them internally, so the driver supplies them
+   unprojected.
 
 *  **Fused-QKV / SwiGLU LoRA targets** ``["qkv", "o", "w1", "w2", "w3"]``
    (confirmed against the vendored model in Task 1).
@@ -60,6 +64,11 @@ class IdeogramV4Driver(IModelDriver):
         self.te_max_length = int(arch.get("te.max_length", DEFAULT_TE_MAX_LENGTH))
         sel = arch.get("te.selected_layers", DEFAULT_SELECTED_LAYERS)
         self.selected_layers = tuple(int(i) for i in sel)
+        # QWEN3VL_SELECTED_LAYERS are upstream POST-LAYER indices (the output of
+        # decoder layer k). HF output_hidden_states prepends the embedding output
+        # at [0], so the post-layer-k activation is HF hidden_states[k+1] -- the
+        # same +1 shift microsoft_lens.lens_layers_to_hf_indices applies.
+        self.hf_layer_indices = tuple(k + 1 for k in self.selected_layers)
 
     # --- Phase 1: component access ---
 
@@ -146,10 +155,22 @@ class IdeogramV4Driver(IModelDriver):
                 "supports output_hidden_states=True"
             )
 
+        # Each selected upstream post-layer index k maps to HF hidden_states[k+1]
+        # (precomputed in self.hf_layer_indices); hidden_states[0] is the raw
+        # embedding output, which upstream never taps. Guard against a TE that
+        # didn't return enough layers.
+        max_hf_index = max(self.hf_layer_indices)
+        if len(hidden_states) <= max_hf_index:
+            raise RuntimeError(
+                f"text_encoder returned {len(hidden_states)} hidden states, but "
+                f"the highest selected layer needs HF index {max_hf_index}; "
+                "ensure the encoder exposes all decoder layers."
+            )
+
         # Select the activation layers and concat on the feature dim, matching
         # upstream's (num_taps, B, L, H) -> (B, L, H, num_taps) -> (B, L, H*n)
         # interleaved layout.
-        layers = [hidden_states[i].to(dtype=dtype) for i in self.selected_layers]
+        layers = [hidden_states[i].to(dtype=dtype) for i in self.hf_layer_indices]
         stacked = torch.stack(layers, dim=0)        # (n, B, L, H)
         stacked = stacked.permute(1, 2, 3, 0)       # (B, L, H, n)
         b, length = input_ids.shape

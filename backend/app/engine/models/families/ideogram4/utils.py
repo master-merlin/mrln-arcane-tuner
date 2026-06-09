@@ -1,9 +1,13 @@
 """Ideogram 4 family utilities: fp8 dequant, patchify, latent-norm, chat render.
 
 Layer-index map: Qwen3-VL has 36 transformer layers; we extract hidden states
-from layers [0,3,6,9,12,15,18,21,24,27,30,33,35] and concat on the feature dim
-(13 multi-scale slices). ``hidden_states[0]`` is the embedding output, so
-hidden-state index == layer index for this selection.
+from POST-LAYER indices [0,3,6,9,12,15,18,21,24,27,30,33,35] (the upstream
+``QWEN3_VL_ACTIVATION_LAYERS``) and concat on the feature dim (13 multi-scale
+slices). These are the outputs of decoder layer ``k``. Because HF
+``output_hidden_states`` prepends the embedding output at ``hidden_states[0]``,
+the post-layer-``k`` activation is read at HF ``hidden_states[k+1]`` -- the
+driver applies that ``+1`` shift (mirrors ``microsoft_lens
+lens_layers_to_hf_indices``).
 """
 from __future__ import annotations
 

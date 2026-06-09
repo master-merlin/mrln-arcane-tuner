@@ -84,7 +84,11 @@ def test_encode_text_concats_selected_layers():
     class _TE(torch.nn.Module):
         def forward(self, input_ids, attention_mask, output_hidden_states, **kw):
             b, n = input_ids.shape
-            n_hs = max(QWEN3VL_SELECTED_LAYERS) + 1
+            # +2: HF prepends the embedding output at [0], and the driver taps
+            # post-layer index k at HF hidden_states[k+1], so the top tap needs
+            # index max+1 -> the tuple must be length max+2. Returning exactly
+            # max+2 also asserts the driver never reads past the +1 shift.
+            n_hs = max(QWEN3VL_SELECTED_LAYERS) + 2
             return _Out([torch.randn(b, n, HID) for _ in range(n_hs)])
 
     defn = ModelDefinition(id="x", family="ideogram4", name="X")

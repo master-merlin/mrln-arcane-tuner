@@ -65,6 +65,79 @@ class TestResolveHuggingFace:
         assert result == "/cache/repo"
 
 
+class TestEnsureDefinitionCached:
+    """Pre-fetch a definition's HF components in-process (so the trainer
+    subprocess loads from a warm cache and the top-bar download bar updates)."""
+
+    @staticmethod
+    def _defn(components: dict, definition_id: str = "fake-model"):
+        defn = MagicMock()
+        defn.id = definition_id
+        comps = {}
+        for key, path in components.items():
+            comp = MagicMock()
+            comp.path = path
+            comps[key] = comp
+        defn.components = comps
+        return defn
+
+    @patch("app.engine.utils.model_override_manager.ModelOverrideManager.resolve_effective_source")
+    @patch.object(ModelPathResolver, "resolve")
+    def test_prefetches_each_hf_component(self, mock_resolve, mock_source):
+        from app.core.schemas.model_overrides import ModelSourceType
+        mock_source.return_value = (ModelSourceType.HF_HUB, None, False)
+        defn = self._defn({
+            "repo": "huggingface:org/dit",
+            "text_encoder": "huggingface:org/te",
+        })
+
+        ModelPathResolver.ensure_definition_cached(defn)
+
+        resolved = {c.args[0] for c in mock_resolve.call_args_list}
+        assert resolved == {"huggingface:org/dit", "huggingface:org/te"}
+        # Online → cache-only must NOT be forced (would mask a partial cache).
+        for c in mock_resolve.call_args_list:
+            assert c.kwargs.get("local_files_only") is False
+
+    @patch("app.engine.utils.model_override_manager.ModelOverrideManager.resolve_effective_source")
+    @patch.object(ModelPathResolver, "resolve")
+    def test_skips_local_override(self, mock_resolve, mock_source):
+        from app.core.schemas.model_overrides import ModelSourceType
+        mock_source.return_value = (ModelSourceType.LOCAL_DIFFUSERS, "/local/model", False)
+        defn = self._defn({"repo": "huggingface:org/dit"})
+
+        ModelPathResolver.ensure_definition_cached(defn)
+
+        mock_resolve.assert_not_called()
+
+    @patch("app.engine.utils.model_override_manager.ModelOverrideManager.resolve_effective_source")
+    @patch.object(ModelPathResolver, "resolve")
+    def test_skip_update_resolves_cache_only(self, mock_resolve, mock_source):
+        from app.core.schemas.model_overrides import ModelSourceType
+        mock_source.return_value = (ModelSourceType.HF_HUB, None, True)
+        defn = self._defn({"repo": "huggingface:org/dit"})
+
+        ModelPathResolver.ensure_definition_cached(defn)
+
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.kwargs.get("local_files_only") is True
+
+    @patch("app.engine.utils.model_override_manager.ModelOverrideManager.resolve_effective_source")
+    @patch.object(ModelPathResolver, "resolve")
+    def test_ignores_non_hf_components(self, mock_resolve, mock_source):
+        from app.core.schemas.model_overrides import ModelSourceType
+        mock_source.return_value = (ModelSourceType.HF_HUB, None, False)
+        defn = self._defn({
+            "repo": "huggingface:org/dit",
+            "vae": "/abs/local/vae.safetensors",
+        })
+
+        ModelPathResolver.ensure_definition_cached(defn)
+
+        resolved = {c.args[0] for c in mock_resolve.call_args_list}
+        assert resolved == {"huggingface:org/dit"}
+
+
 class TestFindComponent:
     def test_explicit_definition(self, tmp_path):
         """If definition.components has the key, use it."""

@@ -828,6 +828,73 @@ class TestStartJobClearsStaleSignal:
         assert os.path.exists(sig), "intentional pause signal must survive recovery launch"
 
 
+class TestStartJobPreflightDownload:
+    """start_job pre-fetches the base model in-process before launching.
+
+    The trainer runs in a detached subprocess where the download-progress WS
+    bridge is a no-op, so the top-bar indicator never updates for the base-model
+    download. Pre-fetching in the API process (where the WS loop is captured)
+    fixes that; the subprocess then loads from the warm cache.
+    """
+
+    def _mock_plugin(self):
+        plugin = MagicMock()
+        # No `.pid` → start_job skips the LogTailer + PID watchdog (no threads).
+        plugin.start_training.return_value = MagicMock(spec=[])
+        return plugin
+
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_start_job_prefetches_model(self, mock_pm, mock_get_def, mock_prefetch, tmp_path):
+        mock_pm.get_plugin.return_value = self._mock_plugin()
+        fake_def = MagicMock()
+        mock_get_def.return_value = fake_def
+        mgr = JobManager()
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pf"),
+        )
+
+        mgr.start_job(job.id)
+
+        mock_get_def.assert_called_once_with("flux/dev")
+        mock_prefetch.assert_called_once_with(fake_def)
+
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_start_job_skips_prefetch_on_recovery(self, mock_pm, mock_get_def, mock_prefetch, tmp_path):
+        mock_pm.get_plugin.return_value = self._mock_plugin()
+        mock_get_def.return_value = MagicMock()
+        mgr = JobManager()
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="recpf"),
+        )
+
+        mgr.start_job(job.id, preflight=False)
+
+        mock_prefetch.assert_not_called()
+
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_prefetch_failure_does_not_block_launch(self, mock_pm, mock_get_def, mock_prefetch, tmp_path):
+        """A pre-fetch error is best-effort: log and launch anyway (the trainer
+        surfaces the real error via the job log as before)."""
+        plugin = self._mock_plugin()
+        mock_pm.get_plugin.return_value = plugin
+        mock_get_def.return_value = MagicMock()
+        mock_prefetch.side_effect = RuntimeError("hub down")
+        mgr = JobManager()
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pferr"),
+        )
+
+        mgr.start_job(job.id)
+
+        plugin.start_training.assert_called_once()
+
+
 class TestAutoQueue:
     """Backend-owned queue advancement.
 

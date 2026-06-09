@@ -174,6 +174,21 @@ def test_create_job(mock_job_manager, client):
 
 
 @patch("app.api.training.job_routes.job_manager")
+def test_create_job_advances_queue(mock_job_manager, client):
+    """Creating a job must trigger queue advancement so a single pending job
+    auto-starts when auto-queue is on and the GPU is idle — without waiting
+    for a prior job to finish (regression: only-job-in-queue stalled because
+    nothing kicked the queue on creation)."""
+    mock_job_manager.create_job.return_value = {
+        "id": "job-123", "plugin_id": "std", "status": "pending",
+        "config": {}, "created_at": 123456789.0, "logs": []
+    }
+    response = client.post("/api/jobs", json={"plugin_id": "std", "config": {}})
+    assert response.status_code == 200
+    mock_job_manager.schedule_advance_queue.assert_called_once()
+
+
+@patch("app.api.training.job_routes.job_manager")
 @patch("app.api.training.job_routes.asyncio.to_thread")
 def test_create_job_invalid_plugin(mock_to_thread, mock_jm, client):
     async def run_sync(func, *args, **kw):

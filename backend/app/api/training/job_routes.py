@@ -48,7 +48,15 @@ async def create_job(request: CreateJobRequest):
     """Create a new training job."""
     try:
         logger.info("creating_job", plugin_id=request.plugin_id)
-        return await asyncio.to_thread(job_manager.create_job, request.plugin_id, request.config)
+        job = await asyncio.to_thread(job_manager.create_job, request.plugin_id, request.config)
+        # Kick the queue so a freshly-created job auto-starts when auto-queue is
+        # on and the GPU is idle — otherwise the only job in an empty queue sits
+        # PENDING forever (advance_queue otherwise only fires on a prior job's
+        # terminal transition). Gated + single-GPU-safe inside advance_queue, so
+        # a no-op when auto-queue is off or a job is already running. Off-thread,
+        # non-blocking — mirrors the toggle-on drain in set_auto_queue.
+        job_manager.schedule_advance_queue()
+        return job
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

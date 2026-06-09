@@ -401,9 +401,9 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin):
             adanln_dim=adanln_dim,
         )
 
-    @property
-    def device(self) -> torch.device:
-        return next(self.parameters()).device
+        # Flipped to True by diffusers' _set_gradient_checkpointing (via
+        # enable_gradient_checkpointing); the forward block loop honors it.
+        self.gradient_checkpointing = False
 
     def forward(
         self,
@@ -470,7 +470,19 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin):
         sin = sin.to(h.dtype)
 
         for layer in self.layers:
-            h = layer(h, segment_ids=segment_ids, cos=cos, sin=sin, adaln_input=adaln_input)
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                h = self._gradient_checkpointing_func(
+                    layer,
+                    h,
+                    segment_ids,
+                    cos,
+                    sin,
+                    adaln_input,
+                )
+            else:
+                h = layer(
+                    h, segment_ids=segment_ids, cos=cos, sin=sin, adaln_input=adaln_input
+                )
 
         out = self.final_layer(h, c=adaln_input)
         return out.to(torch.float32)

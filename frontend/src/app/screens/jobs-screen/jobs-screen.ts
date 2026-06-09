@@ -191,6 +191,14 @@ export class JobsScreen {
         new Map(),
     );
 
+    /**
+     * Persisted log tail per terminal job, fetched from GET /jobs/{id}/logs
+     * (in-memory buffer, else on-disk job_log.jsonl). Lets a stopped/failed
+     * job — including one that crashed before any training step — still show
+     * its log tail after its live WS buffer is gone.
+     */
+    protected readonly persistedLogsByJob = signal<Map<string, string[]>>(new Map());
+
     /** Loss/LR series for the curve + sparklines — live logs, else replay. */
     protected readonly lossPoints = computed<LossPoint[]>(() => {
         const live = lossSeries(this.selectedJob()?.logs);
@@ -406,6 +414,10 @@ export class JobsScreen {
         const j = this.selectedJob();
         const live = logTail(j?.logs, 14);
         if (live.length) return live;
+        // Persisted tail (from disk) — survives a finished job whose live WS
+        // buffer is gone, including crashes before the first training step.
+        const persisted = (j && this.persistedLogsByJob().get(j.id)) || [];
+        if (persisted.length) return logTail(persisted, 14);
         const points = (j && this.replayByJob().get(j.id)?.points) || [];
         if (!points.length) return [];
         const synth = points
@@ -563,6 +575,33 @@ export class JobsScreen {
                     this.replayByJob.update((m) => {
                         const next = new Map(m);
                         next.set(j.id, { points: [], available: false });
+                        return next;
+                    });
+                },
+            });
+        });
+
+        // Persisted log tail: when a finished job has no live log buffer (e.g.
+        // reopened after the WS stream ended, or it crashed before any step),
+        // fetch its persisted tail from disk so LOG TAIL isn't blank. Fetched
+        // once per job; the backend falls back to job_log.jsonl.
+        effect(() => {
+            const j = this.selectedJob();
+            if (!j || !this.isArchived()) return;
+            if (logTail(j.logs, 1).length) return; // live buffer present
+            if (this.persistedLogsByJob().has(j.id)) return;
+            this.jobService.getJobLogs(j.id).subscribe({
+                next: (lines) => {
+                    this.persistedLogsByJob.update((m) => {
+                        const next = new Map(m);
+                        next.set(j.id, lines ?? []);
+                        return next;
+                    });
+                },
+                error: () => {
+                    this.persistedLogsByJob.update((m) => {
+                        const next = new Map(m);
+                        next.set(j.id, []);
                         return next;
                     });
                 },

@@ -324,6 +324,12 @@ def main():
         # safety-net print: fallback, outermost exception handler; _log_writer may not exist
         print("CRITICAL: Unhandled exception in main execution block.", file=sys.stderr)
         traceback.print_exc()
+        # Bridge the FULL traceback into the job log so it surfaces in the UI.
+        # The trainer is a detached subprocess: traceback.print_exc() above only
+        # reaches trainer_stdout.log on disk, while the UI tails job_log.jsonl —
+        # without this the operator sees just the one-line exit error.
+        if _log_writer:
+            _log_writer.log_exception(e)
         _finalize_before_exit(_log_writer)
         if _log_writer:
             _log_writer.exit(1, error=str(e))

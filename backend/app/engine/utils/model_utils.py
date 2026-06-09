@@ -118,17 +118,42 @@ class ModelPathResolver:
             source="hf", model_id=progress_id, category="training",
         )
         try:
-            with with_progress(model_id=progress_id, category="training"):
-                if filename:
-                    logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
-                    # hf_hub_download() does NOT accept tqdm_class (huggingface_hub
-                    # >= 0.36 — only snapshot_download does); passing it raises
-                    # "unexpected keyword argument 'tqdm_class'" and aborts the
-                    # download. with_progress still emits coarse start/complete.
+            if filename:
+                logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
+                # hf_hub_download() does NOT accept tqdm_class (huggingface_hub
+                # >= 0.36 — only snapshot_download does); passing it raises
+                # "unexpected keyword argument 'tqdm_class'" and aborts the
+                # download. with_progress still emits coarse start/complete.
+                with with_progress(model_id=progress_id, category="training"):
                     return hf_hub_download(repo_id=repo_id, filename=filename)
-                else:
-                    logger.info("downloading_snapshot_from_hub", repo=repo_id)
-                    return snapshot_download(repo_id=repo_id, tqdm_class=bound_tqdm)
+
+            # Snapshot (full repo). Only surface the download indicator on a
+            # REAL transfer: a snapshot already on disk is loaded, not
+            # downloaded, and snapshot_download's per-file "Fetching N files"
+            # bar (the only tqdm huggingface_hub routes through tqdm_class —
+            # see its docstring: "tqdm_class is not passed to each individual
+            # download") iterates cached files identically to downloaded ones,
+            # so attaching the emitting tqdm would flash the bar on a pure
+            # cache hit. Probe the cache first (local_files_only never touches
+            # the network); when the snapshot resolves locally, run the online
+            # resolve WITHOUT the emitting tqdm — it re-checks etags and
+            # transfers nothing. We deliberately re-run the *online*
+            # snapshot_download (not the probe's result) so a *partial* cache
+            # still re-fetches the files it is missing.
+            cached = False
+            try:
+                snapshot_download(repo_id=repo_id, local_files_only=True)
+                cached = True
+            except Exception:
+                cached = False
+
+            if cached:
+                logger.info("snapshot_cache_hit", repo=repo_id)
+                return snapshot_download(repo_id=repo_id)
+
+            logger.info("downloading_snapshot_from_hub", repo=repo_id)
+            with with_progress(model_id=progress_id, category="training"):
+                return snapshot_download(repo_id=repo_id, tqdm_class=bound_tqdm)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("hf_download_failed", repo=repo_id, file=filename, error=str(e))
             raise

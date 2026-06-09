@@ -76,8 +76,7 @@ class ModelPathResolver:
         local_files_only: bool = False,
     ) -> str:
         """Download from HuggingFace Hub and return the local cache path."""
-        from app.api.events.download_progress import WSProgressTqdm, with_progress
-        from functools import partial
+        from app.api.events.download_progress import make_progress_tqdm, with_progress
 
         clean = path_str.replace("huggingface:", "")
         parts = clean.split(":")
@@ -101,9 +100,12 @@ class ModelPathResolver:
                     "the model first.",
                 )
 
-        # Real download — wrap with progress emits.
-        bound_tqdm = partial(
-            WSProgressTqdm,
+        # Real download — wrap with progress emits. Bind the WS metadata with a
+        # tqdm SUBCLASS (not functools.partial): snapshot_download fetches files
+        # concurrently and calls the classmethod tqdm_class.get_lock(), which a
+        # partial cannot provide ("'functools.partial' object has no attribute
+        # 'get_lock'").
+        bound_tqdm = make_progress_tqdm(
             source="hf", model_id=progress_id, category="training",
         )
         try:

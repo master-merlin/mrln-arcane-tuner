@@ -214,6 +214,32 @@ class WSProgressTqdm(hf_tqdm):
         super().close()
 
 
+def make_progress_tqdm(
+    *, source: str = "hf", model_id: str = "", category: str = "",
+) -> type["WSProgressTqdm"]:
+    """Return a ``WSProgressTqdm`` SUBCLASS with the WS metadata pre-bound.
+
+    Pass the result as ``snapshot_download(tqdm_class=...)``.
+
+    We bind the metadata with a real subclass rather than
+    ``functools.partial`` because ``huggingface_hub`` downloads snapshot files
+    concurrently via ``tqdm.contrib.concurrent.thread_map``, which calls the
+    **classmethod** ``tqdm_class.get_lock()``. A ``functools.partial`` does not
+    expose inherited classmethods — that path raises
+    ``'functools.partial' object has no attribute 'get_lock'`` and aborts the
+    download. A subclass inherits ``get_lock`` / ``set_lock`` and works.
+    """
+
+    class _BoundProgressTqdm(WSProgressTqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("source", source)
+            kwargs.setdefault("model_id", model_id)
+            kwargs.setdefault("category", category)
+            super().__init__(*args, **kwargs)
+
+    return _BoundProgressTqdm
+
+
 def _is_repo_cached(repo_id: str) -> bool:
     """Best-effort: True when the repo's ``config.json`` is already in the HF
     cache, i.e. the model was downloaded before and loading it won't hit the

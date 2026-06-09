@@ -64,8 +64,23 @@ class IdeogramV4Loader(GenericComponentLoader):
                 fallback_to_root=True,
             ),
             ComponentSpec(
+                # MUST be Qwen3VLForConditionalGeneration, NOT AutoModel.
+                # The Qwen/Qwen3-VL-8B-Instruct checkpoint's architecture is
+                # ``Qwen3VLForConditionalGeneration`` with weights prefixed
+                # ``model.language_model.*`` / ``model.visual.*`` / ``lm_head.*``.
+                # ``AutoModel`` instantiates ``Qwen3VLModel`` (params
+                # ``language_model.*``, NO ``model.`` prefix) -> prefix mismatch
+                # -> ``from_pretrained`` reports EVERY weight "newly initialized"
+                # (random) and only WARNS, silently yielding a random TE. Verified
+                # via .agent/workdir/ig4_te_load_check.py: with AutoModel
+                # ``torch.allclose(loaded q_proj, checkpoint)`` is False (random);
+                # with ForConditionalGeneration it is True (real weights, 0
+                # "newly initialized" warnings). The driver resolves the text
+                # tower via ``.model.language_model`` (a ``Qwen3VLTextModel`` with
+                # 36 layers). ai-toolkit gets away with AutoModel only because its
+                # transformers build maps Qwen3-VL's AutoModel to the FCG class.
                 key="text_encoder",
-                hf_class="transformers.AutoModel",
+                hf_class="transformers.Qwen3VLForConditionalGeneration",
                 subfolder="text_encoder",
                 separate_repo=True,
                 definition_key="text_encoder",

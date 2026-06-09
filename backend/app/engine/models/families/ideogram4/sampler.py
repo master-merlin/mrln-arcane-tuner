@@ -286,12 +286,22 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
                 t_val = times[i + 1]
                 s_val = times[i]
                 delta = s_val - t_val
-                # Emit the timestep in the shared [0, 1000] convention; the
-                # driver's forward_pass divides by NUM_TRAIN_TIMESTEPS to the
-                # DiT's [0, 1]. Do NOT pre-divide here (x1000 embedder guard).
+                # The schedule ``t`` is the NOISE fraction (t~1 = pure noise,
+                # t~0 = clean; the loop walks t: 1 -> 0). The DiT's internal
+                # convention is the OPPOSITE: model_t=1 is clean/data, model_t=0
+                # is noise (upstream ``predict_velocity`` feeds ``1 - t``). So we
+                # feed ``model_t = 1 - t_val``; passing the raw ``t_val`` tells
+                # the model "this is clean" while it is actually noise, which
+                # never denoises and decodes to a flat white image (verified:
+                # raw t_val -> brightness 254/near-white 1.0; 1 - t_val ->
+                # structured content with latent std ~0.76 matching the data
+                # manifold). The forward_pass divides by NUM_TRAIN_TIMESTEPS to
+                # reach the DiT's [0, 1]; do NOT pre-divide (x1000 embedder
+                # guard) and do NOT extra-x1000.
+                model_t = 1.0 - t_val
                 ts = torch.full(
                     (latents.shape[0],),
-                    t_val * NUM_TRAIN_TIMESTEPS,
+                    model_t * NUM_TRAIN_TIMESTEPS,
                     device=device,
                     dtype=dtype,
                 )

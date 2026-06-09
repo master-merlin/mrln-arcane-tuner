@@ -17,8 +17,13 @@ def test_manifest_declares_stock_components():
     specs = {s.key: s for s in loader.get_component_manifest(_defn())}
 
     # Text encoder: Qwen3-VL in a SEPARATE repo, declared in the YAML under the
-    # "text_encoder" definition key.
-    assert specs["text_encoder"].hf_class == "transformers.AutoModel"
+    # "text_encoder" definition key. MUST load as
+    # Qwen3VLForConditionalGeneration (matches the checkpoint architecture +
+    # ``model.*`` weight prefix); AutoModel silently random-inits the LLM.
+    assert (
+        specs["text_encoder"].hf_class
+        == "transformers.Qwen3VLForConditionalGeneration"
+    )
     assert specs["text_encoder"].separate_repo is True
     assert specs["text_encoder"].definition_key == "text_encoder"
 

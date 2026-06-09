@@ -42,8 +42,13 @@ export PORT
 # data volume.
 export HF_HOME="${HF_HOME:-$DATA_DIR/hf-cache}"
 
+# Trainer subprocess uses the same interpreter as the server. Deps are
+# installed system-wide in the image (no project venv), so point the trainer
+# at it explicitly — avoids a "venv python not found" fallback warning.
+export MRLN_TRAINER_PYTHON="${MRLN_TRAINER_PYTHON:-$(command -v python)}"
+
 AUTH_STATE="off"; [ -n "${MRLN_AUTH_TOKEN:-}" ] && AUTH_STATE="on"
-echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE dist=$MRLN_FRONTEND_DIST hf_home=$HF_HOME"
+echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE dist=$MRLN_FRONTEND_DIST hf_home=$HF_HOME trainer_python=$MRLN_TRAINER_PYTHON"
 
 cd "$BACKEND_DIR"
 exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"

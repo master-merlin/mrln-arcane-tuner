@@ -19,6 +19,31 @@ from app.engine.models.base import TrainingPlugin, BaseTrainingConfig
 
 logger = structlog.get_logger(__name__)
 
+
+def _resolve_trainer_python(backend_root: str) -> str:
+    """Pick the Python interpreter that runs the trainer subprocess.
+
+    Priority:
+    1. ``MRLN_TRAINER_PYTHON`` env var — explicit override. The container
+       entrypoint sets this to the system interpreter (deps are installed
+       system-wide; there is no project venv), keeping the launch clean and
+       unambiguous.
+    2. The project venv, either layout — Windows ``venv/Scripts/python.exe``
+       or POSIX ``venv/bin/python``.
+    3. The current interpreter (``sys.executable``) as a last resort.
+    """
+    explicit = os.environ.get("MRLN_TRAINER_PYTHON")
+    if explicit:
+        return explicit
+    for candidate in (
+        os.path.join(backend_root, "venv", "Scripts", "python.exe"),  # Windows
+        os.path.join(backend_root, "venv", "bin", "python"),          # POSIX
+    ):
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return sys.executable
+
+
 class Config(BaseTrainingConfig):
     """Standard training config with a required model definition ID."""
 
@@ -44,15 +69,10 @@ class StandardPlugin(TrainingPlugin):
         
         logger.debug("backend_root_resolved", path=backend_root)
         
-        # Absolute path to venv python
-        python_executable = os.path.abspath(os.path.join(backend_root, "venv", "Scripts", "python.exe"))
-        logger.debug("python_executable_path", path=python_executable)
-        
-        # Fallback for flexibility
-        if not os.path.exists(python_executable):
-            logger.warning("venv_python_not_found_falling_back", fallback=sys.executable)
-            python_executable = sys.executable
-            
+        # Interpreter for the trainer subprocess (explicit env > venv > current).
+        python_executable = _resolve_trainer_python(backend_root)
+        logger.debug("trainer_python_resolved", path=python_executable)
+
         # Absolute path to run_trainer.py (it lives in backend root now)
         script_path = os.path.abspath(os.path.join(backend_root, "run_trainer.py"))
         logger.debug("script_path_resolved", path=script_path)

@@ -8,6 +8,7 @@ and caching progress messages stop reaching the UI.
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -119,6 +120,53 @@ def test_multiple_messages_arrive_in_order(writer_and_tailer):
         "Caching Latents (50%)",
         "Caching Latents (100%)",
     ]
+
+
+def test_log_exception_writes_full_traceback_lines(tmp_path):
+    """A crash's full traceback is forwarded as individual ``log`` entries.
+
+    The trainer is a detached subprocess whose stderr only reaches
+    ``trainer_stdout.log`` on disk; the UI reads ``job_log.jsonl``. Without
+    this, the operator sees only the one-line exit error and the stack is
+    effectively lost.
+    """
+    writer = JobLogWriter(str(tmp_path))
+
+    def boom():
+        raise ValueError("cublas-boom-xyz")
+
+    try:
+        boom()
+    except ValueError as e:
+        writer.log_exception(e)
+    writer.close()
+
+    with open(writer.log_path, encoding="utf-8") as f:
+        entries = [json.loads(line) for line in f if line.strip()]
+
+    assert all(e["type"] == "log" for e in entries)
+    data = [e["data"] for e in entries]
+    joined = "\n".join(data)
+    assert "cublas-boom-xyz" in joined          # the message
+    assert "ValueError" in joined               # the exception type
+    assert "Traceback (most recent call last)" in joined
+    assert any("boom" in line for line in data)  # the offending frame, not just the message
+    # Each physical traceback line is its own entry so the viewer renders rows.
+    assert all("\n" not in line for line in data)
+
+
+def test_log_exception_no_writer_state_corruption(tmp_path):
+    """Forwarding a traceback must not break a subsequent exit message."""
+    writer = JobLogWriter(str(tmp_path))
+    try:
+        raise RuntimeError("x")
+    except RuntimeError as e:
+        writer.log_exception(e)
+    writer.exit(1, error="x")  # must still succeed after log_exception
+
+    with open(writer.log_path, encoding="utf-8") as f:
+        types = [json.loads(line)["type"] for line in f if line.strip()]
+    assert types[-1] == "exit"
 
 
 def test_dispatcher_stopping_tailer_advances_offset_past_dispatched_line(tmp_path):

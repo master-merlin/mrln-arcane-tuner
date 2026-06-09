@@ -87,6 +87,29 @@ class JobLogWriter:
         """Shorthand for ``emit("step", metrics)``."""
         self.emit("step", metrics)
 
+    def log_exception(
+        self,
+        exc: BaseException,
+        *,
+        header: str = "Trainer crashed — traceback follows:",
+    ) -> None:
+        """Forward a full exception traceback as individual ``log`` lines.
+
+        The trainer runs as a detached subprocess whose stderr only reaches
+        ``trainer_stdout.log`` on disk; the UI reads this job log. Sending the
+        full traceback here (not just ``str(exc)`` in the exit message) makes
+        the entire stack visible in the UI log viewer. Each physical line is a
+        separate entry so the viewer renders normal rows.
+        """
+        import traceback
+
+        self.log(header)
+        formatted = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__),
+        ).rstrip()
+        for line in formatted.splitlines():
+            self.log(line)
+
     def exit(self, code: int, error: str | None = None) -> None:
         """Write a terminal exit message exactly once, then close the file.
 

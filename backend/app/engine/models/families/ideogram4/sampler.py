@@ -195,9 +195,11 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
         encoded here.
         """
         driver = self.pipeline.driver
-        dtype = next(self.pipeline.transformer.parameters()).dtype
 
-        cond = driver.encode_text([prompt], dtype)
+        # f32 features — the denoise loop's precision contract (see denoise):
+        # the bf16 DiT handles its own casting, exactly like the upstream
+        # pipeline which feeds float32 llm_features.
+        cond = driver.encode_text([prompt], torch.float32)
         return {
             "cond": (
                 cond.embeddings.to(self.device),
@@ -247,10 +249,11 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
         Returns a denormalized, unpatchified latent ``[1, 32, H, W]`` ready for
         :meth:`decode_latents`.
 
-        The DiT forward runs under the **same autocast as training**
-        (``pipeline.autocast_dtype``/``use_amp``); the CFG combine and the Euler
-        update run in fp32 for numerical stability across the trajectory
-        (mirrors microsoft_lens). The model predicts velocity in NORMALIZED
+        The DiT forward runs WITHOUT autocast and the whole trajectory
+        (latents, timesteps, text features, CFG combine, Euler update) stays in
+        fp32 — see the precision contract in the loop body; autocast around
+        this family's DiT collapses sampling to the conditional mean (GPU
+        ablation, 2026-06-10). The model predicts velocity in NORMALIZED
         latent space (training normalizes image latents, keeps noise raw), so
         the trajectory stays in normalized space; ``denormalize_latents`` is
         applied once after the loop, before unpatchify/decode (matches upstream
@@ -259,18 +262,29 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
         device = self.device
         driver = self.pipeline.driver
         transformer = self.pipeline.transformer
-        dtype = next(transformer.parameters()).dtype
         scheduler = self._get_scheduler(num_steps)
 
-        # Mirror the training forward's precision regime exactly.
-        amp_dtype = getattr(self.pipeline, "autocast_dtype", dtype)
-        use_amp = getattr(self.pipeline, "use_amp", device.type == "cuda")
-
+        # ── PRECISION CONTRACT (GPU-validated, 2026-06-10) ──
+        # NO autocast, f32 trajectory/timesteps/features — mirroring upstream's
+        # loop exactly. A precision ablation (6 full denoise loops, same seed)
+        # against an upstream-equal f32 reference proved:
+        #   bf16 features:            cos(z_final, ref) = 1.0000  (harmless)
+        #   bf16 z + bf16 timesteps:  cos = 0.97                  (harmless)
+        #   torch.autocast(bf16):     cos = 0.32 -> flat/blank image (FATAL)
+        # The vendored DiT keeps deliberate f32 islands (1e4-scaled t-sinusoids,
+        # RoPE phases over positions offset by 65536, adaln modulation); autocast
+        # force-downcasts those ops and collapses 20-step sampling to the
+        # conditional mean. The bf16 model handles its own input casting (the
+        # upstream pipeline feeds f32 into the same weights). ai-toolkit likewise
+        # samples WITHOUT autocast. Training is unaffected by this contract: the
+        # train-time autocast forward is a single (non-compounding) pass and is
+        # validated end-to-end (LoRA renders in ComfyUI).
         cond_feats, cond_mask = prompt_embedding["cond"]
+        cond_feats = cond_feats.float()
         do_cfg = guidance_scale > 1.0
         uncond_feats = zeroed_like_text(cond_feats)
 
-        latents = noise.to(device=device, dtype=dtype)
+        latents = noise.to(device=device, dtype=torch.float32)
         batch = {"latent_h": self._latent_h, "latent_w": self._latent_w}
 
         # Per-grid-point flow times t(u_i) in [~0, ~1]; the loop walks the
@@ -286,44 +300,42 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
                 t_val = times[i + 1]
                 s_val = times[i]
                 delta = s_val - t_val
-                # The schedule ``t`` is the NOISE fraction (t~1 = pure noise,
-                # t~0 = clean; the loop walks t: 1 -> 0). The DiT's internal
-                # convention is the OPPOSITE: model_t=1 is clean/data, model_t=0
-                # is noise (upstream ``predict_velocity`` feeds ``1 - t``). So we
-                # feed ``model_t = 1 - t_val``; passing the raw ``t_val`` tells
-                # the model "this is clean" while it is actually noise, which
-                # never denoises and decodes to a flat white image (verified:
-                # raw t_val -> brightness 254/near-white 1.0; 1 - t_val ->
-                # structured content with latent std ~0.76 matching the data
-                # manifold). The forward_pass divides by NUM_TRAIN_TIMESTEPS to
-                # reach the DiT's [0, 1]; do NOT pre-divide (x1000 embedder
-                # guard) and do NOT extra-x1000.
-                model_t = 1.0 - t_val
+                # Feed the RAW flow time ``t_val`` to the DiT — exactly as
+                # upstream ``pipeline_ideogram4.py::__call__`` does
+                # (``t = schedule(step_intervals[i+1])`` passed straight to the
+                # transformer's ``t=``). This matches the family's proven
+                # convention: t=0 is noise, t=1 is data, velocity = data - noise
+                # (driver.forward_pass is byte-exact vs upstream at raw ``t``).
+                # The loop starts at ``t_val ~ 0`` (z is noise) and walks toward
+                # ``t_val ~ 1`` (data), so the DiT always sees the CURRENT flow
+                # position. forward_pass divides by NUM_TRAIN_TIMESTEPS to reach
+                # the DiT's [0, 1]; emit the [0,1000] value here — do NOT
+                # pre-divide (x1000 embedder guard), do NOT extra-x1000, and do
+                # NOT invert to ``1 - t_val`` (that told the DiT "data" while z
+                # was still noise — an inversion that contradicts forward_pass).
                 ts = torch.full(
                     (latents.shape[0],),
-                    model_t * NUM_TRAIN_TIMESTEPS,
+                    t_val * NUM_TRAIN_TIMESTEPS,
                     device=device,
-                    dtype=dtype,
+                    dtype=torch.float32,
                 )
 
-                with torch.autocast(
-                    device_type="cuda", dtype=amp_dtype, enabled=use_amp,
-                ):
-                    cond_pred = driver.forward_pass(
-                        latents, ts, (cond_feats, cond_mask), batch,
+                # Direct forward — NO autocast (see precision contract above).
+                cond_pred = driver.forward_pass(
+                    latents, ts, (cond_feats, cond_mask), batch,
+                )
+                if do_cfg:
+                    uncond_pred = driver.forward_pass(
+                        latents, ts, (uncond_feats, cond_mask), batch,
                     )
-                    if do_cfg:
-                        uncond_pred = driver.forward_pass(
-                            latents, ts, (uncond_feats, cond_mask), batch,
-                        )
 
-                # CFG combine + Euler step in fp32 (outside autocast).
+                # CFG combine + Euler step in fp32.
                 if do_cfg:
                     v = combine_asymmetric_cfg(cond_pred, uncond_pred, guidance_scale)
                 else:
                     v = cond_pred.float()
 
-                latents = (latents.float() + v * delta).to(dtype)
+                latents = latents + v * delta
 
         latents = utils.denormalize_latents(latents.float())
         return utils.unpatchify_from_seq(latents, self._latent_h, self._latent_w)

@@ -2,14 +2,12 @@ id: ideogram4-fp8
 family: ideogram4
 name: Ideogram 4 (fp8, 9.3B)
 version: '1.0'
-
 defaults:
   resolution: 1024
   learning_rate: 1e-4
   network_rank: 16
   network_alpha: 16
   cache_text_embeddings: true
-
 components:
   repo:
     path: huggingface:ideogram-ai/ideogram-4-fp8
@@ -19,7 +17,10 @@ components:
     path: huggingface:Qwen/Qwen3-VL-8B-Instruct
     type: diffusers
     params: {}
-
+detected_precision:
+  text_encoder: torch.bfloat16
+  unet: torch.bfloat16
+  vae: torch.float32
 architecture_params:
   transformer._class_name: Ideogram4Transformer2DModel
   transformer.emb_dim: 4608
@@ -39,10 +40,173 @@ architecture_params:
   transformer.norm_eps: 1.0e-05
   te.model_type: qwen3_vl
   te.max_length: 2048
-
+  num_heads: 18
+  depth: 34
+  in_channels: 128
+  transformer.adaln_dim: 512
+  transformer.attention_head_dim: 256
+  transformer.llm_features_dim: 53248
+  te.architectures:
+  - Qwen3VLModel
+  te.dtype: bfloat16
+  te.image_token_id: 151655
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 4096
+    initializer_range: 0.02
+    intermediate_size: 12288
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 32
+    num_hidden_layers: 36
+    num_key_value_heads: 8
+    pad_token_id: null
+    rms_norm_eps: 1.0e-06
+    rope_parameters:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_theta: 5000000
+      rope_type: default
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 4096
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 12288
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 32
+  te.text_config.num_hidden_layers: 36
+  te.text_config.num_key_value_heads: 8
+  te.text_config.pad_token_id: null
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_parameters:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_theta: 5000000
+    rope_type: default
+  te.text_config.rope_parameters.mrope_interleaved: true
+  te.text_config.rope_parameters.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_parameters.rope_theta: 5000000
+  te.text_config.rope_parameters.rope_type: default
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: false
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 8
+    - 16
+    - 24
+    depth: 27
+    dtype: bfloat16
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1152
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4304
+    model_type: qwen3_vl_vision
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 4096
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 8
+  - 16
+  - 24
+  te.vision_config.depth: 27
+  te.vision_config.dtype: bfloat16
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1152
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4304
+  te.vision_config.model_type: qwen3_vl_vision
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 4096
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  te.ideogram_fp8_weight_only: true
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 1.0
+  scheduler.shift_terminal: null
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae._class_name: AutoencoderKLFlux2
+  vae.act_fn: silu
+  vae.batch_norm_eps: 0.0001
+  vae.batch_norm_momentum: 0.1
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.decoder_block_out_channels: null
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 32
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.patch_size:
+  - 2
+  - 2
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: true
+  vae.use_quant_conv: true
+model_size_mb: {}
 lora_targetable_modules:
-  - qkv
-  - o
-  - w1
-  - w2
-  - w3
+- qkv
+- o
+- w1
+- w2
+- w3
+block_topology: []

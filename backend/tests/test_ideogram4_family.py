@@ -373,6 +373,112 @@ def test_forward_pass_timestep_scale_divides_by_1000():
     assert captured["L"] == 5 + 16
 
 
+def test_sampler_denoise_feeds_raw_flow_time_not_inverted():
+    """Sampler must feed the schedule's RAW flow time to the DiT (matches upstream).
+
+    Upstream ``pipeline_ideogram4.py::__call__`` walks the Euler loop feeding the
+    raw ``t_val = schedule(step_intervals[i+1])`` STRAIGHT to the transformer's
+    ``t=`` argument, and ``driver.forward_pass`` (proven byte-exact vs upstream)
+    divides the ``[0,1000]`` timestep by 1000 to the DiT's ``[0,1]``. So the
+    sampler must pass ``ts = t_val * 1000`` — NOT ``(1 - t_val) * 1000``. The
+    inverted form told the DiT "t=1 (data)" while ``z`` was still noise at the
+    first step: a band-aid that contradicts the proven forward convention
+    (t=0 noise, t=1 data). This pins the raw, upstream-matching convention.
+    """
+    from app.engine.models.families.ideogram4.sampler import (
+        NUM_TRAIN_TIMESTEPS,
+        IdeogramV4Sampler,
+        _Ideogram4FlowSchedule,
+    )
+
+    captured_ts: list[float] = []
+    precision_violations: list[str] = []
+
+    class _Driver:
+        def forward_pass(self, latents, ts, text, batch):
+            captured_ts.append(float(ts.reshape(-1)[0]))
+            # ── Precision contract (GPU ablation 2026-06-10) ──
+            # autocast around this family's DiT collapses sampling to the
+            # conditional mean; trajectory/timesteps/features must be fp32.
+            if torch.is_autocast_enabled("cuda") or torch.is_autocast_enabled("cpu"):
+                precision_violations.append("autocast enabled in denoise forward")
+            if latents.dtype != torch.float32:
+                precision_violations.append(f"latents dtype {latents.dtype}")
+            if ts.dtype != torch.float32:
+                precision_violations.append(f"ts dtype {ts.dtype}")
+            if text[0].dtype != torch.float32:
+                precision_violations.append(f"text feats dtype {text[0].dtype}")
+            return torch.zeros_like(latents)
+
+    class _Pipe:
+        config: dict = {}
+        device = torch.device("cpu")
+        autocast_dtype = torch.float32
+        use_amp = False
+
+        def __init__(self):
+            self.driver = _Driver()
+            self.transformer = torch.nn.Linear(1, 1)  # has params -> dtype probe
+
+    sampler = IdeogramV4Sampler(_Pipe())
+    sampler._height, sampler._width = 512, 512
+    sampler._latent_h, sampler._latent_w = 2, 2  # S_img = 2*2 = 4
+
+    num_steps = 2
+    noise = torch.randn(1, 4, 128)  # [1, S, 128]
+    prompt_embedding = {
+        "cond": (torch.zeros(1, 3, 8), torch.ones(1, 3, dtype=torch.bool)),
+    }
+
+    sampler.denoise(
+        noise, prompt_embedding, num_steps=num_steps, guidance_scale=1.0, seed=0,
+    )
+
+    schedule = _Ideogram4FlowSchedule(num_steps=num_steps, height=512, width=512)
+    times = schedule.flow_times()
+    expected = [
+        times[i + 1] * NUM_TRAIN_TIMESTEPS for i in range(num_steps - 1, -1, -1)
+    ]
+    assert captured_ts == pytest.approx(expected, abs=1e-3), (
+        f"sampler must feed raw flow time*1000 {expected}, got {captured_ts}; "
+        "feeding (1 - t_val)*1000 inverts the DiT timestep convention"
+    )
+    # Sharpen: the FIRST step starts at the noise end (t~0), not data (t~1000).
+    assert captured_ts[0] < 1.0, (
+        "first denoise step must start near t=0 (noise); a value near 1000 means "
+        "the inverted (1 - t_val) band-aid is back"
+    )
+    # Precision contract: no autocast, fp32 trajectory/timesteps/features.
+    # GPU-validated 2026-06-10: autocast(bf16) around this DiT collapses the
+    # 20-step loop to the conditional mean (cos(z_final, f32 ref) = 0.32 ->
+    # flat image); fp32-no-autocast matches the upstream pipeline (cos ~1.0).
+    assert not precision_violations, f"precision contract violated: {precision_violations}"
+
+
+def test_driver_precision_spec_disables_amp():
+    """ideogram4 trains WITHOUT autocast (AMP-off A/B, 2026-06-10).
+
+    GPU ablation proved autocast(bf16) around this DiT corrupts the forward
+    (the vendored model keeps deliberate f32 islands — 1e4-scaled t-sinusoids,
+    RoPE over 65536-offset positions, adaln — that autocast force-downcasts):
+    sampling collapses outright (cos 0.32 vs f32 ref) and the training forward
+    carries ~10%% error (cos 0.86-0.94). bf16 INPUTS without autocast are
+    harmless (cos 0.97-1.0), so autocast_dtype stays bf16 for the pipeline's
+    input/cache casting while ``use_amp`` is force-disabled. Matches upstream
+    + ai-toolkit, which never autocast this model.
+    """
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    drv = IdeogramV4Driver(
+        ModelDefinition(id="x", family="ideogram4", name="X"), torch.device("cpu"),
+    )
+    for mixed_precision in ("bf16", "fp16", "fp32"):
+        spec = drv.get_precision_spec(mixed_precision)
+        assert spec.use_amp is False, f"AMP must be off for {mixed_precision}"
+        assert spec.grad_scaler_enabled is False
+        assert spec.autocast_dtype == torch.bfloat16
+
+
 def test_build_packed_inputs_shapes_and_role_counts():
     """_build_packed_inputs: pos last-dim 3, indicator/segment len L, role counts."""
     drv, _ = _make_driver_with_stub_dit(latent_h=2, latent_w=3)

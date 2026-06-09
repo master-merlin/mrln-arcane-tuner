@@ -126,6 +126,31 @@ class IdeogramV4Driver(IModelDriver):
     def resolve_loading_dtype(self) -> torch.dtype:
         return torch.bfloat16
 
+    def get_precision_spec(
+        self, mixed_precision: str, *, is_adaptive_optimizer: bool = False,
+    ) -> Any:
+        """AMP is force-disabled for this family (GPU ablation, 2026-06-10).
+
+        ``torch.autocast(bf16)`` around the vendored DiT force-downcasts its
+        deliberate f32 islands (1e4-scaled t-embedding sinusoids, RoPE phases
+        over ``IMAGE_POSITION_OFFSET``-shifted positions, adaln modulation).
+        Measured per-forward error vs an f32 reference: cos 0.86-0.94 — fatal
+        when compounded over a 20-step sampling loop (cos 0.32, mean-collapse)
+        and ~10% target noise during training. bf16 INPUTS without autocast
+        are harmless (cos 0.97-1.0), so ``autocast_dtype`` stays bf16: the
+        pipeline keeps casting latents/text caches to bf16, while ``use_amp``
+        turns the autocast contexts into no-ops and the bf16 model manages
+        its own internal precision. Upstream and ai-toolkit likewise never
+        autocast this model. No GradScaler (bf16, never fp16).
+        """
+        from app.engine.core.layer_manifest import PrecisionSpec
+
+        return PrecisionSpec(
+            autocast_dtype=torch.bfloat16,
+            use_amp=False,
+            grad_scaler_enabled=False,
+        )
+
     # --- Phase 2: text encoding ---
 
     def _resolve_language_model(self) -> nn.Module:

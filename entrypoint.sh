@@ -48,7 +48,12 @@ export HF_HOME="${HF_HOME:-$DATA_DIR/hf-cache}"
 export MRLN_TRAINER_PYTHON="${MRLN_TRAINER_PYTHON:-$(command -v python)}"
 
 AUTH_STATE="off"; [ -n "${MRLN_AUTH_TOKEN:-}" ] && AUTH_STATE="on"
-echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE dist=$MRLN_FRONTEND_DIST hf_home=$HF_HOME trainer_python=$MRLN_TRAINER_PYTHON"
+# Whether the pod injected an HF token into the container process. If this
+# reads "off" but you set HF_TOKEN in the RunPod template, the variable isn't
+# reaching the process — use Server → Models instead. The token VALUE is never
+# printed.
+HF_STATE="off"; { [ -n "${HF_TOKEN:-}" ] || [ -n "${HUGGING_FACE_HUB_TOKEN:-}" ]; } && HF_STATE="on"
+echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE hf_token_env=$HF_STATE dist=$MRLN_FRONTEND_DIST hf_home=$HF_HOME trainer_python=$MRLN_TRAINER_PYTHON"
 
 cd "$BACKEND_DIR"
 exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"

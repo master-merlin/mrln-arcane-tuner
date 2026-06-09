@@ -158,6 +158,16 @@ export class JobService {
     }>(`${this.apiUrl}/history/${jobId}/replay`);
   }
 
+  /**
+   * Persisted log tail for a job. The backend returns the in-memory buffer
+   * when present, else reconstructs it from the on-disk job_log.jsonl — so a
+   * stopped/failed job (even one that crashed before any training step) still
+   * has a tail to show.
+   */
+  getJobLogs(jobId: string): Observable<string[]> {
+    return this.http.get<string[]>(`${this.apiUrl}/${jobId}/logs`);
+  }
+
   listJobs(): Observable<Job[]> {
     return this.http.get<Job[]>(this.apiUrl);
   }

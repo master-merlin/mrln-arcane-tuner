@@ -201,6 +201,22 @@ def test_build_packed_inputs_shapes_and_role_counts():
     assert torch.allclose(packed["x"][0, :s_text], torch.zeros(s_text, 128))
 
 
+def test_trainer_setup_family_wires_strategies():
+    from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.families.ideogram4.trainer import IdeogramV4Trainer
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+    from app.engine.models.families.ideogram4.loader import IdeogramV4Loader
+    from app.engine.models.families.ideogram4.saver import IdeogramV4Saver
+
+    defn = ModelDefinition(id="x", family="ideogram4", name="X")
+    trainer = IdeogramV4Trainer(defn, {})
+    trainer._setup_family()
+
+    assert isinstance(trainer.driver, IdeogramV4Driver)
+    assert isinstance(trainer.loader, IdeogramV4Loader)
+    assert isinstance(trainer.saver, IdeogramV4Saver)
+
+
 def test_saver_architecture_name():
     from app.engine.core.pipeline.saver_base import GenericLoRASaver
     from app.engine.models.families.ideogram4.saver import IdeogramV4Saver

@@ -1,19 +1,24 @@
 """Ideogram 4 family utilities: fp8 dequant, patchify, latent-norm, chat render.
 
 Layer-index map: Qwen3-VL has 36 transformer layers; we extract hidden states
-from POST-LAYER indices [0,3,6,9,12,15,18,21,24,27,30,33,35] (the upstream
-``QWEN3_VL_ACTIVATION_LAYERS``) and concat on the feature dim (13 multi-scale
-slices). These are the outputs of decoder layer ``k``. Because HF
-``output_hidden_states`` prepends the embedding output at ``hidden_states[0]``,
-the post-layer-``k`` activation is read at HF ``hidden_states[k+1]`` -- the
-driver applies that ``+1`` shift (mirrors ``microsoft_lens
-lens_layers_to_hf_indices``).
+from decoder-layer-OUTPUT indices [0,3,6,9,12,15,18,21,24,27,30,33,35] (the
+upstream ``QWEN3_VL_ACTIVATION_LAYERS``) and concat on the feature dim (13
+multi-scale slices). ``QWEN3VL_SELECTED_LAYERS[i] == k`` means "the OUTPUT of
+decoder layer ``k``". The driver reproduces ai-toolkit's manual Qwen3-VL forward
+(``get_qwen3_vl_features``): it runs ``language_model.layers`` explicitly and
+captures ``captured[k] = hidden_states`` right AFTER calling layer ``k``, so
+index ``k`` maps DIRECTLY to layer ``k``'s output. There is NO ``+1`` HF-offset
+here -- that offset only applied to the old top-level
+``AutoModel(output_hidden_states=True)`` path (whose ``hidden_states[0]`` was the
+raw embedding), which has been replaced.
 """
 from __future__ import annotations
 
 import torch
 
-# 13 Qwen3-VL hidden-state indices (see module docstring).
+# 13 Qwen3-VL decoder-layer-OUTPUT indices (see module docstring). Index ``k``
+# == the output of decoder layer ``k`` (captured directly in the manual forward,
+# no HF +1 offset). Matches the upstream ``QWEN3_VL_ACTIVATION_LAYERS``.
 QWEN3VL_SELECTED_LAYERS: tuple[int, ...] = (
     0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 35,
 )
@@ -165,8 +170,15 @@ def unpatchify_from_seq(seq: torch.Tensor, lat_h: int, lat_w: int) -> torch.Tens
 
 
 def render_chat_prompt(caption: str, tokenizer) -> str:
-    """Render a caption through the Qwen3 chat template (text-only)."""
-    messages = [{"role": "user", "content": caption}]
+    """Render a caption through the Qwen3-VL chat template (text-only).
+
+    Matches the ai-toolkit reference exactly: the user message ``content`` is a
+    LIST of typed parts (``[{"type": "text", "text": caption}]``), not a bare
+    string, and ``add_generation_prompt=True``. (For Qwen3-VL the list form and
+    the bare-string form render to the identical token sequence, but we keep the
+    list form to mirror the reference verbatim.)
+    """
+    messages = [{"role": "user", "content": [{"type": "text", "text": caption}]}]
     return tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True,
     )

@@ -145,48 +145,169 @@ def test_patchify_matches_upstream_ordering():
     assert not torch.equal(expected, wrong)
 
 
-def test_encode_text_concats_selected_layers():
+HID = 8  # tiny stand-in for Qwen3-VL hidden size
+
+
+class _FakeTok:
+    """Minimal Qwen3-VL-style tokenizer stub.
+
+    Records the chat-template content shape and the ``add_special_tokens`` kwarg
+    so parity tests can assert the driver follows the ai-toolkit path.
+    """
+
+    def __init__(self):
+        self.last_messages = None
+        self.last_add_special_tokens = None
+
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+        self.last_messages = messages
+        assert add_generation_prompt is True
+        assert tokenize is False
+        # Render the typed-list content into a flat string (one token per word).
+        content = messages[0]["content"]
+        if isinstance(content, list):
+            return " ".join(part["text"] for part in content)
+        return content
+
+    def __call__(self, texts, **kw):
+        self.last_add_special_tokens = kw.get("add_special_tokens")
+        n = max(len(t.split()) for t in texts) or 1
+        return {
+            "input_ids": torch.ones(len(texts), n, dtype=torch.long),
+            "attention_mask": torch.ones(len(texts), n, dtype=torch.long),
+        }
+
+
+class _FakeRotary(torch.nn.Module):
+    def forward(self, hidden_states, position_ids):
+        # Return a (cos, sin) pair shaped like real mRoPE embeddings; the fake
+        # decoder layer ignores them, but the contract (a 2-tuple) is preserved.
+        b = hidden_states.shape[0]
+        length = hidden_states.shape[1]
+        cos = torch.zeros(b, length, HID)
+        return (cos, cos.clone())
+
+
+class _FakeDecoderLayer(torch.nn.Module):
+    """Identity-plus-bias decoder layer: output(k) = input + (k+1).
+
+    The deterministic per-layer offset lets a test assert the driver captures
+    the OUTPUT of layer ``k`` (not the input / not ``k+1``).
+    """
+
+    def __init__(self, layer_idx):
+        super().__init__()
+        self.layer_idx = layer_idx
+
+    def forward(self, hidden_states, **kw):
+        return hidden_states + float(self.layer_idx + 1)
+
+
+class _FakeLanguageModel(torch.nn.Module):
+    def __init__(self, n_layers):
+        super().__init__()
+
+        class _Cfg:
+            _attn_implementation = "eager"
+
+        self.config = _Cfg()
+        self.embed_tokens = torch.nn.Embedding(8, HID)
+        self.layers = torch.nn.ModuleList(
+            [_FakeDecoderLayer(i) for i in range(n_layers)]
+        )
+        self.rotary_emb = _FakeRotary()
+
+    def forward(self, *a, **kw):  # not used; manual loop drives the layers
+        raise NotImplementedError
+
+
+class _FakeQwen3VL(torch.nn.Module):
+    """AutoModel-style wrapper exposing ``.language_model`` (like Qwen3VLModel)."""
+
+    def __init__(self, n_layers):
+        super().__init__()
+        self.language_model = _FakeLanguageModel(n_layers)
+
+
+def _make_text_driver(monkeypatch, n_layers):
     from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.families.ideogram4 import driver as driver_mod
     from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
-    from app.engine.models.families.ideogram4.utils import QWEN3VL_SELECTED_LAYERS
 
-    HID = 8  # tiny stand-in for Qwen3-VL hidden size
-
-    class _Tok:
-        def apply_chat_template(self, messages, tokenize, add_generation_prompt):
-            return messages[0]["content"]
-        def __call__(self, texts, **kw):
-            n = max(len(t.split()) for t in texts) or 1
-            import torch
-            return {
-                "input_ids": torch.ones(len(texts), n, dtype=torch.long),
-                "attention_mask": torch.ones(len(texts), n, dtype=torch.long),
-            }
-
-    class _Out:
-        def __init__(self, hs):
-            self.hidden_states = hs
-
-    import torch
-
-    class _TE(torch.nn.Module):
-        def forward(self, input_ids, attention_mask, output_hidden_states, **kw):
-            b, n = input_ids.shape
-            # +2: HF prepends the embedding output at [0], and the driver taps
-            # post-layer index k at HF hidden_states[k+1], so the top tap needs
-            # index max+1 -> the tuple must be length max+2. Returning exactly
-            # max+2 also asserts the driver never reads past the +1 shift.
-            n_hs = max(QWEN3VL_SELECTED_LAYERS) + 2
-            return _Out([torch.randn(b, n, HID) for _ in range(n_hs)])
+    # The fake decoder layers don't consume the causal mask; stub it out so the
+    # manual forward runs without a real Qwen3-VL config/attn backend.
+    monkeypatch.setattr(driver_mod, "create_causal_mask", lambda **kw: None)
 
     defn = ModelDefinition(id="x", family="ideogram4", name="X")
     drv = IdeogramV4Driver(defn, torch.device("cpu"))
-    drv.text_encoder = _TE()
-    drv.tokenizer = _Tok()
+    tok = _FakeTok()
+    drv.text_encoder = _FakeQwen3VL(n_layers)
+    drv.tokenizer = tok
+    return drv, tok
+
+
+def test_encode_text_concats_selected_layers(monkeypatch):
+    from app.engine.models.families.ideogram4.utils import QWEN3VL_SELECTED_LAYERS
+
+    n_layers = max(QWEN3VL_SELECTED_LAYERS) + 1  # 36 real layers
+    drv, _ = _make_text_driver(monkeypatch, n_layers)
 
     out = drv.encode_text(["a cat sitting"], torch.float32)
+    # Concat width is exactly len(selected) * hidden -- the manual layer path.
     assert out.embeddings.shape[-1] == len(QWEN3VL_SELECTED_LAYERS) * HID
     assert out.embeddings.shape[0] == 1
+    assert out.attention_mask.dtype == torch.bool
+
+
+def test_encode_text_captures_layer_outputs_directly(monkeypatch):
+    """Index ``k`` must map to the OUTPUT of decoder layer ``k`` (no +1 offset).
+
+    The fake layers add ``(layer_idx + 1)`` so the running activation after
+    layer ``k`` equals ``embed + sum_{j<=k}(j+1)``. The reshaped feature for a
+    selected layer ``k`` (innermost interleaved axis) must equal that cumulative
+    sum -- proving direct layer-output capture, not the old HF ``[k+1]`` tap.
+    """
+    drv, _ = _make_text_driver(monkeypatch, n_layers=6)
+    drv.selected_layers = (0, 2, 5)
+
+    # Force embed_tokens to a known constant (0) so we can predict the sums.
+    torch.nn.init.zeros_(drv.text_encoder.language_model.embed_tokens.weight)
+
+    out = drv.encode_text(["a b c"], torch.float32)  # 3 tokens
+    emb = out.embeddings[0]  # (L, HID * 3)
+    L = emb.shape[0]
+    # Interleaved layout: feature[:, j*? ] -> reshape was (L, HID, n) -> (L, HID*n)
+    # so the last axis groups by (hidden_unit, layer): index = h*n + layer_pos.
+    n = len(drv.selected_layers)
+    reshaped = emb.reshape(L, HID, n)
+    # cumulative output offset after layer k = sum_{j=0..k}(j+1)
+    expected = {0: 1.0, 2: 1.0 + 2.0 + 3.0, 5: float(sum(j + 1 for j in range(6)))}
+    for pos, k in enumerate(drv.selected_layers):
+        assert torch.allclose(
+            reshaped[:, :, pos], torch.full((L, HID), float(expected[k]))
+        ), f"layer {k} feature should equal its OUTPUT activation {expected[k]}"
+
+
+def test_encode_text_tokenization_matches_ai_toolkit(monkeypatch):
+    """Parity guard: typed-list chat content + add_special_tokens=False.
+
+    These two together are the ai-toolkit tokenization path; the old path used a
+    bare-string content and add_special_tokens=True.
+    """
+    from app.engine.models.families.ideogram4.utils import QWEN3VL_SELECTED_LAYERS
+
+    n_layers = max(QWEN3VL_SELECTED_LAYERS) + 1
+    drv, tok = _make_text_driver(monkeypatch, n_layers)
+
+    drv.encode_text(["a cat"], torch.float32)
+
+    # add_special_tokens=False (Qwen3-VL has no BOS; the template emits specials).
+    assert tok.last_add_special_tokens is False
+    # content is the typed list [{"type": "text", "text": ...}], not a bare str.
+    content = tok.last_messages[0]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == "a cat"
 
 
 def test_latent_norm_roundtrip():

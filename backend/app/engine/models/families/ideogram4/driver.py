@@ -5,17 +5,19 @@ Implements :class:`IModelDriver` for the Ideogram 4 diffusion family
 
 Key family characteristics:
 
-*  **Multi-layer Qwen3-VL conditioning**: the stock Qwen3-VL language model is
-   run with ``output_hidden_states=True`` and the hidden states at
+*  **Multi-layer Qwen3-VL conditioning (manual layer capture)**: the stock
+   Qwen3-VL language model is run with an EXPLICIT decoder-layer loop that
+   reproduces ai-toolkit's ``get_qwen3_vl_features`` verbatim (embed_tokens +
+   hand-built mRoPE ``position_embeddings`` + causal mask + per-layer forward),
+   capturing the OUTPUT of each decoder layer in
    :data:`~app.engine.models.families.ideogram4.utils.QWEN3VL_SELECTED_LAYERS`
-   (13 multi-scale slices: post-layer indices ``(0,3,...,35)`` -- the real
-   upstream ``QWEN3_VL_ACTIVATION_LAYERS``) are concatenated on the feature
-   dimension.  These are POST-LAYER indices (the output of decoder layer ``k``);
-   HF ``output_hidden_states`` prepends the embedding output at ``[0]``, so each
-   tap reads HF ``hidden_states[k+1]`` (mirrors ``microsoft_lens
-   lens_layers_to_hf_indices``).  The result is ``(B, L, 4096 * 13)`` raw hidden
-   states; the DiT projects them internally, so the driver supplies them
-   unprojected.
+   (13 multi-scale slices: layer-output indices ``(0,3,...,35)`` -- the upstream
+   ``QWEN3_VL_ACTIVATION_LAYERS``) and concatenating them on the feature
+   dimension.  Index ``k`` maps DIRECTLY to the output of decoder layer ``k`` --
+   there is NO ``+1`` HF-offset (that offset belonged to the old top-level
+   ``AutoModel(output_hidden_states=True)`` path, now replaced).  The result is
+   ``(B, L, 4096 * 13)`` raw hidden states; the DiT projects them internally, so
+   the driver supplies them unprojected.
 
 *  **Fused-QKV / SwiGLU LoRA targets** ``["qkv", "o", "w1", "w2", "w3"]``
    (confirmed against the vendored model in Task 1).
@@ -32,6 +34,7 @@ from typing import Any
 import structlog
 import torch
 import torch.nn as nn
+from transformers.masking_utils import create_causal_mask
 
 from app.engine.core.definitions import ModelDefinition
 from app.engine.core.interfaces import IModelDriver
@@ -73,12 +76,11 @@ class IdeogramV4Driver(IModelDriver):
         arch = getattr(definition, "architecture_params", {}) or {}
         self.te_max_length = int(arch.get("te.max_length", DEFAULT_TE_MAX_LENGTH))
         sel = arch.get("te.selected_layers", DEFAULT_SELECTED_LAYERS)
+        # QWEN3VL_SELECTED_LAYERS are decoder-layer-OUTPUT indices: index ``k``
+        # == the output of decoder layer ``k``. The manual forward captures layer
+        # outputs DIRECTLY at these indices (ai-toolkit parity), so there is no
+        # HF ``+1`` offset.
         self.selected_layers = tuple(int(i) for i in sel)
-        # QWEN3VL_SELECTED_LAYERS are upstream POST-LAYER indices (the output of
-        # decoder layer k). HF output_hidden_states prepends the embedding output
-        # at [0], so the post-layer-k activation is HF hidden_states[k+1] -- the
-        # same +1 shift microsoft_lens.lens_layers_to_hf_indices applies.
-        self.hf_layer_indices = tuple(k + 1 for k in self.selected_layers)
         # Stashed post-patchify latent grid (set by prepare_latents); consumed by
         # forward_pass when the batch doesn't carry latent_h/latent_w.
         self._latent_h: int = 0
@@ -126,18 +128,133 @@ class IdeogramV4Driver(IModelDriver):
 
     # --- Phase 2: text encoding ---
 
+    def _resolve_language_model(self) -> nn.Module:
+        """Reach the ``Qwen3VLTextModel`` (embed_tokens / layers / rotary_emb).
+
+        ``AutoModel.from_pretrained("Qwen/Qwen3-VL-8B-Instruct")`` returns a
+        ``Qwen3VLModel`` whose text tower is ``.language_model`` -- the SAME
+        attribute ai-toolkit uses. We also accept ``.model.language_model``
+        (the ``...ForConditionalGeneration`` wrapper) and a TE that already IS
+        the text model (exposes ``layers``/``embed_tokens``), so the manual
+        forward works regardless of which wrapper the loader produced.
+        """
+        te = self.text_encoder
+        if hasattr(te, "language_model"):
+            return te.language_model
+        inner = getattr(te, "model", None)
+        if inner is not None and hasattr(inner, "language_model"):
+            return inner.language_model
+        if hasattr(te, "layers") and hasattr(te, "embed_tokens"):
+            return te
+        raise RuntimeError(
+            "Could not locate the Qwen3-VL text model (expected "
+            "text_encoder.language_model with .embed_tokens/.layers/.rotary_emb); "
+            f"got {type(te).__name__}."
+        )
+
+    @torch.no_grad()
+    def _run_qwen3vl_layers(
+        self,
+        language_model: nn.Module,
+        token_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        pos_2d: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Manual Qwen3-VL layer forward -> concat selected layer OUTPUTS.
+
+        Faithful port of ai-toolkit ``src/pipeline.py::get_qwen3_vl_features``,
+        adapted to this transformers' ``create_causal_mask`` signature (which
+        wants ``input_embeds=`` + ``cache_position=``) exactly the way
+        ``Qwen3VLTextModel.forward`` calls it. Steps:
+
+        1. ``inputs_embeds = embed_tokens(token_ids)``.
+        2. Build the 4-row mRoPE position ids from ``pos_2d`` (text-only: all
+           rows equal). Row 0 is the text position ids fed to the layers/mask;
+           rows 1-3 are the (t, h, w) mRoPE sections fed to ``rotary_emb``.
+        3. ``create_causal_mask`` + ``rotary_emb`` -> shared causal mask +
+           ``position_embeddings``.
+        4. Explicit decoder-layer loop; capture ``hidden_states`` (the OUTPUT of
+           the layer) at each ``QWEN3VL_SELECTED_LAYERS`` index DIRECTLY.
+        5. ``stack -> permute(1,2,3,0) -> reshape(B, L, H*n)`` interleaved
+           layout, then zero pad positions via ``attention_mask``.
+
+        Returns ``(B, L, H * n_layers)`` in ``dtype``.
+        """
+        inputs_embeds = language_model.embed_tokens(token_ids)
+
+        # 4-row mRoPE position ids (text-only -> all rows == pos_2d).
+        position_ids_4d = pos_2d[None, ...].expand(4, pos_2d.shape[0], -1)
+        text_position_ids = position_ids_4d[0]
+        mrope_position_ids = position_ids_4d[1:]
+
+        # cache_position: contiguous query indices (this transformers version's
+        # create_causal_mask requires it; mirrors Qwen3VLTextModel.forward).
+        cache_position = torch.arange(
+            inputs_embeds.shape[1], device=inputs_embeds.device,
+        )
+        causal_mask = create_causal_mask(
+            config=language_model.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=None,
+            position_ids=text_position_ids,
+        )
+        position_embeddings = language_model.rotary_emb(
+            inputs_embeds, mrope_position_ids,
+        )
+
+        tap_set = set(self.selected_layers)
+        captured: dict[int, torch.Tensor] = {}
+        hidden_states = inputs_embeds
+        for layer_idx, decoder_layer in enumerate(language_model.layers):
+            hidden_states = decoder_layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+            if layer_idx in tap_set:
+                captured[layer_idx] = hidden_states
+
+        missing = [k for k in self.selected_layers if k not in captured]
+        if missing:
+            raise RuntimeError(
+                f"Qwen3-VL exposed {len(language_model.layers)} decoder layers, "
+                f"but selected layer index/indices {missing} were not reached; "
+                "ensure the text model has all decoder layers."
+            )
+
+        selected = [captured[k] for k in self.selected_layers]
+        batch_size, seq_len = token_ids.shape
+        stacked = torch.stack(selected, dim=0)        # (n, B, L, H)
+        stacked = stacked.permute(1, 2, 3, 0)         # (B, L, H, n)
+        stacked = stacked.reshape(batch_size, seq_len, -1).to(dtype)
+
+        # Zero non-text (padding) positions, matching ai-toolkit.
+        text_mask = attention_mask.to(stacked.dtype).unsqueeze(-1)
+        return stacked * text_mask
+
     @torch.no_grad()
     def encode_text(
         self, captions: list[str], dtype: torch.dtype,
     ) -> TextEncoderOutput:
-        """Chat-template -> Qwen3-VL -> concat 13 selected hidden states.
+        """Chat-template -> manual Qwen3-VL layer forward -> concat 13 outputs.
 
-        Mirrors upstream ``Ideogram4Pipeline._encode_text``: the selected
-        hidden states are stacked and reshaped so each text token's feature
-        vector is the per-hidden-unit interleaving of all selected layers
-        (``stack -> permute -> reshape``), yielding a final feature width of
-        ``4096 * len(QWEN3VL_SELECTED_LAYERS)``.  The DiT projects this raw
-        concatenation internally, so no projection/norm is applied here.
+        Faithful port of ai-toolkit ``Ideogram4Model.get_prompt_embeds`` +
+        ``get_qwen3_vl_features``:
+
+        * The user message ``content`` is the typed list
+          ``[{"type": "text", "text": caption}]`` and tokenization uses
+          ``add_special_tokens=False`` (the chat template already emits the
+          ``<|im_start|>`` specials; Qwen3-VL has no BOS).
+        * The Qwen3-VL language model is run with an EXPLICIT decoder-layer loop
+          (``_run_qwen3vl_layers``) capturing the OUTPUT of each selected layer
+          DIRECTLY (no HF ``+1`` offset), then stacked/permuted/reshaped into the
+          interleaved ``(B, L, H * n_layers)`` layout the frozen DiT expects.
 
         Returns ``TextEncoderOutput`` with ``embeddings`` ``(B, L, H*n_layers)``
         and a bool ``attention_mask`` ``(B, L)``.
@@ -146,7 +263,7 @@ class IdeogramV4Driver(IModelDriver):
         encoded = self.tokenizer(
             rendered, padding=True, truncation=True,
             max_length=self.te_max_length, return_tensors="pt",
-            add_special_tokens=True,
+            add_special_tokens=False,
         )
         # Device-safety: follow the text encoder's parameters, not self.device.
         # Falls back to self.device for parameter-less encoders.
@@ -158,37 +275,14 @@ class IdeogramV4Driver(IModelDriver):
         input_ids = encoded["input_ids"].to(te_device)
         attn = encoded["attention_mask"].to(te_device)
 
-        out = self.text_encoder(
-            input_ids=input_ids, attention_mask=attn,
-            output_hidden_states=True, use_cache=False,
+        # Text-only mRoPE position ids: cumulative real-token index (pad -> 0),
+        # mirroring ai-toolkit's (attention_mask.cumsum - 1).clamp(min=0).
+        pos_2d = (attn.cumsum(dim=-1) - 1).clamp(min=0).to(torch.long)
+
+        language_model = self._resolve_language_model()
+        embeddings = self._run_qwen3vl_layers(
+            language_model, input_ids, attn, pos_2d, dtype,
         )
-        hidden_states = getattr(out, "hidden_states", None)
-        if hidden_states is None:
-            raise RuntimeError(
-                "text_encoder returned no hidden_states; ensure the model "
-                "supports output_hidden_states=True"
-            )
-
-        # Each selected upstream post-layer index k maps to HF hidden_states[k+1]
-        # (precomputed in self.hf_layer_indices); hidden_states[0] is the raw
-        # embedding output, which upstream never taps. Guard against a TE that
-        # didn't return enough layers.
-        max_hf_index = max(self.hf_layer_indices)
-        if len(hidden_states) <= max_hf_index:
-            raise RuntimeError(
-                f"text_encoder returned {len(hidden_states)} hidden states, but "
-                f"the highest selected layer needs HF index {max_hf_index}; "
-                "ensure the encoder exposes all decoder layers."
-            )
-
-        # Select the activation layers and concat on the feature dim, matching
-        # upstream's (num_taps, B, L, H) -> (B, L, H, num_taps) -> (B, L, H*n)
-        # interleaved layout.
-        layers = [hidden_states[i].to(dtype=dtype) for i in self.hf_layer_indices]
-        stacked = torch.stack(layers, dim=0)        # (n, B, L, H)
-        stacked = stacked.permute(1, 2, 3, 0)       # (B, L, H, n)
-        b, length = input_ids.shape
-        embeddings = stacked.reshape(b, length, -1)  # (B, L, H*n)
 
         return TextEncoderOutput(embeddings=embeddings, attention_mask=attn.bool())
 

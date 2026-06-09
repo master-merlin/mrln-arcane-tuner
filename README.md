@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.5.5-alpha` · PyTorch 2.10 · CUDA 12.6 · Angular 22 · Node 24 · FastAPI
+`v0.5.5-alpha` · PyTorch 2.10 · CUDA 13.0 local / 12.6 container · Angular 22 · Node 24 · FastAPI
 
 ---
 
@@ -37,7 +37,7 @@ This project wouldn't exist without the incredible open-source community that pi
 | Requirement   | Version              | Notes                     |
 | ------------- | -------------------- | ------------------------- |
 | Python        | 3.12+                | With `venv` support       |
-| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 12.6 (driver R560+)  |
+| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.0 (driver R580+); see container note below for cloud hosts |
 | Node.js       | 24+ (LTS)            | Required by Angular 22 / TS 6 |
 | npm           | 10+                  | Comes with Node.js        |
 
@@ -73,9 +73,11 @@ python -m venv venv
 # Windows: venv\Scripts\activate
 # Linux:   source venv/bin/activate
 
-# 2. Install PyTorch with CUDA 12.6
+# 2. Install PyTorch with CUDA 13.0 (local dev; needs an R580+ driver).
+#    The published container ships CUDA 12.6 (cu126) for broad host-driver
+#    compatibility — see "Run as a container" below.
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
-    --index-url https://download.pytorch.org/whl/cu126
+    --index-url https://download.pytorch.org/whl/cu130
 
 # 3. Install remaining Python dependencies
 pip install -r requirements.txt

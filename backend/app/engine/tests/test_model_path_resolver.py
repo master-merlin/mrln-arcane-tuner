@@ -44,26 +44,55 @@ class TestResolve:
         assert result == "/cache/models/file.safetensors"
 
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_resolve_hf_local_cache_hit(self, mock_download):
-        """local_files_only=True succeeds — no second download call."""
-        mock_download.return_value = "/cache/local"
+    def test_resolve_hf_online_always_runs_resumable_download(self, mock_download):
+        """Online mode must run the real resumable snapshot_download.
+
+        Regression: the old fast-path called ``snapshot_download(..,
+        local_files_only=True)`` first and, if it returned ANY cached
+        snapshot, skipped the real download.  A previously interrupted
+        download leaves a *partial* snapshot (missing e.g. ``tokenizer/``);
+        the fast-path returned it as if complete, so the loader then failed
+        with "Unrecognized model ... should have a ``model_type`` key".
+
+        The fix: online mode always calls the resumable
+        ``snapshot_download`` (no ``local_files_only=True`` pre-check), which
+        re-verifies every file's etag and fetches only what is missing —
+        self-healing a partial cache.
+        """
+        mock_download.return_value = "/cache/repo"
         result = ModelPathResolver.resolve("huggingface:org/repo")
-        # First call should be with local_files_only=True
+        assert result == "/cache/repo"
+        # No cache-only short-circuit when online.
+        for call in mock_download.call_args_list:
+            assert call.kwargs.get("local_files_only") is not True, (
+                "online resolve must not short-circuit on a cache-only "
+                "(possibly partial) snapshot"
+            )
+        # Exactly one (resumable) download call.
+        assert mock_download.call_count == 1
+
+    @patch("app.engine.utils.model_utils.snapshot_download")
+    def test_resolve_hf_offline_cache_hit(self, mock_download):
+        """Offline / skip-update mode reads cache only — single call."""
+        mock_download.return_value = "/cache/local"
+        result = ModelPathResolver.resolve(
+            "huggingface:org/repo", local_files_only=True,
+        )
         mock_download.assert_called_once_with(
             repo_id="org/repo", local_files_only=True,
         )
         assert result == "/cache/local"
 
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_resolve_hf_cache_miss_downloads(self, mock_download):
-        """local_files_only fails → fallback download."""
-        mock_download.side_effect = [
-            Exception("Not cached"),  # first call (local_files_only)
-            "/cache/downloaded",      # second call (real download)
-        ]
-        result = ModelPathResolver.resolve("huggingface:org/repo")
-        assert result == "/cache/downloaded"
-        assert mock_download.call_count == 2
+    def test_resolve_hf_offline_cache_miss_raises(self, mock_download):
+        """Offline mode with nothing cached raises a clear error."""
+        import pytest
+
+        mock_download.side_effect = Exception("Not cached")
+        with pytest.raises(FileNotFoundError):
+            ModelPathResolver.resolve(
+                "huggingface:org/repo", local_files_only=True,
+            )
 
 
 class TestFindComponent:

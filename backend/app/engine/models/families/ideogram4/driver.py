@@ -396,7 +396,6 @@ class IdeogramV4Driver(IModelDriver):
         # are first, image tokens follow — mirror upstream out[:, max_text:]).
         return out[:, s_text:]
 
-    def get_saver(self) -> Any:
-        raise NotImplementedError(
-            "Ideogram 4 saver lands in a later task."
-        )
+    def get_saver(self):
+        from .saver import IdeogramV4Saver
+        return IdeogramV4Saver()

@@ -201,5 +201,24 @@ def test_build_packed_inputs_shapes_and_role_counts():
     assert torch.allclose(packed["x"][0, :s_text], torch.zeros(s_text, 128))
 
 
+def test_saver_architecture_name():
+    from app.engine.core.pipeline.saver_base import GenericLoRASaver
+    from app.engine.models.families.ideogram4.saver import IdeogramV4Saver
+
+    saver = IdeogramV4Saver()
+    assert isinstance(saver, GenericLoRASaver)
+    assert saver.architecture_name == "ideogram4"
+
+
+def test_driver_get_saver_returns_saver():
+    import torch
+    from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+    from app.engine.models.families.ideogram4.saver import IdeogramV4Saver
+
+    drv = IdeogramV4Driver(ModelDefinition(id="x", family="ideogram4", name="X"), torch.device("cpu"))
+    assert isinstance(drv.get_saver(), IdeogramV4Saver)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

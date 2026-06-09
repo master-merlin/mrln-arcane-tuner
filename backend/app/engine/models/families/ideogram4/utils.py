@@ -123,21 +123,44 @@ def dequantize_fp8_state_dict(
 
 
 def patchify_to_seq(latents: torch.Tensor) -> torch.Tensor:
-    """[B, C, H, W] -> [B, (H/2)*(W/2), C*4] via 2x2 space-to-depth."""
+    """[B, C, H, W] -> [B, (H/2)*(W/2), C*4] via 2x2 space-to-depth.
+
+    The 128-dim token feature vector is laid out as ``(p_h, p_w, c)`` -- patch
+    row outermost, patch column middle, latent channel innermost. This MUST
+    match the channel ordering the FROZEN pretrained DiT's ``input_proj``
+    (``modeling_ideogram4.py``: ``nn.Linear(in_channels=128, emb_dim)``) was
+    trained on; feeding a permuted ordering into the frozen weights corrupts
+    the conditioning. The ordering is the exact inverse of upstream
+    ``pipeline_ideogram4.py::_decode``::
+
+        z = z.view(batch_size, grid_h, grid_w, patch, patch, ae_channels)
+        z = z.permute(0, 5, 1, 3, 2, 4).contiguous()
+        z = z.view(batch_size, ae_channels, grid_h * patch, grid_w * patch)
+
+    i.e. upstream splits the token feature dim as ``(p_h, p_w, c)``, so the
+    forward patchify produces that same ``(p_h, p_w, c)`` order here.
+    """
     b, c, h, w = latents.shape
     p = PATCH_FACTOR
+    # (B, c, grid_h, p_h, grid_w, p_w) -> (B, grid_h, grid_w, p_h, p_w, c)
     x = latents.reshape(b, c, h // p, p, w // p, p)
-    x = x.permute(0, 2, 4, 1, 3, 5).reshape(b, (h // p) * (w // p), c * p * p)
+    x = x.permute(0, 2, 4, 3, 5, 1).reshape(b, (h // p) * (w // p), p * p * c)
     return x
 
 
 def unpatchify_from_seq(seq: torch.Tensor, lat_h: int, lat_w: int) -> torch.Tensor:
-    """Inverse of :func:`patchify_to_seq` given the post-patchify grid."""
+    """Inverse of :func:`patchify_to_seq` given the post-patchify grid.
+
+    Reproduces upstream ``pipeline_ideogram4.py::_decode`` exactly: the token
+    feature dim is split as ``(p_h, p_w, c)`` then permuted back to a
+    ``(B, C, H, W)`` latent.
+    """
     b, s, d = seq.shape
     p = PATCH_FACTOR
     c = d // (p * p)
-    x = seq.reshape(b, lat_h, lat_w, c, p, p)
-    x = x.permute(0, 3, 1, 4, 2, 5).reshape(b, c, lat_h * p, lat_w * p)
+    # (B, grid_h, grid_w, p_h, p_w, c) -> (B, c, grid_h, p_h, grid_w, p_w)
+    x = seq.reshape(b, lat_h, lat_w, p, p, c)
+    x = x.permute(0, 5, 1, 3, 2, 4).reshape(b, c, lat_h * p, lat_w * p)
     return x
 
 

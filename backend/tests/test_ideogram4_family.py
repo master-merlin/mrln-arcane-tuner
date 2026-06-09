@@ -57,6 +57,54 @@ def test_patchify_roundtrip():
     assert torch.allclose(back, x)
 
 
+def test_patchify_matches_upstream_ordering():
+    """Pin the token feature layout to upstream's ``(p_h, p_w, c)`` order.
+
+    Upstream ``pipeline_ideogram4.py::_decode`` splits the 128-dim token as
+    ``view(B, grid_h, grid_w, patch, patch, ae_channels)`` -> the feature dim
+    is ordered ``(p_h, p_w, c)``. We build a latent whose value encodes its
+    (channel, row, col) coordinate and assert the first token's flat vector is
+    laid out patch-row-outer, patch-col-middle, channel-inner. This FAILS for
+    the old ``(c, p_h, p_w)`` ordering.
+    """
+    from app.engine.models.families.ideogram4.utils import patchify_to_seq
+
+    p = 2
+    c = 3  # tiny channel count (real model uses 32); token dim = c*p*p = 12
+    # value(channel, row, col) = channel*100 + row*10 + col, unique per cell.
+    x = torch.zeros(1, c, p, p)
+    for ch in range(c):
+        for row in range(p):
+            for col in range(p):
+                x[0, ch, row, col] = ch * 100 + row * 10 + col
+
+    seq = patchify_to_seq(x)  # [1, 1, c*p*p]
+    assert seq.shape == (1, 1, c * p * p)
+    token = seq[0, 0]
+
+    # Upstream order: index = ((p_h * p) + p_w) * c + ch  -> (p_h, p_w, c)
+    expected = torch.empty(c * p * p)
+    idx = 0
+    for ph in range(p):
+        for pw in range(p):
+            for ch in range(c):
+                expected[idx] = ch * 100 + ph * 10 + pw
+                idx += 1
+    assert torch.equal(token, expected), (
+        f"token layout {token.tolist()} != upstream (p_h,p_w,c) {expected.tolist()}"
+    )
+
+    # Guard: the WRONG (c, p_h, p_w) ordering must differ, so this test has teeth.
+    wrong = torch.empty(c * p * p)
+    idx = 0
+    for ch in range(c):
+        for ph in range(p):
+            for pw in range(p):
+                wrong[idx] = ch * 100 + ph * 10 + pw
+                idx += 1
+    assert not torch.equal(expected, wrong)
+
+
 def test_encode_text_concats_selected_layers():
     from app.engine.core.definitions import ModelDefinition
     from app.engine.models.families.ideogram4.driver import IdeogramV4Driver

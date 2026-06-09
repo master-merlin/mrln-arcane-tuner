@@ -101,5 +101,105 @@ def test_encode_text_concats_selected_layers():
     assert out.embeddings.shape[0] == 1
 
 
+def test_latent_norm_roundtrip():
+    from app.engine.models.families.ideogram4.utils import (
+        denormalize_latents, normalize_latents,
+    )
+    x = torch.randn(2, 7, 128)
+    back = denormalize_latents(normalize_latents(x))
+    assert torch.allclose(back, x, atol=1e-5)
+
+
+def test_latent_norm_constants_match_upstream():
+    """Constants must equal upstream get_latent_norm() exactly (no approximation)."""
+    from app.engine.models.families.ideogram4 import utils
+
+    assert len(utils.LATENT_SHIFT) == 128
+    assert len(utils.LATENT_SCALE) == 128
+    # spot-check the documented upstream endpoints
+    assert utils.LATENT_SHIFT[0] == 0.01984364
+    assert utils.LATENT_SHIFT[-1] == -0.01760592
+    assert utils.LATENT_SCALE[0] == 1.63933691
+    assert utils.LATENT_SCALE[-1] == 1.68533454
+
+
+def _make_driver_with_stub_dit(feat_dim=8, latent_h=4, latent_w=4):
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    captured = {}
+
+    class _DiT(torch.nn.Module):
+        def forward(self, *, llm_features, x, t, position_ids, segment_ids, indicator):
+            captured["t"] = t.detach().clone()
+            captured["L"] = x.shape[1]
+            captured["position_ids"] = position_ids.detach().clone()
+            captured["segment_ids"] = segment_ids.detach().clone()
+            captured["indicator"] = indicator.detach().clone()
+            captured["llm_features"] = llm_features.detach().clone()
+            captured["x"] = x.detach().clone()
+            return torch.zeros(x.shape[0], x.shape[1], x.shape[2])
+
+    defn = ModelDefinition(id="x", family="ideogram4", name="X")
+    drv = IdeogramV4Driver(defn, torch.device("cpu"))
+    drv.transformer = _DiT()
+    drv._latent_h, drv._latent_w = latent_h, latent_w
+    return drv, captured
+
+
+def test_forward_pass_timestep_scale_divides_by_1000():
+    """Trainer passes [0,1000]; DiT wants [0,1]. Guards the prior ×1000 noise bug."""
+    drv, captured = _make_driver_with_stub_dit(feat_dim=8, latent_h=4, latent_w=4)
+
+    image_seq = torch.randn(1, 16, 128)            # S_img = 4*4 = 16
+    feats = torch.randn(1, 5, 8)
+    text = (feats, torch.ones(1, 5, dtype=torch.bool))
+    ts = torch.tensor([500.0])                     # [0,1000] convention in
+
+    out = drv.forward_pass(image_seq, ts, text, {"latent_h": 4, "latent_w": 4})
+
+    assert torch.allclose(captured["t"], ts / 1000.0), \
+        "driver must divide [0,1000] timestep by 1000"
+    # image-position outputs sliced back to [B, S_img, 128]
+    assert out.shape == (1, 16, 128)
+    assert captured["L"] == 5 + 16
+
+
+def test_build_packed_inputs_shapes_and_role_counts():
+    """_build_packed_inputs: pos last-dim 3, indicator/segment len L, role counts."""
+    drv, _ = _make_driver_with_stub_dit(latent_h=2, latent_w=3)
+
+    s_text, s_img = 4, 6  # 2*3
+    text_feats = torch.randn(1, s_text, 8)
+    # one padded text token at the end
+    text_mask = torch.tensor([[True, True, True, False]])
+    image_seq = torch.randn(1, s_img, 128)
+
+    packed = drv._build_packed_inputs(text_feats, text_mask, image_seq, 2, 3)
+    L = s_text + s_img
+
+    assert packed["position_ids"].shape == (1, L, 3)
+    assert packed["indicator"].shape == (1, L)
+    assert packed["segment_ids"].shape == (1, L)
+    assert packed["x"].shape == (1, L, 128)
+    assert packed["llm_features"].shape == (1, L, 8)
+
+    ind = packed["indicator"][0]
+    # 3 real text tokens -> LLM_TOKEN_INDICATOR(3); 6 image -> OUTPUT_IMAGE(2);
+    # 1 padded text -> 0.
+    assert int((ind == 3).sum()) == 3
+    assert int((ind == 2).sum()) == 6
+    assert int((ind == 0).sum()) == 1
+
+    # image positions are offset; text positions are < offset
+    pos = packed["position_ids"][0]
+    assert (pos[:s_text] < 65536).all()
+    assert (pos[s_text:] >= 65536).all()
+    # padded text position has zeroed llm_features
+    assert torch.allclose(packed["llm_features"][0, 3], torch.zeros(8))
+    # image latents land at image positions
+    assert torch.allclose(packed["x"][0, s_text:], image_seq[0])
+    assert torch.allclose(packed["x"][0, :s_text], torch.zeros(s_text, 128))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

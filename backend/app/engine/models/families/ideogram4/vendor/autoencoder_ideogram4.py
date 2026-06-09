@@ -42,9 +42,14 @@ ENCODE / DECODE METHOD NAMES & SHAPES:
         at inference). For testability + a clean driver surface we ADD thin
         wrappers that delegate to the ported submodules WITHOUT any patchify or
         latent normalization (the pipeline owns those):
-          - ``encode(x: (B, in_channels=3, H, W)) -> (B, 2*z_channels=64, H/8, W/8)``
-            returns the raw Encoder output (mean+logvar concatenated; quant_conv
-            applied). Sampling/splitting is the caller's job.
+          - ``encode(x: (B, in_channels=3, H, W)) -> (B, z_channels=32, H/8, W/8)``
+            returns the deterministic posterior MEAN (first z_channels of the
+            Encoder's 2*z_channels mean+logvar head; quant_conv applied). This
+            is the latent the shared ``LatentManager`` caches (raw, NO scaling)
+            and the latent the pipeline patchifies (32 -> 128). The logvar half
+            is dropped (deterministic encoding; the trainer does not sample the
+            posterior). Property ``dtype`` mirrors the diffusers VAE contract
+            (first-parameter dtype) so ``LatentManager`` / the sampler can cast.
           - ``decode(z: (B, z_channels=32, H/8, W/8)) -> (B, out_ch=3, H, W)``
             runs the Decoder (post_quant_conv applied). Image range is the raw
             decoder output (upstream clamps to [-1, 1] downstream).
@@ -430,17 +435,46 @@ class Ideogram4AutoEncoder(nn.Module):
             track_running_stats=True,
         )
 
+    @property
+    def dtype(self) -> torch.dtype:
+        """Parameter dtype, mirroring the diffusers VAE ``.dtype`` attribute.
+
+        The shared :class:`~app.engine.components.latents.LatentManager` and the
+        sampler read ``vae.dtype`` to cast the input batch
+        (``image_batch.to(self.device, dtype=self.vae.dtype)``). This bare
+        ``nn.Module`` has no such attribute by default; expose it from the
+        first parameter so both code paths work without a diffusers wrapper.
+        """
+        return next(self.parameters()).dtype
+
     def encode(self, x: Tensor) -> Tensor:
-        """Image -> raw latent stats.
+        """Image -> z_channels posterior MEAN latent (raw, un-normalized).
+
+        The Encoder's ``conv_out`` emits ``2 * z_channels`` channels
+        (mean+logvar of the KL posterior). We return the deterministic
+        posterior MEAN — the first ``z_channels`` channels — which is the
+        latent the Decoder consumes and the latent the pipeline patchifies
+        (``z_channels`` -> ``2*2*z_channels`` token dim = 128 for the
+        production ``z_channels=32``, matching the DiT's ``in_channels=128``).
+
+        This return shape is what the shared ``LatentManager`` caches: its
+        raw-Tensor branch uses the encode() output AS the latent with NO extra
+        scaling (``LatentManager.scaling_factor`` is 1.0 for this VAE — there is
+        no ``vae.config.scaling_factor``). The per-channel LATENT_SHIFT/
+        LATENT_SCALE normalization is applied LATER in ``driver.prepare_latents``
+        (on the patchified 128-dim sequence), so returning the raw mean here
+        avoids any double-scaling.
 
         Args:
             x: (B, in_channels, H, W) image tensor (upstream range [-1, 1]).
 
         Returns:
-            (B, 2 * z_channels, H / 8, W / 8) mean+logvar of the KL posterior
-            (quant_conv applied). Posterior sampling / split is the caller's job.
+            (B, z_channels, H / 8, W / 8) posterior mean latent (quant_conv
+            applied; logvar half dropped). Decoder-ready and patchify-ready.
         """
-        return self.encoder(x)
+        stats = self.encoder(x)
+        mean = stats[:, : self.params.z_channels]
+        return mean
 
     def decode(self, z: Tensor) -> Tensor:
         """Latent -> image.

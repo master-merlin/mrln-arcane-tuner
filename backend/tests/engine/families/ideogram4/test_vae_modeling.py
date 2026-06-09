@@ -60,8 +60,8 @@ def test_bn_is_not_in_encode_decode_path() -> None:
     assert int(vae.bn.num_batches_tracked) == 0
     x = torch.randn(1, TINY_PARAMS.in_channels, 16, 16)
     with torch.no_grad():
-        latents = vae.encode(x)
-        z = latents[:, : TINY_PARAMS.z_channels]
+        # encode() now returns the z_channels posterior mean directly.
+        z = vae.encode(x)
         vae.decode(z)
     assert int(vae.bn.num_batches_tracked) == 0
 
@@ -72,16 +72,14 @@ def test_encode_decode_roundtrip_shapes() -> None:
     x = torch.randn(1, TINY_PARAMS.in_channels, h, w)
 
     with torch.no_grad():
-        latents = vae.encode(x)
-        # Encoder emits mean+logvar -> 2 * z_channels, spatially downsampled.
-        assert latents.shape[1] == 2 * TINY_PARAMS.z_channels
-        assert latents.shape[2] == h // TINY_SPATIAL_FACTOR
-        assert latents.shape[3] == w // TINY_SPATIAL_FACTOR
-
-        # Decoder consumes z_channels (the posterior mean half here).
-        z = latents[:, : TINY_PARAMS.z_channels]
+        # encode() returns the z_channels posterior mean (NOT 2*z_channels);
+        # the logvar half of the encoder head is dropped (deterministic).
+        z = vae.encode(x)
         assert z.shape[1] == TINY_PARAMS.z_channels
+        assert z.shape[2] == h // TINY_SPATIAL_FACTOR
+        assert z.shape[3] == w // TINY_SPATIAL_FACTOR
 
+        # Decoder consumes the z_channels latent directly.
         decoded = vae.decode(z)
 
     # Decode restores the input spatial dims and out_ch channels.

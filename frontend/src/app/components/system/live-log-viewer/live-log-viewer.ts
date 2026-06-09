@@ -75,6 +75,11 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
                         [title]="wrap() ? 'Disable word wrap' : 'Enable word wrap'">
                     <app-ico [name]="wrap() ? 'Minus' : 'WrapText'" [size]="12" /> Wrap
                 </button>
+                <button type="button" class="btn sm" (click)="downloadLogs()"
+                        [disabled]="parsedLogs().length === 0"
+                        title="Download all logs as a file" data-testid="log-download">
+                    <app-ico name="Download" [size]="12" />
+                </button>
                 <button type="button" class="btn sm" (click)="clearLogs()"
                         [disabled]="clearing()" title="Clear all entries">
                     <app-ico name="Trash2" [size]="12" />
@@ -244,6 +249,32 @@ export class LiveLogViewerComponent implements OnInit {
 
     toggleFilter(type: 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL') {
         this.filters.update(f => ({ ...f, [type]: !f[type] }));
+    }
+
+    /**
+     * Export the full in-memory log buffer (raw structlog lines, unaffected
+     * by the on-screen level/text filters) as a downloadable file. Lets a
+     * user hand off complete logs for debugging when a remote session into
+     * the pod isn't available.
+     */
+    downloadLogs() {
+        const lines = this.logs();
+        if (lines.length === 0) {
+            this.toast.error('No logs to download');
+            return;
+        }
+        const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        // Filesystem-safe timestamp: 2026-06-09T07-12-30
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `mrln-${this.mode()}-logs-${ts}.log`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        this.toast.success(`Downloaded ${lines.length} log line${lines.length === 1 ? '' : 's'}`);
     }
 
     clearLogs() {

@@ -183,11 +183,22 @@ async def reorder_job(job_id: str, direction: str = "up"):
 
 @router.get("/jobs/{job_id}/logs", response_model=list[str])
 async def get_job_logs(job_id: str):
-    """Return buffered log lines for a job."""
-    job = await asyncio.to_thread(job_manager.get_job, job_id)
-    if not job:
+    """Return buffered log lines for a job.
+
+    Falls back to the persisted ``job_log.jsonl`` on disk when the in-memory
+    buffer is empty (a stopped/failed job, or after a backend restart) so the
+    tail always survives.
+    """
+    def _resolve() -> list[str] | None:
+        job = job_manager.get_job(job_id)
+        if not job:
+            return None
+        return job.logs if job.logs else job_manager.read_persisted_logs(job)
+
+    result = await asyncio.to_thread(_resolve)
+    if result is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job.logs
+    return result
 
 
 @router.delete("/jobs/{job_id}", response_model=JobActionResponse)

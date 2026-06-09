@@ -35,7 +35,14 @@ try:
     # Critical: Disable file handler (`include_file_handler=False`) to avoid file locking contentions on Windows.
     # The worker logs only to STDOUT, which the JobManager captures and bridges to the main server log.
     setup_logging("INFO", include_file_handler=False)
-    logger = get_logger("trainer") 
+    logger = get_logger("trainer")
+
+    # Apply Hugging Face auth so gated-model downloads in this subprocess
+    # authenticate. An inherited env token (HF_TOKEN) wins; otherwise the
+    # token saved in Server → Models is used. Never logs the token value.
+    from app.core.hf_auth import apply_hf_auth
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+    apply_hf_auth(ModelOverrideManager.get_all().hf_token)
 except ImportError:
     # safety-net print: pre-init, import-failure handler runs before logging setup completes
     print("CRITICAL: Failed to import dependencies. Check PYTHONPATH and venv.", file=sys.stderr)

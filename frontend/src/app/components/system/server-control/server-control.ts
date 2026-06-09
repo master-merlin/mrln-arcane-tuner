@@ -16,6 +16,7 @@ interface ApplicationSettings {
 interface ModelGlobalSettings {
     global_offline_mode: boolean;
     default_model_path: string;
+    hf_token_set: boolean;
 }
 
 /**
@@ -128,6 +129,23 @@ interface ModelGlobalSettings {
                     </label>
                     <p class="sc-hint">block ALL HuggingFace network requests — use only locally cached models</p>
                 </div>
+                <div class="sc-field">
+                    <label class="field-label">Hugging Face Token</label>
+                    <div class="sc-path-row">
+                        <input type="password" class="input mono"
+                               [ngModel]="pendingHfToken()"
+                               (ngModelChange)="pendingHfToken.set($event)"
+                               [placeholder]="modelSettings()?.hf_token_set ? '•••••••••••• (token saved)' : 'hf_…'"
+                               autocomplete="off" data-testid="setting-hf-token" />
+                        <button type="button" class="btn primary sm" (click)="saveHfToken()"
+                                [disabled]="!pendingHfToken().trim()">Save</button>
+                        @if (modelSettings()?.hf_token_set) {
+                            <button type="button" class="btn sm" (click)="clearHfToken()"
+                                    data-testid="clear-hf-token">Clear</button>
+                        }
+                    </div>
+                    <p class="sc-hint">authenticates downloads of gated models (e.g. some FLUX weights). Stored server-side; an <code>HF_TOKEN</code> environment variable, if set, takes precedence.</p>
+                </div>
             </div>
         </div>
     </div>
@@ -181,6 +199,7 @@ export class ServerControlComponent implements OnInit {
     pendingModelPath = signal('');
     modelPathDirty = signal(false);
     browsingModelPath = signal(false);
+    pendingHfToken = signal('');
 
     ngOnInit() {
         this.loadSettings();
@@ -295,6 +314,36 @@ export class ServerControlComponent implements OnInit {
                 this.toast.success('Default model path saved');
             },
             error: (err) => this.toast.error(err.error?.detail || 'Failed to save model path'),
+        });
+    }
+
+    // ── Hugging Face token (write-only; the raw value is never fetched back) ──
+
+    saveHfToken() {
+        const token = this.pendingHfToken().trim();
+        if (!token) return;
+        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, {
+            hf_token: token,
+        }).subscribe({
+            next: (s) => {
+                this.modelSettings.set(s);
+                this.pendingHfToken.set('');
+                this.toast.success('Hugging Face token saved');
+            },
+            error: (err) => this.toast.error(err.error?.detail || 'Failed to save token'),
+        });
+    }
+
+    clearHfToken() {
+        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, {
+            hf_token: '',
+        }).subscribe({
+            next: (s) => {
+                this.modelSettings.set(s);
+                this.pendingHfToken.set('');
+                this.toast.success('Hugging Face token cleared');
+            },
+            error: (err) => this.toast.error(err.error?.detail || 'Failed to clear token'),
         });
     }
 }

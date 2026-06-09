@@ -49,9 +49,14 @@ class EnrichDefinitionResponse(BaseModel):
 
 
 class ModelSettingsResponse(BaseModel):
-    """Global model settings (offline mode + default storage path)."""
+    """Global model settings (offline mode + default storage path).
+
+    ``hf_token_set`` is a masked indicator — the raw Hugging Face token is
+    never returned to clients. Set/clear it via PUT's ``hf_token`` field.
+    """
     global_offline_mode: bool
     default_model_path: str
+    hf_token_set: bool = False
 
 
 class ModelSourceResponse(BaseModel):

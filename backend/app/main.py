@@ -91,6 +91,12 @@ async def lifespan(app: FastAPI):
     from app.core.runtime_config import write_runtime_config
     write_runtime_config(BACKEND_PORT, FRONTEND_PORT)
 
+    # Apply Hugging Face auth (env token wins, else the saved Server setting)
+    # before the registry initialises — model metadata fetches may need it.
+    from app.core.hf_auth import apply_hf_auth
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+    apply_hf_auth(ModelOverrideManager.get_all().hf_token)
+
     # Model registry & plugins
     from app.engine.models.registry import registry
     registry.initialize()

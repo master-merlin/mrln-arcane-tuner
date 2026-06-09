@@ -67,4 +67,5 @@ class ModelSettings(BaseModel):
 
     global_offline_mode: bool = False
     default_model_path: str = ""
+    hf_token: str = ""
     overrides: dict[str, ModelOverride] = {}

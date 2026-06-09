@@ -255,12 +255,18 @@ async def get_model_settings():
     return {
         "global_offline_mode": settings.global_offline_mode,
         "default_model_path": settings.default_model_path,
+        "hf_token_set": bool(settings.hf_token),
     }
 
 
 @router.put("/models/settings", response_model=ModelSettingsResponse)
 async def update_model_settings(body: dict[str, Any]):
-    """Update global model settings."""
+    """Update global model settings.
+
+    ``hf_token`` is write-only: pass a token to set it, ``""`` to clear it.
+    The raw value is persisted but never returned (response carries only the
+    masked ``hf_token_set`` flag).
+    """
     settings = await ModelOverrideManager.get_all_async()
 
     if "global_offline_mode" in body:
@@ -275,15 +281,26 @@ async def update_model_settings(body: dict[str, Any]):
             )
         settings.default_model_path = path_str
 
+    if "hf_token" in body:
+        settings.hf_token = (body["hf_token"] or "").strip()
+
     await ModelOverrideManager._save_async(settings)
+
+    # Re-apply HF auth so the new token takes effect without a restart
+    # (env-provided token still wins — see app.core.hf_auth).
+    from app.core.hf_auth import apply_hf_auth
+    apply_hf_auth(settings.hf_token)
+
     logger.info(
         "model_settings_updated",
         offline=settings.global_offline_mode,
         path=settings.default_model_path,
+        hf_token_set=bool(settings.hf_token),
     )
     return {
         "global_offline_mode": settings.global_offline_mode,
         "default_model_path": settings.default_model_path,
+        "hf_token_set": bool(settings.hf_token),
     }
 
 

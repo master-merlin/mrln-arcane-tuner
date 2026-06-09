@@ -29,13 +29,10 @@ def test_manifest_declares_stock_components():
     assert specs["tokenizer"].definition_key == "text_encoder"
 
     # VAE: upstream uses a CUSTOM `AutoEncoder` (ideogram4/autoencoder.py), NOT a
-    # diffusers-native class. It must be vendored (out of scope for this task);
-    # the spec declares the intended vendored class name + fp32 override.
-    assert specs["vae"].hf_class == (
-        "app.engine.models.families.ideogram4.vendor.autoencoder_ideogram4."
-        "Ideogram4AutoEncoder"
-    )
-    assert specs["vae"].dtype_override == torch.float32
+    # diffusers-native class, so the generic from_pretrained manifest path can't
+    # build it. It is now vendored (vendor/autoencoder_ideogram4.py) and loaded
+    # BY HAND in the overridden load(), so it is NOT in the manifest.
+    assert "vae" not in specs
 
     # The DiT is NOT in the manifest -- loaded by the overridden load().
     assert "unet" not in specs

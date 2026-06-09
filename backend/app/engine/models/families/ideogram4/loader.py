@@ -7,12 +7,18 @@ Stock components load through the generic manifest path:
   model definition YAML under the ``text_encoder`` component key; the specs only
   set ``separate_repo=True`` + ``definition_key="text_encoder"`` so the generic
   loader resolves that repo independently of the fp8 DiT root.
+The DiT and the VAE are both loaded by the overridden
+:meth:`IdeogramV4Loader.load` (NOT in the manifest):
+
+- ``unet`` (the DiT) — see below.
 - ``vae`` — upstream uses a **custom** ``AutoEncoder`` (``ideogram4/
-  autoencoder.py``), NOT a ``diffusers``-native class, and loads it via
-  ``convert_diffusers_state_dict`` + manual ``load_state_dict``.  That class
-  must be vendored (see the TODO below) before the VAE actually loads; vendoring
-  it is out of scope for this task.  The spec declares the intended vendored
-  class name so the manifest contract is locked.
+  autoencoder.py``, vendored here as ``vendor/autoencoder_ideogram4.py::
+  Ideogram4AutoEncoder``), NOT a ``diffusers``-native class.  The generic
+  ``from_pretrained`` manifest path cannot build it, so it is loaded by hand from
+  the ``vae/`` subfolder: ``Ideogram4AutoEncoder(AutoEncoderParams())`` +
+  ``load_file`` + ``convert_diffusers_state_dict`` + manual
+  ``load_state_dict(strict=False)``, mirroring the DiT load.  The VAE runs in
+  float32.
 
 The DiT is loaded by the overridden :meth:`IdeogramV4Loader.load` (not in the
 manifest) via the HiDream-O1 direct-safetensors pattern — ``init_empty_weights``
@@ -65,25 +71,12 @@ class IdeogramV4Loader(GenericComponentLoader):
                 definition_key="text_encoder",
                 fallback_to_root=True,
             ),
-            # TODO(ideogram4-vae): custom VAE needs vendoring. Upstream
-            # ``ideogram4/autoencoder.py`` defines ``AutoEncoder`` (a bespoke
-            # nn.Module with a BatchNorm head), loaded via
-            # ``convert_diffusers_state_dict`` + manual ``load_state_dict`` from
-            # ``vae/diffusion_pytorch_model.safetensors`` — NOT ``from_pretrained``
-            # and NOT a diffusers-native class. Until it is vendored as
-            # ``vendor/autoencoder_ideogram4.py::Ideogram4AutoEncoder`` (with a
-            # custom load path mirroring the DiT below), the generic manifest path
-            # cannot load it. The spec is declared here to lock the contract.
-            ComponentSpec(
-                key="vae",
-                hf_class=(
-                    "app.engine.models.families.ideogram4.vendor."
-                    "autoencoder_ideogram4.Ideogram4AutoEncoder"
-                ),
-                subfolder="vae",
-                dtype_override=torch.float32,
-                fallback_to_root=True,
-            ),
+            # NOTE: the VAE is NOT in the manifest. It is a custom
+            # ``Ideogram4AutoEncoder`` (vendored from upstream
+            # ``ideogram4/autoencoder.py``) that the generic ``from_pretrained``
+            # path cannot build, so it is loaded by hand in ``load()`` below
+            # (mirroring the DiT): ``load_file`` + ``convert_diffusers_state_dict``
+            # + manual ``load_state_dict``, in float32.
         ]
 
     async def load(
@@ -92,13 +85,16 @@ class IdeogramV4Loader(GenericComponentLoader):
         torch_dtype: torch.dtype | None = None,
         initial_device: str | None = None,
     ) -> dict[str, Any]:
-        """Load Ideogram 4 components and the vendored fp8 DiT.
+        """Load Ideogram 4 components, the vendored fp8 DiT, and the custom VAE.
 
-        Loads stock components (tokenizer, text_encoder, vae) via the generic
+        Loads stock components (tokenizer, text_encoder) via the generic
         manifest path, then loads the vendored ``Ideogram4Transformer2DModel``
         directly from the fp8 safetensors shards in the ``transformer/``
         subfolder, because the class is not registered in the ``diffusers``
-        namespace.  The KEY addition vs the Lens loader: the raw shard state
+        namespace.  Finally loads the custom ``Ideogram4AutoEncoder`` by hand
+        from the ``vae/`` subfolder (``load_file`` +
+        ``convert_diffusers_state_dict`` + manual ``load_state_dict``, in
+        float32).  The KEY addition vs the Lens loader: the raw shard state
         dict is passed through :func:`dequantize_fp8_state_dict` (float8 weight
         + float32 per-output-channel ``weight_scale`` -> real weight) BEFORE
         ``load_state_dict``, then any remaining tensors are cast to the load
@@ -112,7 +108,8 @@ class IdeogramV4Loader(GenericComponentLoader):
 
         Returns:
             Dict of loaded components keyed by name, including ``"unet"`` for
-            the ``Ideogram4Transformer2DModel`` instance.
+            the ``Ideogram4Transformer2DModel`` instance and ``"vae"`` for the
+            custom ``Ideogram4AutoEncoder`` instance.
         """
         # 1. Load stock components via the generic path.
         components = await super().load(definition, torch_dtype, initial_device)
@@ -202,6 +199,62 @@ class IdeogramV4Loader(GenericComponentLoader):
         model.eval()
 
         components["unet"] = model
+
+        # 3. Load the custom VAE by hand (NOT a diffusers-native class, so the
+        #    generic from_pretrained manifest path can't build it). Mirrors the
+        #    DiT style: empty/default-config instance + load_file +
+        #    convert_diffusers_state_dict + strict=False load_state_dict. The VAE
+        #    runs in float32 regardless of the DiT load dtype (upstream loads it
+        #    fp32; the old manifest spec requested dtype_override=float32).
+        vae_dir = root / "vae"
+        if not vae_dir.is_dir():
+            if not (root / "vae" / "diffusion_pytorch_model.safetensors").is_file():
+                raise FileNotFoundError(
+                    f"No 'vae/' subfolder at root: {root}. "
+                    "Place the Ideogram 4 VAE weights in a 'vae/' subdirectory."
+                )
+        vae_weights = vae_dir / "diffusion_pytorch_model.safetensors"
+        if not vae_weights.is_file():
+            raise FileNotFoundError(
+                f"VAE weights not found: {vae_weights}"
+            )
+
+        from app.engine.models.families.ideogram4.vendor.autoencoder_ideogram4 import (
+            AutoEncoderParams,
+            Ideogram4AutoEncoder,
+            convert_diffusers_state_dict,
+        )
+
+        # Default params == the real Ideogram 4 VAE config (z_channels=32,
+        # ch_mult=[1,2,4,4], etc.).
+        vae = Ideogram4AutoEncoder(AutoEncoderParams())
+        try:
+            raw_vae_sd = load_file(str(vae_weights))
+        except Exception as e:
+            self.logger.error(
+                "ideogram4.vae_load_failed", path=str(vae_weights), error=str(e),
+            )
+            raise RuntimeError(f"failed to load VAE weights {vae_weights}: {e}") from e
+        converted_vae_sd = convert_diffusers_state_dict(raw_vae_sd)
+
+        vae_missing, vae_unexpected = vae.load_state_dict(
+            converted_vae_sd, strict=False,
+        )
+        if vae_missing:
+            self.warnings.append(
+                f"VAE: {len(vae_missing)} missing key(s) "
+                f"(first 5: {list(vae_missing)[:5]})",
+            )
+        if vae_unexpected:
+            self.warnings.append(
+                f"VAE: {len(vae_unexpected)} unexpected key(s) "
+                f"(first 5: {list(vae_unexpected)[:5]})",
+            )
+
+        vae = vae.to(device=target_device, dtype=torch.float32)
+        vae.eval()
+        components["vae"] = vae
+
         self.logger.info(
             "ideogram4.load.complete",
             components=list(components.keys()),

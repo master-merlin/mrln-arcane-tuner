@@ -18,6 +18,22 @@ from app.engine.components.latents import LatentManager
 logger = structlog.get_logger(__name__)
 
 
+def _internal_api_headers() -> dict[str, str]:
+    """Auth header for the trainer's own loopback API calls.
+
+    The trainer runs as a separate subprocess with no browser cookie, so when
+    a shared access token is configured (``MRLN_AUTH_TOKEN``) its calls to
+    ``http://localhost/api/...`` would be rejected by ``TokenAuthMiddleware``
+    (every ``/api`` path is gated). The subprocess inherits the token via the
+    environment, so forward it as the ``X-Auth-Token`` header the middleware
+    accepts. No token configured → no header, leaving local dev unchanged.
+    """
+    from app.core.container_config import auth_token
+
+    token = auth_token()
+    return {"X-Auth-Token": token} if token else {}
+
+
 class PipelineDataMixin:
     """Dataset preparation, inventory building, and batch construction."""
 
@@ -57,7 +73,9 @@ class PipelineDataMixin:
         api_url = f"http://localhost:{port}/api"
         model_name = self.definition.id.split("/")[-1]
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0, headers=_internal_api_headers(),
+        ) as client:
             for ds_config in datasets_config:
                 if isinstance(ds_config, str):
                     ds_config = {"dataset_name": ds_config}

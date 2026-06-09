@@ -134,6 +134,46 @@ class ModelPathResolver:
             raise
 
     @staticmethod
+    def ensure_definition_cached(definition: any) -> None:
+        """Pre-fetch a definition's Hugging Face components in-process.
+
+        Training runs in a detached subprocess (``run_trainer.py``) where the
+        download-progress WS bridge is a no-op — ``_APP_LOOP`` is only captured
+        in the API process by ``main.lifespan``, so ``schedule_emit_from_thread``
+        silently drops every event there. Calling this from the API process
+        *before* launching the trainer downloads the base model through the
+        progress-emitting ``_resolve_hf`` path, so the top-bar download
+        indicator updates; the subprocess then loads from the warm HF cache.
+
+        Respects per-model source overrides (mirrors ``GenericComponentLoader.
+        _resolve_root``):
+        - ``LOCAL_DIFFUSERS`` / ``LOCAL_SAFETENSORS`` → weights are already
+          local, nothing to fetch.
+        - ``HF_HUB`` + skip-update / global-offline → resolve cache-only
+          (``local_files_only=True``); a missing repo raises here, surfacing the
+          problem as a clean pre-flight error rather than a trainer crash.
+
+        Best-effort: only ``huggingface:`` component paths are pre-fetched; any
+        non-HF (absolute / relative) paths are left to the loader.
+        """
+        from app.core.schemas.model_overrides import ModelSourceType
+        from app.engine.utils.model_override_manager import ModelOverrideManager
+
+        source_type, _local_path, local_files_only = (
+            ModelOverrideManager.resolve_effective_source(definition.id)
+        )
+        if source_type in (
+            ModelSourceType.LOCAL_DIFFUSERS,
+            ModelSourceType.LOCAL_SAFETENSORS,
+        ):
+            return
+
+        for comp in definition.components.values():
+            path = getattr(comp, "path", None)
+            if isinstance(path, str) and path.startswith("huggingface:"):
+                ModelPathResolver.resolve(path, local_files_only=local_files_only)
+
+    @staticmethod
     def find_component(
         definition: any,
         component_key: str,

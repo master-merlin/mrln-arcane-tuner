@@ -218,8 +218,12 @@ class JobManager:
                     logger.info("relaunching_paused_job", job_id=job_id)
                     # Keep the pause signal we just wrote — don't let start_job
                     # clear it, that's how the trainer knows to pause after
-                    # loading the latest checkpoint.
-                    self.start_job(job_id, clear_stale_signal=False)
+                    # loading the latest checkpoint. preflight=False: a resumed
+                    # run is already cached, and recovery may run on the event
+                    # loop where a blocking pre-fetch download would be unsafe.
+                    self.start_job(
+                        job_id, clear_stale_signal=False, preflight=False,
+                    )
 
                     # After start_job the status is RUNNING; set it to PAUSED
                     # because the trainer will block on the pause signal.
@@ -738,7 +742,37 @@ class JobManager:
 
     # ── Job Control ──────────────────────────────────────────────────
 
-    def start_job(self, job_id: str, clear_stale_signal: bool = True) -> None:
+    def _preflight_download(self, job: Job) -> None:
+        """Download the job's base model in-process before launching the trainer.
+
+        Best-effort progress UX only — runs the model resolve through the
+        WS-emitting ``_resolve_hf`` path so the top-bar download indicator
+        updates (the detached trainer subprocess can't emit those events). The
+        subprocess then loads from the warm HF cache. Called from ``start_job``
+        on a worker thread (off the event loop), so the blocking download is
+        safe and the WS emits schedule onto the captured loop.
+
+        Failures are swallowed: the pre-fetch must never block or fail a launch
+        that the trainer could otherwise complete — the trainer re-resolves the
+        model and surfaces any real error through the job log as before.
+        """
+        try:
+            from app.engine.models.registry import registry
+            from app.engine.utils.model_utils import ModelPathResolver
+
+            definition_id = job.config.get("definition_id") or job.plugin_id
+            definition = registry.get_definition(definition_id)
+            if definition is None:
+                return
+            ModelPathResolver.ensure_definition_cached(definition)
+        except Exception as e:
+            logger.warning(
+                "preflight_download_failed", job_id=job.id, error=str(e),
+            )
+
+    def start_job(
+        self, job_id: str, clear_stale_signal: bool = True, preflight: bool = True,
+    ) -> None:
         """Launch the training subprocess for a job.
 
         Args:
@@ -753,6 +787,12 @@ class JobManager:
                 steps). The crash-recovery ``relaunch_paused`` path passes
                 ``False`` because it *intentionally* writes a pause signal
                 immediately before calling start_job.
+            preflight: When true (the default), download the base model in this
+                (API) process before launching, so its progress reaches the
+                top-bar download indicator — the trainer subprocess can't emit
+                those WS events. The crash-recovery ``relaunch_paused`` path
+                passes ``False``: a resumed run is already cached, and recovery
+                may run on the event loop where a blocking download is unsafe.
         """
         job = self.get_job(job_id)
         if not job:
@@ -764,6 +804,9 @@ class JobManager:
         plugin = plugin_manager.get_plugin(job.plugin_id)
         if not plugin:
             raise ValueError(f"Plugin {job.plugin_id} not found")
+
+        if preflight:
+            self._preflight_download(job)
 
         if clear_stale_signal:
             from app.engine.components.signal_manager import TrainingSignalManager

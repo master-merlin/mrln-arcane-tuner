@@ -41,6 +41,12 @@ COPY backend/requirements.txt ./requirements.txt
 RUN python -m pip install --break-system-packages \
         torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
         --index-url https://download.pytorch.org/whl/cu126 \
+    # setuptools/wheel ship via apt in the base image (no pip RECORD), so pip
+    # can't uninstall them to honor the pinned versions. Install pip-managed
+    # copies with --ignore-installed first; requirements.txt then sees the
+    # pinned versions already satisfied.
+    && python -m pip install --break-system-packages --ignore-installed \
+        setuptools==78.1.1 wheel==0.46.2 \
     && python -m pip install --break-system-packages -r requirements.txt
 
 # Native shared libraries required by OpenCV (cv2) and friends at import time

@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.5.2-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 22 · Node 24 · FastAPI
+`v0.5.3-alpha` · PyTorch 2.10 · CUDA 13.0 · Angular 22 · Node 24 · FastAPI
 
 ---
 
@@ -133,7 +133,7 @@ required:
 
 ```
 mastermerlin/mrln-arcane-tuner:latest          # rolling latest
-mastermerlin/mrln-arcane-tuner:0.5.2-alpha     # pinned version
+mastermerlin/mrln-arcane-tuner:0.5.3-alpha     # pinned version
 ```
 
 The image bundles **CUDA 13.0 · PyTorch 2.10 · Python 3.12** (runtime) and a
@@ -143,8 +143,8 @@ The image bundles **CUDA 13.0 · PyTorch 2.10 · Python 3.12** (runtime) and a
 
 ```bash
 # Tag with both the version and latest so pods can pin or float.
-docker build -t mastermerlin/mrln-arcane-tuner:0.5.2-alpha -t mastermerlin/mrln-arcane-tuner:latest .
-docker push mastermerlin/mrln-arcane-tuner:0.5.2-alpha
+docker build -t mastermerlin/mrln-arcane-tuner:0.5.3-alpha -t mastermerlin/mrln-arcane-tuner:latest .
+docker push mastermerlin/mrln-arcane-tuner:0.5.3-alpha
 docker push mastermerlin/mrln-arcane-tuner:latest
 ```
 

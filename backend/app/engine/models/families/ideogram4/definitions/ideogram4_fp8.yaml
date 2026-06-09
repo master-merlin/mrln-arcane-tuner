@@ -1,0 +1,48 @@
+id: ideogram4-fp8
+family: ideogram4
+name: Ideogram 4 (fp8, 9.3B)
+version: '1.0'
+
+defaults:
+  resolution: 1024
+  learning_rate: 1e-4
+  network_rank: 16
+  network_alpha: 16
+  cache_text_embeddings: true
+
+components:
+  repo:
+    path: huggingface:ideogram-ai/ideogram-4-fp8
+    type: diffusers
+    params: {}
+  text_encoder:
+    path: huggingface:Qwen/Qwen3-VL-8B-Instruct
+    type: diffusers
+    params: {}
+
+architecture_params:
+  transformer._class_name: Ideogram4Transformer2DModel
+  transformer.emb_dim: 4608
+  transformer.hidden_size: 4608
+  transformer.num_layers: 34
+  transformer.num_heads: 18
+  transformer.num_attention_heads: 18
+  transformer.intermediate_size: 12288
+  transformer.adanln_dim: 512
+  transformer.in_channels: 128
+  transformer.patch_size: 2
+  transformer.rope_theta: 5000000
+  transformer.mrope_section:
+  - 24
+  - 20
+  - 20
+  transformer.norm_eps: 1.0e-05
+  te.model_type: qwen3_vl
+  te.max_length: 2048
+
+lora_targetable_modules:
+  - qkv
+  - o
+  - w1
+  - w2
+  - w3

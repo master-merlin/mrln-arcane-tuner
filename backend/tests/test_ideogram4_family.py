@@ -236,5 +236,28 @@ def test_driver_get_saver_returns_saver():
     assert isinstance(drv.get_saver(), IdeogramV4Saver)
 
 
+def test_definition_yaml_loads():
+    from pathlib import Path
+    import yaml
+    from app.engine.core.definitions import ModelDefinition
+
+    yaml_path = (
+        Path(__file__).parent.parent
+        / "app/engine/models/families/ideogram4/definitions/ideogram4_fp8.yaml"
+    )
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+    if "components" in data:
+        for k, v in data["components"].items():
+            if isinstance(v, str):
+                data["components"][k] = {"path": v}
+
+    definition = ModelDefinition(**data)
+    assert definition.family == "ideogram4"
+    assert "qkv" in definition.lora_targetable_modules
+    assert "w1" in definition.lora_targetable_modules
+    assert "o" in definition.lora_targetable_modules
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

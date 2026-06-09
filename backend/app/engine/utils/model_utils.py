@@ -85,15 +85,24 @@ class ModelPathResolver:
         # model_id for the WS payload — disambiguate single-file vs snapshot
         progress_id = f"{repo_id}/{filename}" if filename else repo_id
 
-        # Try local-only first — avoids symlink errors on Windows. No
-        # download happens here, so no progress emit is needed.
-        try:
-            if filename:
-                return hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=True)
-            else:
+        # Offline / skip-update mode: cache only, never hit the network.
+        # We do NOT use this as a fast-path when online: a previously
+        # interrupted download leaves a *partial* snapshot in the cache, and
+        # ``snapshot_download(local_files_only=True)`` returns it as if it were
+        # complete (it does not verify the file manifest offline). The loader
+        # then fails on a missing subfolder (e.g. ``tokenizer/``) with
+        # "Unrecognized model ... should have a ``model_type`` key". So when
+        # online we always run the resumable download below, which re-checks
+        # every file's etag and fetches only what's missing — self-healing a
+        # partial cache.
+        if local_files_only:
+            try:
+                if filename:
+                    return hf_hub_download(
+                        repo_id=repo_id, filename=filename, local_files_only=True,
+                    )
                 return snapshot_download(repo_id=repo_id, local_files_only=True)
-        except Exception:
-            if local_files_only:
+            except Exception:
                 raise FileNotFoundError(
                     f"Model '{repo_id}' not found in local HF cache. "
                     "Disable offline / skip-update mode or download "

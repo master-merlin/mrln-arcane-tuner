@@ -33,36 +33,35 @@ class TestResolveLocal:
 class TestResolveHuggingFace:
     @patch("app.engine.utils.model_utils.snapshot_download")
     def test_hf_full_repo(self, mock_download):
-        """huggingface:<repo_id> should trigger snapshot_download."""
-        mock_download.side_effect = [
-            Exception("not cached"),  # local_files_only first
-            "/cache/repo",  # actual download
-        ]
-        # local only fails, then full download succeeds
-        mock_download.side_effect = Exception("not cached")
-
-        with patch("app.engine.utils.model_utils.snapshot_download") as m:
-            m.side_effect = [Exception("not cached"), "/cache/repo"]
-            result = ModelPathResolver.resolve("huggingface:org/model")
-            assert result == "/cache/repo"
+        """huggingface:<repo_id> runs the resumable snapshot_download."""
+        mock_download.return_value = "/cache/repo"
+        result = ModelPathResolver.resolve("huggingface:org/model")
+        assert result == "/cache/repo"
+        # Online → no cache-only short-circuit (would mask a partial cache).
+        for call in mock_download.call_args_list:
+            assert call.kwargs.get("local_files_only") is not True
+        assert mock_download.call_count == 1
 
     @patch("app.engine.utils.model_utils.hf_hub_download")
     def test_hf_single_file(self, mock_download):
-        """huggingface:<repo_id>:<filename> should trigger hf_hub_download."""
-        mock_download.side_effect = [
-            Exception("not cached"),
-            "/cache/model.safetensors",
-        ]
+        """huggingface:<repo_id>:<filename> runs the resumable hf_hub_download."""
+        mock_download.return_value = "/cache/model.safetensors"
         result = ModelPathResolver.resolve("huggingface:org/model:model.safetensors")
         assert result == "/cache/model.safetensors"
+        for call in mock_download.call_args_list:
+            assert call.kwargs.get("local_files_only") is not True
+        assert mock_download.call_count == 1
 
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_hf_uses_local_cache_first(self, mock_download):
-        """Should try local_files_only=True first and skip download if cached."""
+    def test_hf_offline_uses_local_cache_only(self, mock_download):
+        """Offline / skip-update mode reads the cache and never downloads."""
         mock_download.return_value = "/cache/repo"
-        result = ModelPathResolver.resolve("huggingface:org/model")
-        # First call should be local_files_only=True
-        mock_download.assert_called_once_with(repo_id="org/model", local_files_only=True)
+        result = ModelPathResolver.resolve(
+            "huggingface:org/model", local_files_only=True,
+        )
+        mock_download.assert_called_once_with(
+            repo_id="org/model", local_files_only=True,
+        )
         assert result == "/cache/repo"
 
 

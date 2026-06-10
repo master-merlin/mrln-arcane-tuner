@@ -13,28 +13,29 @@ import os
 _VARIANTS_SUBDIR = "captions"
 
 
-def variant_dir(dataset_path: str, definition_id: str) -> str:
-    return os.path.join(dataset_path, _VARIANTS_SUBDIR, definition_id)
+def variant_dir(dataset_path: str, definition_id: str, masked: bool = False) -> str:
+    base = os.path.join(dataset_path, _VARIANTS_SUBDIR, definition_id)
+    return os.path.join(base, "masked") if masked else base
 
 
-def variant_path(dataset_path: str, definition_id: str, stem: str) -> str:
-    return os.path.join(variant_dir(dataset_path, definition_id), f"{stem}.txt")
+def variant_path(dataset_path: str, definition_id: str, stem: str, masked: bool = False) -> str:
+    return os.path.join(variant_dir(dataset_path, definition_id, masked), f"{stem}.txt")
 
 
-def has_variant(dataset_path: str, definition_id: str, stem: str) -> bool:
-    return os.path.exists(variant_path(dataset_path, definition_id, stem))
+def has_variant(dataset_path: str, definition_id: str, stem: str, masked: bool = False) -> bool:
+    return os.path.exists(variant_path(dataset_path, definition_id, stem, masked))
 
 
-def read_variant(dataset_path: str, definition_id: str, stem: str) -> str | None:
-    path = variant_path(dataset_path, definition_id, stem)
+def read_variant(dataset_path: str, definition_id: str, stem: str, masked: bool = False) -> str | None:
+    path = variant_path(dataset_path, definition_id, stem, masked)
     if not os.path.exists(path):
         return None
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
-def write_variant(dataset_path: str, definition_id: str, stem: str, text: str) -> None:
-    path = variant_path(dataset_path, definition_id, stem)
+def write_variant(dataset_path: str, definition_id: str, stem: str, text: str, masked: bool = False) -> None:
+    path = variant_path(dataset_path, definition_id, stem, masked)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
@@ -49,12 +50,31 @@ def _read_general(dataset_path: str, stem: str) -> str | None:
     return None
 
 
-def resolve_caption(dataset_path: str, stem: str, definition_id: str | None) -> str:
-    """Return the variant caption when present, else the general caption, else ''."""
+def _read_masked(dataset_path: str, stem: str) -> str | None:
+    path = os.path.join(dataset_path, "masked", f"{stem}.txt")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
+
+
+def resolve_caption(dataset_path: str, stem: str, definition_id: str | None, masked: bool = False) -> str:
+    """Return the variant caption when present, else the masked/general caption, else ''.
+
+    Original axis (masked=False): variant → general `{stem}.txt` → ''.
+    Masked axis (masked=True):    masked variant → `masked/{stem}.txt`
+                                  → original general `{stem}.txt` → '' .
+    The masked chain falls back to the original caption (not '') when no masked
+    caption exists — an unmasked caption is a better seed than nothing.
+    """
     if definition_id:
-        variant = read_variant(dataset_path, definition_id, stem)
+        variant = read_variant(dataset_path, definition_id, stem, masked)
         if variant is not None:
             return variant
+    if masked:
+        masked_cap = _read_masked(dataset_path, stem)
+        if masked_cap is not None:
+            return masked_cap
     general = _read_general(dataset_path, stem)
     return general if general is not None else ""
 

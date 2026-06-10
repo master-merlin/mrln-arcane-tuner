@@ -213,6 +213,22 @@ describe('DetailCaptionSidebar — model-aware variant load', () => {
         expect(header.textContent).toContain('Caption · flux1-schnell');
     });
 
+    it('reloads the variant after a suggestion is accepted', () => {
+        const { fixture, http, store } = mountVariantLoad();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1')
+            .flush({ text: 'old variant', has_variant: true });
+        expect(fixture.componentInstance.captionText()).toBe('old variant');
+
+        (fixture.componentInstance as unknown as { onVariantAccepted: () => void }).onVariantAccepted();
+        fixture.detectChanges();
+        http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1')
+            .flush({ text: 'new variant', has_variant: true });
+        expect(fixture.componentInstance.captionText()).toBe('new variant');
+    });
+
     afterEach(() => {
         // The AI caption-settings child + the suggestion-review child fire
         // their own init GETs (preferences, templates, suggestions listing).

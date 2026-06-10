@@ -168,7 +168,8 @@ import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
                     <app-caption-suggestion-review
                         [datasetName]="datasetName()"
                         [stem]="currentStem()"
-                        [definitionId]="modelContext.activeDefinitionId()" />
+                        [definitionId]="modelContext.activeDefinitionId()"
+                        (accepted)="onVariantAccepted()" />
                     @if (currentPair().metadata?.has_masked_caption) {
                         <app-caption-suggestion-review
                             [datasetName]="datasetName()"
@@ -216,6 +217,11 @@ export class DetailCaptionSidebarComponent {
     /** The text the load effect last published — the revert target in
      *  variant mode (where there's no `pair.caption_content` to fall back to). */
     private baseline = signal('');
+
+    /** Bumped to force the load effect to re-fetch the variant — e.g. after a
+     *  suggestion is accepted, so the editor reflects the promoted variant
+     *  immediately instead of only on the next navigation. */
+    private reloadTrigger = signal(0);
 
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
@@ -270,6 +276,7 @@ export class DetailCaptionSidebarComponent {
         // in-place save mutations (parent assigns pair.caption_content) do
         // not clobber an in-progress edit.
         effect(() => {
+            this.reloadTrigger();   // re-run after an accepted suggestion promotes a variant
             const pair = this.currentPair();
             const masked = this.showMasked();
             const def = this.modelContext.activeDefinitionId();
@@ -381,6 +388,12 @@ export class DetailCaptionSidebarComponent {
 
     discardSuggestion() {
         this.suggestedCaption.set(null);
+    }
+
+    /** A pending suggestion was accepted → its text is now the live variant.
+     *  Re-run the load effect so the editor reflects it without re-navigation. */
+    protected onVariantAccepted(): void {
+        this.reloadTrigger.update(n => n + 1);
     }
 
     /** Queue an LLM refine pass for the current image under the active definition. */

@@ -418,13 +418,30 @@ export class DatasetWorkspaceComponent {
      *     store failure we restore the previous text.
      */
     protected onSaveCaption(
-        event: { pair: DatasetPair; content: string; isMasked: boolean },
+        // `definitionId` is optional so Browse-mode (grid editing, which has no
+        // variant concept) can omit it; DetailsMode always supplies it (null
+        // unless in variant mode). Absent/null ⇒ the general/masked path runs.
+        event: { pair: DatasetPair; content: string; isMasked: boolean; definitionId?: string | null },
     ): void {
         const d = this.dataset();
         if (!d) return;
-        const { pair, content, isMasked } = event;
+        const { pair, content, isMasked, definitionId } = event;
         if (!pair?.media_file) return;
         const mediaFile: string = pair.media_file;
+
+        // Variant mode: write the per-definition variant. The general caption
+        // (and its has_caption metadata) is the untouched base, so we do NOT
+        // stamp the caption cache or MediaItemStore here. Gated to !isMasked —
+        // a masked save always routes to the general masked path below.
+        if (definitionId && !isMasked) {
+            const variantStem = mediaFile.substring(0, mediaFile.lastIndexOf('.'));
+            this.datasetsApi.saveCaptionVariant(d.name, definitionId, variantStem, content).subscribe({
+                next: () => this.toast.success('Variant saved.'),
+                error: () => this.toast.error('Could not save caption variant.'),
+            });
+            return;
+        }
+
         // Masked captions live under ``masked/<stem>.txt`` on disk — legacy
         // parity with ``dataset-viewer.saveCurrentCaption``. ``pair.caption_file``
         // always points to the PLAIN caption file even when the masked variant

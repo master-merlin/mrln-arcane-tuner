@@ -64,12 +64,16 @@ def test_chat_vision_retries_on_429_then_succeeds(monkeypatch):
 
 def test_chat_vision_gives_up_after_retries(monkeypatch):
     monkeypatch.setattr(openai_compat, "_sleep", lambda s: None)
+    calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
         return httpx.Response(500)
 
     with pytest.raises(RuntimeError, match="failed after retries"):
         openai_compat.chat_vision(**_vision_kwargs(httpx.MockTransport(handler)))
+
+    assert calls["n"] == len(openai_compat.RETRY_DELAYS) + 1
 
 
 def test_chat_vision_401_fails_fast_without_retry(monkeypatch):

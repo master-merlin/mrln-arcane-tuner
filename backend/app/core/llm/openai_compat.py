@@ -13,9 +13,10 @@ import base64
 import time
 
 import httpx
-import structlog
 
-logger = structlog.get_logger(__name__)
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 #: model_id prefix marking external API providers (e.g. "api-openai").
 API_MODEL_PREFIX = "api-"

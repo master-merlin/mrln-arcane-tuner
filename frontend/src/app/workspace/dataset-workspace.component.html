@@ -66,9 +66,9 @@
 
             <!-- Right: scope · analyze / cache / rescan · close -->
             <div class="ws-right">
+                <app-project-membership-pill [dataset]="dataset()"/>
                 <app-context-switcher/>
                 <app-model-selector/>
-                <app-project-membership-pill [dataset]="dataset()"/>
                 <span class="ws-divider"></span>
                 <button class="btn sm" type="button" (click)="openAction('analyze')"
                         title="Analyze dataset">

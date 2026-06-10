@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.api._path_guard import validate_path_within
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.captioning.caption_batch import run_caption_batch
+from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
@@ -167,5 +168,51 @@ async def batch_caption_api(request: BatchCaptionRequest):
             target=request.target,
         ),
         lane="gpu",
+    )
+    return {"task_id": task.id}
+
+
+class RefineBatchRequest(BaseModel):
+    """Request body for batch LLM caption refinement."""
+
+    dataset_name: str
+    image_rel_paths: list[str]
+    definition_id: str
+    preset: str
+    model: str | None = None
+
+
+@router.post("/refine-batch", response_model=TaskEnqueuedResponse)
+async def refine_batch_api(request: RefineBatchRequest):
+    """Start a backend-owned LLM caption-refinement task on the background lane.
+
+    Inference is offloaded to the Ollama server, so this runs on the non-GPU
+    ``background`` lane and can proceed alongside a GPU captioning task. Each
+    image's caption is refined and written as a pending suggestion (the user
+    accepts via the suggestion routes — the live variant is never overwritten)."""
+    from app.core.settings_manager import SettingsManager
+
+    settings = SettingsManager.get_instance().get_module_settings("llm_refine") or {}
+    base_url = settings.get("base_url", "http://localhost:11434")
+    model = request.model or settings.get("model", "qwen2.5:7b-instruct")
+    task = task_manager.create(
+        type="caption_refine_batch",
+        title=f"Refine captions ({request.definition_id})",
+        total=len(request.image_rel_paths),
+        dataset_name=request.dataset_name,
+        target="original",
+    )
+    task_manager.enqueue(
+        task.id,
+        lambda tid: run_caption_refine_batch(
+            tid,
+            dataset_name=request.dataset_name,
+            image_rel_paths=request.image_rel_paths,
+            definition_id=request.definition_id,
+            preset=request.preset,
+            model=model,
+            base_url=base_url,
+        ),
+        lane="background",
     )
     return {"task_id": task.id}

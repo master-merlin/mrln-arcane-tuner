@@ -673,36 +673,34 @@ export class DatasetService {
 
   // ── Caption Variant Suggestions & Refine ───────────────────────────
 
-  listCaptionSuggestions(name: string, definitionId: string): Observable<SuggestionsResponse> {
-    return this.http.get<SuggestionsResponse>(
-      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions?definition_id=${encodeURIComponent(definitionId)}`,
-    );
+  listCaptionSuggestions(name: string, definitionId: string, masked = false): Observable<SuggestionsResponse> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions?definition_id=${encodeURIComponent(definitionId)}`;
+    if (masked) url += '&masked=true';
+    return this.http.get<SuggestionsResponse>(url);
   }
 
-  acceptCaptionSuggestion(name: string, definitionId: string, stem: string): Observable<{ status: string }> {
-    return this.http.post<{ status: string }>(
-      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept`,
-      { definition_id: definitionId, stem },
-    );
+  acceptCaptionSuggestion(name: string, definitionId: string, stem: string, masked = false): Observable<{ status: string }> {
+    const body: Record<string, unknown> = { definition_id: definitionId, stem };
+    if (masked) body['masked'] = true;
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept`, body);
   }
 
-  rejectCaptionSuggestion(name: string, definitionId: string, stem: string): Observable<{ status: string }> {
-    return this.http.post<{ status: string }>(
-      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/reject`,
-      { definition_id: definitionId, stem },
-    );
+  rejectCaptionSuggestion(name: string, definitionId: string, stem: string, masked = false): Observable<{ status: string }> {
+    const body: Record<string, unknown> = { definition_id: definitionId, stem };
+    if (masked) body['masked'] = true;
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/reject`, body);
   }
 
-  acceptAllCaptionSuggestions(name: string, definitionId: string): Observable<{ accepted: number }> {
-    return this.http.post<{ accepted: number }>(
-      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept-all`,
-      { definition_id: definitionId },
-    );
+  acceptAllCaptionSuggestions(name: string, definitionId: string, masked = false): Observable<{ accepted: number }> {
+    const body: Record<string, unknown> = { definition_id: definitionId };
+    if (masked) body['masked'] = true;
+    return this.http.post<{ accepted: number }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept-all`, body);
   }
 
-  refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string): Observable<{ task_id: string }> {
+  refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string, target?: 'original' | 'masked'): Observable<{ task_id: string }> {
     const body: Record<string, unknown> = { dataset_name: name, image_rel_paths: imageRelPaths, definition_id: definitionId, preset };
     if (model) body['model'] = model;
+    if (target) body['target'] = target;
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/refine-batch`, body);
   }
 

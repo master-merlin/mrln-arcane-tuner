@@ -67,5 +67,40 @@ describe('DatasetService — caption refine/suggestions', () => {
         expect((result as { task_id: string }).task_id).toBe('t1');
     });
 
+    it('lists masked caption suggestions', () => {
+        const { svc, http } = setup();
+        svc.listCaptionSuggestions('ds', 'flux1-schnell', true).subscribe();
+        const req = http.expectOne('/api/datasets/ds/caption-suggestions?definition_id=flux1-schnell&masked=true');
+        expect(req.request.method).toBe('GET');
+        req.flush({ definition_id: 'flux1-schnell', items: [] });
+    });
+
+    it('accepts a masked suggestion', () => {
+        const { svc, http } = setup();
+        svc.acceptCaptionSuggestion('ds', 'flux1-schnell', 'a', true).subscribe();
+        const req = http.expectOne('/api/datasets/ds/caption-suggestions/accept');
+        expect(req.request.body).toEqual({ definition_id: 'flux1-schnell', stem: 'a', masked: true });
+        req.flush({ status: 'accepted' });
+    });
+
+    it('accepts all masked suggestions', () => {
+        const { svc, http } = setup();
+        svc.acceptAllCaptionSuggestions('ds', 'flux1-schnell', true).subscribe();
+        const req = http.expectOne('/api/datasets/ds/caption-suggestions/accept-all');
+        expect(req.request.body).toEqual({ definition_id: 'flux1-schnell', masked: true });
+        req.flush({ accepted: 0 });
+    });
+
+    it('enqueues a masked refine batch', () => {
+        const { svc, http } = setup();
+        svc.refineCaptions('ds', ['a.png'], 'flux1-schnell', 'standardize', undefined, 'masked').subscribe();
+        const req = http.expectOne('/api/captions/refine-batch');
+        expect(req.request.body).toEqual({
+            dataset_name: 'ds', image_rel_paths: ['a.png'], definition_id: 'flux1-schnell',
+            preset: 'standardize', target: 'masked',
+        });
+        req.flush({ task_id: 't1' });
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

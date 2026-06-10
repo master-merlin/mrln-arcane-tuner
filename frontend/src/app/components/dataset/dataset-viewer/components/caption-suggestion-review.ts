@@ -1,6 +1,17 @@
 // caption-suggestion-review.ts
 import { ChangeDetectionStrategy, Component, effect, inject, input, output, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatasetService } from '../../../../services/dataset';
+import { WebSocketService } from '../../../../services/websocket.service';
+
+/** Backend `suggestion.written` payload — emitted per stem by the refine batch worker. */
+interface SuggestionWritten {
+    dataset_name: string;
+    stem: string;
+    definition_id: string;
+    target: 'original' | 'masked';
+    suggestion: string;
+}
 
 /**
  * Shows the pending LLM-refined caption suggestion (if any) for one image under the
@@ -34,6 +45,7 @@ export class CaptionSuggestionReviewComponent {
     accepted = output<void>();
 
     private api = inject(DatasetService);
+    private ws = inject(WebSocketService);
     protected suggestion = signal<string | null>(null);
 
     constructor() {
@@ -48,6 +60,19 @@ export class CaptionSuggestionReviewComponent {
                 this.suggestion.set(item ? item.suggestion : null);
             });
         });
+
+        // Live update: the refine batch is async, so when the backend writes the
+        // suggestion for the image we're viewing, show it without re-navigation.
+        this.ws.on<SuggestionWritten>('suggestion.written')
+            .pipe(takeUntilDestroyed())
+            .subscribe(e => {
+                if (e.dataset_name === this.datasetName()
+                    && e.stem === this.stem()
+                    && e.definition_id === this.definitionId()
+                    && (e.target === 'masked') === this.masked()) {
+                    this.suggestion.set(e.suggestion);
+                }
+            });
     }
 
     accept(): void {

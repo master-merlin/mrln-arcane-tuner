@@ -21,6 +21,38 @@ from app.core.tasks.task_manager import task_manager
 logger = get_logger(__name__)
 
 
+def _emit_suggestion_written(
+    *,
+    dataset_name: str,
+    stem: str,
+    definition_id: str,
+    target: str,
+    suggestion: str,
+) -> None:
+    """Broadcast a ``suggestion.written`` event so the frontend review updates
+    live (no re-navigation). Mirrors ``caption_batch._emit_caption_written``:
+    the worker runs its own ``asyncio.run`` loop on a background thread, so the
+    broadcast MUST be scheduled onto the main app loop (where the WS
+    connections live) via ``run_coroutine_threadsafe`` — awaiting it on the
+    worker's loop would never reach connected clients. No-op if no loop yet."""
+    loop = task_manager._loop
+    if loop is None:
+        return
+    from app.core.events import event_manager
+
+    payload = {
+        "dataset_name": dataset_name,
+        "stem": stem,
+        "definition_id": definition_id,
+        "target": target,
+        "suggestion": suggestion,
+    }
+    asyncio.run_coroutine_threadsafe(
+        event_manager.broadcast("suggestion.written", payload),
+        loop,
+    )
+
+
 def run_caption_refine_batch(
     task_id: str,
     *,
@@ -53,6 +85,13 @@ def run_caption_refine_batch(
                 refined = await caption_refine.refine_caption(client, model, source, preset)
                 caption_suggestions.write_suggestion(ds_path, definition_id, stem, refined, masked=masked)
                 ok += 1
+                _emit_suggestion_written(
+                    dataset_name=dataset_name,
+                    stem=stem,
+                    definition_id=definition_id,
+                    target=target,
+                    suggestion=refined,
+                )
             except Exception:
                 logger.exception("caption_refine_failed", rel=rel)
                 failed += 1

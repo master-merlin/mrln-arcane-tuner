@@ -703,6 +703,12 @@ export class DatasetService {
     return this.http.get<{ text: string; has_variant: boolean }>(url);
   }
 
+  getCaptionVariantMap(name: string, definitionId: string, masked = false): Observable<{ variants: Record<string, string> }> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/caption-variant-map?definition_id=${encodeURIComponent(definitionId)}`;
+    if (masked) url += '&masked=true';
+    return this.http.get<{ variants: Record<string, string> }>(url);
+  }
+
   saveCaptionVariant(name: string, definitionId: string, stem: string, text: string, masked = false): Observable<{ ok: boolean }> {
     return this.http.put<{ ok: boolean }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-variant`,
       { definition_id: definitionId, stem, text, masked });

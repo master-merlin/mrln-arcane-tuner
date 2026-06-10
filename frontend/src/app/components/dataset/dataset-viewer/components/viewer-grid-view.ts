@@ -1,15 +1,16 @@
-import { Component, ElementRef, effect, input, output, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ElementRef, computed, effect, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
 
 /**
- * A grid row: a dataset pair plus the transient `_captionDirty` flag the
- * textarea stamps in place so blur can tell a real edit from a focus-then-blur
- * (which must NOT save). A plain `DatasetPair` is assignable to this (the flag
- * is optional), so parents can keep passing `DatasetPair[]`.
+ * A grid row: a dataset pair plus two transient fields the textarea stamps in
+ * place — `_captionDirty` (so blur can tell a real edit from a focus-then-blur,
+ * which must NOT save) and `_variantCaption` (the edited model-aware variant
+ * text, handed to the parent on save). A plain `DatasetPair` is assignable to
+ * this (both are optional), so parents can keep passing `DatasetPair[]`.
  */
-type GridPair = DatasetPair & { _captionDirty?: boolean };
+type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: string };
 
 /** Payload emitted by the per-tile crop button. */
 export interface GridCropRequest {
@@ -153,7 +154,7 @@ export interface GridCropRequest {
                          <!-- Editable Caption Area -->
                          <div class="flex-1 flex flex-col bg-surface-mid border-t border-surface-high">
                             <textarea
-                                [ngModel]="showMasked() && pair.masked_caption_content != null ? pair.masked_caption_content : pair.caption_content"
+                                [ngModel]="displayCaption(pair)"
                                 (ngModelChange)="onCaptionEdit(pair, $event)"
                                 (blur)="onCaptionBlur(pair)"
                                 class="w-full h-full bg-transparent text-text-secondary text-xs p-3 focus:bg-base focus:outline-none resize-none font-mono"
@@ -269,6 +270,24 @@ export class ViewerGridViewComponent {
      *  changes the matching tile gets a brand-coloured outline AND is
      *  scrolled into view. */
     activeMediaFile = input<string | null>(null);
+    /** Active model-aware definition id, or null when model-aware is off.
+     *  When set (and not masked) the grid shows + edits the per-definition
+     *  caption *variant* instead of the general caption — same mechanics as
+     *  the details view. Off ⇒ byte-identical general-caption behaviour. */
+    definitionId = input<string | null>(null);
+    /** Resolved variant texts by stem for the active definition (only stems
+     *  that HAVE a variant; absent stems fall back to the general caption). */
+    variantCaptions = input<Record<string, string>>({});
+
+    /** True when editing per-definition variants (model-aware + a definition +
+     *  not viewing masked captions). */
+    protected variantMode = computed(() => !!this.definitionId() && !this.showMasked());
+
+    /** Display/edit buffer for variant text, keyed by stem. Seeded from
+     *  `variantCaptions` (falling back to the general caption) whenever the
+     *  definition, the resolved map, or the pair list changes; edits live here
+     *  too so the textarea stays reactive under OnPush. */
+    private variantText = signal<Record<string, string>>({});
 
     private scrollHost = viewChild<ElementRef<HTMLElement>>('scrollHost');
 
@@ -335,6 +354,33 @@ export class ViewerGridViewComponent {
             if (!mf) return;
             queueMicrotask(() => this.scrollActiveIntoView(mf));
         });
+
+        // Seed the variant display buffer whenever the definition, the resolved
+        // variant map, or the pair list changes. Reads inputs reactively and
+        // writes the signal untracked so it never re-triggers itself.
+        effect(() => {
+            const map = this.variantCaptions();
+            const def = this.definitionId();
+            const masked = this.showMasked();
+            const list = this.pairs();
+            if (!def || masked) return;
+            const next: Record<string, string> = {};
+            for (const p of list) next[p.stem] = map[p.stem] ?? p.caption_content ?? '';
+            untracked(() => this.variantText.set(next));
+        });
+    }
+
+    /** The caption text shown in a tile: the per-definition variant in
+     *  model-aware mode (falling back to the general caption for stems with no
+     *  variant yet), else the masked or general caption as before. */
+    displayCaption(pair: GridPair): string {
+        if (this.variantMode()) {
+            const t = this.variantText()[pair.stem];
+            return t !== undefined ? t : (pair.caption_content ?? '');
+        }
+        return this.showMasked() && pair.masked_caption_content != null
+            ? pair.masked_caption_content
+            : (pair.caption_content ?? '');
     }
 
     private scrollActiveIntoView(mediaFile: string): void {
@@ -425,7 +471,12 @@ export class ViewerGridViewComponent {
      * from a focus-then-blur (which used to trigger an unwanted save).
      */
     onCaptionEdit(pair: GridPair, value: string): void {
-        if (this.showMasked()) {
+        if (this.variantMode()) {
+            // Variant mode: keep the general caption untouched. Stamp the pair
+            // (handed to the parent on save) AND the reactive buffer (display).
+            pair._variantCaption = value;
+            this.variantText.update(m => ({ ...m, [pair.stem]: value }));
+        } else if (this.showMasked()) {
             pair.masked_caption_content = value;
         } else {
             pair.caption_content = value;

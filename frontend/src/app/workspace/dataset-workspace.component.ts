@@ -6,7 +6,9 @@ import {
     inject,
     signal,
 } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of, switchMap } from 'rxjs';
+import { toObservable, takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ModelContextStore } from '../state/model-context.store';
 import { OverlayStore, type WorkspaceMode } from '../state/overlay.store';
 import { DatasetStore } from '../state/dataset.store';
 import { MediaItemStore, MediaItem } from '../state/media-item.store';
@@ -83,6 +85,7 @@ export class DatasetWorkspaceComponent {
     private sync = inject(DatasetSyncService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
+    protected modelContext = inject(ModelContextStore);
 
     /** Datasets whose `/pairs` we've fetched at least once (acts as the
      *  load-state marker; the actual rows now live in MediaItemStore). */
@@ -199,6 +202,19 @@ export class DatasetWorkspaceComponent {
     /** Render edited overlays in place of originals when true (legacy default). */
     protected showOverlay = signal<boolean>(true);
 
+    /** Active model-aware definition for the grid, or null when model-aware is
+     *  off / a masked view is active (the grid only does the original axis). */
+    protected variantDefinitionId = computed<string | null>(() =>
+        this.modelContext.modelAware() && !this.showMasked()
+            ? this.modelContext.activeDefinitionId()
+            : null,
+    );
+    /** Resolved variant texts by stem for {@link variantDefinitionId}; fed to
+     *  the Browse grid so it overlays model-aware captions. Empty when off. */
+    protected variantCaptions = signal<Record<string, string>>({});
+    /** Bumped to force a variant-map refetch (after a variant save / accept). */
+    private variantMapReload = signal(0);
+
     /** True when at least one pair has a masked-image flag — drives toggle enablement. */
     protected hasMaskedImages = computed<boolean>(() =>
         this.pairs().some(p => !!p?.metadata?.has_masked),
@@ -265,6 +281,24 @@ export class DatasetWorkspaceComponent {
         // Ensure the dataset store is hydrated so the lookup above succeeds.
         // No-op if `loadAll` already ran on the Datasets screen.
         void this.datasets.loadAll().catch(() => undefined);
+
+        // Fetch the per-definition variant map for the grid whenever the active
+        // definition / dataset changes (or a save bumps the reload counter).
+        // Cleared to {} when model-aware is off so the grid is byte-identical.
+        const variantMapQuery = computed(() => {
+            const d = this.dataset();
+            const def = this.variantDefinitionId();
+            const r = this.variantMapReload();
+            return d && def ? { name: d.name, def, r } : null;
+        });
+        toObservable(variantMapQuery)
+            .pipe(
+                switchMap(q =>
+                    q ? this.datasetsApi.getCaptionVariantMap(q.name, q.def) : of({ variants: {} }),
+                ),
+                takeUntilDestroyed(),
+            )
+            .subscribe(res => this.variantCaptions.set(res.variants ?? {}));
 
         // Effect 1 — resolve the dataset row.
         //
@@ -436,7 +470,10 @@ export class DatasetWorkspaceComponent {
         if (definitionId && !isMasked) {
             const variantStem = mediaFile.substring(0, mediaFile.lastIndexOf('.'));
             this.datasetsApi.saveCaptionVariant(d.name, definitionId, variantStem, content).subscribe({
-                next: () => this.toast.success('Variant saved.'),
+                next: () => {
+                    this.toast.success('Variant saved.');
+                    this.variantMapReload.update(n => n + 1);  // keep the grid overlay fresh
+                },
                 error: () => this.toast.error('Could not save caption variant.'),
             });
             return;

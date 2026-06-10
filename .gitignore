@@ -28,6 +28,7 @@ backend/tests/tests.log
 /docs/
 /adapters/
 /scripts/
+graphify-out/
 
 # ========================
 # Python

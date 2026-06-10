@@ -1,0 +1,40 @@
+<!-- frontend/src/app/shell/model-selector/model-selector.component.html -->
+<div class="flex items-center gap-2 text-xs">
+    <label class="flex items-center gap-1.5 cursor-pointer select-none">
+        <input
+            type="checkbox"
+            [ngModel]="ctx.modelAware()"
+            (ngModelChange)="toggleModelAware($event)"
+            data-testid="model-aware-toggle"
+        />
+        <span class="text-text-subtle">Model-aware</span>
+    </label>
+
+    @if (ctx.modelAware()) {
+        <select
+            class="bg-surface-mid border border-surface-high rounded-theme-md px-2 py-1"
+            [ngModel]="selectedFamily()"
+            (ngModelChange)="onFamilyChange($event)"
+            data-testid="family-select"
+        >
+            <option value="">Family…</option>
+            @for (fam of families(); track fam) {
+                <option [value]="fam">{{ fam }}</option>
+            }
+        </select>
+
+        @if (selectedFamily()) {
+            <select
+                class="bg-surface-mid border border-surface-high rounded-theme-md px-2 py-1"
+                [ngModel]="ctx.activeDefinitionId()"
+                (ngModelChange)="onDefinitionChange($event)"
+                data-testid="definition-select"
+            >
+                <option [ngValue]="null">Definition…</option>
+                @for (d of familyDefinitions(); track d.id) {
+                    <option [value]="d.id">{{ d.name }}</option>
+                }
+            </select>
+        }
+    }
+</div>

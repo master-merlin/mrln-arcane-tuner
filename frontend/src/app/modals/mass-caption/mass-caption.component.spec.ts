@@ -267,7 +267,20 @@ describe('MassCaptionComponent — Refine tab', () => {
         comp.refineStrategy.set('all');
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.startRefine();
-        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original', 'auto');
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original', 'auto', false);
+    });
+
+    it('startRefine forwards the auto-accept flag', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.pairs.set([{ media_file: 'a.png', caption_content: 'cap a' }]);
+        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct', style: 'auto' });
+        comp.refineTarget.set('original');
+        comp.refineStrategy.set('all');
+        comp.autoAccept.set(true);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.startRefine();
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original', 'auto', true);
     });
 
     it('startRefine targets masked-captioned images when the masked target is selected', async () => {
@@ -282,6 +295,6 @@ describe('MassCaptionComponent — Refine tab', () => {
         comp.refineStrategy.set('all');
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         await comp.startRefine();
-        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'masked', 'tags');
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'masked', 'tags', false);
     });
 });

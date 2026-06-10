@@ -18,6 +18,7 @@ import { DatasetService, Dataset, type DatasetPair } from '../services/dataset';
 import { ScopeStore } from '../state/scope.store';
 import { ToastService } from '../services/toast';
 import { RuntimeConfigService } from '../services/runtime-config.service';
+import { WebSocketService } from '../services/websocket.service';
 import { SegmentedComponent, type SegOption } from '../ui/segmented/segmented.component';
 import { IconButtonComponent } from '../ui/icon-button/icon-button.component';
 import { ContextSwitcherComponent } from '../shell/context-switcher/context-switcher.component';
@@ -86,6 +87,7 @@ export class DatasetWorkspaceComponent {
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
     protected modelContext = inject(ModelContextStore);
+    private socket = inject(WebSocketService);
 
     /** Datasets whose `/pairs` we've fetched at least once (acts as the
      *  load-state marker; the actual rows now live in MediaItemStore). */
@@ -299,6 +301,18 @@ export class DatasetWorkspaceComponent {
                 takeUntilDestroyed(),
             )
             .subscribe(res => this.variantCaptions.set(res.variants ?? {}));
+
+        // Auto-accepted refines promote variants in the background — refresh the
+        // grid overlay when one lands for the active dataset + definition.
+        this.socket
+            .on<{ dataset_name: string; definition_id: string; target: string }>('variant.written')
+            .pipe(takeUntilDestroyed())
+            .subscribe(e => {
+                const d = this.dataset();
+                if (d && e.dataset_name === d.name && e.definition_id === this.variantDefinitionId()) {
+                    this.variantMapReload.update(n => n + 1);
+                }
+            });
 
         // Effect 1 — resolve the dataset row.
         //

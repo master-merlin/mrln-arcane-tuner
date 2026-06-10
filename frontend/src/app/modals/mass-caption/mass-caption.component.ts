@@ -185,6 +185,30 @@ type Tab = 'generate' | 'refine';
                 <section class="mc-section">
                     <div class="mc-section-head">
                         <span class="mc-section-bar"></span>
+                        <span class="eyebrow">OUTPUT</span>
+                    </div>
+                    <div class="mc-choices">
+                        <button type="button" class="mc-choice"
+                                [class.active]="!autoAccept()"
+                                (click)="autoAccept.set(false)">
+                            @if (!autoAccept()) { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Review suggestions</div>
+                            <div class="mc-choice-desc">Stage each refined caption as a suggestion to accept or reject per image.</div>
+                        </button>
+                        <button type="button" class="mc-choice"
+                                [class.active]="autoAccept()"
+                                (click)="autoAccept.set(true)"
+                                data-testid="refine-auto-accept">
+                            @if (autoAccept()) { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Auto-accept</div>
+                            <div class="mc-choice-desc">Save refined captions straight to the variant — no review.</div>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
                         <span class="eyebrow">REFINEMENT MODEL</span>
                     </div>
                     <div class="mc-settings">
@@ -359,6 +383,8 @@ export class MassCaptionModalComponent implements OnInit {
 
     protected refineTarget = signal<'original' | 'masked'>('original');
     protected refineStrategy = signal<'skip' | 'all'>('skip');
+    /** When true, refined captions are saved straight to the variant (no per-image review). */
+    protected autoAccept = signal<boolean>(false);
     protected refineSettings = signal<RefineSettingsState | null>(null);
 
     /** Latest snapshot from the shared caption-settings component. Null
@@ -517,7 +543,7 @@ export class MassCaptionModalComponent implements OnInit {
         if (!confirm(`Refine ${cands.length} ${masked ? 'masked' : 'original'} captions with ${settings.model}?`)) return;
         this._finalized = false;
         this.launch(
-            this.datasetsApi.refineCaptions(name, cands.map(p => p.media_file), settings.definitionId, settings.preset, settings.model, this.refineTarget(), settings.style),
+            this.datasetsApi.refineCaptions(name, cands.map(p => p.media_file), settings.definitionId, settings.preset, settings.model, this.refineTarget(), settings.style, this.autoAccept()),
             'Could not start refinement.');
     }
 

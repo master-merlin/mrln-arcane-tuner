@@ -11,6 +11,7 @@ import { debounceTime, switchMap, of } from 'rxjs';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { CaptionContextService, type TokenCountResult } from '../../../../services/caption-context.service';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
+import { WebSocketService } from '../../../../services/websocket.service';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
@@ -196,6 +197,7 @@ export class DetailCaptionSidebarComponent {
     protected modelContext = inject(ModelContextStore);
     protected llm = inject(LlmAvailabilityStore);
     private captionContext = inject(CaptionContextService);
+    private ws = inject(WebSocketService);
     protected tokenInfo = signal<TokenCountResult | null>(null);
 
     /** Max tag chips shown before collapsing the rest into an overflow chip. */
@@ -323,6 +325,24 @@ export class DetailCaptionSidebarComponent {
                 takeUntilDestroyed(),
             )
             .subscribe(res => this.tokenInfo.set(res));
+
+        // An auto-accepted refine promotes the variant in the background — if it
+        // lands for the image + definition we're editing, reload the editor so
+        // it shows the promoted text without re-navigation.
+        this.ws
+            .on<{ dataset_name: string; stem: string; definition_id: string; target: string }>('variant.written')
+            .pipe(takeUntilDestroyed())
+            .subscribe(e => {
+                if (
+                    e.dataset_name === this.datasetName() &&
+                    e.stem === this.currentStem() &&
+                    e.definition_id === this.modelContext.activeDefinitionId() &&
+                    e.target === 'original' &&
+                    this.variantMode()
+                ) {
+                    this.reloadTrigger.update(n => n + 1);
+                }
+            });
     }
 
     onCaptionChange() {

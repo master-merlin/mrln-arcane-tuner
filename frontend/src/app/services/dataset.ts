@@ -714,11 +714,12 @@ export class DatasetService {
       { definition_id: definitionId, stem, text, masked });
   }
 
-  refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string, target?: 'original' | 'masked', style?: 'auto' | 'natural_language' | 'tags'): Observable<{ task_id: string }> {
+  refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string, target?: 'original' | 'masked', style?: 'auto' | 'natural_language' | 'tags', autoAccept?: boolean): Observable<{ task_id: string }> {
     const body: Record<string, unknown> = { dataset_name: name, image_rel_paths: imageRelPaths, definition_id: definitionId, preset };
     if (model) body['model'] = model;
     if (target) body['target'] = target;
     if (style) body['style'] = style;
+    if (autoAccept) body['auto_accept'] = true;
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/refine-batch`, body);
   }
 

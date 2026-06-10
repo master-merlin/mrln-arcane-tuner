@@ -11,6 +11,7 @@ import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
+import { CaptionContextService } from '../../services/caption-context.service';
 
 function makeTask(status: string) {
     return { id: 't1', status, total: 1, current: 1, ok: 1, failed: 0, current_item: 'a.png', title: 'x' };
@@ -213,5 +214,74 @@ describe('MassCaptionComponent completion effect', () => {
 
         expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
         expect(onCompleted).not.toHaveBeenCalled();
+    });
+});
+
+describe('MassCaptionComponent — Refine tab', () => {
+    let api: any;
+    let overlay: OverlayStore;
+
+    beforeEach(() => {
+        api = {
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            refineCaptions: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            listCaptionSuggestions: vi.fn().mockReturnValue(of({ definition_id: 'd', items: [] })),
+            // The embedded <app-dataset-refine-settings> child calls these on init.
+            listRefineModels: vi.fn().mockReturnValue(of({ curated: [], installed: [], available: true })),
+            pullRefineModel: vi.fn().mockReturnValue(of({ ok: true })),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                OverlayStore, MediaItemStore, CaptionCacheStore,
+                { provide: DatasetService, useValue: api },
+                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: vi.fn() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: CaptionContextService, useValue: { listDefinitions: vi.fn().mockReturnValue(of([])) } },
+            ],
+        });
+        overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('mass-caption', { datasetName: 'ds1' });
+    });
+
+    it('switches to the Refine tab and mounts refine settings', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.tab.set('refine');
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('app-dataset-refine-settings')).toBeTruthy();
+    });
+
+    it('startRefine selects captioned images for the original target and posts target', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'cap a' },
+            { media_file: 'b.png', caption_content: '' },
+        ]);
+        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct' });
+        comp.refineTarget.set('original');
+        comp.refineStrategy.set('all');
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.startRefine();
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original');
+    });
+
+    it('startRefine targets masked-captioned images when the masked target is selected', async () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'cap a', metadata: { has_masked_caption: true } },
+            { media_file: 'b.png', caption_content: 'cap b', metadata: {} },
+        ]);
+        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct' });
+        comp.refineTarget.set('masked');
+        comp.refineStrategy.set('all');
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        await comp.startRefine();
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'masked');
     });
 });

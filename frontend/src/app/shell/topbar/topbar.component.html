@@ -12,6 +12,12 @@
         </div>
     }
 
+    @if (showScope()) {
+        <div style="margin-left: 14px;">
+            <app-model-selector />
+        </div>
+    }
+
     <div class="topbar-actions">
         <app-task-center />
         <app-download-indicator />

@@ -10,6 +10,7 @@ import { toObservable, takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { debounceTime, switchMap, of } from 'rxjs';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { CaptionContextService, type TokenCountResult } from '../../../../services/caption-context.service';
+import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
@@ -159,7 +160,9 @@ import { CaptionContextService, type TokenCountResult } from '../../../../servic
             @if (modelContext.modelAware() && modelContext.activeDefinitionId(); as def) {
                 <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30">
                     <button (click)="refineVariant()" data-testid="refine-variant"
-                            class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95">
+                            [disabled]="!llm.available()"
+                            [title]="llm.available() ? 'Refine this caption for ' + def : 'LLM endpoint unreachable — configure it in Server settings'"
+                            class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">
                         Refine for {{ def }}
                     </button>
                     <app-caption-suggestion-review
@@ -184,6 +187,7 @@ export class DetailCaptionSidebarComponent {
     private datasets = inject(DatasetStore);
     private toast = inject(ToastService);
     protected modelContext = inject(ModelContextStore);
+    protected llm = inject(LlmAvailabilityStore);
     private captionContext = inject(CaptionContextService);
     protected tokenInfo = signal<TokenCountResult | null>(null);
 
@@ -242,6 +246,12 @@ export class DetailCaptionSidebarComponent {
     });
 
     constructor() {
+        // Keep LLM-endpoint availability fresh when the workspace opens (the
+        // top bar also probes on app-init; this is a harmless re-check so the
+        // Refine button's enabled/disabled state is correct even if the
+        // sidebar mounts without the top bar).
+        this.llm.refresh();
+
         // Sync textarea with the active pair's caption (or its masked variant)
         // whenever the user navigates to a different image or toggles the
         // masked-caption view. Re-fires on pair identity change only, so

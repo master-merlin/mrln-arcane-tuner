@@ -5,6 +5,7 @@ import { provideHttpClientTesting, HttpTestingController } from '@angular/common
 import { DetailCaptionSidebarComponent } from './detail-caption-sidebar';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { ModelContextStore } from '../../../../state/model-context.store';
+import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 
 function mount() {
     localStorage.clear();
@@ -151,7 +152,8 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         fixture.componentRef.setInput('currentPair', { media_file: 'img1.png', caption_file: 'img1.txt', caption_content: 'hi' });
         const http = TestBed.inject(HttpTestingController);
         const store = TestBed.inject(ModelContextStore);
-        return { fixture, http, store };
+        const llm = TestBed.inject(LlmAvailabilityStore);
+        return { fixture, http, store, llm };
     }
 
     it('does not render the suggestion review when model-aware is off', () => {
@@ -171,10 +173,25 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         expect(fixture.nativeElement.querySelector('app-caption-suggestion-review')).toBeTruthy();
     });
 
-    it('refine button enqueues a refine batch for the current image', () => {
-        const { fixture, http, store } = mountVariant();
+    it('disables the refine button with a tooltip when the LLM endpoint is unreachable', () => {
+        const { fixture, http, store, llm } = mountVariant();
         store.setModelAware(true);
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        llm.available.set(false);
+        fixture.detectChanges();
+        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]');
+        expect(btn.disabled).toBe(true);
+        expect(btn.getAttribute('title')).toContain('unreachable');
+    });
+
+    it('refine button enqueues a refine batch for the current image', () => {
+        const { fixture, http, store, llm } = mountVariant();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        // The Refine button is gated on LLM availability; mark it reachable so
+        // the click is not swallowed by the disabled attribute.
+        llm.available.set(true);
         fixture.detectChanges();
         // drain the child review's GET
         http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));

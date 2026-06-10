@@ -32,22 +32,14 @@ import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
                     </button>
                 </div>
                 
-                <!-- Caption header — filename on the left, char count on the right -->
-                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid flex items-start justify-between gap-3">
-                    <div class="min-w-0 flex-1">
-                        <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : (variantMode() ? 'Caption · ' + modelContext.activeDefinitionId() : 'Caption') }}</h4>
+                <!-- Caption header — model/definition name (row 1) + filename (row 2).
+                     The token count moved to its own row under the editor so a long
+                     model name has the full width here and no longer wraps. -->
+                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid">
+                    <div class="min-w-0">
+                        <h4 class="text-[11px] font-bold uppercase tracking-widest mb-0.5 truncate" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : (variantMode() ? 'Caption · ' + modelContext.activeDefinitionId() : 'Caption') }}</h4>
                         <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
                     </div>
-                    @if (showTokenCount()) {
-                        <span class="mono text-[10px] whitespace-nowrap mt-0.5"
-                              [class.text-danger]="tokenInfo()!.will_truncate"
-                              [class.text-text-muted]="!tokenInfo()!.will_truncate"
-                              data-testid="token-count">
-                            {{ tokenInfo()!.tokens }} / {{ tokenInfo()!.limit }} tok
-                        </span>
-                    } @else {
-                        <span class="mono text-[10px] text-text-muted whitespace-nowrap mt-0.5" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
-                    }
                 </div>
 
                 <!-- Textarea (with truncation overlay backdrop) -->
@@ -65,6 +57,20 @@ import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
                         class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
                         placeholder="Enter caption for this image..."
                     ></textarea>
+                </div>
+
+                <!-- Token / char count — own row directly under the editor. -->
+                <div class="shrink-0 px-4 py-1 border-t border-surface-mid bg-surface-mid/40 flex justify-end">
+                    @if (showTokenCount()) {
+                        <span class="mono text-[10px] whitespace-nowrap"
+                              [class.text-danger]="tokenInfo()!.will_truncate"
+                              [class.text-text-muted]="!tokenInfo()!.will_truncate"
+                              data-testid="token-count">
+                            {{ tokenInfo()!.tokens }} / {{ tokenInfo()!.limit }} tok
+                        </span>
+                    } @else {
+                        <span class="mono text-[10px] text-text-muted whitespace-nowrap" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
+                    }
                 </div>
 
                 <!-- Dataset tags — pulled from the parent dataset (create/edit modal). Hidden when empty. -->

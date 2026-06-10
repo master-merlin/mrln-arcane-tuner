@@ -5,6 +5,10 @@ import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { DatasetStore } from '../../../../state/dataset.store';
 import { ToastService } from '../../../../services/toast';
 import { dedupeTags, normalizeCommaSpacing } from './caption-text.utils';
+import { toObservable, takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { debounceTime, switchMap, of } from 'rxjs';
+import { ModelContextStore } from '../../../../state/model-context.store';
+import { CaptionContextService, type TokenCountResult } from '../../../../services/caption-context.service';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
@@ -32,16 +36,34 @@ import { dedupeTags, normalizeCommaSpacing } from './caption-text.utils';
                         <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
                         <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
                     </div>
-                    <span class="mono text-[10px] text-text-muted whitespace-nowrap mt-0.5" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
+                    @if (showTokenCount()) {
+                        <span class="mono text-[10px] whitespace-nowrap mt-0.5"
+                              [class.text-danger]="tokenInfo()!.will_truncate"
+                              [class.text-text-muted]="!tokenInfo()!.will_truncate"
+                              data-testid="token-count">
+                            {{ tokenInfo()!.tokens }} / {{ tokenInfo()!.limit }} tok
+                        </span>
+                    } @else {
+                        <span class="mono text-[10px] text-text-muted whitespace-nowrap mt-0.5" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
+                    }
                 </div>
 
-                <!-- Textarea -->
-                <textarea
-                    [(ngModel)]="captionText"
-                    (ngModelChange)="onCaptionChange()"
-                    class="flex-1 min-h-0 bg-surface-mid text-text-secondary p-3 resize-none focus:outline-none focus:bg-surface-high/50 transition-colors font-mono text-xs leading-relaxed scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
-                    placeholder="Enter caption for this image..."
-                ></textarea>
+                <!-- Textarea (with truncation overlay backdrop) -->
+                <div class="relative flex-1 min-h-0">
+                    @if (tokenInfo()?.will_truncate) {
+                        <div aria-hidden="true" data-testid="caption-overflow-backdrop"
+                             class="absolute inset-0 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-auto pointer-events-none text-text-secondary">
+                            <span>{{ captionHead() }}</span><span class="text-danger opacity-60">{{ captionOverflow() }}</span>
+                        </div>
+                    }
+                    <textarea
+                        [(ngModel)]="captionText"
+                        (ngModelChange)="onCaptionChange()"
+                        [class.text-transparent]="tokenInfo()?.will_truncate"
+                        class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
+                        placeholder="Enter caption for this image..."
+                    ></textarea>
+                </div>
 
                 <!-- Dataset tags — pulled from the parent dataset (create/edit modal). Hidden when empty. -->
                 @if (visibleDatasetTags().length > 0) {
@@ -139,6 +161,9 @@ export class DetailCaptionSidebarComponent {
     private datasetService = inject(DatasetService);
     private datasets = inject(DatasetStore);
     private toast = inject(ToastService);
+    private modelContext = inject(ModelContextStore);
+    private captionContext = inject(CaptionContextService);
+    protected tokenInfo = signal<TokenCountResult | null>(null);
 
     /** Max tag chips shown before collapsing the rest into an overflow chip. */
     private static readonly TAG_CHIP_LIMIT = 6;
@@ -176,6 +201,16 @@ export class DetailCaptionSidebarComponent {
         Math.max(0, this.datasetTags().length - DetailCaptionSidebarComponent.TAG_CHIP_LIMIT),
     );
 
+    protected showTokenCount = computed(() => this.tokenInfo() != null);
+    protected captionHead = computed(() => {
+        const cut = this.tokenInfo()?.cutoff_char_index;
+        return cut == null ? this.captionText() : this.captionText().slice(0, cut);
+    });
+    protected captionOverflow = computed(() => {
+        const cut = this.tokenInfo()?.cutoff_char_index;
+        return cut == null ? '' : this.captionText().slice(cut);
+    });
+
     constructor() {
         // Sync textarea with the active pair's caption (or its masked variant)
         // whenever the user navigates to a different image or toggles the
@@ -191,6 +226,24 @@ export class DetailCaptionSidebarComponent {
                 : pair?.caption_content ?? '';
             this.captionText.set(text);
         });
+
+        const tokenQuery = computed(() => ({
+            text: this.captionText(),
+            defId: this.modelContext.modelAware() ? this.modelContext.activeDefinitionId() : null,
+        }));
+        toObservable(tokenQuery)
+            .pipe(
+                debounceTime(300),
+                switchMap(q => {
+                    if (!q.defId) {
+                        this.tokenInfo.set(null);
+                        return of(null);
+                    }
+                    return this.captionContext.tokenCount(q.text, q.defId);
+                }),
+                takeUntilDestroyed(),
+            )
+            .subscribe(res => this.tokenInfo.set(res));
     }
 
     onCaptionChange() {

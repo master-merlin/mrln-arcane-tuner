@@ -59,6 +59,38 @@ def test_accept_all(mock_dm, client, tmp_path):
 
 
 @patch(f"{_MOD}.dataset_manager")
+def test_list_suggestions_masked_axis(mock_dm, client, tmp_path):
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    sg.write_suggestion(str(tmp_path), "flux1-schnell", "img1", "masked sug", masked=True)
+
+    r = client.get("/api/datasets/ds/caption-suggestions",
+                   params={"definition_id": "flux1-schnell", "masked": "true"})
+    assert r.status_code == 200
+    stems = [i["stem"] for i in r.json()["items"]]
+    assert stems == ["img1"]
+    # original axis is empty
+    r0 = client.get("/api/datasets/ds/caption-suggestions",
+                    params={"definition_id": "flux1-schnell"})
+    assert [i["stem"] for i in r0.json()["items"]] == []
+
+
+@patch(f"{_MOD}.dataset_manager")
+def test_accept_masked_suggestion(mock_dm, client, tmp_path):
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    sg.write_suggestion(str(tmp_path), "flux1-schnell", "img1", "masked sug", masked=True)
+
+    r = client.post("/api/datasets/ds/caption-suggestions/accept",
+                    json={"definition_id": "flux1-schnell", "stem": "img1", "masked": True})
+    assert r.status_code == 200
+    assert cv.read_variant(str(tmp_path), "flux1-schnell", "img1", masked=True) == "masked sug"
+    assert sg.read_suggestion(str(tmp_path), "flux1-schnell", "img1", masked=True) is None
+
+
+@patch(f"{_MOD}.dataset_manager")
 def test_list_variant_definitions(mock_dm, client, tmp_path):
     ds = MagicMock()
     ds.path = str(tmp_path)

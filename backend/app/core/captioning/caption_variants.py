@@ -79,6 +79,27 @@ def resolve_caption(dataset_path: str, stem: str, definition_id: str | None, mas
     return general if general is not None else ""
 
 
+def list_variant_texts(dataset_path: str, definition_id: str, masked: bool = False) -> dict[str, str]:
+    """Return ``{stem: text}`` for every variant of ``definition_id`` on the
+    given axis — one cheap directory scan so the grid can resolve a whole
+    dataset's model-aware captions in a single request. Non-recursive, so the
+    original axis never picks up the nested ``masked/`` files.
+    """
+    d = variant_dir(dataset_path, definition_id, masked)
+    if not os.path.isdir(d):
+        return {}
+    out: dict[str, str] = {}
+    for entry in os.listdir(d):
+        if not entry.endswith(".txt"):
+            continue
+        path = os.path.join(d, entry)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            out[entry[: -len(".txt")]] = f.read()
+    return out
+
+
 def list_variant_definition_ids(dataset_path: str) -> list[str]:
     root = os.path.join(dataset_path, _VARIANTS_SUBDIR)
     if not os.path.isdir(root):

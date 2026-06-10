@@ -60,6 +60,17 @@ async def list_variants(name: str) -> dict:
     return {"definition_ids": ids}
 
 
+@router.get("/datasets/{name}/caption-variant-map")
+async def get_caption_variant_map(name: str, definition_id: str, masked: bool = False) -> dict:
+    """All variant texts for a definition as ``{stem: text}`` — lets the grid
+    overlay model-aware captions for the whole dataset in one request (stems
+    without a variant are simply absent; the caller falls back to the general
+    caption it already holds)."""
+    path = _ds_path(name)
+    variants = await asyncio.to_thread(cv.list_variant_texts, path, definition_id, masked)
+    return {"variants": variants}
+
+
 @router.get("/datasets/{name}/caption-variant")
 async def get_caption_variant(name: str, definition_id: str, stem: str, masked: bool = False) -> dict:
     path = _ds_path(name)

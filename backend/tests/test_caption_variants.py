@@ -38,6 +38,28 @@ def test_list_variant_definition_ids(tmp_path):
     assert set(cv.list_variant_definition_ids(ds)) == {"flux1-schnell", "sdxl_base_1.0"}
 
 
+def test_list_variant_texts_returns_stem_to_text_map(tmp_path):
+    ds = str(tmp_path)
+    cv.write_variant(ds, "flux1-schnell", "a", "caption a")
+    cv.write_variant(ds, "flux1-schnell", "b", "caption b")
+    # a different definition's variants must not bleed in
+    cv.write_variant(ds, "sdxl_base_1.0", "a", "sdxl a")
+    out = cv.list_variant_texts(ds, "flux1-schnell")
+    assert out == {"a": "caption a", "b": "caption b"}
+
+
+def test_list_variant_texts_empty_when_no_dir(tmp_path):
+    assert cv.list_variant_texts(str(tmp_path), "flux1-schnell") == {}
+
+
+def test_list_variant_texts_masked_axis_isolated(tmp_path):
+    ds = str(tmp_path)
+    cv.write_variant(ds, "flux1-schnell", "a", "orig a")
+    cv.write_variant(ds, "flux1-schnell", "a", "masked a", masked=True)
+    assert cv.list_variant_texts(ds, "flux1-schnell") == {"a": "orig a"}
+    assert cv.list_variant_texts(ds, "flux1-schnell", masked=True) == {"a": "masked a"}
+
+
 def test_masked_variant_write_read_has_roundtrip(tmp_path):
     ds = str(tmp_path)
     cv.write_variant(ds, "flux1-schnell", "img1", "masked variant", masked=True)

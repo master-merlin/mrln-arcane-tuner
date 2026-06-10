@@ -12,13 +12,23 @@ describe('ModelContextStore', () => {
         expect(store.activeDefinition()).toBeNull();
     });
 
-    it('setModelAware(false) clears the active definition', () => {
+    it('setModelAware(false) deactivates the definition (activeDefinition null)', () => {
         const store = new ModelContextStore();
         store.setModelAware(true);
         store.setDefinition(DEF);
         store.setModelAware(false);
         expect(store.modelAware()).toBe(false);
         expect(store.activeDefinition()).toBeNull();
+    });
+
+    it('retains the definition across an off/on toggle for quick comparison', () => {
+        const store = new ModelContextStore();
+        store.setModelAware(true);
+        store.setDefinition(DEF);
+        store.setModelAware(false);
+        expect(store.activeDefinition()).toBeNull();   // hidden while off
+        store.setModelAware(true);
+        expect(store.activeDefinition()).toEqual(DEF);  // restored — no re-pick
     });
 
     it('persists model-aware + definition across instances', () => {

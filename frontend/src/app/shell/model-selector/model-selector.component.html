@@ -1,14 +1,22 @@
 <!-- frontend/src/app/shell/model-selector/model-selector.component.html -->
 <div class="flex items-center gap-2 text-xs">
-    <label class="flex items-center gap-1.5 cursor-pointer select-none">
-        <input
-            type="checkbox"
-            [ngModel]="ctx.modelAware()"
-            (ngModelChange)="toggleModelAware($event)"
-            data-testid="model-aware-toggle"
-        />
-        <span class="text-text-subtle">Model-aware</span>
-    </label>
+    <button
+        type="button"
+        role="switch"
+        [attr.aria-checked]="ctx.modelAware()"
+        (click)="toggleModelAware(!ctx.modelAware())"
+        data-testid="model-aware-toggle"
+        title="Model-aware captions"
+        class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors cursor-pointer"
+        [class.bg-brand]="ctx.modelAware()"
+        [class.bg-surface-high]="!ctx.modelAware()"
+    >
+        <span
+            class="inline-block h-3 w-3 rounded-full bg-white transition-transform"
+            [style.transform]="ctx.modelAware() ? 'translateX(14px)' : 'translateX(2px)'"
+        ></span>
+    </button>
+    <span class="text-text-subtle select-none">Model-aware</span>
 
     @if (ctx.modelAware()) {
         <select

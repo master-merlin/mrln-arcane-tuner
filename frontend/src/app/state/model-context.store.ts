@@ -54,7 +54,11 @@ export class ModelContextStore {
 
     setModelAware(on: boolean): void {
         this._modelAware.set(on);
-        if (!on) this._definition.set(null);
+        // Keep the selected definition when turning model-aware OFF so the user
+        // can flip the toggle on/off to compare general vs model-aware captions
+        // without re-picking. `activeDefinition`/`activeDefinitionId` gate on
+        // `modelAware`, so the definition is simply inactive (not surfaced)
+        // while off, then restored on the next enable.
         this.persist();
     }
 

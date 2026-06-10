@@ -6,6 +6,7 @@ import {
     effect,
     inject,
     signal,
+    untracked,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CaptionContextService } from '../../services/caption-context.service';
@@ -51,6 +52,18 @@ export class ModelSelectorComponent {
             if (this.ctx.modelAware() && !this.loaded()) {
                 this.loaded.set(true);
                 this.api.listDefinitions().subscribe(defs => this.definitions.set(defs));
+            }
+        });
+
+        // Reflect the retained/persisted definition's family in the dropdown
+        // when model-aware is (re)enabled — so flipping the toggle on/off (or a
+        // page reload) keeps the family + definition visible without re-picking.
+        // Reads `selectedFamily` untracked so this only reacts to the active
+        // definition changing, never fighting a manual family pick.
+        effect(() => {
+            const fam = this.ctx.activeDefinition()?.family;
+            if (fam && fam !== untracked(this.selectedFamily)) {
+                this.selectedFamily.set(fam);
             }
         });
     }

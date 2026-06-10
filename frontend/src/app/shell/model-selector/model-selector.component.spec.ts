@@ -52,5 +52,30 @@ describe('ModelSelectorComponent', () => {
         expect(families).toEqual(['flux1', 'sdxl']);
     });
 
+    it('toggle button enables model-aware', () => {
+        const { fixture, http, store } = setup();
+        fixture.detectChanges();
+        const btn = fixture.nativeElement.querySelector('[data-testid="model-aware-toggle"]');
+        expect(btn.getAttribute('role')).toBe('switch');
+        btn.click();
+        fixture.detectChanges();
+        expect(store.modelAware()).toBe(true);
+        // enabling triggers the lazy definitions fetch — drain it
+        http.expectOne('/api/caption-context/definitions').flush([]);
+    });
+
+    it('reflects the retained definition family when model-aware is on', () => {
+        const { fixture, http, store } = setup();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        http.expectOne('/api/caption-context/definitions').flush([
+            { id: 'flux1-schnell', family: 'flux1', name: 'Schnell' },
+        ]);
+        fixture.detectChanges();
+        const selectedFamily = (fixture.componentInstance as unknown as { selectedFamily: () => string }).selectedFamily();
+        expect(selectedFamily).toBe('flux1');
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

@@ -697,6 +697,17 @@ export class DatasetService {
     return this.http.post<{ accepted: number }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept-all`, body);
   }
 
+  getCaptionVariant(name: string, definitionId: string, stem: string, masked = false): Observable<{ text: string; has_variant: boolean }> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/caption-variant?definition_id=${encodeURIComponent(definitionId)}&stem=${encodeURIComponent(stem)}`;
+    if (masked) url += '&masked=true';
+    return this.http.get<{ text: string; has_variant: boolean }>(url);
+  }
+
+  saveCaptionVariant(name: string, definitionId: string, stem: string, text: string, masked = false): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-variant`,
+      { definition_id: definitionId, stem, text, masked });
+  }
+
   refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string, target?: 'original' | 'masked'): Observable<{ task_id: string }> {
     const body: Record<string, unknown> = { dataset_name: name, image_rel_paths: imageRelPaths, definition_id: definitionId, preset };
     if (model) body['model'] = model;

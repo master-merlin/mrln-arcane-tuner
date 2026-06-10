@@ -121,5 +121,24 @@ describe('DatasetService — caption refine/suggestions', () => {
         req.flush({ ok: true });
     });
 
+    it('gets a caption variant', () => {
+        const { svc, http } = setup();
+        let r: unknown;
+        svc.getCaptionVariant('ds', 'flux1-schnell', 'img1').subscribe(x => (r = x));
+        const req = http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1');
+        expect(req.request.method).toBe('GET');
+        req.flush({ text: 'v', has_variant: true });
+        expect((r as { text: string }).text).toBe('v');
+    });
+
+    it('saves a caption variant', () => {
+        const { svc, http } = setup();
+        svc.saveCaptionVariant('ds', 'flux1-schnell', 'img1', 'edited').subscribe();
+        const req = http.expectOne('/api/datasets/ds/caption-variant');
+        expect(req.request.method).toBe('PUT');
+        expect(req.request.body).toEqual({ definition_id: 'flux1-schnell', stem: 'img1', text: 'edited', masked: false });
+        req.flush({ ok: true });
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

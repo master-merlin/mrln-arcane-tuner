@@ -164,20 +164,20 @@ type Tab = 'generate' | 'refine';
                         <span class="mc-section-bar"></span>
                         <span class="eyebrow">REFINE STRATEGY</span>
                     </div>
-                    <div class="mc-choices">
+                    <div class="mc-choices compact">
                         <button type="button" class="mc-choice"
                                 [class.active]="refineStrategy() === 'skip'"
-                                (click)="refineStrategy.set('skip')">
+                                (click)="refineStrategy.set('skip')"
+                                title="Only refine captions without a pending suggestion to review.">
                             @if (refineStrategy() === 'skip') { <span class="mc-choice-dot"></span> }
                             <div class="mc-choice-title">Skip pending</div>
-                            <div class="mc-choice-desc">Only refine captions without a pending suggestion to review.</div>
                         </button>
                         <button type="button" class="mc-choice"
                                 [class.active]="refineStrategy() === 'all'"
-                                (click)="refineStrategy.set('all')">
+                                (click)="refineStrategy.set('all')"
+                                title="Re-run refinement across every matching caption.">
                             @if (refineStrategy() === 'all') { <span class="mc-choice-dot"></span> }
                             <div class="mc-choice-title">Re-refine all</div>
-                            <div class="mc-choice-desc">Re-run refinement across every matching caption.</div>
                         </button>
                     </div>
                 </section>
@@ -187,21 +187,21 @@ type Tab = 'generate' | 'refine';
                         <span class="mc-section-bar"></span>
                         <span class="eyebrow">OUTPUT</span>
                     </div>
-                    <div class="mc-choices">
+                    <div class="mc-choices compact">
                         <button type="button" class="mc-choice"
                                 [class.active]="!autoAccept()"
-                                (click)="autoAccept.set(false)">
+                                (click)="autoAccept.set(false)"
+                                title="Stage each refined caption as a suggestion to accept or reject per image.">
                             @if (!autoAccept()) { <span class="mc-choice-dot"></span> }
                             <div class="mc-choice-title">Review suggestions</div>
-                            <div class="mc-choice-desc">Stage each refined caption as a suggestion to accept or reject per image.</div>
                         </button>
                         <button type="button" class="mc-choice"
                                 [class.active]="autoAccept()"
                                 (click)="autoAccept.set(true)"
-                                data-testid="refine-auto-accept">
+                                data-testid="refine-auto-accept"
+                                title="Save refined captions straight to the variant — no review.">
                             @if (autoAccept()) { <span class="mc-choice-dot"></span> }
                             <div class="mc-choice-title">Auto-accept</div>
-                            <div class="mc-choice-desc">Save refined captions straight to the variant — no review.</div>
                         </button>
                     </div>
                 </section>
@@ -297,6 +297,14 @@ type Tab = 'generate' | 'refine';
             color: var(--color-text-primary); margin-bottom: 4px;
         }
         .mc-choice-desc { font-size: 10.5px; color: var(--color-text-subtle); line-height: 1.5; }
+
+        /* Compact variant for the secondary binary selectors (strategy / output)
+           — same card language as the mask modal but title-only + tighter so the
+           Refine tab doesn't stack three tall description cards. */
+        .mc-choices.compact { gap: 8px; }
+        .mc-choices.compact .mc-choice { padding: 8px 12px; }
+        .mc-choices.compact .mc-choice-title { margin-bottom: 0; font-size: 12px; }
+        .mc-choices.compact .mc-choice-dot { top: 8px; right: 10px; }
 
         .mc-settings {
             background: color-mix(in oklab, var(--color-surface-mid) 70%, transparent);

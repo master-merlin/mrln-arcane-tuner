@@ -4,6 +4,7 @@ import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dat
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { DatasetStore } from '../../../../state/dataset.store';
 import { ToastService } from '../../../../services/toast';
+import { dedupeTags, normalizeCommaSpacing } from './caption-text.utils';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
@@ -67,6 +68,16 @@ import { ToastService } from '../../../../services/toast';
                             class="flex-1 px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors flex items-center justify-center gap-1.5 border border-surface-high/40">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
                         Revert
+                    </button>
+                    <button type="button" (click)="applyDedupe()" data-testid="caption-dedupe"
+                            title="Remove duplicate tags"
+                            class="px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors border border-surface-high/40">
+                        Dedupe
+                    </button>
+                    <button type="button" (click)="applyNormalize()" data-testid="caption-normalize"
+                            title="Normalize comma spacing"
+                            class="px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors border border-surface-high/40">
+                        Tidy
                     </button>
                     <span class="text-[10px] text-text-subtle italic whitespace-nowrap pl-1"><span class="font-bold">Ctrl+Enter</span> save</span>
                 </div>
@@ -184,6 +195,16 @@ export class DetailCaptionSidebarComponent {
 
     onCaptionChange() {
         this.captionChanged.emit();
+    }
+
+    applyDedupe(): void {
+        this.captionText.set(dedupeTags(this.captionText()));
+        this.onCaptionChange();
+    }
+
+    applyNormalize(): void {
+        this.captionText.set(normalizeCommaSpacing(this.captionText()));
+        this.onCaptionChange();
     }
 
     toggleCaptionPanel() {

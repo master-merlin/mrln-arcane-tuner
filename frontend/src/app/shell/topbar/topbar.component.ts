@@ -15,6 +15,7 @@ import { TaskCenterComponent } from './task-center.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
 import { ProjectService } from '../../services/project.service';
+import { LlmAvailabilityStore } from '../../state/llm-availability.store';
 
 interface Crumb {
     label: string;
@@ -42,6 +43,19 @@ export class TopbarComponent {
     protected scope = inject(ScopeStore);
     protected theme = inject(ThemeStore);
     protected projects = inject(ProjectService);
+    protected llm = inject(LlmAvailabilityStore);
+
+    constructor() {
+        // App-init probe: detect whether the LLM endpoint (Ollama/LM Studio)
+        // is reachable so the availability icon + LLM-gated controls reflect
+        // reality on first paint.
+        this.llm.refresh();
+    }
+
+    /** Open the Server screen (where the LLM endpoint is configured). */
+    protected goServer(): void {
+        this.router.navigateByUrl('/server');
+    }
 
     /** Icon shows the theme you'll switch TO: Sun in dark, Moon in light. */
     protected themeIcon = computed(() => (this.theme.theme() === 'dark' ? 'Sun' : 'Moon'));

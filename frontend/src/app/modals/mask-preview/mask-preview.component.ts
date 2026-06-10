@@ -288,12 +288,22 @@ export class MaskPreviewModalComponent implements OnInit {
 
     protected onImageLoaded(event: Event): void {
         const target = event.target as HTMLImageElement | null;
-        const url = target?.currentSrc || target?.src;
-        if (!url) return;
+        // Record the bound `imageUrl()` (what `isImageLoading()` checks) as well
+        // as the browser's resolved currentSrc/src. currentSrc is ABSOLUTE; when
+        // mediaBaseUrl/apiUrl are relative it won't equal imageUrl(), which left
+        // the loader stuck on top of an already-loaded image.
+        const urls = [this.imageUrl(), target?.currentSrc, target?.src].filter(
+            (u): u is string => !!u,
+        );
+        if (!urls.length) return;
         this.loadedUrls.update(s => {
-            if (s.has(url)) return s;
-            const next = new Set(s);
-            next.add(url);
+            let next = s;
+            for (const u of urls) {
+                if (!next.has(u)) {
+                    if (next === s) next = new Set(s);
+                    next.add(u);
+                }
+            }
             return next;
         });
     }

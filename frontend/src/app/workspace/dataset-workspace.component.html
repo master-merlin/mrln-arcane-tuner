@@ -66,8 +66,9 @@
 
             <!-- Right: scope · analyze / cache / rescan · close -->
             <div class="ws-right">
-                <app-context-switcher/>
                 <app-project-membership-pill [dataset]="dataset()"/>
+                <app-context-switcher/>
+                <app-model-selector/>
                 <span class="ws-divider"></span>
                 <button class="btn sm" type="button" (click)="openAction('analyze')"
                         title="Analyze dataset">
@@ -185,6 +186,8 @@
                         [activeMediaFile]="activeMediaFile()"
                         [showMasked]="showMasked()"
                         [showOverlay]="showOverlay()"
+                        [definitionId]="variantDefinitionId()"
+                        [variantCaptions]="variantCaptions()"
                         (saveCaption)="onSaveCaption($event)"
                         (toggleExclusion)="onToggleExclusion($event)"
                         (deletePair)="onDeletePairRequested($event)"/>

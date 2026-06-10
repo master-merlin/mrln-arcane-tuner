@@ -16,6 +16,14 @@
         <app-task-center />
         <app-download-indicator />
         <app-notification-panel />
+        @if (llm.available()) {
+            <button class="icon-btn" type="button"
+                    title="LLM endpoint reachable — open Server settings"
+                    aria-label="LLM endpoint reachable"
+                    (click)="goServer()">
+                <app-ico name="Bot" [size]="15" />
+            </button>
+        }
         <button
             class="icon-btn"
             type="button"

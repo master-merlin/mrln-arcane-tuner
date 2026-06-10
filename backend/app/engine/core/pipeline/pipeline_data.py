@@ -176,6 +176,7 @@ class PipelineDataMixin:
                                 "path": img_path,
                                 "id": img_rel,
                                 "caption": caption,
+                                "dataset_path": ds_path,
                                 "prefix": prefix,
                                 "dropout_rate": float(ds_config.get("caption_dropout_rate", 0.0)),
                                 "orig_w": w,
@@ -242,26 +243,28 @@ class PipelineDataMixin:
         weighted random selection is applied using the item's own weight.
 
         Caption handling for masked variants:
-        - If a dedicated ``masked/{stem}.txt`` exists → use it as-is
-        - Otherwise → fall back to ``triggerword + prefix`` only,
-          avoiding the full original caption which describes spatial
-          context (backgrounds, viewing angles) absent from the
-          masked image.
+        - Masked caption resolves via select_training_caption(masked=True):
+          masked variant → masked/{stem}.txt → original caption.
         """
+        from app.engine.core.pipeline.caption_selection import select_training_caption
+
+        _def_id = getattr(getattr(self, "definition", None), "id", None)
+        _cfg = getattr(self, "config", None)
+        _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
+
+        # Masked variant: weighted random selection using the item's own weight.
         if (
             item.get("has_masked")
             and random.random() >= item.get("original_weight", 0.70)
         ):
-            if item.get("has_masked_caption"):
-                cap = item["masked_caption"]
-            else:
-                # No dedicated masked caption — return empty string so
-                # _get_batch assembles trigger + prefix only (it always
-                # prepends those).  This avoids the full original caption
-                # which describes spatial context absent from the masked image.
-                cap = ""
+            # Route masked through the same per-definition resolver as the general
+            # branch. Defensive: no masked variant → masked_caption → original.
+            cap = select_training_caption(item, _def_id, _use_general, masked=True)
             return (item["masked_path"], cap, item["masked_cache_dir"])
-        return item["path"], item["caption"], item["cache_dir"]
+
+        # General (non-masked) caption: per-definition variant overrides item["caption"].
+        cap = select_training_caption(item, _def_id, _use_general)
+        return item["path"], cap, item["cache_dir"]
 
     def _get_batch(self, items: list[dict]) -> dict[str, Any]:
         """Build a training batch from inventory items.

@@ -55,5 +55,20 @@ AUTH_STATE="off"; [ -n "${MRLN_AUTH_TOKEN:-}" ] && AUTH_STATE="on"
 HF_STATE="off"; { [ -n "${HF_TOKEN:-}" ] || [ -n "${HUGGING_FACE_HUB_TOKEN:-}" ]; } && HF_STATE="on"
 echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE hf_token_env=$HF_STATE dist=$MRLN_FRONTEND_DIST hf_home=$HF_HOME trainer_python=$MRLN_TRAINER_PYTHON"
 
+# --- Ollama sidecar (best-effort; never blocks app startup) ---
+# Launched only when the binary is present (the image installs it best-effort).
+# A missing or failing Ollama must NEVER prevent the FastAPI app from starting,
+# so the whole block is guarded and backgrounded — no failure mode propagates
+# to the `exec uvicorn` below. Models live under the data volume so pulls
+# survive pod restarts.
+if command -v ollama >/dev/null 2>&1; then
+    export OLLAMA_MODELS="${DATA_DIR}/models/ollama"
+    mkdir -p "$OLLAMA_MODELS" || true
+    echo "[entrypoint] starting ollama serve (OLLAMA_MODELS=$OLLAMA_MODELS)"
+    ollama serve >/tmp/ollama.log 2>&1 &
+else
+    echo "[entrypoint] ollama not installed; LLM caption refinement sidecar disabled"
+fi
+
 cd "$BACKEND_DIR"
 exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"

@@ -1,16 +1,24 @@
 import { Component, input, output, model, inject, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
+import { CaptionSuggestionReviewComponent } from './caption-suggestion-review';
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { DatasetStore } from '../../../../state/dataset.store';
 import { ToastService } from '../../../../services/toast';
+import { dedupeTags, normalizeCommaSpacing } from './caption-text.utils';
+import { toObservable, takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { debounceTime, switchMap, of } from 'rxjs';
+import { ModelContextStore } from '../../../../state/model-context.store';
+import { CaptionContextService, type TokenCountResult } from '../../../../services/caption-context.service';
+import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
+import { WebSocketService } from '../../../../services/websocket.service';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'w-80 h-full flex flex-col' },
-    imports: [FormsModule, DatasetCaptionSettingsComponent],
+    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
             <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
@@ -25,22 +33,46 @@ import { ToastService } from '../../../../services/toast';
                     </button>
                 </div>
                 
-                <!-- Caption header — filename on the left, char count on the right -->
-                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid flex items-start justify-between gap-3">
-                    <div class="min-w-0 flex-1">
-                        <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
+                <!-- Caption header — model/definition name (row 1) + filename (row 2).
+                     The token count moved to its own row under the editor so a long
+                     model name has the full width here and no longer wraps. -->
+                <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid">
+                    <div class="min-w-0">
+                        <h4 class="text-[11px] font-bold uppercase tracking-widest mb-0.5 truncate" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : (variantMode() ? 'Caption · ' + modelContext.activeDefinitionId() : 'Caption') }}</h4>
                         <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
                     </div>
-                    <span class="mono text-[10px] text-text-muted whitespace-nowrap mt-0.5" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
                 </div>
 
-                <!-- Textarea -->
-                <textarea
-                    [(ngModel)]="captionText"
-                    (ngModelChange)="onCaptionChange()"
-                    class="flex-1 min-h-0 bg-surface-mid text-text-secondary p-3 resize-none focus:outline-none focus:bg-surface-high/50 transition-colors font-mono text-xs leading-relaxed scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
-                    placeholder="Enter caption for this image..."
-                ></textarea>
+                <!-- Textarea (with truncation overlay backdrop) -->
+                <div class="relative flex-1 min-h-0">
+                    @if (tokenInfo()?.will_truncate) {
+                        <div aria-hidden="true" data-testid="caption-overflow-backdrop"
+                             class="absolute inset-0 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-auto pointer-events-none text-text-secondary">
+                            <span>{{ captionHead() }}</span><span class="text-danger opacity-60">{{ captionOverflow() }}</span>
+                        </div>
+                    }
+                    <textarea
+                        [(ngModel)]="captionText"
+                        (ngModelChange)="onCaptionChange()"
+                        [class.text-transparent]="tokenInfo()?.will_truncate"
+                        class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
+                        placeholder="Enter caption for this image..."
+                    ></textarea>
+                </div>
+
+                <!-- Token / char count — own row directly under the editor. -->
+                <div class="shrink-0 px-4 py-1 border-t border-surface-mid bg-surface-mid/40 flex justify-end">
+                    @if (showTokenCount()) {
+                        <span class="mono text-[10px] whitespace-nowrap"
+                              [class.text-danger]="tokenInfo()!.will_truncate"
+                              [class.text-text-muted]="!tokenInfo()!.will_truncate"
+                              data-testid="token-count">
+                            {{ tokenInfo()!.tokens }} / {{ tokenInfo()!.limit }} tok
+                        </span>
+                    } @else {
+                        <span class="mono text-[10px] text-text-muted whitespace-nowrap" [title]="captionText().length + ' characters'">{{ captionText().length }} chars</span>
+                    }
+                </div>
 
                 <!-- Dataset tags — pulled from the parent dataset (create/edit modal). Hidden when empty. -->
                 @if (visibleDatasetTags().length > 0) {
@@ -67,6 +99,16 @@ import { ToastService } from '../../../../services/toast';
                             class="flex-1 px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors flex items-center justify-center gap-1.5 border border-surface-high/40">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
                         Revert
+                    </button>
+                    <button type="button" (click)="applyDedupe()" data-testid="caption-dedupe"
+                            title="Remove duplicate tags"
+                            class="px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors border border-surface-high/40">
+                        Dedupe
+                    </button>
+                    <button type="button" (click)="applyNormalize()" data-testid="caption-normalize"
+                            title="Normalize comma spacing"
+                            class="px-2 py-1.5 bg-surface-mid hover:bg-surface-high text-text-secondary hover:text-white text-[11px] rounded-theme-md transition-colors border border-surface-high/40">
+                        Tidy
                     </button>
                     <span class="text-[10px] text-text-subtle italic whitespace-nowrap pl-1"><span class="font-bold">Ctrl+Enter</span> save</span>
                 </div>
@@ -120,6 +162,30 @@ import { ToastService } from '../../../../services/toast';
                     </div>
                 }
             </div>
+
+            <!-- Model-aware refined-variant review + refine trigger -->
+            @if (modelContext.modelAware() && modelContext.activeDefinitionId(); as def) {
+                <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30">
+                    <button (click)="refineVariant()" data-testid="refine-variant"
+                            [disabled]="!llm.available()"
+                            [title]="llm.available() ? 'Refine this caption for ' + def : 'LLM endpoint unreachable — configure it in Server settings'"
+                            class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">
+                        Refine for {{ def }}
+                    </button>
+                    <app-caption-suggestion-review
+                        [datasetName]="datasetName()"
+                        [stem]="currentStem()"
+                        [definitionId]="modelContext.activeDefinitionId()"
+                        (accepted)="onVariantAccepted()" />
+                    @if (currentPair().metadata?.has_masked_caption) {
+                        <app-caption-suggestion-review
+                            [datasetName]="datasetName()"
+                            [stem]="currentStem()"
+                            [definitionId]="modelContext.activeDefinitionId()"
+                            [masked]="true" />
+                    }
+                </div>
+            }
         </div>
     `,
     styles: []
@@ -128,6 +194,11 @@ export class DetailCaptionSidebarComponent {
     private datasetService = inject(DatasetService);
     private datasets = inject(DatasetStore);
     private toast = inject(ToastService);
+    protected modelContext = inject(ModelContextStore);
+    protected llm = inject(LlmAvailabilityStore);
+    private captionContext = inject(CaptionContextService);
+    private ws = inject(WebSocketService);
+    protected tokenInfo = signal<TokenCountResult | null>(null);
 
     /** Max tag chips shown before collapsing the rest into an overflow chip. */
     private static readonly TAG_CHIP_LIMIT = 6;
@@ -142,6 +213,23 @@ export class DetailCaptionSidebarComponent {
     saveRequested = output<void>();
     captionChanged = output<void>();
     captionReverted = output<void>();
+    /** The text the editor was (re)loaded with — lets the parent track its
+     *  dirty baseline against the variant (or general) text actually shown. */
+    baselineChanged = output<string>();
+
+    /** True when the editor is in per-definition variant mode (model-aware +
+     *  an active definition + not viewing the masked caption). */
+    protected variantMode = computed(() =>
+        this.modelContext.modelAware() && !!this.modelContext.activeDefinitionId() && !this.showMasked());
+
+    /** The text the load effect last published — the revert target in
+     *  variant mode (where there's no `pair.caption_content` to fall back to). */
+    private baseline = signal('');
+
+    /** Bumped to force the load effect to re-fetch the variant — e.g. after a
+     *  suggestion is accepted, so the editor reflects the promoted variant
+     *  immediately instead of only on the next navigation. */
+    private reloadTrigger = signal(0);
 
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
@@ -165,25 +253,110 @@ export class DetailCaptionSidebarComponent {
         Math.max(0, this.datasetTags().length - DetailCaptionSidebarComponent.TAG_CHIP_LIMIT),
     );
 
+    /** Caption stem (filename sans extension) for the active image. */
+    protected currentStem = computed(() => {
+        const f = this.currentPair()?.media_file ?? '';
+        const base = f.split(/[\\/]/).pop() ?? f;
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
+    });
+
+    protected showTokenCount = computed(() => this.tokenInfo() != null);
+    protected captionHead = computed(() => {
+        const cut = this.tokenInfo()?.cutoff_char_index;
+        return cut == null ? this.captionText() : this.captionText().slice(0, cut);
+    });
+    protected captionOverflow = computed(() => {
+        const cut = this.tokenInfo()?.cutoff_char_index;
+        return cut == null ? '' : this.captionText().slice(cut);
+    });
+
     constructor() {
+        // Keep LLM-endpoint availability fresh when the workspace opens (the
+        // top bar also probes on app-init; this is a harmless re-check so the
+        // Refine button's enabled/disabled state is correct even if the
+        // sidebar mounts without the top bar).
+        this.llm.refresh();
+
         // Sync textarea with the active pair's caption (or its masked variant)
         // whenever the user navigates to a different image or toggles the
         // masked-caption view. Re-fires on pair identity change only, so
         // in-place save mutations (parent assigns pair.caption_content) do
         // not clobber an in-progress edit.
         effect(() => {
+            this.reloadTrigger();   // re-run after an accepted suggestion promotes a variant
             const pair = this.currentPair();
             const masked = this.showMasked();
+            const def = this.modelContext.activeDefinitionId();
+            const variantMode = this.modelContext.modelAware() && !!def && !masked;
             this.suggestedCaption.set(null);
+            if (variantMode && pair) {
+                this.datasetService.getCaptionVariant(this.datasetName(), def!, this.currentStem()).subscribe({
+                    next: r => { this.captionText.set(r.text); this.baseline.set(r.text); this.baselineChanged.emit(r.text); },
+                    error: () => {
+                        const t = pair.caption_content ?? '';
+                        this.captionText.set(t); this.baseline.set(t); this.baselineChanged.emit(t);
+                    },
+                });
+                return;
+            }
             const text = masked && pair?.masked_caption_content != null
                 ? pair.masked_caption_content
                 : pair?.caption_content ?? '';
             this.captionText.set(text);
+            this.baseline.set(text);
+            this.baselineChanged.emit(text);
         });
+
+        const tokenQuery = computed(() => ({
+            text: this.captionText(),
+            defId: this.modelContext.modelAware() ? this.modelContext.activeDefinitionId() : null,
+        }));
+        toObservable(tokenQuery)
+            .pipe(
+                debounceTime(300),
+                switchMap(q => {
+                    if (!q.defId) {
+                        this.tokenInfo.set(null);
+                        return of(null);
+                    }
+                    return this.captionContext.tokenCount(q.text, q.defId);
+                }),
+                takeUntilDestroyed(),
+            )
+            .subscribe(res => this.tokenInfo.set(res));
+
+        // An auto-accepted refine promotes the variant in the background — if it
+        // lands for the image + definition we're editing, reload the editor so
+        // it shows the promoted text without re-navigation.
+        this.ws
+            .on<{ dataset_name: string; stem: string; definition_id: string; target: string }>('variant.written')
+            .pipe(takeUntilDestroyed())
+            .subscribe(e => {
+                if (
+                    e.dataset_name === this.datasetName() &&
+                    e.stem === this.currentStem() &&
+                    e.definition_id === this.modelContext.activeDefinitionId() &&
+                    e.target === 'original' &&
+                    this.variantMode()
+                ) {
+                    this.reloadTrigger.update(n => n + 1);
+                }
+            });
     }
 
     onCaptionChange() {
         this.captionChanged.emit();
+    }
+
+    applyDedupe(): void {
+        this.captionText.set(dedupeTags(this.captionText()));
+        this.onCaptionChange();
+    }
+
+    applyNormalize(): void {
+        this.captionText.set(normalizeCommaSpacing(this.captionText()));
+        this.onCaptionChange();
     }
 
     toggleCaptionPanel() {
@@ -243,6 +416,22 @@ export class DetailCaptionSidebarComponent {
         this.suggestedCaption.set(null);
     }
 
+    /** A pending suggestion was accepted → its text is now the live variant.
+     *  Re-run the load effect so the editor reflects it without re-navigation. */
+    protected onVariantAccepted(): void {
+        this.reloadTrigger.update(n => n + 1);
+    }
+
+    /** Queue an LLM refine pass for the current image under the active definition. */
+    protected refineVariant(): void {
+        const def = this.modelContext.activeDefinitionId();
+        if (!def) return;
+        this.datasetService.refineCaptions(this.datasetName(), [this.currentPair().media_file], def, 'standardize').subscribe({
+            next: () => this.toast.success('Refine queued — suggestion will appear when ready.'),
+            error: () => this.toast.error('Failed to queue refine.'),
+        });
+    }
+
     copyCaption(): void {
         const text = this.captionText() || '';
         if (!text) return;
@@ -258,9 +447,9 @@ export class DetailCaptionSidebarComponent {
 
     revertCaption(): void {
         const pair = this.currentPair();
-        const text = this.showMasked() && pair?.masked_caption_content != null
-            ? pair.masked_caption_content
-            : pair?.caption_content ?? '';
+        const text = this.variantMode()
+            ? this.baseline()
+            : (this.showMasked() && pair?.masked_caption_content != null ? pair.masked_caption_content : pair?.caption_content ?? '');
         this.captionText.set(text);
         this.captionReverted.emit();
     }

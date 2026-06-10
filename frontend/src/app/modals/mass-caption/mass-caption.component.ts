@@ -8,7 +8,7 @@ import {
     signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { firstValueFrom } from 'rxjs';
+import { Observable, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -20,6 +20,10 @@ import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
 } from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
+import {
+    DatasetRefineSettingsComponent,
+    RefineSettingsState,
+} from '../../components/dataset/dataset-refine-settings/dataset-refine-settings';
 
 interface MassCaptionModalData {
     datasetId?: string;
@@ -34,6 +38,7 @@ interface MassCaptionModalData {
 }
 
 type CaptionStrategy = 'keep' | 'overwrite';
+type Tab = 'generate' | 'refine';
 
 /**
  * Mass Captioning modal — launches a server-side batch captioning task and
@@ -43,7 +48,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
 @Component({
     selector: 'app-modal-mass-caption',
     standalone: true,
-    imports: [FormsModule, IcoComponent, TaskQueueHintComponent, DatasetCaptionSettingsComponent],
+    imports: [FormsModule, IcoComponent, TaskQueueHintComponent, DatasetCaptionSettingsComponent, DatasetRefineSettingsComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -53,6 +58,19 @@ type CaptionStrategy = 'keep' | 'overwrite';
             </div>
             <button class="icon-btn" type="button" (click)="overlay.closeModal()" aria-label="Close">×</button>
         </div>
+
+        @if (data.datasetName && !running()) {
+            <div class="mc-tabs">
+                @for (t of tabs; track t.id) {
+                    <button class="mc-tab"
+                            type="button"
+                            [class.active]="tab() === t.id"
+                            (click)="tab.set(t.id)">
+                        <app-ico [name]="t.icon" [size]="12"/> {{ t.label }}
+                    </button>
+                }
+            </div>
+        }
 
         <div class="modal-body mc-body">
             @if (!data.datasetName) {
@@ -84,7 +102,7 @@ type CaptionStrategy = 'keep' | 'overwrite';
                 <button class="btn danger-out mc-stop" type="button" (click)="cancel()">
                     <app-ico name="X" [size]="12"/> Stop Process
                 </button>
-            } @else {
+            } @else if (tab() === 'generate') {
                 <section class="mc-section">
                     <div class="mc-section-head">
                         <span class="mc-section-bar"></span>
@@ -117,6 +135,86 @@ type CaptionStrategy = 'keep' | 'overwrite';
                         <app-dataset-caption-settings (settingsChanged)="onSettingsChange($event)"/>
                     </div>
                 </section>
+            } @else if (tab() === 'refine') {
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
+                        <span class="eyebrow">REFINE TARGET</span>
+                    </div>
+                    <div class="mc-choices">
+                        <button type="button" class="mc-choice"
+                                [class.active]="refineTarget() === 'original'"
+                                (click)="refineTarget.set('original')">
+                            @if (refineTarget() === 'original') { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Original</div>
+                            <div class="mc-choice-desc">Refine the standard captions for images that already have one.</div>
+                        </button>
+                        <button type="button" class="mc-choice"
+                                [class.active]="refineTarget() === 'masked'"
+                                (click)="refineTarget.set('masked')">
+                            @if (refineTarget() === 'masked') { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Masked</div>
+                            <div class="mc-choice-desc">Refine the masked-variant captions for masked images.</div>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
+                        <span class="eyebrow">REFINE STRATEGY</span>
+                    </div>
+                    <div class="mc-choices compact">
+                        <button type="button" class="mc-choice"
+                                [class.active]="refineStrategy() === 'skip'"
+                                (click)="refineStrategy.set('skip')"
+                                title="Only refine captions without a pending suggestion to review.">
+                            @if (refineStrategy() === 'skip') { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Skip pending</div>
+                        </button>
+                        <button type="button" class="mc-choice"
+                                [class.active]="refineStrategy() === 'all'"
+                                (click)="refineStrategy.set('all')"
+                                title="Re-run refinement across every matching caption.">
+                            @if (refineStrategy() === 'all') { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Re-refine all</div>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
+                        <span class="eyebrow">OUTPUT</span>
+                    </div>
+                    <div class="mc-choices compact">
+                        <button type="button" class="mc-choice"
+                                [class.active]="!autoAccept()"
+                                (click)="autoAccept.set(false)"
+                                title="Stage each refined caption as a suggestion to accept or reject per image.">
+                            @if (!autoAccept()) { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Review suggestions</div>
+                        </button>
+                        <button type="button" class="mc-choice"
+                                [class.active]="autoAccept()"
+                                (click)="autoAccept.set(true)"
+                                data-testid="refine-auto-accept"
+                                title="Save refined captions straight to the variant — no review.">
+                            @if (autoAccept()) { <span class="mc-choice-dot"></span> }
+                            <div class="mc-choice-title">Auto-accept</div>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="mc-section">
+                    <div class="mc-section-head">
+                        <span class="mc-section-bar"></span>
+                        <span class="eyebrow">REFINEMENT MODEL</span>
+                    </div>
+                    <div class="mc-settings">
+                        <app-dataset-refine-settings (settingsChanged)="refineSettings.set($event)"/>
+                    </div>
+                </section>
             }
         </div>
 
@@ -124,10 +222,10 @@ type CaptionStrategy = 'keep' | 'overwrite';
             <div class="modal-foot mc-foot">
                 <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
                 <button class="btn cta" type="button"
-                        [disabled]="!currentSettings"
+                        [disabled]="!canStart()"
                         (click)="start()">
                     <app-ico name="Play" [size]="12"/>
-                    {{ target() === 'masked' ? 'Caption Masked Images' : 'Execute Mass Captioning' }}
+                    {{ ctaLabel() }}
                 </button>
             </div>
         }
@@ -139,6 +237,27 @@ type CaptionStrategy = 'keep' | 'overwrite';
             display: flex; align-items: center; gap: 10px;
             padding: 24px; justify-content: center;
             color: var(--color-text-muted); font-size: 13px;
+        }
+
+        .mc-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--color-border-default);
+        }
+        .mc-tab {
+            flex: 1; padding: 13px 14px;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            font-size: 11.5px; font-weight: 700; letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--color-text-subtle);
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            background: transparent;
+            cursor: pointer;
+        }
+        .mc-tab.active {
+            color: var(--color-text-primary);
+            border-bottom-color: var(--color-brand);
         }
 
         .mc-section { display: flex; flex-direction: column; gap: 12px; }
@@ -178,6 +297,14 @@ type CaptionStrategy = 'keep' | 'overwrite';
             color: var(--color-text-primary); margin-bottom: 4px;
         }
         .mc-choice-desc { font-size: 10.5px; color: var(--color-text-subtle); line-height: 1.5; }
+
+        /* Compact variant for the secondary binary selectors (strategy / output)
+           — same card language as the mask modal but title-only + tighter so the
+           Refine tab doesn't stack three tall description cards. */
+        .mc-choices.compact { gap: 8px; }
+        .mc-choices.compact .mc-choice { padding: 8px 12px; }
+        .mc-choices.compact .mc-choice-title { margin-bottom: 0; font-size: 12px; }
+        .mc-choices.compact .mc-choice-dot { top: 8px; right: 10px; }
 
         .mc-settings {
             background: color-mix(in oklab, var(--color-surface-mid) 70%, transparent);
@@ -253,8 +380,20 @@ export class MassCaptionModalComponent implements OnInit {
 
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
+    protected readonly tabs: ReadonlyArray<{ id: Tab; label: string; icon: 'Sparkles' | 'Wand2' }> = [
+        { id: 'generate', label: 'Generate', icon: 'Sparkles' },
+        { id: 'refine', label: 'Refine', icon: 'Wand2' },
+    ];
+    protected tab = signal<Tab>('generate');
+
     protected strategy = signal<CaptionStrategy>('keep');
     protected target = signal<'original' | 'masked'>('original');
+
+    protected refineTarget = signal<'original' | 'masked'>('original');
+    protected refineStrategy = signal<'skip' | 'all'>('skip');
+    /** When true, refined captions are saved straight to the variant (no per-image review). */
+    protected autoAccept = signal<boolean>(false);
+    protected refineSettings = signal<RefineSettingsState | null>(null);
 
     /** Latest snapshot from the shared caption-settings component. Null
      *  until the child emits its first `settingsChanged` (which fires on
@@ -278,6 +417,16 @@ export class MassCaptionModalComponent implements OnInit {
         const t = this.task();
         return t && t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     });
+
+    protected ctaLabel = computed(() => this.tab() === 'refine'
+        ? 'Refine Captions'
+        : (this.target() === 'masked' ? 'Caption Masked Images' : 'Execute Mass Captioning'));
+    /** Mirrors `currentSettings` as a signal so `canStart` (a computed) reacts
+     *  when the embedded caption-settings child emits its first state. */
+    protected settingsReady = signal<boolean>(false);
+    protected canStart = computed(() => this.tab() === 'refine'
+        ? !!this.refineSettings()
+        : this.settingsReady());
 
     /** Guard: prevents the completion effect from firing more than once. */
     private _finalized = false;
@@ -314,13 +463,16 @@ export class MassCaptionModalComponent implements OnInit {
      *  distinct so neither modal re-hooks to the other's task. Returns true
      *  when reattached. */
     private attachToRunningTask(name: string): boolean {
-        const existing = this.tasks.active().find(
-            t => t.type === 'caption_batch' && t.dataset_name === name
-                && t.target === this.target(),
-        );
-        if (!existing) return false;
-        this._taskView = this.tasks.byId(existing.id);
-        this.taskId.set(existing.id);
+        const mine = this.tasks.active().filter(t =>
+            t.dataset_name === name && (
+                (t.type === 'caption_batch' && t.target === this.target()) ||
+                t.type === 'caption_refine_batch'
+            ));
+        if (mine.length === 0) return false;
+        const t = mine.find(x => x.status === 'running') ?? mine[0];
+        this._taskView = this.tasks.byId(t.id);
+        this.taskId.set(t.id);
+        this.tab.set(t.type === 'caption_refine_batch' ? 'refine' : 'generate');
         this.running.set(true);
         return true;
     }
@@ -336,9 +488,15 @@ export class MassCaptionModalComponent implements OnInit {
 
     protected onSettingsChange(state: CaptionSettingsState): void {
         this.currentSettings = state;
+        this.settingsReady.set(true);
     }
 
     protected start(): void {
+        if (this.tab() === 'refine') { void this.startRefine(); return; }
+        this.startGenerate();
+    }
+
+    private startGenerate(): void {
         const name = this.data.datasetName;
         if (!name || !this.currentSettings) return;
         const all = this.pairs();
@@ -361,17 +519,53 @@ export class MassCaptionModalComponent implements OnInit {
         }
         if (!confirm(`Start captioning ${candidates.length} ${target} images?`)) return;
 
-        this.running.set(true);
-        this.datasetsApi.batchCaption({
+        this._finalized = false;
+        this.launch(this.datasetsApi.batchCaption({
             dataset_name: name,
             image_rel_paths: candidates.map(p => p.media_file),
             model_id: this.currentSettings.resolvedModelId,
             params: this.currentSettings.params,
             system_prompt: this.currentSettings.resolvedSystemPrompt,
             target: target,
-        }).subscribe({
+        }), 'Could not start captioning.');
+    }
+
+    protected async startRefine(): Promise<void> {
+        const name = this.data.datasetName;
+        const settings = this.refineSettings();
+        if (!name || !settings) return;
+        const masked = this.refineTarget() === 'masked';
+        let cands = masked
+            ? this.pairs().filter(p => p.metadata?.has_masked_caption)
+            : this.pairs().filter(p => p.caption_content?.trim());
+        if (this.refineStrategy() === 'skip') {
+            try {
+                const r = await firstValueFrom(this.datasetsApi.listCaptionSuggestions(name, settings.definitionId, masked));
+                const pending = new Set((r?.items ?? []).map(i => i.stem));
+                cands = cands.filter(p => !pending.has(this.stemOf(p.media_file)));
+            } catch {
+                this.toast.warning('Could not check pending suggestions — refining all.');
+            }
+        }
+        if (cands.length === 0) { this.toast.info('No images need refinement.'); return; }
+        if (!confirm(`Refine ${cands.length} ${masked ? 'masked' : 'original'} captions with ${settings.model}?`)) return;
+        this._finalized = false;
+        this.launch(
+            this.datasetsApi.refineCaptions(name, cands.map(p => p.media_file), settings.definitionId, settings.preset, settings.model, this.refineTarget(), settings.style, this.autoAccept()),
+            'Could not start refinement.');
+    }
+
+    private stemOf(rel: string): string {
+        const base = rel.split(/[\\/]/).pop() ?? rel;
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
+    }
+
+    private launch(obs: Observable<{ task_id: string }>, errMsg: string): void {
+        this.running.set(true);
+        obs.subscribe({
             next: ({ task_id }) => { this._taskView = this.tasks.byId(task_id); this.taskId.set(task_id); },
-            error: () => { this.running.set(false); this.toast.error('Could not start captioning.'); },
+            error: () => { this.running.set(false); this.toast.error(errMsg); },
         });
     }
 

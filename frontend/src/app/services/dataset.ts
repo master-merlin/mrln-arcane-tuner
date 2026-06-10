@@ -155,6 +155,18 @@ export interface DatasetPair {
   metadata: PairMetadata | null;
 }
 
+export interface TagCount { tag: string; count: number; }
+export interface Cooccurrence { labels: string[]; matrix: number[][]; }
+export interface Contradiction { a: string; b: string; count: number; images: string[]; }
+export interface TagAnalyticsResponse {
+  total_images: number;
+  total_tags: number;
+  top_tags: TagCount[];
+  orphan_tags: string[];
+  cooccurrence: Cooccurrence;
+  contradictions: Contradiction[];
+}
+
 // ── Response shapes ────────────────────────────────────────────────────
 // Mirror the backend C2 Pydantic response models (api/dataset, api/training,
 // api/* routes) one-to-one. These replace the prior `Observable<any>` returns.
@@ -218,6 +230,10 @@ export interface ModelRegistryItem {
 export interface ModelRegistryResponse { category: string; folder: string; models: ModelRegistryItem[]; }
 /** `POST /models/download`. */
 export interface ModelDownloadResponse { status: string; filename: string; path: string; size_mb: number; }
+/** One pending caption-variant suggestion row. */
+export interface SuggestionItem { stem: string; suggestion: string; current: string; }
+/** `GET /datasets/{name}/caption-suggestions?definition_id=X`. */
+export interface SuggestionsResponse { definition_id: string; items: SuggestionItem[]; }
 
 @Injectable({
   providedIn: 'root'
@@ -357,6 +373,12 @@ export class DatasetService {
       url += `&bucketing_mode=${bucketingMode}`;
     }
     return this.http.get(url);
+  }
+
+  getTagAnalytics(name: string, topN = 30): Observable<TagAnalyticsResponse> {
+    return this.http.get<TagAnalyticsResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/tag-analytics?top_n=${topN}`,
+    );
   }
 
   cropImage(name: string, path: string, targetWidth: number, targetHeight: number, origin: string, cropX?: number, cropY?: number): Observable<CropResponse> {
@@ -647,6 +669,66 @@ export class DatasetService {
     return this.http.post<ModelDownloadResponse>(`${this.rtc.apiUrl}/models/download`, {
       category, filename, target_folder: targetFolder,
     });
+  }
+
+  // ── Caption Variant Suggestions & Refine ───────────────────────────
+
+  listCaptionSuggestions(name: string, definitionId: string, masked = false): Observable<SuggestionsResponse> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions?definition_id=${encodeURIComponent(definitionId)}`;
+    if (masked) url += '&masked=true';
+    return this.http.get<SuggestionsResponse>(url);
+  }
+
+  acceptCaptionSuggestion(name: string, definitionId: string, stem: string, masked = false): Observable<{ status: string }> {
+    const body: Record<string, unknown> = { definition_id: definitionId, stem };
+    if (masked) body['masked'] = true;
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept`, body);
+  }
+
+  rejectCaptionSuggestion(name: string, definitionId: string, stem: string, masked = false): Observable<{ status: string }> {
+    const body: Record<string, unknown> = { definition_id: definitionId, stem };
+    if (masked) body['masked'] = true;
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/reject`, body);
+  }
+
+  acceptAllCaptionSuggestions(name: string, definitionId: string, masked = false): Observable<{ accepted: number }> {
+    const body: Record<string, unknown> = { definition_id: definitionId };
+    if (masked) body['masked'] = true;
+    return this.http.post<{ accepted: number }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept-all`, body);
+  }
+
+  getCaptionVariant(name: string, definitionId: string, stem: string, masked = false): Observable<{ text: string; has_variant: boolean }> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/caption-variant?definition_id=${encodeURIComponent(definitionId)}&stem=${encodeURIComponent(stem)}`;
+    if (masked) url += '&masked=true';
+    return this.http.get<{ text: string; has_variant: boolean }>(url);
+  }
+
+  getCaptionVariantMap(name: string, definitionId: string, masked = false): Observable<{ variants: Record<string, string> }> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/caption-variant-map?definition_id=${encodeURIComponent(definitionId)}`;
+    if (masked) url += '&masked=true';
+    return this.http.get<{ variants: Record<string, string> }>(url);
+  }
+
+  saveCaptionVariant(name: string, definitionId: string, stem: string, text: string, masked = false): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.apiUrl}/${encodeURIComponent(name)}/caption-variant`,
+      { definition_id: definitionId, stem, text, masked });
+  }
+
+  refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string, target?: 'original' | 'masked', style?: 'auto' | 'natural_language' | 'tags', autoAccept?: boolean): Observable<{ task_id: string }> {
+    const body: Record<string, unknown> = { dataset_name: name, image_rel_paths: imageRelPaths, definition_id: definitionId, preset };
+    if (model) body['model'] = model;
+    if (target) body['target'] = target;
+    if (style) body['style'] = style;
+    if (autoAccept) body['auto_accept'] = true;
+    return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/refine-batch`, body);
+  }
+
+  listRefineModels(): Observable<{ curated: string[]; installed: string[]; available: boolean }> {
+    return this.http.get<{ curated: string[]; installed: string[]; available: boolean }>(`${this.rtc.apiUrl}/llm-refine/models`);
+  }
+
+  pullRefineModel(tag: string): Observable<{ ok: boolean }> {
+    return this.http.post<{ ok: boolean }>(`${this.rtc.apiUrl}/llm-refine/pull`, { tag });
   }
 
 }

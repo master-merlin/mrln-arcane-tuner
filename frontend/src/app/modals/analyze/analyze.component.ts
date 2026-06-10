@@ -10,6 +10,7 @@ import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint
 import { CropAllItem } from './crop-all';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { TaskStore } from '../../state/task.store';
+import { TagAnalyticsPanelComponent } from './tag-analytics-panel';
 
 type FileFilter = 'all' | 'low-hps' | 'no-cap' | 'masked' | 'crop' | 'dupes';
 type FileSort = 'idx' | 'hps-desc' | 'hps-asc' | 'name' | 'size';
@@ -162,7 +163,7 @@ const THUMB_FALLBACK_DATA_URI =
 @Component({
     selector: 'app-modal-analyze',
     standalone: true,
-    imports: [IcoComponent, SegmentedComponent, TaskQueueHintComponent],
+    imports: [IcoComponent, SegmentedComponent, TaskQueueHintComponent, TagAnalyticsPanelComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -181,6 +182,11 @@ const THUMB_FALLBACK_DATA_URI =
                     Open a dataset workspace first — analysis is per-dataset.
                 </div>
             } @else {
+                <div class="an-tabs">
+                    <button type="button" class="an-tab" [class.active]="mainTab() === 'image'" (click)="mainTab.set('image')">Image</button>
+                    <button type="button" class="an-tab" [class.active]="mainTab() === 'caption'" (click)="mainTab.set('caption')">Caption</button>
+                </div>
+                @if (mainTab() === 'image') {
                 @if (cropAllRunning()) {
                     <app-task-queue-hint [task]="cropTask()"/>
                     <div class="card an-cropall-progress">
@@ -592,6 +598,9 @@ const THUMB_FALLBACK_DATA_URI =
                         </div>
                     }
                 }
+                } @else {
+                    <app-tag-analytics-panel [datasetName]="data.datasetName" />
+                }
             }
         </div>
 
@@ -932,6 +941,7 @@ export class AnalyzeModalComponent implements OnInit {
     protected pairs = signal<Pair[]>([]);
 
     protected activeTab = signal<'distributions' | 'files'>('distributions');
+    protected mainTab = signal<'image' | 'caption'>('image');
 
     protected setActiveTab(t: 'distributions' | 'files'): void {
         this.activeTab.set(t);

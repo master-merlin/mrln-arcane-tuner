@@ -82,6 +82,7 @@ class StubDatasetService {
         subscribe: (cb: any) => cb({ version: '2.0.0' }),
     });
     saveCaption = vi.fn();
+    saveCaptionVariant = vi.fn().mockReturnValue(of({ ok: true }));
 }
 class StubToast {
     success = vi.fn();
@@ -387,6 +388,7 @@ describe('DatasetWorkspaceComponent.onSaveCaption masked-path routing', () => {
             pair: { media_file: 'cat.png', caption_file: 'cat.txt' },
             content: 'masked text',
             isMasked: true,
+            definitionId: null,
         });
 
         // Drain the microtask queue for the .then() chain.
@@ -403,6 +405,7 @@ describe('DatasetWorkspaceComponent.onSaveCaption masked-path routing', () => {
             pair: { media_file: 'cat.png', caption_file: 'cat.txt' },
             content: 'plain text',
             isMasked: false,
+            definitionId: null,
         });
         await Promise.resolve();
         await Promise.resolve();
@@ -417,6 +420,7 @@ describe('DatasetWorkspaceComponent.onSaveCaption masked-path routing', () => {
             pair: { media_file: 'fox.JPG', caption_file: '' },
             content: 't',
             isMasked: false,
+            definitionId: null,
         });
         await Promise.resolve();
         await Promise.resolve();
@@ -434,11 +438,46 @@ describe('DatasetWorkspaceComponent.onSaveCaption masked-path routing', () => {
             pair: { media_file: 'dog.png', caption_file: 'dog.txt' },
             content: 'm',
             isMasked: true,
+            definitionId: null,
         });
         await Promise.resolve();
         await Promise.resolve();
 
         expect(mediaItems.saveCaption).toHaveBeenCalledWith('alpha', 'dog.png', 'masked/dog.txt', 'm');
+    });
+
+    it('routes a variant save (definitionId + !masked) to saveCaptionVariant and skips mediaItems.saveCaption', async () => {
+        const { cmp, mediaItems } = setup({ media_file: 'cat.png', caption_file: 'cat.txt', metadata: {} });
+        const api = TestBed.inject(DatasetService) as any;
+
+        (cmp as any).onSaveCaption({
+            pair: { media_file: 'cat.png', caption_file: 'cat.txt' },
+            content: 'variant text',
+            isMasked: false,
+            definitionId: 'flux1-schnell',
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(api.saveCaptionVariant).toHaveBeenCalledWith('alpha', 'flux1-schnell', 'cat', 'variant text');
+        expect(mediaItems.saveCaption).not.toHaveBeenCalled();
+    });
+
+    it('does NOT route to the variant when masked even if a definitionId is present', async () => {
+        const { cmp, mediaItems } = setup({ media_file: 'cat.png', caption_file: 'cat.txt', metadata: {} });
+        const api = TestBed.inject(DatasetService) as any;
+
+        (cmp as any).onSaveCaption({
+            pair: { media_file: 'cat.png', caption_file: 'cat.txt' },
+            content: 'masked text',
+            isMasked: true,
+            definitionId: 'flux1-schnell',
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(api.saveCaptionVariant).not.toHaveBeenCalled();
+        expect(mediaItems.saveCaption).toHaveBeenCalledWith('alpha', 'cat.png', 'masked/cat.txt', 'masked text');
     });
 });
 

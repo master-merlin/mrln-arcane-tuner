@@ -367,6 +367,9 @@ from app.api.cache_routes import router as cache_router      # noqa: E402
 from app.api.project_routes import router as project_router  # noqa: E402
 from app.api.tasks_routes import router as tasks_router  # noqa: E402
 from app.api.io_routes import router as io_router  # noqa: E402
+from app.api.caption_context_routes import router as caption_context_router  # noqa: E402
+from app.api.llm_refine_routes import router as llm_refine_router  # noqa: E402
+from app.api.caption_variant_routes import router as caption_variant_router  # noqa: E402
 
 app.include_router(ws_router, prefix="/api")
 app.include_router(training_router, prefix="/api")
@@ -380,6 +383,9 @@ app.include_router(cache_router, prefix="/api")
 app.include_router(project_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(io_router, prefix="/api")
+app.include_router(caption_context_router)
+app.include_router(llm_refine_router)
+app.include_router(caption_variant_router, prefix="/api")
 
 
 # ── Static File Mounts ──────────────────────────────────────────────────

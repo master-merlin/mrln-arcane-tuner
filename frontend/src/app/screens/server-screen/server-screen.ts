@@ -8,6 +8,7 @@ import {
     signal,
 } from '@angular/core';
 import { ServerControlComponent } from '../../components/system/server-control/server-control';
+import { LlmEndpointSettingsComponent } from '../../components/system/llm-endpoint-settings/llm-endpoint-settings';
 import { LiveLogViewerComponent } from '../../components/system/live-log-viewer/live-log-viewer';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { IcoComponent } from '../../icons/ico.component';
@@ -35,6 +36,7 @@ import { WebSocketService } from '../../services/websocket.service';
     standalone: true,
     imports: [
         ServerControlComponent,
+        LlmEndpointSettingsComponent,
         LiveLogViewerComponent,
         KpiTileComponent,
         IcoComponent,

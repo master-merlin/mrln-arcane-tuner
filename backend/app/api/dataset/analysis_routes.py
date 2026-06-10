@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset.harmonize_batch import run_harmonize_batch
+from app.core.dataset.tag_analytics import compute_tag_analytics
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
@@ -21,6 +22,32 @@ logger = get_logger(__name__)
 class VersionResponse(BaseModel):
     """The dataset's semantic version after a bump/set operation."""
     version: str
+
+
+class TagCount(BaseModel):
+    tag: str
+    count: int
+
+
+class Cooccurrence(BaseModel):
+    labels: list[str]
+    matrix: list[list[int]]
+
+
+class Contradiction(BaseModel):
+    a: str
+    b: str
+    count: int
+    images: list[str]
+
+
+class TagAnalyticsResponse(BaseModel):
+    total_images: int
+    total_tags: int
+    top_tags: list[TagCount]
+    orphan_tags: list[str]
+    cooccurrence: Cooccurrence
+    contradictions: list[Contradiction]
 
 
 @router.get("/datasets/{name}/analysis")
@@ -71,6 +98,20 @@ async def analyze_dataset(
         msg = str(e)
         status = 404 if "not found" in msg.lower() else 400
         raise HTTPException(status_code=status, detail=msg)
+
+
+@router.get("/datasets/{name}/tag-analytics", response_model=TagAnalyticsResponse)
+async def tag_analytics(name: str, top_n: int = 30):
+    """Tag frequency, orphans, co-occurrence matrix, and contradictions."""
+    if dataset_manager.get_dataset(name) is None:
+        raise HTTPException(404, f"Dataset '{name}' not found.")
+
+    def _compute() -> dict:
+        pairs = dataset_manager.get_dataset_pairs(name)
+        items = [(p.get("media_file", ""), p.get("caption_content", "") or "") for p in pairs]
+        return compute_tag_analytics(items, top_n=top_n)
+
+    return await asyncio.to_thread(_compute)
 
 
 @router.post("/datasets/{name}/bump", response_model=VersionResponse)

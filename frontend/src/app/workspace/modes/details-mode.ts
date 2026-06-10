@@ -17,6 +17,7 @@ import { DetailMediaContainerComponent } from '../../components/dataset/dataset-
 import { DetailCaptionSidebarComponent } from '../../components/dataset/dataset-viewer/components/detail-caption-sidebar';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
+import { ModelContextStore } from '../../state/model-context.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { IcoComponent } from '../../icons/ico.component';
 import { CanvasFooterComponent } from '../shared/canvas-footer.component';
@@ -115,7 +116,8 @@ import type { DatasetPair } from '../../services/dataset';
                         [(captionText)]="captionText"
                         (saveRequested)="onSaveCaption()"
                         (captionChanged)="onCaptionChanged()"
-                        (captionReverted)="onCaptionReverted()"/>
+                        (captionReverted)="onCaptionReverted()"
+                        (baselineChanged)="editorBaseline.set($event)"/>
                 </aside>
             </div>
         } @else {
@@ -221,8 +223,10 @@ export class DetailsMode {
      *  matching the Browse toolbar's pattern. */
     hasMaskedImages = input<boolean>(false);
 
-    /** Caption save intent — workspace performs optimistic + API. */
-    saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean }>();
+    /** Caption save intent — workspace performs optimistic + API. The
+     *  `definitionId` is the active definition when in variant mode (model-aware
+     *  + a definition + not masked), else `null` (general/masked save). */
+    saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean; definitionId: string | null }>();
     /** Delete pair intent (canvas footer trash OR media-container delete). */
     deletePair = output<DatasetPair>();
     /** Delete mask intent (masking-sidebar). */
@@ -241,7 +245,13 @@ export class DetailsMode {
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);
+    private modelContext = inject(ModelContextStore);
     protected rtc = inject(RuntimeConfigService);
+
+    /** The text the caption sidebar last (re)loaded — the dirty baseline.
+     *  Tracks the variant text in variant mode, so dirty compares against the
+     *  actually-shown caption rather than `pair.caption_content`. */
+    protected editorBaseline = signal<string>('');
 
     /** Caption editor is two-way bound; the local `isDirty` mirrors the
      *  orphan parent's tracking so the save button enables on edit. The
@@ -283,24 +293,17 @@ export class DetailsMode {
     });
 
     constructor() {
-        // Whenever the active pair's caption updates (e.g. the workspace's
-        // optimistic save just stamped it), drop the dirty flag. Tracks
-        // the actual string content so a successful save
-        // (text === captionText) clears the save button.
-        //
-        // Reads ``masked_caption_content`` when the workspace's "Masked"
-        // toggle is on (matching the sidebar's textarea source) — otherwise
-        // the workspace's masked-save stamp lands on a field this effect
-        // never reads and the dirty flag stays set forever. Falls back to
-        // ``caption_content`` when the current pair has no masked variant,
-        // mirroring the sidebar's pair-sync effect.
+        // Whenever the editor's loaded baseline matches the textarea, drop the
+        // dirty flag. The baseline is published by the caption sidebar's load
+        // effect via `(baselineChanged)` — it is the general caption today, the
+        // masked caption in masked view, or the per-definition variant in
+        // variant mode. Comparing against it (rather than `pair.caption_content`)
+        // makes dirty-clearing correct in all three regimes: on load the sidebar
+        // sets `captionText` AND emits `baselineChanged` to the same value, and
+        // on save `onSaveCaption` optimistically sets `editorBaseline` to the
+        // saved content.
         effect(() => {
-            const pair = this.currentPair();
-            const masked = this.showMasked();
-            const saved = masked && pair?.masked_caption_content != null
-                ? pair.masked_caption_content
-                : pair?.caption_content ?? '';
-            if (saved === this.captionText()) {
+            if (this.editorBaseline() === this.captionText()) {
                 this.isDirty.set(false);
             }
         });
@@ -426,17 +429,31 @@ export class DetailsMode {
         }
     }
 
+    /** Active definition when in variant mode (model-aware + a definition +
+     *  not masked), else null. Gating invariant: the workspace routes a save
+     *  to the per-definition variant only when this is non-null. */
+    private variantDef(): string | null {
+        return (this.modelContext.modelAware() && !this.showMasked())
+            ? this.modelContext.activeDefinitionId()
+            : null;
+    }
+
     /** Bubble the caption save intent — workspace handles optimistic + API. */
     protected onSaveCaption(): void {
         const pair = this.currentPair();
         if (!pair?.media_file) return;
+        const content = this.captionText();
         this.saveCaption.emit({
             pair,
-            content: this.captionText(),
+            content,
             // Mirror the workspace's "Masked" toggle — when on, the caption
             // sidebar's textarea is bound to ``masked_caption_content`` and
             // the workspace will route the save to ``masked/<stem>.txt``.
             isMasked: this.showMasked(),
+            definitionId: this.variantDef(),
         });
+        // Optimistic: the editing target now matches the saved content, so the
+        // dirty-clear effect drops the Save button.
+        this.editorBaseline.set(content);
     }
 }

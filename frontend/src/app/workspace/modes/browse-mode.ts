@@ -45,6 +45,8 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
             [activeMediaFile]="activeMediaFile()"
             [showMasked]="showMasked()"
             [showOverlay]="showOverlay()"
+            [definitionId]="definitionId()"
+            [variantCaptions]="variantCaptions()"
             (detailRequested)="openDetail($event)"
             (editRequested)="openEdit($event)"
             (captionSaved)="onCaptionSaved($event)"
@@ -81,9 +83,14 @@ export class BrowseMode {
     showMasked = input<boolean>(false);
     /** Render edited overlays in place of originals when true (legacy default). */
     showOverlay = input<boolean>(true);
+    /** Active model-aware definition id (null = model-aware off). Drives the
+     *  grid's per-definition variant display + save path. */
+    definitionId = input<string | null>(null);
+    /** Resolved variant texts by stem for the active definition. */
+    variantCaptions = input<Record<string, string>>({});
 
     /** Caption was edited and the textarea lost focus while dirty. */
-    saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean }>();
+    saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean; definitionId?: string | null }>();
     /** Eye-toggle on a tile — workspace performs the API + rollback. */
     toggleExclusion = output<{ media_file: string; enabled: boolean }>();
     /** Trash icon on a tile — workspace confirms + performs the API. */
@@ -127,18 +134,24 @@ export class BrowseMode {
     }
 
     /**
-     * The grid mutated `pair.caption_content` (or `masked_caption_content`)
-     * in place via ngModel. Reproject that to a save-intent payload the
-     * workspace can run through its optimistic helper. Browse-mode is
-     * always non-masked today (showMasked input defaults to false on the
-     * grid component), so `isMasked` is false here.
+     * The grid mutated the pair in place via ngModel. Reproject that to a
+     * save-intent payload the workspace can run through its optimistic helper.
+     * Browse-mode is always non-masked today (showMasked defaults false on the
+     * grid), so `isMasked` is false. In model-aware mode the grid stamps the
+     * edited variant text on `_variantCaption`; we forward it plus the active
+     * `definitionId` so the workspace routes to the variant save path (the
+     * general caption stays untouched). Off ⇒ the general-caption path, exactly
+     * as before.
      */
-    protected onCaptionSaved(pair: DatasetPair): void {
+    protected onCaptionSaved(pair: DatasetPair & { _variantCaption?: string }): void {
         if (!pair?.media_file) return;
+        const def = this.definitionId();
+        const isVariant = !!def && !this.showMasked();
         this.saveCaption.emit({
             pair,
-            content: pair.caption_content ?? '',
+            content: isVariant ? (pair._variantCaption ?? '') : (pair.caption_content ?? ''),
             isMasked: false,
+            definitionId: isVariant ? def : null,
         });
     }
 

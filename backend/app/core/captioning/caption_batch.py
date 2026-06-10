@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from app.core.captioning import caption_variants
 from app.core.captioning.caption_service import CaptionService
 from app.core.logger import get_logger
 from app.core.tasks.task import TaskStatus
@@ -62,10 +63,20 @@ def _masked_path(dataset_name: str, rel: str) -> str:
     return str(validate_path_within(masked, root))
 
 
-def _write_caption(dataset_name: str, rel: str, text: str, target: str) -> None:
+def _write_caption(
+    dataset_name: str,
+    rel: str,
+    text: str,
+    target: str,
+    definition_id: str | None = None,
+) -> None:
     """Persist *text* to disk and update the media-item metadata flag.
 
     Storage:
+    - per-definition variant: when *definition_id* is given and ``target ==
+      "original"``, the caption is written to
+      ``{dataset.path}/captions/{definition_id}/{stem}.txt`` via
+      ``caption_variants.write_variant`` instead of the general caption.
     - original: delegates to ``dataset_manager.save_caption`` — writes
       ``{dataset.path}/{stem}.txt``, flips ``has_caption``, recomputes
       ``caption_count`` and broadcasts ``entity.changed`` so the dataset card
@@ -77,6 +88,12 @@ def _write_caption(dataset_name: str, rel: str, text: str, target: str) -> None:
     from app.core.dataset_manager import dataset_manager as dm
 
     stem = Path(rel).stem
+
+    if definition_id and target == "original":
+        dataset = dm.get_dataset(dataset_name)
+        if dataset is not None:
+            caption_variants.write_variant(dataset.path, definition_id, stem, text)
+        return
 
     if target != "masked":
         dm.save_caption(dataset_name, f"{stem}.txt", text)
@@ -132,6 +149,7 @@ def run_caption_batch(
     params: dict,
     system_prompt: str | None,
     target: str,
+    definition_id: str | None = None,
 ) -> None:
     """Synchronous worker — runs on the GPU lane thread.
 
@@ -143,6 +161,9 @@ def run_caption_batch(
     ok = 0
     failed = 0
     cancelled = False
+
+    if definition_id is None:
+        definition_id = params.get("definition_id")
 
     try:
         service = _get_service()
@@ -164,7 +185,10 @@ def run_caption_batch(
                     model_id=model_id,
                     params=call_params,
                 )
-                _write_caption(dataset_name, rel, caption, target)
+                if definition_id:
+                    _write_caption(dataset_name, rel, caption, target, definition_id)
+                else:
+                    _write_caption(dataset_name, rel, caption, target)
                 ok += 1
                 _emit_caption_written(
                     dataset_name=dataset_name,

@@ -6,7 +6,9 @@ import {
     inject,
     signal,
 } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of, switchMap } from 'rxjs';
+import { toObservable, takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ModelContextStore } from '../state/model-context.store';
 import { OverlayStore, type WorkspaceMode } from '../state/overlay.store';
 import { DatasetStore } from '../state/dataset.store';
 import { MediaItemStore, MediaItem } from '../state/media-item.store';
@@ -16,9 +18,11 @@ import { DatasetService, Dataset, type DatasetPair } from '../services/dataset';
 import { ScopeStore } from '../state/scope.store';
 import { ToastService } from '../services/toast';
 import { RuntimeConfigService } from '../services/runtime-config.service';
+import { WebSocketService } from '../services/websocket.service';
 import { SegmentedComponent, type SegOption } from '../ui/segmented/segmented.component';
 import { IconButtonComponent } from '../ui/icon-button/icon-button.component';
 import { ContextSwitcherComponent } from '../shell/context-switcher/context-switcher.component';
+import { ModelSelectorComponent } from '../shell/model-selector/model-selector.component';
 import { ProjectMembershipPillComponent } from './project-membership-pill/project-membership-pill.component';
 import { IcoComponent } from '../icons/ico.component';
 import { FilmstripScrubberComponent } from './filmstrip-scrubber/filmstrip-scrubber.component';
@@ -60,6 +64,7 @@ import { EditMode } from './modes/edit-mode';
         SegmentedComponent,
         IconButtonComponent,
         ContextSwitcherComponent,
+        ModelSelectorComponent,
         ProjectMembershipPillComponent,
         IcoComponent,
         FilmstripScrubberComponent,
@@ -81,6 +86,8 @@ export class DatasetWorkspaceComponent {
     private sync = inject(DatasetSyncService);
     private toast = inject(ToastService);
     private rtc = inject(RuntimeConfigService);
+    protected modelContext = inject(ModelContextStore);
+    private socket = inject(WebSocketService);
 
     /** Datasets whose `/pairs` we've fetched at least once (acts as the
      *  load-state marker; the actual rows now live in MediaItemStore). */
@@ -197,6 +204,19 @@ export class DatasetWorkspaceComponent {
     /** Render edited overlays in place of originals when true (legacy default). */
     protected showOverlay = signal<boolean>(true);
 
+    /** Active model-aware definition for the grid, or null when model-aware is
+     *  off / a masked view is active (the grid only does the original axis). */
+    protected variantDefinitionId = computed<string | null>(() =>
+        this.modelContext.modelAware() && !this.showMasked()
+            ? this.modelContext.activeDefinitionId()
+            : null,
+    );
+    /** Resolved variant texts by stem for {@link variantDefinitionId}; fed to
+     *  the Browse grid so it overlays model-aware captions. Empty when off. */
+    protected variantCaptions = signal<Record<string, string>>({});
+    /** Bumped to force a variant-map refetch (after a variant save / accept). */
+    private variantMapReload = signal(0);
+
     /** True when at least one pair has a masked-image flag — drives toggle enablement. */
     protected hasMaskedImages = computed<boolean>(() =>
         this.pairs().some(p => !!p?.metadata?.has_masked),
@@ -263,6 +283,36 @@ export class DatasetWorkspaceComponent {
         // Ensure the dataset store is hydrated so the lookup above succeeds.
         // No-op if `loadAll` already ran on the Datasets screen.
         void this.datasets.loadAll().catch(() => undefined);
+
+        // Fetch the per-definition variant map for the grid whenever the active
+        // definition / dataset changes (or a save bumps the reload counter).
+        // Cleared to {} when model-aware is off so the grid is byte-identical.
+        const variantMapQuery = computed(() => {
+            const d = this.dataset();
+            const def = this.variantDefinitionId();
+            const r = this.variantMapReload();
+            return d && def ? { name: d.name, def, r } : null;
+        });
+        toObservable(variantMapQuery)
+            .pipe(
+                switchMap(q =>
+                    q ? this.datasetsApi.getCaptionVariantMap(q.name, q.def) : of({ variants: {} }),
+                ),
+                takeUntilDestroyed(),
+            )
+            .subscribe(res => this.variantCaptions.set(res.variants ?? {}));
+
+        // Auto-accepted refines promote variants in the background — refresh the
+        // grid overlay when one lands for the active dataset + definition.
+        this.socket
+            .on<{ dataset_name: string; definition_id: string; target: string }>('variant.written')
+            .pipe(takeUntilDestroyed())
+            .subscribe(e => {
+                const d = this.dataset();
+                if (d && e.dataset_name === d.name && e.definition_id === this.variantDefinitionId()) {
+                    this.variantMapReload.update(n => n + 1);
+                }
+            });
 
         // Effect 1 — resolve the dataset row.
         //
@@ -416,13 +466,33 @@ export class DatasetWorkspaceComponent {
      *     store failure we restore the previous text.
      */
     protected onSaveCaption(
-        event: { pair: DatasetPair; content: string; isMasked: boolean },
+        // `definitionId` is optional so Browse-mode (grid editing, which has no
+        // variant concept) can omit it; DetailsMode always supplies it (null
+        // unless in variant mode). Absent/null ⇒ the general/masked path runs.
+        event: { pair: DatasetPair; content: string; isMasked: boolean; definitionId?: string | null },
     ): void {
         const d = this.dataset();
         if (!d) return;
-        const { pair, content, isMasked } = event;
+        const { pair, content, isMasked, definitionId } = event;
         if (!pair?.media_file) return;
         const mediaFile: string = pair.media_file;
+
+        // Variant mode: write the per-definition variant. The general caption
+        // (and its has_caption metadata) is the untouched base, so we do NOT
+        // stamp the caption cache or MediaItemStore here. Gated to !isMasked —
+        // a masked save always routes to the general masked path below.
+        if (definitionId && !isMasked) {
+            const variantStem = mediaFile.substring(0, mediaFile.lastIndexOf('.'));
+            this.datasetsApi.saveCaptionVariant(d.name, definitionId, variantStem, content).subscribe({
+                next: () => {
+                    this.toast.success('Variant saved.');
+                    this.variantMapReload.update(n => n + 1);  // keep the grid overlay fresh
+                },
+                error: () => this.toast.error('Could not save caption variant.'),
+            });
+            return;
+        }
+
         // Masked captions live under ``masked/<stem>.txt`` on disk — legacy
         // parity with ``dataset-viewer.saveCurrentCaption``. ``pair.caption_file``
         // always points to the PLAIN caption file even when the masked variant

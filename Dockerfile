@@ -49,7 +49,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Docker Scout that ship in the CUDA base image.
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv python3-pip git ca-certificates \
+        python3.12 python3.12-venv python3-pip git ca-certificates curl \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
@@ -92,6 +92,11 @@ COPY backend/ /app/backend/
 
 # Built SPA from stage 1.
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
+
+# --- Ollama (local LLM sidecar for caption refinement) ---
+# Installed best-effort; the entrypoint only launches it if the binary is present,
+# so an install hiccup never blocks the app. Verify in a real image build.
+RUN curl -fsSL https://ollama.com/install.sh | sh || echo "WARN: ollama install failed; sidecar will be skipped at runtime"
 
 # Entrypoint.
 COPY entrypoint.sh /entrypoint.sh

@@ -1,15 +1,16 @@
-import { Component, ElementRef, effect, input, output, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ElementRef, computed, effect, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
 
 /**
- * A grid row: a dataset pair plus the transient `_captionDirty` flag the
- * textarea stamps in place so blur can tell a real edit from a focus-then-blur
- * (which must NOT save). A plain `DatasetPair` is assignable to this (the flag
- * is optional), so parents can keep passing `DatasetPair[]`.
+ * A grid row: a dataset pair plus two transient fields the textarea stamps in
+ * place — `_captionDirty` (so blur can tell a real edit from a focus-then-blur,
+ * which must NOT save) and `_variantCaption` (the edited model-aware variant
+ * text, handed to the parent on save). A plain `DatasetPair` is assignable to
+ * this (both are optional), so parents can keep passing `DatasetPair[]`.
  */
-type GridPair = DatasetPair & { _captionDirty?: boolean };
+type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: string };
 
 /** Payload emitted by the per-tile crop button. */
 export interface GridCropRequest {
@@ -153,7 +154,7 @@ export interface GridCropRequest {
                          <!-- Editable Caption Area -->
                          <div class="flex-1 flex flex-col bg-surface-mid border-t border-surface-high">
                             <textarea
-                                [ngModel]="showMasked() && pair.masked_caption_content != null ? pair.masked_caption_content : pair.caption_content"
+                                [ngModel]="displayCaption(pair)"
                                 (ngModelChange)="onCaptionEdit(pair, $event)"
                                 (blur)="onCaptionBlur(pair)"
                                 class="w-full h-full bg-transparent text-text-secondary text-xs p-3 focus:bg-base focus:outline-none resize-none font-mono"
@@ -269,6 +270,24 @@ export class ViewerGridViewComponent {
      *  changes the matching tile gets a brand-coloured outline AND is
      *  scrolled into view. */
     activeMediaFile = input<string | null>(null);
+    /** Active model-aware definition id, or null when model-aware is off.
+     *  When set (and not masked) the grid shows + edits the per-definition
+     *  caption *variant* instead of the general caption — same mechanics as
+     *  the details view. Off ⇒ byte-identical general-caption behaviour. */
+    definitionId = input<string | null>(null);
+    /** Resolved variant texts by stem for the active definition (only stems
+     *  that HAVE a variant; absent stems fall back to the general caption). */
+    variantCaptions = input<Record<string, string>>({});
+
+    /** True when editing per-definition variants (model-aware + a definition +
+     *  not viewing masked captions). */
+    protected variantMode = computed(() => !!this.definitionId() && !this.showMasked());
+
+    /** Display/edit buffer for variant text, keyed by stem. Seeded from
+     *  `variantCaptions` (falling back to the general caption) whenever the
+     *  definition, the resolved map, or the pair list changes; edits live here
+     *  too so the textarea stays reactive under OnPush. */
+    private variantText = signal<Record<string, string>>({});
 
     private scrollHost = viewChild<ElementRef<HTMLElement>>('scrollHost');
 
@@ -311,17 +330,27 @@ export class ViewerGridViewComponent {
 
     protected onTileLoaded(event: Event, pair: GridPair): void {
         const target = event.target as HTMLImageElement | HTMLVideoElement | null;
-        // currentSrc is what the browser actually fetched (resolved + winning
-        // <picture>/srcset entry). Fall back to the computed displayUrl when
-        // currentSrc is empty (some test envs).
-        const url = (target as HTMLImageElement)?.currentSrc
-            || (target as HTMLImageElement)?.src
-            || this.getDisplayUrl(pair);
-        if (!url) return;
+        // Record BOTH the browser's resolved URL (currentSrc — winning
+        // <picture>/srcset entry, always ABSOLUTE) AND `getDisplayUrl(pair)` —
+        // the exact value the template binds and `isLoaded()` checks. When
+        // `mediaBaseUrl` is relative (the workspace mount) currentSrc ≠
+        // displayUrl, so storing only currentSrc left `isLoaded()` false and the
+        // loader dots bled through the at-rest opacity-80 image. Storing the
+        // displayUrl key guarantees the match.
+        const urls = [
+            this.getDisplayUrl(pair),
+            (target as HTMLImageElement)?.currentSrc,
+            (target as HTMLImageElement)?.src,
+        ].filter((u): u is string => !!u);
+        if (!urls.length) return;
         this.loadedUrls.update(s => {
-            if (s.has(url)) return s;
-            const next = new Set(s);
-            next.add(url);
+            let next = s;
+            for (const u of urls) {
+                if (!next.has(u)) {
+                    if (next === s) next = new Set(s);
+                    next.add(u);
+                }
+            }
             return next;
         });
     }
@@ -335,6 +364,47 @@ export class ViewerGridViewComponent {
             if (!mf) return;
             queueMicrotask(() => this.scrollActiveIntoView(mf));
         });
+
+        // Seed the variant display buffer whenever the definition, the resolved
+        // variant map, or the pair list changes. Reads inputs reactively and
+        // writes the signal untracked so it never re-triggers itself.
+        effect(() => {
+            const map = this.variantCaptions();
+            const def = this.definitionId();
+            const masked = this.showMasked();
+            const list = this.pairs();
+            if (!def || masked) return;
+            const next: Record<string, string> = {};
+            for (const p of list) next[this.variantKey(p)] = map[this.variantKey(p)] ?? p.caption_content ?? '';
+            untracked(() => this.variantText.set(next));
+        });
+    }
+
+    /**
+     * Variant-map / caption-file key for a pair — the media file's basename sans
+     * extension. This MUST match how the backend names variant files
+     * (`Path(media_file).stem`) and how the details view derives its stem,
+     * because `pair.stem` can be lowercased by the backend MediaItem while the
+     * actual files preserve the original case (e.g. `911Targa1`). Keying off
+     * `pair.stem` silently missed every variant on case-sensitive stems.
+     */
+    private variantKey(pair: GridPair): string {
+        const base = (pair.media_file ?? '').split(/[\\/]/).pop() ?? '';
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
+    }
+
+    /** The caption text shown in a tile: the per-definition variant in
+     *  model-aware mode (falling back to the general caption for stems with no
+     *  variant yet), else the masked or general caption as before. */
+    displayCaption(pair: GridPair): string {
+        if (this.variantMode()) {
+            const t = this.variantText()[this.variantKey(pair)];
+            return t !== undefined ? t : (pair.caption_content ?? '');
+        }
+        return this.showMasked() && pair.masked_caption_content != null
+            ? pair.masked_caption_content
+            : (pair.caption_content ?? '');
     }
 
     private scrollActiveIntoView(mediaFile: string): void {
@@ -425,7 +495,12 @@ export class ViewerGridViewComponent {
      * from a focus-then-blur (which used to trigger an unwanted save).
      */
     onCaptionEdit(pair: GridPair, value: string): void {
-        if (this.showMasked()) {
+        if (this.variantMode()) {
+            // Variant mode: keep the general caption untouched. Stamp the pair
+            // (handed to the parent on save) AND the reactive buffer (display).
+            pair._variantCaption = value;
+            this.variantText.update(m => ({ ...m, [this.variantKey(pair)]: value }));
+        } else if (this.showMasked()) {
             pair.masked_caption_content = value;
         } else {
             pair.caption_content = value;

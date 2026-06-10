@@ -52,8 +52,18 @@ class PipelineCachingMixin:
         if persist_trigger and trigger:
             caption_hints[trigger] = "dropout_trigger"
 
+        # Per-definition caption-variant resolution (computed once). Defensive:
+        # when no definition / no variant / any error, select_training_caption
+        # returns item["caption"] verbatim, so behavior is unchanged.
+        from app.engine.core.pipeline.caption_selection import select_training_caption
+
+        _definition = getattr(self, "definition", None)
+        _def_id = getattr(_definition, "id", None)
+        _cfg = getattr(self, "config", None)
+        _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
+
         for item in self.inventory:
-            cap = item["caption"]
+            cap = select_training_caption(item, _def_id, _use_general)
             img_name = os.path.splitext(
                 os.path.basename(item.get("path", ""))
             )[0]
@@ -85,16 +95,17 @@ class PipelineCachingMixin:
             if dropout_cap not in caption_hints:
                 caption_hints[dropout_cap] = f"{img_name}_dropout"
 
-            # Dedicated masked caption (from masked/{stem}.txt)
-            # When no masked caption file exists, _select_variant falls
-            # back to trigger + prefix which is already the dropout variant.
-            if item.get("has_masked_caption") and item.get("masked_caption"):
-                m_cap = item["masked_caption"]
-                # Apply same trigger expansion as original caption
-                if trigger and "[triggerword]" in m_cap:
+            # Masked caption hint — route through the same resolver as
+            # _select_variant so the pre-cached embedding matches the trained
+            # caption. Gate on has_masked (not has_masked_caption) so masked
+            # *variant* items without a masked/{stem}.txt are still cached.
+            if item.get("has_masked"):
+                m_cap = select_training_caption(item, _def_id, _use_general, masked=True)
+                m_inline = "[triggerword]" in m_cap
+                if trigger and m_inline:
                     m_cap = m_cap.replace("[triggerword]", trigger)
                 m_parts: list[str] = []
-                if trigger and "[triggerword]" not in item.get("masked_caption", ""):
+                if trigger and not m_inline:
                     m_parts.append(trigger)
                 if item.get("prefix"):
                     m_parts.append(item["prefix"])

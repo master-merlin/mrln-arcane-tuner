@@ -1,6 +1,7 @@
 import { Component, input, output, model, inject, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
+import { CaptionSuggestionReviewComponent } from './caption-suggestion-review';
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { DatasetStore } from '../../../../state/dataset.store';
 import { ToastService } from '../../../../services/toast';
@@ -15,7 +16,7 @@ import { CaptionContextService, type TokenCountResult } from '../../../../servic
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'w-80 h-full flex flex-col' },
-    imports: [FormsModule, DatasetCaptionSettingsComponent],
+    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
             <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
@@ -153,6 +154,20 @@ import { CaptionContextService, type TokenCountResult } from '../../../../servic
                     </div>
                 }
             </div>
+
+            <!-- Model-aware refined-variant review + refine trigger -->
+            @if (modelContext.modelAware() && modelContext.activeDefinitionId(); as def) {
+                <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30">
+                    <button (click)="refineVariant()" data-testid="refine-variant"
+                            class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95">
+                        Refine for {{ def }}
+                    </button>
+                    <app-caption-suggestion-review
+                        [datasetName]="datasetName()"
+                        [stem]="currentStem()"
+                        [definitionId]="modelContext.activeDefinitionId()" />
+                </div>
+            }
         </div>
     `,
     styles: []
@@ -161,7 +176,7 @@ export class DetailCaptionSidebarComponent {
     private datasetService = inject(DatasetService);
     private datasets = inject(DatasetStore);
     private toast = inject(ToastService);
-    private modelContext = inject(ModelContextStore);
+    protected modelContext = inject(ModelContextStore);
     private captionContext = inject(CaptionContextService);
     protected tokenInfo = signal<TokenCountResult | null>(null);
 
@@ -200,6 +215,14 @@ export class DetailCaptionSidebarComponent {
     protected datasetTagOverflow = computed<number>(() =>
         Math.max(0, this.datasetTags().length - DetailCaptionSidebarComponent.TAG_CHIP_LIMIT),
     );
+
+    /** Caption stem (filename sans extension) for the active image. */
+    protected currentStem = computed(() => {
+        const f = this.currentPair()?.media_file ?? '';
+        const base = f.split(/[\\/]/).pop() ?? f;
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
+    });
 
     protected showTokenCount = computed(() => this.tokenInfo() != null);
     protected captionHead = computed(() => {
@@ -315,6 +338,16 @@ export class DetailCaptionSidebarComponent {
 
     discardSuggestion() {
         this.suggestedCaption.set(null);
+    }
+
+    /** Queue an LLM refine pass for the current image under the active definition. */
+    protected refineVariant(): void {
+        const def = this.modelContext.activeDefinitionId();
+        if (!def) return;
+        this.datasetService.refineCaptions(this.datasetName(), [this.currentPair().media_file], def, 'standardize').subscribe({
+            next: () => this.toast.success('Refine queued — suggestion will appear when ready.'),
+            error: () => this.toast.error('Failed to queue refine.'),
+        });
     }
 
     copyCaption(): void {

@@ -120,9 +120,87 @@ describe('DetailCaptionSidebar — token counter', () => {
         for (let i = 0; i < 10; i++) {
             const pending = http.match(req => !req.url.endsWith('/caption-context/token-count'));
             if (pending.length === 0) break;
-            // Flush list endpoints (templates) with an array, others with an
-            // object, so the child component's response handlers don't throw.
-            pending.forEach(r => r.flush(r.request.url.includes('/templates') ? [] : {}));
+            // Flush list endpoints (templates) with an array, the suggestion
+            // review child's listing with a suggestions-shaped object, and
+            // everything else with a bare object, so response handlers don't
+            // throw. (Turning model-aware on now also mounts the review child,
+            // which fires a /caption-suggestions GET.)
+            pending.forEach(r => {
+                if (r.request.url.includes('/templates')) r.flush([]);
+                else if (r.request.url.includes('/caption-suggestions')) r.flush({ definition_id: null, items: [] });
+                else r.flush({});
+            });
+        }
+        http.verify();
+    });
+});
+
+describe('DetailCaptionSidebar — variant suggestion + refine', () => {
+    function mountVariant() {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('currentPair', { media_file: 'img1.png', caption_file: 'img1.txt', caption_content: 'hi' });
+        const http = TestBed.inject(HttpTestingController);
+        const store = TestBed.inject(ModelContextStore);
+        return { fixture, http, store };
+    }
+
+    it('does not render the suggestion review when model-aware is off', () => {
+        const { fixture } = mountVariant();
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('app-caption-suggestion-review')).toBeNull();
+    });
+
+    it('renders the suggestion review when model-aware + definition active', () => {
+        const { fixture, http, store } = mountVariant();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        // the review child will fetch suggestions; satisfy + ignore it
+        const reqs = http.match(() => true);
+        reqs.forEach(r => { if (!r.cancelled) r.flush(r.request.method === 'GET' ? { definition_id: 'flux1-schnell', items: [] } : {}); });
+        expect(fixture.nativeElement.querySelector('app-caption-suggestion-review')).toBeTruthy();
+    });
+
+    it('refine button enqueues a refine batch for the current image', () => {
+        const { fixture, http, store } = mountVariant();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        // drain the child review's GET
+        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]');
+        expect(btn).toBeTruthy();
+        btn.click();
+        const req = http.expectOne('/api/captions/refine-batch');
+        expect(req.request.body.definition_id).toBe('flux1-schnell');
+        expect(req.request.body.image_rel_paths).toEqual(['img1.png']);
+        req.flush({ task_id: 't1' });
+    });
+
+    afterEach(() => {
+        // The AI caption-settings child + the suggestion-review child fire
+        // their own init GETs (.../preferences, .../templates, suggestions
+        // listing). Drain everything left iteratively (the children chain
+        // requests), flushing list endpoints with an array and others with a
+        // suggestions-shaped object so response handlers don't throw.
+        const http = TestBed.inject(HttpTestingController);
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] : { definition_id: null, items: [] });
+            });
         }
         http.verify();
     });

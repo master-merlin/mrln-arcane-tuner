@@ -180,6 +180,7 @@ class RefineBatchRequest(BaseModel):
     definition_id: str
     preset: str
     model: str | None = None
+    target: str = "original"
 
 
 @router.post("/refine-batch", response_model=TaskEnqueuedResponse)
@@ -200,7 +201,7 @@ async def refine_batch_api(request: RefineBatchRequest):
         title=f"Refine captions ({request.definition_id})",
         total=len(request.image_rel_paths),
         dataset_name=request.dataset_name,
-        target="original",
+        target=request.target,
     )
     task_manager.enqueue(
         task.id,
@@ -212,6 +213,7 @@ async def refine_batch_api(request: RefineBatchRequest):
             preset=request.preset,
             model=model,
             base_url=base_url,
+            target=request.target,
         ),
         lane="background",
     )

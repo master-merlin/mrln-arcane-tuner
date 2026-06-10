@@ -50,6 +50,28 @@ describe('ViewerGridViewComponent — model-aware captions', () => {
         expect(comp.displayCaption(p)).toBe('edited variant');
     });
 
+    it('reacts when the variant map arrives AFTER initial render (async fetch)', () => {
+        const p = pair('a', 'general cap');
+        const { fixture, comp } = setup({ pairs: [p], definitionId: 'flux1-schnell', variantCaptions: {} });
+        // before the map resolves → general
+        expect(comp.displayCaption(p)).toBe('general cap');
+        // map resolves later
+        fixture.componentRef.setInput('variantCaptions', { a: 'late variant' });
+        fixture.detectChanges();
+        expect(comp.displayCaption(p)).toBe('late variant');
+    });
+
+    it('reacts when model-aware is enabled AFTER initial render (definitionId arrives)', () => {
+        const p = pair('a', 'general cap');
+        const { fixture, comp } = setup({ pairs: [p], variantCaptions: { a: 'the variant' } });
+        // model-aware off → general
+        expect(comp.displayCaption(p)).toBe('general cap');
+        // definition selected later
+        fixture.componentRef.setInput('definitionId', 'flux1-schnell');
+        fixture.detectChanges();
+        expect(comp.displayCaption(p)).toBe('the variant');
+    });
+
     it('editing with model-aware OFF writes the general caption (legacy behaviour)', () => {
         const p = pair('a', 'general cap') as DatasetPair & { _variantCaption?: string };
         const { comp } = setup({ pairs: [p] });

@@ -69,6 +69,30 @@ describe('ViewerGridViewComponent — model-aware captions', () => {
         expect(comp.displayCaption(p)).toBe('edited variant');
     });
 
+    it('renders the variant text in the actual <textarea> (DOM), not just the method', async () => {
+        const p = pair('a', 'general cap');
+        const { fixture } = setup({ pairs: [p], definitionId: 'flux1-schnell', variantCaptions: { a: 'flux variant' } });
+        await fixture.whenStable();
+        fixture.detectChanges();
+        const ta = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+        expect(ta.value).toBe('flux variant');
+    });
+
+    it('updates the <textarea> when the variant map arrives after first paint (DOM)', async () => {
+        const p = pair('a', 'general cap');
+        const { fixture } = setup({ pairs: [p], definitionId: 'flux1-schnell', variantCaptions: {} });
+        await fixture.whenStable();
+        fixture.detectChanges();
+        let ta = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+        expect(ta.value).toBe('general cap');
+        fixture.componentRef.setInput('variantCaptions', { a: 'late variant' });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        ta = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+        expect(ta.value).toBe('late variant');
+    });
+
     it('reacts when the variant map arrives AFTER initial render (async fetch)', () => {
         const p = pair('a', 'general cap');
         const { fixture, comp } = setup({ pairs: [p], definitionId: 'flux1-schnell', variantCaptions: {} });

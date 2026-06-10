@@ -30,6 +30,7 @@ def run_caption_refine_batch(
     preset: str,
     model: str,
     base_url: str = "http://localhost:11434",
+    target: str = "original",
 ) -> None:
     ds = dataset_manager.get_dataset(dataset_name)
     if ds is None:
@@ -46,10 +47,11 @@ def run_caption_refine_batch(
             if task_manager.is_cancelled(task_id):
                 break
             stem = Path(rel).stem
-            source = caption_variants.resolve_caption(ds_path, stem, None)
+            masked = target == "masked"
+            source = caption_variants.resolve_caption(ds_path, stem, None, masked=masked)
             try:
                 refined = await caption_refine.refine_caption(client, model, source, preset)
-                caption_suggestions.write_suggestion(ds_path, definition_id, stem, refined)
+                caption_suggestions.write_suggestion(ds_path, definition_id, stem, refined, masked=masked)
                 ok += 1
             except Exception:
                 logger.exception("caption_refine_failed", rel=rel)

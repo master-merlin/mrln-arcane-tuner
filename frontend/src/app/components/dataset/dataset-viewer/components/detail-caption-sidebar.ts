@@ -166,6 +166,13 @@ import { CaptionContextService, type TokenCountResult } from '../../../../servic
                         [datasetName]="datasetName()"
                         [stem]="currentStem()"
                         [definitionId]="modelContext.activeDefinitionId()" />
+                    @if (currentPair().metadata?.has_masked_caption) {
+                        <app-caption-suggestion-review
+                            [datasetName]="datasetName()"
+                            [stem]="currentStem()"
+                            [definitionId]="modelContext.activeDefinitionId()"
+                            [masked]="true" />
+                    }
                 </div>
             }
         </div>

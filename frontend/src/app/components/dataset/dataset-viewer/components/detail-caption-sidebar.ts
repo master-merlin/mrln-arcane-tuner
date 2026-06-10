@@ -35,7 +35,7 @@ import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
                 <!-- Caption header — filename on the left, char count on the right -->
                 <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid flex items-start justify-between gap-3">
                     <div class="min-w-0 flex-1">
-                        <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : 'Caption' }}</h4>
+                        <h4 class="text-xs font-bold uppercase tracking-widest mb-0.5" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : (variantMode() ? 'Caption · ' + modelContext.activeDefinitionId() : 'Caption') }}</h4>
                         <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
                     </div>
                     @if (showTokenCount()) {
@@ -204,6 +204,18 @@ export class DetailCaptionSidebarComponent {
     saveRequested = output<void>();
     captionChanged = output<void>();
     captionReverted = output<void>();
+    /** The text the editor was (re)loaded with — lets the parent track its
+     *  dirty baseline against the variant (or general) text actually shown. */
+    baselineChanged = output<string>();
+
+    /** True when the editor is in per-definition variant mode (model-aware +
+     *  an active definition + not viewing the masked caption). */
+    protected variantMode = computed(() =>
+        this.modelContext.modelAware() && !!this.modelContext.activeDefinitionId() && !this.showMasked());
+
+    /** The text the load effect last published — the revert target in
+     *  variant mode (where there's no `pair.caption_content` to fall back to). */
+    private baseline = signal('');
 
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
@@ -260,11 +272,25 @@ export class DetailCaptionSidebarComponent {
         effect(() => {
             const pair = this.currentPair();
             const masked = this.showMasked();
+            const def = this.modelContext.activeDefinitionId();
+            const variantMode = this.modelContext.modelAware() && !!def && !masked;
             this.suggestedCaption.set(null);
+            if (variantMode && pair) {
+                this.datasetService.getCaptionVariant(this.datasetName(), def!, this.currentStem()).subscribe({
+                    next: r => { this.captionText.set(r.text); this.baseline.set(r.text); this.baselineChanged.emit(r.text); },
+                    error: () => {
+                        const t = pair.caption_content ?? '';
+                        this.captionText.set(t); this.baseline.set(t); this.baselineChanged.emit(t);
+                    },
+                });
+                return;
+            }
             const text = masked && pair?.masked_caption_content != null
                 ? pair.masked_caption_content
                 : pair?.caption_content ?? '';
             this.captionText.set(text);
+            this.baseline.set(text);
+            this.baselineChanged.emit(text);
         });
 
         const tokenQuery = computed(() => ({
@@ -382,9 +408,9 @@ export class DetailCaptionSidebarComponent {
 
     revertCaption(): void {
         const pair = this.currentPair();
-        const text = this.showMasked() && pair?.masked_caption_content != null
-            ? pair.masked_caption_content
-            : pair?.caption_content ?? '';
+        const text = this.variantMode()
+            ? this.baseline()
+            : (this.showMasked() && pair?.masked_caption_content != null ? pair.masked_caption_content : pair?.caption_content ?? '');
         this.captionText.set(text);
         this.captionReverted.emit();
     }

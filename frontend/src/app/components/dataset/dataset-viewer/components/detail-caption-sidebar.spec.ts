@@ -136,6 +136,101 @@ describe('DetailCaptionSidebar — token counter', () => {
     });
 });
 
+describe('DetailCaptionSidebar — model-aware variant load', () => {
+    function mountVariantLoad() {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('currentPair', { media_file: 'img1.png', caption_file: 'img1.txt', caption_content: 'general text' });
+        const http = TestBed.inject(HttpTestingController);
+        const store = TestBed.inject(ModelContextStore);
+        return { fixture, http, store };
+    }
+
+    it('does NOT issue a variant GET when model-aware is off (uses caption_content)', () => {
+        const { fixture, http } = mountVariantLoad();
+        fixture.detectChanges();
+        http.expectNone(r => r.url.endsWith('/caption-variant'));
+        expect(fixture.componentInstance.captionText()).toBe('general text');
+    });
+
+    it('fetches the variant + sets the textarea + emits baselineChanged in variant mode', () => {
+        const { fixture, http, store } = mountVariantLoad();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        const baselines: string[] = [];
+        fixture.componentInstance.baselineChanged.subscribe(t => baselines.push(t));
+        fixture.detectChanges();
+        const req = http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1');
+        expect(req.request.method).toBe('GET');
+        req.flush({ text: 'variant text', has_variant: true });
+        expect(fixture.componentInstance.captionText()).toBe('variant text');
+        expect(baselines).toContain('variant text');
+    });
+
+    it('falls back to caption_content + emits baselineChanged when the variant GET errors', () => {
+        const { fixture, http, store } = mountVariantLoad();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        const baselines: string[] = [];
+        fixture.componentInstance.baselineChanged.subscribe(t => baselines.push(t));
+        fixture.detectChanges();
+        const req = http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1');
+        req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.captionText()).toBe('general text');
+        expect(baselines).toContain('general text');
+    });
+
+    it('revert restores the loaded variant baseline in variant mode', () => {
+        const { fixture, http, store } = mountVariantLoad();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1')
+            .flush({ text: 'variant text', has_variant: true });
+        fixture.componentInstance.captionText.set('edited away');
+        (fixture.componentInstance as unknown as { revertCaption: () => void }).revertCaption();
+        expect(fixture.componentInstance.captionText()).toBe('variant text');
+    });
+
+    it('shows the definition in the caption header in variant mode', () => {
+        const { fixture, http, store } = mountVariantLoad();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        http.expectOne('/api/datasets/ds/caption-variant?definition_id=flux1-schnell&stem=img1')
+            .flush({ text: 'variant text', has_variant: true });
+        fixture.detectChanges();
+        const header = fixture.nativeElement.querySelector('h4');
+        expect(header.textContent).toContain('Caption · flux1-schnell');
+    });
+
+    afterEach(() => {
+        // The AI caption-settings child + the suggestion-review child fire
+        // their own init GETs (preferences, templates, suggestions listing).
+        // Drain everything left (including any variant GET the test itself did
+        // not assert on), flushing list endpoints with an array.
+        const http = TestBed.inject(HttpTestingController);
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] : { definition_id: null, items: [] });
+            });
+        }
+        http.verify();
+    });
+});
+
 describe('DetailCaptionSidebar — variant suggestion + refine', () => {
     function mountVariant() {
         localStorage.clear();

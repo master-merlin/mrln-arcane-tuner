@@ -176,6 +176,7 @@ class PipelineDataMixin:
                                 "path": img_path,
                                 "id": img_rel,
                                 "caption": caption,
+                                "dataset_path": ds_path,
                                 "prefix": prefix,
                                 "dropout_rate": float(ds_config.get("caption_dropout_rate", 0.0)),
                                 "orig_w": w,

@@ -52,8 +52,18 @@ class PipelineCachingMixin:
         if persist_trigger and trigger:
             caption_hints[trigger] = "dropout_trigger"
 
+        # Per-definition caption-variant resolution (computed once). Defensive:
+        # when no definition / no variant / any error, select_training_caption
+        # returns item["caption"] verbatim, so behavior is unchanged.
+        from app.engine.core.pipeline.caption_selection import select_training_caption
+
+        _definition = getattr(self, "definition", None)
+        _def_id = getattr(_definition, "id", None)
+        _cfg = getattr(self, "config", None)
+        _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
+
         for item in self.inventory:
-            cap = item["caption"]
+            cap = select_training_caption(item, _def_id, _use_general)
             img_name = os.path.splitext(
                 os.path.basename(item.get("path", ""))
             )[0]

@@ -53,6 +53,14 @@ describe('ViewerGridViewComponent — model-aware captions', () => {
         expect(comp.displayCaption(p)).toBe('flux variant');
     });
 
+    it('keys variants off the media_file basename, not the (possibly lowercased) pair.stem', () => {
+        // Backend lowercases MediaItem.stem ("911targa1") but the variant files
+        // + map preserve the original case ("911Targa1", from media_file).
+        const p = { stem: '911targa1', media_file: '911Targa1.jpg', media_type: 'image', caption_content: 'general' } as DatasetPair;
+        const { comp } = setup({ pairs: [p], definitionId: 'sdxl_base_1.0', variantCaptions: { '911Targa1': 'the variant' } });
+        expect(comp.displayCaption(p)).toBe('the variant');
+    });
+
     it('model-aware ON: falls back to the general caption for stems without a variant', () => {
         const p = pair('a', 'general cap');
         const { comp } = setup({ pairs: [p], definitionId: 'flux1-schnell', variantCaptions: {} });

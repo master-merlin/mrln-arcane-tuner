@@ -375,9 +375,23 @@ export class ViewerGridViewComponent {
             const list = this.pairs();
             if (!def || masked) return;
             const next: Record<string, string> = {};
-            for (const p of list) next[p.stem] = map[p.stem] ?? p.caption_content ?? '';
+            for (const p of list) next[this.variantKey(p)] = map[this.variantKey(p)] ?? p.caption_content ?? '';
             untracked(() => this.variantText.set(next));
         });
+    }
+
+    /**
+     * Variant-map / caption-file key for a pair — the media file's basename sans
+     * extension. This MUST match how the backend names variant files
+     * (`Path(media_file).stem`) and how the details view derives its stem,
+     * because `pair.stem` can be lowercased by the backend MediaItem while the
+     * actual files preserve the original case (e.g. `911Targa1`). Keying off
+     * `pair.stem` silently missed every variant on case-sensitive stems.
+     */
+    private variantKey(pair: GridPair): string {
+        const base = (pair.media_file ?? '').split(/[\\/]/).pop() ?? '';
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
     }
 
     /** The caption text shown in a tile: the per-definition variant in
@@ -385,7 +399,7 @@ export class ViewerGridViewComponent {
      *  variant yet), else the masked or general caption as before. */
     displayCaption(pair: GridPair): string {
         if (this.variantMode()) {
-            const t = this.variantText()[pair.stem];
+            const t = this.variantText()[this.variantKey(pair)];
             return t !== undefined ? t : (pair.caption_content ?? '');
         }
         return this.showMasked() && pair.masked_caption_content != null
@@ -485,7 +499,7 @@ export class ViewerGridViewComponent {
             // Variant mode: keep the general caption untouched. Stamp the pair
             // (handed to the parent on save) AND the reactive buffer (display).
             pair._variantCaption = value;
-            this.variantText.update(m => ({ ...m, [pair.stem]: value }));
+            this.variantText.update(m => ({ ...m, [this.variantKey(pair)]: value }));
         } else if (this.showMasked()) {
             pair.masked_caption_content = value;
         } else {

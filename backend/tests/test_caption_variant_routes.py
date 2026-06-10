@@ -106,3 +106,41 @@ def test_unknown_dataset_404(mock_dm, client):
     mock_dm.get_dataset.return_value = None
     r = client.get("/api/datasets/ghost/caption-variants")
     assert r.status_code == 404
+
+
+@patch(f"{_MOD}.dataset_manager")
+def test_get_caption_variant_returns_resolved_text_and_flag(mock_dm, client, tmp_path):
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    cv.write_variant(str(tmp_path), "flux1-schnell", "img1", "variant text")
+
+    resp = client.get("/api/datasets/ds/caption-variant",
+                      params={"definition_id": "flux1-schnell", "stem": "img1"})
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "variant text", "has_variant": True}
+
+
+@patch(f"{_MOD}.dataset_manager")
+def test_get_caption_variant_falls_back_to_general(mock_dm, client, tmp_path):
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    (tmp_path / "img1.txt").write_text("general text", encoding="utf-8")
+
+    resp = client.get("/api/datasets/ds/caption-variant",
+                      params={"definition_id": "flux1-schnell", "stem": "img1"})
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "general text", "has_variant": False}
+
+
+@patch(f"{_MOD}.dataset_manager")
+def test_put_caption_variant_writes_variant(mock_dm, client, tmp_path):
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+
+    resp = client.put("/api/datasets/ds/caption-variant",
+                      json={"definition_id": "flux1-schnell", "stem": "img1", "text": "edited variant"})
+    assert resp.status_code == 200
+    assert cv.read_variant(str(tmp_path), "flux1-schnell", "img1") == "edited variant"

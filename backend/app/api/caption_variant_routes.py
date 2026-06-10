@@ -39,6 +39,13 @@ class AcceptAllRequest(BaseModel):
     masked: bool = False
 
 
+class VariantWriteRequest(BaseModel):
+    definition_id: str
+    stem: str
+    text: str
+    masked: bool = False
+
+
 def _ds_path(name: str) -> str:
     ds = dataset_manager.get_dataset(name)
     if ds is None:
@@ -51,6 +58,26 @@ async def list_variants(name: str) -> dict:
     path = _ds_path(name)
     ids = await asyncio.to_thread(cv.list_variant_definition_ids, path)
     return {"definition_ids": ids}
+
+
+@router.get("/datasets/{name}/caption-variant")
+async def get_caption_variant(name: str, definition_id: str, stem: str, masked: bool = False) -> dict:
+    path = _ds_path(name)
+
+    def _read() -> dict:
+        return {
+            "text": cv.resolve_caption(path, stem, definition_id, masked),
+            "has_variant": cv.has_variant(path, definition_id, stem, masked),
+        }
+
+    return await asyncio.to_thread(_read)
+
+
+@router.put("/datasets/{name}/caption-variant")
+async def put_caption_variant(name: str, req: VariantWriteRequest) -> dict:
+    path = _ds_path(name)
+    await asyncio.to_thread(cv.write_variant, path, req.definition_id, req.stem, req.text, req.masked)
+    return {"ok": True}
 
 
 @router.get("/datasets/{name}/caption-suggestions", response_model=SuggestionsResponse)

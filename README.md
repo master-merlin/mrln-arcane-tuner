@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.5.6-alpha` · PyTorch 2.10 · CUDA 13.0 local / 12.6 container · Angular 22 · Node 24 · FastAPI
+`v0.5.6-alpha` · PyTorch 2.10 · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
 
 ---
 
@@ -74,8 +74,8 @@ python -m venv venv
 # Linux:   source venv/bin/activate
 
 # 2. Install PyTorch with CUDA 13.0 (local dev; needs an R580+ driver).
-#    The published container ships CUDA 12.6 (cu126) for broad host-driver
-#    compatibility — see "Run as a container" below.
+#    The published container ships CUDA 12.8 (cu128, Blackwell-capable) with a
+#    cu126 fallback for older host drivers — see "Run as a container" below.
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
     --index-url https://download.pytorch.org/whl/cu130
 
@@ -134,27 +134,46 @@ The published image is on Docker Hub — you can use it directly, no build
 required:
 
 ```
-mastermerlin/mrln-arcane-tuner:latest          # rolling latest
-mastermerlin/mrln-arcane-tuner:0.5.6-alpha     # pinned version
+mastermerlin/mrln-arcane-tuner:latest             # rolling latest (CUDA 12.8 / cu128)
+mastermerlin/mrln-arcane-tuner:0.5.6-alpha        # pinned version (CUDA 12.8 / cu128)
+mastermerlin/mrln-arcane-tuner:0.5.6-alpha-cu126  # fallback for legacy R560–R565 drivers
 ```
 
-The image bundles **CUDA 12.6 · PyTorch 2.10 · Python 3.12** (runtime) and a
-**Node 24 / Angular 22** production build of the UI.
+The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.10 · Python 3.12**
+(runtime) and a **Node 24 / Angular 22** production build of the UI. cu128 ships
+**Blackwell (sm_120/sm_100)** kernels plus Hopper/Ada/Ampere, and needs an
+**R570+** host driver — which Blackwell cards require anyway, so it covers the
+whole modern fleet. The `-cu126` tag is for older hosts pinned to **R560–R565**
+drivers (no Blackwell support).
 
-**Building your own** (only needed if you've modified the code):
+> **"no kernel image is available for execution on the device"** on a Blackwell
+> card (e.g. RTX PRO 6000) means you're on an older cu126 image — pull `latest`
+> (cu128).
+
+**Building your own** (only needed if you've modified the code). The CUDA target
+is parameterized via build args (default cu128):
 
 ```bash
-# Tag with both the version and latest so pods can pin or float.
+# Primary (cu128 — Blackwell + modern fleet). Tag with version and latest.
 docker build -t mastermerlin/mrln-arcane-tuner:0.5.6-alpha -t mastermerlin/mrln-arcane-tuner:latest .
 docker push mastermerlin/mrln-arcane-tuner:0.5.6-alpha
 docker push mastermerlin/mrln-arcane-tuner:latest
+
+# Fallback (cu126 — legacy R560–R565 drivers).
+docker build --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
+    -t mastermerlin/mrln-arcane-tuner:0.5.6-alpha-cu126 .
+docker push mastermerlin/mrln-arcane-tuner:0.5.6-alpha-cu126
 ```
 
 ### 2. Create the pod on RunPod
 
-- **GPU:** any NVIDIA Ampere+ GPU. The image is built for **CUDA 12.6**
-  (PyTorch 2.10) — works on the R560+ host drivers common on cloud GPU hosts.
-  (CUDA 13 needs R580+, which most hosts don't ship yet.)
+- **GPU:** any NVIDIA Ampere+ GPU, **including Blackwell** (RTX 50xx / RTX PRO
+  6000 Blackwell). The default image is built for **CUDA 12.8** (cu128) and
+  needs an **R570+** host driver — standard on current cloud hosts and mandatory
+  for Blackwell anyway. On a legacy host stuck on **R560–R565**, use the
+  `:0.5.6-alpha-cu126` tag instead (no Blackwell support). Avoid CUDA 13 in the
+  container: it needs R580+ and its forward-compat layer breaks cuBLAS on older
+  drivers.
 - **Container image:** `mastermerlin/mrln-arcane-tuner:latest`
 - **Volume (strongly recommended):** attach a **network volume mounted at
   `/workspace`**. The SQLite DB, `datasets/`, `models/`, `outputs/`, **and the

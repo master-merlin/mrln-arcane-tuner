@@ -15,6 +15,7 @@ import { provideHttpClient, withXhr } from '@angular/common/http';
 import { DetailsMode } from '../details-mode';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
+import { ModelContextStore } from '../../../state/model-context.store';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 
 class StubOverlay {
@@ -85,6 +86,8 @@ describe('DetailsMode', () => {
             expect(events.length).toBe(1);
             expect(events[0].isMasked).toBe(true);
             expect(events[0].content).toBe('hello masked');
+            // Model-aware off → no variant stamp.
+            expect(events[0].definitionId).toBeNull();
         });
 
         it('emits isMasked=false when showMasked input is false (default)', () => {
@@ -99,6 +102,55 @@ describe('DetailsMode', () => {
             (c as any).captionText.set('hello plain');
             (c as any).onSaveCaption();
             expect(events[0].isMasked).toBe(false);
+            // Model-aware off → no variant stamp.
+            expect(events[0].definitionId).toBeNull();
+        });
+
+        it('stamps definitionId with the active def when model-aware + !masked', () => {
+            const store = TestBed.inject(ModelContextStore);
+            store.setModelAware(true);
+            store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+            const fixture = TestBed.createComponent(DetailsMode);
+            fixture.componentRef.setInput('datasetId', 'd1');
+            fixture.componentRef.setInput('datasetName', 'alpha');
+            fixture.componentRef.setInput('imageIndex', 0);
+            fixture.componentRef.setInput('pairs', [makePair()]);
+            const c = fixture.componentInstance;
+            const events: any[] = [];
+            c.saveCaption.subscribe(e => events.push(e));
+            (c as any).captionText.set('variant edit');
+            (c as any).onSaveCaption();
+            expect(events[0].definitionId).toBe('flux1-schnell');
+            expect(events[0].isMasked).toBe(false);
+        });
+
+        it('stamps definitionId=null when model-aware but masked view', () => {
+            const store = TestBed.inject(ModelContextStore);
+            store.setModelAware(true);
+            store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+            const fixture = TestBed.createComponent(DetailsMode);
+            fixture.componentRef.setInput('datasetId', 'd1');
+            fixture.componentRef.setInput('datasetName', 'alpha');
+            fixture.componentRef.setInput('imageIndex', 0);
+            fixture.componentRef.setInput('pairs', [makePair()]);
+            fixture.componentRef.setInput('showMasked', true);
+            const c = fixture.componentInstance;
+            const events: any[] = [];
+            c.saveCaption.subscribe(e => events.push(e));
+            (c as any).captionText.set('masked edit');
+            (c as any).onSaveCaption();
+            expect(events[0].definitionId).toBeNull();
+            expect(events[0].isMasked).toBe(true);
+        });
+
+        afterEach(() => {
+            // ModelContextStore persists to localStorage and is providedIn:root
+            // (shared across TestBed). Reset it so the model-aware tests don't
+            // leak into the model-aware-off cases above.
+            const store = TestBed.inject(ModelContextStore);
+            store.setModelAware(false);
+            store.setDefinition(null);
+            localStorage.clear();
         });
     });
 

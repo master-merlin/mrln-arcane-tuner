@@ -517,7 +517,7 @@ export class MassCaptionModalComponent implements OnInit {
         if (!confirm(`Refine ${cands.length} ${masked ? 'masked' : 'original'} captions with ${settings.model}?`)) return;
         this._finalized = false;
         this.launch(
-            this.datasetsApi.refineCaptions(name, cands.map(p => p.media_file), settings.definitionId, settings.preset, settings.model, this.refineTarget()),
+            this.datasetsApi.refineCaptions(name, cands.map(p => p.media_file), settings.definitionId, settings.preset, settings.model, this.refineTarget(), settings.style),
             'Could not start refinement.');
     }
 

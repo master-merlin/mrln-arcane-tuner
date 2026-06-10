@@ -262,12 +262,12 @@ describe('MassCaptionComponent — Refine tab', () => {
             { media_file: 'a.png', caption_content: 'cap a' },
             { media_file: 'b.png', caption_content: '' },
         ]);
-        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct' });
+        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct', style: 'auto' });
         comp.refineTarget.set('original');
         comp.refineStrategy.set('all');
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.startRefine();
-        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original');
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original', 'auto');
     });
 
     it('startRefine targets masked-captioned images when the masked target is selected', async () => {
@@ -277,11 +277,11 @@ describe('MassCaptionComponent — Refine tab', () => {
             { media_file: 'a.png', caption_content: 'cap a', metadata: { has_masked_caption: true } },
             { media_file: 'b.png', caption_content: 'cap b', metadata: {} },
         ]);
-        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct' });
+        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'qwen2.5:7b-instruct', style: 'tags' });
         comp.refineTarget.set('masked');
         comp.refineStrategy.set('all');
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         await comp.startRefine();
-        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'masked');
+        expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'masked', 'tags');
     });
 });

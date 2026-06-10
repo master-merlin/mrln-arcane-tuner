@@ -34,6 +34,25 @@ describe('DatasetRefineSettingsComponent', () => {
         expect(last).not.toBeNull();
         expect(last!.definitionId).toBe('flux1-schnell');
         expect(last!.preset).toBe('standardize');
+        expect(last!.style).toBe('auto');   // default refinement template
+    });
+
+    it('emits the chosen style override and exposes the auto hint per family', () => {
+        const { fixture, http } = setup();
+        const emitted: (RefineSettingsState | null)[] = [];
+        fixture.componentInstance.settingsChanged.subscribe(s => emitted.push(s));
+        fixture.detectChanges();
+        http.expectOne('/api/llm-refine/models').flush({ curated: ['m'], installed: ['m'], available: true });
+        http.expectOne('/api/caption-context/definitions').flush([]);
+        fixture.detectChanges();
+        // flux1 → auto resolves to natural language
+        const ci = fixture.componentInstance as unknown as {
+            autoStyleLabel: () => string; style: { set: (v: string) => void };
+        };
+        expect(ci.autoStyleLabel()).toBe('natural language');
+        ci.style.set('tags');
+        fixture.detectChanges();
+        expect(emitted[emitted.length - 1]!.style).toBe('tags');
     });
 
     it('emits null when Ollama is unavailable', () => {

@@ -5,10 +5,16 @@ import { CaptionContextService } from '../../../services/caption-context.service
 import { ModelContextStore, DefinitionRef } from '../../../state/model-context.store';
 import { ToastService } from '../../../services/toast';
 
+/** Caption-style template for refinement. "auto" derives from the model's text
+ *  encoder (CLIP/SDXL → tags, T5/large-context → natural language); the other
+ *  two are explicit user overrides. */
+export type RefineStyle = 'auto' | 'natural_language' | 'tags';
+
 export interface RefineSettingsState {
     definitionId: string;
     preset: string;
     model: string;
+    style: RefineStyle;
 }
 
 const PRESETS = ['standardize', 'synonym_merge'];
@@ -68,9 +74,21 @@ const PRESETS = ['standardize', 'synonym_merge'];
                        placeholder="or type a model tag…" [ngModel]="model()" (ngModelChange)="model.set($event)">
             </div>
 
+            <!-- Refinement template (caption style) -->
+            <div>
+                <label class="block mb-1 text-text-subtle uppercase tracking-wide text-[10px]">Refinement template</label>
+                <select class="w-full p-2 rounded-theme-md bg-surface-high" [ngModel]="style()" (ngModelChange)="style.set($event)"
+                        data-testid="refine-style">
+                    <option [ngValue]="'auto'">Auto — match model ({{ autoStyleLabel() }})</option>
+                    <option [ngValue]="'natural_language'">Natural-language caption</option>
+                    <option [ngValue]="'tags'">Booru tags</option>
+                </select>
+                <p class="mt-1 text-[10px] text-text-subtle">Caption captioning models in prose; tag SDXL-style models. Always fit the model's token budget.</p>
+            </div>
+
             <!-- Preset -->
             <div>
-                <label class="block mb-1 text-text-subtle uppercase tracking-wide text-[10px]">Preset</label>
+                <label class="block mb-1 text-text-subtle uppercase tracking-wide text-[10px]">Operation</label>
                 <select class="w-full p-2 rounded-theme-md bg-surface-high" [ngModel]="preset()" (ngModelChange)="preset.set($event)">
                     @for (p of presets; track p) { <option [ngValue]="p">{{ p }}</option> }
                 </select>
@@ -96,9 +114,16 @@ export class DatasetRefineSettingsComponent implements OnInit {
 
     model = signal<string>('');
     protected preset = signal<string>('standardize');
+    protected style = signal<RefineStyle>('auto');
 
     /** Curated models not yet installed. */
     protected pullable = computed(() => this.curated().filter(c => !this.installed().includes(c)));
+
+    /** What "Auto" resolves to for the active definition's family — mirrors the
+     *  backend `caption_style_for` (CLIP/SDXL → tags, else natural language). */
+    protected autoStyleLabel = computed<'tags' | 'natural language'>(() =>
+        this.modelContext.activeDefinition()?.family === 'sdxl' ? 'tags' : 'natural language',
+    );
 
     constructor() {
         // Recompute + emit whenever inputs change.
@@ -106,12 +131,13 @@ export class DatasetRefineSettingsComponent implements OnInit {
             const defId = this.modelContext.activeDefinitionId();
             const model = this.model();
             const preset = this.preset();
+            const style = this.style();
             const available = this.available();
             if (available === false || !defId || !model) {
                 this.settingsChanged.emit(null);
                 return;
             }
-            this.settingsChanged.emit({ definitionId: defId, preset, model });
+            this.settingsChanged.emit({ definitionId: defId, preset, model, style });
         });
     }
 

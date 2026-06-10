@@ -155,6 +155,18 @@ export interface DatasetPair {
   metadata: PairMetadata | null;
 }
 
+export interface TagCount { tag: string; count: number; }
+export interface Cooccurrence { labels: string[]; matrix: number[][]; }
+export interface Contradiction { a: string; b: string; count: number; images: string[]; }
+export interface TagAnalyticsResponse {
+  total_images: number;
+  total_tags: number;
+  top_tags: TagCount[];
+  orphan_tags: string[];
+  cooccurrence: Cooccurrence;
+  contradictions: Contradiction[];
+}
+
 // ── Response shapes ────────────────────────────────────────────────────
 // Mirror the backend C2 Pydantic response models (api/dataset, api/training,
 // api/* routes) one-to-one. These replace the prior `Observable<any>` returns.
@@ -357,6 +369,12 @@ export class DatasetService {
       url += `&bucketing_mode=${bucketingMode}`;
     }
     return this.http.get(url);
+  }
+
+  getTagAnalytics(name: string, topN = 30): Observable<TagAnalyticsResponse> {
+    return this.http.get<TagAnalyticsResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/tag-analytics?top_n=${topN}`,
+    );
   }
 
   cropImage(name: string, path: string, targetWidth: number, targetHeight: number, origin: string, cropX?: number, cropY?: number): Observable<CropResponse> {

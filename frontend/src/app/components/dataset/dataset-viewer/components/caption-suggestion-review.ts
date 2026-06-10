@@ -14,7 +14,7 @@ import { DatasetService } from '../../../../services/dataset';
     template: `
         @if (suggestion(); as s) {
             <div class="p-2 bg-warning/10 rounded-theme-md border border-warning/30 animate-fadeIn">
-                <h5 class="text-[10px] text-warning font-bold mb-1 uppercase tracking-wide">Refined variant — review</h5>
+                <h5 class="text-[10px] text-warning font-bold mb-1 uppercase tracking-wide">{{ masked() ? 'Refined masked variant — review' : 'Refined variant — review' }}</h5>
                 <p class="text-[10px] text-text-secondary font-mono mb-2 max-h-32 overflow-y-auto">{{ s }}</p>
                 <div class="flex gap-2">
                     <button (click)="accept()" data-testid="suggestion-accept"
@@ -30,6 +30,7 @@ export class CaptionSuggestionReviewComponent {
     datasetName = input.required<string>();
     stem = input.required<string>();
     definitionId = input<string | null>(null);
+    masked = input<boolean>(false);
     accepted = output<void>();
 
     private api = inject(DatasetService);
@@ -42,7 +43,7 @@ export class CaptionSuggestionReviewComponent {
             const def = this.definitionId();
             this.suggestion.set(null);
             if (!def || !stem || !name) return;
-            this.api.listCaptionSuggestions(name, def).subscribe(r => {
+            this.api.listCaptionSuggestions(name, def, this.masked()).subscribe(r => {
                 const item = r.items.find(i => i.stem === stem);
                 this.suggestion.set(item ? item.suggestion : null);
             });
@@ -52,7 +53,7 @@ export class CaptionSuggestionReviewComponent {
     accept(): void {
         const def = this.definitionId();
         if (!def) return;
-        this.api.acceptCaptionSuggestion(this.datasetName(), def, this.stem()).subscribe(() => {
+        this.api.acceptCaptionSuggestion(this.datasetName(), def, this.stem(), this.masked()).subscribe(() => {
             this.suggestion.set(null);
             this.accepted.emit();
         });
@@ -61,6 +62,6 @@ export class CaptionSuggestionReviewComponent {
     reject(): void {
         const def = this.definitionId();
         if (!def) return;
-        this.api.rejectCaptionSuggestion(this.datasetName(), def, this.stem()).subscribe(() => this.suggestion.set(null));
+        this.api.rejectCaptionSuggestion(this.datasetName(), def, this.stem(), this.masked()).subscribe(() => this.suggestion.set(null));
     }
 }

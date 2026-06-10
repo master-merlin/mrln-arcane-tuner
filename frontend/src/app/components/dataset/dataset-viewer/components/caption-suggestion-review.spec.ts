@@ -59,3 +59,23 @@ describe('CaptionSuggestionReviewComponent', () => {
 
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });
+
+describe('CaptionSuggestionReviewComponent — masked axis', () => {
+    it('lists masked suggestions when masked=true', () => {
+        const { fixture, http } = mount('flux1-schnell');
+        fixture.componentRef.setInput('masked', true);
+        fixture.detectChanges();
+        const req = http.expectOne('/api/datasets/ds/caption-suggestions?definition_id=flux1-schnell&masked=true');
+        req.flush({ definition_id: 'flux1-schnell', items: [{ stem: 'img1', suggestion: 'm', current: 'c' }] });
+        fixture.detectChanges();
+        expect(fixture.nativeElement.textContent).toContain('m');
+    });
+
+    it('defaults to the original axis (no masked param)', () => {
+        const { fixture, http } = mount('flux1-schnell');
+        fixture.detectChanges();
+        http.expectOne('/api/datasets/ds/caption-suggestions?definition_id=flux1-schnell').flush({ definition_id: 'flux1-schnell', items: [] });
+    });
+
+    afterEach(() => TestBed.inject(HttpTestingController).verify());
+});

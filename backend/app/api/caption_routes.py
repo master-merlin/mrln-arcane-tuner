@@ -181,6 +181,9 @@ class RefineBatchRequest(BaseModel):
     preset: str
     model: str | None = None
     target: str = "original"
+    # Caption style: "auto" (derive from the model's text encoder), "tags", or
+    # "natural_language" (explicit user override of the refinement template).
+    style: str = "auto"
 
 
 @router.post("/refine-batch", response_model=TaskEnqueuedResponse)
@@ -214,6 +217,7 @@ async def refine_batch_api(request: RefineBatchRequest):
             model=model,
             base_url=base_url,
             target=request.target,
+            style=request.style,
         ),
         lane="background",
     )

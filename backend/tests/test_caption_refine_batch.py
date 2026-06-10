@@ -91,6 +91,60 @@ def test_refine_batch_emits_suggestion_written(mock_refine, mock_dm, mock_tm, mo
     assert kw["suggestion"] == "refined cap"
 
 
+@patch.object(crb, "resolve_caption_target")
+@patch.object(crb, "task_manager")
+@patch.object(crb, "dataset_manager")
+@patch.object(crb.caption_refine, "refine_caption", new_callable=AsyncMock)
+def test_refine_batch_passes_model_aware_system_prompt(mock_refine, mock_dm, mock_tm, mock_target, tmp_path):
+    """The batch resolves the definition's caption target and refines with a
+    model-aware (style + token-budget) system prompt, not a fixed preset."""
+    from app.engine.core.caption_target import CaptionTarget
+
+    mock_target.return_value = CaptionTarget("sdxl", "clip", "x", 77, 75)
+    mock_refine.return_value = "refined"
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    mock_tm.is_cancelled.return_value = False
+    mock_tm._loop = None
+    (tmp_path / "img1.txt").write_text("a, b", encoding="utf-8")
+
+    crb.run_caption_refine_batch(
+        "t1", dataset_name="ds", image_rel_paths=["img1.png"],
+        definition_id="sdxl_base_1.0", preset="standardize",
+        model="m", base_url="http://test", style="auto",
+    )
+
+    sp = mock_refine.await_args.kwargs["system_prompt"]
+    assert sp is not None
+    assert "tag" in sp.lower()   # SDXL → tagging style
+    assert "75" in sp            # usable token budget baked in
+
+
+@patch.object(crb, "resolve_caption_target", side_effect=ValueError("unknown"))
+@patch.object(crb, "task_manager")
+@patch.object(crb, "dataset_manager")
+@patch.object(crb.caption_refine, "refine_caption", new_callable=AsyncMock)
+def test_refine_batch_falls_back_when_target_unresolvable(mock_refine, mock_dm, mock_tm, mock_target, tmp_path):
+    """If the definition can't be resolved to a caption target, refine still
+    runs with the legacy preset (system_prompt=None) rather than crashing."""
+    mock_refine.return_value = "refined"
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    mock_tm.is_cancelled.return_value = False
+    mock_tm._loop = None
+    (tmp_path / "img1.txt").write_text("a, b", encoding="utf-8")
+
+    crb.run_caption_refine_batch(
+        "t1", dataset_name="ds", image_rel_paths=["img1.png"],
+        definition_id="ghost-def", preset="standardize", model="m", base_url="http://test",
+    )
+
+    assert mock_refine.await_args.kwargs["system_prompt"] is None
+    mock_tm.complete.assert_called_once_with("t1")
+
+
 @patch.object(crb, "task_manager")
 @patch.object(crb, "dataset_manager")
 @patch.object(crb.caption_refine, "refine_caption", new_callable=AsyncMock)

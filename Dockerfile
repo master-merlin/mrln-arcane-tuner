@@ -47,6 +47,15 @@ RUN python -m pip install --break-system-packages \
     # pinned versions already satisfied.
     && python -m pip install --break-system-packages --ignore-installed \
         setuptools==78.1.1 wheel==0.46.2 \
+    # --ignore-installed leaves the old apt-managed setuptools/wheel on disk
+    # alongside the pinned copies (it can't uninstall them — no pip RECORD), so
+    # Docker Scout still flags the vulnerable 68.1.2/0.42.0 files. The pinned
+    # copies in /usr/local win on sys.path; delete the stale apt copies and the
+    # Debian bundled wheel so the vulnerable files leave the image entirely.
+    && rm -rf /usr/lib/python3/dist-packages/setuptools* \
+              /usr/lib/python3/dist-packages/pkg_resources* \
+              /usr/lib/python3/dist-packages/wheel* \
+              /usr/share/python-wheels/setuptools-*.whl \
     && python -m pip install --break-system-packages -r requirements.txt
 
 # Native shared libraries required by OpenCV (cv2) and friends at import time

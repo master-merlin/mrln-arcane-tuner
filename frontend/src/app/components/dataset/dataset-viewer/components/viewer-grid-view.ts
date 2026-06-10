@@ -330,17 +330,27 @@ export class ViewerGridViewComponent {
 
     protected onTileLoaded(event: Event, pair: GridPair): void {
         const target = event.target as HTMLImageElement | HTMLVideoElement | null;
-        // currentSrc is what the browser actually fetched (resolved + winning
-        // <picture>/srcset entry). Fall back to the computed displayUrl when
-        // currentSrc is empty (some test envs).
-        const url = (target as HTMLImageElement)?.currentSrc
-            || (target as HTMLImageElement)?.src
-            || this.getDisplayUrl(pair);
-        if (!url) return;
+        // Record BOTH the browser's resolved URL (currentSrc — winning
+        // <picture>/srcset entry, always ABSOLUTE) AND `getDisplayUrl(pair)` —
+        // the exact value the template binds and `isLoaded()` checks. When
+        // `mediaBaseUrl` is relative (the workspace mount) currentSrc ≠
+        // displayUrl, so storing only currentSrc left `isLoaded()` false and the
+        // loader dots bled through the at-rest opacity-80 image. Storing the
+        // displayUrl key guarantees the match.
+        const urls = [
+            this.getDisplayUrl(pair),
+            (target as HTMLImageElement)?.currentSrc,
+            (target as HTMLImageElement)?.src,
+        ].filter((u): u is string => !!u);
+        if (!urls.length) return;
         this.loadedUrls.update(s => {
-            if (s.has(url)) return s;
-            const next = new Set(s);
-            next.add(url);
+            let next = s;
+            for (const u of urls) {
+                if (!next.has(u)) {
+                    if (next === s) next = new Set(s);
+                    next.add(u);
+                }
+            }
             return next;
         });
     }

@@ -21,6 +21,25 @@ function setup(inputs: Record<string, unknown>) {
     return { fixture, comp: fixture.componentInstance as unknown as AnyGrid };
 }
 
+describe('ViewerGridViewComponent — tile loader', () => {
+    it('marks a tile loaded even when the browser resolved an absolute currentSrc', () => {
+        const p = pair('a', 'cap');
+        const { fixture } = setup({ pairs: [p] });
+        const comp = fixture.componentInstance as unknown as {
+            onTileLoaded: (e: Event, p: DatasetPair) => void;
+            isLoaded: (p: DatasetPair) => boolean;
+        };
+        expect(comp.isLoaded(p)).toBe(false);
+        // Browser reports an ABSOLUTE currentSrc (≠ the relative displayUrl the
+        // template binds + isLoaded checks). The tile must still count as loaded.
+        comp.onTileLoaded(
+            { target: { currentSrc: 'http://host/media/ds/a.png?t=0', src: 'http://host/media/ds/a.png?t=0' } } as unknown as Event,
+            p,
+        );
+        expect(comp.isLoaded(p)).toBe(true);
+    });
+});
+
 describe('ViewerGridViewComponent — model-aware captions', () => {
     it('model-aware OFF: shows the general caption (byte-identical)', () => {
         const p = pair('a', 'general cap');

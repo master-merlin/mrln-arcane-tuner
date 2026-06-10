@@ -243,35 +243,26 @@ class PipelineDataMixin:
         weighted random selection is applied using the item's own weight.
 
         Caption handling for masked variants:
-        - If a dedicated ``masked/{stem}.txt`` exists → use it as-is
-        - Otherwise → fall back to ``triggerword + prefix`` only,
-          avoiding the full original caption which describes spatial
-          context (backgrounds, viewing angles) absent from the
-          masked image.
+        - Masked caption resolves via select_training_caption(masked=True):
+          masked variant → masked/{stem}.txt → original caption.
         """
-        if (
-            item.get("has_masked")
-            and random.random() >= item.get("original_weight", 0.70)
-        ):
-            if item.get("has_masked_caption"):
-                cap = item["masked_caption"]
-            else:
-                # No dedicated masked caption — return empty string so
-                # _get_batch assembles trigger + prefix only (it always
-                # prepends those).  This avoids the full original caption
-                # which describes spatial context absent from the masked image.
-                cap = ""
-            return (item["masked_path"], cap, item["masked_cache_dir"])
-        # General (non-masked) caption: route through the per-definition
-        # variant resolver so a variant overrides item["caption"]. Mirrors
-        # _build_caption_hints (TE pre-cache). Defensive: when no definition /
-        # no variant / use_general / any error, select_training_caption returns
-        # item["caption"] verbatim, so the per-step caption is byte-identical.
         from app.engine.core.pipeline.caption_selection import select_training_caption
 
         _def_id = getattr(getattr(self, "definition", None), "id", None)
         _cfg = getattr(self, "config", None)
         _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
+
+        # Masked variant: weighted random selection using the item's own weight.
+        if (
+            item.get("has_masked")
+            and random.random() >= item.get("original_weight", 0.70)
+        ):
+            # Route masked through the same per-definition resolver as the general
+            # branch. Defensive: no masked variant → masked_caption → original.
+            cap = select_training_caption(item, _def_id, _use_general, masked=True)
+            return (item["masked_path"], cap, item["masked_cache_dir"])
+
+        # General (non-masked) caption: per-definition variant overrides item["caption"].
         cap = select_training_caption(item, _def_id, _use_general)
         return item["path"], cap, item["cache_dir"]
 

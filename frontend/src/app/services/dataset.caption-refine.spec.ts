@@ -102,5 +102,24 @@ describe('DatasetService — caption refine/suggestions', () => {
         req.flush({ task_id: 't1' });
     });
 
+    it('lists refine models', () => {
+        const { svc, http } = setup();
+        let result: unknown;
+        svc.listRefineModels().subscribe(r => (result = r));
+        const req = http.expectOne('/api/llm-refine/models');
+        expect(req.request.method).toBe('GET');
+        req.flush({ curated: ['qwen2.5:7b-instruct'], installed: [], available: true });
+        expect((result as { available: boolean }).available).toBe(true);
+    });
+
+    it('pulls a refine model', () => {
+        const { svc, http } = setup();
+        svc.pullRefineModel('qwen2.5:3b-instruct').subscribe();
+        const req = http.expectOne('/api/llm-refine/pull');
+        expect(req.request.method).toBe('POST');
+        expect(req.request.body).toEqual({ tag: 'qwen2.5:3b-instruct' });
+        req.flush({ ok: true });
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

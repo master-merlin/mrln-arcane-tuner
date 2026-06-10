@@ -704,6 +704,14 @@ export class DatasetService {
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/refine-batch`, body);
   }
 
+  listRefineModels(): Observable<{ curated: string[]; installed: string[]; available: boolean }> {
+    return this.http.get<{ curated: string[]; installed: string[]; available: boolean }>(`${this.rtc.apiUrl}/llm-refine/models`);
+  }
+
+  pullRefineModel(tag: string): Observable<{ ok: boolean }> {
+    return this.http.post<{ ok: boolean }>(`${this.rtc.apiUrl}/llm-refine/pull`, { tag });
+  }
+
 }
 
 export interface PipelineBlock {

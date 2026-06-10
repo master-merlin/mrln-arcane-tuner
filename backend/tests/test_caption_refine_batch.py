@@ -121,6 +121,39 @@ def test_refine_batch_passes_model_aware_system_prompt(mock_refine, mock_dm, moc
     assert "75" in sp            # usable token budget baked in
 
 
+@patch.object(crb, "_emit_variant_written")
+@patch.object(crb, "task_manager")
+@patch.object(crb, "dataset_manager")
+@patch.object(crb.caption_refine, "refine_caption", new_callable=AsyncMock)
+def test_refine_batch_auto_accept_promotes_variant(mock_refine, mock_dm, mock_tm, mock_emit, tmp_path):
+    """With auto_accept, each refined caption is promoted straight to the live
+    variant (no pending suggestion left to review) and a variant.written event
+    fires instead of suggestion.written."""
+    from app.core.captioning import caption_variants as cv
+
+    mock_refine.return_value = "refined cap"
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    mock_tm.is_cancelled.return_value = False
+    mock_tm._loop = None
+    (tmp_path / "img1.txt").write_text("general caption", encoding="utf-8")
+
+    crb.run_caption_refine_batch(
+        "t1", dataset_name="ds", image_rel_paths=["img1.png"],
+        definition_id="flux1-schnell", preset="standardize",
+        model="m", base_url="http://test", auto_accept=True,
+    )
+
+    # promoted to the live variant, no pending suggestion remains
+    assert cv.read_variant(str(tmp_path), "flux1-schnell", "img1") == "refined cap"
+    assert sg.read_suggestion(str(tmp_path), "flux1-schnell", "img1") is None
+    mock_emit.assert_called_once()
+    assert mock_emit.call_args.kwargs["definition_id"] == "flux1-schnell"
+    assert mock_emit.call_args.kwargs["stem"] == "img1"
+    mock_tm.complete.assert_called_once_with("t1")
+
+
 @patch.object(crb, "resolve_caption_target", side_effect=ValueError("unknown"))
 @patch.object(crb, "task_manager")
 @patch.object(crb, "dataset_manager")

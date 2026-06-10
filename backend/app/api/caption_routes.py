@@ -184,6 +184,9 @@ class RefineBatchRequest(BaseModel):
     # Caption style: "auto" (derive from the model's text encoder), "tags", or
     # "natural_language" (explicit user override of the refinement template).
     style: str = "auto"
+    # When true, promote each refined caption straight to the live variant
+    # instead of staging a suggestion for per-image review.
+    auto_accept: bool = False
 
 
 @router.post("/refine-batch", response_model=TaskEnqueuedResponse)
@@ -218,6 +221,7 @@ async def refine_batch_api(request: RefineBatchRequest):
             base_url=base_url,
             target=request.target,
             style=request.style,
+            auto_accept=request.auto_accept,
         ),
         lane="background",
     )

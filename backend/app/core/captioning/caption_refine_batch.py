@@ -54,6 +54,34 @@ def _emit_suggestion_written(
     )
 
 
+def _emit_variant_written(
+    *,
+    dataset_name: str,
+    stem: str,
+    definition_id: str,
+    target: str,
+) -> None:
+    """Broadcast a ``variant.written`` event after an auto-accepted refine
+    promotes a caption straight to the live variant — so the Browse grid + the
+    details editor refresh without re-navigation. Same cross-loop scheduling
+    rationale as :func:`_emit_suggestion_written`. No-op if no loop yet."""
+    loop = task_manager._loop
+    if loop is None:
+        return
+    from app.core.events import event_manager
+
+    payload = {
+        "dataset_name": dataset_name,
+        "stem": stem,
+        "definition_id": definition_id,
+        "target": target,
+    }
+    asyncio.run_coroutine_threadsafe(
+        event_manager.broadcast("variant.written", payload),
+        loop,
+    )
+
+
 def run_caption_refine_batch(
     task_id: str,
     *,
@@ -65,6 +93,7 @@ def run_caption_refine_batch(
     base_url: str = "http://localhost:11434",
     target: str = "original",
     style: str = "auto",
+    auto_accept: bool = False,
 ) -> None:
     ds = dataset_manager.get_dataset(dataset_name)
     if ds is None:
@@ -104,13 +133,24 @@ def run_caption_refine_batch(
                 )
                 caption_suggestions.write_suggestion(ds_path, definition_id, stem, refined, masked=masked)
                 ok += 1
-                _emit_suggestion_written(
-                    dataset_name=dataset_name,
-                    stem=stem,
-                    definition_id=definition_id,
-                    target=target,
-                    suggestion=refined,
-                )
+                if auto_accept:
+                    # Promote straight to the live variant (snapshot + clear the
+                    # suggestion) — no review step — and notify the grid/editor.
+                    caption_suggestions.accept_suggestion(ds_path, definition_id, stem, masked=masked)
+                    _emit_variant_written(
+                        dataset_name=dataset_name,
+                        stem=stem,
+                        definition_id=definition_id,
+                        target=target,
+                    )
+                else:
+                    _emit_suggestion_written(
+                        dataset_name=dataset_name,
+                        stem=stem,
+                        definition_id=definition_id,
+                        target=target,
+                        suggestion=refined,
+                    )
             except Exception:
                 logger.exception("caption_refine_failed", rel=rel)
                 failed += 1

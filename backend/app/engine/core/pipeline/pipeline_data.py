@@ -262,7 +262,18 @@ class PipelineDataMixin:
                 # which describes spatial context absent from the masked image.
                 cap = ""
             return (item["masked_path"], cap, item["masked_cache_dir"])
-        return item["path"], item["caption"], item["cache_dir"]
+        # General (non-masked) caption: route through the per-definition
+        # variant resolver so a variant overrides item["caption"]. Mirrors
+        # _build_caption_hints (TE pre-cache). Defensive: when no definition /
+        # no variant / use_general / any error, select_training_caption returns
+        # item["caption"] verbatim, so the per-step caption is byte-identical.
+        from app.engine.core.pipeline.caption_selection import select_training_caption
+
+        _def_id = getattr(getattr(self, "definition", None), "id", None)
+        _cfg = getattr(self, "config", None)
+        _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
+        cap = select_training_caption(item, _def_id, _use_general)
+        return item["path"], cap, item["cache_dir"]
 
     def _get_batch(self, items: list[dict]) -> dict[str, Any]:
         """Build a training batch from inventory items.

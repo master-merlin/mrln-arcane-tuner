@@ -230,6 +230,10 @@ export interface ModelRegistryItem {
 export interface ModelRegistryResponse { category: string; folder: string; models: ModelRegistryItem[]; }
 /** `POST /models/download`. */
 export interface ModelDownloadResponse { status: string; filename: string; path: string; size_mb: number; }
+/** One pending caption-variant suggestion row. */
+export interface SuggestionItem { stem: string; suggestion: string; current: string; }
+/** `GET /datasets/{name}/caption-suggestions?definition_id=X`. */
+export interface SuggestionsResponse { definition_id: string; items: SuggestionItem[]; }
 
 @Injectable({
   providedIn: 'root'
@@ -665,6 +669,41 @@ export class DatasetService {
     return this.http.post<ModelDownloadResponse>(`${this.rtc.apiUrl}/models/download`, {
       category, filename, target_folder: targetFolder,
     });
+  }
+
+  // ── Caption Variant Suggestions & Refine ───────────────────────────
+
+  listCaptionSuggestions(name: string, definitionId: string): Observable<SuggestionsResponse> {
+    return this.http.get<SuggestionsResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions?definition_id=${encodeURIComponent(definitionId)}`,
+    );
+  }
+
+  acceptCaptionSuggestion(name: string, definitionId: string, stem: string): Observable<{ status: string }> {
+    return this.http.post<{ status: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept`,
+      { definition_id: definitionId, stem },
+    );
+  }
+
+  rejectCaptionSuggestion(name: string, definitionId: string, stem: string): Observable<{ status: string }> {
+    return this.http.post<{ status: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/reject`,
+      { definition_id: definitionId, stem },
+    );
+  }
+
+  acceptAllCaptionSuggestions(name: string, definitionId: string): Observable<{ accepted: number }> {
+    return this.http.post<{ accepted: number }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/caption-suggestions/accept-all`,
+      { definition_id: definitionId },
+    );
+  }
+
+  refineCaptions(name: string, imageRelPaths: string[], definitionId: string, preset: string, model?: string): Observable<{ task_id: string }> {
+    const body: Record<string, unknown> = { dataset_name: name, image_rel_paths: imageRelPaths, definition_id: definitionId, preset };
+    if (model) body['model'] = model;
+    return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/refine-batch`, body);
   }
 
 }

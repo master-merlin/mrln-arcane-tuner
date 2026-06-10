@@ -38,6 +38,10 @@ class CaptionService:
             "joycaption": JoyCaptionModel(self),
             "youtu-vl": YoutuVLModel(self),
         }
+        # External OpenAI-compatible API providers (no VRAM; load/unload no-op)
+        from app.core.captioning.models.api_model import ApiCaptionModel
+        for provider in ("openai", "anthropic", "gemini", "openrouter", "custom"):
+            self.plugins[f"api-{provider}"] = ApiCaptionModel(self, provider)
     
     @classmethod
     def get_instance(cls) -> "CaptionService":

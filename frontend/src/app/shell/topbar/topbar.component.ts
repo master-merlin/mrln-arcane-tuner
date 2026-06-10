@@ -8,7 +8,6 @@ import { NavigationEnd, Router } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { filter } from 'rxjs';
 import { ContextSwitcherComponent } from '../context-switcher/context-switcher.component';
-import { ModelSelectorComponent } from '../model-selector/model-selector.component';
 import { IcoComponent } from '../../icons/ico.component';
 import { DownloadIndicatorComponent } from './download-indicator.component';
 import { NotificationPanelComponent } from './notification-panel.component';
@@ -34,7 +33,7 @@ interface Crumb {
 @Component({
     selector: 'app-topbar',
     standalone: true,
-    imports: [ContextSwitcherComponent, ModelSelectorComponent, IcoComponent, DownloadIndicatorComponent, NotificationPanelComponent, TaskCenterComponent],
+    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, NotificationPanelComponent, TaskCenterComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './topbar.component.html',
 })

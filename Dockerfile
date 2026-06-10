@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1
 
+# Global build arg: must be declared before the first FROM so the runtime stage's
+# FROM can interpolate it. See the runtime stage below for the cu128/cu126 rationale.
+ARG CUDA_BASE=12.8.1
+
 # ── Stage 1: build the Angular SPA ───────────────────────────────────────
 FROM node:24-bookworm AS frontend
 WORKDIR /build
@@ -11,17 +15,32 @@ RUN npm ci --legacy-peer-deps
 COPY frontend/ ./
 RUN npm run build -- --configuration production
 
-# ── Stage 2: runtime (CUDA 12.6 + Python 3.12) ──────────────────────────
-# CUDA 12.6 (not 13.0): CUDA 13 needs an R580+ host driver for native support.
-# Common cloud GPU hosts (e.g. RunPod) still ship R565-class drivers (CUDA
-# 12.7), where CUDA 13 only works via a forward-compat layer that leaves cuBLAS
-# broken — every GEMM fails with CUBLAS_STATUS_INVALID_VALUE. 12.6 is supported
-# natively by R560+ and stays minor-version compatible across the 12.x fleet.
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS runtime
+# ── Stage 2: runtime (CUDA + Python 3.12) ───────────────────────────────
+# CUDA target is parameterized so one Dockerfile builds two variants:
+#   • cu128 (DEFAULT — the `latest` / version tags): ships Blackwell (sm_120)
+#     kernels alongside Hopper/Ada/Ampere. Needs an R570+ host driver, but
+#     Blackwell cards mandate R570+ anyway, so this natively covers the whole
+#     modern GPU fleet. cu126 has NO Blackwell SASS → "no kernel image is
+#     available for execution on the device" on RTX/PRO Blackwell cards.
+#   • cu126 (the `-cu126` fallback tag): for legacy hosts pinned to R560–R565
+#     drivers (no Blackwell). Build with:
+#       --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126
+# Do NOT default to cu130 (CUDA 13): it needs R580+ and the 12→13 forward-compat
+# layer breaks cuBLAS on older drivers (every GEMM → CUBLAS_STATUS_INVALID_VALUE).
+# The base-image CUDA version also sets NVIDIA_REQUIRE_CUDA, which gates
+# container startup on the host driver — keep CUDA_BASE's minor aligned with
+# TORCH_CUDA so the gate matches the wheels' real driver floor.
+# (CUDA_BASE is declared as a global ARG at the top of this file.)
+FROM nvidia/cuda:${CUDA_BASE}-cudnn-runtime-ubuntu24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    # pypi.nvidia.com sporadically stalls mid-download on the large CUDA wheels.
+    # A 120s socket timeout + retries turns an indefinite hang into an
+    # error-and-retry so the build self-heals instead of wedging.
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5 \
     MRLN_CONTAINER=1 \
     MRLN_FRONTEND_DIST=/app/frontend/browser \
     PORT=8000
@@ -36,11 +55,14 @@ RUN apt-get update && apt-get upgrade -y \
 
 WORKDIR /app/backend
 
-# Install PyTorch (CUDA 12.6) first, then the rest — mirrors backend/install.sh.
+# Install PyTorch first, then the rest — mirrors backend/install.sh. TORCH_CUDA
+# selects the wheel build (cu128 default; cu126 for the fallback tag); declared
+# here so it only busts the cache from this layer on.
+ARG TORCH_CUDA=cu128
 COPY backend/requirements.txt ./requirements.txt
 RUN python -m pip install --break-system-packages \
         torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
-        --index-url https://download.pytorch.org/whl/cu126 \
+        --index-url https://download.pytorch.org/whl/${TORCH_CUDA} \
     # setuptools/wheel ship via apt in the base image (no pip RECORD), so pip
     # can't uninstall them to honor the pinned versions. Install pip-managed
     # copies with --ignore-installed first; requirements.txt then sees the

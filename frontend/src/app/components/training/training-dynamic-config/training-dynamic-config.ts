@@ -1038,31 +1038,35 @@ export class TrainingDynamicConfigComponent {
     // handoff after this still wins, as it isn't gated).
     if (event.auto && this._externalConfigApplied) return;
     this._isTemplateApplying = true;
-    if (event.isDefault) {
-      this.resetFormToDefaults();
-    } else {
-      if (event.definitionId) {
-        const model = this.availableModels().find(m => m.id === event.definitionId);
-        if (model) {
-          this.selectedFamily.set(model.family ?? '');
-          // Explicitly update the form control so valueChanges triggers the tracking signal
-          this.form.get('definition_id')?.setValue(event.definitionId);
+    try {
+      if (event.isDefault) {
+        this.resetFormToDefaults();
+      } else {
+        if (event.definitionId) {
+          const model = this.availableModels().find(m => m.id === event.definitionId);
+          if (model) {
+            this.selectedFamily.set(model.family ?? '');
+            // Explicitly update the form control so valueChanges triggers the tracking signal
+            this.form.get('definition_id')?.setValue(event.definitionId);
+          }
         }
+        this.patchFormRecursive(this.form, event.config);
+        // Sync block swap slider values from loaded template
+        this._syncBlockSwapFromForm();
+        // Rebuild target layers tree from the newly-patched control
+        this.targetLayersCard?.refreshFromControl();
       }
-      this.patchFormRecursive(this.form, event.config);
-      // Sync block swap slider values from loaded template
-      this._syncBlockSwapFromForm();
-      // Rebuild target layers tree from the newly-patched control
-      this.targetLayersCard?.refreshFromControl();
+    } finally {
+      // ALWAYS release the child's auto-save suppression, even if the
+      // reset/patch above throws — a latched suppressAutoSave silently
+      // disables every future auto-save (no template would ever be created).
+      setTimeout(() => {
+        this._isTemplateApplying = false;
+        if (this.templateSelector) {
+          this.templateSelector.suppressAutoSave.set(false);
+        }
+      }, 1500);
     }
-
-    // Release the child's auto-save suppression after patching is done
-    setTimeout(() => {
-      this._isTemplateApplying = false;
-      if (this.templateSelector) {
-        this.templateSelector.suppressAutoSave.set(false);
-      }
-    }, 1500);
   }
 
   resetFormToDefaults() {
@@ -1070,13 +1074,26 @@ export class TrainingDynamicConfigComponent {
     const props = schema?.properties || {};
 
     Object.keys(this.form.controls).forEach(key => {
-      if (key === 'definition_id') return;
+      // Default = "default settings for the CURRENT model": the virtual
+      // Default selector entry carries the current definition id, so the
+      // model selection must survive the reset. Resetting model_family to
+      // its schema default silently switched the family, which reloads the
+      // schema and rebuilds the whole form mid-flight.
+      if (key === 'definition_id' || key === 'model_family') return;
 
       const propSchema = this.resolveSchema(props[key]);
       const control = this.form.get(key);
 
       if (propSchema.type === 'array') {
-        const formArray = control as FormArray;
+        // Schema-`array` props are not always FormArrays: layer_checklist
+        // (targeted_layers) is built as a flat FormControl<string[]> (see
+        // buildForm). Calling .clear() on it threw mid-loop, aborting the
+        // reset AND leaking the selector's suppressAutoSave=true forever.
+        if (!(control instanceof FormArray)) {
+          control?.setValue(propSchema.default ?? []);
+          return;
+        }
+        const formArray = control;
         formArray.clear();
         const defaults = Array.isArray(propSchema.default) ? propSchema.default : [];
         defaults.forEach(() => {

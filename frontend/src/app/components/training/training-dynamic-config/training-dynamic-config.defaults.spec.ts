@@ -27,6 +27,7 @@ const SCHEMA: SchemaNode = {
     type: 'object',
     properties: {
         definition_id: { type: 'string', default: '' },
+        model_family: { type: 'string', default: 'ernie_image' },
         max_train_steps: { type: 'integer', default: 1000 },
         resolutions: { type: 'array', default: [1024], items: { type: 'integer' } },
         datasets: {
@@ -47,6 +48,16 @@ const SCHEMA: SchemaNode = {
                 type: 'object',
                 properties: { prompt: { type: 'string', default: '' } },
             },
+        },
+        // Declared `array` in the schema but built as a flat FormControl<string[]>
+        // (see buildForm's layer_checklist branch) — resetFormToDefaults used to
+        // call .clear() on it and THROW, killing the whole reset AND leaking the
+        // selector's suppressAutoSave=true forever (auto-create never fired again).
+        targeted_layers: {
+            type: 'array',
+            ui_type: 'layer_checklist',
+            default: [],
+            items: { type: 'string' },
         },
     },
 } as unknown as SchemaNode;
@@ -121,5 +132,51 @@ describe('TrainingDynamicConfig — Default template reset keeps the form comple
         c.patchFormRecursive(c.form, { resolutions: [1024, 768, 512] });
         c.resetFormToDefaults();
         expect(c.getFormArray('resolutions').value).toEqual([1024]);
+    });
+
+    it('keeps the selected model (definition_id AND model_family) on reset', () => {
+        // The virtual Default means "default settings for the CURRENT model" —
+        // its selector entry carries the current definition id. Resetting
+        // model_family to the schema default silently switched the family
+        // (ernie_image), which reloads the schema, rebuilds the whole form and
+        // detaches every rendered dataset row from the live form.
+        const c = build();
+        c.form.get('definition_id')?.setValue('flux2-klein-base-9b');
+        c.form.get('model_family')?.setValue('flux2');
+
+        c.resetFormToDefaults();
+
+        expect(c.form.get('definition_id')?.value).toBe('flux2-klein-base-9b');
+        expect(c.form.get('model_family')?.value).toBe('flux2');
+    });
+
+    it('does not throw on layer_checklist arrays (flat FormControl) and resets their value', () => {
+        const c = build();
+        c.form.get('targeted_layers')?.setValue(['blocks.0', 'blocks.1']);
+
+        expect(() => c.resetFormToDefaults()).not.toThrow();
+        expect(c.form.get('targeted_layers')?.value).toEqual([]);
+        // The keys AFTER the checklist in schema order must still be reset —
+        // previously the throw aborted the loop mid-way.
+        expect(c.getFormArray('datasets').length).toBe(1);
+    });
+
+    it('releases the selector auto-save suppression even if the reset throws', () => {
+        vi.useFakeTimers();
+        try {
+            const c = build();
+            const selector = { suppressAutoSave: { set: vi.fn() } };
+            (c as unknown as { templateSelector: unknown }).templateSelector = selector;
+            vi.spyOn(c, 'resetFormToDefaults').mockImplementation(() => { throw new Error('boom'); });
+
+            expect(() => c.onTemplateApplied({ config: {}, isDefault: true })).toThrow('boom');
+            vi.advanceTimersByTime(1500);
+
+            // suppressAutoSave must NOT stay latched on — that silently disables
+            // every future auto-save (the "no template ever created" bug).
+            expect(selector.suppressAutoSave.set).toHaveBeenCalledWith(false);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

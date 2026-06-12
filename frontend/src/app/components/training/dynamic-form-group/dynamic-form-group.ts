@@ -77,8 +77,12 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                              </button>
                          </div>
 
+                         <!-- Rows track by CONTROL IDENTITY (not $index): when the parent
+                              rebuilds the form (definition/family change), index-tracked rows
+                              reuse their DOM and stay bound to the OLD form's detached
+                              controls — edits then never reach the live form. -->
                          <div class="grid grid-cols-3 md:grid-cols-5 gap-2.5">
-                             @for (control of formArray().controls; track $index) {
+                             @for (control of formArray().controls; track control) {
                                  @if (!isPreset(control.value)) {
                                    <div class="relative group animate-in slide-in-from-bottom-2 duration-200">
                                        <input type="number" [formControlName]="$index"
@@ -99,7 +103,7 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                   </div>
 
                } @else {
-                 @for (control of formArray().controls; track $index) {
+                 @for (control of formArray().controls; track control) {
                     <div class="flex items-center gap-2 animate-in slide-in-from-left-2 duration-200">
                         <input [type]="isNumber(schema().items) ? 'number' : 'text'" 
                                [formControlName]="$index"
@@ -114,8 +118,8 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                  }
                }
              } @else {
-               <!-- Case 2: Array of Objects -->
-               @for (itemForm of formArray().controls; track $index; let dsIdx = $index) {
+               <!-- Case 2: Array of Objects (track by control identity — see above) -->
+               @for (itemForm of formArray().controls; track itemForm; let dsIdx = $index) {
                   <div [formGroupName]="$index"
                        [attr.data-testid]="'config-array-object-' + fieldKey() + '-' + $index"
                        class="relative border-t border-surface-mid/40 pt-4 animate-in zoom-in-95 duration-200">

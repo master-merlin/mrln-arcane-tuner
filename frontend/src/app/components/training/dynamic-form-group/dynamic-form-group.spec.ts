@@ -1,4 +1,4 @@
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { FormArray, FormControl, FormGroup } from '@angular/forms';
 import { of } from 'rxjs';
@@ -28,13 +28,15 @@ const SCHEMA: SchemaNode = {
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [DynamicFormGroupComponent],
-    template: `<app-dynamic-form-group fieldKey="my_list" [schema]="schema" [parentForm]="form" />`,
+    // Mirrors the real parent (training-dynamic-config): the form reference is
+    // re-read whenever the parent is checked, and buildForm() REPLACES it.
+    template: `<app-dynamic-form-group fieldKey="my_list" [schema]="schema" [parentForm]="form()" />`,
 })
 class HostComponent {
     schema = SCHEMA;
-    form = new FormGroup({
+    form = signal(new FormGroup({
         my_list: new FormArray([new FormControl('alpha'), new FormControl('beta')]),
-    });
+    }));
 }
 
 function build() {
@@ -60,7 +62,7 @@ describe('DynamicFormGroup — re-renders on external FormArray mutations (OnPus
 
     it('shows the empty state after the array is cleared outside any UI event', () => {
         const fixture = build();
-        const arr = fixture.componentInstance.form.get('my_list') as FormArray;
+        const arr = fixture.componentInstance.form().get('my_list') as FormArray;
 
         // Simulate an async template apply clearing the array (no click, no
         // input event — exactly what resetFormToDefaults does from HTTP).
@@ -73,11 +75,35 @@ describe('DynamicFormGroup — re-renders on external FormArray mutations (OnPus
 
     it('renders rows grown externally (template apply adding datasets)', () => {
         const fixture = build();
-        const arr = fixture.componentInstance.form.get('my_list') as FormArray;
+        const arr = fixture.componentInstance.form().get('my_list') as FormArray;
 
         arr.push(new FormControl('gamma'));
         fixture.detectChanges();
 
         expect(fixture.nativeElement.querySelectorAll('input').length).toBe(3);
+    });
+
+    it('rebinds row inputs when the parent form is REPLACED (schema rebuild)', () => {
+        // A definition/family change rebuilds the whole form (buildForm()).
+        // Rows tracked by $index reuse their DOM, leaving formControlName
+        // directives attached to the OLD form's controls — edits then write
+        // into the void and auto-save never sees them (live bug: toggling
+        // "masking enabled" saved masking_enabled:false forever).
+        const fixture = build();
+        const newForm = new FormGroup({
+            my_list: new FormArray([new FormControl('fresh-a'), new FormControl('fresh-b')]),
+        });
+        fixture.componentInstance.form.set(newForm);
+        fixture.detectChanges();
+
+        const input: HTMLInputElement = fixture.nativeElement.querySelector('input');
+        expect(input.value).toBe('fresh-a');
+
+        // An edit through the DOM must land in the NEW form, not the old one.
+        input.value = 'edited';
+        input.dispatchEvent(new Event('input'));
+        fixture.detectChanges();
+
+        expect((newForm.get('my_list') as FormArray).at(0).value).toBe('edited');
     });
 });

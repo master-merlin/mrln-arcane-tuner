@@ -168,6 +168,10 @@ class SelfUpdateService:
             return
         if self._loop is None:
             return
+        # Flip state synchronously here (not just inside the coroutine) so a
+        # second near-simultaneous apply() sees a non-startable state and is
+        # rejected — closes the double-spawn window. _apply_impl re-broadcasts.
+        self.state = UpdateState.PULLING
         asyncio.run_coroutine_threadsafe(self._apply_impl(), self._loop)
 
     async def _apply_impl(self) -> None:

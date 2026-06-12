@@ -59,11 +59,9 @@ class PipelineCachingMixin:
 
         _definition = getattr(self, "definition", None)
         _def_id = getattr(_definition, "id", None)
-        _cfg = getattr(self, "config", None)
-        _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
 
         for item in self.inventory:
-            cap = select_training_caption(item, _def_id, _use_general)
+            cap = select_training_caption(item, _def_id)
             img_name = os.path.splitext(
                 os.path.basename(item.get("path", ""))
             )[0]
@@ -100,7 +98,7 @@ class PipelineCachingMixin:
             # caption. Gate on has_masked (not has_masked_caption) so masked
             # *variant* items without a masked/{stem}.txt are still cached.
             if item.get("has_masked"):
-                m_cap = select_training_caption(item, _def_id, _use_general, masked=True)
+                m_cap = select_training_caption(item, _def_id, masked=True)
                 m_inline = "[triggerword]" in m_cap
                 if trigger and m_inline:
                     m_cap = m_cap.replace("[triggerword]", trigger)

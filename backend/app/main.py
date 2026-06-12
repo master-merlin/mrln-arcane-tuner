@@ -360,6 +360,7 @@ from app.api.training import router as training_router      # noqa: E402
 from app.api.filesystem_routes import router as fs_router   # noqa: E402
 from app.api.dataset import router as dataset_router  # noqa: E402
 from app.api.caption_routes import router as caption_router  # noqa: E402
+from app.api.api_provider_routes import router as api_provider_router  # noqa: E402
 from app.api.settings_routes import router as settings_router  # noqa: E402
 from app.api.masking_routes import router as masking_router  # noqa: E402
 from app.api.system_routes import router as system_router    # noqa: E402
@@ -376,6 +377,7 @@ app.include_router(training_router, prefix="/api")
 app.include_router(fs_router, prefix="/api")
 app.include_router(dataset_router, prefix="/api")
 app.include_router(caption_router, prefix="/api/captions")
+app.include_router(api_provider_router, prefix="/api/captions", tags=["captions"])
 app.include_router(settings_router)
 app.include_router(masking_router, prefix="/api")
 app.include_router(system_router, prefix="/api")

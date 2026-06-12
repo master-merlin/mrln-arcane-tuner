@@ -59,6 +59,10 @@ class DatasetItem(BaseModel):
     num_repeats: int = Field(1, description="Number of times to repeat this dataset", json_schema_extra={"group": "CONCEPTS"})
     ignore_filter: bool = Field(False, description="If True, use ALL images regardless of exclusions", json_schema_extra={"group": "CONCEPTS", "hidden": True})
 
+    # Caption usage (per-dataset)
+    use_captions: bool = Field(True, description="Train with this dataset's captions (off = trigger word / prefix only)", json_schema_extra={"group": "CONCEPTS", "inline_group": "caption_toggles"})
+    use_model_aware_captions: bool = Field(True, description="Prefer the model-aware caption variant for the selected model", json_schema_extra={"group": "CONCEPTS", "inline_group": "caption_toggles", "depends_on": "use_captions"})
+
     # Masked training (per-dataset)
     masking_enabled: bool = Field(False, description="Include masked variants", json_schema_extra={"group": "CONCEPTS", "inline_group": "masking_toggles"})
     recreate_masks: bool = Field(False, description="Re-generate masked images", json_schema_extra={"group": "CONCEPTS", "inline_group": "masking_toggles", "depends_on": "masking_enabled"})

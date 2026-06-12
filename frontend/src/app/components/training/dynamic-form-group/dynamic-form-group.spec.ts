@@ -106,4 +106,90 @@ describe('DynamicFormGroup — re-renders on external FormArray mutations (OnPus
 
         expect((newForm.get('my_list') as FormArray).at(0).value).toBe('edited');
     });
+
+    it('maps inline-group keys to friendly labels', () => {
+        const fixture = build();
+        const child = fixture.debugElement.children[0].componentInstance as DynamicFormGroupComponent;
+        expect(child.inlineGroupLabel('masking_toggles')).toBe('Enable masking');
+        expect(child.inlineGroupLabel('caption_toggles')).toBe('Captions');
+        expect(child.inlineGroupLabel('future_group')).toBe('Future Group');
+    });
+});
+
+/**
+ * Dataset-row placement: the 3-column grid must read
+ * [Captions | Enable masking] [Original Weight] [Mask Opacity]
+ * — ALL inline toggle groups share ONE grid cell (side by side), and
+ * original_weight is reordered before mask_opacity so they land in
+ * columns 2 and 3 of the same row instead of wrapping.
+ */
+const DATASETS_SCHEMA: SchemaNode = {
+    type: 'array',
+    items: {
+        type: 'object',
+        properties: {
+            use_captions: { type: 'boolean', default: true, inline_group: 'caption_toggles' },
+            use_model_aware_captions: { type: 'boolean', default: true, inline_group: 'caption_toggles', depends_on: 'use_captions' },
+            masking_enabled: { type: 'boolean', default: false, inline_group: 'masking_toggles' },
+            recreate_masks: { type: 'boolean', default: false, inline_group: 'masking_toggles', depends_on: 'masking_enabled' },
+            // Real schema declares mask_opacity BEFORE original_weight; the row
+            // wants original_weight (col 2) before mask_opacity (col 3).
+            mask_opacity: { type: 'number', default: 0, depends_on: 'masking_enabled' },
+            original_weight: { type: 'number', default: 1, depends_on: 'masking_enabled' },
+        },
+    },
+} as SchemaNode;
+
+@Component({
+    standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    imports: [DynamicFormGroupComponent],
+    template: `<app-dynamic-form-group fieldKey="datasets" [schema]="schema" [parentForm]="form()" />`,
+})
+class DatasetsHostComponent {
+    schema = DATASETS_SCHEMA;
+    form = signal(new FormGroup({
+        datasets: new FormArray([
+            new FormGroup({
+                use_captions: new FormControl(true),
+                use_model_aware_captions: new FormControl(true),
+                masking_enabled: new FormControl(false),
+                recreate_masks: new FormControl(false),
+            }),
+        ]),
+    }));
+}
+
+describe('DynamicFormGroup — dataset row toggle placement', () => {
+    function buildDatasets() {
+        TestBed.configureTestingModule({
+            imports: [DatasetsHostComponent],
+            providers: [
+                { provide: DatasetService, useValue: { listDatasets: () => of([]) } },
+                { provide: DatasetStore, useValue: { entities: () => [] } },
+                { provide: RuntimeConfigService, useValue: { mediaBaseUrl: '' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DatasetsHostComponent);
+        fixture.detectChanges();
+        return fixture;
+    }
+
+    it('renders ALL inline toggle groups inside ONE shared grid cell', () => {
+        const fixture = buildDatasets();
+        const cells = fixture.nativeElement.querySelectorAll('[data-testid="config-inline-groups-cell"]');
+        expect(cells.length).toBe(1);
+        // Both group headers live in the same cell, side by side.
+        expect(cells[0].textContent).toContain('Captions');
+        expect(cells[0].textContent).toContain('Enable masking');
+        // All four toggles are present.
+        expect(cells[0].querySelectorAll('input[type="checkbox"]').length).toBe(4);
+    });
+
+    it('orders original_weight before mask_opacity in the datasets row', () => {
+        const fixture = buildDatasets();
+        const child = fixture.debugElement.children[0].componentInstance as DynamicFormGroupComponent;
+        const keys = child.nestedProps().map(p => p.key);
+        expect(keys.indexOf('original_weight')).toBeLessThan(keys.indexOf('mask_opacity'));
+    });
 });

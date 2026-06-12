@@ -89,6 +89,10 @@ class PipelineDataMixin:
                 ds_masking_enabled = bool(ds_config.get("masking_enabled", False))
                 ds_original_weight = max(float(ds_config.get("original_weight", 0.70)), 0.50)
 
+                # Per-dataset caption flags (defaults preserve old-config behavior)
+                ds_use_captions = bool(ds_config.get("use_captions", True))
+                ds_use_model_aware = bool(ds_config.get("use_model_aware_captions", True))
+
                 try:
                     resp = await client.get(f"{api_url}/datasets/{name}/pairs")
                     if resp.status_code != 200:
@@ -179,6 +183,8 @@ class PipelineDataMixin:
                                 "dataset_path": ds_path,
                                 "prefix": prefix,
                                 "dropout_rate": float(ds_config.get("caption_dropout_rate", 0.0)),
+                                "use_captions": ds_use_captions,
+                                "use_model_aware_captions": ds_use_model_aware,
                                 "orig_w": w,
                                 "orig_h": h,
                                 "target_w": target_w,
@@ -249,8 +255,6 @@ class PipelineDataMixin:
         from app.engine.core.pipeline.caption_selection import select_training_caption
 
         _def_id = getattr(getattr(self, "definition", None), "id", None)
-        _cfg = getattr(self, "config", None)
-        _use_general = bool(_cfg.get("use_general_captions", False)) if isinstance(_cfg, dict) else False
 
         # Masked variant: weighted random selection using the item's own weight.
         if (
@@ -259,11 +263,11 @@ class PipelineDataMixin:
         ):
             # Route masked through the same per-definition resolver as the general
             # branch. Defensive: no masked variant → masked_caption → original.
-            cap = select_training_caption(item, _def_id, _use_general, masked=True)
+            cap = select_training_caption(item, _def_id, masked=True)
             return (item["masked_path"], cap, item["masked_cache_dir"])
 
         # General (non-masked) caption: per-definition variant overrides item["caption"].
-        cap = select_training_caption(item, _def_id, _use_general)
+        cap = select_training_caption(item, _def_id)
         return item["path"], cap, item["cache_dir"]
 
     def _get_batch(self, items: list[dict]) -> dict[str, Any]:

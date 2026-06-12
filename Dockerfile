@@ -67,13 +67,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app/backend
-
-# Install PyTorch first, then the rest — mirrors backend/install.sh. TORCH_CUDA
-# selects the wheel build (cu128 default; cu126 for the fallback tag); declared
-# here so it only busts the cache from this layer on.
+# Install PyTorch (pinned versions, independent of the repo so this heavy layer
+# stays cached across code changes). TORCH_CUDA selects the wheel build (cu128
+# default; cu126 for the fallback tag). The app's own deps are installed from the
+# cloned requirements.txt after the git checkout below — keeping /app empty until
+# then so the clone (which requires an empty target) succeeds.
 ARG TORCH_CUDA=cu128
-COPY backend/requirements.txt ./requirements.txt
 RUN python -m pip install --break-system-packages \
         torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
         --index-url https://download.pytorch.org/whl/${TORCH_CUDA} \
@@ -91,8 +90,7 @@ RUN python -m pip install --break-system-packages \
     && rm -rf /usr/lib/python3/dist-packages/setuptools* \
               /usr/lib/python3/dist-packages/pkg_resources* \
               /usr/lib/python3/dist-packages/wheel* \
-              /usr/share/python-wheels/setuptools-*.whl \
-    && python -m pip install --break-system-packages -r requirements.txt
+              /usr/share/python-wheels/setuptools-*.whl
 
 # Native shared libraries required by OpenCV (cv2) and friends at import time
 # — the slim CUDA runtime base lacks them. Placed after the pip layer so
@@ -112,6 +110,8 @@ RUN --mount=type=secret,id=git_token \
             git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
             cd /app && git remote set-url origin "$REPO_URL"'
 WORKDIR /app/backend
+# Install the app's Python deps from the cloned checkout (torch is already in
+# place from the cached layer above; pip sees it satisfied and skips it).
 RUN python -m pip install --break-system-packages -r requirements.txt
 
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).

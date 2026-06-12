@@ -132,6 +132,20 @@ describe('MassCaptionComponent launcher', () => {
         expect(taskStore.cancel).toHaveBeenCalledWith('t1');
         expect(comp.running()).toBe(false);
     });
+
+    it('start() is blocked while the API provider is unconfigured', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = {
+            resolvedModelId: 'api-openai', params: {}, resolvedSystemPrompt: '',
+            apiConfigured: false,
+        };
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png')]);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.start();
+        expect(api.batchCaption).not.toHaveBeenCalled();
+    });
 });
 
 describe('MassCaptionComponent completion effect', () => {

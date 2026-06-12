@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { DatasetCaptionSettingsComponent } from './dataset-caption-settings';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService } from '../../../services/project.service';
@@ -101,5 +101,69 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
         comp.switchMode('api');
         expect(last.modelId).toBe('api-openai');
         expect(last.resolvedModelId).toBe('api-openai');
+    });
+
+    it('loads provider statuses and reports apiConfigured in settingsChanged', () => {
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.listProviders.mockReturnValue(of([
+            { provider: 'openai', configured: true, key_masked: 'sk-…1234', base_url: '' },
+            { provider: 'gemini', configured: false, key_masked: '', base_url: '' },
+        ]));
+        const { comp } = create();
+        let last: any;
+        comp.settingsChanged.subscribe((s: any) => (last = s));
+
+        comp.switchMode('api');                    // api-openai → configured
+        expect(last.apiConfigured).toBe(true);
+
+        comp.onModelChange('api-gemini');          // unconfigured provider
+        expect(last.apiConfigured).toBe(false);
+    });
+
+    it('local mode leaves apiConfigured undefined', () => {
+        const { comp } = create();
+        let last: any;
+        comp.settingsChanged.subscribe((s: any) => (last = s));
+        comp.onModelChange('joycaption');
+        expect(last.apiConfigured).toBeUndefined();
+    });
+
+    it('saveProviderCredentials PUTs the key and refreshes status', () => {
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.updateProvider.mockReturnValue(of(
+            { provider: 'openai', configured: true, key_masked: 'sk-…7890', base_url: '' }));
+        const { comp } = create();
+        comp.switchMode('api');
+        comp.keyInput.set('sk-fresh-key-7890');
+        comp.saveProviderCredentials();
+        expect(api.updateProvider).toHaveBeenCalledWith('openai', { api_key: 'sk-fresh-key-7890' });
+        expect(comp.keyInput()).toBe('');
+        expect(comp.activeProviderStatus()?.key_masked).toBe('sk-…7890');
+    });
+
+    it('custom provider also sends the base URL', () => {
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.updateProvider.mockReturnValue(of(
+            { provider: 'custom', configured: true, key_masked: '', base_url: 'http://localhost:11434/v1' }));
+        const { comp } = create();
+        comp.switchMode('api');
+        comp.onModelChange('api-custom');
+        comp.baseUrlInput.set('http://localhost:11434/v1');
+        comp.saveProviderCredentials();
+        expect(api.updateProvider).toHaveBeenCalledWith('custom',
+            { base_url: 'http://localhost:11434/v1' });
+    });
+
+    it('fetchProviderModels fills fetchedModels; failure sets the error note', () => {
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.listModels.mockReturnValue(of(['gpt-4o', 'gpt-4o-mini']));
+        const { comp } = create();
+        comp.switchMode('api');
+        comp.fetchProviderModels();
+        expect(comp.fetchedModels()).toEqual(['gpt-4o', 'gpt-4o-mini']);
+
+        api.listModels.mockReturnValue(throwError(() => new Error('502')));
+        comp.fetchProviderModels();
+        expect(comp.fetchModelsError()).toContain('Could not fetch');
     });
 });

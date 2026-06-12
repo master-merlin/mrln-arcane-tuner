@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
-import { ApiCaptionService } from '../../../services/api-caption.service';
+import { ApiCaptionService, ApiProviderStatus } from '../../../services/api-caption.service';
 import { Subject } from 'rxjs';
 import { debounceTime, switchMap } from 'rxjs/operators';
 
@@ -60,6 +60,9 @@ export interface CaptionSettingsState {
     /** The wildcard substitution value (per-template). */
     wildcard: string;
     params: Record<string, unknown>;
+    /** API mode only: whether the selected provider has usable credentials.
+     *  Undefined in local mode. Hosts should disable generation when false. */
+    apiConfigured?: boolean;
 }
 
 @Component({
@@ -117,6 +120,63 @@ export interface CaptionSettingsState {
                         <p class="text-[10px] text-text-subtle italic border-t border-surface-high/30 pt-1 mt-1">{{ config.description }}</p>
                 }
             </div>
+
+            <!-- API connection card (API mode only) -->
+            @if (captionMode() === 'api') {
+                <div class="bg-surface-high/40 p-3 rounded-theme-lg border border-surface-high/50 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold">Connection</label>
+                        @if (activeProviderStatus(); as st) {
+                            <span class="text-[10px] font-mono"
+                                  [class.text-success]="st.configured" [class.text-danger]="!st.configured"
+                                  data-testid="api-key-status">
+                                {{ st.configured ? (st.key_masked || 'configured') + ' ✓' : 'not configured' }}
+                            </span>
+                        }
+                    </div>
+                    @if (selectedCaptionModel() === 'api-custom') {
+                        <input type="text" [ngModel]="baseUrlInput()" (ngModelChange)="baseUrlInput.set($event)"
+                            data-testid="api-base-url"
+                            placeholder="Base URL, e.g. http://localhost:11434/v1"
+                            class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand">
+                    }
+                    <div class="flex gap-2">
+                        <input type="password" [ngModel]="keyInput()" (ngModelChange)="keyInput.set($event)"
+                            data-testid="api-key-input"
+                            [placeholder]="selectedCaptionModel() === 'api-custom' ? 'API key (optional)' : 'Paste API key…'"
+                            class="flex-1 bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand">
+                        <button type="button" (click)="saveProviderCredentials()"
+                            data-testid="api-key-save"
+                            class="px-3 text-[10px] font-bold uppercase tracking-wider bg-surface-mid hover:bg-surface-high text-brand rounded-theme-md border border-surface-high transition-colors">
+                            Save
+                        </button>
+                    </div>
+
+                    <!-- Provider model: free text until a fetch succeeds, then a select -->
+                    <div>
+                        <div class="flex items-center justify-between mb-0.5">
+                            <label class="text-[10px] text-text-subtle">Model</label>
+                            <button type="button" (click)="fetchProviderModels()"
+                                data-testid="api-fetch-models"
+                                class="text-[10px] text-brand hover:underline">Fetch models</button>
+                        </div>
+                        @if (fetchedModels().length > 0) {
+                            <select [ngModel]="captionModelParams()['model']" (ngModelChange)="updateParam('model', $event)"
+                                data-testid="api-model-select"
+                                class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand">
+                                @for (m of fetchedModels(); track m) { <option [value]="m">{{ m }}</option> }
+                            </select>
+                        } @else {
+                            <input type="text" [ngModel]="captionModelParams()['model']" (ngModelChange)="updateParam('model', $event)"
+                                data-testid="api-model-input" placeholder="e.g. gpt-4o"
+                                class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand">
+                        }
+                        @if (fetchModelsError()) {
+                            <p class="text-[10px] text-danger mt-1">{{ fetchModelsError() }}</p>
+                        }
+                    </div>
+                </div>
+            }
 
             <!-- Template Card -->
             <div class="bg-surface-high/40 rounded-theme-lg border border-surface-mid/50 overflow-hidden">
@@ -453,6 +513,58 @@ export class DatasetCaptionSettingsComponent implements OnInit {
      *  top items (System Prompt) get the room; expanding shrinks the prompt. */
     showDetailedSettings = signal<boolean>(false);
 
+    // ── API provider connection state ──
+    providerStatuses = signal<ApiProviderStatus[]>([]);
+    keyInput = signal('');
+    baseUrlInput = signal('');
+    fetchedModels = signal<string[]>([]);
+    fetchModelsError = signal('');
+
+    /** Status entry for the currently selected api-* provider. */
+    activeProviderStatus = computed(() => {
+        const id = this.selectedCaptionModel();
+        if (!id.startsWith('api-')) return undefined;
+        return this.providerStatuses().find(s => `api-${s.provider}` === id);
+    });
+
+    private get activeProviderName(): string {
+        return this.selectedCaptionModel().replace(/^api-/, '');
+    }
+
+    private loadProviderStatuses() {
+        this.apiCaptionService.listProviders().subscribe(statuses => {
+            this.providerStatuses.set(statuses);
+            this.emitChanges();
+        });
+    }
+
+    saveProviderCredentials() {
+        const updates: { api_key?: string; base_url?: string } = {};
+        if (this.keyInput().trim()) updates.api_key = this.keyInput().trim();
+        if (this.activeProviderName === 'custom' && this.baseUrlInput().trim()) {
+            updates.base_url = this.baseUrlInput().trim();
+        }
+        if (Object.keys(updates).length === 0) return;
+        this.apiCaptionService.updateProvider(this.activeProviderName, updates)
+            .subscribe(status => {
+                this.providerStatuses.update(list => {
+                    const rest = list.filter(s => s.provider !== status.provider);
+                    return [...rest, status];
+                });
+                this.keyInput.set('');
+                this.emitChanges();
+            });
+    }
+
+    fetchProviderModels() {
+        this.fetchModelsError.set('');
+        this.apiCaptionService.listModels(this.activeProviderName).subscribe({
+            next: models => this.fetchedModels.set(models),
+            error: () => this.fetchModelsError.set(
+                'Could not fetch models — check the key/base URL.'),
+        });
+    }
+
     private preferences: ProjectPreferences | null = null;
     private settingsUpdate$ = new Subject<void>();
     private pendingSaves = new Map<string, { config: Record<string, unknown>; system_prompt?: string; wildcard?: string }>();
@@ -469,7 +581,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     }
 
     getCoreParams(config: CaptionModelConfig): CaptionParam[] {
-        return config.params.filter(p => !p.group);
+        return config.params.filter(p => !p.group && p.key !== 'model');
     }
 
     getExtraParams(config: CaptionModelConfig): CaptionParam[] {
@@ -503,6 +615,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     }
 
     ngOnInit() {
+        this.loadProviderStatuses();
         this.settingsUpdate$.pipe(
             debounceTime(1000),
             switchMap(() => {
@@ -576,6 +689,9 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         this.selectedCaptionModel.set(modelId);
         if (modelId.startsWith('api-')) this.lastApiModelId = modelId;
         else this.lastLocalModelId = modelId;
+        this.fetchedModels.set([]);
+        this.fetchModelsError.set('');
+        this.baseUrlInput.set(this.activeProviderStatus()?.base_url ?? '');
         if (!this.autoSave()) {
             // Edit mode: switch model locally, reset params to its defaults; the
             // host's Save persists. No backend template list reload.
@@ -753,7 +869,10 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             systemPrompt: rawPrompt,
             resolvedSystemPrompt: this.resolveWildcard(rawPrompt),
             wildcard: this.captionWildcard(),
-            params: this.captionModelParams()
+            params: this.captionModelParams(),
+            apiConfigured: modelId.startsWith('api-')
+                ? (this.activeProviderStatus()?.configured ?? false)
+                : undefined,
         });
     }
 }

@@ -44,6 +44,7 @@ class Contradiction(BaseModel):
 class TagAnalyticsResponse(BaseModel):
     total_images: int
     total_tags: int
+    style: str = "tags"  # "tags" (comma-split) or "prose" (word/phrase) analysis
     top_tags: list[TagCount]
     orphan_tags: list[str]
     cooccurrence: Cooccurrence
@@ -101,15 +102,56 @@ async def analyze_dataset(
 
 
 @router.get("/datasets/{name}/tag-analytics", response_model=TagAnalyticsResponse)
-async def tag_analytics(name: str, top_n: int = 30):
-    """Tag frequency, orphans, co-occurrence matrix, and contradictions."""
-    if dataset_manager.get_dataset(name) is None:
+async def tag_analytics(
+    name: str,
+    top_n: int = 30,
+    definition_id: str | None = None,
+    masked: bool = False,
+):
+    """Tag frequency, orphans, co-occurrence matrix, and contradictions.
+
+    When ``definition_id`` is given (model-aware), captions are resolved through
+    the per-definition variant resolver and the analysis style is derived from
+    that model (CLIP/SDXL → tag-split, T5/large-context → prose word/phrase).
+    Without it, general captions are analysed with an auto-detected style.
+    """
+    ds = dataset_manager.get_dataset(name)
+    if ds is None:
         raise HTTPException(404, f"Dataset '{name}' not found.")
 
     def _compute() -> dict:
         pairs = dataset_manager.get_dataset_pairs(name)
-        items = [(p.get("media_file", ""), p.get("caption_content", "") or "") for p in pairs]
-        return compute_tag_analytics(items, top_n=top_n)
+        style: str | None = None
+        if definition_id:
+            from pathlib import Path
+
+            from app.core.captioning import caption_variants
+            from app.core.dataset.tag_analytics import detect_style
+            from app.core.llm import caption_refine
+            from app.engine.core.caption_target import resolve_caption_target
+
+            items = [
+                (
+                    p.get("media_file", ""),
+                    caption_variants.resolve_caption(
+                        ds.path, Path(p.get("media_file", "")).stem, definition_id, masked
+                    ),
+                )
+                for p in pairs
+            ]
+            try:
+                target = resolve_caption_target(definition_id)
+                style = "tags" if caption_refine.caption_style_for(target) == "tags" else "prose"
+            except Exception:
+                style = None
+            # Honor the model's style, but never tag-split captions that are
+            # actually prose (that's the "one giant tag" uselessness) — fall back
+            # to prose so the analysis stays meaningful.
+            if style == "tags" and detect_style(items) == "prose":
+                style = "prose"
+        else:
+            items = [(p.get("media_file", ""), p.get("caption_content", "") or "") for p in pairs]
+        return compute_tag_analytics(items, top_n=top_n, style=style)
 
     return await asyncio.to_thread(_compute)
 

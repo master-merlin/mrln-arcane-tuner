@@ -4,8 +4,10 @@ import { provideHttpClient, withFetch } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TagAnalyticsPanelComponent } from './tag-analytics-panel';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
+import { ModelContextStore } from '../../state/model-context.store';
 
 function mount(datasetName: string | null) {
+    localStorage.clear();   // ModelContextStore hydrates from here — isolate tests
     TestBed.configureTestingModule({
         imports: [TagAnalyticsPanelComponent],
         providers: [
@@ -44,6 +46,20 @@ describe('TagAnalyticsPanelComponent', () => {
         const { fixture, http } = mount(null);
         fixture.detectChanges();
         http.expectNone(() => true);
+    });
+
+    it('passes the active definition and shows prose mode when model-aware', () => {
+        const { fixture, http } = mount('myds');
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        store.setDefinition({ id: 'sdxl_base_1.0', family: 'sdxl', name: 'SDXL Base' });
+        fixture.detectChanges();
+        http.expectOne('/api/datasets/myds/tag-analytics?top_n=30&definition_id=sdxl_base_1.0')
+            .flush({ ...SAMPLE, style: 'prose' });
+        fixture.detectChanges();
+        const text = fixture.nativeElement.textContent;
+        expect(text).toContain('Prose analysis');
+        expect(text).toContain('SDXL Base');
     });
 
     afterEach(() => TestBed.inject(HttpTestingController).verify());

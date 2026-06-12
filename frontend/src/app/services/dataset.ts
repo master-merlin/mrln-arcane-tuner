@@ -161,6 +161,8 @@ export interface Contradiction { a: string; b: string; count: number; images: st
 export interface TagAnalyticsResponse {
   total_images: number;
   total_tags: number;
+  /** Analysis style used: "tags" (comma-split) or "prose" (words + phrases). */
+  style?: 'tags' | 'prose';
   top_tags: TagCount[];
   orphan_tags: string[];
   cooccurrence: Cooccurrence;
@@ -375,10 +377,10 @@ export class DatasetService {
     return this.http.get(url);
   }
 
-  getTagAnalytics(name: string, topN = 30): Observable<TagAnalyticsResponse> {
-    return this.http.get<TagAnalyticsResponse>(
-      `${this.apiUrl}/${encodeURIComponent(name)}/tag-analytics?top_n=${topN}`,
-    );
+  getTagAnalytics(name: string, topN = 30, definitionId?: string | null): Observable<TagAnalyticsResponse> {
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/tag-analytics?top_n=${topN}`;
+    if (definitionId) url += `&definition_id=${encodeURIComponent(definitionId)}`;
+    return this.http.get<TagAnalyticsResponse>(url);
   }
 
   cropImage(name: string, path: string, targetWidth: number, targetHeight: number, origin: string, cropX?: number, cropY?: number): Observable<CropResponse> {

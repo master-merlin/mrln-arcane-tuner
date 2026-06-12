@@ -132,6 +132,8 @@ export interface CaptionSettingsState {
                                   data-testid="api-key-status">
                                 {{ st.configured ? (st.key_masked || 'configured') + ' ✓' : 'not configured' }}
                             </span>
+                        } @else if (providerStatusError()) {
+                            <span class="text-[10px] text-danger" data-testid="api-status-error">{{ providerStatusError() }}</span>
                         }
                     </div>
                     @if (selectedCaptionModel() === 'api-custom') {
@@ -519,6 +521,9 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     baseUrlInput = signal('');
     fetchedModels = signal<string[]>([]);
     fetchModelsError = signal('');
+    /** Non-empty when GET /captions/api-providers failed — rendered in place of
+     *  the status badge so hosts' disabled CTAs aren't left unexplained. */
+    providerStatusError = signal('');
 
     /** Status entry for the currently selected api-* provider. */
     activeProviderStatus = computed(() => {
@@ -532,9 +537,23 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     }
 
     private loadProviderStatuses() {
-        this.apiCaptionService.listProviders().subscribe(statuses => {
-            this.providerStatuses.set(statuses);
-            this.emitChanges();
+        this.providerStatusError.set('');
+        this.apiCaptionService.listProviders().subscribe({
+            next: statuses => {
+                this.providerStatuses.set(statuses);
+                // Opening with a persisted api-custom selection never goes through
+                // onModelChange, so seed the Base URL field from the status here.
+                if (!this.baseUrlInput()) {
+                    this.baseUrlInput.set(this.activeProviderStatus()?.base_url ?? '');
+                }
+                this.emitChanges();
+            },
+            error: () => {
+                this.providerStatusError.set('Could not load provider status.');
+                // Still re-emit so hosts get a definitive apiConfigured=false
+                // instead of waiting on a settingsChanged that never comes.
+                this.emitChanges();
+            },
         });
     }
 

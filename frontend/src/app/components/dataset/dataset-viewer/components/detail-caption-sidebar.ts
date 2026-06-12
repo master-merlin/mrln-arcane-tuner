@@ -132,7 +132,7 @@ import { WebSocketService } from '../../../../services/websocket.service';
                     </div>
 
                     <div class="shrink-0 px-3 pb-2 pt-2 space-y-2">
-                        <button (click)="generateCaption()" [disabled]="isGeneratingCaption()" 
+                        <button (click)="generateCaption()" [disabled]="isGeneratingCaption() || apiBlocked()"
                             class="w-full py-2 rounded-theme-lg font-bold text-xs shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 group"
                             [class.bg-brand]="!isGeneratingCaption()"
                             [class.hover:bg-brand/90]="!isGeneratingCaption()"
@@ -234,6 +234,10 @@ export class DetailCaptionSidebarComponent {
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
     suggestedCaption = signal<string | null>(null);
+    /** Mirrors `currentSettings.apiConfigured === false` as a signal so the
+     *  Generate button disables reactively when the selected api-* provider
+     *  has no usable key (same gate as the mass-caption modal). */
+    protected apiBlocked = signal<boolean>(false);
     currentSettings: CaptionSettingsState | null = null;
     private lastModelId: string | null = null;
 
@@ -370,11 +374,16 @@ export class DetailCaptionSidebarComponent {
         }
         this.lastModelId = state.resolvedModelId;
         this.currentSettings = state;
+        this.apiBlocked.set(state.apiConfigured === false);
     }
 
     generateCaption() {
         const pair = this.currentPair();
         if (!pair || !this.currentSettings) return;
+        if (this.currentSettings.apiConfigured === false) {
+            this.toast.error('Configure the API provider key first.');
+            return;
+        }
 
         this.isGeneratingCaption.set(true);
         this.datasetService.generateCaption(

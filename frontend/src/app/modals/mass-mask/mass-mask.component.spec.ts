@@ -126,6 +126,22 @@ describe('MassMaskModalComponent — launcher contract', () => {
         expect(comp.taskId()).toBe('t1');
     });
 
+    it('Caption: start() is blocked and CTA stays disabled while the API provider is unconfigured', () => {
+        const { comp } = make();
+        comp.captionSettings.set({
+            resolvedModelId: 'api-openai', params: {}, resolvedSystemPrompt: '',
+            apiConfigured: false,
+        });
+        comp.tab.set('caption');
+        comp.captionStrategy.set('overwrite');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        expect(comp.canStart()).toBe(false);
+        comp.start();
+        expect(api.batchCaption).not.toHaveBeenCalled();
+        expect(comp.running()).toBe(false);
+    });
+
     it('cancel() delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
         comp.maskingSettings.set({ modelId: 'rembg', params: {} });

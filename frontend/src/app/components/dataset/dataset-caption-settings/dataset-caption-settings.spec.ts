@@ -154,6 +154,30 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
             { base_url: 'http://localhost:11434/v1' });
     });
 
+    it('listProviders failure sets providerStatusError and still emits apiConfigured=false', () => {
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.listProviders.mockReturnValue(throwError(() => new Error('500')));
+        const { comp } = create();
+        expect(comp.providerStatusError()).toContain('Could not');
+        let last: any;
+        comp.settingsChanged.subscribe((s: any) => (last = s));
+        comp.switchMode('api');                    // no statuses → unconfigured
+        expect(last.apiConfigured).toBe(false);
+    });
+
+    it('seeds baseUrlInput from the provider status when statuses arrive', () => {
+        prefs.selected_caption_model = 'api-custom';
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.listProviders.mockReturnValue(of([
+            { provider: 'custom', configured: true, key_masked: '', base_url: 'http://localhost:11434/v1' },
+        ]));
+        const { comp } = create();
+        // Re-deliver statuses after the persisted model restore — covers either
+        // arrival order of the two init requests.
+        comp.loadProviderStatuses();
+        expect(comp.baseUrlInput()).toBe('http://localhost:11434/v1');
+    });
+
     it('fetchProviderModels fills fetchedModels; failure sets the error note', () => {
         const api = TestBed.inject(ApiCaptionService) as any;
         api.listModels.mockReturnValue(of(['gpt-4o', 'gpt-4o-mini']));

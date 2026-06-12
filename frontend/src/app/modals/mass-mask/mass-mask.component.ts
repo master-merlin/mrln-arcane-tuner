@@ -475,7 +475,10 @@ export class MassMaskModalComponent implements OnInit {
         switch (this.tab()) {
             case 'generate': return !!this.maskingSettings();
             case 'apply':    return this.maskedCount() > 0;
-            case 'caption':  return !!this.captionSettings();
+            // apiConfigured === false → the selected api-* provider has no
+            // usable key; keep the CTA disabled (same gate as mass-caption).
+            case 'caption':  return !!this.captionSettings()
+                && this.captionSettings()!.apiConfigured !== false;
         }
     });
 
@@ -598,7 +601,7 @@ export class MassMaskModalComponent implements OnInit {
     private startCaption(): void {
         const name = this.data.datasetName;
         const settings = this.captionSettings();
-        if (!name || !settings) return;
+        if (!name || !settings || settings.apiConfigured === false) return;
         const candidates = this.captionStrategy() === 'keep'
             ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
             : this.pairs().filter(p => p.metadata?.has_mask);

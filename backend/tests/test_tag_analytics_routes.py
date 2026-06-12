@@ -29,6 +29,42 @@ def test_tag_analytics_success(mock_to_thread, mock_dm, client):
     assert any(set([c["a"], c["b"]]) == {"day", "night"} for c in body["contradictions"])
 
 
+@patch("app.core.llm.caption_refine.caption_style_for", return_value="natural_language")
+@patch("app.engine.core.caption_target.resolve_caption_target")
+@patch("app.core.captioning.caption_variants.resolve_caption")
+@patch(f"{_MODULE}.dataset_manager")
+@patch(f"{_MODULE}.asyncio.to_thread")
+def test_tag_analytics_model_aware_uses_variants_and_prose(
+    mock_to_thread, mock_dm, mock_resolve, mock_target, mock_style, client
+):
+    """With definition_id, captions come from the variant resolver and the style
+    is derived from the model (here natural_language -> prose)."""
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    ds = type("D", (), {"path": "/ds"})()
+    mock_dm.get_dataset.return_value = ds
+    mock_dm.get_dataset_pairs.return_value = [
+        {"media_file": "A1.png", "caption_content": "generic one"},
+        {"media_file": "B2.png", "caption_content": "generic two"},
+    ]
+    variants = {
+        "A1": "a red sports car on a road",
+        "B2": "a blue sports car on a road",
+    }
+    mock_resolve.side_effect = lambda path, stem, defid, masked: variants[stem]
+
+    resp = client.get("/api/datasets/myds/tag-analytics?definition_id=sdxl_base_1.0")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["style"] == "prose"
+    freq = {t["tag"]: t["count"] for t in body["top_tags"]}
+    assert freq.get("sports car") == 2     # phrase from the VARIANT captions
+    assert "generic one" not in freq       # general captions were NOT used
+    mock_resolve.assert_any_call("/ds", "A1", "sdxl_base_1.0", False)
+
+
 @patch(f"{_MODULE}.dataset_manager")
 @patch(f"{_MODULE}.asyncio.to_thread")
 def test_tag_analytics_unknown_dataset_404(mock_to_thread, mock_dm, client):

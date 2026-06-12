@@ -1,0 +1,48 @@
+import { TestBed } from '@angular/core/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { ApiCaptionService } from './api-caption.service';
+import { RuntimeConfigService } from './runtime-config.service';
+
+describe('ApiCaptionService', () => {
+    let svc: ApiCaptionService;
+    let http: HttpTestingController;
+
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            imports: [HttpClientTestingModule],
+            providers: [
+                ApiCaptionService,
+                { provide: RuntimeConfigService, useValue: { apiUrl: 'http://test/api' } },
+            ],
+        });
+        svc = TestBed.inject(ApiCaptionService);
+        http = TestBed.inject(HttpTestingController);
+    });
+
+    afterEach(() => http.verify());
+
+    it('GETs provider statuses', () => {
+        let result: unknown;
+        svc.listProviders().subscribe(r => (result = r));
+        const req = http.expectOne('http://test/api/captions/api-providers');
+        expect(req.request.method).toBe('GET');
+        req.flush([{ provider: 'openai', configured: true, key_masked: 'sk-…1234', base_url: '' }]);
+        expect((result as any[])[0].provider).toBe('openai');
+    });
+
+    it('PUTs partial credential updates', () => {
+        svc.updateProvider('custom', { base_url: 'http://localhost:11434/v1' }).subscribe();
+        const req = http.expectOne('http://test/api/captions/api-providers/custom');
+        expect(req.request.method).toBe('PUT');
+        expect(req.request.body).toEqual({ base_url: 'http://localhost:11434/v1' });
+        req.flush({ provider: 'custom', configured: true, key_masked: '', base_url: 'http://localhost:11434/v1' });
+    });
+
+    it('GETs and unwraps the provider model list', () => {
+        let models: string[] = [];
+        svc.listModels('openai').subscribe(m => (models = m));
+        const req = http.expectOne('http://test/api/captions/api-providers/openai/models');
+        req.flush({ models: ['gpt-4o', 'gpt-4o-mini'] });
+        expect(models).toEqual(['gpt-4o', 'gpt-4o-mini']);
+    });
+});

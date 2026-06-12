@@ -424,9 +424,12 @@ export class MassCaptionModalComponent implements OnInit {
     /** Mirrors `currentSettings` as a signal so `canStart` (a computed) reacts
      *  when the embedded caption-settings child emits its first state. */
     protected settingsReady = signal<boolean>(false);
+    /** Mirrors `currentSettings.apiConfigured === false` as a signal — when the
+     *  selected api-* provider has no usable key, the CTA stays disabled. */
+    protected apiBlocked = signal<boolean>(false);
     protected canStart = computed(() => this.tab() === 'refine'
         ? !!this.refineSettings()
-        : this.settingsReady());
+        : (this.settingsReady() && !this.apiBlocked()));
 
     /** Guard: prevents the completion effect from firing more than once. */
     private _finalized = false;
@@ -489,6 +492,7 @@ export class MassCaptionModalComponent implements OnInit {
     protected onSettingsChange(state: CaptionSettingsState): void {
         this.currentSettings = state;
         this.settingsReady.set(true);
+        this.apiBlocked.set(state.apiConfigured === false);
     }
 
     protected start(): void {
@@ -498,7 +502,7 @@ export class MassCaptionModalComponent implements OnInit {
 
     private startGenerate(): void {
         const name = this.data.datasetName;
-        if (!name || !this.currentSettings) return;
+        if (!name || !this.currentSettings || this.currentSettings.apiConfigured === false) return;
         const all = this.pairs();
         const target = this.target();
         const mode = this.strategy();

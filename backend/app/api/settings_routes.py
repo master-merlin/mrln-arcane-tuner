@@ -19,10 +19,19 @@ logger = get_logger(__name__)
 # Modules that have been migrated to the project/template system
 _MIGRATED_MODULES = frozenset({"training", "captioning", "masking"})
 
+# Modules holding secrets — served only through dedicated masked endpoints
+_PROTECTED_MODULES = frozenset({"api_captioning"})
+
 
 @router.get("/{module}")
 async def get_settings(module: str) -> dict[str, Any]:
     """Return settings for a specific module."""
+    if module in _PROTECTED_MODULES:
+        raise HTTPException(
+            403,
+            f"'{module}' holds credentials and is only accessible via "
+            "/api/captions/api-providers.",
+        )
     if module in _MIGRATED_MODULES:
         raise HTTPException(
             410,
@@ -37,6 +46,12 @@ async def get_settings(module: str) -> dict[str, Any]:
 @router.put("/{module}")
 async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, Any]:
     """Update settings for a specific module."""
+    if module in _PROTECTED_MODULES:
+        raise HTTPException(
+            403,
+            f"'{module}' holds credentials and is only accessible via "
+            "/api/captions/api-providers.",
+        )
     if module in _MIGRATED_MODULES:
         raise HTTPException(
             410,

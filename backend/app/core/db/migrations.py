@@ -44,6 +44,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v10,
         _migrate_v11,
         _migrate_v12,
+        _migrate_v13,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -832,4 +833,32 @@ def _migrate_v12(conn) -> None:
     exactly once on each DB already at v11.
     """
     conn.execute("DROP TABLE IF EXISTS saved_concepts")
+
+
+# ── V13: API captioning provider default templates ──────────────────────
+
+def _migrate_v13(conn) -> None:
+    """Seed readonly General default templates for api-* caption providers."""
+    import json as _json
+    import time as _time
+
+    now = _time.time()
+    base = {"temperature": 0.7, "top_p": 1.0, "max_tokens": 512,
+            "max_long_side": 1024}
+    defaults = [
+        ("cap_default_api_openai", "api-openai", "gpt-4o"),
+        ("cap_default_api_anthropic", "api-anthropic", "claude-sonnet-4-6"),
+        ("cap_default_api_gemini", "api-gemini", "gemini-2.5-flash"),
+        ("cap_default_api_openrouter", "api-openrouter", ""),
+        ("cap_default_api_custom", "api-custom", ""),
+    ]
+    for tid, model_id, default_model in defaults:
+        conn.execute(
+            "INSERT OR IGNORE INTO captioning_templates "
+            "(id, project_id, model_id, name, is_default, readonly, "
+            " system_prompt, config, created_at, updated_at) "
+            "VALUES (?, NULL, ?, 'Default', 1, 1, ?, ?, ?, ?)",
+            (tid, model_id, "Describe this image in detail.",
+             _json.dumps({**base, "model": default_model}), now, now),
+        )
 

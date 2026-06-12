@@ -4,6 +4,7 @@ import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
 import { DetailCaptionSidebarComponent } from './detail-caption-sidebar';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
+import { DatasetService } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 
@@ -47,6 +48,24 @@ describe('DetailCaptionSidebar — tag hygiene buttons', () => {
         fixture.detectChanges();
         expect(fixture.nativeElement.querySelector('[data-testid="caption-dedupe"]')).toBeTruthy();
         expect(fixture.nativeElement.querySelector('[data-testid="caption-normalize"]')).toBeTruthy();
+    });
+});
+
+describe('DetailCaptionSidebar — API gating', () => {
+    it('generateCaption is blocked while the API provider is unconfigured', () => {
+        const fixture = mount();
+        const cmp = fixture.componentInstance;
+        fixture.detectChanges();
+        const ds = TestBed.inject(DatasetService);
+        const spy = vi.spyOn(ds, 'generateCaption');
+        cmp.currentSettings = {
+            modelId: 'api-openai', resolvedModelId: 'api-openai',
+            systemPrompt: '', resolvedSystemPrompt: '', wildcard: '',
+            params: {}, apiConfigured: false,
+        };
+        cmp.generateCaption();
+        expect(spy).not.toHaveBeenCalled();
+        expect(cmp.isGeneratingCaption()).toBe(false);
     });
 });
 

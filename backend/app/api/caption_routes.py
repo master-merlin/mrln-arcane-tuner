@@ -14,7 +14,9 @@ from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.captioning.caption_batch import run_caption_batch
 from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
+from app.core.llm import provider_settings
 from app.core.logger import get_logger
+from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
@@ -54,6 +56,11 @@ async def generate_caption_api(request: GenerateCaptionRequest):
         image=request.image_rel_path,
         model=request.model_id,
     )
+
+    try:
+        provider_settings.validate_caption_model(request.model_id, request.params)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     service = CaptionService.get_instance()
 
@@ -120,7 +127,25 @@ async def generate_caption_api(request: GenerateCaptionRequest):
 
 @router.delete("/unload", response_model=UnloadModelsResponse)
 async def unload_models_api():
-    """Unload all caption models and free VRAM."""
+    """Unload all caption models and free VRAM.
+
+    No-ops while a caption batch is pending/running: the batch worker loads
+    the model once and frees it in its own ``finally`` after the last image,
+    and an eager unload from the UI (model/variant/tab change) would force a
+    per-image reload — or crash a generate in flight on the GPU lane.
+    """
+    active_batch = any(
+        t.type == "caption_batch"
+        and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+        for t in task_manager.list()
+    )
+    if active_batch:
+        logger.info("unload_skipped_caption_batch_active")
+        return {
+            "status": "success",
+            "message": "Unload skipped — a captioning batch is in progress; "
+                       "models are freed when it finishes.",
+        }
     try:
         logger.info("unloading_caption_models")
         service = CaptionService.get_instance()
@@ -146,6 +171,11 @@ class BatchCaptionRequest(BaseModel):
 async def batch_caption_api(request: BatchCaptionRequest):
     """Start a backend-owned captioning task. Always creates the task (queued if
     the GPU lane is busy) and returns its id immediately."""
+    try:
+        provider_settings.validate_caption_model(request.model_id, request.params)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Distinguish masked-caption runs in the Task Center — they target the
     # masked/<stem>.txt sidecar, not the plain caption, and can run alongside
     # an original-caption task for the same dataset.
@@ -167,7 +197,7 @@ async def batch_caption_api(request: BatchCaptionRequest):
             system_prompt=request.system_prompt,
             target=request.target,
         ),
-        lane="gpu",
+        lane=provider_settings.lane_for_model(request.model_id),
     )
     return {"task_id": task.id}
 

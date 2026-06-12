@@ -95,3 +95,89 @@ def test_worker_masked_uses_masked_source(tmp_path, monkeypatch):
     assert masked_calls == ["a.png"]      # masked composite used as source
     assert full_calls == []               # original NOT used for masked target
     assert task_manager.get(t.id).status.value == "completed"
+
+
+def test_worker_api_model_skips_unload_and_injects_abort(monkeypatch):
+    """api-* batches must never trigger the global unload (lane safety) and
+    must hand the HTTP client a cancellation probe."""
+    StubService.unloaded = False
+    seen_params = []
+
+    class ApiStub(StubService):
+        def generate_caption(self, image_path, model_id, params):
+            seen_params.append(params)
+            return "cap"
+
+    monkeypatch.setattr(caption_batch, "_get_service", lambda: ApiStub())
+    monkeypatch.setattr(caption_batch.CaptionService, "unload_models", StubService.unload_models)
+    monkeypatch.setattr(caption_batch, "_full_path", lambda ds, rel: f"/fake/{ds}/{rel}")
+    monkeypatch.setattr(caption_batch, "_write_caption", lambda ds, rel, text, target: None)
+    monkeypatch.setattr(caption_batch, "_emit_caption_written", lambda **kw: None)
+
+    t = task_manager.create(type="caption_batch", title="x", total=1, dataset_name="ds")
+    caption_batch.run_caption_batch(
+        t.id, dataset_name="ds", image_rel_paths=["a.png"],
+        model_id="api-openai", params={"model": "gpt-4o"}, system_prompt=None,
+        target="original",
+    )
+
+    assert task_manager.get(t.id).status.value == "completed"
+    assert StubService.unloaded is False           # finally must NOT unload
+    assert callable(seen_params[0]["_should_abort"])
+    assert seen_params[0]["_should_abort"]() is False  # task not cancelled
+
+
+def test_worker_api_model_fails_fast_after_consecutive_failures(monkeypatch):
+    StubService.unloaded = False
+
+    class FailingStub(StubService):
+        def generate_caption(self, image_path, model_id, params):
+            raise RuntimeError("401 bad key")
+
+    monkeypatch.setattr(caption_batch, "_get_service", lambda: FailingStub())
+    monkeypatch.setattr(caption_batch.CaptionService, "unload_models", StubService.unload_models)
+    monkeypatch.setattr(caption_batch, "_full_path", lambda ds, rel: f"/fake/{ds}/{rel}")
+    monkeypatch.setattr(caption_batch, "_write_caption", lambda ds, rel, text, target: None)
+    monkeypatch.setattr(caption_batch, "_emit_caption_written", lambda **kw: None)
+
+    rels = [f"{i}.png" for i in range(20)]
+    t = task_manager.create(type="caption_batch", title="x", total=len(rels), dataset_name="ds")
+    caption_batch.run_caption_batch(
+        t.id, dataset_name="ds", image_rel_paths=rels,
+        model_id="api-openai", params={"model": "gpt-4o"}, system_prompt=None,
+        target="original",
+    )
+
+    task = task_manager.get(t.id)
+    assert task.status.value == "failed"
+    assert "consecutive" in (task.error or "")
+    assert task.failed == 5                        # stopped at the 5th failure
+    assert StubService.unloaded is False           # api path: still no unload
+
+
+def test_worker_local_model_failures_do_not_fast_fail_and_still_unload(monkeypatch):
+    """The fast-fail and unload-skip are api-only — local batches keep the
+    old semantics: ride out failures, always unload in finally."""
+    StubService.unloaded = False
+
+    class FailingStub(StubService):
+        def generate_caption(self, image_path, model_id, params):
+            raise RuntimeError("CUDA OOM")
+
+    monkeypatch.setattr(caption_batch, "_get_service", lambda: FailingStub())
+    monkeypatch.setattr(caption_batch.CaptionService, "unload_models", StubService.unload_models)
+    monkeypatch.setattr(caption_batch, "_full_path", lambda ds, rel: f"/fake/{ds}/{rel}")
+    monkeypatch.setattr(caption_batch, "_write_caption", lambda ds, rel, text, target: None)
+    monkeypatch.setattr(caption_batch, "_emit_caption_written", lambda **kw: None)
+
+    rels = [f"{i}.png" for i in range(7)]
+    t = task_manager.create(type="caption_batch", title="x", total=len(rels), dataset_name="ds")
+    caption_batch.run_caption_batch(
+        t.id, dataset_name="ds", image_rel_paths=rels,
+        model_id="florence-2", params={}, system_prompt=None, target="original",
+    )
+
+    task = task_manager.get(t.id)
+    assert task.status.value == "completed"        # no fast-fail for local
+    assert task.failed == 7                        # processed every image
+    assert StubService.unloaded is True            # finally still unloads

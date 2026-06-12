@@ -92,12 +92,26 @@ class JoyCaptionParams(BaseModel):
     refer_character_name: bool = False
 
 
+class ApiCaptionParams(BaseModel):
+    """Parameters for external OpenAI-compatible API captioning providers."""
+    model: str = ""
+    temperature: float = Field(0.7, ge=0, le=2)
+    top_p: float = Field(1.0, ge=0, le=1)
+    max_tokens: int = Field(512, ge=64, le=8192)
+    max_long_side: int | str = Field(1024)
+
+
 # Registry mapping model IDs to their param schemas
 CAPTION_PARAM_MODELS: dict[str, type[BaseModel]] = {
     "florence-2": Florence2Params,
     "youtu-vl": YoutuVLParams,
     "qwen3-vl": Qwen3VLParams,
     "joycaption": JoyCaptionParams,
+    "api-openai": ApiCaptionParams,
+    "api-anthropic": ApiCaptionParams,
+    "api-gemini": ApiCaptionParams,
+    "api-openrouter": ApiCaptionParams,
+    "api-custom": ApiCaptionParams,
 }
 
 

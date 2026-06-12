@@ -106,4 +106,12 @@ describe('DynamicFormGroup — re-renders on external FormArray mutations (OnPus
 
         expect((newForm.get('my_list') as FormArray).at(0).value).toBe('edited');
     });
+
+    it('maps inline-group keys to friendly labels', () => {
+        const fixture = build();
+        const child = fixture.debugElement.children[0].componentInstance as DynamicFormGroupComponent;
+        expect(child.inlineGroupLabel('masking_toggles')).toBe('Enable masking');
+        expect(child.inlineGroupLabel('caption_toggles')).toBe('Captions');
+        expect(child.inlineGroupLabel('future_group')).toBe('Future Group');
+    });
 });

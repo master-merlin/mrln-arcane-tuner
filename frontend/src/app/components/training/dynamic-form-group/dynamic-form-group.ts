@@ -139,7 +139,7 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                             @if (nestedProp.schema.inline_group && isFirstInlineGroupProp(nestedProp.key)) {
                               <div class="flex flex-col gap-1.5">
                                 <label class="field-label">
-                                  {{ nestedProp.schema.inline_group === 'masking_toggles' ? 'Enable masking' : (nestedProp.schema.inline_group.replace('_', ' ') | titlecase) }}
+                                  {{ inlineGroupLabel(nestedProp.schema.inline_group) }}
                                 </label>
                                 <div class="flex flex-col gap-2 mt-1">
                                   @for (ip of getInlineGroupProps(nestedProp.schema.inline_group); track ip.key) {
@@ -520,6 +520,16 @@ export class DynamicFormGroupComponent {
 
   getInlineGroupProps(groupName: string): SchemaProp[] {
     return this.nestedProps().filter(p => p.schema.inline_group === groupName);
+  }
+
+  /** Friendly header for an inline toggle group (fallback: titlecased key). */
+  inlineGroupLabel(groupName: string): string {
+    const labels: Record<string, string> = {
+      masking_toggles: 'Enable masking',
+      caption_toggles: 'Captions',
+    };
+    return labels[groupName] ?? groupName.replace(/_/g, ' ')
+      .replace(/\b\w/g, ch => ch.toUpperCase());
   }
 
   /**

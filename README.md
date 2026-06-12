@@ -27,6 +27,7 @@ This project wouldn't exist without the incredible open-source community that pi
 - **[Nerogar](https://github.com/Nerogar/OneTrainer)** — Inspiration for the unified multi-model trainer architecture that supports multiple model families through a single pipeline.
 - **[Hugging Face / diffusers](https://github.com/huggingface/diffusers)** — Key mapping logic for PEFT-to-BFL LoRA conversion is derived from `lora_conversion_utils.py`. Credited in [`flux2/saver.py`](backend/app/engine/models/families/flux2/saver.py).
 - **[rockerBOO / lora-inspector](https://github.com/rockerBOO/lora-inspector)** — Inspiration for the LoRA inspection tooling (format detection, weight statistics, layer analysis). Credited in [`lora_tools.py`](backend/app/engine/utils/lora_tools.py).
+- **[NyxAwroo / IMG-Dataset-Refiner](https://github.com/NyxAwroo/IMG-Dataset-Refiner)** — Inspiration for the model-aware caption workflow — per-model caption variants, architecture-aware token budgets, tag analytics, and LLM-assisted caption refinement.
 
 > **Note:** MRLN Arcane Tuner is a personal experiment and is **not intended to compete** with any of these projects. They are community pillars. This tool simply explores a different angle — dataset quality first.
 

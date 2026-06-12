@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
+import { ApiCaptionService } from '../../../services/api-caption.service';
 import { Subject } from 'rxjs';
 import { debounceTime, switchMap } from 'rxjs/operators';
 
@@ -37,6 +38,15 @@ export interface CaptionModelConfig {
     params: CaptionParam[];
 }
 
+/** Shared tunables for every API provider (model name is set per template). */
+const API_PROVIDER_PARAMS: CaptionParam[] = [
+    { key: 'model', label: 'Model', type: 'text', default: '', placeholder: 'e.g. gpt-4o' },
+    { key: 'temperature', label: 'Temperature', type: 'number', min: 0, max: 2, step: 0.1, default: 0.7 },
+    { key: 'top_p', label: 'Top P', type: 'number', min: 0, max: 1, step: 0.05, default: 1.0 },
+    { key: 'max_tokens', label: 'Max Tokens', type: 'number', min: 64, max: 8192, step: 64, default: 512 },
+    { key: 'max_long_side', label: 'Max Upload Size (longside px)', type: 'select', options: [512, 768, 1024, 1280], default: 1024 },
+];
+
 export interface CaptionSettingsState {
     modelId: string;
     resolvedModelId: string;
@@ -59,15 +69,33 @@ export interface CaptionSettingsState {
     imports: [FormsModule],
     template: `
         <div class="space-y-3 animate-fadeIn">
+            <!-- Local / API mode tabs -->
+            <div class="flex gap-1 bg-surface-low/60 p-1 rounded-theme-lg border border-surface-mid/50">
+                <button type="button" data-testid="caption-mode-local"
+                    (click)="switchMode('local')"
+                    [class.bg-surface-high]="captionMode() === 'local'"
+                    [class.text-brand]="captionMode() === 'local'"
+                    class="flex-1 text-[11px] font-bold uppercase tracking-wider py-1.5 rounded-theme-md text-text-subtle transition-colors">
+                    Local
+                </button>
+                <button type="button" data-testid="caption-mode-api"
+                    (click)="switchMode('api')"
+                    [class.bg-surface-high]="captionMode() === 'api'"
+                    [class.text-brand]="captionMode() === 'api'"
+                    class="flex-1 text-[11px] font-bold uppercase tracking-wider py-1.5 rounded-theme-md text-text-subtle transition-colors">
+                    API
+                </button>
+            </div>
+
             <!-- Model Selector Row -->
             <div class="bg-surface-high/40 p-3 rounded-theme-lg border border-surface-high/50">
                 <div class="flex gap-2 mb-2">
                     <div class="flex-1">
-                            <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">Model</label>
+                            <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold mb-1 block">{{ captionMode() === 'api' ? 'Provider' : 'Model' }}</label>
                             <select [ngModel]="selectedCaptionModel()" (ngModelChange)="onModelChange($event)"
                                    data-testid="caption-model-select"
                             class="w-full bg-surface-low border border-surface-mid text-text-primary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors">
-                            @for (model of captionModels; track model.id) {
+                            @for (model of (captionMode() === 'api' ? apiProviders : captionModels); track model.id) {
                                 <option [value]="model.id">{{ model.name }}</option>
                             }
                         </select>
@@ -280,6 +308,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     private datasetService = inject(DatasetService);
     private projectService = inject(ProjectService);
     private templateService = inject(TemplateService);
+    /** Injected now; the API connection UI (Task 9) consumes it. */
+    private apiCaptionService = inject(ApiCaptionService);
 
     projectId = input<string | null>(null);
     effectiveProjectId = computed(() => this.projectId() ?? this.projectService.activeDatasetProject());
@@ -377,9 +407,40 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         },
     ];
 
+    /** External API providers — rendered under the API tab. Each is a pseudo
+     *  caption model (id `api-<provider>`) so templates/preferences/batch
+     *  reuse the local-model machinery unchanged. */
+    apiProviders: CaptionModelConfig[] = [
+        { id: 'api-openai', name: 'OpenAI', description: 'OpenAI vision models (gpt-4o, gpt-4o-mini, …) via api.openai.com.', params: API_PROVIDER_PARAMS },
+        { id: 'api-anthropic', name: 'Anthropic', description: 'Claude vision models via the OpenAI-compatible endpoint.', params: API_PROVIDER_PARAMS },
+        { id: 'api-gemini', name: 'Gemini', description: 'Google Gemini vision models via the OpenAI-compatible endpoint.', params: API_PROVIDER_PARAMS },
+        { id: 'api-openrouter', name: 'OpenRouter', description: 'Any OpenRouter-hosted vision model behind one key.', params: API_PROVIDER_PARAMS },
+        { id: 'api-custom', name: 'Local / Custom', description: 'Any OpenAI-compatible server: Ollama, LM Studio, vLLM. Set the Base URL below.', params: API_PROVIDER_PARAMS },
+    ];
+
+    /** Local models + API providers — single lookup space for model ids. */
+    get allModelConfigs(): CaptionModelConfig[] {
+        return [...this.captionModels, ...this.apiProviders];
+    }
+
     qwen3Variants = ['4B-Instruct', '4B-Thinking', '8B-Instruct', '8B-Thinking', '32B-Instruct', '32B-Thinking'];
 
     selectedCaptionModel = signal<string>('florence-2');
+
+    /** Explicit Local/API tab. Derived from the active model id so persisted
+     *  api-* preferences reopen on the API tab. */
+    captionMode = computed<'local' | 'api'>(() =>
+        this.selectedCaptionModel().startsWith('api-') ? 'api' : 'local');
+
+    /** Last-used model per tab, restored on switch (session-scoped). */
+    private lastLocalModelId = 'florence-2';
+    private lastApiModelId = 'api-openai';
+
+    switchMode(mode: 'local' | 'api') {
+        if (mode === this.captionMode()) return;
+        this.onModelChange(mode === 'api' ? this.lastApiModelId : this.lastLocalModelId);
+    }
+
     selectedQwen3Variant = signal<string>('4B-Instruct');
     currentTemplates = signal<Template[]>([]);
     activeTemplateId = signal<string | null>(null);
@@ -397,7 +458,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     private pendingSaves = new Map<string, { config: Record<string, unknown>; system_prompt?: string; wildcard?: string }>();
 
     activeModelConfig = computed(() => {
-        return this.captionModels.find(m => m.id === this.selectedCaptionModel());
+        return this.allModelConfigs.find(m => m.id === this.selectedCaptionModel());
     });
 
     isDefaultTemplate() {
@@ -433,7 +494,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     /** Edit-modal: load a single template into the UI, bypassing preference-driven
      *  selection and the template list fetch. */
     private applyPreset(tpl: Template) {
-        if (tpl.model_id && this.captionModels.some(m => m.id === tpl.model_id)) {
+        if (tpl.model_id && this.allModelConfigs.some(m => m.id === tpl.model_id)) {
             this.selectedCaptionModel.set(tpl.model_id);
         }
         this.currentTemplates.set([tpl]);
@@ -460,8 +521,10 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         this.projectService.getPreferences(pId).pipe(
             switchMap(prefs => {
                 this.preferences = prefs;
-                if (prefs.selected_caption_model && this.captionModels.some(m => m.id === prefs.selected_caption_model)) {
+                if (prefs.selected_caption_model && this.allModelConfigs.some(m => m.id === prefs.selected_caption_model)) {
                     this.selectedCaptionModel.set(prefs.selected_caption_model);
+                    if (prefs.selected_caption_model.startsWith('api-')) this.lastApiModelId = prefs.selected_caption_model;
+                    else this.lastLocalModelId = prefs.selected_caption_model;
                 }
                 if (prefs.qwen3_variant && this.qwen3Variants.includes(prefs.qwen3_variant)) {
                     this.selectedQwen3Variant.set(prefs.qwen3_variant);
@@ -498,7 +561,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             this.captionSystemPrompt.set(tpl.system_prompt || '');
             this.captionWildcard.set(tpl.wildcard || '');
 
-            const modelConfig = this.captionModels.find(m => m.id === this.selectedCaptionModel());
+            const modelConfig = this.allModelConfigs.find(m => m.id === this.selectedCaptionModel());
             const codeDefaults: Record<string, unknown> = {};
             modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
 
@@ -511,10 +574,12 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         if (modelId === this.selectedCaptionModel()) return;
         this.datasetService.unloadModels().subscribe();
         this.selectedCaptionModel.set(modelId);
+        if (modelId.startsWith('api-')) this.lastApiModelId = modelId;
+        else this.lastLocalModelId = modelId;
         if (!this.autoSave()) {
             // Edit mode: switch model locally, reset params to its defaults; the
             // host's Save persists. No backend template list reload.
-            const cfg = this.captionModels.find(m => m.id === modelId);
+            const cfg = this.allModelConfigs.find(m => m.id === modelId);
             const defaults: Record<string, unknown> = {};
             cfg?.params.forEach(p => { defaults[p.key] = p.default; });
             this.captionModelParams.set(defaults);

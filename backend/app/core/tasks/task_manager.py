@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 
+from app.core.drain import DrainActive, is_draining
 from app.core.events import event_manager
 from app.core.logger import get_logger
 from app.core.tasks.task import Task, TaskStatus
@@ -139,6 +140,8 @@ class TaskManager:
         """Append (task_id, worker_fn) to a lane FIFO and ensure the lane's
         single worker thread is running. worker_fn is called as worker_fn(task_id)
         on the lane thread when this task reaches the front of the queue."""
+        if lane == "gpu" and is_draining():
+            raise DrainActive("Update pending — new GPU tasks are paused until restart.")
         with self._lock:
             self._lanes.setdefault(lane, []).append((task_id, worker_fn))
             # Presence in `_lane_threads` IS the "lane has a live worker" flag —

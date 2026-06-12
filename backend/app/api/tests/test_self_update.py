@@ -123,3 +123,26 @@ async def test_apply_error_on_pull_failure_no_restart(svc, monkeypatch):
     await svc._apply_impl()
     assert svc.state == UpdateState.ERROR
     assert called["restart"] is False
+
+
+@pytest.mark.asyncio
+async def test_check_once_safe_swallows_errors(svc, monkeypatch):
+    async def boom():
+        raise RuntimeError("network")
+
+    monkeypatch.setattr(svc, "check", boom)
+    # Must not raise — periodic loop relies on this.
+    await svc.check_once_safe()
+
+
+@pytest.mark.asyncio
+async def test_check_once_safe_runs_check(svc, monkeypatch):
+    called = {"v": False}
+
+    async def ok():
+        called["v"] = True
+        return {"behind": 0, "commits": []}
+
+    monkeypatch.setattr(svc, "check", ok)
+    await svc.check_once_safe()
+    assert called["v"] is True

@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 _IDLE_POLL_S = 3.0
 _GIT_TIMEOUT_S = 120.0
 _BUILD_TIMEOUT_S = 1800.0
+_CHECK_INTERVAL_S = 1800.0  # periodic availability check (30 min)
 
 
 class UpdateState(str, Enum):
@@ -246,6 +247,21 @@ class SelfUpdateService:
         from app.api.system_routes import _restart_server_logic
 
         await _restart_server_logic()
+
+    # ── periodic check ──────────────────────────────────────────────────
+    async def check_once_safe(self) -> None:
+        """One periodic check; never raises (the loop depends on it)."""
+        try:
+            await self.check()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("periodic_update_check_failed", error=str(e))
+
+    async def run_periodic_check(self) -> None:
+        """Background loop: re-check behind-count on an interval while available."""
+        while True:
+            if self.available:
+                await self.check_once_safe()
+            await asyncio.sleep(_CHECK_INTERVAL_S)
 
 
 # Module singleton — configured at startup (lifespan) with the real env values.

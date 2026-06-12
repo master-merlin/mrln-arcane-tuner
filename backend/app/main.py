@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
     self_update_service.set_loop(loop)
     if self_update_service.remote:
         await asyncio.to_thread(self_update_service.probe_availability)
+    _update_task = asyncio.create_task(self_update_service.run_periodic_check())
 
     # Warm the cross-dataset cache-stats aggregation in the background so the
     # datasets KPI is ready by the time the user navigates (silent — hidden from
@@ -120,6 +121,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    _update_task.cancel()
     logger.info("shutting_down_api")
 
 

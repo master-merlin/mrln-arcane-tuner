@@ -11,8 +11,9 @@
  * triggering NG0101 (ApplicationRef.tick called recursively).
  */
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { settle } from '../../../testing/async';
 import { provideHttpClient, withXhr } from '@angular/common/http';
 import { of } from 'rxjs';
 import { MassMaskModalComponent } from './mass-mask.component';
@@ -274,9 +275,9 @@ describe('MassMaskModalComponent — completion handler', () => {
 
     // Use tab='apply' for all completion tests: the _completion effect is
     // tab-independent, and 'apply' does not render DatasetMaskingSettingsComponent
-    // or DatasetCaptionSettingsComponent, so fakeAsync stays XHR-free.
+    // or DatasetCaptionSettingsComponent, so the tests stay XHR-free.
 
-    it('completed task fires onCompleted + refreshDataset + running=false', fakeAsync(() => {
+    it('completed task fires onCompleted + refreshDataset + running=false', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
@@ -288,14 +289,13 @@ describe('MassMaskModalComponent — completion handler', () => {
         comp.start();
         taskSignal.set({ status: 'completed', current: 1, total: 1, current_item: null, error: null });
         fixture!.detectChanges(); // flush the _completion effect
-        tick();
-        tick(); // drain refreshDataset + loadPairs Promise microtasks
+        await settle(); // drain refreshDataset + loadPairs Promise microtasks
         expect(onCompleted).toHaveBeenCalledTimes(1);
         expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
         expect(comp.running()).toBe(false);
-    }));
+    });
 
-    it('failed task fires toast.error, does NOT fire onCompleted, running=false', fakeAsync(() => {
+    it('failed task fires toast.error, does NOT fire onCompleted, running=false', async () => {
         const toast = TestBed.inject(ToastService) as any;
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
@@ -306,18 +306,17 @@ describe('MassMaskModalComponent — completion handler', () => {
         comp.start();
         taskSignal.set({ status: 'failed', current: 0, total: 1, current_item: null, error: 'boom' });
         fixture!.detectChanges();
-        tick();
-        tick();
+        await settle();
         expect(toast.error).toHaveBeenCalledWith('boom');
         expect(onCompleted).not.toHaveBeenCalled();
         expect(comp.running()).toBe(false);
-    }));
+    });
 
-    it('cancelled task — onCompleted does NOT fire (explicit cancel sets _finalized)', fakeAsync(() => {
+    it('cancelled task — onCompleted does NOT fire (explicit cancel sets _finalized)', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
-        // Use 'apply' tab: avoids DatasetMaskingSettingsComponent XHR in fakeAsync.
+        // Use 'apply' tab: avoids DatasetMaskingSettingsComponent XHR.
         comp.tab.set('apply');
         comp.pairs.set([makePair('a.png', { has_mask: true })]);
         vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -325,8 +324,7 @@ describe('MassMaskModalComponent — completion handler', () => {
         comp.cancel(); // arms _finalized before the status arrives
         taskSignal.set({ status: 'cancelled', current: 0, total: 1, current_item: null, error: null });
         fixture!.detectChanges();
-        tick();
-        tick();
+        await settle();
         expect(onCompleted).not.toHaveBeenCalled();
-    }));
+    });
 });

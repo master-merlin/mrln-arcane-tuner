@@ -1,5 +1,5 @@
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, tick, flush } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { of, Subject } from 'rxjs';
 
 import { DatasetMaskingSettingsComponent } from './dataset-masking-settings';
@@ -58,7 +58,22 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
         return fixture.componentInstance;
     }
 
-    it('creates ONE "Custom Settings" derived from the readonly default on first edit', fakeAsync(() => {
+    // The save path is timer-only (setTimeout save debounce); every observable
+    // here is a synchronous of()/Subject. Vitest fake timers replace fakeAsync's
+    // tick()/flush(): vi.runAllTimers() drains all pending timers like flush()
+    // did. 'Date' MUST be faked with the timer fns — RxJS debounceTime compares
+    // Date.now() to decide emit-vs-reschedule, so a fake clock with a real Date
+    // reschedules forever. rAF stays real so zoneless CD scheduling is not
+    // frozen; the explicit useRealTimers() is mandatory because the global
+    // vi.restoreAllMocks() does not undo fake timers.
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('creates ONE "Custom Settings" derived from the readonly default on first edit', () => {
         const sysDefault = tpl({
             id: 'mask_default_sam3', name: 'Default', is_default: true, readonly: true,
             config: { text_prompt: 'subject', multimask_output: true },
@@ -67,7 +82,7 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
         expect(c.activeTemplateId()).toBe('mask_default_sam3');
 
         c.updateParam('text_prompt', 'person');
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createMaskingTemplate).toHaveBeenCalledTimes(1);
         const created = svc.createMaskingTemplate.mock.calls[0][0];
@@ -78,50 +93,48 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
         expect(c.activeTemplateId()).toBe('new-id');
         // The default itself was never written.
         expect(svc.updateTemplate).not.toHaveBeenCalledWith('masking', 'mask_default_sam3', expect.anything());
-    }));
+    });
 
-    it('reuses an existing "Custom Settings" instead of creating a duplicate', fakeAsync(() => {
+    it('reuses an existing "Custom Settings" instead of creating a duplicate', () => {
         const sysDefault = tpl({ id: 'def', name: 'Default', is_default: true, readonly: true, config: { text_prompt: 'subject' } });
         const custom = tpl({ id: 'cs1', name: 'Custom Settings', project_id: 'p1', config: { text_prompt: 'hair' } });
         const c = build([sysDefault, custom], { active_mask_template: 'def' });
         expect(c.activeTemplateId()).toBe('def');
 
         c.updateParam('text_prompt', 'person');
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createMaskingTemplate).not.toHaveBeenCalled();
         expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
         expect(svc.updateTemplate.mock.calls[0][1]).toBe('cs1');
         expect(c.activeTemplateId()).toBe('cs1');
-    }));
+    });
 
-    it('never edits an is_default template in place even when not readonly', fakeAsync(() => {
+    it('never edits an is_default template in place even when not readonly', () => {
         const sysDefault = tpl({ id: 'def', name: 'Default', is_default: true, readonly: false, config: {} });
         const c = build([sysDefault]);
 
         c.updateParam('text_prompt', 'person');
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.updateTemplate).not.toHaveBeenCalledWith('masking', 'def', expect.anything());
         expect(svc.createMaskingTemplate).toHaveBeenCalledTimes(1);
-    }));
+    });
 
-    it('creates "Custom Settings" from current params when the model has NO template (RemBG gap)', fakeAsync(() => {
+    it('creates "Custom Settings" from current params when the model has NO template (RemBG gap)', () => {
         const c = build([]); // no templates seeded for this model
         expect(c.activeTemplateId()).toBeNull();
 
         c.updateParam('text_prompt', 'person');
-        flush();
+        vi.runAllTimers();
 
         // The edit must not be silently dropped.
         expect(svc.createMaskingTemplate).toHaveBeenCalledTimes(1);
         expect(svc.createMaskingTemplate.mock.calls[0][0].config).toMatchObject({ text_prompt: 'person' });
         expect(c.activeTemplateId()).toBe('new-id');
-    }));
+    });
 
-    it('does not create a second copy while the first create is in flight (slider drag)', fakeAsync(() => {
+    it('does not create a second copy while the first create is in flight (slider drag)', () => {
         const sysDefault = tpl({ id: 'def', name: 'Default', is_default: true, readonly: true, config: {} });
         const c = build([sysDefault]);
         const create$ = new Subject<Template>();
@@ -134,27 +147,25 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
 
         create$.next(tpl({ id: 'new-id', name: 'Custom Settings' }));
         create$.complete();
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         // The buffered edit lands in the created copy.
         expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
         expect(svc.updateTemplate.mock.calls[0][1]).toBe('new-id');
         expect(svc.updateTemplate.mock.calls[0][2].config).toMatchObject({ max_hole_area: 20 });
-    }));
+    });
 
-    it('still updates an editable user template directly', fakeAsync(() => {
+    it('still updates an editable user template directly', () => {
         const mine = tpl({ id: 'mine', name: 'My Masks', config: { text_prompt: 'hair' } });
         const c = build([mine], { active_mask_template: 'mine' });
 
         c.updateParam('text_prompt', 'face');
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createMaskingTemplate).not.toHaveBeenCalled();
         expect(svc.updateTemplate).toHaveBeenCalledWith('masking', 'mine',
             expect.objectContaining({ config: expect.objectContaining({ text_prompt: 'face' }) }));
-    }));
+    });
 
     it('falls back to the model code defaults when no template exists (no stale params)', () => {
         const c = build([]);

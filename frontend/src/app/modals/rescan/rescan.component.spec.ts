@@ -7,8 +7,9 @@
  * status the modal reconciles datasets and auto-closes.
  */
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { settle } from '../../../testing/async';
 import { of } from 'rxjs';
 import { RescanModalComponent } from './rescan.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -108,7 +109,7 @@ describe('RescanModalComponent — launcher contract', () => {
         expect(comp.pct()).toBe(30);
     });
 
-    it('on completion: reconciles, prunes missing (library), and auto-closes', fakeAsync(() => {
+    it('on completion: reconciles, prunes missing (library), and auto-closes', async () => {
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
@@ -121,14 +122,13 @@ describe('RescanModalComponent — launcher contract', () => {
         comp.start();
         taskSignal.set({ id: 't1', status: 'completed', total: 4, current: 4 });
         fixture.detectChanges(); // flush completion effect
-        tick();
-        tick(); // loadAll + deleteDataset microtasks
+        await settle(); // loadAll().then(...) → deleteDataset microtask chain
         expect(datasets.loadAll).toHaveBeenCalled();
         expect(datasets.deleteDataset).toHaveBeenCalledWith('b', false);
         expect(closeSpy).toHaveBeenCalled();
-    }));
+    });
 
-    it('on failure: toasts the error and auto-closes', fakeAsync(() => {
+    it('on failure: toasts the error and auto-closes', async () => {
         const toast = TestBed.inject(ToastService) as any;
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
@@ -141,13 +141,12 @@ describe('RescanModalComponent — launcher contract', () => {
         comp.start();
         taskSignal.set({ id: 't1', status: 'failed', total: 4, current: 1, error: 'boom' });
         fixture.detectChanges();
-        tick();
-        tick();
+        await settle();
         expect(toast.error).toHaveBeenCalledWith('boom');
         expect(closeSpy).toHaveBeenCalled();
-    }));
+    });
 
-    it('after Stop, a late "cancelled" update does NOT reconcile or auto-close', fakeAsync(() => {
+    it('after Stop, a late "cancelled" update does NOT reconcile or auto-close', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const overlay = TestBed.inject(OverlayStore);
@@ -160,9 +159,8 @@ describe('RescanModalComponent — launcher contract', () => {
         comp.cancel(); // explicit Stop arms _finalized
         taskSignal.set({ id: 't1', status: 'cancelled', total: 4, current: 2 });
         fixture.detectChanges();
-        tick();
-        tick();
+        await settle(); // give the would-be reconcile chain a chance to run
         expect(datasets.loadAll).not.toHaveBeenCalled(); // no reconcile after user stop
         expect(closeSpy).not.toHaveBeenCalled(); // launcher stays open
-    }));
+    });
 });

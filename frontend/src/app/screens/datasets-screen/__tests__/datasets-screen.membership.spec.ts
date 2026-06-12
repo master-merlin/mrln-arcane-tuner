@@ -1,6 +1,7 @@
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, flushMicrotasks } from '@angular/core/testing';
-import { ApplicationRef, signal, WritableSignal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { signal, WritableSignal } from '@angular/core';
+import { settle } from '../../../../testing/async';
 import { of } from 'rxjs';
 import { DatasetsScreen } from '../datasets-screen';
 import { DatasetStore } from '../../../state/dataset.store';
@@ -20,14 +21,13 @@ import { SearchStore } from '../../../state/search.store';
  * closes, otherwise the newly-added dataset stays hidden.
  *
  * The component class is instantiated directly (no template render) so the
- * effect / computed logic can be exercised in isolation; `ApplicationRef.tick()`
- * flushes the effect and `flushMicrotasks()` resolves the membership fetch.
+ * effect / computed logic can be exercised in isolation; `TestBed.tick()`
+ * flushes the effect and `await settle()` resolves the membership fetch.
  */
 describe('DatasetsScreen — project membership refresh', () => {
     let projectId: WritableSignal<string | null>;
     let workspace: WritableSignal<WorkspaceState | null>;
     let getProjectDatasets: Mock;
-    let appRef: ApplicationRef;
 
     function ids(comp: DatasetsScreen): string[] {
         return (comp as unknown as {
@@ -71,39 +71,38 @@ describe('DatasetsScreen — project membership refresh', () => {
                 },
             ],
         });
-        appRef = TestBed.inject(ApplicationRef);
     });
 
     // Baseline: proves the harness flushes the membership effect at all.
-    it('shows datasets that belong to the scoped project', fakeAsync(() => {
+    it('shows datasets that belong to the scoped project', async () => {
         projectId.set('p1');
         getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
         const comp = TestBed.runInInjectionContext(() => new DatasetsScreen());
-        appRef.tick();
-        flushMicrotasks();
+        TestBed.tick();
+        await settle();
         expect(ids(comp)).toEqual(['d1']);
-    }));
+    });
 
     // The bug: a dataset added to the already-scoped project from the workspace
     // pill must appear in the library after the workspace closes.
-    it('re-syncs membership when the workspace closes (newly-added dataset appears)', fakeAsync(() => {
+    it('re-syncs membership when the workspace closes (newly-added dataset appears)', async () => {
         projectId.set('p1');
         getProjectDatasets.mockReturnValue(of([])); // p1 has no datasets yet
         const comp = TestBed.runInInjectionContext(() => new DatasetsScreen());
-        appRef.tick();
-        flushMicrotasks();
+        TestBed.tick();
+        await settle();
         expect(ids(comp)).toEqual([]); // d1 not in p1 → filtered out
 
         // Pill adds d1 to p1 from inside the workspace, then the user returns.
         getProjectDatasets.mockReturnValue(of([{ id: 'd1', name: 'ds-1' }]));
         workspace.set({ datasetId: 'd1', mode: 'browse', imageIndex: 0 }); // open
-        appRef.tick();
-        flushMicrotasks();
+        TestBed.tick();
+        await settle();
         workspace.set(null); // close → must trigger a membership re-fetch
-        appRef.tick();
-        flushMicrotasks();
+        TestBed.tick();
+        await settle();
 
         expect(ids(comp)).toEqual(['d1']);
         expect(getProjectDatasets).toHaveBeenCalledWith('p1');
-    }));
+    });
 });

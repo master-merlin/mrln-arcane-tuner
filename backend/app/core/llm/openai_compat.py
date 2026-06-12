@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import time
+from collections.abc import Callable
 
 import httpx
 
@@ -71,12 +72,20 @@ def chat_vision(
     max_tokens: int = 512,
     timeout: float = 120.0,
     transport: httpx.BaseTransport | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> str:
     """POST a single text+image chat completion and return the caption.
 
     Retries 429/5xx/transport errors per RETRY_DELAYS (honouring a
-    ``Retry-After`` header); other HTTP errors fail fast.
+    ``Retry-After`` header); other HTTP errors fail fast.  *should_abort* is
+    polled before each attempt and between ≤1s backoff-sleep slices so a
+    cancelled batch task stops promptly instead of riding out the backoff.
     """
+
+    def _check_abort() -> None:
+        if should_abort and should_abort():
+            raise RuntimeError("API caption request aborted (task cancelled).")
+
     url = f"{base_url.rstrip('/')}/chat/completions"
     data_url = "data:image/jpeg;base64," + base64.b64encode(image_jpeg).decode("ascii")
     payload = {
@@ -96,6 +105,7 @@ def chat_vision(
     last_error: Exception | None = None
     with httpx.Client(timeout=timeout, transport=transport) as client:
         for attempt in range(len(RETRY_DELAYS) + 1):
+            _check_abort()
             try:
                 resp = client.post(url, json=payload, headers=_headers(api_key))
                 if resp.status_code == 429 or resp.status_code >= 500:
@@ -128,7 +138,13 @@ def chat_vision(
                 logger.warning(
                     "api_caption_retry", attempt=attempt + 1, delay=delay,
                     error=str(exc))
-                _sleep(delay)
+                # Sleep in ≤1s slices so cancellation is honoured mid-backoff.
+                remaining = delay
+                while remaining > 0:
+                    _check_abort()
+                    step = min(1.0, remaining)
+                    _sleep(step)
+                    remaining -= step
 
     raise RuntimeError(f"API caption request failed after retries: {last_error}")
 

@@ -565,13 +565,18 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         }
         if (Object.keys(updates).length === 0) return;
         this.apiCaptionService.updateProvider(this.activeProviderName, updates)
-            .subscribe(status => {
-                this.providerStatuses.update(list => {
-                    const rest = list.filter(s => s.provider !== status.provider);
-                    return [...rest, status];
-                });
-                this.keyInput.set('');
-                this.emitChanges();
+            .subscribe({
+                next: status => {
+                    this.providerStatusError.set('');
+                    this.providerStatuses.update(list => {
+                        const rest = list.filter(s => s.provider !== status.provider);
+                        return [...rest, status];
+                    });
+                    this.keyInput.set('');
+                    this.emitChanges();
+                },
+                // Keep the typed key so the user can retry without re-pasting.
+                error: () => this.providerStatusError.set('Could not save credentials.'),
             });
     }
 

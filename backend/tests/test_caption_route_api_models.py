@@ -11,7 +11,8 @@ from app.core.llm import provider_settings
 def test_batch_rejects_unconfigured_api_provider(monkeypatch):
     monkeypatch.setattr(
         provider_settings, "validate_caption_model",
-        lambda mid: (_ for _ in ()).throw(ValueError("No API key configured")))
+        lambda mid, params=None: (_ for _ in ()).throw(
+            ValueError("No API key configured")))
     req = caption_routes.BatchCaptionRequest(
         dataset_name="ds", image_rel_paths=["a.png"],
         model_id="api-openai", params={})
@@ -22,7 +23,8 @@ def test_batch_rejects_unconfigured_api_provider(monkeypatch):
 
 
 def test_batch_enqueues_api_model_on_background_lane(monkeypatch):
-    monkeypatch.setattr(provider_settings, "validate_caption_model", lambda mid: None)
+    monkeypatch.setattr(provider_settings, "validate_caption_model",
+                        lambda mid, params=None: None)
     enq = {}
 
     class FakeTask:

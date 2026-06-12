@@ -7,6 +7,8 @@ masked form.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -83,7 +85,9 @@ async def list_provider_models(provider: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:
-        models = list_models(base_url=cfg.base_url, api_key=cfg.api_key)
+        # list_models is a sync httpx call (up to 30s) — keep it off the loop.
+        models = await asyncio.to_thread(
+            lambda: list_models(base_url=cfg.base_url, api_key=cfg.api_key))
     except (httpx.HTTPError, ValueError) as e:
         raise HTTPException(
             status_code=502,

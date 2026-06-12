@@ -141,6 +141,17 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
         expect(comp.activeProviderStatus()?.key_masked).toBe('sk-…7890');
     });
 
+    it('saveProviderCredentials failure surfaces an error and keeps the typed key', () => {
+        const api = TestBed.inject(ApiCaptionService) as any;
+        api.updateProvider.mockReturnValue(throwError(() => new Error('500')));
+        const { comp } = create();
+        comp.switchMode('api');
+        comp.keyInput.set('sk-typed-key');
+        comp.saveProviderCredentials();
+        expect(comp.providerStatusError()).toContain('Could not save');
+        expect(comp.keyInput()).toBe('sk-typed-key');   // not cleared on failure
+    });
+
     it('custom provider also sends the base URL', () => {
         const api = TestBed.inject(ApiCaptionService) as any;
         api.updateProvider.mockReturnValue(of(

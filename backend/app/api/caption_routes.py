@@ -57,7 +57,7 @@ async def generate_caption_api(request: GenerateCaptionRequest):
     )
 
     try:
-        provider_settings.validate_caption_model(request.model_id)
+        provider_settings.validate_caption_model(request.model_id, request.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -153,7 +153,7 @@ async def batch_caption_api(request: BatchCaptionRequest):
     """Start a backend-owned captioning task. Always creates the task (queued if
     the GPU lane is busy) and returns its id immediately."""
     try:
-        provider_settings.validate_caption_model(request.model_id)
+        provider_settings.validate_caption_model(request.model_id, request.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -60,4 +60,5 @@ class ApiCaptionModel(CaptionModel):
             temperature=float(params.get("temperature", 0.7)),
             top_p=float(params.get("top_p", 1.0)),
             max_tokens=int(params.get("max_tokens", 512)),
+            should_abort=params.get("_should_abort"),
         )

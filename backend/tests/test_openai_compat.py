@@ -59,7 +59,27 @@ def test_chat_vision_retries_on_429_then_succeeds(monkeypatch):
 
     assert result == "ok"
     assert calls["n"] == 2
-    assert sleeps == [3.0]  # max(RETRY_DELAYS[0]=1, retry-after=3)
+    # Backoff is sliced into ≤1s chunks (cancellation checks between chunks),
+    # but the TOTAL still honours max(RETRY_DELAYS[0]=1, retry-after=3).
+    assert sum(sleeps) == 3.0
+    assert all(s <= 1.0 for s in sleeps)
+
+
+def test_chat_vision_should_abort_stops_backoff_promptly(monkeypatch):
+    """A cancelled task aborts between backoff slices instead of riding it out."""
+    sleeps = []
+    monkeypatch.setattr(openai_compat, "_sleep", sleeps.append)
+    aborted = {"flag": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        aborted["flag"] = True  # cancel as soon as the first attempt fails
+        return httpx.Response(429, headers={"retry-after": "30"})
+
+    with pytest.raises(RuntimeError, match="aborted"):
+        openai_compat.chat_vision(
+            should_abort=lambda: aborted["flag"],
+            **_vision_kwargs(httpx.MockTransport(handler)))
+    assert sleeps == []  # aborted before the first backoff slice
 
 
 def test_chat_vision_gives_up_after_retries(monkeypatch):

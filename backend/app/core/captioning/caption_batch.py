@@ -155,12 +155,15 @@ def run_caption_batch(
 
     Iterates over *image_rel_paths*, calls the caption service for each image,
     persists the result, and updates task progress.  Honours cancellation
-    before each image.  Always calls ``CaptionService.unload_models()`` in
-    the finally block to free VRAM.
+    before each image.  For local models, always calls
+    ``CaptionService.unload_models()`` in the finally block to free VRAM;
+    api-* models are stateless and must never trigger the global unload
+    (it would rip a local model out from under the GPU lane).
     """
     ok = 0
     failed = 0
     cancelled = False
+    consecutive_failures = 0
 
     if definition_id is None:
         definition_id = params.get("definition_id")
@@ -177,6 +180,12 @@ def run_caption_batch(
                 call_params = params.copy()
                 if system_prompt:
                     call_params["system_prompt"] = system_prompt
+                if model_id.startswith("api-"):
+                    # Let the HTTP client's retry/backoff loop bail out as soon
+                    # as the task is cancelled (instead of sleeping through the
+                    # full backoff schedule).
+                    call_params["_should_abort"] = (
+                        lambda: task_manager.is_cancelled(task_id))
 
                 src = (_masked_path(dataset_name, rel) if target == "masked"
                        else _full_path(dataset_name, rel))
@@ -190,6 +199,7 @@ def run_caption_batch(
                 else:
                     _write_caption(dataset_name, rel, caption, target)
                 ok += 1
+                consecutive_failures = 0
                 _emit_caption_written(
                     dataset_name=dataset_name,
                     media_file=rel,
@@ -198,12 +208,24 @@ def run_caption_batch(
                 )
             except Exception as exc:  # noqa: BLE001
                 failed += 1
+                consecutive_failures += 1
                 logger.warning(
                     "caption_batch_item_failed",
                     task_id=task_id,
                     rel_path=rel,
                     error=str(exc),
                 )
+                # API batches: a long run of consecutive failures means the
+                # provider/key/model is broken — fail fast instead of burning
+                # through the whole batch (each item retries with backoff).
+                if model_id.startswith("api-") and consecutive_failures >= 5:
+                    task_manager.update(
+                        task_id, current=i + 1, item=rel, ok=ok, failed=failed)
+                    task_manager.fail(
+                        task_id,
+                        f"Aborted after {consecutive_failures} consecutive "
+                        f"API failures (last: {exc})")
+                    return
 
             task_manager.update(task_id, current=i + 1, item=rel, ok=ok, failed=failed)
 
@@ -211,7 +233,10 @@ def run_caption_batch(
         task_manager.fail(task_id, str(exc))
         return
     finally:
-        CaptionService.unload_models()
+        # api-* plugins hold no VRAM; skipping the global unload keeps a
+        # background-lane API batch from unloading the GPU lane's model.
+        if not model_id.startswith("api-"):
+            CaptionService.unload_models()
 
     if cancelled:
         task_manager._finish(task_id, TaskStatus.CANCELLED)

@@ -87,14 +87,23 @@ def resolve_provider(provider: str) -> ProviderConfig:
     return ProviderConfig(provider=provider, base_url=base_url, api_key=raw["api_key"])
 
 
-def validate_caption_model(model_id: str) -> None:
-    """Raise ValueError when an ``api-*`` model id is unusable. No-op otherwise."""
+def validate_caption_model(model_id: str, params: dict | None = None) -> None:
+    """Raise ValueError when an ``api-*`` model id is unusable. No-op otherwise.
+
+    When *params* is given, additionally requires a non-empty provider model
+    name (``params["model"]``) so empty selections fail at enqueue time
+    instead of once per image inside the batch.
+    """
     if not model_id.startswith(API_MODEL_PREFIX):
         return
     provider = provider_from_model_id(model_id)
     if provider is None:
         raise ValueError(f"Unknown API caption model '{model_id}'")
     resolve_provider(provider)
+    if params is not None and not str(params.get("model") or "").strip():
+        raise ValueError(
+            f"No provider model selected for '{model_id}'. "
+            "Pick one in the API captioning settings (e.g. gpt-4o).")
 
 
 def lane_for_model(model_id: str) -> str:

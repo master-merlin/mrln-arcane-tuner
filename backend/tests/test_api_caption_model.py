@@ -72,3 +72,44 @@ def test_caption_service_registers_api_plugins():
     for provider in ("openai", "anthropic", "gemini", "openrouter", "custom"):
         assert f"api-{provider}" in service.plugins
         assert isinstance(service.plugins[f"api-{provider}"], ApiCaptionModel)
+
+
+def test_generate_caption_api_model_never_touches_unload(monkeypatch):
+    """API generate must bypass the shared load/unload bookkeeping (lane safety)."""
+    from app.core.captioning.caption_service import CaptionService
+
+    service = CaptionService()
+    CaptionService._active_model_key = "florence-2"  # simulate GPU lane mid-run
+    try:
+        calls = {"unload": 0}
+        monkeypatch.setattr(
+            CaptionService, "unload_models",
+            classmethod(
+                lambda cls: calls.__setitem__("unload", calls["unload"] + 1)))
+        captured = {}
+
+        def fake_generate(self, image, params):
+            captured["params"] = params
+            return "cap"
+
+        monkeypatch.setattr(
+            "app.core.captioning.models.api_model.ApiCaptionModel.generate",
+            fake_generate)
+        monkeypatch.setattr(service, "_load_image",
+                            lambda p: Image.new("RGB", (4, 4)))
+
+        out = service.generate_caption("x.png", "api-openai", {"model": "gpt-4o"})
+        assert out == "cap"
+        assert captured["params"]["image_path"] == "x.png"
+        assert calls["unload"] == 0
+        assert CaptionService._active_model_key == "florence-2"  # untouched
+    finally:
+        CaptionService._active_model_key = None  # cleanup
+
+
+def test_generate_caption_unknown_api_model_raises(monkeypatch):
+    from app.core.captioning.caption_service import CaptionService
+
+    service = CaptionService()
+    with pytest.raises(ValueError, match="not supported"):
+        service.generate_caption("x.png", "api-bogus", {"model": "gpt-4o"})

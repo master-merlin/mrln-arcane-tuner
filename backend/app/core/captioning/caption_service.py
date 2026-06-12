@@ -77,6 +77,17 @@ class CaptionService:
         """
         Generate a caption for the given image using the specified model.
         """
+        # API-provider plugins are stateless (no VRAM): bypass the shared
+        # load/unload bookkeeping entirely so a background-lane API batch can
+        # never unload a local model that the GPU lane is actively using.
+        if model_id.startswith("api-"):
+            plugin = self.plugins.get(model_id)
+            if plugin is None:
+                raise ValueError(f"Model '{model_id}' not supported.")
+            image = self._load_image(image_path)
+            params["image_path"] = image_path
+            return plugin.generate(image, params)
+
         # Parse model_id and variant
         base_model_id = model_id
         variant = None

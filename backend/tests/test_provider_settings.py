@@ -78,6 +78,12 @@ def test_validate_caption_model(fake_settings):
         provider_settings.validate_caption_model("api-gemini")  # unconfigured
     with pytest.raises(ValueError, match="Unknown"):
         provider_settings.validate_caption_model("api-bogus")
+    # With params: an empty provider-model selection fails up front …
+    with pytest.raises(ValueError, match="model"):
+        provider_settings.validate_caption_model("api-openai", params={"model": ""})
+    # … a real one passes, and params are ignored for local models.
+    provider_settings.validate_caption_model("api-openai", params={"model": "gpt-4o"})
+    provider_settings.validate_caption_model("florence-2", params={"model": ""})
 
 
 def test_lane_for_model():

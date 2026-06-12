@@ -41,9 +41,7 @@
         "build": {
           "builder": "@angular/build:application",
           "options": {
-            "polyfills": [
-              "zone.js"
-            ],
+            "polyfills": [],
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
             "assets": [

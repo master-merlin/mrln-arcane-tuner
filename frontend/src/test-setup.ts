@@ -1,10 +1,8 @@
-// zone.js Vitest patch: wraps describe/it/beforeEach in a ProxyZone so that
-// fakeAsync/tick/waitForAsync keep working under the Vitest runner. zone.js and
-// zone.js/testing are loaded ahead of this file via the build polyfills; this
-// side-effect import (added in zone.js 0.16.2) installs the Vitest test-framework
-// adapter that zone.js otherwise only ships for jasmine/mocha/jest. Without it,
-// fakeAsync specs throw "Expected to be running in 'ProxyZone'".
-import 'zone.js/plugins/vitest-patch';
+// Zoneless: no zone.js anywhere. TestBed defaults to zoneless change detection
+// when zone.js is absent, matching the app's provideZonelessChangeDetection().
+// fakeAsync/tick/flushMicrotasks are unavailable — specs use async bodies with
+// the settle() helper (src/testing/async.ts), TestBed.tick(), or Vitest fake
+// timers instead.
 import { afterEach } from 'vitest';
 
 // Restore vi.spyOn() spies after every test. Jasmine (the old Karma runner)

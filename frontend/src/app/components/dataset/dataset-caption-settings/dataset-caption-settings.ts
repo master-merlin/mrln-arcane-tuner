@@ -697,14 +697,16 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         if (tpl) {
             this.captionSystemPrompt.set(tpl.system_prompt || '');
             this.captionWildcard.set(tpl.wildcard || '');
-
-            const modelConfig = this.allModelConfigs.find(m => m.id === this.selectedCaptionModel());
-            const codeDefaults: Record<string, unknown> = {};
-            modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
-
-            this.captionModelParams.set({ ...codeDefaults, ...(tpl.config || {}) });
-            this.emitChanges();
         }
+
+        const modelConfig = this.allModelConfigs.find(m => m.id === this.selectedCaptionModel());
+        const codeDefaults: Record<string, unknown> = {};
+        modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
+
+        // No template for this model (no seeded default yet): fall back to the
+        // model's code defaults instead of keeping the previous model's params.
+        this.captionModelParams.set({ ...codeDefaults, ...(tpl?.config || {}) });
+        this.emitChanges();
     }
 
     onModelChange(modelId: string) {
@@ -781,20 +783,52 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         return prompt.replace(/\{wildcard\}/g, this.captionWildcard());
     }
 
+    /** True while the copy-on-edit POST is in flight; buffers the newest change
+     *  so rapid edits can't spawn duplicate 'Custom Settings' rows. */
+    private creatingCopy = false;
+    private pendingCopyChanges: { config?: Record<string, unknown>; system_prompt?: string; wildcard?: string } | null = null;
+
     private updateActiveTemplate(changes: { config?: Record<string, unknown>; system_prompt?: string; wildcard?: string }) {
+        if (this.creatingCopy) {
+            this.pendingCopyChanges = {
+                ...(this.pendingCopyChanges || {}),
+                ...changes,
+                config: { ...(this.pendingCopyChanges?.config || {}), ...(changes.config || {}) },
+            };
+            return;
+        }
+
         const activeId = this.activeTemplateId();
-        if (!activeId) return;
-
         const templates = this.currentTemplates();
-        let activeTpl = templates.find(t => t.id === activeId);
+        const activeTpl = templates.find(t => t.id === activeId);
 
-        if (!activeTpl) return;
+        // System defaults (readonly or is_default) are never written through,
+        // and a model without any template must not silently drop the edit:
+        // both save into the user's 'Custom Settings' copy for this model —
+        // reused when it already exists, created exactly once otherwise.
+        if (!activeTpl || activeTpl.readonly || activeTpl.is_default) {
+            const existing = templates.find(t =>
+                t.name === 'Custom Settings' && !t.readonly && !t.is_default &&
+                t.model_id === this.selectedCaptionModel());
+            if (existing) {
+                const merged = {
+                    system_prompt: changes.system_prompt ?? existing.system_prompt ?? '',
+                    wildcard: changes.wildcard ?? existing.wildcard ?? '',
+                    config: { ...(existing.config || {}), ...(changes.config || {}) },
+                };
+                this.activeTemplateId.set(existing.id);
+                this.currentTemplates.update(ts => ts.map(t => t.id === existing.id ? { ...t, ...merged } : t));
+                this.applyActiveTemplate();
+                this.settingsUpdate$.next();
+                this.saveEditableTemplate(existing.id, merged);
+                return;
+            }
 
-        if (activeTpl.readonly) {
-            const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
-            const wildcard = changes.wildcard ?? activeTpl.wildcard ?? '';
-            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+            const systemPrompt = changes.system_prompt ?? activeTpl?.system_prompt ?? this.captionSystemPrompt() ?? '';
+            const wildcard = changes.wildcard ?? activeTpl?.wildcard ?? this.captionWildcard() ?? '';
+            const config = { ...(activeTpl?.config || {}), ...(changes.config || {}) };
 
+            this.creatingCopy = true;
             this.templateService.createCaptioningTemplate({
                 model_id: this.selectedCaptionModel(),
                 name: 'Custom Settings',
@@ -802,35 +836,50 @@ export class DatasetCaptionSettingsComponent implements OnInit {
                 system_prompt: systemPrompt,
                 wildcard: wildcard,
                 config: config
-            }).subscribe(newTpl => {
-                this.currentTemplates.update(ts => [...ts, newTpl]);
-                this.activeTemplateId.set(newTpl.id);
-                this.applyActiveTemplate();
-                this.settingsUpdate$.next();
+            }).subscribe({
+                next: newTpl => {
+                    this.creatingCopy = false;
+                    this.currentTemplates.update(ts => [...ts, newTpl]);
+                    this.activeTemplateId.set(newTpl.id);
+                    this.applyActiveTemplate();
+                    this.settingsUpdate$.next();
+                    const pending = this.pendingCopyChanges;
+                    this.pendingCopyChanges = null;
+                    if (pending) this.updateActiveTemplate(pending);
+                },
+                error: () => {
+                    this.creatingCopy = false;
+                    this.pendingCopyChanges = null;
+                },
             });
-        } else {
-            const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
-            const wildcard = changes.wildcard ?? activeTpl.wildcard ?? '';
-            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
-
-            this.currentTemplates.update(ts => ts.map(t => {
-                if (t.id === activeId) {
-                    return { ...t, system_prompt: systemPrompt, wildcard: wildcard, config: config };
-                }
-                return t;
-            }));
-            this.applyActiveTemplate();
-
-            this.pendingSaves.set(activeId, { system_prompt: systemPrompt, wildcard, config });
-            
-            setTimeout(() => {
-                const pending = this.pendingSaves.get(activeId);
-                if (pending) {
-                    this.pendingSaves.delete(activeId);
-                    this.templateService.updateTemplate('captioning', activeId, pending).subscribe();
-                }
-            }, 500);
+            return;
         }
+
+        const systemPrompt = changes.system_prompt ?? activeTpl.system_prompt ?? '';
+        const wildcard = changes.wildcard ?? activeTpl.wildcard ?? '';
+        const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+
+        this.currentTemplates.update(ts => ts.map(t => {
+            if (t.id === activeId) {
+                return { ...t, system_prompt: systemPrompt, wildcard: wildcard, config: config };
+            }
+            return t;
+        }));
+        this.applyActiveTemplate();
+        this.saveEditableTemplate(activeTpl.id, { system_prompt: systemPrompt, wildcard, config });
+    }
+
+    /** Debounced write-back for an editable template (coalesces rapid edits). */
+    private saveEditableTemplate(id: string, data: { config: Record<string, unknown>; system_prompt?: string; wildcard?: string }) {
+        this.pendingSaves.set(id, data);
+
+        setTimeout(() => {
+            const pending = this.pendingSaves.get(id);
+            if (pending) {
+                this.pendingSaves.delete(id);
+                this.templateService.updateTemplate('captioning', id, pending).subscribe();
+            }
+        }, 500);
     }
 
     addTemplate() {

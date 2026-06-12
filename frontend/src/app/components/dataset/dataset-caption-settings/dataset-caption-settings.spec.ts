@@ -1,9 +1,10 @@
-import { TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import type { Mock } from 'vitest';
+import { TestBed, fakeAsync, tick, flush } from '@angular/core/testing';
+import { of, throwError, Subject } from 'rxjs';
 import { DatasetCaptionSettingsComponent } from './dataset-caption-settings';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService } from '../../../services/project.service';
-import { TemplateService } from '../../../services/template.service';
+import { TemplateService, Template } from '../../../services/template.service';
 import { ApiCaptionService } from '../../../services/api-caption.service';
 
 function makeTemplate(modelId: string, id = `tpl-${modelId}`) {
@@ -201,4 +202,147 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
         comp.fetchProviderModels();
         expect(comp.fetchModelsError()).toContain('Could not fetch');
     });
+});
+
+function tplOf(over: Partial<Template>): Template {
+    return {
+        id: 't', name: 'T', project_id: null, config: {}, created_at: 0, updated_at: 0,
+        used_count: 0, is_default: false, readonly: false, model_id: 'florence-2',
+        system_prompt: 'Describe this image in detail.', wildcard: '', ...over,
+    };
+}
+
+/**
+ * Captioning mirror of the masking copy-on-edit contract: editing a system
+ * default saves into ONE reusable "Custom Settings" copy derived from the
+ * default (config + system_prompt + wildcard), is_default rows are protected
+ * even when not readonly, and rapid edits can't stack duplicate copies.
+ */
+describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
+    let svc: {
+        listCaptioningTemplates: Mock;
+        createCaptioningTemplate: Mock;
+        updateTemplate: Mock;
+    };
+
+    function build(templates: Template[], prefs: Record<string, unknown> = {}) {
+        svc = {
+            listCaptioningTemplates: vi.fn().mockReturnValue(of(templates)),
+            createCaptioningTemplate: vi.fn().mockImplementation((data: Partial<Template>) =>
+                of(tplOf({ ...data, id: 'new-id' } as Partial<Template>))),
+            updateTemplate: vi.fn().mockImplementation((_d: string, id: string, data: Partial<Template>) =>
+                of(tplOf({ ...templates.find(t => t.id === id), ...data, id } as Partial<Template>))),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                { provide: DatasetService, useValue: { unloadModels: () => of(null) } },
+                {
+                    provide: ProjectService, useValue: {
+                        activeDatasetProject: () => 'p1',
+                        getPreferences: vi.fn().mockReturnValue(of(prefs)),
+                        updatePreferences: vi.fn().mockReturnValue(of({})),
+                    },
+                },
+                { provide: TemplateService, useValue: svc },
+                { provide: ApiCaptionService, useValue: { listProviders: () => of([]) } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
+        fixture.detectChanges();
+        return fixture.componentInstance;
+    }
+
+    it('creates ONE "Custom Settings" derived from the readonly default on first edit', fakeAsync(() => {
+        const sysDefault = tplOf({
+            id: 'cap_default_florence2', name: 'Default', is_default: true, readonly: true,
+            config: { detail_mode: 'detailed' }, system_prompt: 'Describe this image in detail.',
+        });
+        const c = build([sysDefault]);
+        expect(c.activeTemplateId()).toBe('cap_default_florence2');
+
+        c.updateParam('detail_mode', 'brief');
+        flush();
+
+        expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
+        const created = svc.createCaptioningTemplate.mock.calls[0][0];
+        expect(created.name).toBe('Custom Settings');
+        expect(created.config).toMatchObject({ detail_mode: 'brief' });
+        expect(created.system_prompt).toBe('Describe this image in detail.');
+        expect(c.activeTemplateId()).toBe('new-id');
+        expect(svc.updateTemplate).not.toHaveBeenCalledWith('captioning', 'cap_default_florence2', expect.anything());
+    }));
+
+    it('reuses an existing "Custom Settings" instead of creating a duplicate', fakeAsync(() => {
+        const sysDefault = tplOf({ id: 'def', name: 'Default', is_default: true, readonly: true });
+        const custom = tplOf({ id: 'cs1', name: 'Custom Settings', project_id: 'p1', config: { a: 1 } });
+        const c = build([sysDefault, custom], { active_caption_template: 'def' });
+
+        c.onSystemPromptChange('A new prompt');
+        tick(500);
+        flush();
+
+        expect(svc.createCaptioningTemplate).not.toHaveBeenCalled();
+        expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
+        expect(svc.updateTemplate.mock.calls[0][1]).toBe('cs1');
+        expect(svc.updateTemplate.mock.calls[0][2]).toMatchObject({ system_prompt: 'A new prompt' });
+        expect(c.activeTemplateId()).toBe('cs1');
+    }));
+
+    it('never edits an is_default template in place even when not readonly', fakeAsync(() => {
+        const sysDefault = tplOf({ id: 'def', name: 'Default', is_default: true, readonly: false });
+        const c = build([sysDefault]);
+
+        c.updateParam('temperature', 0.9);
+        tick(500);
+        flush();
+
+        expect(svc.updateTemplate).not.toHaveBeenCalledWith('captioning', 'def', expect.anything());
+        expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
+    }));
+
+    it('creates "Custom Settings" when the model has NO template (edit not dropped)', fakeAsync(() => {
+        const c = build([]);
+        expect(c.activeTemplateId()).toBeNull();
+
+        c.updateParam('temperature', 0.5);
+        flush();
+
+        expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
+        expect(svc.createCaptioningTemplate.mock.calls[0][0].config).toMatchObject({ temperature: 0.5 });
+        expect(c.activeTemplateId()).toBe('new-id');
+    }));
+
+    it('does not create a second copy while the first create is in flight', fakeAsync(() => {
+        const sysDefault = tplOf({ id: 'def', name: 'Default', is_default: true, readonly: true });
+        const c = build([sysDefault]);
+        const create$ = new Subject<Template>();
+        svc.createCaptioningTemplate.mockReturnValue(create$.asObservable());
+
+        c.updateParam('temperature', 0.5);
+        c.onSystemPromptChange('Two edits, one copy');
+
+        expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
+
+        create$.next(tplOf({ id: 'new-id', name: 'Custom Settings' }));
+        create$.complete();
+        tick(500);
+        flush();
+
+        expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
+        expect(svc.updateTemplate.mock.calls[0][1]).toBe('new-id');
+        expect(svc.updateTemplate.mock.calls[0][2]).toMatchObject({ system_prompt: 'Two edits, one copy' });
+    }));
+
+    it('still updates an editable user template directly', fakeAsync(() => {
+        const mine = tplOf({ id: 'mine', name: 'My Captions', config: { temperature: 0.2 } });
+        const c = build([mine], { active_caption_template: 'mine' });
+
+        c.updateParam('temperature', 0.7);
+        tick(500);
+        flush();
+
+        expect(svc.createCaptioningTemplate).not.toHaveBeenCalled();
+        expect(svc.updateTemplate).toHaveBeenCalledWith('captioning', 'mine',
+            expect.objectContaining({ config: expect.objectContaining({ temperature: 0.7 }) }));
+    }));
 });

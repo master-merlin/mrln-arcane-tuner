@@ -341,14 +341,14 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         const activeId = this.activeTemplateId();
         const tpl = this.currentTemplates().find(t => t.id === activeId);
 
-        if (tpl) {
-            const modelConfig = this.maskingModels.find(m => m.id === this.selectedMaskModel());
-            const codeDefaults: Record<string, unknown> = {};
-            modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
+        const modelConfig = this.maskingModels.find(m => m.id === this.selectedMaskModel());
+        const codeDefaults: Record<string, unknown> = {};
+        modelConfig?.params.forEach(p => { codeDefaults[p.key] = p.default; });
 
-            this.maskingParams.set({ ...codeDefaults, ...(tpl.config || {}) });
-            this.emitChanges();
-        }
+        // No template for this model (no seeded default yet): fall back to the
+        // model's code defaults instead of keeping the previous model's params.
+        this.maskingParams.set({ ...codeDefaults, ...(tpl?.config || {}) });
+        this.emitChanges();
     }
 
     onModelChange(modelId: string) {
@@ -382,50 +382,89 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         this.updateActiveTemplate({ config: newParams });
     }
 
+    /** True while the copy-on-edit POST is in flight; buffers the newest change
+     *  so rapid edits (slider drags) can't spawn duplicate 'Custom Settings'. */
+    private creatingCopy = false;
+    private pendingCopyChanges: { config?: Record<string, unknown> } | null = null;
+
     private updateActiveTemplate(changes: { config?: Record<string, unknown> }) {
+        if (this.creatingCopy) {
+            this.pendingCopyChanges = {
+                config: { ...(this.pendingCopyChanges?.config || {}), ...(changes.config || {}) },
+            };
+            return;
+        }
+
         const activeId = this.activeTemplateId();
-        if (!activeId) return;
-
         const templates = this.currentTemplates();
-        let activeTpl = templates.find(t => t.id === activeId);
+        const activeTpl = templates.find(t => t.id === activeId);
 
-        if (!activeTpl) return;
+        // System defaults (readonly or is_default) are never written through,
+        // and a model without any template must not silently drop the edit:
+        // both save into the user's 'Custom Settings' copy for this model —
+        // reused when it already exists, created exactly once otherwise.
+        if (!activeTpl || activeTpl.readonly || activeTpl.is_default) {
+            const existing = templates.find(t =>
+                t.name === 'Custom Settings' && !t.readonly && !t.is_default &&
+                t.model_id === this.selectedMaskModel());
+            if (existing) {
+                const merged = { ...(existing.config || {}), ...(changes.config || {}) };
+                this.activeTemplateId.set(existing.id);
+                this.currentTemplates.update(ts => ts.map(t => t.id === existing.id ? { ...t, config: merged } : t));
+                this.applyActiveTemplate();
+                this.settingsUpdate$.next();
+                this.saveEditableTemplate(existing.id, merged);
+                return;
+            }
 
-        if (activeTpl.readonly) {
-            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
-            
+            const config = { ...(activeTpl?.config || {}), ...(changes.config || {}) };
+            this.creatingCopy = true;
             this.templateService.createMaskingTemplate({
                 model_id: this.selectedMaskModel(),
                 name: 'Custom Settings',
                 project_id: this.effectiveProjectId(),
                 config: config
-            }).subscribe(newTpl => {
-                this.currentTemplates.update(ts => [...ts, newTpl]);
-                this.activeTemplateId.set(newTpl.id);
-                this.applyActiveTemplate();
-                this.settingsUpdate$.next();
+            }).subscribe({
+                next: newTpl => {
+                    this.creatingCopy = false;
+                    this.currentTemplates.update(ts => [...ts, newTpl]);
+                    this.activeTemplateId.set(newTpl.id);
+                    this.applyActiveTemplate();
+                    this.settingsUpdate$.next();
+                    const pending = this.pendingCopyChanges;
+                    this.pendingCopyChanges = null;
+                    if (pending) this.updateActiveTemplate(pending);
+                },
+                error: () => {
+                    this.creatingCopy = false;
+                    this.pendingCopyChanges = null;
+                },
             });
-        } else {
-            const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
-            
-            this.currentTemplates.update(ts => ts.map(t => {
-                if (t.id === activeId) {
-                    return { ...t, config: config };
-                }
-                return t;
-            }));
-            this.applyActiveTemplate();
-
-            this.pendingSaves.set(activeId, { config });
-            
-            setTimeout(() => {
-                const pending = this.pendingSaves.get(activeId);
-                if (pending) {
-                    this.pendingSaves.delete(activeId);
-                    this.templateService.updateTemplate('masking', activeId, pending).subscribe();
-                }
-            }, 500);
+            return;
         }
+
+        const config = { ...(activeTpl.config || {}), ...(changes.config || {}) };
+        this.currentTemplates.update(ts => ts.map(t => {
+            if (t.id === activeId) {
+                return { ...t, config: config };
+            }
+            return t;
+        }));
+        this.applyActiveTemplate();
+        this.saveEditableTemplate(activeTpl.id, config);
+    }
+
+    /** Debounced write-back for an editable template (coalesces rapid edits). */
+    private saveEditableTemplate(id: string, config: Record<string, unknown>) {
+        this.pendingSaves.set(id, { config });
+
+        setTimeout(() => {
+            const pending = this.pendingSaves.get(id);
+            if (pending) {
+                this.pendingSaves.delete(id);
+                this.templateService.updateTemplate('masking', id, pending).subscribe();
+            }
+        }, 500);
     }
 
     addTemplate() {

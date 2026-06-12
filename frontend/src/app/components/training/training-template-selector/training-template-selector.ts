@@ -399,25 +399,66 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     });
   }
 
+  /** True while the copy-on-edit POST is in flight; `_pendingCopySave` buffers
+   *  the newest form value from a debounced burst so a second debounce tick
+   *  can't spawn a duplicate "Default by User" row. Flushed on resolve. */
+  private _creatingCopy = false;
+  private _pendingCopySave: { config: TrainingConfig; defId: string } | null = null;
+
   public triggerAutoSave(newFormValue: TrainingConfig, currentDefId: string) {
     if (this.suppressAutoSave()) return;
     // An external adopt (edit-in-place / job reload) is resolving — don't let a
     // form patch save against the previously-active id and spawn a copy.
     if (this._pendingAdopt) return;
 
+    if (this._creatingCopy) {
+      this._pendingCopySave = { config: newFormValue, defId: currentDefId };
+      return;
+    }
+
     const id = this.activeTemplateId();
 
     const tpl = this.allTemplates().find(t => t.id === id);
-    
-    if (id === 'default' || (tpl && tpl.readonly)) {
+
+    // System defaults (the virtual 'default', readonly rows, and any
+    // `is_default` row) are never written through — edits land in the user's
+    // per-definition "Default by User" copy instead: reused when it already
+    // exists in this project scope, created exactly once otherwise. The copy
+    // is persisted as the active template so a reload keeps saving into it
+    // rather than landing back on Default and spawning another copy.
+    if (id === 'default' || (tpl && (tpl.readonly || tpl.is_default))) {
+      const existing = this.allTemplates().find(t =>
+        t.name === 'Default by User' && !t.readonly && !t.is_default &&
+        t.definition_id === currentDefId &&
+        (t.project_id ?? null) === (this.projectId() ?? null));
+      if (existing) {
+        this.activeTemplateId.set(existing.id);
+        this._persistActiveTemplate(existing.id);
+        this.templateService.updateTemplate('training', existing.id, { definition_id: currentDefId, config: newFormValue }).subscribe(updatedTpl => {
+            this.allTemplates.update(current => current.map(t => t.id === existing.id ? updatedTpl : t));
+        });
+        return;
+      }
+      this._creatingCopy = true;
       this.templateService.createTrainingTemplate({
           definition_id: currentDefId,
           name: 'Default by User',
           project_id: this.projectId(),
           config: newFormValue
-      }).subscribe(newTpl => {
-          this.allTemplates.update(current => [...current, newTpl]);
-          this.activeTemplateId.set(newTpl.id);
+      }).subscribe({
+          next: newTpl => {
+              this._creatingCopy = false;
+              this.allTemplates.update(current => [...current, newTpl]);
+              this.activeTemplateId.set(newTpl.id);
+              this._persistActiveTemplate(newTpl.id);
+              const pending = this._pendingCopySave;
+              this._pendingCopySave = null;
+              if (pending) this.triggerAutoSave(pending.config, pending.defId);
+          },
+          error: () => {
+              this._creatingCopy = false;
+              this._pendingCopySave = null;
+          },
       });
       return;
     }

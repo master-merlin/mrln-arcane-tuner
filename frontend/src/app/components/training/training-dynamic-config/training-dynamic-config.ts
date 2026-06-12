@@ -1084,6 +1084,16 @@ export class TrainingDynamicConfigComponent {
         });
         if (this.isPrimitiveArray(key)) {
           formArray.patchValue(defaults);
+        } else {
+          // Object arrays with a minimum row count (`datasets`, minItems: 1)
+          // are seeded back to that minimum with blank rows — mirroring
+          // buildForm()'s initial auto-add. The schema declares no default for
+          // them, so a bare clear left ZERO rows and the Datasets card
+          // collapsed to "No items added" on the next change-detection pass.
+          const minRows = propSchema.minItems ?? (key === 'datasets' ? 1 : 0);
+          while (formArray.length < minRows) {
+            this.addArrayItem(key, propSchema.items);
+          }
         }
       } else {
         const def = propSchema.default !== undefined ? propSchema.default : '';

@@ -26,6 +26,8 @@ export interface SchemaNode {
   min?: number;
   max?: number;
   step?: number;
+  /** Minimum row count for arrays (pydantic `min_length` → JSON-Schema `minItems`). */
+  minItems?: number;
 
   // UI / rendering extensions
   input_type?: string;

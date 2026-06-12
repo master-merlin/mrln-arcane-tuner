@@ -357,6 +357,17 @@ export class DynamicFormGroupComponent {
         this.availableDatasets = this._allDatasetNames;
       }
     });
+
+    // The rows render from `formArray().controls`, but template applies (the
+    // on-load auto-apply, Jobs handoffs) mutate the array from async HTTP
+    // callbacks — no event inside this OnPush view, so nothing marks it for
+    // check and stale rows linger bound to detached controls until the next
+    // click. Re-subscribes when the parent rebuilds the form (new FormGroup).
+    effect((onCleanup) => {
+      const arr = this.parentForm().get(this.fieldKey());
+      const sub = arr?.valueChanges.subscribe(() => this.cdr.markForCheck());
+      onCleanup(() => sub?.unsubscribe());
+    });
   }
 
   // Gets the exact FormArray from parent

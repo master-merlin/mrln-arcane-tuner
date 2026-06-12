@@ -45,6 +45,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v11,
         _migrate_v12,
         _migrate_v13,
+        _migrate_v14,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -861,4 +862,40 @@ def _migrate_v13(conn) -> None:
             (tid, model_id, "Describe this image in detail.",
              _json.dumps({**base, "model": default_model}), now, now),
         )
+
+
+# ── V14: RemBG masking default + readonly hardening ─────────────────────
+
+def _migrate_v14(conn) -> None:
+    """Seed the missing RemBG masking default; harden editable defaults.
+
+    v4 seeded a masking default only for sam3, so RemBG had no template at
+    all — the settings panel silently dropped edits (no active template) and
+    the copy-on-edit flow never ran. Config mirrors the frontend's RemBG code
+    defaults. Also flips ``readonly`` on any General row still marked
+    ``is_default`` but editable, so "system default" templates can never be
+    written through again.
+    """
+    import json as _json
+    import time as _time
+
+    now = _time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO masking_templates "
+        "(id, project_id, model_id, name, is_default, readonly, "
+        " config, created_at, updated_at) "
+        "VALUES ('mask_default_rembg', NULL, 'rembg', 'Default', 1, 1, ?, ?, ?)",
+        (_json.dumps({
+            "model_name": "birefnet-general",
+            "post_process_mask": True,
+            "alpha_matting": False,
+            "alpha_matting_foreground_threshold": 240,
+            "alpha_matting_background_threshold": 10,
+            "alpha_matting_erode_size": 10,
+        }), now, now),
+    )
+    conn.execute(
+        "UPDATE masking_templates SET readonly = 1 "
+        "WHERE is_default = 1 AND project_id IS NULL AND readonly = 0"
+    )
 

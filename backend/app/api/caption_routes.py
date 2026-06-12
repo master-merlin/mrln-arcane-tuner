@@ -14,6 +14,7 @@ from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.captioning.caption_batch import run_caption_batch
 from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
+from app.core.llm import provider_settings
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
 
@@ -54,6 +55,11 @@ async def generate_caption_api(request: GenerateCaptionRequest):
         image=request.image_rel_path,
         model=request.model_id,
     )
+
+    try:
+        provider_settings.validate_caption_model(request.model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     service = CaptionService.get_instance()
 
@@ -146,6 +152,11 @@ class BatchCaptionRequest(BaseModel):
 async def batch_caption_api(request: BatchCaptionRequest):
     """Start a backend-owned captioning task. Always creates the task (queued if
     the GPU lane is busy) and returns its id immediately."""
+    try:
+        provider_settings.validate_caption_model(request.model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Distinguish masked-caption runs in the Task Center — they target the
     # masked/<stem>.txt sidecar, not the plain caption, and can run alongside
     # an original-caption task for the same dataset.
@@ -167,7 +178,7 @@ async def batch_caption_api(request: BatchCaptionRequest):
             system_prompt=request.system_prompt,
             target=request.target,
         ),
-        lane="gpu",
+        lane=provider_settings.lane_for_model(request.model_id),
     )
     return {"task_id": task.id}
 

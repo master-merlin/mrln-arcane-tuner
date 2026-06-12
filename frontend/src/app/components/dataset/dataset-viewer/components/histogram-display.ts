@@ -1,4 +1,4 @@
-import { Component, input, ElementRef, ViewChild, effect, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, signal, ElementRef, ViewChild, effect, ChangeDetectionStrategy } from '@angular/core';
 import { HistogramData } from '../../../../services/dataset';
 
 @Component({
@@ -14,7 +14,7 @@ import { HistogramData } from '../../../../services/dataset';
                     <button
                         (click)="toggleChannel(ch.key)"
                         [class]="'w-6 h-6 rounded-full text-[10px] font-bold flex items-center justify-center transition-all ' +
-                            (activeChannels[ch.key] ? ch.activeClass : 'bg-surface-mid/50 text-text-disabled hover:bg-surface-mid/80')"
+                            (activeChannels()[ch.key] ? ch.activeClass : 'bg-surface-mid/50 text-text-disabled hover:bg-surface-mid/80')"
                         [attr.data-testid]="'histogram-toggle-' + ch.key">
                         {{ ch.label }}
                     </button>
@@ -40,7 +40,7 @@ export class HistogramDisplayComponent {
         { key: 'luminance' as const, label: 'L', color: 'rgba(255, 255, 255, 0.40)', strokeColor: 'rgba(255, 255, 255, 0.6)', activeClass: 'bg-white/80 text-black' },
     ];
 
-    activeChannels: Record<string, boolean> = { r: true, g: true, b: true, luminance: true };
+    activeChannels = signal<Record<string, boolean>>({ r: true, g: true, b: true, luminance: true });
 
     constructor() {
         effect(() => {
@@ -52,7 +52,7 @@ export class HistogramDisplayComponent {
     }
 
     toggleChannel(key: string): void {
-        this.activeChannels[key] = !this.activeChannels[key];
+        this.activeChannels.update(ch => ({ ...ch, [key]: !ch[key] }));
         const d = this.data();
         if (d) this.render(d);
     }
@@ -79,8 +79,9 @@ export class HistogramDisplayComponent {
 
         // Find global max for normalization (skip top 0.1% to avoid spike domination)
         let globalMax = 1;
+        const active = this.activeChannels();
         for (const ch of this.channels) {
-            if (!this.activeChannels[ch.key]) continue;
+            if (!active[ch.key]) continue;
             const arr = data[ch.key];
             if (arr) {
                 // Use 99.5th percentile instead of absolute max for better visibility
@@ -93,7 +94,7 @@ export class HistogramDisplayComponent {
         // Draw each active channel as filled area + stroke
         const drawOrder: (keyof HistogramData)[] = ['luminance', 'b', 'g', 'r'];
         for (const key of drawOrder) {
-            if (!this.activeChannels[key]) continue;
+            if (!active[key]) continue;
             const arr = data[key];
             const chDef = this.channels.find(c => c.key === key);
             if (!arr || !chDef) continue;

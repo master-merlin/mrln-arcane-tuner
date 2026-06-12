@@ -47,6 +47,13 @@ export HF_HOME="${HF_HOME:-$DATA_DIR/hf-cache}"
 # at it explicitly — avoids a "venv python not found" fallback warning.
 export MRLN_TRAINER_PYTHON="${MRLN_TRAINER_PYTHON:-$(command -v python)}"
 
+# Self-update: trust the /app checkout (root-owned) and default git coords so
+# the SelfUpdateService can run git against it without "dubious ownership".
+git config --global --add safe.directory /app 2>/dev/null || true
+export MRLN_APP_DIR="${MRLN_APP_DIR:-/app}"
+export MRLN_GIT_BRANCH="${MRLN_GIT_BRANCH:-main}"
+export MRLN_GIT_REMOTE="${MRLN_GIT_REMOTE:-}"
+
 AUTH_STATE="off"; [ -n "${MRLN_AUTH_TOKEN:-}" ] && AUTH_STATE="on"
 # Whether the pod injected an HF token into the container process. If this
 # reads "off" but you set HF_TOKEN in the RunPod template, the variable isn't

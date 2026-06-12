@@ -45,12 +45,26 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MRLN_FRONTEND_DIST=/app/frontend/browser \
     PORT=8000
 
+# Self-update coordinates. /app is cloned (below) as a real git checkout so the
+# running container can pull + rebuild itself. REPO_URL is overridable at build
+# time; the lowercase canonical remote is the default.
+ARG REPO_URL=https://github.com/master-merlin/mrln-arcane-tuner.git
+ARG GIT_BRANCH=main
+ENV MRLN_GIT_REMOTE=${REPO_URL} \
+    MRLN_GIT_BRANCH=${GIT_BRANCH} \
+    MRLN_APP_DIR=/app
+
 # apt-get upgrade patches base-OS CVEs (e.g. gnupg2 CVE-2025-68973) flagged by
 # Docker Scout that ship in the CUDA base image.
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         python3.12 python3.12-venv python3-pip git ca-certificates curl \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 24 LTS — enables runtime frontend rebuilds during self-update.
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend
@@ -87,10 +101,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Backend source.
-COPY backend/ /app/backend/
+# /app is a real git checkout so the app can self-update at runtime. Private
+# repo → pass the PAT as a build secret (id=git_token); falls back to an
+# unauthenticated clone for public repos. The remote is reset to the clean
+# REPO_URL afterward so no token is baked into the image's git config.
+RUN --mount=type=secret,id=git_token \
+    sh -c 'if [ -f /run/secrets/git_token ]; then \
+              AUTH="https://$(cat /run/secrets/git_token)@$(echo "$REPO_URL" | sed -E "s#https?://##")"; \
+            else AUTH="$REPO_URL"; fi; \
+            git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
+            cd /app && git remote set-url origin "$REPO_URL"'
+WORKDIR /app/backend
+RUN python -m pip install --break-system-packages -r requirements.txt
 
-# Built SPA from stage 1.
+# Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
 
 # --- Ollama (local LLM sidecar for caption refinement) ---

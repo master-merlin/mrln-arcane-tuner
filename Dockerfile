@@ -119,8 +119,13 @@ COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
 
 # --- Ollama (local LLM sidecar for caption refinement) ---
 # Installed best-effort; the entrypoint only launches it if the binary is present,
-# so an install hiccup never blocks the app. Verify in a real image build.
-RUN curl -fsSL https://ollama.com/install.sh | sh || echo "WARN: ollama install failed; sidecar will be skipped at runtime"
+# so an install hiccup never blocks the app. zstd is REQUIRED: Ollama's installer
+# now ships zstd-compressed tarballs and aborts extraction with "requires zstd"
+# (which the best-effort `|| echo` then silently swallows, shipping no binary).
+RUN apt-get update && apt-get install -y --no-install-recommends zstd \
+    && rm -rf /var/lib/apt/lists/* \
+    && ( curl -fsSL https://ollama.com/install.sh | sh \
+         || echo "WARN: ollama install failed; sidecar will be skipped at runtime" )
 
 # Entrypoint.
 COPY entrypoint.sh /entrypoint.sh

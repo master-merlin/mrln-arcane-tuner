@@ -140,9 +140,11 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                                  columns 2-3 of the row for Original Weight / Mask Opacity).
                                  Rendered once, at the first inline-group prop encountered. -->
                             @if (nestedProp.schema.inline_group && isFirstInlineGroupProp(nestedProp.key)) {
-                              <div class="flex items-start gap-6" data-testid="config-inline-groups-cell">
+                              <!-- pr-9 = the caption-prefix wand (28px) + its gap (8px), so the
+                                   right-aligned masking group ends flush with the INPUT above it. -->
+                              <div class="flex flex-wrap items-start justify-between gap-6 pr-9" data-testid="config-inline-groups-cell">
                                 @for (group of inlineGroups(); track group) {
-                                  <div class="flex flex-col gap-1.5 flex-1 min-w-0">
+                                  <div class="flex flex-col gap-1.5 shrink-0">
                                     <label class="field-label">
                                       {{ inlineGroupLabel(group) }}
                                     </label>
@@ -158,7 +160,7 @@ import { SchemaNode, SchemaProp } from '../schema-node';
                                                    class="sr-only peer">
                                             <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
                                           </label>
-                                          <span class="text-[11px] text-text-muted">{{ ip.schema.title || (ip.key | titlecase) }}</span>
+                                          <span class="text-[11px] text-text-muted whitespace-nowrap">{{ ip.schema.title || (ip.key | titlecase) }}</span>
                                         </div>
                                       }
                                     </div>

@@ -135,28 +135,35 @@ import { SchemaNode, SchemaProp } from '../schema-node';
 
                           @for (nestedProp of nestedProps(); track nestedProp.key) {
 
-                            <!-- Inline group: render all grouped toggles in one cell on first encounter -->
+                            <!-- Inline groups: ALL toggle groups share ONE grid cell, side by
+                                 side (e.g. [Captions | Enable masking] in column 1, leaving
+                                 columns 2-3 of the row for Original Weight / Mask Opacity).
+                                 Rendered once, at the first inline-group prop encountered. -->
                             @if (nestedProp.schema.inline_group && isFirstInlineGroupProp(nestedProp.key)) {
-                              <div class="flex flex-col gap-1.5">
-                                <label class="field-label">
-                                  {{ inlineGroupLabel(nestedProp.schema.inline_group) }}
-                                </label>
-                                <div class="flex flex-col gap-2 mt-1">
-                                  @for (ip of getInlineGroupProps(nestedProp.schema.inline_group); track ip.key) {
-                                    <div class="flex items-center gap-3 transition-opacity duration-200"
-                                         [class.opacity-40]="isNestedFieldDisabled(ip.schema, formArray().at(dsIdx))"
-                                         [class.pointer-events-none]="isNestedFieldDisabled(ip.schema, formArray().at(dsIdx))">
-                                      <label class="relative inline-flex items-center cursor-pointer group">
-                                        <input type="checkbox" [formControlName]="ip.key"
-                                               [attr.data-testid]="'config-nested-checkbox-' + fieldKey() + '-' + ip.key"
-                                               (change)="onNestedToggleChange(dsIdx, ip.key)"
-                                               class="sr-only peer">
-                                        <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
-                                      </label>
-                                      <span class="text-[11px] text-text-muted">{{ ip.schema.title || (ip.key | titlecase) }}</span>
+                              <div class="flex items-start gap-6" data-testid="config-inline-groups-cell">
+                                @for (group of inlineGroups(); track group) {
+                                  <div class="flex flex-col gap-1.5 flex-1 min-w-0">
+                                    <label class="field-label">
+                                      {{ inlineGroupLabel(group) }}
+                                    </label>
+                                    <div class="flex flex-col gap-2 mt-1">
+                                      @for (ip of getInlineGroupProps(group); track ip.key) {
+                                        <div class="flex items-center gap-3 transition-opacity duration-200"
+                                             [class.opacity-40]="isNestedFieldDisabled(ip.schema, formArray().at(dsIdx))"
+                                             [class.pointer-events-none]="isNestedFieldDisabled(ip.schema, formArray().at(dsIdx))">
+                                          <label class="relative inline-flex items-center cursor-pointer group">
+                                            <input type="checkbox" [formControlName]="ip.key"
+                                                   [attr.data-testid]="'config-nested-checkbox-' + fieldKey() + '-' + ip.key"
+                                                   (change)="onNestedToggleChange(dsIdx, ip.key)"
+                                                   class="sr-only peer">
+                                            <div class="w-7 h-4 bg-surface-high/50 border border-surface-mid rounded-full peer peer-focus:ring-2 peer-focus:ring-brand/50 peer-checked:after:translate-x-3 after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative"></div>
+                                          </label>
+                                          <span class="text-[11px] text-text-muted">{{ ip.schema.title || (ip.key | titlecase) }}</span>
+                                        </div>
+                                      }
                                     </div>
-                                  }
-                                </div>
+                                  </div>
+                                }
                               </div>
                             }
 
@@ -404,6 +411,11 @@ export class DynamicFormGroupComponent {
    */
   private readonly nestedFieldOrder: Record<string, string[]> = {
     sample_prompts: ['prompt', 'seed', 'guidance_scale', 'width', 'height', 'num_inference_steps'],
+    // Row layout: [toggle groups] [Original Weight] [Mask Opacity] — the
+    // schema declares mask_opacity before original_weight, so swap them here.
+    datasets: ['dataset_name', 'caption_prefix', 'caption_dropout_rate', 'num_repeats',
+               'use_captions', 'use_model_aware_captions', 'masking_enabled', 'recreate_masks',
+               'original_weight', 'mask_opacity'],
   };
 
   nestedProps(): SchemaProp[] {
@@ -510,12 +522,21 @@ export class DynamicFormGroupComponent {
   }
 
   // Group helpers
+  /** True only for the FIRST inline-group prop overall — the single shared
+   *  cell that renders every toggle group is emitted at that prop. */
   isFirstInlineGroupProp(key: string): boolean {
-    const props = this.nestedProps();
-    const propSchema = props.find(p => p.key === key)?.schema;
-    if (!propSchema?.inline_group) return false;
-    const groupProps = props.filter(p => p.schema.inline_group === propSchema.inline_group);
-    return groupProps.length > 0 && groupProps[0].key === key;
+    const first = this.nestedProps().find(p => !!p.schema.inline_group);
+    return first?.key === key;
+  }
+
+  /** Distinct inline-group names, in schema order. */
+  inlineGroups(): string[] {
+    const seen: string[] = [];
+    for (const p of this.nestedProps()) {
+      const g = p.schema.inline_group;
+      if (g && !seen.includes(g)) seen.push(g);
+    }
+    return seen;
   }
 
   getInlineGroupProps(groupName: string): SchemaProp[] {

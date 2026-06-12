@@ -4,6 +4,8 @@
 
 `v0.6.0-beta` · PyTorch 2.10 · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
 
+**Author:** [master-merlin](https://github.com/master-merlin) · **Repository:** [github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)
+
 ---
 
 ## Why This Exists
@@ -443,6 +445,14 @@ Combine **Inspect** results with **Targeted Layer Training** — inspect a refer
 Detailed architecture documentation, including full API route inventory and component listing:
 
 - [**ARCHITECTURE.md**](documentation/ARCHITECTURE.md) — System architecture, API routes, frontend components, conventions
+
+---
+
+## Author
+
+Created and maintained by **[master-merlin](https://github.com/master-merlin)**.
+
+Repository: **[github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)** — issues, contributions, and discussion are welcome there.
 
 ---
 

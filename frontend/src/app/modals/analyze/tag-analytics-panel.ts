@@ -3,6 +3,7 @@ import {
     ChangeDetectionStrategy, Component, effect, inject, input, signal,
 } from '@angular/core';
 import { DatasetService, type TagAnalyticsResponse } from '../../services/dataset';
+import { ModelContextStore } from '../../state/model-context.store';
 import { CooccurrenceHeatmapComponent } from './cooccurrence-heatmap';
 
 @Component({
@@ -13,9 +14,17 @@ import { CooccurrenceHeatmapComponent } from './cooccurrence-heatmap';
     template: `
         @if (data(); as d) {
             <div class="ta-wrap">
+                <div class="ta-mode">
+                    <span class="ta-mode-pill" [class.prose]="d.style === 'prose'">
+                        {{ d.style === 'prose' ? 'Prose analysis (words + phrases)' : 'Tag analysis (comma-split)' }}
+                    </span>
+                    @if (modelContext.activeDefinition(); as def) {
+                        <span class="ta-mode-def">· model-aware: {{ def.name }}</span>
+                    }
+                </div>
                 <div class="ta-grid">
                     <div class="ta-col">
-                        <h4 class="ta-h">Top tags</h4>
+                        <h4 class="ta-h">{{ d.style === 'prose' ? 'Top terms' : 'Top tags' }}</h4>
                         <div class="ta-scroll">
                             @for (t of d.top_tags.slice(0, 50); track t.tag) {
                                 <div class="ta-row" [title]="t.tag">
@@ -26,7 +35,7 @@ import { CooccurrenceHeatmapComponent } from './cooccurrence-heatmap';
                         </div>
                     </div>
                     <div class="ta-col">
-                        <h4 class="ta-h">Orphan tags ({{ d.orphan_tags.length }})</h4>
+                        <h4 class="ta-h">{{ d.style === 'prose' ? 'Unique terms' : 'Orphan tags' }} ({{ d.orphan_tags.length }})</h4>
                         <div class="ta-scroll">
                             <div class="ta-chips">
                                 @for (o of d.orphan_tags.slice(0, 80); track o) { <span class="ta-chip" [title]="o">{{ o }}</span> }
@@ -51,6 +60,10 @@ import { CooccurrenceHeatmapComponent } from './cooccurrence-heatmap';
     `,
     styles: [`
         .ta-wrap { display: flex; flex-direction: column; gap: 14px; }
+        .ta-mode { display: flex; align-items: center; gap: 8px; font-size: 10.5px; }
+        .ta-mode-pill { padding: 1px 8px; border-radius: 999px; background: var(--color-surface-high); color: var(--color-text-secondary); font-weight: 600; }
+        .ta-mode-pill.prose { background: color-mix(in oklab, var(--color-brand) 18%, var(--color-surface-high)); color: var(--color-brand); }
+        .ta-mode-def { color: var(--color-text-muted); }
         .ta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         .ta-col { display: flex; flex-direction: column; min-width: 0; }
         .ta-h { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-subtle); margin-bottom: 6px; }
@@ -69,6 +82,7 @@ import { CooccurrenceHeatmapComponent } from './cooccurrence-heatmap';
 export class TagAnalyticsPanelComponent {
     datasetName = input<string | null>(null);
     private api = inject(DatasetService);
+    protected modelContext = inject(ModelContextStore);
 
     protected data = signal<TagAnalyticsResponse | null>(null);
     protected loading = signal(false);
@@ -76,10 +90,13 @@ export class TagAnalyticsPanelComponent {
     constructor() {
         effect(() => {
             const name = this.datasetName();
+            // Re-analyze the per-definition variant captions when model-aware is
+            // on; null (off) → general captions. Reacts to the toggle/definition.
+            const defId = this.modelContext.activeDefinitionId();
             this.data.set(null);
             if (!name) return;
             this.loading.set(true);
-            this.api.getTagAnalytics(name).subscribe({
+            this.api.getTagAnalytics(name, 30, defId).subscribe({
                 next: r => { this.data.set(r); this.loading.set(false); },
                 error: () => this.loading.set(false),
             });

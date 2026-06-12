@@ -126,14 +126,10 @@ async def tag_analytics(
             from pathlib import Path
 
             from app.core.captioning import caption_variants
+            from app.core.dataset.tag_analytics import detect_style
             from app.core.llm import caption_refine
             from app.engine.core.caption_target import resolve_caption_target
 
-            try:
-                target = resolve_caption_target(definition_id)
-                style = "tags" if caption_refine.caption_style_for(target) == "tags" else "prose"
-            except Exception:
-                style = None
             items = [
                 (
                     p.get("media_file", ""),
@@ -143,6 +139,16 @@ async def tag_analytics(
                 )
                 for p in pairs
             ]
+            try:
+                target = resolve_caption_target(definition_id)
+                style = "tags" if caption_refine.caption_style_for(target) == "tags" else "prose"
+            except Exception:
+                style = None
+            # Honor the model's style, but never tag-split captions that are
+            # actually prose (that's the "one giant tag" uselessness) — fall back
+            # to prose so the analysis stays meaningful.
+            if style == "tags" and detect_style(items) == "prose":
+                style = "prose"
         else:
             items = [(p.get("media_file", ""), p.get("caption_content", "") or "") for p in pairs]
         return compute_tag_analytics(items, top_n=top_n, style=style)

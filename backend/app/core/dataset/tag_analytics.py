@@ -83,7 +83,7 @@ def _prose_terms(caption: str) -> list[str]:
     return terms
 
 
-def _detect_style(items: list[tuple[str, str]]) -> str:
+def detect_style(items: list[tuple[str, str]]) -> str:
     """Auto-detect 'tags' vs 'prose' from comma density.
 
     A caption is tag-like when it has a comma and short comma-segments
@@ -121,7 +121,7 @@ def compute_tag_analytics(
     """
     if rules is None:
         rules = DEFAULT_CONTRADICTION_RULES
-    resolved_style = style if style in ("tags", "prose") else _detect_style(items)
+    resolved_style = style if style in ("tags", "prose") else detect_style(items)
 
     freq: Counter[str] = Counter()
     per_image_tags: list[tuple[str, set[str]]] = []

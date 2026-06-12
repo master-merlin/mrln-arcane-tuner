@@ -10,6 +10,7 @@ import { filter } from 'rxjs';
 import { ContextSwitcherComponent } from '../context-switcher/context-switcher.component';
 import { IcoComponent } from '../../icons/ico.component';
 import { DownloadIndicatorComponent } from './download-indicator.component';
+import { UpdateIndicatorComponent } from './update-indicator.component';
 import { NotificationPanelComponent } from './notification-panel.component';
 import { TaskCenterComponent } from './task-center.component';
 import { ScopeStore } from '../../state/scope.store';
@@ -34,7 +35,7 @@ interface Crumb {
 @Component({
     selector: 'app-topbar',
     standalone: true,
-    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, NotificationPanelComponent, TaskCenterComponent],
+    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, UpdateIndicatorComponent, NotificationPanelComponent, TaskCenterComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './topbar.component.html',
 })

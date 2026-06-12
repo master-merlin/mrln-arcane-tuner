@@ -12,7 +12,7 @@ import { Injectable, computed, signal } from '@angular/core';
  * Each panel picks a unique id and drives its visibility through
  * `isOpen(id)` / `toggle(id)` instead of a local `open` signal.
  */
-export type TopbarPanelId = 'downloads' | 'notifications' | 'tasks';
+export type TopbarPanelId = 'downloads' | 'notifications' | 'tasks' | 'updates';
 
 @Injectable({ providedIn: 'root' })
 export class TopbarPanelStore {

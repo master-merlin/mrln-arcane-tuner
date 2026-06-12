@@ -3,13 +3,30 @@
         <div class="eyebrow">SYSTEM</div>
         <h1 class="page-title">Server Control</h1>
         <p class="page-sub">Manage the backend instance, settings &amp; logs.</p>
+        @if (update.status()?.is_repo) {
+            <p class="page-sub server-version">Running {{ versionLabel() }}</p>
+        }
     </div>
     <div class="page-head-actions">
+        @if (update.available()) {
+            <button type="button" class="btn" (click)="onCheckUpdates()" [disabled]="update.isBusy()">
+                <app-ico name="RefreshCw" [size]="14" /> Check for updates
+            </button>
+            <button type="button" class="btn" (click)="onUpdateAndRestart()" [disabled]="update.isBusy()">
+                <app-ico name="Download" [size]="14" /> Update &amp; restart
+            </button>
+        }
         <button type="button" class="btn" (click)="system.requestRestart()">
             <app-ico name="RotateCw" [size]="14" /> Restart server
         </button>
     </div>
 </div>
+
+@if (updateBanner()) {
+    <div class="server-update-banner" [class.is-error]="update.state() === 'error'">
+        <app-ico name="Info" [size]="14" /> {{ updateBanner() }}
+    </div>
+}
 
 <!-- Health KPI rail — fed by GET /system/health + the live WS connection -->
 <div class="server-kpi-rail">

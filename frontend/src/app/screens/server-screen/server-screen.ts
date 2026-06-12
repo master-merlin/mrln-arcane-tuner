@@ -15,6 +15,8 @@ import { IcoComponent } from '../../icons/ico.component';
 import { SystemControlService } from '../../services/system-control.service';
 import { SystemService, HealthSnapshot } from '../../services/system.service';
 import { WebSocketService } from '../../services/websocket.service';
+import { SystemUpdateService } from '../../services/system-update.service';
+import { ToastService } from '../../services/toast';
 
 /**
  * Server screen — Hi-Fi layout: page-head (with Restart action) + health KPI
@@ -49,6 +51,42 @@ export class ServerScreen {
     protected system = inject(SystemControlService);
     private systemSvc = inject(SystemService);
     private ws = inject(WebSocketService);
+    protected update = inject(SystemUpdateService);
+    private toast = inject(ToastService);
+
+    protected updateBanner = computed(() => {
+        const s = this.update.status();
+        if (!s) return null;
+        switch (s.state) {
+            case 'pulling': return 'Pulling latest code…';
+            case 'building': return 'Building frontend…';
+            case 'pending_restart': return `Update pending — ${s.active} task(s) draining…`;
+            case 'restarting': return 'Restarting…';
+            case 'error': return `Update failed: ${s.error ?? 'see server log'}`;
+            default: return null;
+        }
+    });
+
+    protected versionLabel = computed(() => {
+        const s = this.update.status();
+        if (!s?.is_repo || !s.branch) return '—';
+        return `${s.branch} @ ${s.commit ?? '???'}${s.dirty ? ' (dirty)' : ''}`;
+    });
+
+    protected onCheckUpdates(): void {
+        this.update.check().subscribe({
+            next: r => this.toast.info(
+                r.behind > 0 ? `${r.behind} commit(s) behind origin.` : 'Already up to date.'),
+            error: () => this.toast.error('Update check failed.'),
+        });
+    }
+
+    protected onUpdateAndRestart(): void {
+        this.update.apply().subscribe({
+            next: () => this.toast.info('Update started — the server will restart when idle.'),
+            error: () => this.toast.error('Could not start update.'),
+        });
+    }
 
     private health = signal<HealthSnapshot | null>(null);
     // Epoch ms at which `health` was fetched, so the displayed uptime can

@@ -31,3 +31,13 @@
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+.server-version { opacity: 0.75; font-variant-numeric: tabular-nums; }
+
+.server-update-banner {
+    display: flex; align-items: center; gap: 8px;
+    margin: 0 0 16px; padding: 10px 14px; border-radius: 8px;
+    background: var(--surface-2, #1b1f2a); border: 1px solid var(--border, #2a2f3a);
+    font-size: 13px;
+}
+.server-update-banner.is-error { border-color: var(--danger, #e5484d); color: var(--danger, #e5484d); }

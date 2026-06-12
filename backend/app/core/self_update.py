@@ -38,6 +38,7 @@ class UpdateState(str, Enum):
 # heavy singleton at module import time.
 def _list_tasks():
     from app.core.tasks.task_manager import task_manager
+
     return task_manager.list()
 
 
@@ -56,7 +57,9 @@ class SelfUpdateService:
         self._loop = loop
 
     # ── git plumbing ────────────────────────────────────────────────────
-    def _run_git(self, args: list[str], cwd: str | None = None, timeout: float | None = None):
+    def _run_git(
+        self, args: list[str], cwd: str | None = None, timeout: float | None = None
+    ):
         """Run `git <args>`; return (returncode, stdout, stderr). Never raises
         on non-zero exit. Credentials disabled so a private remote fails fast."""
         env = os.environ.copy()
@@ -90,7 +93,9 @@ class SelfUpdateService:
 
     def probe_availability(self) -> None:
         """Set `available` from an unauthenticated ls-remote. Run once at startup."""
-        rc, _out, err = self._run_git(["ls-remote", "--heads", self.remote], timeout=20.0)
+        rc, _out, err = self._run_git(
+            ["ls-remote", "--heads", self.remote], timeout=20.0
+        )
         self.available = rc == 0
         if not self.available:
             logger.info("self_update_unavailable", reason=err.strip()[:200])
@@ -99,6 +104,7 @@ class SelfUpdateService:
         """In-process task_manager tasks that a restart would kill. Training
         jobs are NOT counted — they survive the restart."""
         from app.core.tasks.task import TaskStatus
+
         return sum(1 for t in _list_tasks() if t.status == TaskStatus.RUNNING)
 
     def status_payload(self) -> dict:
@@ -134,13 +140,19 @@ class SelfUpdateService:
     # ── check ───────────────────────────────────────────────────────────
     async def check(self) -> dict:
         def _work():
-            self._run_git(["fetch", "--quiet", "origin", self.branch], timeout=_GIT_TIMEOUT_S)
-            rc, out, _ = self._run_git(["rev-list", "--count", f"HEAD..origin/{self.branch}"])
+            self._run_git(
+                ["fetch", "--quiet", "origin", self.branch], timeout=_GIT_TIMEOUT_S
+            )
+            rc, out, _ = self._run_git(
+                ["rev-list", "--count", f"HEAD..origin/{self.branch}"]
+            )
             behind = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
             rc_l, out_l, _ = self._run_git(
                 ["log", "--no-decorate", "--format=%s", f"HEAD..origin/{self.branch}"]
             )
-            commits = [ln for ln in out_l.splitlines() if ln.strip()] if rc_l == 0 else []
+            commits = (
+                [ln for ln in out_l.splitlines() if ln.strip()] if rc_l == 0 else []
+            )
             return behind, commits
 
         behind, commits = await asyncio.to_thread(_work)
@@ -161,7 +173,9 @@ class SelfUpdateService:
         try:
             self._set_state(UpdateState.PULLING)
             if not await asyncio.to_thread(self._pull):
-                self._set_state(UpdateState.ERROR, error="git pull failed — see server log.")
+                self._set_state(
+                    UpdateState.ERROR, error="git pull failed — see server log."
+                )
                 return
 
             self._set_state(UpdateState.BUILDING)
@@ -199,14 +213,20 @@ class SelfUpdateService:
         fe = os.path.join(self.app_dir, "frontend")
 
         def _run(cmd: list[str], timeout: float):
-            proc = subprocess.run(cmd, cwd=fe, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(
+                cmd, cwd=fe, capture_output=True, text=True, timeout=timeout
+            )
             if proc.returncode != 0:
                 raise RuntimeError(f"{cmd[0]} failed: {proc.stderr.strip()[:300]}")
 
         def _build():
             import shutil
+
             _run(["npm", "ci"], _BUILD_TIMEOUT_S)
-            _run(["npm", "run", "build", "--", "--configuration", "production"], _BUILD_TIMEOUT_S)
+            _run(
+                ["npm", "run", "build", "--", "--configuration", "production"],
+                _BUILD_TIMEOUT_S,
+            )
             built = os.path.join(fe, "dist", "frontend", "browser")
             served = os.path.join(fe, "browser")
             if os.path.isdir(built):
@@ -224,4 +244,13 @@ class SelfUpdateService:
 
     async def _do_restart(self) -> None:
         from app.api.system_routes import _restart_server_logic
+
         await _restart_server_logic()
+
+
+# Module singleton — configured at startup (lifespan) with the real env values.
+self_update_service = SelfUpdateService(
+    app_dir=os.environ.get("MRLN_APP_DIR", "/app"),
+    branch=os.environ.get("MRLN_GIT_BRANCH", "main"),
+    remote=os.environ.get("MRLN_GIT_REMOTE", ""),
+)

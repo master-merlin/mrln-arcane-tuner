@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from app.core.logger import SERVER_LOG_PATH, get_logger
+from app.core.self_update import self_update_service
 
 router = APIRouter(prefix="/system", tags=["System"])
 logger = get_logger(__name__)
@@ -168,3 +169,29 @@ async def get_gpu_status():
     from app.core.system_monitor import system_monitor
     snap = system_monitor.snapshot()
     return {"gpus": [g.to_dict() for g in snap.gpus]}
+
+
+# ── Self-Update ──────────────────────────────────────────────────────────
+
+
+@router.get("/update/status")
+async def get_update_status():
+    """Current git/version info + update-state for the Server screen + top-bar."""
+    return self_update_service.status_payload()
+
+
+@router.post("/update/check")
+async def check_update():
+    """Fetch and report how many commits behind origin/<branch> we are."""
+    if not self_update_service.available:
+        raise HTTPException(status_code=403, detail="Self-update is not available.")
+    return await self_update_service.check()
+
+
+@router.post("/update/apply", response_model=MessageResponse)
+async def apply_update():
+    """Pull → build → drain → restart-when-idle. Returns immediately."""
+    if not self_update_service.available:
+        raise HTTPException(status_code=403, detail="Self-update is not available.")
+    self_update_service.apply()
+    return {"message": "Update started. Watch the update.status events for progress."}

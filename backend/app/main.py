@@ -66,6 +66,11 @@ async def lifespan(app: FastAPI):
     from app.core.tasks import task_manager
     task_manager.set_loop(loop)
 
+    from app.core.self_update import self_update_service
+    self_update_service.set_loop(loop)
+    if self_update_service.remote:
+        await asyncio.to_thread(self_update_service.probe_availability)
+
     # Warm the cross-dataset cache-stats aggregation in the background so the
     # datasets KPI is ready by the time the user navigates (silent — hidden from
     # the Task Center). Non-GPU 'background' lane so it never blocks GPU work.
@@ -192,6 +197,14 @@ def _maybe_start_frontend() -> None:
 # ── Application ──────────────────────────────────────────────────────────
 
 app = FastAPI(title="MRLN Arcane Tuner API", lifespan=lifespan)
+
+
+from app.core.drain import DrainActive  # noqa: E402
+
+
+@app.exception_handler(DrainActive)
+async def _drain_active_handler(request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 # ── Exception Handlers ───────────────────────────────────────────────────

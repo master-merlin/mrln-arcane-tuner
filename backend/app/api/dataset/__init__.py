@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.dataset.crud_routes import router as crud_router
+from app.api.dataset.control_routes import router as control_router
 from app.api.dataset.adjustment_routes import router as adjustment_router
 from app.api.dataset.crop_routes import router as crop_router
 from app.api.dataset.analysis_routes import router as analysis_router
@@ -16,6 +17,7 @@ router = APIRouter()
 # ``/datasets/{name}`` catch-all could shadow it.
 router.include_router(stats_router)
 router.include_router(crud_router)
+router.include_router(control_router)
 router.include_router(adjustment_router)
 router.include_router(crop_router)
 router.include_router(analysis_router)

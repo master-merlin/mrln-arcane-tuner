@@ -1680,6 +1680,111 @@ class DatasetManager:
         logger.info("all_images_enabled", dataset=name, reset_count=len(changed))
         return {"reset_count": len(changed)}
 
+    # ── Paired edit datasets: logical role ordering ─────────────────────
+
+    def set_pair_order(
+        self, name: str, media_file: str, role_order: list[str] | None,
+    ) -> dict:
+        """Set (or clear with ``None``) one pair group's logical role order.
+
+        ``role_order`` is a permutation of physical slot names (``root`` +
+        control dirs), position 0 = training target. Validated against the
+        slots actually on disk for this stem — metadata-only, no files move.
+        """
+        from app.core.dataset.control_helpers import ROOT_SLOT, detect_control_slots
+
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+        lookup_key = media_file.replace(os.sep, "/")
+        meta = dataset.media_metadata.get(lookup_key)
+        if meta is None:
+            raise ValueError(
+                f"Media file '{media_file}' not found in dataset '{name}'."
+            )
+
+        if role_order is not None:
+            stem = os.path.splitext(os.path.basename(lookup_key))[0]
+            available = {ROOT_SLOT, *detect_control_slots(dataset.path, stem)}
+            invalid = [s for s in role_order if s not in available]
+            if invalid:
+                raise ValueError(
+                    "role_order references unavailable slot(s): "
+                    + ", ".join(invalid)
+                )
+
+        info = dict(meta.get("control_info") or {})
+        if role_order is None:
+            info.pop("role_order", None)
+        else:
+            info["role_order"] = list(role_order)
+        meta["control_info"] = info or None
+        self._persist_media_item(dataset, lookup_key)
+        return {"media_file": lookup_key, "role_order": role_order}
+
+    def apply_pair_order_all(self, name: str, role_order: list[str]) -> dict:
+        """Apply one role order to every pair group that has the named slots.
+
+        The dataset-wide BACKWARD flip: items lacking any referenced slot
+        are skipped (counted), never partially reordered. Persists in one
+        transaction and broadcasts ``dataset.invalidated``.
+        """
+        from app.core.dataset.control_helpers import (
+            ROOT_SLOT,
+            list_control_stem_maps,
+        )
+
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+        control_maps = list_control_stem_maps(dataset.path)
+
+        applied = skipped = 0
+        for lookup_key, meta in dataset.media_metadata.items():
+            stem = os.path.splitext(os.path.basename(lookup_key))[0].lower()
+            available = {ROOT_SLOT} | {
+                slot for slot, stem_map in control_maps.items() if stem in stem_map
+            }
+            if all(s in available for s in role_order):
+                info = dict(meta.get("control_info") or {})
+                info["role_order"] = list(role_order)
+                meta["control_info"] = info
+                applied += 1
+            else:
+                skipped += 1
+
+        self._persist_dataset(dataset)
+        self._emit_dataset_invalidated(name)
+        return {"applied": applied, "skipped": skipped}
+
+    def refresh_control_metadata(self, name: str, stem: str) -> str | None:
+        """Re-detect one stem's control slots and update its media entry.
+
+        Targeted post-upload refresh (no full rescan): preserves
+        ``role_order``/``target_edited_at``, persists the single row, and
+        emits the ``entity.changed`` event via ``_persist_media_item``.
+        Returns the updated lookup key, or ``None`` if no media matches.
+        """
+        from app.core.dataset.control_helpers import detect_control_slots
+
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+        for lookup_key, meta in dataset.media_metadata.items():
+            if os.path.splitext(os.path.basename(lookup_key))[0] != stem:
+                continue
+            slots = detect_control_slots(dataset.path, stem)
+            info = dict(meta.get("control_info") or {})
+            if slots:
+                info["slots"] = slots
+            else:
+                info.pop("slots", None)
+            meta["control_count"] = len(slots)
+            meta["control_info"] = info or None
+            self._persist_media_item(dataset, lookup_key)
+            return lookup_key
+        return None
+
     def delete_media_pair(self, name: str, media_file: str):
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")

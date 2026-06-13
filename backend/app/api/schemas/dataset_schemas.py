@@ -111,6 +111,54 @@ class EnableAllResponse(BaseModel):
     reset_count: int
 
 
+class PairOrderRequest(BaseModel):
+    """Set (or clear with null) one pair group's logical role order."""
+    role_order: list[str] | None = None
+
+
+class PairOrderResponse(BaseModel):
+    """New role order for a single pair group."""
+    media_file: str
+    role_order: list[str] | None = None
+
+
+class PairOrderApplyAllRequest(BaseModel):
+    """Dataset-wide role order (the BACKWARD flip)."""
+    role_order: list[str] = Field(min_length=1)
+
+
+class PairOrderApplyAllResponse(BaseModel):
+    """Counts for a dataset-wide role-order application."""
+    applied: int
+    skipped: int
+
+
+class OrphanControl(BaseModel):
+    """A control file whose stem has no target image."""
+    slot: str
+    rel_path: str
+
+
+class PairWarning(BaseModel):
+    """Per-stem pair-health warning."""
+    stem: str
+    type: Literal[
+        "dim_mismatch", "target_edited_after_control", "role_order_invalid",
+    ]
+
+
+class PairHealthResponse(BaseModel):
+    """Pair-health report for an edit dataset (all findings are warnings)."""
+    kind: str
+    target_count: int
+    paired_count: int
+    fully_paired: bool
+    active_slots: list[str] = Field(default_factory=list)
+    missing_by_slot: dict[str, list[str]] = Field(default_factory=dict)
+    orphans: list[OrphanControl] = Field(default_factory=list)
+    warnings: list[PairWarning] = Field(default_factory=list)
+
+
 class DatasetPairResponse(BaseModel):
     """One image/caption pair row. Canonical contract mirrored by the frontend
     ``DatasetPair`` interface (services/dataset.ts). Results are filtered to rows

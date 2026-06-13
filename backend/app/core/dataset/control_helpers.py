@@ -123,3 +123,110 @@ def resolve_effective_roles(
         # else: invalid reference → keep default order
 
     return available[order[0]], [available[s] for s in order[1:]]
+
+
+# Relative aspect-ratio tolerance for the dim_mismatch warning. Pairs may
+# legitimately differ in size (bucketing handles it) — only a different
+# *shape* is worth flagging, and 3% matches the scan's AR snapping.
+_AR_TOLERANCE = 0.03
+
+
+def compute_pair_health(dataset) -> dict[str, Any]:
+    """On-demand pair-health report for one dataset (disk walk + metadata).
+
+    Disk is the source of truth for which targets/controls exist; the
+    scan-maintained ``media_metadata`` supplies dimensions, ``role_order``
+    and the ``target_edited_at`` stamp for the warning checks. All
+    findings are warnings — none block training by themselves (training
+    applies its own skip/abort policy on incomplete pairs).
+    """
+    from app.core.dataset.media_types import MULTIMEDIA_EXTENSIONS
+
+    path = dataset.path
+    targets: dict[str, str] = {}
+    if os.path.isdir(path):
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if entry.name.startswith((".", "~")):
+                    continue
+                stem, ext = os.path.splitext(entry.name.lower())
+                if ext in MULTIMEDIA_EXTENSIONS:
+                    targets[stem] = entry.name
+
+    control_maps = list_control_stem_maps(path)
+    active_slots = list(control_maps.keys())
+
+    missing_by_slot: dict[str, list[str]] = {}
+    if getattr(dataset, "kind", "standard") == "edit" and not active_slots:
+        # An edit dataset with no controls at all: every target is unpaired.
+        if targets:
+            missing_by_slot[CONTROL_SLOTS[0]] = sorted(targets)
+    for slot, stem_map in control_maps.items():
+        missing = sorted(s for s in targets if s not in stem_map)
+        if missing:
+            missing_by_slot[slot] = missing
+
+    orphans = [
+        {"slot": slot, "rel_path": f"{slot}/{fname}"}
+        for slot, stem_map in control_maps.items()
+        for s, fname in sorted(stem_map.items())
+        if s not in targets
+    ]
+
+    paired_count = sum(
+        1 for s in targets
+        if active_slots and all(s in control_maps[slot] for slot in active_slots)
+    )
+    fully_paired = (
+        bool(targets) and bool(active_slots) and paired_count == len(targets)
+    )
+
+    warnings: list[dict[str, str]] = []
+    for rel_path, meta in (dataset.media_metadata or {}).items():
+        stem = os.path.splitext(os.path.basename(rel_path))[0].lower()
+        info = meta.get("control_info") or {}
+        slots = info.get("slots") or {}
+
+        role_order = info.get("role_order")
+        if role_order:
+            avail = {ROOT_SLOT, *slots.keys()}
+            if any(s not in avail for s in role_order):
+                warnings.append({"stem": stem, "type": "role_order_invalid"})
+
+        t_w, t_h = meta.get("width") or 0, meta.get("height") or 0
+        if t_w and t_h:
+            target_ar = t_w / t_h
+            for slot_info in slots.values():
+                c_w, c_h = slot_info.get("width") or 0, slot_info.get("height") or 0
+                if c_w and c_h and (
+                    abs(c_w / c_h - target_ar) / target_ar > _AR_TOLERANCE
+                ):
+                    warnings.append({"stem": stem, "type": "dim_mismatch"})
+                    break
+
+        stamp = info.get("target_edited_at")
+        if stamp and slots:
+            try:
+                newest_control = max(
+                    os.path.getmtime(os.path.join(path, s["rel_path"]))
+                    for s in slots.values() if s.get("rel_path")
+                )
+            except (OSError, ValueError):
+                newest_control = None
+            if newest_control is not None and stamp > newest_control:
+                warnings.append(
+                    {"stem": stem, "type": "target_edited_after_control"}
+                )
+
+    return {
+        "kind": getattr(dataset, "kind", "standard"),
+        "target_count": len(targets),
+        "paired_count": paired_count,
+        "fully_paired": fully_paired,
+        "active_slots": active_slots,
+        "missing_by_slot": missing_by_slot,
+        "orphans": orphans,
+        "warnings": warnings,
+    }

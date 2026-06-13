@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -176,8 +177,24 @@ async def scan_all_datasets_batch(force_full: bool = Query(False)):
 
 
 @router.post("/datasets/{name}/upload", response_model=UploadResponse)
-async def upload_file(name: str, file: UploadFile = File(...)):
-    """Upload a file into a dataset directory."""
+async def upload_file(
+    name: str,
+    file: UploadFile = File(...),
+    slot: int = Form(default=0),
+    target_stem: str | None = Form(default=None),
+):
+    """Upload a file into a dataset directory.
+
+    ``slot=0`` (default) uploads into the dataset root. ``slot=1..3``
+    uploads a control image for an existing target: the file is renamed
+    to ``{target_stem}{ext}`` inside the slot folder (``control/``,
+    ``control_2/``, ``control_3/``) so the stem-pairing convention holds.
+    """
+    from app.core.dataset.control_helpers import (
+        CONTROL_IMAGE_EXTS,
+        CONTROL_SLOTS,
+    )
+
     dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -185,9 +202,50 @@ async def upload_file(name: str, file: UploadFile = File(...)):
     # Sanitize filename to prevent directory traversal via crafted names
     safe_name = sanitize_filename(file.filename or "upload")
     dataset_root = Path(dataset.path)
-    save_path = dataset_root / safe_name
 
-    logger.info("uploading_file", dataset_name=name, filename=safe_name)
+    if slot == 0:
+        save_path = dataset_root / safe_name
+        rel_name = safe_name
+    else:
+        if not 1 <= slot <= len(CONTROL_SLOTS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"slot must be 0..{len(CONTROL_SLOTS)}",
+            )
+        if not (target_stem or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="target_stem is required for control slot uploads",
+            )
+        target_stem = sanitize_filename(target_stem)
+        stems = {
+            os.path.splitext(k)[0]
+            for k in (dataset.media_metadata or {})
+        }
+        if target_stem not in stems:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No target image with stem '{target_stem}' in '{name}'",
+            )
+        ext = Path(safe_name).suffix.lower()
+        if ext not in CONTROL_IMAGE_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Control images must be one of {list(CONTROL_IMAGE_EXTS)}",
+            )
+        slot_dir = CONTROL_SLOTS[slot - 1]
+        (dataset_root / slot_dir).mkdir(parents=True, exist_ok=True)
+        # Purge same-stem siblings with other extensions so slot detection
+        # (fixed ext priority) stays deterministic after replacement.
+        for other_ext in CONTROL_IMAGE_EXTS:
+            if other_ext != ext:
+                (dataset_root / slot_dir / f"{target_stem}{other_ext}").unlink(
+                    missing_ok=True,
+                )
+        save_path = dataset_root / slot_dir / f"{target_stem}{ext}"
+        rel_name = f"{slot_dir}/{target_stem}{ext}"
+
+    logger.info("uploading_file", dataset_name=name, filename=rel_name, slot=slot)
 
     try:
         def save_upload():
@@ -195,9 +253,15 @@ async def upload_file(name: str, file: UploadFile = File(...)):
                 shutil.copyfileobj(file.file, buffer)
 
         await asyncio.to_thread(save_upload)
-        return {"filename": safe_name, "status": "uploaded"}
+        if slot:
+            # Targeted refresh: control flags/dims on the paired media item
+            # (no full rescan), emits the media_item entity.changed event.
+            await asyncio.to_thread(
+                dataset_manager.refresh_control_metadata, name, target_stem,
+            )
+        return {"filename": rel_name, "status": "uploaded"}
     except OSError as e:
-        logger.error("upload_failed", dataset_name=name, filename=safe_name, error=str(e))
+        logger.error("upload_failed", dataset_name=name, filename=rel_name, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

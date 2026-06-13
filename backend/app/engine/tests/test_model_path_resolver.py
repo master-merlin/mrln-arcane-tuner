@@ -44,32 +44,39 @@ class TestResolve:
         assert result == "/cache/models/file.safetensors"
 
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_resolve_hf_online_always_runs_resumable_download(self, mock_download):
-        """Online mode must run the real resumable snapshot_download.
+    def test_resolve_hf_online_returns_resumable_not_cache_probe(self, mock_download):
+        """Online mode must return the resumable download, never a cache probe.
 
-        Regression: the old fast-path called ``snapshot_download(..,
-        local_files_only=True)`` first and, if it returned ANY cached
-        snapshot, skipped the real download.  A previously interrupted
-        download leaves a *partial* snapshot (missing e.g. ``tokenizer/``);
-        the fast-path returned it as if complete, so the loader then failed
-        with "Unrecognized model ... should have a ``model_type`` key".
+        Regression: a previously interrupted download leaves a *partial*
+        snapshot (missing e.g. ``tokenizer/``); returning a cache-only result
+        as if complete makes the loader fail with "Unrecognized model ...
+        should have a ``model_type`` key".
 
-        The fix: online mode always calls the resumable
-        ``snapshot_download`` (no ``local_files_only=True`` pre-check), which
-        re-verifies every file's etag and fetches only what is missing —
-        self-healing a partial cache.
+        Online resolve may *probe* the cache (``local_files_only=True``) to
+        decide whether to show the download indicator — a pure cache hit must
+        not flash the progress bar — but the path it RETURNS must always come
+        from the resumable online ``snapshot_download`` (no ``local_files_only``),
+        which re-verifies every file's etag and refetches whatever is missing,
+        self-healing a partial cache. The probe result must never be returned.
         """
-        mock_download.return_value = "/cache/repo"
+        def fake_snapshot(**kwargs):
+            # The cache-only probe and the resumable online resolve return
+            # distinct paths so we can prove which one the caller gets.
+            return "/cache/probe" if kwargs.get("local_files_only") else "/cache/online"
+
+        mock_download.side_effect = fake_snapshot
         result = ModelPathResolver.resolve("huggingface:org/repo")
-        assert result == "/cache/repo"
-        # No cache-only short-circuit when online.
-        for call in mock_download.call_args_list:
-            assert call.kwargs.get("local_files_only") is not True, (
-                "online resolve must not short-circuit on a cache-only "
-                "(possibly partial) snapshot"
-            )
-        # Exactly one (resumable) download call.
-        assert mock_download.call_count == 1
+        # Returned path is the online (self-healing) resolve, not the probe.
+        assert result == "/cache/online"
+        # A resumable, non-cache-only snapshot_download was actually run.
+        online_calls = [
+            c for c in mock_download.call_args_list
+            if c.kwargs.get("local_files_only") is not True
+        ]
+        assert online_calls, (
+            "online resolve must run a resumable (non-cache-only) "
+            "snapshot_download so partial caches self-heal"
+        )
 
     @patch("app.engine.utils.model_utils.snapshot_download")
     def test_resolve_hf_offline_cache_hit(self, mock_download):

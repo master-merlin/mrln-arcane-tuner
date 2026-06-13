@@ -1,7 +1,8 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
+import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 import { ScopeStore } from '../state/scope.store';
 import type {
   TemplatePlanEntry, TemplateEntryResolution, ImportCreated, ImportSkip,
@@ -201,7 +202,10 @@ export class ProjectService {
   planImportProject(file: File): Observable<ProjectImportPlan> {
     const form = new FormData();
     form.append('file', file);
-    return this.http.post<ProjectImportPlan>(`${this.apiUrl}/import/plan`, form);
+    // Read-only plan: safe to auto-retry across a brief backend restart.
+    return this.http.post<ProjectImportPlan>(`${this.apiUrl}/import/plan`, form, {
+      context: new HttpContext().set(RETRY_ON_TRANSIENT, true),
+    });
   }
 
   applyImportProject(file: File, resolutions: ProjectImportResolutions): Observable<ProjectImportResult> {

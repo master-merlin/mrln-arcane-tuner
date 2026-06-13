@@ -3,6 +3,7 @@ import { HttpClientTestingModule, HttpTestingController } from '@angular/common/
 import { ProjectService } from './project.service';
 import { RuntimeConfigService } from './runtime-config.service';
 import { ScopeStore } from '../state/scope.store';
+import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 
 describe('ProjectService export/import', () => {
     let svc: ProjectService;
@@ -37,6 +38,7 @@ describe('ProjectService export/import', () => {
         svc.planImportProject(file).subscribe();
         const req = http.expectOne('http://test/api/projects/import/plan');
         expect((req.request.body as FormData).get('file')).toBe(file);
+        expect(req.request.context.get(RETRY_ON_TRANSIENT)).toBe(true);
         req.flush({});
     });
 

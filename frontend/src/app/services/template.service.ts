@@ -1,7 +1,8 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpContext, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
+import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 import type { TrainingConfig } from './job';
 
 export type TemplateDomain = 'captioning' | 'masking' | 'training';
@@ -173,7 +174,10 @@ export class TemplateService {
     const form = new FormData();
     form.append('file', file);
     if (projectId) form.append('project_id', projectId);
-    return this.http.post<TemplateImportPlan>(`${this.apiUrl}/import/plan`, form);
+    // Read-only plan: safe to auto-retry across a brief backend restart.
+    return this.http.post<TemplateImportPlan>(`${this.apiUrl}/import/plan`, form, {
+      context: new HttpContext().set(RETRY_ON_TRANSIENT, true),
+    });
   }
 
   applyImportTemplate(

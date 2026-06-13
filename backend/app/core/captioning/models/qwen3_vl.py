@@ -19,6 +19,10 @@ class Qwen3VLModel(CaptionModel):
     in-memory before inference to stay within the model's optimal range.
     """
 
+    # Qwen3-VL's processor takes a list of images natively → multi-image
+    # (control + target) edit-instruction captioning is supported.
+    supports_multi_image = True
+
     VARIANTS = {
         "4B-Instruct": "Qwen/Qwen3-VL-4B-Instruct",
         "4B-Thinking": "Qwen/Qwen3-VL-4B-Thinking",
@@ -134,6 +138,16 @@ class Qwen3VLModel(CaptionModel):
         max_long_side = int(params.get("max_long_side", DEFAULT_MAX_LONG_SIDE))
         image = self._resize_for_inference(image, max_long_side)
 
+        # Extra (control) images for two-image edit-instruction captioning.
+        # Order in the prompt: control(s) first, target last.
+        from app.core.captioning.models.base import MULTI_IMAGE_INSTRUCTION
+
+        extra_images = [
+            self._resize_for_inference(img, max_long_side)
+            for img in (params.get("extra_images") or [])
+        ]
+        all_images = [*extra_images, image]
+
         # Build prompts — system_prompt goes to the system role
         system_prompt = self.resolve_prompt(params)
 
@@ -148,21 +162,26 @@ class Qwen3VLModel(CaptionModel):
         else:
             user_prompt = params.get("user_prompt") or "Describe this image in detail."
 
-        # Build messages in Qwen VL chat format
+        # Two-image mode: default to the edit-instruction prompt unless the
+        # user supplied an explicit one.
+        if extra_images and not params.get("user_prompt") and not params.get("system_prompt"):
+            user_prompt = MULTI_IMAGE_INSTRUCTION
+
+        # Build messages in Qwen VL chat format (one image block per image)
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": user_prompt}
-                ]
-            }
+                    *({"type": "image", "image": img} for img in all_images),
+                    {"type": "text", "text": user_prompt},
+                ],
+            },
         ]
 
         # Apply chat template and process inputs
         text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.processor(text=[text], images=[image], padding=True, return_tensors="pt")
+        inputs = self.processor(text=[text], images=all_images, padding=True, return_tensors="pt")
 
         # Move to device
         device = next(self.model.parameters()).device

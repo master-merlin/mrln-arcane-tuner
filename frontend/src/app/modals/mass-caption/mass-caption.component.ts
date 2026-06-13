@@ -135,6 +135,34 @@ type Tab = 'generate' | 'refine';
                         <app-dataset-caption-settings (settingsChanged)="onSettingsChange($event)"/>
                     </div>
                 </section>
+
+                @if (isEditDataset()) {
+                    <section class="mc-section">
+                        <div class="mc-section-head">
+                            <span class="mc-section-bar"></span>
+                            <span class="eyebrow">EDIT INSTRUCTION CAPTIONS</span>
+                        </div>
+                        <label class="mc-toggle" [class.disabled]="!multiImageModel()">
+                            <input type="checkbox"
+                                   data-testid="include-control-toggle"
+                                   [checked]="includeControl()"
+                                   [disabled]="!multiImageModel()"
+                                   (change)="includeControl.set($any($event.target).checked)"/>
+                            <span class="mc-toggle-text">
+                                <span class="mc-choice-title">Include control image</span>
+                                <span class="mc-choice-desc">
+                                    @if (multiImageModel()) {
+                                        Show the VLM each target's control ("before") image so the
+                                        caption is an edit instruction.
+                                    } @else {
+                                        The selected model can't read multiple images — pick Qwen3-VL
+                                        or an API provider to enable this.
+                                    }
+                                </span>
+                            </span>
+                        </label>
+                    </section>
+                }
             } @else if (tab() === 'refine') {
                 <section class="mc-section">
                     <div class="mc-section-head">
@@ -297,6 +325,10 @@ type Tab = 'generate' | 'refine';
             color: var(--color-text-primary); margin-bottom: 4px;
         }
         .mc-choice-desc { font-size: 10.5px; color: var(--color-text-subtle); line-height: 1.5; }
+        .mc-toggle { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; padding: 4px 0; }
+        .mc-toggle.disabled { opacity: 0.55; cursor: not-allowed; }
+        .mc-toggle input { margin-top: 3px; }
+        .mc-toggle-text { display: flex; flex-direction: column; gap: 3px; }
 
         /* Compact variant for the secondary binary selectors (strategy / output)
            — same card language as the mask modal but title-only + tighter so the
@@ -489,10 +521,22 @@ export class MassCaptionModalComponent implements OnInit {
         }
     }
 
+    /** True when the loaded pairs include any control image — i.e. this is an
+     *  edit (paired) dataset. Derived from the already-loaded pairs so the
+     *  control-image captioning toggle needs no extra dependency or fetch. */
+    protected isEditDataset = computed<boolean>(() =>
+        this.pairs().some(p => (p.control_files?.length ?? 0) > 0),
+    );
+    /** Selected model can caption from control + target together. */
+    protected multiImageModel = signal<boolean>(false);
+    /** Feed each target's control image(s) to the VLM for edit-instruction captions. */
+    protected includeControl = signal<boolean>(false);
+
     protected onSettingsChange(state: CaptionSettingsState): void {
         this.currentSettings = state;
         this.settingsReady.set(true);
         this.apiBlocked.set(state.apiConfigured === false);
+        this.multiImageModel.set(state.supportsMultiImage ?? false);
     }
 
     protected start(): void {
@@ -531,6 +575,8 @@ export class MassCaptionModalComponent implements OnInit {
             params: this.currentSettings.params,
             system_prompt: this.currentSettings.resolvedSystemPrompt,
             target: target,
+            include_control: this.includeControl() && this.multiImageModel()
+                && this.isEditDataset(),
         }), 'Could not start captioning.');
     }
 

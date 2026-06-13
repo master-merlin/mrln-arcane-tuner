@@ -2,9 +2,23 @@ from abc import ABC, abstractmethod
 from PIL import Image
 from typing import Any
 
+# Default instruction used for two-image (edit) captioning when the user has
+# not supplied a custom prompt. The VLM is shown the control ("before") image
+# first and the target ("after") image last; the caption is an edit instruction.
+MULTI_IMAGE_INSTRUCTION = (
+    "The first image is the original and the second image is the edited "
+    "result. Write a single concise instruction (imperative, no preamble) "
+    "describing the edit applied to the original to produce the result."
+)
+
 
 class CaptionModel(ABC):
     """Abstract base class for captioning model plugins."""
+
+    # Whether this model can caption from more than one image at once (e.g.
+    # control + target for edit-instruction captions). Single-image models
+    # leave this False; the service rejects extra images for them.
+    supports_multi_image: bool = False
 
     @abstractmethod
     def load(self, variant: str = None) -> tuple[Any, Any]:

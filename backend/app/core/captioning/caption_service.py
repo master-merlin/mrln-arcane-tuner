@@ -73,10 +73,43 @@ class CaptionService:
             torch.cuda.empty_cache()
         logger.info("all_caption_models_unloaded")
 
-    def generate_caption(self, image_path: str, model_id: str, params: dict) -> str:
+    def supports_multi_image(self, model_id: str) -> bool:
+        """Whether *model_id* can caption from multiple images (edit captions)."""
+        base = "qwen3-vl" if model_id.startswith("qwen3-vl-") else model_id
+        plugin = self.plugins.get(base)
+        return bool(plugin and getattr(plugin, "supports_multi_image", False))
+
+    def _resolve_extra_images(
+        self, model_id: str, extra_image_paths: list[str] | None, params: dict,
+    ) -> None:
+        """Load any extra (control) images into ``params['extra_images']``.
+
+        Raises ``ValueError`` if extras are supplied for a model that can't
+        consume them, so a misconfigured edit-caption run fails loudly rather
+        than silently dropping the control image.
+        """
+        if not extra_image_paths:
+            return
+        if not self.supports_multi_image(model_id):
+            raise ValueError(
+                f"Model '{model_id}' does not support multi-image captioning; "
+                "remove the control image(s) or pick a multi-image model."
+            )
+        params["extra_images"] = [self._load_image(p) for p in extra_image_paths]
+
+    def generate_caption(
+        self, image_path: str, model_id: str, params: dict,
+        extra_image_paths: list[str] | None = None,
+    ) -> str:
         """
         Generate a caption for the given image using the specified model.
+
+        ``extra_image_paths`` supplies additional (e.g. control/"before")
+        images for two-image edit-instruction captioning; they are loaded into
+        ``params['extra_images']`` for multi-image-capable models.
         """
+        self._resolve_extra_images(model_id, extra_image_paths, params)
+
         # API-provider plugins are stateless (no VRAM): bypass the shared
         # load/unload bookkeeping entirely so a background-lane API batch can
         # never unload a local model that the GPU lane is actively using.

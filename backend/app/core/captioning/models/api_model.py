@@ -30,6 +30,9 @@ def _encode_jpeg(image: Image.Image, max_long_side: int) -> bytes:
 class ApiCaptionModel(CaptionModel):
     """Caption via an external OpenAI-compatible chat-completions API."""
 
+    # OpenAI-compatible chat APIs accept multiple image parts natively.
+    supports_multi_image = True
+
     def __init__(self, service, provider: str):
         self.provider = provider
 
@@ -50,13 +53,23 @@ class ApiCaptionModel(CaptionModel):
             raise ValueError(
                 f"No provider model selected for '{self.model_id}'. "
                 "Pick one in the API captioning settings (e.g. gpt-4o).")
-        image_jpeg = _encode_jpeg(image, int(params.get("max_long_side", 1024)))
+        max_side = int(params.get("max_long_side", 1024))
+        image_jpeg = _encode_jpeg(image, max_side)
+        # Control ("before") images for two-image edit captioning, encoded in
+        # the same order the caller supplied (control first, target last).
+        extra = params.get("extra_images") or []
+        extra_jpeg = [_encode_jpeg(img, max_side) for img in extra]
+        prompt = self.resolve_prompt(params)
+        if extra and not params.get("system_prompt"):
+            from app.core.captioning.models.base import MULTI_IMAGE_INSTRUCTION
+            prompt = MULTI_IMAGE_INSTRUCTION
         return chat_vision(
             base_url=cfg.base_url,
             api_key=cfg.api_key,
             model=model,
-            prompt=self.resolve_prompt(params),
+            prompt=prompt,
             image_jpeg=image_jpeg,
+            extra_images_jpeg=extra_jpeg,
             temperature=float(params.get("temperature", 0.7)),
             top_p=float(params.get("top_p", 1.0)),
             max_tokens=int(params.get("max_tokens", 512)),

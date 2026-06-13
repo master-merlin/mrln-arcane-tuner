@@ -36,6 +36,9 @@ export interface CaptionModelConfig {
     name: string;
     description: string;
     params: CaptionParam[];
+    /** Can caption from control + target together (edit-instruction captions).
+     *  The UI greys out "include control images" for models without it. */
+    supportsMultiImage?: boolean;
 }
 
 /** Shared tunables for every API provider (model name is set per template). */
@@ -63,6 +66,9 @@ export interface CaptionSettingsState {
     /** API mode only: whether the selected provider has usable credentials.
      *  Undefined in local mode. Hosts should disable generation when false. */
     apiConfigured?: boolean;
+    /** Whether the selected model can caption from control + target together
+     *  (edit-instruction captions). Hosts gate the "include control" toggle. */
+    supportsMultiImage?: boolean;
 }
 
 @Component({
@@ -416,6 +422,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             id: 'qwen3-vl',
             name: 'Qwen3 VL',
             description: 'Alibaba Qwen3 VL. Excellent reasoning capabilities.',
+            supportsMultiImage: true,
             params: [
                 { key: 'max_long_side', label: 'Max Image Size (longside px)', type: 'select', options: [768, 1024, 1280], default: 1280 },
                 { key: 'temperature', label: 'Temperature', type: 'number', min: 0, max: 2, step: 0.1, default: 0.7 },
@@ -473,11 +480,11 @@ export class DatasetCaptionSettingsComponent implements OnInit {
      *  caption model (id `api-<provider>`) so templates/preferences/batch
      *  reuse the local-model machinery unchanged. */
     apiProviders: CaptionModelConfig[] = [
-        { id: 'api-openai', name: 'OpenAI', description: 'OpenAI vision models (gpt-4o, gpt-4o-mini, …) via api.openai.com.', params: API_PROVIDER_PARAMS },
-        { id: 'api-anthropic', name: 'Anthropic', description: 'Claude vision models via the OpenAI-compatible endpoint.', params: API_PROVIDER_PARAMS },
-        { id: 'api-gemini', name: 'Gemini', description: 'Google Gemini vision models via the OpenAI-compatible endpoint.', params: API_PROVIDER_PARAMS },
-        { id: 'api-openrouter', name: 'OpenRouter', description: 'Any OpenRouter-hosted vision model behind one key.', params: API_PROVIDER_PARAMS },
-        { id: 'api-custom', name: 'Local / Custom', description: 'Any OpenAI-compatible server: Ollama, LM Studio, vLLM. Set the Base URL below.', params: API_PROVIDER_PARAMS },
+        { id: 'api-openai', name: 'OpenAI', description: 'OpenAI vision models (gpt-4o, gpt-4o-mini, …) via api.openai.com.', params: API_PROVIDER_PARAMS, supportsMultiImage: true },
+        { id: 'api-anthropic', name: 'Anthropic', description: 'Claude vision models via the OpenAI-compatible endpoint.', params: API_PROVIDER_PARAMS, supportsMultiImage: true },
+        { id: 'api-gemini', name: 'Gemini', description: 'Google Gemini vision models via the OpenAI-compatible endpoint.', params: API_PROVIDER_PARAMS, supportsMultiImage: true },
+        { id: 'api-openrouter', name: 'OpenRouter', description: 'Any OpenRouter-hosted vision model behind one key.', params: API_PROVIDER_PARAMS, supportsMultiImage: true },
+        { id: 'api-custom', name: 'Local / Custom', description: 'Any OpenAI-compatible server: Ollama, LM Studio, vLLM. Set the Base URL below.', params: API_PROVIDER_PARAMS, supportsMultiImage: true },
     ];
 
     /** Local models + API providers — single lookup space for model ids. */
@@ -945,6 +952,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         const resolvedModelId = modelId === 'qwen3-vl' ? `qwen3-vl-${variant}` : modelId;
 
         const rawPrompt = this.captionSystemPrompt();
+        const modelConfig = this.allModelConfigs.find(m => m.id === modelId);
         this.settingsChanged.emit({
             modelId: modelId,
             resolvedModelId: resolvedModelId,
@@ -956,6 +964,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             apiConfigured: modelId.startsWith('api-')
                 ? (this.activeProviderStatus()?.configured ?? false)
                 : undefined,
+            supportsMultiImage: modelConfig?.supportsMultiImage ?? false,
         });
     }
 }

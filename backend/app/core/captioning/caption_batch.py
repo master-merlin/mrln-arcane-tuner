@@ -47,6 +47,22 @@ def _full_path(dataset_name: str, rel: str) -> str:
     return str(validate_path_within(root / rel, root))
 
 
+def _control_paths(dataset_name: str, rel: str) -> list[str]:
+    """Resolve a target's control ("before") image absolute paths for two-image
+    edit captioning. Returns the stem-matched control slot files in slot order
+    (control, control_2, control_3); empty when the target has no controls."""
+    from app.core.dataset.control_helpers import detect_control_slots
+    from app.core.dataset_manager import dataset_manager as dm
+
+    dataset = dm.get_dataset(dataset_name)
+    if dataset is None:
+        return []
+    root = Path(dataset.path)
+    stem = Path(rel).stem
+    slots = detect_control_slots(str(root), stem)
+    return [str(root / info["rel_path"]) for info in slots.values() if info.get("rel_path")]
+
+
 def _masked_path(dataset_name: str, rel: str) -> str:
     """Resolve the masked composite (``masked/{stem}.jpg``) used as the caption
     source for ``target="masked"`` — mirrors the single-image route."""
@@ -150,6 +166,7 @@ def run_caption_batch(
     system_prompt: str | None,
     target: str,
     definition_id: str | None = None,
+    include_control: bool = False,
 ) -> None:
     """Synchronous worker — runs on the GPU lane thread.
 
@@ -189,10 +206,12 @@ def run_caption_batch(
 
                 src = (_masked_path(dataset_name, rel) if target == "masked"
                        else _full_path(dataset_name, rel))
+                extra = _control_paths(dataset_name, rel) if include_control else None
                 caption = service.generate_caption(
                     image_path=src,
                     model_id=model_id,
                     params=call_params,
+                    extra_image_paths=extra,
                 )
                 if definition_id:
                     _write_caption(dataset_name, rel, caption, target, definition_id)

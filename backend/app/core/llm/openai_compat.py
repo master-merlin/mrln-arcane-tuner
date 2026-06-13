@@ -67,6 +67,7 @@ def chat_vision(
     model: str,
     prompt: str,
     image_jpeg: bytes,
+    extra_images_jpeg: list[bytes] | None = None,
     temperature: float = 0.7,
     top_p: float = 1.0,
     max_tokens: int = 512,
@@ -74,9 +75,12 @@ def chat_vision(
     transport: httpx.BaseTransport | None = None,
     should_abort: Callable[[], bool] | None = None,
 ) -> str:
-    """POST a single text+image chat completion and return the caption.
+    """POST a text+image(s) chat completion and return the caption.
 
-    Retries 429/5xx/transport errors per RETRY_DELAYS (honouring a
+    ``extra_images_jpeg`` adds further image parts for multi-image (edit)
+    captioning — OpenAI-compatible chat APIs accept multiple ``image_url``
+    parts natively. Ordering matches the caller (control images first, target
+    last). Retries 429/5xx/transport errors per RETRY_DELAYS (honouring a
     ``Retry-After`` header); other HTTP errors fail fast.  *should_abort* is
     polled before each attempt and between ≤1s backoff-sleep slices so a
     cancelled batch task stops promptly instead of riding out the backoff.
@@ -86,17 +90,16 @@ def chat_vision(
         if should_abort and should_abort():
             raise RuntimeError("API caption request aborted (task cancelled).")
 
+    def _data_url(jpeg: bytes) -> str:
+        return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+
     url = f"{base_url.rstrip('/')}/chat/completions"
-    data_url = "data:image/jpeg;base64," + base64.b64encode(image_jpeg).decode("ascii")
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for jpeg in [*(extra_images_jpeg or []), image_jpeg]:
+        content.append({"type": "image_url", "image_url": {"url": _data_url(jpeg)}})
     payload = {
         "model": model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        }],
+        "messages": [{"role": "user", "content": content}],
         "temperature": temperature,
         "top_p": top_p,
         "max_tokens": max_tokens,

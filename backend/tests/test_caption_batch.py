@@ -7,7 +7,7 @@ from app.core.captioning import caption_batch
 class StubService:
     unloaded = False
 
-    def generate_caption(self, image_path, model_id, params):
+    def generate_caption(self, image_path, model_id, params, extra_image_paths=None):
         return f"caption for {image_path}"
 
     @classmethod
@@ -104,7 +104,7 @@ def test_worker_api_model_skips_unload_and_injects_abort(monkeypatch):
     seen_params = []
 
     class ApiStub(StubService):
-        def generate_caption(self, image_path, model_id, params):
+        def generate_caption(self, image_path, model_id, params, extra_image_paths=None):
             seen_params.append(params)
             return "cap"
 
@@ -131,7 +131,7 @@ def test_worker_api_model_fails_fast_after_consecutive_failures(monkeypatch):
     StubService.unloaded = False
 
     class FailingStub(StubService):
-        def generate_caption(self, image_path, model_id, params):
+        def generate_caption(self, image_path, model_id, params, extra_image_paths=None):
             raise RuntimeError("401 bad key")
 
     monkeypatch.setattr(caption_batch, "_get_service", lambda: FailingStub())
@@ -161,7 +161,7 @@ def test_worker_local_model_failures_do_not_fast_fail_and_still_unload(monkeypat
     StubService.unloaded = False
 
     class FailingStub(StubService):
-        def generate_caption(self, image_path, model_id, params):
+        def generate_caption(self, image_path, model_id, params, extra_image_paths=None):
             raise RuntimeError("CUDA OOM")
 
     monkeypatch.setattr(caption_batch, "_get_service", lambda: FailingStub())

@@ -45,6 +45,9 @@ class GenerateCaptionRequest(BaseModel):
     params: dict[str, Any]
     system_prompt: str | None = None
     target: str = "original"  # "original" or "masked"
+    # Extra (e.g. control/"before") image rel-paths for two-image edit
+    # captioning. Only honoured by multi-image-capable models.
+    extra_image_paths: list[str] = []
 
 
 @router.post("/generate", response_model=GenerateCaptionResponse)
@@ -89,6 +92,21 @@ async def generate_caption_api(request: GenerateCaptionRequest):
     if not full_path.exists():
         raise HTTPException(status_code=404, detail=f"Image not found at {full_path}")
 
+    # Resolve + validate any extra (control) images against the dataset root.
+    extra_paths: list[str] = []
+    if request.extra_image_paths:
+        if not service.supports_multi_image(request.model_id):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{request.model_id}' does not support multi-image "
+                       "captioning.",
+            )
+        for rel in request.extra_image_paths:
+            p = validate_path_within(dataset_root / rel, dataset_root)
+            if not p.exists():
+                raise HTTPException(status_code=404, detail=f"Control image not found: {rel}")
+            extra_paths.append(str(p))
+
     try:
         params = request.params.copy()
         if request.system_prompt:
@@ -99,6 +117,7 @@ async def generate_caption_api(request: GenerateCaptionRequest):
             image_path=str(full_path),
             model_id=request.model_id,
             params=params,
+            extra_image_paths=extra_paths or None,
         )
 
         # When target is "masked", auto-save caption alongside masked image
@@ -165,6 +184,9 @@ class BatchCaptionRequest(BaseModel):
     params: dict[str, Any]
     system_prompt: str | None = None
     target: str = "original"
+    # Two-image edit captioning: feed each target's control image(s) to the VLM
+    # so the caption is an edit instruction. Requires a multi-image model.
+    include_control: bool = False
 
 
 @router.post("/batch", response_model=TaskEnqueuedResponse)
@@ -175,6 +197,15 @@ async def batch_caption_api(request: BatchCaptionRequest):
         provider_settings.validate_caption_model(request.model_id, request.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    if request.include_control and not CaptionService.get_instance().supports_multi_image(
+        request.model_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{request.model_id}' does not support multi-image "
+                   "captioning; disable 'include control' or pick a multi-image model.",
+        )
 
     # Distinguish masked-caption runs in the Task Center — they target the
     # masked/<stem>.txt sidecar, not the plain caption, and can run alongside
@@ -196,6 +227,7 @@ async def batch_caption_api(request: BatchCaptionRequest):
             params=request.params,
             system_prompt=request.system_prompt,
             target=request.target,
+            include_control=request.include_control,
         ),
         lane=provider_settings.lane_for_model(request.model_id),
     )

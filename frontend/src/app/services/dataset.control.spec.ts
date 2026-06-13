@@ -54,4 +54,29 @@ describe('DatasetService control/edit endpoints (PR7)', () => {
         expect(req.request.body).toEqual({ image_path: 'img.png', target: 'control_2' });
         req.flush({ status: 'saved_to_control', file: 'control_2/img.png' });
     });
+
+    it('generateCaption omits extra_image_paths when none given', () => {
+        svc.generateCaption('ds', 'img.png', 'qwen3-vl', {}).subscribe();
+        const req = http.expectOne('http://test/api/captions/generate');
+        expect('extra_image_paths' in req.request.body).toBe(false);
+        req.flush({ caption: 'x' });
+    });
+
+    it('generateCaption forwards extra_image_paths for two-image captions', () => {
+        svc.generateCaption('ds', 'img.png', 'qwen3-vl', {}, undefined, 'original',
+            ['control/img.png']).subscribe();
+        const req = http.expectOne('http://test/api/captions/generate');
+        expect(req.request.body.extra_image_paths).toEqual(['control/img.png']);
+        req.flush({ caption: 'x' });
+    });
+
+    it('batchCaption forwards include_control', () => {
+        svc.batchCaption({
+            dataset_name: 'ds', image_rel_paths: ['a.png'], model_id: 'qwen3-vl',
+            params: {}, target: 'original', include_control: true,
+        }).subscribe();
+        const req = http.expectOne('http://test/api/captions/batch');
+        expect(req.request.body.include_control).toBe(true);
+        req.flush({ task_id: 't1' });
+    });
 });

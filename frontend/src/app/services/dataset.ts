@@ -516,14 +516,15 @@ export class DatasetService {
       aspect_ratio: aspectRatio
     });
   }
-  generateCaption(datasetName: string, imagePath: string, modelId: string, params: Record<string, unknown>, systemPrompt?: string, target: string = 'original'): Observable<{ caption: string }> {
+  generateCaption(datasetName: string, imagePath: string, modelId: string, params: Record<string, unknown>, systemPrompt?: string, target: string = 'original', extraImagePaths?: string[]): Observable<{ caption: string }> {
     return this.http.post<{ caption: string }>(`${this.rtc.apiUrl}/captions/generate`, {
       dataset_name: datasetName,
       image_rel_path: imagePath,
       model_id: modelId,
       params: params,
       system_prompt: systemPrompt || params['system_prompt'] || null,
-      target
+      target,
+      ...(extraImagePaths?.length ? { extra_image_paths: extraImagePaths } : {})
     });
   }
 
@@ -570,6 +571,7 @@ export class DatasetService {
   batchCaption(body: {
     dataset_name: string; image_rel_paths: string[]; model_id: string;
     params: Record<string, unknown>; system_prompt?: string; target: string;
+    include_control?: boolean;
   }): Observable<{ task_id: string }> {
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/batch`, body);
   }

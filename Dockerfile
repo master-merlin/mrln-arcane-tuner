@@ -99,12 +99,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+# --- Ollama (local LLM sidecar for caption refinement) ---
+# Installed best-effort; the entrypoint only launches it if the binary is present,
+# so an install hiccup never blocks the app. zstd is REQUIRED: Ollama's installer
+# now ships zstd-compressed tarballs and aborts extraction with "requires zstd"
+# (which the best-effort `|| echo` then silently swallows, shipping no binary).
+# Placed BEFORE the git clone (it's independent of app code) so a CACHEBUST'd
+# re-clone never re-downloads Ollama's large tarball.
+RUN apt-get update && apt-get install -y --no-install-recommends zstd \
+    && rm -rf /var/lib/apt/lists/* \
+    && ( curl -fsSL https://ollama.com/install.sh | sh \
+         || echo "WARN: ollama install failed; sidecar will be skipped at runtime" )
+
 # /app is a real git checkout so the app can self-update at runtime. Private
 # repo → pass the PAT as a build secret (id=git_token); falls back to an
 # unauthenticated clone for public repos. The remote is reset to the clean
 # REPO_URL afterward so no token is baked into the image's git config.
+# CACHEBUST: this clone (and the pip install below) is the ONLY part that depends
+# on the app code. Pass --build-arg CACHEBUST=<origin-sha-or-timestamp> to force a
+# fresh clone of the latest origin/main on rebuild; the torch, Ollama, and apt
+# layers above stay cached. Default 0 reuses the cached clone.
+ARG CACHEBUST=0
 RUN --mount=type=secret,id=git_token \
-    sh -c 'if [ -f /run/secrets/git_token ]; then \
+    sh -c 'echo "cachebust=$CACHEBUST"; \
+            if [ -f /run/secrets/git_token ]; then \
               AUTH="https://$(cat /run/secrets/git_token)@$(echo "$REPO_URL" | sed -E "s#https?://##")"; \
             else AUTH="$REPO_URL"; fi; \
             git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
@@ -116,16 +134,6 @@ RUN python -m pip install --break-system-packages -r requirements.txt
 
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
-
-# --- Ollama (local LLM sidecar for caption refinement) ---
-# Installed best-effort; the entrypoint only launches it if the binary is present,
-# so an install hiccup never blocks the app. zstd is REQUIRED: Ollama's installer
-# now ships zstd-compressed tarballs and aborts extraction with "requires zstd"
-# (which the best-effort `|| echo` then silently swallows, shipping no binary).
-RUN apt-get update && apt-get install -y --no-install-recommends zstd \
-    && rm -rf /var/lib/apt/lists/* \
-    && ( curl -fsSL https://ollama.com/install.sh | sh \
-         || echo "WARN: ollama install failed; sidecar will be skipped at runtime" )
 
 # Entrypoint.
 COPY entrypoint.sh /entrypoint.sh

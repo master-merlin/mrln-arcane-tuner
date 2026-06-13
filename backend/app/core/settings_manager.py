@@ -21,8 +21,21 @@ class SettingsManager:
         # Resolve absolute paths relative to this file
         # This file is in backend/app/core/
         self.root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.storage_file = os.path.join(self.root_dir, storage_file)
-        
+
+        # An explicit MRLN_SETTINGS_PATH wins. The container entrypoint points it
+        # at the persistent data volume so UI-set settings — notably the Hugging
+        # Face token — survive a pod restart (the default location lives in the
+        # ephemeral /app checkout, which a fresh container wipes). Local dev sets
+        # no env var and keeps settings beside the backend, unchanged.
+        env_path = os.environ.get("MRLN_SETTINGS_PATH")
+        if env_path:
+            self.storage_file = env_path
+            parent = os.path.dirname(self.storage_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        else:
+            self.storage_file = os.path.join(self.root_dir, storage_file)
+
         self.settings: dict[str, Any] = {}
         self.load()
 

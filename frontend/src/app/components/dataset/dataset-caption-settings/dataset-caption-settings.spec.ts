@@ -1,5 +1,5 @@
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, tick, flush } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { of, throwError, Subject } from 'rxjs';
 import { DatasetCaptionSettingsComponent } from './dataset-caption-settings';
 import { DatasetService } from '../../../services/dataset';
@@ -252,7 +252,22 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
         return fixture.componentInstance;
     }
 
-    it('creates ONE "Custom Settings" derived from the readonly default on first edit', fakeAsync(() => {
+    // The save path is timer-only (setTimeout save debounce + the 1s preferences
+    // debounce); every observable here is a synchronous of()/Subject. Vitest fake
+    // timers replace fakeAsync's tick()/flush(): vi.runAllTimers() drains all
+    // pending timers like flush() did. 'Date' MUST be faked with the timer fns —
+    // RxJS debounceTime compares Date.now() to decide emit-vs-reschedule, so a
+    // fake clock with a real Date reschedules forever. rAF stays real so zoneless
+    // CD scheduling is not frozen; the explicit useRealTimers() is mandatory
+    // because the global vi.restoreAllMocks() does not undo fake timers.
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('creates ONE "Custom Settings" derived from the readonly default on first edit', () => {
         const sysDefault = tplOf({
             id: 'cap_default_florence2', name: 'Default', is_default: true, readonly: true,
             config: { detail_mode: 'detailed' }, system_prompt: 'Describe this image in detail.',
@@ -261,7 +276,7 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
         expect(c.activeTemplateId()).toBe('cap_default_florence2');
 
         c.updateParam('detail_mode', 'brief');
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
         const created = svc.createCaptioningTemplate.mock.calls[0][0];
@@ -270,49 +285,47 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
         expect(created.system_prompt).toBe('Describe this image in detail.');
         expect(c.activeTemplateId()).toBe('new-id');
         expect(svc.updateTemplate).not.toHaveBeenCalledWith('captioning', 'cap_default_florence2', expect.anything());
-    }));
+    });
 
-    it('reuses an existing "Custom Settings" instead of creating a duplicate', fakeAsync(() => {
+    it('reuses an existing "Custom Settings" instead of creating a duplicate', () => {
         const sysDefault = tplOf({ id: 'def', name: 'Default', is_default: true, readonly: true });
         const custom = tplOf({ id: 'cs1', name: 'Custom Settings', project_id: 'p1', config: { a: 1 } });
         const c = build([sysDefault, custom], { active_caption_template: 'def' });
 
         c.onSystemPromptChange('A new prompt');
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createCaptioningTemplate).not.toHaveBeenCalled();
         expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
         expect(svc.updateTemplate.mock.calls[0][1]).toBe('cs1');
         expect(svc.updateTemplate.mock.calls[0][2]).toMatchObject({ system_prompt: 'A new prompt' });
         expect(c.activeTemplateId()).toBe('cs1');
-    }));
+    });
 
-    it('never edits an is_default template in place even when not readonly', fakeAsync(() => {
+    it('never edits an is_default template in place even when not readonly', () => {
         const sysDefault = tplOf({ id: 'def', name: 'Default', is_default: true, readonly: false });
         const c = build([sysDefault]);
 
         c.updateParam('temperature', 0.9);
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.updateTemplate).not.toHaveBeenCalledWith('captioning', 'def', expect.anything());
         expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
-    }));
+    });
 
-    it('creates "Custom Settings" when the model has NO template (edit not dropped)', fakeAsync(() => {
+    it('creates "Custom Settings" when the model has NO template (edit not dropped)', () => {
         const c = build([]);
         expect(c.activeTemplateId()).toBeNull();
 
         c.updateParam('temperature', 0.5);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createCaptioningTemplate).toHaveBeenCalledTimes(1);
         expect(svc.createCaptioningTemplate.mock.calls[0][0].config).toMatchObject({ temperature: 0.5 });
         expect(c.activeTemplateId()).toBe('new-id');
-    }));
+    });
 
-    it('does not create a second copy while the first create is in flight', fakeAsync(() => {
+    it('does not create a second copy while the first create is in flight', () => {
         const sysDefault = tplOf({ id: 'def', name: 'Default', is_default: true, readonly: true });
         const c = build([sysDefault]);
         const create$ = new Subject<Template>();
@@ -325,24 +338,22 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
 
         create$.next(tplOf({ id: 'new-id', name: 'Custom Settings' }));
         create$.complete();
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
         expect(svc.updateTemplate.mock.calls[0][1]).toBe('new-id');
         expect(svc.updateTemplate.mock.calls[0][2]).toMatchObject({ system_prompt: 'Two edits, one copy' });
-    }));
+    });
 
-    it('still updates an editable user template directly', fakeAsync(() => {
+    it('still updates an editable user template directly', () => {
         const mine = tplOf({ id: 'mine', name: 'My Captions', config: { temperature: 0.2 } });
         const c = build([mine], { active_caption_template: 'mine' });
 
         c.updateParam('temperature', 0.7);
-        tick(500);
-        flush();
+        vi.runAllTimers();
 
         expect(svc.createCaptioningTemplate).not.toHaveBeenCalled();
         expect(svc.updateTemplate).toHaveBeenCalledWith('captioning', 'mine',
             expect.objectContaining({ config: expect.objectContaining({ temperature: 0.7 }) }));
-    }));
+    });
 });

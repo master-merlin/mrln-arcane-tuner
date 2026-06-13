@@ -1,5 +1,5 @@
 // detail-caption-sidebar.spec.ts
-import { TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
 import { DetailCaptionSidebarComponent } from './detail-caption-sidebar';
@@ -88,38 +88,49 @@ describe('DetailCaptionSidebar — token counter', () => {
         return { fixture, http, store };
     }
 
-    it('does not query token-count when model-aware is off', fakeAsync(() => {
+    // The token-count query sits behind a debounceTime(300). Vitest fake timers
+    // replace fakeAsync's tick(). 'Date' MUST be faked together with the timer
+    // fns: RxJS debounceTime compares Date.now() to decide whether to emit or
+    // reschedule, so a fake clock with a real Date reschedules forever and the
+    // request never fires. rAF stays real so change-detection scheduling is not
+    // frozen, and we must never await fixture.whenStable() while fake timers are
+    // installed (it can deadlock on a faked, never-firing notification).
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    });
+
+    it('does not query token-count when model-aware is off', () => {
         const { fixture, http } = mountCounter();
         fixture.detectChanges();
         fixture.componentInstance.captionText.set('a new caption');
         fixture.detectChanges();
-        tick(500);
+        vi.advanceTimersByTime(500);
         http.expectNone('/api/caption-context/token-count');
-    }));
+    });
 
-    it('queries token-count and exposes the result when model-aware + definition active', fakeAsync(() => {
+    it('queries token-count and exposes the result when model-aware + definition active', () => {
         const { fixture, http, store } = mountCounter();
         store.setModelAware(true);
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
         fixture.detectChanges();
         fixture.componentInstance.captionText.set('a long caption that overflows');
         fixture.detectChanges();
-        tick(400);
+        vi.advanceTimersByTime(400);
         const req = http.expectOne('/api/caption-context/token-count');
         req.flush({ tokens: 260, limit: 255, will_truncate: true, cutoff_char_index: 12 });
         const info = (fixture.componentInstance as unknown as { tokenInfo: () => { tokens: number; will_truncate: boolean } | null }).tokenInfo();
         expect(info?.tokens).toBe(260);
         expect(info?.will_truncate).toBe(true);
-    }));
+    });
 
-    it('renders the overflow backdrop split at the cutoff when truncating', fakeAsync(() => {
+    it('renders the overflow backdrop split at the cutoff when truncating', () => {
         const { fixture, http, store } = mountCounter();
         store.setModelAware(true);
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
         fixture.detectChanges();
         fixture.componentInstance.captionText.set('HEADtextOVERFLOWtext');
         fixture.detectChanges();
-        tick(400);
+        vi.advanceTimersByTime(400);
         http.expectOne('/api/caption-context/token-count').flush({ tokens: 99, limit: 10, will_truncate: true, cutoff_char_index: 8 });
         fixture.detectChanges();
         const backdrop = fixture.nativeElement.querySelector('[data-testid="caption-overflow-backdrop"]');
@@ -127,7 +138,7 @@ describe('DetailCaptionSidebar — token counter', () => {
         const spans = backdrop.querySelectorAll('span');
         expect(spans[0].textContent).toBe('HEADtext');
         expect(spans[1].textContent).toBe('OVERFLOWtext');
-    }));
+    });
 
     afterEach(() => {
         // The AI-captioning child panel (open by default) fires its own
@@ -152,6 +163,9 @@ describe('DetailCaptionSidebar — token counter', () => {
             });
         }
         http.verify();
+        // The global vi.restoreAllMocks() does NOT undo fake timers; a leaked
+        // install would hang every later spec (teardown waits on real timers).
+        vi.useRealTimers();
     });
 });
 

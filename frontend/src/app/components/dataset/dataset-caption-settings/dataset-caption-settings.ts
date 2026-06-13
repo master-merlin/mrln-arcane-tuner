@@ -623,7 +623,12 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             // so the preset is applied once. The effect still reacts to presetTemplate itself.
             if (preset) { untracked(() => this.applyPreset(preset)); return; }
             const pid = this.effectiveProjectId();
-            this.loadPreferencesAndTemplates();
+            // untracked for the same reason as the preset path: with synchronous
+            // observables (tests), the subscribe callbacks run inside this effect's
+            // tracked execution, making activeTemplateId/currentTemplates accidental
+            // dependencies — every edit would then re-run the effect and clobber the
+            // user's selection with a reload. React to preset + project id only.
+            untracked(() => this.loadPreferencesAndTemplates());
         });
     }
 
@@ -668,15 +673,20 @@ export class DatasetCaptionSettingsComponent implements OnInit {
                 }
                 return this.templateService.listCaptioningTemplates(this.selectedCaptionModel(), pId);
             })
-        ).subscribe(templates => {
-            this.currentTemplates.set(templates);
-            if (this.preferences?.active_caption_template && templates.some(t => t.id === this.preferences!.active_caption_template)) {
-                this.activeTemplateId.set(this.preferences.active_caption_template);
-            } else {
-                const defaultTpl = templates.find(t => t.is_default);
-                this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
-            }
-            this.applyActiveTemplate();
+        ).subscribe({
+            next: templates => {
+                this.currentTemplates.set(templates);
+                if (this.preferences?.active_caption_template && templates.some(t => t.id === this.preferences!.active_caption_template)) {
+                    this.activeTemplateId.set(this.preferences.active_caption_template);
+                } else {
+                    const defaultTpl = templates.find(t => t.is_default);
+                    this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
+                }
+                this.applyActiveTemplate();
+            },
+            // Best-effort init load: on failure keep the code defaults instead of
+            // surfacing an unhandled rejection (zoneless has no zone to absorb it).
+            error: err => console.warn('caption preferences/templates load failed', err),
         });
     }
 

@@ -264,7 +264,11 @@ export class DatasetMaskingSettingsComponent implements OnInit {
             // this effect and wipe the change before Save reads it.
             if (preset) { untracked(() => this.applyPreset(preset)); return; }
             const pid = this.effectiveProjectId();
-            this.loadPreferencesAndTemplates();
+            // untracked for the same reason: with synchronous observables (tests),
+            // the subscribe callbacks run inside this effect's tracked execution,
+            // making activeTemplateId/currentTemplates accidental dependencies —
+            // every edit would re-run the effect and clobber the user's selection.
+            untracked(() => this.loadPreferencesAndTemplates());
         });
     }
 
@@ -313,15 +317,20 @@ export class DatasetMaskingSettingsComponent implements OnInit {
                 }
                 return this.templateService.listMaskingTemplates(this.selectedMaskModel(), pId);
             })
-        ).subscribe(templates => {
-            this.currentTemplates.set(templates);
-            if (this.preferences?.active_mask_template && templates.some(t => t.id === this.preferences!.active_mask_template)) {
-                this.activeTemplateId.set(this.preferences.active_mask_template);
-            } else {
-                const defaultTpl = templates.find(t => t.is_default);
-                this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
-            }
-            this.applyActiveTemplate();
+        ).subscribe({
+            next: templates => {
+                this.currentTemplates.set(templates);
+                if (this.preferences?.active_mask_template && templates.some(t => t.id === this.preferences!.active_mask_template)) {
+                    this.activeTemplateId.set(this.preferences.active_mask_template);
+                } else {
+                    const defaultTpl = templates.find(t => t.is_default);
+                    this.activeTemplateId.set(defaultTpl ? defaultTpl.id : (templates.length > 0 ? templates[0].id : null));
+                }
+                this.applyActiveTemplate();
+            },
+            // Best-effort init load: on failure keep the code defaults instead of
+            // surfacing an unhandled rejection (zoneless has no zone to absorb it).
+            error: err => console.warn('masking preferences/templates load failed', err),
         });
     }
 

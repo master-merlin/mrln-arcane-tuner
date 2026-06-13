@@ -83,6 +83,7 @@ class StubDatasetService {
     });
     saveCaption = vi.fn();
     saveCaptionVariant = vi.fn().mockReturnValue(of({ ok: true }));
+    getCaptionVariantMap = vi.fn().mockReturnValue(of({ variants: {} }));
 }
 class StubToast {
     success = vi.fn();

@@ -42,8 +42,7 @@
     "@lucide/angular": "^1.16.0",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
-    "uplot": "^1.6.32",
-    "zone.js": "^0.16.2"
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@angular-devkit/build-angular": "22.0.0",

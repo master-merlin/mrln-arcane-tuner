@@ -15,8 +15,9 @@
  * NG0101 (ApplicationRef.tick called recursively).
  */
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
+import { settle } from '../../../testing/async';
 import { signal } from '@angular/core';
 import { AnalyzeModalComponent } from './analyze.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -182,7 +183,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         expect(comp.cropAllPercent()).toBe(25);
     });
 
-    it('completed task clears running and refetches', fakeAsync(() => {
+    it('completed task clears running and refetches', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { fixture: f, comp } = make();
@@ -192,10 +193,10 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         comp.startCropAll();
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         f.detectChanges();
-        tick();
+        await settle();
         expect(comp.cropAllRunning()).toBe(false);
         expect(fetchSpy).toHaveBeenCalled();
-    }));
+    });
 
     it('harmonize() fires taskHarmonize and stores task id', () => {
         const { comp } = make();
@@ -206,7 +207,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         expect(comp.harmonizing()).toBe(true);
     });
 
-    it('harmonize completion clears harmonizing and refetches', fakeAsync(() => {
+    it('harmonize completion clears harmonizing and refetches', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -216,8 +217,8 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         comp.harmonize();
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         f.detectChanges();
-        tick();
+        await settle();
         expect(comp.harmonizing()).toBe(false);
         expect(fetchSpy).toHaveBeenCalled();
-    }));
+    });
 });

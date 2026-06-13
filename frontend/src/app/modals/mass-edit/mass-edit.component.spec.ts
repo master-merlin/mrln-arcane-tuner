@@ -1,6 +1,7 @@
 import type { Mock } from 'vitest';
-import { TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { settle } from '../../../testing/async';
 import { of } from 'rxjs';
 import { MassEditModalComponent } from './mass-edit.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -88,7 +89,7 @@ describe('MassEditModalComponent — launcher contract', () => {
         expect(comp.pct()).toBe(25);
     });
 
-    it('completed task closes modal + refreshes; failed does not close', fakeAsync(() => {
+    it('completed task closes modal + refreshes; failed does not close', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
@@ -99,9 +100,9 @@ describe('MassEditModalComponent — launcher contract', () => {
         comp.start();
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         fixture!.detectChanges();
-        tick();
+        await settle();
         expect(sync.refreshDataset).toHaveBeenCalledWith('ds1');
         expect(closeSpy).toHaveBeenCalled();
         expect(comp.running()).toBe(false);
-    }));
+    });
 });

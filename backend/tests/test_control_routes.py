@@ -236,6 +236,18 @@ class TestControlRoutes:
         )
         assert res.status_code == 400
 
+    def test_delete_orphans_route(self, manager, monkeypatch):
+        ds = _make_edit_dataset(manager, controls=("img1", "ghost"),
+                                targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.delete("/api/datasets/editds/control/orphans")
+        assert res.status_code == 200
+        assert res.json() == {"deleted": 1}
+        assert not os.path.exists(os.path.join(ds.path, "control", "ghost.jpg"))
+        assert os.path.exists(os.path.join(ds.path, "control", "img1.jpg"))
+
     def test_apply_all_route(self, manager, monkeypatch):
         _make_edit_dataset(manager, controls=("img1",), targets=("img1", "img2"))
         client, mod = _client(manager)

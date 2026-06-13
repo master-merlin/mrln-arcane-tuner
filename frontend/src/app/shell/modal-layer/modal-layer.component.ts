@@ -28,6 +28,8 @@ import { JobConfigModalComponent } from '../../modals/job-config/job-config.comp
 import { ImportDatasetModalComponent } from '../../modals/import-dataset/import-dataset.component';
 import { ExportOptionsModalComponent } from '../../modals/export-options/export-options.component';
 import { ImportArchiveModalComponent } from '../../modals/import-archive/import-archive.component';
+import { PairOrderModalComponent } from '../../modals/pair-order/pair-order.component';
+import { PairHealthModalComponent } from '../../modals/pair-health/pair-health.component';
 
 /**
  * Modal stack renderer.
@@ -67,6 +69,8 @@ import { ImportArchiveModalComponent } from '../../modals/import-archive/import-
         ImportDatasetModalComponent,
         ExportOptionsModalComponent,
         ImportArchiveModalComponent,
+        PairOrderModalComponent,
+        PairHealthModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -141,6 +145,12 @@ import { ImportArchiveModalComponent } from '../../modals/import-archive/import-
                             }
                             @case ('version-edit') {
                                 @defer { <app-modal-version-edit/> }
+                            }
+                            @case ('pair-order') {
+                                @defer { <app-modal-pair-order/> }
+                            }
+                            @case ('pair-health') {
+                                @defer { <app-modal-pair-health/> }
                             }
                             @case ('templates-library') {
                                 @defer { <app-modal-templates-library/> }

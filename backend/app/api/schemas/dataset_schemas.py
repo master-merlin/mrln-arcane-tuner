@@ -133,6 +133,11 @@ class PairOrderApplyAllResponse(BaseModel):
     skipped: int
 
 
+class OrphansDeletedResponse(BaseModel):
+    """Count of orphaned control files removed."""
+    deleted: int
+
+
 class OrphanControl(BaseModel):
     """A control file whose stem has no target image."""
     slot: str

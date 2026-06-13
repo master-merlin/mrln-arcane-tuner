@@ -133,7 +133,7 @@ export class DatasetStore extends EntityStore<Dataset> {
         name: string,
         description: string = '',
         classifier: string = '',
-        extra: { trigger_word?: string; tags?: string[]; notes?: string } = {},
+        extra: { trigger_word?: string; tags?: string[]; notes?: string; kind?: string } = {},
     ): Promise<Dataset | null> {
         try {
             const created = await firstValueFrom(
@@ -194,6 +194,7 @@ export class DatasetStore extends EntityStore<Dataset> {
                         trigger_word: next.trigger_word ?? '',
                         tags: next.tags ?? [],
                         notes: next.notes ?? '',
+                        kind: next.kind,
                     },
                 ),
             ),

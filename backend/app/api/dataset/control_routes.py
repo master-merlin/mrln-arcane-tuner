@@ -13,6 +13,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 
 from app.api.schemas.dataset_schemas import (
+    OrphansDeletedResponse,
     PairHealthResponse,
     PairOrderApplyAllRequest,
     PairOrderApplyAllResponse,
@@ -41,6 +42,40 @@ async def get_pair_health(name: str):
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return await asyncio.to_thread(compute_pair_health, dataset)
+
+
+@router.delete(
+    "/datasets/{name}/control/orphans", response_model=OrphansDeletedResponse,
+)
+async def delete_orphan_controls(name: str):
+    """Delete every control file whose stem has no target image.
+
+    Orphans have no ``media_items`` row, so this is pure filesystem
+    cleanup — the health report is the only thing that changes.
+    """
+    import os
+
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    def _delete() -> int:
+        health = compute_pair_health(dataset)
+        deleted = 0
+        for orphan in health["orphans"]:
+            try:
+                os.remove(os.path.join(dataset.path, orphan["rel_path"]))
+                deleted += 1
+            except OSError:
+                logger.warning(
+                    "orphan_control_delete_failed",
+                    dataset_name=name, rel_path=orphan["rel_path"],
+                )
+        return deleted
+
+    deleted = await asyncio.to_thread(_delete)
+    logger.info("orphan_controls_deleted", dataset_name=name, deleted=deleted)
+    return {"deleted": deleted}
 
 
 @router.patch(

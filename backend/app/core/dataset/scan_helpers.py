@@ -13,6 +13,7 @@ from typing import Any
 import cv2
 from PIL import Image
 
+from app.core.dataset.control_helpers import detect_control_slots
 from app.core.dataset.media_types import VIDEO_EXTENSIONS
 
 
@@ -64,8 +65,10 @@ def build_media_entry(
 ) -> dict[str, Any]:
     """Build the per-file metadata dict for a multimedia entry.
 
-    Checks for masks and masked derivatives. Preserves ``enabled``
-    state from existing metadata.
+    Checks for masks, masked derivatives, and stem-matched control
+    images (paired edit datasets). Preserves ``enabled`` state plus the
+    logical ``role_order`` / ``target_edited_at`` pair metadata from
+    existing metadata — both are user/edit state the disk can't rebuild.
 
     Returns:
         Metadata dict ready for ``media_metadata[rel_path]``.
@@ -124,6 +127,19 @@ def build_media_entry(
             }
         except Exception:
             pass
+
+    # Control slots (paired edit datasets): disk is source of truth for
+    # the slot files; role_order/target_edited_at carry over from the
+    # existing metadata (a rescan must never reset the logical ordering).
+    control_slots = detect_control_slots(dataset_path, stem)
+    control_info: dict[str, Any] = {"slots": control_slots} if control_slots else {}
+    prev_control = existing_meta.get("control_info") or {}
+    for preserved in ("role_order", "target_edited_at"):
+        if prev_control.get(preserved) is not None:
+            control_info[preserved] = prev_control[preserved]
+
+    entry["control_count"] = len(control_slots)
+    entry["control_info"] = control_info or None
 
     return entry
 

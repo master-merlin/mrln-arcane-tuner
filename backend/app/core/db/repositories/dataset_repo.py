@@ -27,7 +27,7 @@ class DatasetRepository:
         "caption_coverage", "missing", "preview_image",
         "majority_ar", "harmonization_score", "classifier",
         "version", "has_cache", "source_type", "license", "updated_at",
-        "trigger_word", "tags", "notes",
+        "trigger_word", "tags", "notes", "kind",
     ]
 
     # ── Reads ────────────────────────────────────────────────────────

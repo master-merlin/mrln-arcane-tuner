@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -60,6 +61,10 @@ class Dataset(BaseModel):
     trigger_word: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+    # Open enum: "standard" | "edit" today ("video"/"mixed" reserved).
+    # "edit" enables paired-control affordances (control/ slots, role
+    # ordering, pair health); switching kind never touches files on disk.
+    kind: str = "standard"
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -410,6 +415,7 @@ class DatasetManager:
         trigger_word: str = "",
         tags: list[str] | None = None,
         notes: str = "",
+        kind: str = "standard",
     ) -> Dataset:
         if path is None:
             # Auto-created folder: the stored name MUST equal the folder basename.
@@ -442,6 +448,7 @@ class DatasetManager:
             trigger_word=trigger_word,
             tags=tags or [],
             notes=notes,
+            kind=kind,
             created_at=time.time(),
             version="1.0.0"
         )
@@ -1276,6 +1283,7 @@ class DatasetManager:
         new_trigger_word: str = "",
         new_tags: list[str] | None = None,
         new_notes: str = "",
+        new_kind: str | None = None,
     ) -> Dataset:
         if current_name not in self.datasets:
             raise ValueError(f"Dataset '{current_name}' not found.")
@@ -1329,6 +1337,10 @@ class DatasetManager:
         dataset.trigger_word = new_trigger_word
         dataset.tags = new_tags or []
         dataset.notes = new_notes
+        # None = leave unchanged (older clients PATCH without a kind and
+        # must not silently reset an edit dataset back to standard).
+        if new_kind is not None:
+            dataset.kind = new_kind
         self._persist_dataset(dataset)
 
         loop = self._loop
@@ -1401,13 +1413,22 @@ class DatasetManager:
         
         # Sort by filename
         result.sort(key=lambda x: x["media_file"])
-        
+
+        # Control slot files (paired edit datasets) — one scandir per slot
+        # dir, disk-truth like the rest of this endpoint. Empty for
+        # datasets without control/ folders.
+        from app.core.dataset.control_helpers import (
+            list_control_stem_maps,
+            resolve_effective_roles,
+        )
+        control_maps = list_control_stem_maps(dataset.path)
+
         # Hydrate with content and metadata
         for p in result:
             p["caption_content"] = ""
             p["masked_caption_content"] = None
             p["metadata"] = None
-            
+
             if p["caption_file"]:
                 try:
                     p["caption_content"] = self.read_caption(name, p["caption_file"])
@@ -1451,6 +1472,34 @@ class DatasetManager:
                             except Exception:
                                 pass
                     p["metadata"] = meta
+
+            # Pair roles: physical slot files from disk, logical ordering
+            # from metadata (``control_info.role_order``). The resolved
+            # ``effective_target``/``effective_controls`` are what training
+            # and the grid consume — re-ordering is metadata-only.
+            slot_files: dict[str, str] = {}
+            for slot, stem_map in control_maps.items():
+                fname = stem_map.get(p["stem"])
+                if fname:
+                    slot_files[slot] = f"{slot}/{fname}"
+
+            meta = p.get("metadata") or {}
+            control_info = meta.get("control_info")
+            if isinstance(control_info, str):
+                try:
+                    control_info = json.loads(control_info)
+                except (ValueError, TypeError):
+                    control_info = None
+
+            role_order = (control_info or {}).get("role_order")
+            target, controls = resolve_effective_roles(
+                p["media_file"], slot_files, role_order,
+            )
+            p["control_files"] = list(slot_files.values())
+            p["control_info"] = control_info
+            p["role_order"] = role_order
+            p["effective_target"] = target
+            p["effective_controls"] = controls
 
         return result
 
@@ -1713,6 +1762,22 @@ class DatasetManager:
                     os.remove(masked_path)
                 except OSError:
                     pass
+
+        # Control slot images (paired edit datasets) — stem-matched
+        # sidecars like masks; orphaned controls would resurface as
+        # pair-health warnings, so remove them with their target.
+        from app.core.dataset.control_helpers import (
+            CONTROL_IMAGE_EXTS,
+            CONTROL_SLOTS,
+        )
+        for slot in CONTROL_SLOTS:
+            for ctl_ext in CONTROL_IMAGE_EXTS:
+                ctl_path = os.path.join(dataset.path, slot, stem + ctl_ext)
+                if os.path.exists(ctl_path):
+                    try:
+                        os.remove(ctl_path)
+                    except OSError:
+                        pass
 
         # Overlay (rendered PNG + overlays.json recipe) — otherwise the file
         # and recipe entry orphan after the image is gone.

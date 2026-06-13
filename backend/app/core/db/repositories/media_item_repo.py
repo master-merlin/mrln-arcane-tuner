@@ -28,6 +28,7 @@ class MediaItemRepository:
         "has_masked_caption", "mask_info", "has_caption",
         "is_video", "frame_count", "tags", "notes", "quality_score",
         "added_at", "has_overlay", "enabled",
+        "control_count", "control_info",
     ]
 
     # ── Reads ────────────────────────────────────────────────────────
@@ -235,7 +236,7 @@ class MediaItemRepository:
                 if key in item:
                     item[key] = bool(item[key])
             # Parse JSON fields
-            for key in ("mask_info", "tags", "notes"):
+            for key in ("mask_info", "control_info", "tags", "notes"):
                 if item.get(key) and isinstance(item[key], str):
                     try:
                         item[key] = json.loads(item[key])
@@ -257,7 +258,7 @@ class MediaItemRepository:
             if key in data:
                 data[key] = int(bool(data[key]))
         # Dicts/lists → JSON strings
-        for key in ("mask_info", "tags", "notes"):
+        for key in ("mask_info", "control_info", "tags", "notes"):
             if key in data and not isinstance(data.get(key), (str, type(None))):
                 data[key] = json.dumps(data[key])
         # Default added_at

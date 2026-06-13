@@ -4,7 +4,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# Open set: gates pair UI/validation, deliberately a plain string in the
+# model so future kinds ("video", "mixed") only extend this set.
+_ALLOWED_DATASET_KINDS = {"standard", "edit"}
+
+
+def _validate_kind(v: str | None) -> str | None:
+    if v is not None and v not in _ALLOWED_DATASET_KINDS:
+        raise ValueError(
+            f"Unknown dataset kind '{v}'. "
+            f"Allowed: {sorted(_ALLOWED_DATASET_KINDS)}"
+        )
+    return v
 
 
 class CreateDatasetRequest(BaseModel):
@@ -15,6 +28,9 @@ class CreateDatasetRequest(BaseModel):
     trigger_word: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+    kind: str = "standard"
+
+    _check_kind = field_validator("kind")(_validate_kind)
 
 
 class UpdateDatasetRequest(BaseModel):
@@ -25,6 +41,11 @@ class UpdateDatasetRequest(BaseModel):
     trigger_word: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+    # None = leave unchanged, so older clients can't reset an edit
+    # dataset back to standard by omitting the field.
+    kind: str | None = None
+
+    _check_kind = field_validator("kind")(_validate_kind)
 
 
 class CaptionRequest(BaseModel):
@@ -105,3 +126,17 @@ class DatasetPairResponse(BaseModel):
     masked_caption_content: str | None = None
     # Free-form per-item media_metadata; shape varies by enrichment state.
     metadata: dict | None = None
+
+    # ── Paired edit datasets ─────────────────────────────────────────
+    # Physical control slot rel-paths in slot order (control/, control_2/,
+    # control_3/); empty for standard datasets.
+    control_files: list[str] = Field(default_factory=list)
+    # Per-slot dims + role_order + target_edited_at (mirrors mask_info).
+    control_info: dict | None = None
+    # Logical ordering: permutation of physical slot names ("root" +
+    # control dirs), position 0 = training target. None = default order.
+    role_order: list[str] | None = None
+    # Resolved roles — what training and the grid consume. The caption
+    # stays keyed to the stem regardless of ordering.
+    effective_target: str = ""
+    effective_controls: list[str] = Field(default_factory=list)

@@ -73,6 +73,7 @@ async def create_dataset(request: CreateDatasetRequest):
             trigger_word=request.trigger_word,
             tags=request.tags,
             notes=request.notes,
+            kind=request.kind,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -92,6 +93,7 @@ async def update_dataset(name: str, request: UpdateDatasetRequest):
             new_trigger_word=request.trigger_word,
             new_tags=request.tags,
             new_notes=request.notes,
+            new_kind=request.kind,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

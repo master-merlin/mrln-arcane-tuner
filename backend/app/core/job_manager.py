@@ -126,9 +126,12 @@ class JobManager:
                     status_str = row.get("status", "pending")
                     stored_pid = row.get("pid")
 
-                    # For running/paused jobs, check if the subprocess survived
+                    # For running/paused jobs, check if OUR trainer subprocess
+                    # survived. Identity-match (not bare pid_exists) so a reused
+                    # PID — or an unrelated orphan — can't masquerade as a live
+                    # trainer and keep the job RUNNING, wedging the queue.
                     if status_str in ("running", "paused"):
-                        if self._is_pid_alive(stored_pid):
+                        if self._is_trainer_process(stored_pid, row["id"]):
                             # Process survived the restart — keep status
                             logger.info(
                                 "job_process_still_alive",
@@ -452,6 +455,27 @@ class JobManager:
             return psutil.pid_exists(pid)
         except Exception:
             return False
+
+    @staticmethod
+    def _is_trainer_process(pid: int | None, job_id: str) -> bool:
+        """True iff *pid* is a live process that is THIS job's trainer subprocess.
+
+        Stronger than a bare ``pid_exists``: the trainer is launched as
+        ``run_trainer.py --config '{… "job_id": <id> …}'`` (see
+        ``StandardPlugin.start_training``), so both ``run_trainer`` and the job
+        id appear verbatim in its cmdline. Matching on them defeats PID reuse —
+        a recycled PID now running an unrelated process won't carry our markers,
+        so a dead trainer can't be mistaken for a live one and wedge the
+        single-GPU queue across a restart.
+        """
+        if not pid or pid <= 0:
+            return False
+        try:
+            import psutil
+            cmdline = " ".join(psutil.Process(int(pid)).cmdline())
+        except Exception:
+            return False
+        return "run_trainer" in cmdline and job_id in cmdline
 
     def delete_job(self, job_id: str) -> None:
         """Remove a job from the registry and the database. Broadcasts entity.changed."""
@@ -890,6 +914,55 @@ class JobManager:
             self._starting = True
             return pending[0].id
 
+    def _reconcile_active_jobs(self) -> list[str]:
+        """Demote any RUNNING/PAUSED job whose trainer process is gone to FAILED.
+
+        The single-GPU guard treats every RUNNING/PAUSED job as "GPU busy" and
+        refuses to launch the next one. If a trainer dies without the exit
+        handler or PID watchdog catching it — e.g. an orphaned subprocess left
+        alive after a server restart, or a PID that was reused — the job is
+        stuck "active" forever and blocks every start until a *container*
+        restart clears the in-memory state. Re-checking real liveness here lets
+        the queue self-heal: a phantom is marked FAILED and stops blocking.
+
+        Only PID-bearing phantoms are reconciled. A RUNNING job with no PID may
+        be mid-launch (``start_job`` sets status before PID), so we leave it
+        alone to avoid racing that window. Returns the reconciled job ids.
+        """
+        with self._lock:
+            active = [
+                j for j in self._jobs.values()
+                if j.status in (JobStatus.RUNNING, JobStatus.PAUSED)
+            ]
+        reconciled: list[str] = []
+        for job in active:
+            if job.pid is None:
+                continue  # possibly mid-launch — trust the status
+            if self._is_trainer_process(job.pid, job.id):
+                continue  # genuinely our live trainer
+            stale_pid = job.pid
+            with self._lock:
+                job.status = JobStatus.FAILED
+                job.finished_at = time.time()
+                job.pid = None
+                job.error = job.error or (
+                    "Training process is no longer running (recovered)."
+                )
+            self._persist_status(
+                job.id, "failed", finished_at=job.finished_at, error=job.error,
+            )
+            self._stop_tailer(job.id)
+            reconciled.append(job.id)
+            logger.warning(
+                "reconciled_stale_active_job", job_id=job.id, stale_pid=stale_pid,
+            )
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    event_manager.broadcast("job_update", job.model_dump()),
+                    self._loop,
+                )
+        return reconciled
+
     def advance_queue(self) -> None:
         """Start the next pending job if auto-queue is on and the GPU is idle.
 
@@ -905,6 +978,9 @@ class JobManager:
         """
         if not self._auto_queue_enabled():
             return
+        # Self-heal first: drop any phantom "active" job (dead/orphaned trainer)
+        # so it stops blocking the single-GPU guard before we pick what to run.
+        self._reconcile_active_jobs()
         while True:
             next_id = self._claim_next_pending()
             if next_id is None:
@@ -1066,6 +1142,11 @@ class JobManager:
 
         self._stop_tailer(job_id)
         self._reset_job_log_state(job)
+
+        # Self-heal any phantom "active" job (dead/orphaned trainer) so a stale
+        # RUNNING/PAUSED entry can't make this restart queue behind a process
+        # that no longer exists.
+        self._reconcile_active_jobs()
 
         with self._lock:
             job.status = JobStatus.PENDING

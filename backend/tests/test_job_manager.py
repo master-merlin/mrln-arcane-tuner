@@ -1146,3 +1146,187 @@ class TestSignalPauseReconcile:
         mgr._reconcile_signal_pause(job.id, '{"event": "sampling_complete"}')
         assert job.status == JobStatus.RUNNING
 
+
+class TestStaleActiveReconciliation:
+    """A job stuck RUNNING/PAUSED whose trainer process is gone (dead, or a
+    reused PID now running something else) must not permanently block the
+    single-GPU queue. The guard treats any RUNNING/PAUSED job as "GPU busy", so
+    one phantom wedges every start until a *container* restart resets in-memory
+    state. Reconciling liveness on the advance/restart paths lets the queue
+    self-heal: the phantom is marked FAILED and stops blocking.
+    """
+
+    # ── process-identity check (defeats PID reuse) ───────────────────────
+
+    def test_is_trainer_process_false_for_no_pid(self):
+        mgr = JobManager()
+        assert mgr._is_trainer_process(None, "job-1") is False
+        assert mgr._is_trainer_process(0, "job-1") is False
+
+    @patch("psutil.Process")
+    def test_is_trainer_process_true_when_cmdline_matches(self, MockProc):
+        # The trainer is launched as `run_trainer.py --config '{... job_id ...}'`,
+        # so both markers appear in its cmdline.
+        MockProc.return_value.cmdline.return_value = [
+            "/usr/bin/python", "-u", "/app/backend/run_trainer.py",
+            "--definition_id", "flux/dev", "--config", '{"job_id": "job-xyz"}',
+        ]
+        mgr = JobManager()
+        assert mgr._is_trainer_process(4321, "job-xyz") is True
+
+    @patch("psutil.Process")
+    def test_is_trainer_process_false_for_reused_pid(self, MockProc):
+        # A recycled PID now running an unrelated process — must NOT be mistaken
+        # for our trainer.
+        MockProc.return_value.cmdline.return_value = ["/bin/bash", "-c", "sleep 1"]
+        mgr = JobManager()
+        assert mgr._is_trainer_process(4321, "job-xyz") is False
+
+    @patch("psutil.Process")
+    def test_is_trainer_process_false_for_other_job_id(self, MockProc):
+        # Our trainer, but for a different job — not THIS job's process.
+        MockProc.return_value.cmdline.return_value = [
+            "python", "run_trainer.py", "--config", '{"job_id": "other-job"}',
+        ]
+        mgr = JobManager()
+        assert mgr._is_trainer_process(4321, "job-xyz") is False
+
+    @patch("psutil.Process", side_effect=Exception("NoSuchProcess"))
+    def test_is_trainer_process_false_when_pid_dead(self, _MockProc):
+        mgr = JobManager()
+        assert mgr._is_trainer_process(4321, "job-xyz") is False
+
+    # ── reconciliation ───────────────────────────────────────────────────
+
+    def test_reconcile_demotes_phantom_running_job(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 5555  # set, but not a live trainer (mocked below)
+        with patch.object(mgr, "_is_trainer_process", return_value=False), \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            reconciled = mgr._reconcile_active_jobs()
+        assert reconciled == [job.id]
+        assert job.status == JobStatus.FAILED
+        assert job.pid is None
+        assert job.finished_at is not None
+
+    def test_reconcile_demotes_phantom_paused_job(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.PAUSED
+        job.pid = 5555
+        with patch.object(mgr, "_is_trainer_process", return_value=False), \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            mgr._reconcile_active_jobs()
+        assert job.status == JobStatus.FAILED
+
+    def test_reconcile_keeps_live_trainer(self):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 5555
+        with patch.object(mgr, "_is_trainer_process", return_value=True), \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            reconciled = mgr._reconcile_active_jobs()
+        assert reconciled == []
+        assert job.status == JobStatus.RUNNING
+
+    def test_reconcile_ignores_pidless_job(self):
+        """A RUNNING job with no PID may be mid-launch — don't demote it (avoids
+        racing start_job's status→pid window). Only PID-bearing phantoms are
+        reconciled at runtime."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = None
+        with patch.object(mgr, "_is_trainer_process", return_value=False) as chk, \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            reconciled = mgr._reconcile_active_jobs()
+        assert reconciled == []
+        assert job.status == JobStatus.RUNNING
+        chk.assert_not_called()  # short-circuits before the (slow) psutil probe
+
+    # ── self-heal at the decision points ─────────────────────────────────
+
+    def test_advance_queue_self_heals_phantom_then_starts_pending(self):
+        """The wedge fix: a phantom RUNNING job is reconciled at advance time so
+        the pending job starts — no container restart needed."""
+        mgr = JobManager()
+        phantom = mgr.create_job("flux/dev", _make_config(lora_name="phantom"))
+        phantom.status = JobStatus.RUNNING
+        phantom.pid = 5555
+        pending = mgr.create_job("flux/dev", _make_config(lora_name="next"))
+        pending.status = JobStatus.PENDING
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "_is_trainer_process", return_value=False), \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        assert phantom.status == JobStatus.FAILED
+        ms.assert_called_once_with(pending.id)
+
+    def test_advance_queue_keeps_live_running_job_blocking(self):
+        """Reconciliation must NOT demote a genuinely-running trainer — the
+        single-GPU guard still blocks."""
+        mgr = JobManager()
+        running = mgr.create_job("flux/dev", _make_config(lora_name="live"))
+        running.status = JobStatus.RUNNING
+        running.pid = 5555
+        pending = mgr.create_job("flux/dev", _make_config(lora_name="next"))
+        pending.status = JobStatus.PENDING
+        with patch.object(mgr, "_auto_queue_enabled", return_value=True), \
+                patch.object(mgr, "_is_trainer_process", return_value=True), \
+                patch.object(mgr, "start_job") as ms:
+            mgr.advance_queue()
+        assert running.status == JobStatus.RUNNING
+        ms.assert_not_called()
+
+    @patch.object(JobManager, "start_job")
+    def test_restart_self_heals_phantom_and_launches(self, mock_start):
+        """Restarting a failed job while a phantom blocks the GPU must reconcile
+        the phantom and launch — not stay queued behind a dead process."""
+        mgr = JobManager()
+        phantom = mgr.create_job("flux/dev", _make_config(lora_name="phantom"))
+        phantom.status = JobStatus.RUNNING
+        phantom.pid = 5555
+        failed = mgr.create_job("flux/dev", _make_config(lora_name="done"))
+        failed.status = JobStatus.FAILED
+        with patch.object(mgr, "_is_trainer_process", return_value=False), \
+                patch.object(mgr, "_reset_job_log_state"), \
+                patch.object(mgr, "_persist_status"), patch.object(mgr, "_stop_tailer"):
+            mgr.restart_job(failed.id)
+        assert phantom.status == JobStatus.FAILED
+        mock_start.assert_called_once_with(failed.id)
+
+    # ── startup hydration uses the identity check ────────────────────────
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_load_demotes_running_with_reused_pid(self, MockRepo):
+        """A running job whose stored PID is alive but is NOT our trainer (PID
+        reuse / an unrelated orphan) must be demoted, not kept RUNNING."""
+        MockRepo.return_value.list_recent.return_value = [{
+            "id": "db-reused", "definition_id": "flux/dev", "config": {},
+            "status": "running", "created_at": 1.0, "started_at": 1.0,
+            "finished_at": None, "error": None, "pid": 4321,
+        }]
+        mgr = JobManager()
+        with patch.object(mgr, "_is_trainer_process", return_value=False):
+            mgr.load_from_db()
+        assert mgr.get_job("db-reused").status == JobStatus.STOPPED
+
+    @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
+    def test_load_keeps_running_when_pid_is_our_trainer(self, MockRepo):
+        """An orphaned-but-alive trainer (our run_trainer for this job) is kept
+        RUNNING and queued for re-attach — training survives a server restart."""
+        MockRepo.return_value.list_recent.return_value = [{
+            "id": "db-live", "definition_id": "flux/dev", "config": {},
+            "status": "running", "created_at": 1.0, "started_at": 1.0,
+            "finished_at": None, "error": None, "pid": 4321,
+        }]
+        mgr = JobManager()
+        with patch.object(mgr, "_is_trainer_process", return_value=True):
+            mgr.load_from_db()
+        assert mgr.get_job("db-live").status == JobStatus.RUNNING
+        assert any(r["id"] == "db-live" for r in mgr._recovery_jobs)
+

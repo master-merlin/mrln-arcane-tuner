@@ -31,6 +31,9 @@ link_dir "$DATA_DIR/outputs"  "$BACKEND_DIR/outputs"
 # ── Runtime env ──────────────────────────────────────────────────────────
 export MRLN_CONTAINER=1
 export MRLN_DB_PATH="$DATA_DIR/arcane_tuner.db"
+# App settings (incl. the UI-set Hugging Face token) live on the persistent
+# volume, not the ephemeral /app checkout — otherwise a pod restart wipes them.
+export MRLN_SETTINGS_PATH="${MRLN_SETTINGS_PATH:-$DATA_DIR/settings.json}"
 export MRLN_FRONTEND_DIST="${MRLN_FRONTEND_DIST:-/app/frontend/browser}"
 PORT="${PORT:-8000}"
 export PORT

@@ -49,6 +49,16 @@ class PipelineDataMixin:
         datasets_config = self.config.get("datasets", [])
         inventory: list[dict[str, Any]] = []
 
+        # ── Paired edit-model config ──
+        # control_inputs > 0 → train on the pair's effective TARGET while
+        # conditioning on its effective CONTROLS (resolved roles from /pairs).
+        control_inputs = int(getattr(self.definition, "control_inputs", 0) or 0)
+        is_edit_run = control_inputs > 0
+        control_resolution = int(self.config.get("control_resolution", 0) or 0)
+        dataset_kinds: dict[str, str] = {}
+        edit_candidates = 0
+        edit_skipped = 0
+
         # ── Global augmentation config ──
         self._aug_h_flip = bool(self.config.get("h_flip", False))
         self._aug_v_flip = bool(self.config.get("v_flip", False))
@@ -104,6 +114,7 @@ class PipelineDataMixin:
                     ds_data = ds_resp.json()
                     ds_path = ds_data.get("path")
                     ds_version = ds_data.get("version", "1.0.0")
+                    dataset_kinds[name] = ds_data.get("kind", "standard")
 
                     # Recreate masked images if requested
                     if ds_masking_enabled and bool(ds_config.get("recreate_masks", False)):
@@ -126,19 +137,46 @@ class PipelineDataMixin:
                         )
 
                     for pair in pairs:
-                        img_rel = pair.get("media_file")
-                        if not img_rel:
+                        media_rel = pair.get("media_file")
+                        if not media_rel:
                             continue
                         if not ignore_filter:
                             meta = pair.get("metadata") or {}
                             if meta.get("enabled") is False:
                                 continue
 
+                        # Edit runs train the pair's effective TARGET (role
+                        # ordering may point a control slot at it). Standard
+                        # runs (and standard models on edit datasets) train the
+                        # root media file — controls are ignored.
+                        if is_edit_run:
+                            edit_candidates += 1
+                            img_rel = pair.get("effective_target") or media_rel
+                            # Partial pair (fewer controls than the model needs):
+                            # skip + count. Threshold-checked after the loop.
+                            if len(pair.get("effective_controls") or []) < control_inputs:
+                                edit_skipped += 1
+                                self.logger.warning(
+                                    "edit_pair_incomplete",
+                                    dataset=name, media=media_rel,
+                                    have=len(pair.get("effective_controls") or []),
+                                    need=control_inputs,
+                                )
+                                continue
+                        else:
+                            img_rel = media_rel
+
                         img_path = os.path.join(ds_path, img_rel)
                         caption = pair.get("caption_content", "")
 
                         meta = pair.get("metadata", {})
-                        w, h = meta.get("width"), meta.get("height")
+                        # meta dims describe the ROOT media; when a role flip
+                        # points the target at a control slot, read the actual
+                        # target file's dims instead.
+                        if is_edit_run and img_rel != media_rel:
+                            w = h = None
+                        else:
+                            w, h = meta.get("width"), meta.get("height")
                         if not w:
                             try:
                                 with Image.open(img_path) as img:
@@ -207,12 +245,68 @@ class PipelineDataMixin:
                             else:
                                 item["has_masked"] = False
 
+                            # ── Paired control variants (edit runs) ──
+                            if is_edit_run:
+                                from app.engine.core.pipeline.edit_inventory import (
+                                    build_control_fields,
+                                )
+
+                                def _cache_dir_for(rstr, variant, _p=ds_path, _v=ds_version):
+                                    return LatentManager.resolve_cache_dir(
+                                        _p, model_name, _v, rstr, variant
+                                    )
+
+                                def _bucket_for(bw, bh, base):
+                                    return BucketManager(
+                                        base_resolutions=[base]
+                                    ).get_bucket(bw, bh)
+
+                                control_fields = build_control_fields(
+                                    pair.get("effective_controls") or [],
+                                    ds_path, control_inputs,
+                                    target_w, target_h, control_resolution,
+                                    _cache_dir_for, _bucket_for,
+                                )
+                                if control_fields is None:
+                                    # Partial pair — skip this bucket item.
+                                    continue
+                                item.update(control_fields)
+
                             for _ in range(repeats):
                                 inventory.append(item)
 
                 except (httpx.HTTPError, OSError, ValueError, KeyError) as e:
                     self.logger.error("dataset_api_error", name=name, error=str(e))
                     continue
+
+        # ── Run-start validation for edit/standard × dataset-kind ──
+        from app.engine.core.edit_validation import validate_edit_config
+
+        report = validate_edit_config(
+            self.definition, self.config, dataset_kinds.get,
+        )
+        for warning in report.warnings:
+            self.logger.warning("edit_config_warning", message=warning)
+        if not report.ok:
+            raise ValueError(
+                "Edit-model configuration invalid: " + "; ".join(report.errors)
+            )
+
+        # Partial-pair guard: a few missing controls are skipped, but if most
+        # pairs are incomplete the dataset layout is almost certainly wrong.
+        if is_edit_run and edit_candidates > 0:
+            self.logger.info(
+                "edit_pair_coverage",
+                candidates=edit_candidates,
+                skipped_incomplete=edit_skipped,
+                control_inputs=control_inputs,
+            )
+            if edit_skipped / edit_candidates > 0.5:
+                raise ValueError(
+                    f"{edit_skipped}/{edit_candidates} pairs are missing control "
+                    "images — check the dataset's control/ folders. Refusing to "
+                    "train on a mostly-unpaired edit dataset."
+                )
 
         self.inventory = inventory
         if not inventory:
@@ -339,6 +433,87 @@ class PipelineDataMixin:
             "cache_dirs": cache_dirs,
             "paths": batch_paths,
         }
+
+        # ── Paired control images (edit runs) ──
+        # All items in an edit batch carry the same control slot count
+        # (partial pairs were skipped at inventory time), so we transpose into
+        # per-slot stacked tensors the family forward can concat with the
+        # target latents. Controls are loaded clean here and never flipped.
+        if items and items[0].get("control_paths"):
+            self._attach_control_images(batch, items, transform_norm)
+
         # Let families add extra data (e.g. SDXL time_ids)
         batch.update(self.build_batch_extra(items))
         return batch
+
+    @staticmethod
+    def _load_image_to(path: str, tw: int, th: int, transform) -> torch.Tensor:
+        """Open, smart-resize + center-crop to (tw, th), normalize to [-1, 1]."""
+        img = Image.open(path).convert("RGB")
+        scale = max(tw / img.width, th / img.height)
+        nw, nh = int(img.width * scale), int(img.height * scale)
+        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+        left, top = (nw - tw) // 2, (nh - th) // 2
+        img = img.crop((left, top, left + tw, top + th))
+        return transform(img)
+
+    def _attach_control_images(self, batch, items, transform) -> None:
+        """Transpose per-item control fields into per-slot batch tensors."""
+        n_slots = len(items[0]["control_paths"])
+        ctrl_images: list[torch.Tensor] = []
+        ctrl_ids: list[list[str]] = []
+        ctrl_paths: list[list[str]] = []
+        ctrl_cache_dirs: list[list[str]] = []
+        for slot in range(n_slots):
+            slot_imgs: list[torch.Tensor] = []
+            slot_ids: list[str] = []
+            slot_paths: list[str] = []
+            slot_cache: list[str] = []
+            for item in items:
+                path = item["control_paths"][slot]
+                cw, ch = item["control_dims"][slot]
+                slot_imgs.append(self._load_image_to(path, cw, ch, transform))
+                slot_ids.append(item["control_rel_paths"][slot])
+                slot_paths.append(path)
+                slot_cache.append(item["control_cache_dirs"][slot])
+            ctrl_images.append(torch.stack(slot_imgs).to(self.device))
+            ctrl_ids.append(slot_ids)
+            ctrl_paths.append(slot_paths)
+            ctrl_cache_dirs.append(slot_cache)
+        batch["control_images"] = ctrl_images
+        batch["control_ids"] = ctrl_ids
+        batch["control_paths"] = ctrl_paths
+        batch["control_cache_dirs"] = ctrl_cache_dirs
+
+    def _load_control_latents(self, batch: dict) -> None:
+        """Encode/load clean control latents into ``batch['control_latents']``.
+
+        Family-agnostic: runs in the train loop under ``no_grad`` when an edit
+        batch carries control images. Control latents are NEVER noised or
+        flipped — they're the clean conditioning the family forward concats
+        with the noisy target tokens. No-op for non-edit batches.
+        """
+        slots_cache = batch.get("control_cache_dirs")
+        if not slots_cache:
+            return
+        use_cache = self.config.get("cache_latents", True)
+        control_latents: list[torch.Tensor] = []
+        for slot_idx, cache_dirs in enumerate(slots_cache):
+            ids = batch["control_ids"][slot_idx]
+            paths = batch["control_paths"][slot_idx]
+            lat = None
+            if use_cache:
+                lat = self.latent_manager.load_cached_latents(
+                    ids, cache_dirs, source_paths=paths,
+                )
+            if lat is None:
+                lat = self.latent_manager.encode_and_cache_batch(
+                    batch["control_images"][slot_idx],
+                    ids=ids,
+                    cache_dirs=cache_dirs if use_cache else None,
+                    source_paths=paths,
+                )
+            control_latents.append(
+                lat.to(self.device, dtype=self.autocast_dtype)
+            )
+        batch["control_latents"] = control_latents

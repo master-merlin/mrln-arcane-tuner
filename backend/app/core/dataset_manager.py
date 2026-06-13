@@ -2036,7 +2036,11 @@ class DatasetManager:
         """Convert all media to JPG 95% and rename pairs consistently.
 
         Naming scheme: {dataset_name_snake}_{00001}.jpg
-        Renames image, caption (.txt), and mask (masks/*.png) atomically.
+        Renames image, caption (.txt), mask (masks/*.png), masked derivatives
+        (masked/*) and stem-matched control images (control/, control_2/,
+        control_3/ for paired edit datasets) atomically. Controls are renamed
+        only (no format conversion, like masks), preserving each slot's
+        extension, so the target<->control pairing survives.
 
         Args:
             name: Dataset name.
@@ -2045,6 +2049,8 @@ class DatasetManager:
             Dict with processed, converted, renamed counts.
         """
         import re
+
+        from app.core.dataset.control_helpers import detect_control_slots
 
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
@@ -2131,6 +2137,18 @@ class DatasetManager:
                 os.rename(masked_cap, os.path.join(masked_dir, f"{temp_stem}.txt"))
                 has_masked_cap = True
 
+            # Rename stem-matched control images (paired edit datasets) in
+            # lockstep with their target. Disk is the source of truth for which
+            # slots exist; each control keeps its own extension (no conversion).
+            control_renames: list[dict] = []
+            for slot, info in detect_control_slots(dataset.path, old_stem).items():
+                c_ext = os.path.splitext(info["rel_path"])[1]
+                src_ctrl = os.path.join(dataset.path, info["rel_path"])
+                if os.path.exists(src_ctrl):
+                    os.rename(src_ctrl,
+                              os.path.join(dataset.path, slot, f"{temp_stem}{c_ext}"))
+                    control_renames.append({"slot": slot, "ext": c_ext})
+
             temp_map.append({
                 "old_media_file": media_file,
                 "temp_stem": temp_stem,
@@ -2138,6 +2156,7 @@ class DatasetManager:
                 "has_mask": has_mask,
                 "has_masked_img": has_masked_img,
                 "has_masked_cap": has_masked_cap,
+                "controls": control_renames,
                 "was_converted": was_converted,
             })
 
@@ -2180,6 +2199,14 @@ class DatasetManager:
                 dst_mc = os.path.join(masked_dir, f"{final_stem}.txt")
                 if os.path.exists(src_mc):
                     os.rename(src_mc, dst_mc)
+
+            # Control slots (preserve each control's extension)
+            for ctrl in entry.get("controls", []):
+                slot, c_ext = ctrl["slot"], ctrl["ext"]
+                src_c = os.path.join(dataset.path, slot, f"{temp_stem}{c_ext}")
+                dst_c = os.path.join(dataset.path, slot, f"{final_stem}{c_ext}")
+                if os.path.exists(src_c):
+                    os.rename(src_c, dst_c)
 
             # Store final name for metadata remapping
             entry["final_media_file"] = f"{final_stem}.jpg"

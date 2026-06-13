@@ -83,6 +83,48 @@ def test_harmonize_files_progress_cb_fires_per_pair(monkeypatch, tmp_path):
         dataset_manager.datasets.pop(ds_name, None)
 
 
+def test_harmonize_renames_control_slot_files(monkeypatch, tmp_path):
+    """Edit dataset: harmonize must rename the stem-matched control files in
+    control/ control_2/ control_3/ in lockstep with their target so the
+    target<->control pairing survives (target stem N -> control stem N).
+
+    Regression: harmonize only renamed root image + caption + masks/masked,
+    leaving control slots on their old stems -> every pair broke."""
+    from app.core.dataset_manager import Dataset, dataset_manager
+
+    ds_name = "hz-edit"
+    ds_root = tmp_path / "hzedit"
+    ds_root.mkdir()
+    # Two targets (a.png converts to jpg, b.jpg already jpg).
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(ds_root / "a.png")
+    Image.new("RGB", (8, 8), (4, 5, 6)).save(ds_root / "b.jpg")
+    # Control slots, stem-matched, mixed extensions across slots.
+    (ds_root / "control").mkdir()
+    (ds_root / "control_2").mkdir()
+    Image.new("RGB", (8, 8), (9, 9, 9)).save(ds_root / "control" / "a.png")
+    Image.new("RGB", (8, 8), (7, 7, 7)).save(ds_root / "control" / "b.jpg")
+    Image.new("RGB", (8, 8), (5, 5, 5)).save(ds_root / "control_2" / "a.webp")
+
+    ds = Dataset(id="i", name=ds_name, path=str(ds_root), created_at=0.0,
+                 kind="edit", media_metadata={"a.png": {}, "b.jpg": {}})
+    dataset_manager.datasets[ds_name] = ds
+    monkeypatch.setattr(dataset_manager, "scan_dataset", lambda name, *a, **k: None)
+    try:
+        dataset_manager.harmonize_files(ds_name)
+        base = "hz_edit"  # "hz-edit" -> snake
+        # Pairs are sorted by media_file: a -> _00001, b -> _00002.
+        # Controls follow the same new stem, each preserving its extension.
+        assert (ds_root / "control" / f"{base}_00001.png").exists()
+        assert (ds_root / "control" / f"{base}_00002.jpg").exists()
+        assert (ds_root / "control_2" / f"{base}_00001.webp").exists()
+        # Old-stem control files are gone (no orphans, pairing intact).
+        assert not (ds_root / "control" / "a.png").exists()
+        assert not (ds_root / "control" / "b.jpg").exists()
+        assert not (ds_root / "control_2" / "a.webp").exists()
+    finally:
+        dataset_manager.datasets.pop(ds_name, None)
+
+
 def test_harmonize_task_route_enqueues(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app

@@ -433,6 +433,10 @@ class GenericSamplingPipeline(ABC):
         self._offload_to_cpu(te_moved)
 
         # ── Phase 2: Denoise (only transformer on GPU) ──
+        # Stash the full prompt config so edit/kontext samplers can read
+        # control_images without changing the abstract denoise() signature.
+        # Non-edit samplers ignore it.
+        self._active_prompt_cfg = prompt_cfg
         generator = torch.Generator(device=self.device).manual_seed(seed)
         noise = self._create_initial_noise(width, height, generator)
         latents = self.denoise(noise, text_emb, num_steps, guidance, seed)

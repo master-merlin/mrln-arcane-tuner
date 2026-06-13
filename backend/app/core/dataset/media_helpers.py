@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import structlog
@@ -140,6 +141,13 @@ def refresh_media_metadata_after_change(
     entry["has_masked"] = False
     entry["has_masked_caption"] = False
     entry.pop("mask_info", None)
+
+    # Control images are NOT invalidated (unlike masks they may be
+    # aspect/size-independent, and they're user data we must not destroy).
+    # Stamp the pair instead so the health check can flag a target that
+    # was pixel-edited after its controls were produced.
+    if entry.get("control_info"):
+        entry["control_info"]["target_edited_at"] = time.time()
 
     # Overlay was rendered against the old pixels — drop its metadata too.
     # (The physical overlay file + recipe are removed by

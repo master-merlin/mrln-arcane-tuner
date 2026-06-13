@@ -42,11 +42,13 @@ def _loaded_registry():
 ALL_DEFINITION_IDS = [
     "sdxl_base_1.0",
     "flux1-dev",
+    "flux1-kontext-dev",
     "flux1-schnell",
     "flux2-dev",
     "flux2-klein-base-4b",
     "flux2-klein-base-9b",
     "qwen-image-2512",
+    "qwen-image-edit-2509",
     "zimage-base",
     "zimage-de-turbo",
     "ernie-image-base-8b",

@@ -4,7 +4,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# Open set: gates pair UI/validation, deliberately a plain string in the
+# model so future kinds ("video", "mixed") only extend this set.
+_ALLOWED_DATASET_KINDS = {"standard", "edit"}
+
+
+def _validate_kind(v: str | None) -> str | None:
+    if v is not None and v not in _ALLOWED_DATASET_KINDS:
+        raise ValueError(
+            f"Unknown dataset kind '{v}'. "
+            f"Allowed: {sorted(_ALLOWED_DATASET_KINDS)}"
+        )
+    return v
 
 
 class CreateDatasetRequest(BaseModel):
@@ -15,6 +28,9 @@ class CreateDatasetRequest(BaseModel):
     trigger_word: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+    kind: str = "standard"
+
+    _check_kind = field_validator("kind")(_validate_kind)
 
 
 class UpdateDatasetRequest(BaseModel):
@@ -25,6 +41,11 @@ class UpdateDatasetRequest(BaseModel):
     trigger_word: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+    # None = leave unchanged, so older clients can't reset an edit
+    # dataset back to standard by omitting the field.
+    kind: str | None = None
+
+    _check_kind = field_validator("kind")(_validate_kind)
 
 
 class CaptionRequest(BaseModel):
@@ -90,6 +111,79 @@ class EnableAllResponse(BaseModel):
     reset_count: int
 
 
+class PairOrderRequest(BaseModel):
+    """Set (or clear with null) one pair group's logical role order."""
+    role_order: list[str] | None = None
+
+
+class PairOrderResponse(BaseModel):
+    """New role order for a single pair group."""
+    media_file: str
+    role_order: list[str] | None = None
+
+
+class PairOrderApplyAllRequest(BaseModel):
+    """Dataset-wide role order (the BACKWARD flip)."""
+    role_order: list[str] = Field(min_length=1)
+
+
+class PairOrderApplyAllResponse(BaseModel):
+    """Counts for a dataset-wide role-order application."""
+    applied: int
+    skipped: int
+
+
+class OrphansDeletedResponse(BaseModel):
+    """Count of orphaned control files removed."""
+    deleted: int
+
+
+class ControlOpSchema(BaseModel):
+    """One degradation op applied when generating control ("before") images."""
+    type: Literal["grayscale", "blur", "downscale", "noise"]
+    params: dict = Field(default_factory=dict)
+
+
+class ControlGenerateBatchRequest(BaseModel):
+    """Generate degraded control images for a slot from each target.
+
+    ``ops`` are applied in order to a copy of every target's root image and
+    written to the chosen control slot. Existing controls are skipped unless
+    ``overwrite``. ``stems`` restricts the run to a subset of targets (all
+    targets when null).
+    """
+    slot: int = Field(ge=1, le=3)
+    ops: list[ControlOpSchema] = Field(min_length=1)
+    overwrite: bool = False
+    stems: list[str] | None = None
+
+
+class OrphanControl(BaseModel):
+    """A control file whose stem has no target image."""
+    slot: str
+    rel_path: str
+
+
+class PairWarning(BaseModel):
+    """Per-stem pair-health warning."""
+    stem: str
+    type: Literal[
+        "dim_mismatch", "target_edited_after_control", "role_order_invalid",
+    ]
+
+
+class PairHealthResponse(BaseModel):
+    """Pair-health report for an edit dataset (all findings are warnings)."""
+    kind: str
+    target_count: int
+    paired_count: int
+    fully_paired: bool
+    active_slots: list[str] = Field(default_factory=list)
+    missing_by_slot: dict[str, list[str]] = Field(default_factory=dict)
+    orphans: list[OrphanControl] = Field(default_factory=list)
+    warnings: list[PairWarning] = Field(default_factory=list)
+
+
 class DatasetPairResponse(BaseModel):
     """One image/caption pair row. Canonical contract mirrored by the frontend
     ``DatasetPair`` interface (services/dataset.ts). Results are filtered to rows
@@ -105,3 +199,17 @@ class DatasetPairResponse(BaseModel):
     masked_caption_content: str | None = None
     # Free-form per-item media_metadata; shape varies by enrichment state.
     metadata: dict | None = None
+
+    # ── Paired edit datasets ─────────────────────────────────────────
+    # Physical control slot rel-paths in slot order (control/, control_2/,
+    # control_3/); empty for standard datasets.
+    control_files: list[str] = Field(default_factory=list)
+    # Per-slot dims + role_order + target_edited_at (mirrors mask_info).
+    control_info: dict | None = None
+    # Logical ordering: permutation of physical slot names ("root" +
+    # control dirs), position 0 = training target. None = default order.
+    role_order: list[str] | None = None
+    # Resolved roles — what training and the grid consume. The caption
+    # stays keyed to the stem regardless of ordering.
+    effective_target: str = ""
+    effective_controls: list[str] = Field(default_factory=list)

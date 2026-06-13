@@ -161,7 +161,7 @@ class ZImageTrainer(GenericTrainingPipeline):
     # and properly cleans self.components to prevent stale references.
 
     def encode_text(
-        self, captions: list[str], dtype: torch.dtype,
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None,
     ) -> list[torch.Tensor]:
         """Encode captions through the Z-Image text encoder.
 

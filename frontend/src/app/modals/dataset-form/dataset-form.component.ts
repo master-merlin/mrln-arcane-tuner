@@ -77,6 +77,18 @@ interface DatasetFormModalData {
                     <div class="field-error">A dataset named "{{ sanitizedName() }}" already exists.</div>
                 }
 
+                <label class="field-label df-mt">Type</label>
+                <select class="select" formControlName="kind" data-testid="dataset-kind-select">
+                    <option value="standard">Standard — single training images</option>
+                    <option value="edit">Edit (paired) — control "before" + target "after" images</option>
+                </select>
+                @if (kindValue() === 'edit') {
+                    <div class="field-hint">
+                        For Kontext / image-edit models. Control images live in a
+                        control/ folder matched by filename; captions describe the edit.
+                    </div>
+                }
+
                 <label class="field-label df-mt">Category</label>
                 <select class="select" formControlName="classifier">
                     <option value="">None / Uncategorized</option>
@@ -294,6 +306,12 @@ export class DatasetFormModalComponent {
         trigger_word: [''],
         description: [''],
         notes: [''],
+        kind: ['standard'],
+    });
+
+    /** Current `kind` control value as a signal (drives the edit-kind hint). */
+    protected kindValue = toSignal(this.form.controls.kind.valueChanges, {
+        initialValue: this.form.controls.kind.value,
     });
 
     /** Template-accessible constants. */
@@ -407,6 +425,7 @@ export class DatasetFormModalComponent {
                 trigger_word: ds.trigger_word ?? '',
                 description: ds.description ?? '',
                 notes: ds.notes ?? '',
+                kind: ds.kind ?? 'standard',
             });
             this.customClassifierValue.set('');
             this.tags.set([...(ds.tags ?? [])]);
@@ -524,12 +543,13 @@ export class DatasetFormModalComponent {
         // Flush any uncommitted tag draft before reading the form.
         if (this.tagDraft().trim()) this.commitDraftTag();
 
-        const { name, description, trigger_word, notes } = this.form.getRawValue();
+        const { name, description, trigger_word, notes, kind } = this.form.getRawValue();
         const classifier = this.resolveClassifier();
         const extra = {
             trigger_word: (trigger_word ?? '').trim(),
             tags: this.tags(),
             notes: notes ?? '',
+            kind: kind || 'standard',
         };
 
         this.submitting.set(true);
@@ -543,6 +563,7 @@ export class DatasetFormModalComponent {
                     trigger_word: extra.trigger_word,
                     tags: extra.tags,
                     notes: extra.notes,
+                    kind: extra.kind,
                 });
                 this.overlay.closeModal();
             } else {

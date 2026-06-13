@@ -54,9 +54,17 @@ class RenderPipelineBatchRequest(BaseModel):
 
 
 class OverlayCommitRequest(BaseModel):
-    """Request body for committing (flattening) an overlay into the original."""
+    """Request body for committing (flattening) an overlay.
+
+    ``target`` chooses the destination. ``"original"`` (default) is the
+    legacy destructive flatten over the source image. A control slot
+    (``"control"`` / ``"control_2"`` / ``"control_3"``) materializes the
+    overlay render into that slot as a paired control image — non-destructive
+    to the original (no mask invalidation), a first-class pair-production tool.
+    """
 
     image_path: str
+    target: Literal["original", "control", "control_2", "control_3"] = "original"
 
 
 class RestoreModelListRequest(BaseModel):

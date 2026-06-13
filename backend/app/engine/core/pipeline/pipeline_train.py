@@ -202,8 +202,18 @@ class PipelineTrainMixin:
                     if self._aug_v_flip and random.random() < 0.5:
                         latents = torch.flip(latents, dims=[-2])
 
-                    # 2. Encode Text (family hook)
-                    text_emb = self.encode_text(batch["captions"], self.autocast_dtype)
+                    # ── Clean control latents (paired edit runs) ──
+                    # Loaded after the target's flip aug so controls are never
+                    # flipped. No-op for non-edit batches; the family forward
+                    # consumes batch["control_latents"] when present.
+                    self._load_control_latents(batch)
+
+                    # 2. Encode Text (family hook). Pass the batch so paired-edit
+                    # trainers can condition the text encoder on the control image
+                    # + key the TE cache by (caption, control). Ignored otherwise.
+                    text_emb = self.encode_text(
+                        batch["captions"], self.autocast_dtype, batch=batch,
+                    )
 
                 # 3. Forward + Loss (under autocast)
                 with torch.autocast("cuda", dtype=self.autocast_dtype, enabled=self.use_amp):

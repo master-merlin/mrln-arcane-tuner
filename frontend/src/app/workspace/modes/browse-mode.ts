@@ -47,6 +47,8 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
             [showOverlay]="showOverlay()"
             [definitionId]="definitionId()"
             [variantCaptions]="variantCaptions()"
+            [datasetKind]="datasetKind()"
+            (pairOrderRequested)="openPairOrder($event)"
             (detailRequested)="openDetail($event)"
             (editRequested)="openEdit($event)"
             (captionSaved)="onCaptionSaved($event)"
@@ -88,6 +90,8 @@ export class BrowseMode {
     definitionId = input<string | null>(null);
     /** Resolved variant texts by stem for the active definition. */
     variantCaptions = input<Record<string, string>>({});
+    /** Dataset kind ('standard' | 'edit') — enables the grid's pair UX. */
+    datasetKind = input<string>('standard');
 
     /** Caption was edited and the textarea lost focus while dirty. */
     saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean; definitionId?: string | null }>();
@@ -116,6 +120,14 @@ export class BrowseMode {
         if (realIdx == null) return;
         this.overlay.setWorkspaceImage(realIdx);
         this.overlay.setWorkspaceMode('details');
+    }
+
+    /** Pair badge clicked — open the role-reorder modal for this group. */
+    protected openPairOrder(pair: DatasetPair): void {
+        this.overlay.openModal('pair-order', {
+            datasetName: this.datasetName(),
+            pair,
+        });
     }
 
     protected openEdit(visibleIdx: number): void {

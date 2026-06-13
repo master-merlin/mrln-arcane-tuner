@@ -31,9 +31,12 @@ def test_thumbnail_path_for_uses_stem_and_webp(tmp_path):
 
 def test_thumbnail_path_for_normalizes_backslash_keys(tmp_path):
     # rel_path may arrive with Windows-style backslashes from OS APIs;
-    # the helper normalizes them before extracting the stem.
-    expected = tmp_path / ".thumbnails" / "img_001.webp"
+    # the helper normalizes them before building the name. Subdir sources
+    # are namespaced (control/img1.jpg must not collide with img1.png),
+    # so both separator styles resolve to the same prefixed thumbnail.
+    expected = tmp_path / ".thumbnails" / "sub__img_001.webp"
     assert thumbnails.thumbnail_path_for(str(tmp_path), "sub\\img_001.png") == expected
+    assert thumbnails.thumbnail_path_for(str(tmp_path), "sub/img_001.png") == expected
 
 
 # ── generate_thumbnail (images) ─────────────────────────────────────────

@@ -124,6 +124,28 @@ export interface GridCropRequest {
                                  </span>
                              }
 
+                             <!-- Pair badge (bottom-center) — edit datasets only. Paired
+                                  tiles show the slot count (click → reorder modal, with a
+                                  flip indicator when the role order is non-default);
+                                  unpaired tiles get an amber warning chip. -->
+                             @if (datasetKind() === 'edit') {
+                                 @if (pair.control_files?.length) {
+                                     <button class="tile-pair-badge"
+                                             data-testid="tile-pair-badge"
+                                             [class.is-reordered]="!!pair.role_order"
+                                             (click)="onPairOrderClick(pair, $event)"
+                                             [title]="pair.role_order ? 'Paired — custom target/control order (click to reorder)' : 'Paired — click to reorder target/control'">
+                                         ⧉ {{ pair.control_files!.length }}@if (pair.role_order) {<span class="pair-flip">⇄</span>}
+                                     </button>
+                                 } @else {
+                                     <span class="tile-pair-badge is-unpaired"
+                                           data-testid="tile-unpaired-badge"
+                                           title="No control image — this target trains as an incomplete pair (skipped)">
+                                         UNPAIRED
+                                     </span>
+                                 }
+                             }
+
                              <!-- H/C/M state pills (bottom-right) — shared .state-pills-pad from components.css -->
                              <span class="absolute bottom-2 right-2 z-20 state-pills-pad">
                                 <app-state-pills [state]="pairState(pair)"/>
@@ -158,7 +180,7 @@ export interface GridCropRequest {
                                 (ngModelChange)="onCaptionEdit(pair, $event)"
                                 (blur)="onCaptionBlur(pair)"
                                 class="w-full h-full bg-transparent text-text-secondary text-xs p-3 focus:bg-base focus:outline-none resize-none font-mono"
-                                placeholder="Add caption..."
+                                [placeholder]="datasetKind() === 'edit' ? 'Describe the edit (e.g. \\'make it a watercolor painting\\')...' : 'Add caption...'"
                             ></textarea>
                         </div>
                     </div>
@@ -227,6 +249,41 @@ export interface GridCropRequest {
             40% { transform: translateY(-7px); opacity: 1; }
         }
 
+        /* Pair badge — bottom-center chip on edit-dataset tiles. Neutral
+           glass when paired (clickable → reorder modal), amber when the
+           target has no control image. Clears both the OVR badge
+           (bottom-left) and the H/C/M cluster (bottom-right). */
+        .tile-pair-badge {
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 2px 7px;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: var(--color-text-primary);
+            background: color-mix(in oklab, var(--color-surface-low) 75%, transparent);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-theme-sm);
+            box-shadow: 0 1px 2px oklch(0 0 0 / 0.35);
+            cursor: pointer;
+        }
+        .tile-pair-badge:hover { border-color: var(--color-brand); }
+        .tile-pair-badge.is-reordered { color: var(--color-brand); }
+        .tile-pair-badge.is-unpaired {
+            color: white;
+            background: color-mix(in oklab, var(--color-warning) 80%, transparent);
+            border-color: transparent;
+            cursor: default;
+            pointer-events: none;
+        }
+        .pair-flip { font-size: 10px; line-height: 1; }
+
         /* OVR badge — small purple chip indicating an adjustment overlay is
            applied. Sits opposite the HPS pill (bottom-left) so it doesn't
            collide with the H/C/M cluster at bottom-right. */
@@ -278,6 +335,9 @@ export class ViewerGridViewComponent {
     /** Resolved variant texts by stem for the active definition (only stems
      *  that HAVE a variant; absent stems fall back to the general caption). */
     variantCaptions = input<Record<string, string>>({});
+    /** Dataset kind ('standard' | 'edit'). 'edit' enables pair badges, the
+     *  effective-target thumbnail, and the edit-instruction caption hint. */
+    datasetKind = input<string>('standard');
 
     /** True when editing per-definition variants (model-aware + a definition +
      *  not viewing masked captions). */
@@ -434,6 +494,8 @@ export class ViewerGridViewComponent {
     exclusionToggled = output<{ media_file: string, enabled: boolean }>();
     editRequested = output<number>();
     enableAllRequested = output<void>();
+    /** Pair badge clicked on an edit-dataset tile — open the reorder modal. */
+    pairOrderRequested = output<DatasetPair>();
 
     hasAnyOverlay(): boolean {
         return this.pairs().some(p => p.metadata?.has_overlay);
@@ -457,7 +519,22 @@ export class ViewerGridViewComponent {
         ) {
             return this.getOverlayUrl(pair.media_file);
         }
+        // Edit datasets show the LOGICAL target (role_order may point a
+        // control slot at the tile). Masked/overlay views above stay
+        // root-image-specific, so they take precedence intentionally.
+        if (
+            this.datasetKind() === 'edit'
+            && pair.effective_target
+            && pair.effective_target !== pair.media_file
+        ) {
+            return this.getMediaUrl(pair.effective_target);
+        }
         return this.getMediaUrl(pair.media_file);
+    }
+
+    onPairOrderClick(pair: GridPair, event: Event): void {
+        event.stopPropagation();
+        this.pairOrderRequested.emit(pair);
     }
 
     deletePair(pair: GridPair, event: Event) {

@@ -31,6 +31,10 @@ export interface Dataset {
   tags?: string[];
   notes?: string;
   median_quality_score?: number | null;
+  /** Dataset kind — open enum: 'standard' (default) | 'edit' (paired
+   *  control images for kontext/edit-model training). Gates the pair UX
+   *  (badges, control tabs, role ordering, health). */
+  kind?: string;
   /** Number of images in this dataset with `enabled === false` (currently
    *  excluded from training). Surfaced by the list endpoint (PR8a); older
    *  payloads omit it. */
@@ -133,6 +137,15 @@ export interface PairMetadata {
   is_majority_ar?: boolean;
   /** Present once a mask has been generated; drives the mask-info readouts. */
   mask_info?: { width?: number; height?: number; size_bytes?: number; [k: string]: unknown };
+  /** Number of control slot images paired with this target (edit datasets). */
+  control_count?: number;
+  /** Per-slot control file info + role_order + target_edited_at stamp. */
+  control_info?: {
+    slots?: Record<string, { rel_path?: string; width?: number; height?: number }>;
+    role_order?: string[];
+    target_edited_at?: number;
+    [k: string]: unknown;
+  } | null;
   [extra: string]: unknown;
 }
 
@@ -153,6 +166,18 @@ export interface DatasetPair {
   caption_content: string;
   masked_caption_content: string | null;
   metadata: PairMetadata | null;
+  /** Physical control slot rel-paths in slot order (control/, control_2/,
+   *  control_3/); empty for standard datasets. */
+  control_files?: string[];
+  /** Per-slot dims + role_order + target_edited_at (mirrors metadata). */
+  control_info?: PairMetadata['control_info'];
+  /** Logical ordering: permutation of physical slot names ('root' +
+   *  control dirs), position 0 = training target. null = default order. */
+  role_order?: string[] | null;
+  /** Resolved logical target rel-path (what training + the grid show). */
+  effective_target?: string;
+  /** Resolved logical control rel-paths, in role order. */
+  effective_controls?: string[];
 }
 
 export interface TagCount { tag: string; count: number; }
@@ -223,6 +248,8 @@ export interface RenderPipelineResponse {
 export interface OverlayRecipeResponse { image_path: string; recipe: Record<string, unknown>; }
 /** `DELETE /datasets/{name}/overlay/{path}` (revert) and `/overlay/commit`. */
 export interface OverlayActionResponse { status: string; file: string; }
+/** One degradation op for `POST /datasets/{name}/control/generate-batch`. */
+export interface ControlDegradeOp { type: 'grayscale' | 'blur' | 'downscale' | 'noise'; params?: Record<string, unknown>; }
 /** One downloadable model in a registry category. */
 export interface ModelRegistryItem {
   filename: string; downloaded: boolean; local_size_mb: number | null;
@@ -232,6 +259,31 @@ export interface ModelRegistryItem {
 export interface ModelRegistryResponse { category: string; folder: string; models: ModelRegistryItem[]; }
 /** `POST /models/download`. */
 export interface ModelDownloadResponse { status: string; filename: string; path: string; size_mb: number; }
+/** A control file whose stem has no target image. */
+export interface OrphanControl { slot: string; rel_path: string; }
+/** Per-stem pair-health warning. */
+export interface PairWarning {
+  stem: string;
+  type: 'dim_mismatch' | 'target_edited_after_control' | 'role_order_invalid';
+}
+/** `GET /datasets/{name}/control/health`. */
+export interface PairHealth {
+  kind: string;
+  target_count: number;
+  paired_count: number;
+  fully_paired: boolean;
+  active_slots: string[];
+  missing_by_slot: Record<string, string[]>;
+  orphans: OrphanControl[];
+  warnings: PairWarning[];
+}
+/** `PATCH /datasets/{name}/images/{file}/pair-order`. */
+export interface PairOrderResponse { media_file: string; role_order: string[] | null; }
+/** `POST /datasets/{name}/pair-order/apply-all`. */
+export interface PairOrderApplyAllResponse { applied: number; skipped: number; }
+/** `DELETE /datasets/{name}/control/orphans`. */
+export interface OrphansDeletedResponse { deleted: number; }
+
 /** One pending caption-variant suggestion row. */
 export interface SuggestionItem { stem: string; suggestion: string; current: string; }
 /** `GET /datasets/{name}/caption-suggestions?definition_id=X`. */
@@ -272,7 +324,7 @@ export class DatasetService {
     name: string,
     description: string,
     classifier: string = '',
-    extra: { trigger_word?: string; tags?: string[]; notes?: string } = {},
+    extra: { trigger_word?: string; tags?: string[]; notes?: string; kind?: string } = {},
   ): Observable<Dataset> {
     return this.http.post<Dataset>(this.apiUrl, {
       name,
@@ -281,6 +333,7 @@ export class DatasetService {
       trigger_word: extra.trigger_word ?? '',
       tags: extra.tags ?? [],
       notes: extra.notes ?? '',
+      kind: extra.kind ?? 'standard',
     });
   }
 
@@ -324,6 +377,52 @@ export class DatasetService {
     return this.http.post<UploadResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/upload`, formData);
   }
 
+  /** Upload a control image into slot 1..3 for an existing target stem.
+   *  The backend renames the file to `{targetStem}{ext}` inside the slot
+   *  folder so the stem-pairing convention holds. */
+  uploadControlFile(
+    name: string, file: File, slot: number, targetStem: string,
+  ): Observable<UploadResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('slot', String(slot));
+    formData.append('target_stem', targetStem);
+    return this.http.post<UploadResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/upload`, formData);
+  }
+
+  // ── Paired edit datasets ───────────────────────────────────────────
+
+  /** On-demand pair-health report (counts, missing slots, orphans, warnings). */
+  getPairHealth(name: string): Observable<PairHealth> {
+    return this.http.get<PairHealth>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/control/health`);
+  }
+
+  /** Set (or clear with null) one pair group's logical role order. */
+  setPairOrder(
+    name: string, mediaFile: string, roleOrder: string[] | null,
+  ): Observable<PairOrderResponse> {
+    return this.http.patch<PairOrderResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/images/${encodeURIComponent(mediaFile)}/pair-order`,
+      { role_order: roleOrder });
+  }
+
+  /** Apply one role order to every pair group that has the named slots
+   *  (the dataset-wide BACKWARD flip). */
+  applyPairOrderAll(
+    name: string, roleOrder: string[],
+  ): Observable<PairOrderApplyAllResponse> {
+    return this.http.post<PairOrderApplyAllResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/pair-order/apply-all`,
+      { role_order: roleOrder });
+  }
+
+  /** Delete every control file whose stem has no target image. */
+  deleteControlOrphans(name: string): Observable<OrphansDeletedResponse> {
+    return this.http.delete<OrphansDeletedResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/control/orphans`);
+  }
+
   deleteDataset(name: string, deleteFiles: boolean = false): Observable<DatasetDeletedResponse> {
     return this.http.delete<DatasetDeletedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}?delete_files=${deleteFiles}`);
   }
@@ -333,7 +432,7 @@ export class DatasetService {
     newName: string,
     description: string,
     classifier: string = '',
-    extra: { trigger_word?: string; tags?: string[]; notes?: string } = {},
+    extra: { trigger_word?: string; tags?: string[]; notes?: string; kind?: string } = {},
   ): Observable<Dataset> {
     return this.http.patch<Dataset>(`${this.apiUrl}/${encodeURIComponent(currentName)}`, {
       name: newName,
@@ -342,6 +441,8 @@ export class DatasetService {
       trigger_word: extra.trigger_word ?? '',
       tags: extra.tags ?? [],
       notes: extra.notes ?? '',
+      // null = leave unchanged (backend treats absent/None as "keep").
+      kind: extra.kind ?? null,
     });
   }
 
@@ -650,10 +751,38 @@ export class DatasetService {
     );
   }
 
-  commitOverlay(name: string, imagePath: string): Observable<OverlayActionResponse> {
+  /**
+   * Flatten the overlay. `target` defaults to `'original'` (the destructive
+   * bake over the source). A control slot (`'control'|'control_2'|'control_3'`)
+   * materializes the render into that slot as a paired control image —
+   * non-destructive to the original (edit-dataset pair production).
+   */
+  commitOverlay(
+    name: string,
+    imagePath: string,
+    target: 'original' | 'control' | 'control_2' | 'control_3' = 'original',
+  ): Observable<OverlayActionResponse> {
     return this.http.post<OverlayActionResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/overlay/commit`,
-      { image_path: imagePath },
+      { image_path: imagePath, target },
+    );
+  }
+
+  /**
+   * Enqueue a PIL-only batch that degrades each target image into a control
+   * slot (grayscale/blur/downscale/noise) — the BACKWARD pair-production tool.
+   * Runs on the non-GPU background lane; returns the Task Center task id.
+   */
+  generateControlBatch(
+    name: string,
+    slot: number,
+    ops: ControlDegradeOp[],
+    overwrite: boolean = false,
+    stems?: string[],
+  ): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/control/generate-batch`,
+      { slot, ops, overwrite, ...(stems ? { stems } : {}) },
     );
   }
 

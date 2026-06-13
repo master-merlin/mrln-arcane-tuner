@@ -19,6 +19,10 @@ export interface CapabilityFlags {
   supports_train_te: boolean;
   supports_te_quantization: boolean;
   supports_block_swap: boolean;
+  /** Paired control-image inputs (0 = standard T2I, >0 = edit/kontext model). */
+  control_inputs: number;
+  /** True when this is a paired edit model (control_inputs > 0). */
+  is_edit: boolean;
 }
 
 export interface FieldVisibility {

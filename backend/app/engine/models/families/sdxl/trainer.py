@@ -222,7 +222,7 @@ class SDXLTrainer(GenericTrainingPipeline):
         return prompt_embeds, pooled_embeds
 
     def encode_text(
-        self, captions: list[str], dtype: torch.dtype
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None
     ) -> torch.Tensor:
         """Dual CLIP encoding with lazy caching.
 

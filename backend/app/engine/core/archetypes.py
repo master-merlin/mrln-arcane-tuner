@@ -78,6 +78,29 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         "supports_block_swap",
         "no block topology declared for this family",
     ),
+    # Paired edit models (control_inputs > 0): geometric augmentation breaks
+    # control/target pixel correspondence, masked variants are mutually
+    # exclusive with paired training, and control_resolution only applies here.
+    (
+        "h_flip",
+        "supports_augmentation",
+        "paired edit training — flip augmentation breaks control/target correspondence",
+    ),
+    (
+        "v_flip",
+        "supports_augmentation",
+        "paired edit training — flip augmentation breaks control/target correspondence",
+    ),
+    (
+        "masking_enabled",
+        "supports_masking_variants",
+        "masked variants are mutually exclusive with paired edit training",
+    ),
+    (
+        "control_resolution",
+        "is_edit",
+        "control resolution only applies to paired edit models",
+    ),
 ]
 
 
@@ -124,6 +147,17 @@ def resolve_capabilities(definition) -> dict:
     arch = ARCHETYPES[family_cls.archetype]
     caps = {k: v for k, v in asdict(arch).items() if k not in ("id", "config_defaults")}
     caps.update(getattr(family_cls, "capability_overrides", {}))
+
+    # Paired edit conditioning (per-definition, not per-archetype). Surface
+    # control_inputs + an ``is_edit`` flag and the derived gates the field
+    # rules consume (augmentation/masking are disabled for edit models).
+    control_inputs = int(getattr(definition, "control_inputs", 0) or 0)
+    is_edit = control_inputs > 0
+    caps["control_inputs"] = control_inputs
+    caps["is_edit"] = is_edit
+    caps["supports_augmentation"] = not is_edit
+    caps["supports_masking_variants"] = not is_edit
+
     merged = {**arch.config_defaults, **(definition.defaults or {})}
     defaults = {k: _coerce_number(v) for k, v in merged.items()}
     return {

@@ -46,6 +46,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v12,
         _migrate_v13,
         _migrate_v14,
+        _migrate_v15,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -898,4 +899,28 @@ def _migrate_v14(conn) -> None:
         "UPDATE masking_templates SET readonly = 1 "
         "WHERE is_default = 1 AND project_id IS NULL AND readonly = 0"
     )
+
+
+# ── V15: Paired-image (edit/kontext) dataset support ────────────────────
+
+def _migrate_v15(conn) -> None:
+    """Add dataset ``kind`` + per-item control metadata for edit datasets.
+
+    ``datasets.kind`` is an open string enum (``standard`` | ``edit``;
+    ``video``/``mixed`` reserved) — it gates pair UI/validation but never
+    deletes files when switched. ``media_items.control_count`` /
+    ``control_info`` mirror the ``mask_info`` pattern: per-slot rel paths
+    and dimensions for stem-matched ``control*/`` images, plus the logical
+    ``role_order`` (which physical slot is the training target) and the
+    ``target_edited_at`` staleness stamp.
+    """
+    for ddl in (
+        "ALTER TABLE datasets ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard'",
+        "ALTER TABLE media_items ADD COLUMN control_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_items ADD COLUMN control_info TEXT",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass  # Column already exists
 

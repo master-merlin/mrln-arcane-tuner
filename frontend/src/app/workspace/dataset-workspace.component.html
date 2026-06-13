@@ -70,6 +70,13 @@
                 <app-context-switcher/>
                 <app-model-selector/>
                 <span class="ws-divider"></span>
+                @if (dataset()?.kind === 'edit') {
+                    <button class="btn sm" type="button" (click)="openPairHealth()"
+                            data-testid="ws-pair-health-btn"
+                            title="Pair health — paired/unpaired counts, orphans, warnings">
+                        <app-ico name="Copy" [size]="13"/> Pairs
+                    </button>
+                }
                 <button class="btn sm" type="button" (click)="openAction('analyze')"
                         title="Analyze dataset">
                     <app-ico name="PieChart" [size]="13"/> Analyze
@@ -188,6 +195,7 @@
                         [showOverlay]="showOverlay()"
                         [definitionId]="variantDefinitionId()"
                         [variantCaptions]="variantCaptions()"
+                        [datasetKind]="dataset()?.kind ?? 'standard'"
                         (saveCaption)="onSaveCaption($event)"
                         (toggleExclusion)="onToggleExclusion($event)"
                         (deletePair)="onDeletePairRequested($event)"/>

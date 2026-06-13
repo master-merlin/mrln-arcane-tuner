@@ -179,9 +179,13 @@ class QwenImageTrainer(GenericTrainingPipeline):
     # and properly cleans self.components to prevent stale references.
 
     def encode_text(
-        self, captions: list[str], dtype: torch.dtype,
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode captions through Qwen2.5-VL in text-only mode.
+
+        ``batch`` is accepted for hook compatibility and ignored here — the
+        paired-edit subclass (:class:`QwenImageEditTrainer`) uses it to feed
+        the control image to the VL encoder and key the cache compositely.
 
         Returns a ``(embeddings, attention_mask)`` tuple.  The base
         pipeline passes this opaquely to ``forward_pass()`` which unpacks it.

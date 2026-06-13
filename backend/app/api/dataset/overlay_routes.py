@@ -351,7 +351,7 @@ async def delete_overlay(name: str, image_path: str):
 
 @router.post("/datasets/{name}/overlay/commit", response_model=OverlayActionResponse)
 async def commit_overlay(name: str, request: OverlayCommitRequest):
-    """Flatten the overlay into the original file (destructive)."""
+    """Flatten the overlay — into the original (destructive) or a control slot."""
     dataset, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
     stem = Path(request.image_path).stem
     overlay_path = dataset_root / "overlays" / f"{stem}.png"
@@ -359,6 +359,36 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
 
     if not overlay_path.exists():
         raise HTTPException(status_code=404, detail="No overlay to commit")
+
+    # ── Save into a control slot (non-destructive pair production) ──────────
+    if request.target != "original":
+        from app.core.dataset.control_helpers import (
+            CONTROL_SLOTS,
+            prepare_control_slot_path,
+        )
+
+        slot_index = CONTROL_SLOTS.index(request.target) + 1
+
+        def _save_to_slot() -> str:
+            dest = prepare_control_slot_path(
+                str(dataset_root), slot_index, stem, ".png",
+            )
+            # Copy the rendered overlay into the slot; the original (and its
+            # overlay/recipe) are left untouched — no mask invalidation.
+            shutil.copy2(str(overlay_path), dest)
+            return f"{request.target}/{stem}.png"
+
+        rel = await asyncio.to_thread(_save_to_slot)
+        # Refresh control_info on the paired target (no full rescan); this
+        # emits the media_item entity.changed event so the grid/pair UX updates.
+        await asyncio.to_thread(
+            dataset_manager.refresh_control_metadata, name, stem,
+        )
+        logger.info(
+            "overlay_saved_to_control",
+            dataset_name=name, image_path=request.image_path, slot=request.target,
+        )
+        return {"status": "saved_to_control", "file": rel}
 
     def _commit():
         # Overwrite original with overlay

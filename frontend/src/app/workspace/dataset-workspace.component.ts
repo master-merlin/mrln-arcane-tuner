@@ -661,6 +661,13 @@ export class DatasetWorkspaceComponent {
      * error path. The workspace just provides the local-cache
      * reconciliation callback.
      */
+    /** Open the pair-health modal (edit datasets — header "Pairs" button). */
+    protected openPairHealth(): void {
+        const d = this.dataset();
+        if (!d) return;
+        this.overlay.openModal('pair-health', { datasetName: d.name });
+    }
+
     protected editVersion(): void {
         const d = this.dataset();
         if (!d) return;
@@ -690,6 +697,7 @@ export class DatasetWorkspaceComponent {
 function projectPair(item: MediaItem, caption?: CaptionRow): DatasetPair {
     const {
         id, dataset_name, media_file, stem, media_type, caption_file,
+        control_files, role_order, effective_target, effective_controls,
         ...metadata
     } = item;
     return {
@@ -702,6 +710,14 @@ function projectPair(item: MediaItem, caption?: CaptionRow): DatasetPair {
         caption_content: caption?.caption_content ?? '',
         masked_caption_content: caption?.masked_caption_content ?? null,
         metadata,
+        // Pair-level control fields are ROW fields in the `/pairs` shape —
+        // hoist them back out of the MediaItem so the grid/detail pair UX
+        // (badges, control tabs, reorder modal) sees them where the HTTP
+        // contract puts them.
+        control_files: control_files ?? [],
+        role_order: role_order ?? null,
+        effective_target: effective_target ?? media_file,
+        effective_controls: effective_controls ?? [],
     };
 }
 

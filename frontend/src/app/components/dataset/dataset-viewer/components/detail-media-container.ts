@@ -24,6 +24,31 @@ import type { DatasetPair } from '../../../../services/dataset';
             </div>
         }
 
+        <!-- Control slot tabs (paired edit datasets) — switch between the
+             logical target and each control; hold the compare button to
+             flash the primary control for a quick A/B. -->
+        @if (currentPair().control_files?.length) {
+            <div class="ctl-tabs" data-testid="detail-control-tabs">
+                <button type="button"
+                        [class.active]="viewSlot() === -1"
+                        (click)="viewSlot.set(-1)">Target</button>
+                @for (c of currentPair().effective_controls ?? []; track c; let i = $index) {
+                    <button type="button"
+                            [class.active]="viewSlot() === i"
+                            [title]="c"
+                            (click)="viewSlot.set(i)">Control {{ i + 1 }}</button>
+                }
+                <button type="button" class="ctl-peek"
+                        data-testid="detail-ab-peek"
+                        title="Hold to overlay the primary control (A/B compare)"
+                        (pointerdown)="peek.set(true)"
+                        (pointerup)="peek.set(false)"
+                        (pointerleave)="peek.set(false)">
+                    ⇄ Hold to compare
+                </button>
+            </div>
+        }
+
         <button (click)="prevRequested.emit()" class="absolute left-4 top-1/2 -translate-y-1/2 bg-base/60 hover:bg-overlay text-white p-3 rounded-full opacity-0 group-hover:opacity-100 transition-all transform hover:scale-110">
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
         </button>
@@ -32,7 +57,43 @@ import type { DatasetPair } from '../../../../services/dataset';
         </button>
     </div>
     `,
-    styles: []
+    styles: [`
+        .ctl-tabs {
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 15;
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            padding: 3px;
+            border-radius: var(--radius-theme-lg);
+            background: color-mix(in oklab, var(--color-surface-low) 80%, transparent);
+            border: 1px solid var(--color-border-subtle);
+            backdrop-filter: blur(6px);
+        }
+        .ctl-tabs button {
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--color-text-muted);
+            border-radius: var(--radius-theme-md);
+            background: transparent;
+        }
+        .ctl-tabs button:hover { color: var(--color-text-primary); }
+        .ctl-tabs button.active {
+            color: white;
+            background: var(--color-brand);
+        }
+        .ctl-tabs .ctl-peek {
+            margin-left: 4px;
+            border-left: 1px solid var(--color-border-subtle);
+            border-radius: 0 var(--radius-theme-md) var(--radius-theme-md) 0;
+            user-select: none;
+        }
+        .ctl-tabs .ctl-peek:active { color: var(--color-brand); }
+    `]
 })
 export class DetailMediaContainerComponent {
     currentPair = input.required<DatasetPair>();
@@ -65,12 +126,24 @@ export class DetailMediaContainerComponent {
      */
     protected failedOverlays = signal<Set<string>>(new Set());
 
+    /** Active control-tab index (-1 = logical target) — edit datasets. */
+    protected viewSlot = signal<number>(-1);
+    /** True while the A/B compare button is held (shows the primary control). */
+    protected peek = signal<boolean>(false);
+
     constructor() {
         // Drop previously-failed overlays whenever the cache-bust counter
         // bumps — those URLs may now be valid (overlay re-rendered).
         effect(() => {
             this.lastUpdateTime();    // track the signal
             this.failedOverlays.set(new Set());
+        });
+
+        // Navigating to another image resets the control tab to Target.
+        effect(() => {
+            this.currentPair();
+            this.viewSlot.set(-1);
+            this.peek.set(false);
         });
     }
 
@@ -94,6 +167,14 @@ export class DetailMediaContainerComponent {
     }
 
     getDisplayUrl(pair: DatasetPair): string {
+        // Paired edit datasets: control tabs + the hold-to-compare peek
+        // take precedence — they explicitly select which slot to show.
+        const controls = pair.effective_controls ?? [];
+        if (controls.length) {
+            if (this.peek()) return this.getMediaUrl(controls[0]);
+            const slot = this.viewSlot();
+            if (slot >= 0 && controls[slot]) return this.getMediaUrl(controls[slot]);
+        }
         if (this.showMasked() && pair.metadata?.has_masked) {
             const stem = pair.media_file.substring(0, pair.media_file.lastIndexOf('.'));
             return this.getMediaUrl('masked/' + stem + '.jpg');
@@ -103,6 +184,10 @@ export class DetailMediaContainerComponent {
             && !this.failedOverlays().has(pair.media_file)
         ) {
             return this.getOverlayUrl(pair.media_file);
+        }
+        // Logical target may live in a control slot (role_order flip).
+        if (pair.effective_target && pair.effective_target !== pair.media_file) {
+            return this.getMediaUrl(pair.effective_target);
         }
         return this.getMediaUrl(pair.media_file);
     }

@@ -48,6 +48,11 @@ class SamplePromptConfig(BaseModel):
         3.5, description="CFG scale (0 = no guidance)",
         json_schema_extra={"group": "SAMPLING", "min": 0.0, "max": 20.0, "step": 0.5}
     )
+    control_images: list[str] = Field(
+        default_factory=list,
+        description="Control image path(s) for edit-model sampling (the 'before' image). Ignored by standard models.",
+        json_schema_extra={"group": "SAMPLING"}
+    )
 
 
 class DatasetItem(BaseModel):
@@ -132,6 +137,11 @@ class BaseTrainingConfig(BaseModel):
     use_cached_latents: bool = Field(False, description="Re-use latent cache from prior run (only encode new/changed images)", json_schema_extra={"group": "STRATEGY", "depends_on": "resume_from_checkpoint"})
     use_cached_embeddings: bool = Field(False, description="Re-use embedding cache from prior run (only encode new captions)", json_schema_extra={"group": "STRATEGY", "depends_on": "resume_from_checkpoint"})
     resolutions: list[int] = Field([1024], description="Target resolutions for bucketing", json_schema_extra={"group": "STRATEGY"})
+    control_resolution: int = Field(
+        0,
+        description="Base resolution for control images in paired edit training (0 = follow the target's bucket). Qwen-Edit recommends 1024.",
+        json_schema_extra={"group": "STRATEGY", "min": 0, "max": 2048, "step": 64}
+    )
     resolution_strategy: Literal["mixed", "progressive"] = Field("mixed", description="Mixed: all resolutions at once. Progressive: small resolutions first, scale up during training.", json_schema_extra={"group": "STRATEGY"})
     bucketing_mode: Literal["kohya", "multi"] = Field("kohya", description="Kohya: single best resolution per image. Multi: image appears at every qualifying resolution (more latent diversity).", json_schema_extra={"group": "STRATEGY"})
     timestep_sampling: Literal["logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc"] = Field(
@@ -291,16 +301,20 @@ class TrainingPlugin(ABC):
         definition_map = {}
         all_definitions = []
         all_definition_labels = []
+        # definition_id -> control_inputs; lets the frontend dataset picker
+        # require an edit (paired) dataset when an edit model is selected.
+        edit_map = {}
 
         for model in registry._definitions.values():
             if model.family not in families:
                 families.append(model.family)
             if model.family not in definition_map:
                 definition_map[model.family] = []
-            
+
             definition_map[model.family].append(model.id)
             all_definitions.append(model.id)
             all_definition_labels.append(f"{model.name} v{model.version}")
+            edit_map[model.id] = int(getattr(model, "control_inputs", 0) or 0)
 
         if "properties" in schema:
             if "model_family" in schema["properties"]:
@@ -312,6 +326,7 @@ class TrainingPlugin(ABC):
                 schema["properties"]["definition_id"]["enum"] = all_definitions
                 schema["properties"]["definition_id"]["enum_labels"] = all_definition_labels
                 schema["properties"]["definition_id"]["backend_map"] = definition_map
+                schema["properties"]["definition_id"]["edit_map"] = edit_map
                 schema["properties"]["definition_id"]["default"] = all_definitions[0] if all_definitions else ""
 
         # Inject backend-to-scheme map for frontend dependent dropdowns

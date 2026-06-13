@@ -22,6 +22,14 @@ class ModelDefinition(BaseModel):
     defaults: dict[str, Any] = Field(default_factory=dict)
     components: dict[str, ModelComponent] = Field(default_factory=dict)
 
+    # Number of paired control images this model conditions on (0 = standard
+    # text-to-image; 1 = FLUX.1 Kontext / Qwen-Image-Edit; up to 3 for
+    # multi-reference edit variants). Drives the edit-dataset capability
+    # surface, field gating, and run-config validation.
+    control_inputs: int = Field(
+        0, description="Paired control-image inputs (0 = standard T2I)"
+    )
+
     # --- Introspection fields (auto-enriched) ---
     detected_precision: dict[str, str] = Field(
         default_factory=dict,

@@ -56,6 +56,13 @@ export interface MediaItem {
     is_majority_ar?: boolean;
     /** Present once a mask exists; mirrors `PairMetadata.mask_info`. */
     mask_info?: { width?: number; height?: number; size_bytes?: number; [k: string]: unknown };
+    /** Paired edit datasets — physical control slot rel-paths (slot order). */
+    control_files?: string[];
+    /** Logical role order; null/absent = default (root image is target). */
+    role_order?: string[] | null;
+    /** Resolved logical target/control rel-paths from the `/pairs` row. */
+    effective_target?: string;
+    effective_controls?: string[];
     [extra: string]: unknown;
 }
 
@@ -216,6 +223,12 @@ export class MediaItemStore extends EntityStore<MediaItem> {
             media_type: p.media_type ?? meta.media_type,
             caption_file: p.caption_file ?? meta.caption_file,
             has_caption: !!(p.caption_file ?? meta.caption_file),
+            // Pair-level control fields live on the /pairs ROW (not in the
+            // metadata blob) — copy them explicitly or they'd be dropped.
+            control_files: p.control_files ?? [],
+            role_order: p.role_order ?? null,
+            effective_target: p.effective_target ?? p.media_file,
+            effective_controls: p.effective_controls ?? [],
         };
     }
 

@@ -41,8 +41,13 @@ def thumbnail_path_for(dataset_path: str, rel_path: str) -> Path:
 
     The thumbnail filename mirrors the source stem with a ``.webp``
     extension. ``rel_path`` may use forward slashes or OS separators.
+    Subdirectory sources (e.g. ``control/img1.jpg``) prefix their dir
+    components (``control__img1.webp``) — root naming is unchanged so
+    existing thumbnails stay valid, and a control image can't collide
+    with the root image of the same stem.
     """
-    stem = Path(rel_path.replace("\\", "/")).stem
+    p = Path(rel_path.replace("\\", "/"))
+    stem = "__".join((*p.parent.parts, p.stem)) if p.parent.parts else p.stem
     return thumbnail_dir(dataset_path) / f"{stem}.webp"
 
 

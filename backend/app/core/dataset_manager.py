@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -60,6 +61,10 @@ class Dataset(BaseModel):
     trigger_word: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+    # Open enum: "standard" | "edit" today ("video"/"mixed" reserved).
+    # "edit" enables paired-control affordances (control/ slots, role
+    # ordering, pair health); switching kind never touches files on disk.
+    kind: str = "standard"
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -410,6 +415,7 @@ class DatasetManager:
         trigger_word: str = "",
         tags: list[str] | None = None,
         notes: str = "",
+        kind: str = "standard",
     ) -> Dataset:
         if path is None:
             # Auto-created folder: the stored name MUST equal the folder basename.
@@ -442,6 +448,7 @@ class DatasetManager:
             trigger_word=trigger_word,
             tags=tags or [],
             notes=notes,
+            kind=kind,
             created_at=time.time(),
             version="1.0.0"
         )
@@ -1276,6 +1283,7 @@ class DatasetManager:
         new_trigger_word: str = "",
         new_tags: list[str] | None = None,
         new_notes: str = "",
+        new_kind: str | None = None,
     ) -> Dataset:
         if current_name not in self.datasets:
             raise ValueError(f"Dataset '{current_name}' not found.")
@@ -1329,6 +1337,10 @@ class DatasetManager:
         dataset.trigger_word = new_trigger_word
         dataset.tags = new_tags or []
         dataset.notes = new_notes
+        # None = leave unchanged (older clients PATCH without a kind and
+        # must not silently reset an edit dataset back to standard).
+        if new_kind is not None:
+            dataset.kind = new_kind
         self._persist_dataset(dataset)
 
         loop = self._loop
@@ -1401,13 +1413,22 @@ class DatasetManager:
         
         # Sort by filename
         result.sort(key=lambda x: x["media_file"])
-        
+
+        # Control slot files (paired edit datasets) — one scandir per slot
+        # dir, disk-truth like the rest of this endpoint. Empty for
+        # datasets without control/ folders.
+        from app.core.dataset.control_helpers import (
+            list_control_stem_maps,
+            resolve_effective_roles,
+        )
+        control_maps = list_control_stem_maps(dataset.path)
+
         # Hydrate with content and metadata
         for p in result:
             p["caption_content"] = ""
             p["masked_caption_content"] = None
             p["metadata"] = None
-            
+
             if p["caption_file"]:
                 try:
                     p["caption_content"] = self.read_caption(name, p["caption_file"])
@@ -1451,6 +1472,34 @@ class DatasetManager:
                             except Exception:
                                 pass
                     p["metadata"] = meta
+
+            # Pair roles: physical slot files from disk, logical ordering
+            # from metadata (``control_info.role_order``). The resolved
+            # ``effective_target``/``effective_controls`` are what training
+            # and the grid consume — re-ordering is metadata-only.
+            slot_files: dict[str, str] = {}
+            for slot, stem_map in control_maps.items():
+                fname = stem_map.get(p["stem"])
+                if fname:
+                    slot_files[slot] = f"{slot}/{fname}"
+
+            meta = p.get("metadata") or {}
+            control_info = meta.get("control_info")
+            if isinstance(control_info, str):
+                try:
+                    control_info = json.loads(control_info)
+                except (ValueError, TypeError):
+                    control_info = None
+
+            role_order = (control_info or {}).get("role_order")
+            target, controls = resolve_effective_roles(
+                p["media_file"], slot_files, role_order,
+            )
+            p["control_files"] = list(slot_files.values())
+            p["control_info"] = control_info
+            p["role_order"] = role_order
+            p["effective_target"] = target
+            p["effective_controls"] = controls
 
         return result
 
@@ -1631,6 +1680,111 @@ class DatasetManager:
         logger.info("all_images_enabled", dataset=name, reset_count=len(changed))
         return {"reset_count": len(changed)}
 
+    # ── Paired edit datasets: logical role ordering ─────────────────────
+
+    def set_pair_order(
+        self, name: str, media_file: str, role_order: list[str] | None,
+    ) -> dict:
+        """Set (or clear with ``None``) one pair group's logical role order.
+
+        ``role_order`` is a permutation of physical slot names (``root`` +
+        control dirs), position 0 = training target. Validated against the
+        slots actually on disk for this stem — metadata-only, no files move.
+        """
+        from app.core.dataset.control_helpers import ROOT_SLOT, detect_control_slots
+
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+        lookup_key = media_file.replace(os.sep, "/")
+        meta = dataset.media_metadata.get(lookup_key)
+        if meta is None:
+            raise ValueError(
+                f"Media file '{media_file}' not found in dataset '{name}'."
+            )
+
+        if role_order is not None:
+            stem = os.path.splitext(os.path.basename(lookup_key))[0]
+            available = {ROOT_SLOT, *detect_control_slots(dataset.path, stem)}
+            invalid = [s for s in role_order if s not in available]
+            if invalid:
+                raise ValueError(
+                    "role_order references unavailable slot(s): "
+                    + ", ".join(invalid)
+                )
+
+        info = dict(meta.get("control_info") or {})
+        if role_order is None:
+            info.pop("role_order", None)
+        else:
+            info["role_order"] = list(role_order)
+        meta["control_info"] = info or None
+        self._persist_media_item(dataset, lookup_key)
+        return {"media_file": lookup_key, "role_order": role_order}
+
+    def apply_pair_order_all(self, name: str, role_order: list[str]) -> dict:
+        """Apply one role order to every pair group that has the named slots.
+
+        The dataset-wide BACKWARD flip: items lacking any referenced slot
+        are skipped (counted), never partially reordered. Persists in one
+        transaction and broadcasts ``dataset.invalidated``.
+        """
+        from app.core.dataset.control_helpers import (
+            ROOT_SLOT,
+            list_control_stem_maps,
+        )
+
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+        control_maps = list_control_stem_maps(dataset.path)
+
+        applied = skipped = 0
+        for lookup_key, meta in dataset.media_metadata.items():
+            stem = os.path.splitext(os.path.basename(lookup_key))[0].lower()
+            available = {ROOT_SLOT} | {
+                slot for slot, stem_map in control_maps.items() if stem in stem_map
+            }
+            if all(s in available for s in role_order):
+                info = dict(meta.get("control_info") or {})
+                info["role_order"] = list(role_order)
+                meta["control_info"] = info
+                applied += 1
+            else:
+                skipped += 1
+
+        self._persist_dataset(dataset)
+        self._emit_dataset_invalidated(name)
+        return {"applied": applied, "skipped": skipped}
+
+    def refresh_control_metadata(self, name: str, stem: str) -> str | None:
+        """Re-detect one stem's control slots and update its media entry.
+
+        Targeted post-upload refresh (no full rescan): preserves
+        ``role_order``/``target_edited_at``, persists the single row, and
+        emits the ``entity.changed`` event via ``_persist_media_item``.
+        Returns the updated lookup key, or ``None`` if no media matches.
+        """
+        from app.core.dataset.control_helpers import detect_control_slots
+
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+        for lookup_key, meta in dataset.media_metadata.items():
+            if os.path.splitext(os.path.basename(lookup_key))[0] != stem:
+                continue
+            slots = detect_control_slots(dataset.path, stem)
+            info = dict(meta.get("control_info") or {})
+            if slots:
+                info["slots"] = slots
+            else:
+                info.pop("slots", None)
+            meta["control_count"] = len(slots)
+            meta["control_info"] = info or None
+            self._persist_media_item(dataset, lookup_key)
+            return lookup_key
+        return None
+
     def delete_media_pair(self, name: str, media_file: str):
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
@@ -1713,6 +1867,22 @@ class DatasetManager:
                     os.remove(masked_path)
                 except OSError:
                     pass
+
+        # Control slot images (paired edit datasets) — stem-matched
+        # sidecars like masks; orphaned controls would resurface as
+        # pair-health warnings, so remove them with their target.
+        from app.core.dataset.control_helpers import (
+            CONTROL_IMAGE_EXTS,
+            CONTROL_SLOTS,
+        )
+        for slot in CONTROL_SLOTS:
+            for ctl_ext in CONTROL_IMAGE_EXTS:
+                ctl_path = os.path.join(dataset.path, slot, stem + ctl_ext)
+                if os.path.exists(ctl_path):
+                    try:
+                        os.remove(ctl_path)
+                    except OSError:
+                        pass
 
         # Overlay (rendered PNG + overlays.json recipe) — otherwise the file
         # and recipe entry orphan after the image is gone.

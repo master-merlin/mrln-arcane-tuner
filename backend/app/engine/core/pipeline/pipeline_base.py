@@ -49,9 +49,13 @@ class PipelineBaseMixin(BaseTrainer):
         return self.driver.get_te_lora_targets()
 
     def encode_text(
-        self, captions: list[str], dtype: torch.dtype
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None
     ) -> Any:
         """Encode captions into text embeddings.  Delegates to the family driver.
+
+        ``batch`` is accepted (and ignored here) so paired-edit trainers can
+        derive control-image-aware embeddings + composite cache keys; the
+        shared training loop always passes it. Backward compatible.
 
         Returns ``None`` when the driver reports no text encoders (e.g.
         pixel-space families like HiDream-O1 that handle text encoding

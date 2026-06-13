@@ -11,4 +11,9 @@ class QwenImageFamily(ModelFamily):
     archetype = "latent_diffusion"
 
     def get_trainer_class(self):
+        # Image-edit definitions (control_inputs > 0) train on paired control
+        # images — dispatch to the Edit subclass (mirrors flux1 Kontext).
+        if int(getattr(self.definition, "control_inputs", 0) or 0) > 0:
+            from .trainer_edit import QwenImageEditTrainer
+            return QwenImageEditTrainer
         return QwenImageTrainer

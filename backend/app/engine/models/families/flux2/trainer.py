@@ -178,7 +178,7 @@ class Flux2Trainer(GenericTrainingPipeline):
     # ── Text Encoding ────────────────────────────────────────────────────
 
     def encode_text(
-        self, captions: list[str], dtype: torch.dtype
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None
     ) -> Any:
         """Text encoding with lazy caching.
 

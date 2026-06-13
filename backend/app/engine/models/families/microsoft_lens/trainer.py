@@ -109,7 +109,7 @@ class MicrosoftLensTrainer(GenericTrainingPipeline):
 
     # --- Text encoding (cached) ---
 
-    def encode_text(self, captions: list[str], dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_text(self, captions: list[str], dtype: torch.dtype, batch: dict | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if self.config.get("cache_text_embeddings", True):
             return self._get_cached_text_embeddings(captions, dtype)
         out = self.driver.encode_text(captions, dtype)

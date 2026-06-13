@@ -48,6 +48,7 @@ ALL_DEFINITION_IDS = [
     "flux2-klein-base-4b",
     "flux2-klein-base-9b",
     "qwen-image-2512",
+    "qwen-image-edit-2509",
     "zimage-base",
     "zimage-de-turbo",
     "ernie-image-base-8b",

@@ -158,7 +158,7 @@ class ErnieImageTrainer(GenericTrainingPipeline):
     # -- Text Encoding --
 
     def encode_text(
-        self, captions: list[str], dtype: torch.dtype,
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(text_bth, attention_mask)`` -- a tuple consumed by ``forward_pass``.
 

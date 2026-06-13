@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { ImportArchiveService } from './import-archive.service';
 import { RuntimeConfigService } from './runtime-config.service';
+import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 
 describe('ImportArchiveService', () => {
     let svc: ImportArchiveService;
@@ -26,6 +27,7 @@ describe('ImportArchiveService', () => {
         svc.peekImport(file).subscribe((r) => (result = r));
         const req = http.expectOne('http://test/api/import/peek');
         expect((req.request.body as FormData).get('file')).toBe(file);
+        expect(req.request.context.get(RETRY_ON_TRANSIENT)).toBe(true);
         req.flush({ kind: 'project' });
         expect(result).toEqual({ kind: 'project' });
     });

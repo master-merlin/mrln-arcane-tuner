@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { TemplateService } from './template.service';
 import { RuntimeConfigService } from './runtime-config.service';
+import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 
 describe('TemplateService export/import', () => {
     let svc: TemplateService;
@@ -40,6 +41,7 @@ describe('TemplateService export/import', () => {
         const req = http.expectOne('http://test/api/templates/import/plan');
         expect(req.request.body instanceof FormData).toBe(true);
         expect((req.request.body as FormData).get('file')).toBe(file);
+        expect(req.request.context.get(RETRY_ON_TRANSIENT)).toBe(true);
         req.flush({});
     });
 

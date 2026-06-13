@@ -138,6 +138,26 @@ class OrphansDeletedResponse(BaseModel):
     deleted: int
 
 
+class ControlOpSchema(BaseModel):
+    """One degradation op applied when generating control ("before") images."""
+    type: Literal["grayscale", "blur", "downscale", "noise"]
+    params: dict = Field(default_factory=dict)
+
+
+class ControlGenerateBatchRequest(BaseModel):
+    """Generate degraded control images for a slot from each target.
+
+    ``ops`` are applied in order to a copy of every target's root image and
+    written to the chosen control slot. Existing controls are skipped unless
+    ``overwrite``. ``stems`` restricts the run to a subset of targets (all
+    targets when null).
+    """
+    slot: int = Field(ge=1, le=3)
+    ops: list[ControlOpSchema] = Field(min_length=1)
+    overwrite: bool = False
+    stems: list[str] | None = None
+
+
 class OrphanControl(BaseModel):
     """A control file whose stem has no target image."""
     slot: str

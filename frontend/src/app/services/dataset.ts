@@ -248,6 +248,8 @@ export interface RenderPipelineResponse {
 export interface OverlayRecipeResponse { image_path: string; recipe: Record<string, unknown>; }
 /** `DELETE /datasets/{name}/overlay/{path}` (revert) and `/overlay/commit`. */
 export interface OverlayActionResponse { status: string; file: string; }
+/** One degradation op for `POST /datasets/{name}/control/generate-batch`. */
+export interface ControlDegradeOp { type: 'grayscale' | 'blur' | 'downscale' | 'noise'; params?: Record<string, unknown>; }
 /** One downloadable model in a registry category. */
 export interface ModelRegistryItem {
   filename: string; downloaded: boolean; local_size_mb: number | null;
@@ -749,10 +751,38 @@ export class DatasetService {
     );
   }
 
-  commitOverlay(name: string, imagePath: string): Observable<OverlayActionResponse> {
+  /**
+   * Flatten the overlay. `target` defaults to `'original'` (the destructive
+   * bake over the source). A control slot (`'control'|'control_2'|'control_3'`)
+   * materializes the render into that slot as a paired control image —
+   * non-destructive to the original (edit-dataset pair production).
+   */
+  commitOverlay(
+    name: string,
+    imagePath: string,
+    target: 'original' | 'control' | 'control_2' | 'control_3' = 'original',
+  ): Observable<OverlayActionResponse> {
     return this.http.post<OverlayActionResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/overlay/commit`,
-      { image_path: imagePath },
+      { image_path: imagePath, target },
+    );
+  }
+
+  /**
+   * Enqueue a PIL-only batch that degrades each target image into a control
+   * slot (grayscale/blur/downscale/noise) — the BACKWARD pair-production tool.
+   * Runs on the non-GPU background lane; returns the Task Center task id.
+   */
+  generateControlBatch(
+    name: string,
+    slot: number,
+    ops: ControlDegradeOp[],
+    overwrite: boolean = false,
+    stems?: string[],
+  ): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/control/generate-batch`,
+      { slot, ops, overwrite, ...(stems ? { stems } : {}) },
     );
   }
 

@@ -196,6 +196,29 @@ export class OverlayStore extends EntityStore<Overlay> {
     }
 
     /**
+     * Materialize the current overlay render into a control slot for an
+     * edit dataset (pair production). Unlike {@link commitOverlay}, this is
+     * NON-destructive: the original and its overlay row are left intact — we
+     * only copy the rendered result into `control/` (slot 1) etc. The paired
+     * target's `control_info` updates via the media_item entity.changed event
+     * the backend emits, so no optimistic store mutation is needed here.
+     */
+    async saveOverlayToControl(
+        datasetName: string,
+        mediaFile: string,
+        target: 'control' | 'control_2' | 'control_3',
+    ): Promise<void> {
+        try {
+            await firstValueFrom(
+                this.api.commitOverlay(datasetName, mediaFile, target),
+            );
+            this.toast.success(`Saved render to ${target}.`);
+        } catch {
+            this.toast.error(`Couldn't save render to ${target}.`);
+        }
+    }
+
+    /**
      * Optimistically removes the overlay row, then DELETEs the overlay
      * (revert to original). Rolls back + toasts on HTTP failure.
      */

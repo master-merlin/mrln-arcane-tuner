@@ -1,9 +1,14 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { IcoComponent } from '../../../../icons/ico.component';
 import { OverlayStore, Overlay } from '../../../../state/overlay.store';
+import { DatasetStore } from '../../../../state/dataset.store';
 import { PipelineEditorState } from '../pipeline-editor.state';
 import { HistogramPanelComponent } from './histogram-panel.component';
 import { PipelineOrderListComponent } from './pipeline-order-list.component';
+
+/** Physical control slots in slot order — index 0 = `control` (slot 1). */
+const CONTROL_SLOTS = ['control', 'control_2', 'control_3'] as const;
+type ControlSlot = (typeof CONTROL_SLOTS)[number];
 
 @Component({
     selector: 'app-edit-right-panel',
@@ -68,6 +73,25 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
                     <app-ico name="Flame" [size]="13"/> Bake in
                 </button>
             </div>
+            @if (isEditDataset()) {
+                <div class="row control-row" data-testid="save-to-control-row">
+                    <select class="slot-select" data-testid="control-slot-select"
+                            [value]="targetSlot()"
+                            (change)="onSlotChange($event)"
+                            [title]="'Destination control slot'">
+                        @for (s of slots; track s) {
+                            <option [value]="s">{{ slotLabel(s) }}</option>
+                        }
+                    </select>
+                    <button type="button" class="btn sm save-control"
+                            data-testid="save-to-control-btn"
+                            (click)="onSaveToControl()"
+                            [disabled]="!canBake()"
+                            [title]="saveToControlTitle()">
+                        <app-ico name="Copy" [size]="12"/> Save → control
+                    </button>
+                </div>
+            }
         </footer>
     `,
     styles: [`
@@ -93,6 +117,17 @@ import { PipelineOrderListComponent } from './pipeline-order-list.component';
         }
         .row { display: flex; gap: 6px; }
         .row .btn { flex: 1; justify-content: center; }
+        .control-row { align-items: stretch; }
+        .slot-select {
+            flex: 0 0 92px;
+            background: var(--color-surface-low);
+            color: var(--color-text-primary);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: 6px;
+            font-size: 11px;
+            padding: 0 6px;
+        }
+        .control-row .btn.save-control { flex: 1; justify-content: center; }
         .btn.warn {
             background: color-mix(in oklab, var(--color-danger, oklch(0.6 0.18 30)) 16%, transparent);
             color: var(--color-danger, oklch(0.65 0.18 30));
@@ -144,6 +179,15 @@ export class EditRightPanelComponent {
 
     protected state = inject(PipelineEditorState);
     private overlayStore = inject(OverlayStore);
+    private datasetStore = inject(DatasetStore);
+
+    protected readonly slots = CONTROL_SLOTS;
+    protected readonly targetSlot = signal<ControlSlot>('control');
+
+    /** Pair-production picker is shown only for edit-kind datasets. */
+    protected isEditDataset = computed<boolean>(() =>
+        this.datasetStore.entities().find(d => d.name === this.datasetName())?.kind === 'edit',
+    );
 
     /** Bake requires a saved overlay (server-side) AND no in-flight edits. */
     protected canBake = computed<boolean>(() => {
@@ -211,5 +255,26 @@ export class EditRightPanelComponent {
     protected onBake(): void {
         if (!confirm('Bake overlay into original? This replaces the source file and clears the recipe.')) return;
         void this.state.bake();
+    }
+
+    protected slotLabel(slot: ControlSlot): string {
+        return slot === 'control' ? 'Control 1' : `Control ${slot.split('_')[1]}`;
+    }
+
+    protected saveToControlTitle = computed<string>(() =>
+        this.canBake()
+            ? 'Save the rendered overlay into the selected control slot (non-destructive)'
+            : 'Save the overlay first, then it can be copied into a control slot',
+    );
+
+    protected onSlotChange(event: Event): void {
+        this.targetSlot.set((event.target as HTMLSelectElement).value as ControlSlot);
+    }
+
+    /** Materialize the saved overlay render into the chosen control slot. */
+    protected onSaveToControl(): void {
+        void this.overlayStore.saveOverlayToControl(
+            this.datasetName(), this.mediaFile(), this.targetSlot(),
+        );
     }
 }

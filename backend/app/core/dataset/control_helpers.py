@@ -61,6 +61,38 @@ def detect_control_slots(dataset_path: str, stem: str) -> dict[str, dict[str, An
     return slots
 
 
+def control_slot_dir_name(slot_index: int) -> str:
+    """Map a 1-based control slot index to its physical directory name."""
+    if not 1 <= slot_index <= len(CONTROL_SLOTS):
+        raise ValueError(f"slot must be 1..{len(CONTROL_SLOTS)}")
+    return CONTROL_SLOTS[slot_index - 1]
+
+
+def prepare_control_slot_path(
+    dataset_path: str, slot_index: int, stem: str, ext: str
+) -> str:
+    """Compute (and prepare) the destination path for a control image.
+
+    Creates the slot directory and purges any same-stem sibling files with
+    other extensions so slot detection (fixed-priority ext order) stays
+    deterministic after a write — mirrors the control-upload route. Returns
+    the absolute destination path ``{slot_dir}/{stem}{ext}``.
+    """
+    ext = ext.lower()
+    slot_dir = os.path.join(dataset_path, control_slot_dir_name(slot_index))
+    os.makedirs(slot_dir, exist_ok=True)
+    for other_ext in CONTROL_IMAGE_EXTS:
+        if other_ext == ext:
+            continue
+        sibling = os.path.join(slot_dir, f"{stem}{other_ext}")
+        if os.path.exists(sibling):
+            try:
+                os.remove(sibling)
+            except OSError:
+                pass
+    return os.path.join(slot_dir, f"{stem}{ext}")
+
+
 def list_control_stem_maps(dataset_path: str) -> dict[str, dict[str, str]]:
     """Scan each control slot directory once into ``{slot: {stem: filename}}``.
 

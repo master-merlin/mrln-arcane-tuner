@@ -33,11 +33,15 @@ class TestControlInputsField:
         d = ModelDefinition(id="x", family="flux1", name="X", control_inputs=1)
         assert d.control_inputs == 1
 
-    def test_shipped_definitions_default_zero(self):
-        # No edit definitions ship yet (PR6/PR8) — all current ones are 0.
+    def test_shipped_definitions_control_inputs(self):
+        # Standard T2I definitions are 0; edit definitions (Kontext, PR6) are >0.
         registry.initialize()
         for mid in registry.list_models():
-            assert registry.get_definition(mid).control_inputs == 0
+            ci = registry.get_definition(mid).control_inputs
+            if "kontext" in mid or "edit" in mid:
+                assert ci >= 1, f"{mid} is an edit definition but control_inputs={ci}"
+            else:
+                assert ci == 0, f"{mid} is standard but control_inputs={ci}"
 
 
 # ── Capability descriptor ────────────────────────────────────────────────
@@ -113,9 +117,9 @@ class TestEnrichSchemaEditMap:
         enriched = StandardPlugin().enrich_schema(schema)
         edit_map = enriched["properties"]["definition_id"].get("edit_map")
         assert isinstance(edit_map, dict)
-        # Every shipped definition currently maps to 0 control inputs.
-        assert set(edit_map.values()) == {0}
-        assert "flux1-dev" in edit_map
+        # Standard definitions map to 0; the Kontext edit definition to 1.
+        assert edit_map["flux1-dev"] == 0
+        assert edit_map["flux1-kontext-dev"] == 1
 
 
 # ── validate_edit_config ─────────────────────────────────────────────────

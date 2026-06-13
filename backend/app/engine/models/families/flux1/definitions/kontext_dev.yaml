@@ -1,0 +1,115 @@
+id: flux1-kontext-dev
+family: flux1
+name: FLUX.1 Kontext Dev
+version: '1.0'
+# Image-edit ("kontext") variant: conditions on 1 clean control image whose
+# VAE latent is sequence-concatenated with the noisy target. Requires an
+# edit (paired) dataset. The transformer architecture is identical to Dev —
+# only the input preparation (handled by Flux1KontextTrainer) differs.
+control_inputs: 1
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 1e-5
+  # Kontext doubles the latent sequence (target + context) → heavier; keep
+  # the augmentation-free, masking-free edit defaults (enforced anyway).
+  guidance_scale: 1.0
+components:
+  repo:
+    path: huggingface:black-forest-labs/FLUX.1-Kontext-dev
+    type: diffusers
+    params: {}
+detected_precision:
+  clip_encoder: torch.bfloat16
+  t5_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer.hidden_size: 3072
+  transformer.num_attention_heads: 24
+  transformer.in_channels: 64
+  transformer.num_layers: 19
+  transformer.num_single_layers: 38
+  transformer.mlp_ratio: 4.0
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.rope_theta: 10000
+  transformer.guidance_embeds: true
+  te.type: clip_t5
+  te.clip_max_length: 77
+  te.t5_max_length: 512
+  hidden_size: 3072
+  num_heads: 24
+  in_channels: 64
+  transformer._class_name: FluxTransformer2DModel
+  transformer.attention_head_dim: 128
+  transformer.joint_attention_dim: 4096
+  transformer.patch_size: 1
+  transformer.pooled_projection_dim: 768
+  te.architectures:
+  - CLIPTextModel
+  te.hidden_act: quick_gelu
+  te.hidden_size: 768
+  te.max_position_embeddings: 77
+  te.model_type: clip_text_model
+  te.projection_dim: 768
+  te.torch_dtype: bfloat16
+  te.vocab_size: 49408
+  te2.architectures:
+  - T5EncoderModel
+  te2.d_ff: 10240
+  te2.d_kv: 64
+  te2.d_model: 4096
+  te2.model_type: t5
+  te2.num_layers: 24
+  te2.num_heads: 64
+  te2.torch_dtype: bfloat16
+  te2.vocab_size: 32128
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: true
+  vae._class_name: AutoencoderKL
+  vae.in_channels: 3
+  vae.latent_channels: 16
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  depth: 19
+  depth_single_blocks: 38
+  context_dim: 4096
+model_size_mb:
+  transformer: 23800.0
+  text_encoder: 10000.0
+  vae: 167.0
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0
+- add_q_proj
+- add_k_proj
+- add_v_proj
+- to_add_out
+- ff.net.0.proj
+- ff.net.2
+- ff_context.net.0.proj
+- ff_context.net.2
+- proj_mlp
+- proj_out
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 19
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 38
+  approx_vram_mb: 320

@@ -384,6 +384,43 @@ def _repo_total_bytes(repo_id: str) -> Optional[int]:
         return None
 
 
+class SnapshotProgressRegistry:
+    """Thread-safe collector of per-file byte progress for one snapshot
+    download. Populated by ``_PerFileTqdm`` (worker threads) and read by the
+    poller. Holds state only — it never emits."""
+
+    def __init__(self, total: Optional[int]):
+        self.total = total
+        self._lock = threading.Lock()
+        self._active: dict[str, tuple[int, Optional[int]]] = {}
+
+    def update(self, name: str, current: int, total: Optional[int]) -> None:
+        with self._lock:
+            self._active[name] = (current, total)
+
+    def done(self, name: str) -> Optional[int]:
+        """Mark *name* finished, return its size, and log one concise line."""
+        with self._lock:
+            entry = self._active.pop(name, None)
+        size = entry[1] if entry else None
+        if entry is not None:
+            logger.info("downloaded_file", file=name, size_bytes=size)
+        return size
+
+    def snapshot(self) -> list["FileProgress"]:
+        with self._lock:
+            items = sorted(self._active.items())  # stable order by name
+        out: list[FileProgress] = []
+        for name, (cur, tot) in items:
+            pct = int(cur * 100 / tot) if (tot and tot > 0) else None
+            out.append(
+                FileProgress(
+                    name=name, current_bytes=cur, total_bytes=tot, percent=pct,
+                )
+            )
+        return out
+
+
 @contextmanager
 def snapshot_byte_progress(
     *, repo_id: str, model_id: str, category: str,

@@ -128,3 +128,37 @@ class TestFileProgressModel:
         )
         assert p.files[0].name == "dit.safetensors"
         assert p.files[0].percent == 40
+
+
+class TestSnapshotProgressRegistry:
+    def test_update_and_snapshot(self):
+        from app.api.events.download_progress import SnapshotProgressRegistry
+        reg = SnapshotProgressRegistry(total=1000)
+        reg.update("a.bin", current=40, total=100)
+        reg.update("b.bin", current=10, total=50)
+        snap = reg.snapshot()
+        names = [f.name for f in snap]
+        assert names == ["a.bin", "b.bin"]  # sorted by name, stable
+        assert snap[0].percent == 40
+        assert snap[1].percent == 20
+
+    def test_update_overwrites_same_file(self):
+        from app.api.events.download_progress import SnapshotProgressRegistry
+        reg = SnapshotProgressRegistry(total=None)
+        reg.update("a.bin", current=10, total=100)
+        reg.update("a.bin", current=90, total=100)
+        assert len(reg.snapshot()) == 1
+        assert reg.snapshot()[0].current_bytes == 90
+
+    def test_done_removes_and_returns_size(self):
+        from app.api.events.download_progress import SnapshotProgressRegistry
+        reg = SnapshotProgressRegistry(total=None)
+        reg.update("a.bin", current=100, total=100)
+        size = reg.done("a.bin")
+        assert size == 100
+        assert reg.snapshot() == []
+
+    def test_done_unknown_file_is_safe(self):
+        from app.api.events.download_progress import SnapshotProgressRegistry
+        reg = SnapshotProgressRegistry(total=None)
+        assert reg.done("missing") is None

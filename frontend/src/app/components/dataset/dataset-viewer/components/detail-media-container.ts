@@ -1,12 +1,13 @@
 import { Component, ChangeDetectionStrategy, effect, input, output, signal } from '@angular/core';
 import { PanZoomDirective } from '../../../../workspace/shared/pan-zoom.directive';
 import type { DatasetPair } from '../../../../services/dataset';
+import { VideoTrimEditorComponent, type TrimChange } from '../../video/video-trim-editor';
 
 @Component({
     selector: 'app-detail-media-container',
     changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'flex-1 flex flex-col overflow-hidden bg-base' },
-    imports: [PanZoomDirective],
+    imports: [PanZoomDirective, VideoTrimEditorComponent],
     template: `
     <div class="group w-full h-full flex flex-col relative min-h-0 items-center justify-center">
         @if (currentPair(); as pair) {
@@ -14,6 +15,7 @@ import type { DatasetPair } from '../../../../services/dataset';
                  appPanZoom [zoom]="zoom()" (zoomChange)="zoomChange.emit($event)">
                 @if (pair.media_type === 'video') {
                     <video [src]="getMediaUrl(pair.media_file)" controls
+                           (timeupdate)="onTimeUpdate($any($event.target).currentTime)"
                            class="max-w-full max-h-full object-contain rounded-theme-lg"></video>
                 } @else {
                     <img [src]="getDisplayUrl(pair)"
@@ -22,6 +24,22 @@ import type { DatasetPair } from '../../../../services/dataset';
                          alt="Dataset Image">
                 }
             </div>
+
+            <!-- Trim editor — only for video pairs, mounted beneath the player.
+                 Presentational here: the committed window bubbles up via
+                 (trimChanged) and the workspace persists it through
+                 DatasetService.saveTrim + DatasetSyncService.refreshDataset. -->
+            @if (pair.media_type === 'video' && (pair.metadata?.duration_s ?? 0) > 0) {
+                <div class="trim-wrap" data-testid="detail-trim-wrap">
+                    <app-video-trim-editor
+                        [duration]="pair.metadata?.duration_s ?? 0"
+                        [fps]="pair.metadata?.fps"
+                        [trimStartS]="pair.metadata?.trim_start_s ?? null"
+                        [trimEndS]="pair.metadata?.trim_end_s ?? null"
+                        [currentTime]="playheadTime()"
+                        (trimChanged)="onTrimCommit($event)"/>
+                </div>
+            }
         }
 
         <!-- Control slot tabs (paired edit datasets) — switch between the
@@ -58,6 +76,13 @@ import type { DatasetPair } from '../../../../services/dataset';
     </div>
     `,
     styles: [`
+        .trim-wrap {
+            width: 100%;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 8px 16px 14px;
+            flex-shrink: 0;
+        }
         .ctl-tabs {
             position: absolute;
             bottom: 12px;
@@ -112,6 +137,14 @@ export class DetailMediaContainerComponent {
     /** Wheel-zoom (from the pan/zoom directive) bubbled up so the host keeps
      *  the footer's zoom readout + controls in sync. */
     zoomChange = output<number>();
+    /** Committed trim window for the current VIDEO pair — the workspace
+     *  persists it via DatasetService.saveTrim + DatasetSyncService.refreshDataset.
+     *  Carries the media_file so the host doesn't re-derive it. */
+    trimSave = output<{ media_file: string; trim_start_s: number | null; trim_end_s: number | null }>();
+
+    /** Live `<video>` playhead time (seconds) — feeds the trim editor's
+     *  "set in/out from playhead" buttons. Reset on navigation. */
+    protected playheadTime = signal<number | null>(null);
 
     /**
      * `media_file` keys whose overlay URL returned an error. Once a
@@ -139,11 +172,29 @@ export class DetailMediaContainerComponent {
             this.failedOverlays.set(new Set());
         });
 
-        // Navigating to another image resets the control tab to Target.
+        // Navigating to another image resets the control tab to Target and
+        // drops the stale playhead time (the new clip starts at 0).
         effect(() => {
             this.currentPair();
             this.viewSlot.set(-1);
             this.peek.set(false);
+            this.playheadTime.set(null);
+        });
+    }
+
+    /** Track the playing video's current time for "set from playhead". */
+    protected onTimeUpdate(t: number): void {
+        if (Number.isFinite(t)) this.playheadTime.set(t);
+    }
+
+    /** Bubble a committed trim window up for the host to persist. */
+    protected onTrimCommit(change: TrimChange): void {
+        const mf = this.currentPair()?.media_file;
+        if (!mf) return;
+        this.trimSave.emit({
+            media_file: mf,
+            trim_start_s: change.start,
+            trim_end_s: change.end,
         });
     }
 

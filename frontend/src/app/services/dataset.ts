@@ -307,6 +307,41 @@ export interface SuggestionItem { stem: string; suggestion: string; current: str
 /** `GET /datasets/{name}/caption-suggestions?definition_id=X`. */
 export interface SuggestionsResponse { definition_id: string; items: SuggestionItem[]; }
 
+// ── Video curation (clip split / scene-detect / trim / health) ─────────
+/** One cut segment — start/end seconds + optional label. Mirrors the
+ *  backend `Segment` model used by the cutlist/scene-detect/split endpoints. */
+export interface VideoSegment { start_s: number; end_s: number; label: string | null; }
+/** `POST /datasets/{name}/video/cutlist/parse` (synchronous). */
+export interface CutlistParseResponse { segments: VideoSegment[]; format: string; warnings: string[]; }
+/** Split mode — `auto` lets the backend choose copy vs reencode per cut;
+ *  `copy` is fast/keyframe-aligned; `reencode` is exact but slow. */
+export type VideoSplitMode = 'auto' | 'copy' | 'reencode';
+/** `POST /datasets/{name}/video/split` body. */
+export interface VideoSplitRequest {
+    source_rel_path: string;
+    segments: VideoSegment[];
+    mode: VideoSplitMode;
+    output_prefix: string | null;
+    archive_source: boolean;
+}
+/** `POST /datasets/{name}/video/scene-detect` body. */
+export interface SceneDetectRequest {
+    source_rel_path: string;
+    threshold: number;
+    min_scene_len_s: number;
+}
+/** `GET /datasets/{name}/video/scene-proposals`. */
+export interface SceneProposalsResponse { segments: VideoSegment[]; ready: boolean; }
+/** `PATCH /datasets/{name}/video/trim` response — `clip_warnings` is the
+ *  per-family pass/fail map recomputed against the new trim window. */
+export interface TrimResponse { status: string; clip_warnings: Record<string, string[]>; }
+/** One unhealthy clip in a {@link ClipHealthFamily}. */
+export interface ClipOffender { media_file: string; warnings: string[]; }
+/** Per-family clip-health rollup (e.g. "4n+1", "8n+1"). */
+export interface ClipHealthFamily { healthy: number; warning: number; offenders: ClipOffender[]; }
+/** `GET /datasets/{name}/video/health`. */
+export interface ClipHealthResponse { total: number; families: Record<string, ClipHealthFamily>; }
+
 @Injectable({
   providedIn: 'root'
 })
@@ -880,6 +915,60 @@ export class DatasetService {
 
   pullRefineModel(tag: string): Observable<{ ok: boolean }> {
     return this.http.post<{ ok: boolean }>(`${this.rtc.apiUrl}/llm-refine/pull`, { tag });
+  }
+
+  // ── Video curation ─────────────────────────────────────────────────
+
+  /**
+   * Parse an uploaded cut-list (`.llc` / `.csv` / `.tsv`) into segments.
+   * SYNCHRONOUS — returns the parsed segments + detected format + any
+   * parser warnings. Multipart form field `file`; optional
+   * `source_rel_path` query disambiguates segment-vs-clip-relative times.
+   */
+  parseCutlist(name: string, file: File, sourceRelPath?: string): Observable<CutlistParseResponse> {
+    const form = new FormData();
+    form.append('file', file);
+    let url = `${this.apiUrl}/${encodeURIComponent(name)}/video/cutlist/parse`;
+    if (sourceRelPath) url += `?source_rel_path=${encodeURIComponent(sourceRelPath)}`;
+    return this.http.post<CutlistParseResponse>(url, form);
+  }
+
+  /** Enqueue a clip-split background task (`video_split`). Returns the task id. */
+  splitVideo(name: string, req: VideoSplitRequest): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/video/split`, req);
+  }
+
+  /** Enqueue a scene-detection background task (`scene_detect`). Returns the
+   *  task id; poll {@link getSceneProposals} for the result. */
+  sceneDetect(name: string, req: SceneDetectRequest): Observable<{ task_id: string }> {
+    return this.http.post<{ task_id: string }>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/video/scene-detect`, req);
+  }
+
+  /** Poll the latest scene-detection proposals for a source video. `ready`
+   *  flips true once the detect task has produced segments. */
+  getSceneProposals(name: string, sourceRelPath: string): Observable<SceneProposalsResponse> {
+    return this.http.get<SceneProposalsResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/video/scene-proposals`
+      + `?source_rel_path=${encodeURIComponent(sourceRelPath)}`);
+  }
+
+  /** Set (or clear with null) a clip's trim window, in seconds. Returns the
+   *  recomputed per-family clip-health warnings. Callers MUST follow with
+   *  `DatasetSyncService.refreshDataset(name)` to reconcile the media store. */
+  saveTrim(
+    name: string,
+    body: { media_file: string; trim_start_s: number | null; trim_end_s: number | null },
+  ): Observable<TrimResponse> {
+    return this.http.patch<TrimResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/video/trim`, body);
+  }
+
+  /** Dataset-wide clip-health rollup, keyed by frame-count family. */
+  getClipHealth(name: string): Observable<ClipHealthResponse> {
+    return this.http.get<ClipHealthResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/video/health`);
   }
 
 }

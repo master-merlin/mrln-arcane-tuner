@@ -21,6 +21,9 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
     // to match the mass-mask modal's success theme.
     mask_generate_batch: { kind: 'Masking',      accent: 'var(--color-success)' },
     mask_apply_batch:    { kind: 'Apply Masks',  accent: 'var(--color-success)' },
+    // Video curation — splitting a source video into clips + scene detection.
+    video_split:         { kind: 'Clip Split',   accent: 'var(--color-chart-lr)' },
+    scene_detect:        { kind: 'Scene Detect',  accent: 'oklch(0.74 0.12 200)' },
     // Future task types slot in here as the background-task framework absorbs
     // them — e.g. scoring (var(--color-warning)), crop (var(--color-chart-lr)).
     // Until a type is mapped it falls back to a neutral rail + a label parsed

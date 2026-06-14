@@ -176,6 +176,47 @@
 }
 
 .ws-hps { display: flex; align-items: center; gap: 8px; }
+
+/* Clip-health chip + popover (video curation). */
+.ws-health { position: relative; }
+.ws-health-chip { cursor: pointer; gap: 4px; }
+.ws-health-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 60;
+    width: 320px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 10px 12px;
+    background: var(--color-surface-low);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-theme-lg);
+    box-shadow: var(--shadow-lg);
+}
+.ws-health-pop .eyebrow {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--color-text-subtle);
+    margin-bottom: 8px;
+}
+.ws-health-empty { font-size: 12px; color: var(--color-text-muted); }
+.ws-health-row {
+    padding: 6px 0;
+    border-top: 1px solid var(--color-border-subtle);
+}
+.ws-health-file {
+    font-size: 11px; color: var(--color-text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-health-warns { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ws-health-warn {
+    font-size: 9.5px; font-weight: 600;
+    padding: 1px 6px; border-radius: 999px;
+    color: var(--color-warning);
+    background: color-mix(in oklab, var(--color-warning) 12%, transparent);
+    border: 1px solid color-mix(in oklab, var(--color-warning) 30%, transparent);
+}
+
 .ws-hps .eyebrow,
 .ws-density .eyebrow {
     font-size: 11px;

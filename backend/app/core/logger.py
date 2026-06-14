@@ -83,6 +83,20 @@ def config_log_level(level_str: str = "INFO"):
         logging.getLogger(logger_name).setLevel(level)
 
 
+# Third-party loggers that flood the logs during model downloads. Pinned to a
+# WARNING threshold so their INFO/DEBUG (filelock lock acquire/release, urllib3
+# connection-pool debug, hf_xet, websockets per-frame "> TEXT" traces) is
+# dropped while genuine warnings/errors still surface. Threshold only — no
+# message is relabeled.
+_NOISY_DOWNLOAD_LOGGERS = ("filelock", "urllib3", "hf_xet", "websockets")
+
+
+def _quiet_noisy_loggers() -> None:
+    """Raise the threshold of known-noisy download loggers to WARNING."""
+    for name in _NOISY_DOWNLOAD_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def _add_service(_logger, _name, event_dict):
     """R-LOG-07: stamp every FastAPI-side log entry with the canonical
     ``service`` identifier from ``docs/LOGGING.md`` universal_json_schema.
@@ -181,6 +195,9 @@ def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
 
     # Apply Level
     config_log_level(log_level)
+
+    # Silence chatty download libraries (threshold only — real errors survive).
+    _quiet_noisy_loggers()
 
     # Uvicorn Loggers
     # We want to capture uvicorn logs and format them if possible, but Uvicorn has its own formatters.

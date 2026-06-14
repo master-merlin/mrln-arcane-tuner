@@ -177,6 +177,7 @@ class SelfUpdateService:
     async def _apply_impl(self) -> None:
         try:
             self._set_state(UpdateState.PULLING)
+            req_before = self._req_blob()
             if not await asyncio.to_thread(self._pull):
                 self._set_state(
                     UpdateState.ERROR, error="git pull failed — see server log."
@@ -184,6 +185,12 @@ class SelfUpdateService:
                 return
 
             self._set_state(UpdateState.BUILDING)
+            # Reinstall Python deps when the pull changed requirements.txt —
+            # otherwise a release adding a new dependency (e.g. json5 /
+            # scenedetect / imageio-ffmpeg for video training) would pull the
+            # code that imports it but never install it, crashing on restart.
+            if self._req_blob() != req_before:
+                await self._install_backend_deps()
             await self._build_frontend()
 
             self._set_state(UpdateState.PENDING_RESTART)
@@ -208,6 +215,42 @@ class SelfUpdateService:
             logger.error("self_update_reset_failed", error=er.strip()[:300])
             return False
         return True
+
+    def _req_blob(self) -> str:
+        """Git blob hash of backend/requirements.txt at HEAD (empty if unknown).
+        Compared before/after a pull to decide whether deps must be reinstalled."""
+        rc, out, _ = self._run_git(["rev-parse", "HEAD:backend/requirements.txt"])
+        return out.strip() if rc == 0 else ""
+
+    async def _install_backend_deps(self) -> None:
+        """Reinstall backend Python deps after a pull that touched
+        requirements.txt. Mirrors the Docker build via install-deps.sh (which
+        handles the scenedetect --no-deps trap); falls back to a plain install
+        if the script is absent. Container-only, so --break-system-packages
+        matches the image build. Raises on failure → caller flags ERROR and
+        skips the restart, leaving the still-running old process intact."""
+        backend = os.path.join(self.app_dir, "backend")
+        script = os.path.join(backend, "install-deps.sh")
+
+        def _run():
+            if os.path.exists(script):
+                cmd = ["bash", script]
+            else:
+                cmd = [
+                    "python", "-m", "pip", "install",
+                    "--break-system-packages", "-r", "requirements.txt",
+                ]
+            proc = subprocess.run(
+                cmd, cwd=backend, capture_output=True, text=True,
+                timeout=_BUILD_TIMEOUT_S,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"backend dep install failed: {proc.stderr.strip()[:300]}"
+                )
+
+        logger.info("self_update_installing_backend_deps")
+        await asyncio.to_thread(_run)
 
     async def _build_frontend(self) -> None:
         """Rebuild the SPA and sync it into the served dist dir.

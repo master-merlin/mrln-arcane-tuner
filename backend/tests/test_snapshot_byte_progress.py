@@ -109,3 +109,22 @@ class TestSnapshotByteProgress:
         assert emits[0].total_bytes is None
         assert emits[0].percent is None
         assert emits[0].current_bytes == 50
+
+
+class TestFileProgressModel:
+    def test_download_progress_defaults_files_empty(self):
+        from app.api.events.download_progress import DownloadProgress
+        p = DownloadProgress(
+            source="hf", model_id="org/m", category="training", status="starting",
+        )
+        assert p.files == []
+
+    def test_make_payload_carries_files(self):
+        from app.api.events.download_progress import _make_payload, FileProgress
+        f = FileProgress(name="dit.safetensors", current_bytes=40, total_bytes=100)
+        p = _make_payload(
+            source="hf", model_id="org/m", category="training",
+            status="downloading", current=40, total=100, files=[f],
+        )
+        assert p.files[0].name == "dit.safetensors"
+        assert p.files[0].percent == 40

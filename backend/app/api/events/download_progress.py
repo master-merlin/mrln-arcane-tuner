@@ -16,7 +16,7 @@ from typing import Generator, Literal, Optional
 
 import structlog
 from huggingface_hub.utils import tqdm as hf_tqdm  # type: ignore[attr-defined]
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.events import event_manager
 
@@ -24,6 +24,20 @@ logger = structlog.get_logger(__name__)
 
 # How often the snapshot byte-progress poller samples on-disk cache growth.
 SNAPSHOT_POLL_INTERVAL_S = 0.5
+
+
+class FileProgress(BaseModel):
+    """One in-flight file inside a snapshot download."""
+    name: str
+    current_bytes: int = 0
+    total_bytes: Optional[int] = None
+    percent: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _compute_percent(self) -> "FileProgress":
+        if self.percent is None and self.total_bytes and self.total_bytes > 0:
+            self.percent = int(self.current_bytes * 100 / self.total_bytes)
+        return self
 
 
 class DownloadProgress(BaseModel):
@@ -41,6 +55,7 @@ class DownloadProgress(BaseModel):
     total_bytes: Optional[int] = None
     percent: Optional[int] = None
     error: Optional[str] = None
+    files: list[FileProgress] = Field(default_factory=list)
 
 
 class RateLimiter:
@@ -138,6 +153,7 @@ def _make_payload(
     current: int,
     total: Optional[int],
     error: Optional[str] = None,
+    files: Optional[list["FileProgress"]] = None,
 ) -> DownloadProgress:
     percent = (int(current * 100 / total) if (total and total > 0) else None)
     return DownloadProgress(
@@ -149,6 +165,7 @@ def _make_payload(
         total_bytes=total,
         percent=percent,
         error=error,
+        files=files or [],
     )
 
 

@@ -137,6 +137,80 @@ class TestStartJob:
         with pytest.raises(ValueError, match="not found"):
             mgr.start_job(job.id)
 
+    @patch.object(JobManager, "_start_pid_watchdog")
+    @patch("app.core.job_manager.LogTailer")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_preflight_marks_job_preparing_without_persisting_running(
+        self, mock_pm, _mock_tailer, _mock_watchdog, tmp_path,
+    ):
+        """During the base-model pre-fetch the job must show RUNNING + a
+        'downloading' label (not idle 'pending') so the queue card and top bar
+        reflect the real work in progress. The preparing state is in-memory
+        ONLY — 'running' is NOT persisted at pre-fetch time, so a restart
+        mid-download cleanly resumes from the persisted 'pending' row rather
+        than being marked stopped/stranded."""
+        mgr = JobManager()
+        job = mgr.create_job("standard", _make_config())
+
+        proc = MagicMock()
+        proc.pid = 4242
+        mock_pm.get_plugin.return_value.start_training.return_value = proc
+
+        persisted = []
+        seen = {}
+
+        def fake_preflight(j):
+            seen["status"] = j.status
+            seen["label"] = j.status_label
+            seen["persisted_running"] = any(s == "running" for _, s in persisted)
+
+        with patch.object(mgr, "_preflight_download", side_effect=fake_preflight), \
+             patch.object(
+                 mgr, "_persist_status",
+                 side_effect=lambda jid, status, **kw: persisted.append((jid, status)),
+             ), \
+             patch.object(mgr, "_get_job_output_dir", return_value=str(tmp_path)), \
+             patch("app.engine.components.signal_manager.TrainingSignalManager"):
+            mgr.start_job(job.id)
+
+        # The job was actively "preparing" while the model downloaded.
+        assert seen["status"] == JobStatus.RUNNING
+        assert seen["label"] and "download" in seen["label"].lower()
+        # …but 'running' was NOT persisted at that point (DB still 'pending').
+        assert seen["persisted_running"] is False
+
+    @patch.object(JobManager, "_start_pid_watchdog")
+    @patch("app.core.job_manager.LogTailer")
+    @patch("app.core.job_manager.event_manager")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_preflight_broadcasts_preparing_state(
+        self, mock_pm, _mock_em, _mock_tailer, _mock_watchdog, tmp_path,
+    ):
+        """The preparing transition must broadcast BEFORE the download begins,
+        so the frontend flips the card to RUNNING + 'downloading' immediately
+        rather than only after the (possibly multi-minute) fetch completes."""
+        mock_loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        mgr = JobManager()
+        mgr.set_loop(mock_loop)
+        job = mgr.create_job("standard", _make_config())
+
+        proc = MagicMock()
+        proc.pid = 4242
+        mock_pm.get_plugin.return_value.start_training.return_value = proc
+
+        seen = {}
+        with patch("app.core.job_manager.asyncio.run_coroutine_threadsafe") as mock_rct:
+            def fake_preflight(j):
+                seen["broadcasts_before_download"] = mock_rct.call_count
+
+            with patch.object(mgr, "_preflight_download", side_effect=fake_preflight), \
+                 patch.object(mgr, "_persist_status"), \
+                 patch.object(mgr, "_get_job_output_dir", return_value=str(tmp_path)), \
+                 patch("app.engine.components.signal_manager.TrainingSignalManager"):
+                mgr.start_job(job.id)
+
+        assert seen["broadcasts_before_download"] >= 1
+
 
 # ── Stop Job ─────────────────────────────────────────────────────────────
 

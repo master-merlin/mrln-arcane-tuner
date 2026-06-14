@@ -830,6 +830,24 @@ class JobManager:
             raise ValueError(f"Plugin {job.plugin_id} not found")
 
         if preflight:
+            # Reflect the prerequisite base-model download in the job's LIVE
+            # status so the queue card + top bar show real work in progress
+            # instead of an idle "pending" while a large model fetches. This is
+            # an in-memory transition, broadcast immediately. We deliberately do
+            # NOT persist "running" here: the download has no trainer/PID yet, so
+            # leaving the DB row "pending" means a restart mid-download cleanly
+            # resumes from pending — vs. a stranded "running" row that recovery
+            # would mark stopped. ``_preflight_download`` then emits the HF
+            # download progress onto the top-bar indicator.
+            job.status = JobStatus.RUNNING
+            job.status_label = "Downloading base model…"
+            if job.started_at is None:
+                job.started_at = time.time()
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    event_manager.broadcast("job_update", job.model_dump()),
+                    self._loop,
+                )
             self._preflight_download(job)
 
         if clear_stale_signal:
@@ -840,7 +858,13 @@ class JobManager:
             process = plugin.start_training(job.config)
 
             job.status = JobStatus.RUNNING
-            job.started_at = time.time()
+            if job.started_at is None:
+                job.started_at = time.time()
+            # Base model is cached now; hand the status line back to the trainer
+            # (it emits its own "Loading"/"Training"/… labels). Clearing avoids a
+            # stale "Downloading base model…" lingering until the first trainer
+            # status message arrives.
+            job.status_label = None
             self._persist_status(job_id, "running", started_at=job.started_at)
 
             # Broadcast start

@@ -20,7 +20,7 @@ import { MediaItemStore } from '../../state/media-item.store';
 import { ModelContextStore } from '../../state/model-context.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { IcoComponent } from '../../icons/ico.component';
-import { CanvasFooterComponent } from '../shared/canvas-footer.component';
+import { CanvasFooterComponent, CanvasMeta } from '../shared/canvas-footer.component';
 import { buildCanvasMeta } from '../shared/media-meta';
 import type { DatasetPair } from '../../services/dataset';
 
@@ -316,17 +316,9 @@ export class DetailsMode {
         });
     }
 
-    /** Footer metadata strip — filename, resolution, AR, orientation, size, HPS, OVR. */
-    protected mediaMeta = computed<{
-        file: string | null;
-        res: string | null;
-        ar: string | null;
-        orientation: string | null;
-        size: string | null;
-        hpsLabel: string | null;
-        hpsTone: 'success' | 'warning' | 'danger' | null;
-        hasOverlay: boolean;
-    } | null>(() => {
+    /** Footer metadata strip — filename, resolution, AR, orientation, size,
+     *  HPS, OVR plus video-only fps/duration/frame-count (via CanvasMeta). */
+    protected mediaMeta = computed<CanvasMeta | null>(() => {
         const p = this.currentPair();
         if (!p) return null;
         return {

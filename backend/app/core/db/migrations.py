@@ -47,6 +47,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v13,
         _migrate_v14,
         _migrate_v15,
+        _migrate_v16,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -918,6 +919,37 @@ def _migrate_v15(conn) -> None:
         "ALTER TABLE datasets ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard'",
         "ALTER TABLE media_items ADD COLUMN control_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE media_items ADD COLUMN control_info TEXT",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass  # Column already exists
+
+
+# ── V16: Per-clip video metadata (video-LoRA ingest) ────────────────────
+
+def _migrate_v16(conn) -> None:
+    """Add per-clip video metadata columns to ``media_items``.
+
+    Foundation for video-LoRA training: the scanner probes each trainable
+    clip (mp4/webm/mkv/avi — NOT animated ``.gif``) with PyAV and persists
+    its framerate, duration, audio presence and codec so later phases can
+    build trim/clip-health on top. ``is_video`` / ``frame_count`` already
+    exist (v1) and are NOT re-added. ``clip_warnings`` is a JSON string
+    mirroring the ``mask_info`` pattern — populated in a later phase, left
+    NULL here. ``trim_start_s`` / ``trim_end_s`` carry user trim bounds.
+    ``frame_count_estimated`` flags a frame count derived from
+    ``duration × fps`` (the container had no exact frame count).
+    """
+    for ddl in (
+        "ALTER TABLE media_items ADD COLUMN fps REAL",
+        "ALTER TABLE media_items ADD COLUMN duration_s REAL",
+        "ALTER TABLE media_items ADD COLUMN has_audio INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_items ADD COLUMN video_codec TEXT",
+        "ALTER TABLE media_items ADD COLUMN trim_start_s REAL",
+        "ALTER TABLE media_items ADD COLUMN trim_end_s REAL",
+        "ALTER TABLE media_items ADD COLUMN frame_count_estimated INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE media_items ADD COLUMN clip_warnings TEXT",
     ):
         try:
             conn.execute(ddl)

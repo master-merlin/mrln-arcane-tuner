@@ -10,6 +10,10 @@ export interface CanvasMeta {
     hpsLabel: string | null;
     hpsTone: 'success' | 'warning' | 'danger' | null;
     hasOverlay: boolean;
+    /** Video-only metadata (null for stills) — see {@link buildCanvasMeta}. */
+    fps?: string | null;
+    duration?: string | null;
+    frameCount?: string | null;
 }
 
 /**
@@ -72,6 +76,24 @@ export interface CanvasMeta {
                         <span class="meta-item">
                             <app-ico name="HardDrive" [size]="12"/>
                             <span class="mono">{{ m.size }}</span>
+                        </span>
+                    }
+                    @if (m.duration) {
+                        <span class="meta-item" title="Clip duration">
+                            <app-ico name="Clock" [size]="12"/>
+                            <span class="mono">{{ m.duration }}</span>
+                        </span>
+                    }
+                    @if (m.fps) {
+                        <span class="meta-item" title="Framerate">
+                            <span class="muted">FPS</span>
+                            <span class="mono">{{ m.fps }}</span>
+                        </span>
+                    }
+                    @if (m.frameCount) {
+                        <span class="meta-item" title="Frame count">
+                            <app-ico name="Film" [size]="12"/>
+                            <span class="mono">{{ m.frameCount }}</span>
                         </span>
                     }
                     @if (m.hpsLabel && m.hpsTone) {

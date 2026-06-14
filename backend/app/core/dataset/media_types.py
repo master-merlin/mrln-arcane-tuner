@@ -31,6 +31,22 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {".mp4", ".gif", ".webm", ".mkv", ".avi"}
 )
 
+# Video containers a browser can play inline (drives the grid <video> tag).
+# A subset of VIDEO_EXTENSIONS — .mkv/.avi are trainable but not web-native.
+BROWSER_VIDEO_EXTENSIONS: frozenset[str] = frozenset({".mp4", ".webm"})
+
 MULTIMEDIA_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".avif", ".mp4", ".gif"}
+    {".png", ".jpg", ".jpeg", ".webp", ".avif", ".mp4", ".webm", ".gif"}
 )
+
+
+def is_probeable_video(ext: str) -> bool:
+    """Whether *ext* is a trainable video clip worth probing for metadata.
+
+    ``.gif`` lives in ``VIDEO_EXTENSIONS`` (it renders as an animated tile in
+    the grid) but is an animated *image*, not a trainable video — it has no
+    framerate/duration/codec the trim + clip-health layer cares about, so it
+    is excluded from probing. ``ext`` is matched case-insensitively.
+    """
+    ext = ext.lower()
+    return ext in VIDEO_EXTENSIONS and ext != ".gif"

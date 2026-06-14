@@ -29,6 +29,10 @@ class MediaItemRepository:
         "is_video", "frame_count", "tags", "notes", "quality_score",
         "added_at", "has_overlay", "enabled",
         "control_count", "control_info",
+        # Per-clip video metadata (v16).
+        "fps", "duration_s", "has_audio", "video_codec",
+        "trim_start_s", "trim_end_s", "frame_count_estimated",
+        "clip_warnings",
     ]
 
     # ── Reads ────────────────────────────────────────────────────────
@@ -232,11 +236,13 @@ class MediaItemRepository:
             # Convert int booleans back
             for key in ("is_majority_ar", "has_caption", "is_video",
                         "has_mask", "has_masked", "has_masked_caption",
-                        "has_overlay", "enabled"):
+                        "has_overlay", "enabled", "has_audio",
+                        "frame_count_estimated"):
                 if key in item:
                     item[key] = bool(item[key])
             # Parse JSON fields
-            for key in ("mask_info", "control_info", "tags", "notes"):
+            for key in ("mask_info", "control_info", "clip_warnings",
+                        "tags", "notes"):
                 if item.get(key) and isinstance(item[key], str):
                     try:
                         item[key] = json.loads(item[key])
@@ -254,11 +260,13 @@ class MediaItemRepository:
         # Booleans → int
         for key in ("is_majority_ar", "has_caption", "is_video",
                     "has_mask", "has_masked", "has_masked_caption",
-                    "has_overlay", "enabled"):
+                    "has_overlay", "enabled", "has_audio",
+                    "frame_count_estimated"):
             if key in data:
                 data[key] = int(bool(data[key]))
         # Dicts/lists → JSON strings
-        for key in ("mask_info", "control_info", "tags", "notes"):
+        for key in ("mask_info", "control_info", "clip_warnings",
+                    "tags", "notes"):
             if key in data and not isinstance(data.get(key), (str, type(None))):
                 data[key] = json.dumps(data[key])
         # Default added_at

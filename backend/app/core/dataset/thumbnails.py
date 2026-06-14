@@ -16,6 +16,8 @@ from pathlib import Path
 
 import structlog
 
+from app.core.dataset.media_types import VIDEO_EXTENSIONS
+
 logger = structlog.get_logger(__name__)
 
 # Register the AVIF Pillow plugin if available. The import has the
@@ -28,7 +30,11 @@ except ImportError:
 _THUMB_DIR_NAME = ".thumbnails"
 _MAX_EDGE_DEFAULT = 256
 _WEBP_QUALITY = 80
-_VIDEO_EXTS = {".mp4"}
+# Every video/animation extension is first-frame extractable via PyAV
+# (mp4/webm/mkv/avi decode; .gif's first frame works too), so the
+# thumbnail path mirrors the canonical video set instead of an mp4-only
+# literal that silently skipped webm/mkv/avi clips.
+_VIDEO_EXTS = VIDEO_EXTENSIONS
 
 
 def thumbnail_dir(dataset_path: str) -> Path:

@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import cv2
+import structlog
 from PIL import Image
 
 from app.core.dataset.control_helpers import detect_control_slots
-from app.core.dataset.media_types import VIDEO_EXTENSIONS
+from app.core.dataset.media_types import VIDEO_EXTENSIONS, is_probeable_video
+
+logger = structlog.get_logger(__name__)
 
 
 # ── Per-File Extraction ──────────────────────────────────────────────────
@@ -141,7 +145,43 @@ def build_media_entry(
     entry["control_count"] = len(control_slots)
     entry["control_info"] = control_info or None
 
+    # Trainable-video probing (mp4/webm/mkv/avi — NOT animated .gif). Best
+    # effort: a bad clip falls back to the dimensions already computed above
+    # and must never fail the scan. clip_warnings is intentionally NOT
+    # computed here (that's a later phase) — only the plumbing exists.
+    if is_probeable_video(ext):
+        entry["is_video"] = True
+        _merge_video_probe(entry, file_path)
+
     return entry
+
+
+def _merge_video_probe(entry: dict[str, Any], file_path: str) -> None:
+    """Probe a trainable video and merge its metadata into *entry* in place.
+
+    On any probe failure the existing best-effort metadata is kept and a
+    warning is logged — a single unreadable clip never aborts the scan.
+    """
+    from app.core.video import VideoProbe, probe_video
+
+    try:
+        probe: VideoProbe = probe_video(Path(file_path))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scan_video_probe_failed", path=file_path, error=str(exc))
+        return
+
+    if probe.width > 0 and probe.height > 0:
+        entry["width"] = probe.width
+        entry["height"] = probe.height
+        entry["aspect_ratio"] = round(probe.width / probe.height, 5)
+        entry["orientation"] = classify_orientation(probe.width, probe.height)
+
+    entry["fps"] = probe.fps
+    entry["duration_s"] = probe.duration_s
+    entry["frame_count"] = probe.frame_count
+    entry["frame_count_estimated"] = probe.frame_count_estimated
+    entry["has_audio"] = probe.has_audio
+    entry["video_codec"] = probe.video_codec
 
 
 # ── Aggregation ──────────────────────────────────────────────────────────

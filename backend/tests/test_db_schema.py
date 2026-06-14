@@ -230,7 +230,7 @@ class TestV2Migration:
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 15
+            assert row["version"] == 16
 
     def test_v12_drops_saved_concepts(self, db_engine):
         """V12 removes the orphaned ``saved_concepts`` table; the drop is
@@ -355,6 +355,90 @@ class TestMediaItemRepoBooleans:
         assert row["has_masked"] == 1
         assert row["has_masked_caption"] == 0
         assert row["has_caption"] == 1
+
+
+# ── Video metadata columns (V16) ─────────────────────────────────────────
+
+
+class TestMediaItemRepoVideoMetadata:
+    """Round-trip the per-clip video columns added in migration V16."""
+
+    def test_v16_adds_video_columns(self, db_engine):
+        """run_migrations should leave media_items with the new video columns."""
+        run_migrations(db_engine)
+        with db_engine.connection() as conn:
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(media_items)").fetchall()
+            }
+        for col in (
+            "fps", "duration_s", "has_audio", "video_codec",
+            "trim_start_s", "trim_end_s", "frame_count_estimated",
+            "clip_warnings",
+        ):
+            assert col in cols, f"missing column {col}"
+
+    def test_video_columns_round_trip_through_metadata_dict(
+        self, media_repo, dataset_repo
+    ):
+        """Upsert a clip with video metadata; it persists and decodes back.
+
+        Booleans (has_audio, frame_count_estimated) come back as Python bools
+        and clip_warnings round-trips through JSON like mask_info does.
+        """
+        ds = _make_dataset_row("video_meta")
+        dataset_repo.upsert(ds)
+
+        item = _make_media_item(
+            ds["id"], "clip.mp4",
+            is_video=True,
+            fps=23.976,
+            duration_s=4.5,
+            frame_count=108,
+            frame_count_estimated=True,
+            has_audio=True,
+            video_codec="h264",
+            trim_start_s=0.5,
+            trim_end_s=4.0,
+            clip_warnings={"audio": ["has audio track"], "fps": ["non-integer fps"]},
+        )
+        media_repo.upsert(item)
+
+        result = media_repo.to_metadata_dict(ds["id"])
+        assert "clip.mp4" in result
+        meta = result["clip.mp4"]
+
+        assert meta["fps"] == 23.976
+        assert meta["duration_s"] == 4.5
+        assert meta["frame_count"] == 108
+        assert meta["video_codec"] == "h264"
+        assert meta["trim_start_s"] == 0.5
+        assert meta["trim_end_s"] == 4.0
+        # Booleans decode back to Python bools.
+        assert meta["has_audio"] is True
+        assert meta["frame_count_estimated"] is True
+        assert isinstance(meta["has_audio"], bool)
+        assert isinstance(meta["frame_count_estimated"], bool)
+        # clip_warnings round-trips through JSON like mask_info.
+        assert meta["clip_warnings"] == {
+            "audio": ["has audio track"],
+            "fps": ["non-integer fps"],
+        }
+
+    def test_video_columns_default_for_images(self, media_repo, dataset_repo):
+        """An image row written without video fields gets schema defaults
+        (has_audio/frame_count_estimated False, the rest NULL)."""
+        ds = _make_dataset_row("image_defaults")
+        dataset_repo.upsert(ds)
+        media_repo.upsert(_make_media_item(ds["id"], "still.png"))
+
+        meta = media_repo.to_metadata_dict(ds["id"])["still.png"]
+        assert meta["has_audio"] is False
+        assert meta["frame_count_estimated"] is False
+        assert meta["fps"] is None
+        assert meta["duration_s"] is None
+        assert meta["video_codec"] is None
+        assert meta["clip_warnings"] is None
 
 
 # ── _with_conn Transaction Patterns ──────────────────────────────────────

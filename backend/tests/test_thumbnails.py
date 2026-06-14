@@ -96,7 +96,8 @@ def test_generate_thumbnail_atomic_write_no_partial_files(tmp_path):
 
 
 def test_generate_thumbnail_handles_gif(tmp_path):
-    """PIL opens the first frame of a GIF by default."""
+    """A GIF's first frame is extracted (now via PyAV — .gif joined the
+    canonical VIDEO_EXTENSIONS set used for first-frame thumbnails)."""
     src = tmp_path / "src.gif"
     frames = [
         Image.new("RGB", (400, 300), (255, 0, 0)),

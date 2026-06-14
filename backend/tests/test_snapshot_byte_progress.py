@@ -166,7 +166,9 @@ class TestSnapshotProgressRegistry:
 
 class TestCapturePerFile:
     def test_byte_bar_records_into_registry(self):
-        import huggingface_hub.utils.tqdm as hf_tqdm_mod
+        import sys
+        import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
+        hf_tqdm_mod = sys.modules["huggingface_hub.utils.tqdm"]
         from app.api.events.download_progress import (
             SnapshotProgressRegistry, _capture_per_file,
         )
@@ -183,7 +185,9 @@ class TestCapturePerFile:
             assert reg.snapshot() == []  # close() marks done
 
     def test_file_count_bar_ignored(self):
-        import huggingface_hub.utils.tqdm as hf_tqdm_mod
+        import sys
+        import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
+        hf_tqdm_mod = sys.modules["huggingface_hub.utils.tqdm"]
         from app.api.events.download_progress import (
             SnapshotProgressRegistry, _capture_per_file,
         )
@@ -196,7 +200,9 @@ class TestCapturePerFile:
             bar.close()
 
     def test_original_tqdm_restored_even_on_error(self):
-        import huggingface_hub.utils.tqdm as hf_tqdm_mod
+        import sys
+        import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
+        hf_tqdm_mod = sys.modules["huggingface_hub.utils.tqdm"]
         from app.api.events.download_progress import (
             SnapshotProgressRegistry, _capture_per_file,
         )

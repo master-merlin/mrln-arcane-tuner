@@ -18,16 +18,6 @@ import structlog
 from huggingface_hub.utils import tqdm as hf_tqdm  # type: ignore[attr-defined]
 from pydantic import BaseModel, Field, model_validator
 
-# huggingface_hub ≥ 0.20 re-exports `tqdm` as a bare class attribute on the
-# utils package (``from .tqdm import tqdm``), so ``import
-# huggingface_hub.utils.tqdm as mod`` resolves to the CLASS rather than the
-# module.  We pin a stable ``.tqdm`` back-reference on the class so that
-# ``hf_tqdm_mod.tqdm`` works uniformly whether ``hf_tqdm_mod`` is the module
-# (older HF) or the class (current HF).  The attribute is otherwise unused by
-# tqdm internals and causes no side-effects.
-if not hasattr(hf_tqdm, "tqdm"):
-    hf_tqdm.tqdm = hf_tqdm  # type: ignore[attr-defined]
-
 from app.core.events import event_manager
 
 logger = structlog.get_logger(__name__)
@@ -438,36 +428,25 @@ def _capture_per_file(
     """Temporarily route HF's per-file byte bars into *registry*.
 
     huggingface_hub builds each per-file download bar via
-    ``_get_progress_bar_context`` → the module-global ``tqdm`` in
-    ``huggingface_hub.utils.tqdm``. We swap that class for an emitting subclass
-    for the duration of a download and restore it in ``finally``. The outer
-    "Fetching N files" bar binds ``hf_tqdm`` by name at import and uses unit
-    "files" (not "B"), so it is unaffected and ignored. Best-effort: if the
-    attribute is absent on some future HF version, the hook no-ops and only
-    aggregate progress is shown.
-
-    Implementation note: huggingface_hub ≥ 0.20 re-exports ``tqdm`` as a
-    plain class attribute on the utils package, so ``import
-    huggingface_hub.utils.tqdm as m`` resolves to the CLASS, not the module.
-    We therefore patch BOTH ``hf_tqdm_mod.tqdm`` (the class attribute, used by
-    tests and any caller that captured the class as a module alias) AND the
-    real module's ``tqdm`` name (via ``sys.modules``) so that HF's internal
-    ``_get_progress_bar_context`` — which calls the module-level ``tqdm``
-    name directly — also gets routed through ``_PerFileTqdm``.
+    ``_get_progress_bar_context`` → the module-global ``tqdm`` in the
+    ``huggingface_hub.utils.tqdm`` submodule. We swap that name for an
+    emitting subclass for the duration of a download and restore it in
+    ``finally``. (Note: ``import huggingface_hub.utils.tqdm`` binds the tqdm
+    *class*, not the module — the package re-exports the class under that
+    name — so we reach the real module through ``sys.modules``.) The outer
+    "Fetching N files" bar uses unit "files" (not "B"), so it is ignored.
+    Best-effort: if the module/attr is absent on some future HF version, the
+    hook no-ops and only aggregate progress is shown.
     """
     import sys
 
-    import huggingface_hub.utils.tqdm as hf_tqdm_mod
+    import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
 
-    original = getattr(hf_tqdm_mod, "tqdm", None)
-    if original is None:
+    mod = sys.modules.get("huggingface_hub.utils.tqdm")
+    original = getattr(mod, "tqdm", None) if mod is not None else None
+    if mod is None or original is None:
         yield
         return
-
-    # Also capture the real module so we can patch its module-level 'tqdm' name
-    # (the one HF's internal _get_progress_bar_context calls).
-    real_mod = sys.modules.get("huggingface_hub.utils.tqdm")
-    real_mod_original = getattr(real_mod, "tqdm", None) if real_mod else None
 
     class _PerFileTqdm(original):  # type: ignore[misc, valid-type]
         def __init__(self, *args, **kwargs):
@@ -490,22 +469,11 @@ def _capture_per_file(
                 registry.done(self._reg_name)
             super().close()
 
-    hf_tqdm_mod.tqdm = _PerFileTqdm
-    if real_mod is not None and real_mod is not hf_tqdm_mod:
-        real_mod.tqdm = _PerFileTqdm  # type: ignore[attr-defined]
+    mod.tqdm = _PerFileTqdm
     try:
         yield
     finally:
-        hf_tqdm_mod.tqdm = original
-        if real_mod is not None and real_mod is not hf_tqdm_mod:
-            if real_mod_original is None:
-                # Restore by deleting the attr we added
-                try:
-                    delattr(real_mod, "tqdm")
-                except AttributeError:
-                    pass
-            else:
-                real_mod.tqdm = real_mod_original  # type: ignore[attr-defined]
+        mod.tqdm = original
 
 
 @contextmanager

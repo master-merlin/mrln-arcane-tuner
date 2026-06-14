@@ -214,10 +214,20 @@
                             @for (s of currentSamples(); track s.filename) {
                                 <figure class="sample-tile">
                                     <button class="sample-btn" type="button" (click)="openSample(s)" [title]="'View ' + s.filename">
-                                        <img class="sample-img"
-                                             [src]="sampleImageUrl(j.id, s.filename)"
-                                             [alt]="'sample ' + (s.step ?? '')"
-                                             loading="lazy"/>
+                                        @if (isVideoSample(s.filename)) {
+                                            <!-- An <img> can't render an mp4/webm, so video thumbs are a
+                                                 lightweight placeholder tile with a play glyph; the caption
+                                                 carries the step. Clicking opens the lightbox <video>. -->
+                                            <div class="sample-img sample-video-thumb" data-testid="sample-video-thumb"
+                                                 style="display:flex;align-items:center;justify-content:center;color:var(--color-text-secondary)">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                                            </div>
+                                        } @else {
+                                            <img class="sample-img"
+                                                 [src]="sampleImageUrl(j.id, s.filename)"
+                                                 [alt]="'sample ' + (s.step ?? '')"
+                                                 loading="lazy"/>
+                                        }
                                     </button>
                                     <figcaption class="sample-cap mono">
                                         {{ s.step === 999999 ? 'final' : 'step ' + (s.step ?? '?') }}
@@ -405,11 +415,26 @@
             <div class="lightbox-inner" (click)="$event.stopPropagation()">
                 <div class="lightbox-bar">
                     <span class="mono">{{ modal.step === 999999 ? 'final' : 'step ' + (modal.step ?? '?') }}</span>
-                    <button class="q-icon" (click)="closeSample()" title="Close">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                    </button>
+                    <div class="lightbox-bar-tools" style="display:flex;align-items:center;gap:8px">
+                        @if (isVideoSample(modal.filename)) {
+                            <button class="q-icon" (click)="toggleSampleMuted()" [title]="sampleMuted() ? 'Unmute' : 'Mute'" [attr.aria-pressed]="!sampleMuted()" data-testid="lightbox-mute">
+                                @if (sampleMuted()) {
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+                                } @else {
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                                }
+                            </button>
+                        }
+                        <button class="q-icon" (click)="closeSample()" title="Close">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                        </button>
+                    </div>
                 </div>
-                <img class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" [alt]="'sample ' + (modal.step ?? '')"/>
+                @if (isVideoSample(modal.filename)) {
+                    <video class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" controls loop autoplay [muted]="sampleMuted()" playsinline data-testid="lightbox-video"></video>
+                } @else {
+                    <img class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" [alt]="'sample ' + (modal.step ?? '')" data-testid="lightbox-img"/>
+                }
             </div>
         </div>
     }

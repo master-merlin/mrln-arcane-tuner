@@ -1,6 +1,13 @@
 import { Injectable, Signal, computed, inject, signal } from '@angular/core';
 import { WebSocketService } from '../services/websocket.service';
 
+export interface FileProgress {
+    name: string;
+    current_bytes: number;
+    total_bytes: number | null;
+    percent: number | null;
+}
+
 export interface DownloadProgress {
     source: 'curated' | 'hf';
     model_id: string;
@@ -10,6 +17,7 @@ export interface DownloadProgress {
     total_bytes: number | null;
     percent: number | null;
     error: string | null;
+    files?: FileProgress[];
 }
 
 export interface RecentDownload extends DownloadProgress {

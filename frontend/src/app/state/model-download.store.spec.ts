@@ -68,4 +68,13 @@ describe('ModelDownloadStore', () => {
         ws.push(p({ source: 'hf',      model_id: 'x', status: 'starting' }));
         expect(store.activeCount()).toBe(2);
     });
+
+    it('passes per-file progress through on active downloads', () => {
+        ws.push(p({
+            status: 'downloading', current_bytes: 50, percent: 50,
+            files: [{ name: 'dit.safetensors', current_bytes: 20, total_bytes: 80, percent: 25 }],
+        }));
+        expect(store.active()[0].files?.length).toBe(1);
+        expect(store.active()[0].files?.[0].name).toBe('dit.safetensors');
+    });
 });

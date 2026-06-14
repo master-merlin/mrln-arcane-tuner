@@ -10,6 +10,7 @@ from app.api.dataset.analysis_routes import router as analysis_router
 from app.api.dataset.upscale_routes import router as upscale_router
 from app.api.dataset.overlay_routes import router as overlay_router
 from app.api.dataset.stats_routes import router as stats_router
+from app.api.dataset.video_routes import router as video_router
 
 router = APIRouter()
 # Stats router is mounted FIRST so its concrete prefix
@@ -23,4 +24,4 @@ router.include_router(crop_router)
 router.include_router(analysis_router)
 router.include_router(upscale_router)
 router.include_router(overlay_router)
-
+router.include_router(video_router)

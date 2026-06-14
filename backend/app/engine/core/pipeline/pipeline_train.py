@@ -338,6 +338,14 @@ class PipelineTrainMixin:
             if self.ema_handler:
                 self.ema_handler.step()
 
+            # 6a. Driver per-step hook (default no-op). Multi-model families
+            # (WAN 2.2 dual-expert MoE) advance their router here → set the
+            # active expert for the NEXT step (and swap it onto the GPU). Wrapped
+            # in getattr so this stays safe for any driver/trainer shape.
+            driver = getattr(self, "driver", None)
+            if driver is not None and hasattr(driver, "on_optimizer_step"):
+                driver.on_optimizer_step(step)
+
             # 6b. First completed optimizer step: optimizer states are now
             # allocated and gradients are live — snapshot the resident set so
             # _compute_vram_measured can isolate optimizer + activations.

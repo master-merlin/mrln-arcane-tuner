@@ -8,14 +8,22 @@ retrofit callsites) emit `model.download_progress` events via the shared
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 import time as _time
 from contextlib import contextmanager
 from typing import Generator, Literal, Optional
 
+import structlog
 from huggingface_hub.utils import tqdm as hf_tqdm  # type: ignore[attr-defined]
 from pydantic import BaseModel
 
 from app.core.events import event_manager
+
+logger = structlog.get_logger(__name__)
+
+# How often the snapshot byte-progress poller samples on-disk cache growth.
+SNAPSHOT_POLL_INTERVAL_S = 0.5
 
 
 class DownloadProgress(BaseModel):
@@ -294,3 +302,118 @@ def with_progress(
         schedule_emit_from_thread(
             _make_payload(**payload_kw, status="complete", current=0, total=None)
         )
+
+
+# ── Snapshot byte-progress poller ────────────────────────────────────────────
+#
+# huggingface_hub routes a caller's ``tqdm_class`` ONLY to the coarse
+# "Fetching N files" bar, never the per-file byte transfers (its own docstring
+# says so). Wrapping that bar yields file-granularity updates that look frozen
+# while a single multi-GB shard downloads (and report file *counts* rendered as
+# "0.0 MB"). So for a full-repo snapshot we ignore tqdm entirely and instead
+# poll the repo's on-disk cache growth against its total size — which also
+# reports a *partial resume* correctly (on-disk already includes the cached
+# bytes). All helpers are best-effort: any failure degrades to an indeterminate
+# spinner rather than breaking the download.
+
+
+def _repo_cache_dir(repo_id: str) -> Optional[str]:
+    """Local HF cache folder for *repo_id* (…/models--org--name), or None."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        folder = "models--" + repo_id.replace("/", "--")
+        return os.path.join(HF_HUB_CACHE, folder)
+    except Exception:
+        return None
+
+
+def _on_disk_bytes(repo_cache_dir: Optional[str]) -> int:
+    """Bytes currently on disk for a repo — the ``blobs/`` dir (completed blobs
+    plus in-flight ``*.incomplete`` parts). 0 if the dir doesn't exist yet."""
+    if not repo_cache_dir:
+        return 0
+    blobs = os.path.join(repo_cache_dir, "blobs")
+    total = 0
+    try:
+        with os.scandir(blobs) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat().st_size
+                except OSError:
+                    continue
+    except (FileNotFoundError, NotADirectoryError):
+        return 0
+    except OSError:
+        return 0
+    return total
+
+
+def _repo_total_bytes(repo_id: str) -> Optional[int]:
+    """Sum of every file's size in *repo_id* (one metadata call), or None when
+    unknown (offline, missing sizes) — the caller then shows an indeterminate
+    spinner instead of a wrong percentage."""
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().repo_info(repo_id, files_metadata=True)
+        sizes = [
+            s.size for s in (info.siblings or []) if getattr(s, "size", None)
+        ]
+        return sum(sizes) if sizes else None
+    except Exception as e:
+        logger.debug("repo_total_bytes_failed", repo=repo_id, error=str(e))
+        return None
+
+
+@contextmanager
+def snapshot_byte_progress(
+    *, repo_id: str, model_id: str, category: str,
+) -> Generator[None, None, None]:
+    """Emit aggregate BYTE progress for an in-flight full-repo snapshot download.
+
+    Polls the repo's on-disk cache (``blobs/``) against its total size on a
+    background thread and emits throttle-free ``downloading`` events every
+    ``SNAPSHOT_POLL_INTERVAL_S``. A ``starting`` event fires on enter (carrying
+    the resume baseline so a partial cache shows its real %), and a
+    ``complete``/``error`` event fires on exit so the indicator always clears.
+
+    Best-effort: a metadata failure degrades to an indeterminate spinner
+    (``total`` unknown); poll/stat errors are swallowed.
+    """
+    total = _repo_total_bytes(repo_id)
+    cache_dir = _repo_cache_dir(repo_id)
+
+    def _emit(status: str, *, error: Optional[str] = None) -> None:
+        current = _on_disk_bytes(cache_dir)
+        if total is not None:
+            current = min(current, total)  # stale extra blobs can overshoot
+        schedule_emit_from_thread(
+            _make_payload(
+                source="hf", model_id=model_id, category=category,
+                status=status, current=current, total=total, error=error,
+            )
+        )
+
+    _emit("starting")
+    stop = threading.Event()
+
+    def _poll() -> None:
+        while not stop.wait(SNAPSHOT_POLL_INTERVAL_S):
+            _emit("downloading")
+
+    poller = threading.Thread(target=_poll, daemon=True, name="hf_dl_progress")
+    poller.start()
+    try:
+        yield
+    except Exception as exc:
+        stop.set()
+        _emit("error", error=str(exc))
+        raise
+    else:
+        stop.set()
+        _emit("complete")
+    finally:
+        stop.set()
+        poller.join(timeout=1.0)

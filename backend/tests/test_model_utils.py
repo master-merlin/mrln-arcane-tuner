@@ -31,10 +31,11 @@ class TestResolveLocal:
 
 
 class TestResolveHuggingFace:
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=True)
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_hf_full_repo(self, mock_download):
+    def test_hf_full_repo(self, mock_download, _mock_cached):
         """huggingface:<repo_id> resolves via snapshot_download; the returned
-        path comes from an *online* resolve (the cache probe only gates the
+        path comes from an *online* resolve (the cache check only gates the
         progress bar — a cache-only result could mask a partial snapshot)."""
         mock_download.return_value = "/cache/repo"
         result = ModelPathResolver.resolve("huggingface:org/model")
@@ -54,31 +55,55 @@ class TestResolveHuggingFace:
             assert call.kwargs.get("local_files_only") is not True
         assert mock_download.call_count == 1
 
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=True)
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_cached_snapshot_skips_progress_tqdm(self, mock_download):
-        """A snapshot already on disk is loaded, not transferred — so no
+    def test_cached_snapshot_skips_progress_tqdm(self, mock_download, _mock_cached):
+        """A snapshot FULLY on disk is loaded, not transferred — so no
         emitting ``tqdm_class`` is attached (the top-bar bar must not flash)."""
-        # Every call (incl. the local_files_only cache probe) succeeds → cached.
         mock_download.return_value = "/cache/repo"
         result = ModelPathResolver.resolve("huggingface:org/model")
         assert result == "/cache/repo"
         assert all(
             "tqdm_class" not in c.kwargs for c in mock_download.call_args_list
-        ), "cache hit must not attach the progress tqdm"
+        ), "full cache hit must not attach the progress tqdm"
 
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=False)
+    @patch("app.api.events.download_progress.snapshot_byte_progress")
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_uncached_snapshot_attaches_progress_tqdm(self, mock_download):
-        """A snapshot missing from the cache is a real download → progress on."""
-        def side_effect(*args, **kwargs):
-            if kwargs.get("local_files_only"):
-                raise FileNotFoundError("not cached")  # probe miss
-            return "/cache/repo"
-        mock_download.side_effect = side_effect
+    def test_uncached_snapshot_emits_byte_progress(
+        self, mock_download, mock_progress, _mock_cached,
+    ):
+        """A snapshot missing from the cache is a real download → byte progress
+        on. HF never routes a tqdm to per-file transfers, so we wrap the resolve
+        in the on-disk byte poller instead of attaching a tqdm_class."""
+        mock_download.return_value = "/cache/repo"
         result = ModelPathResolver.resolve("huggingface:org/model")
         assert result == "/cache/repo"
-        assert any(
-            "tqdm_class" in c.kwargs for c in mock_download.call_args_list
-        ), "real download must attach the progress tqdm"
+        mock_progress.assert_called_once()
+        assert mock_progress.call_args.kwargs.get("repo_id") == "org/model"
+        # The coarse file-count tqdm must NOT be attached (it looks frozen).
+        assert all("tqdm_class" not in c.kwargs for c in mock_download.call_args_list)
+
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=False)
+    @patch("app.api.events.download_progress.snapshot_byte_progress")
+    @patch("app.engine.utils.model_utils.snapshot_download")
+    def test_partial_cache_emits_byte_progress(
+        self, mock_download, mock_progress, _mock_cached,
+    ):
+        """REGRESSION: a *partial* cache (an interrupted download) must still
+        show progress. A bare ``local_files_only`` probe would 'succeed' and
+        mask the partial snapshot, so the resume ran SILENTLY with the top-bar
+        indicator dark and the job stuck looking idle. ``_snapshot_fully_cached``
+        reports False for a partial cache, so the byte poller wraps the resume
+        and the remainder downloads WITH progress."""
+        mock_download.return_value = "/cache/repo"
+        result = ModelPathResolver.resolve("huggingface:org/model")
+        assert result == "/cache/repo"
+        mock_progress.assert_called_once()
+        # The returned resolve is online (cache-only would mask the partial).
+        assert (
+            mock_download.call_args_list[-1].kwargs.get("local_files_only") is not True
+        )
 
     @patch("app.engine.utils.model_utils.snapshot_download")
     def test_hf_offline_uses_local_cache_only(self, mock_download):

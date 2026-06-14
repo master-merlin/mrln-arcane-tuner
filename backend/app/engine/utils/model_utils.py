@@ -18,6 +18,41 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
 logger = structlog.get_logger(__name__)
 
+
+def _snapshot_fully_cached(repo_id: str) -> bool:
+    """True iff EVERY file in *repo_id* is already in the local HF cache.
+
+    A bare ``snapshot_download(repo_id, local_files_only=True)`` is NOT a
+    reliable "is it cached" signal: it returns whatever snapshot folder exists
+    even when the previous download was interrupted and files are still missing
+    (it does not verify the manifest offline — see ``_resolve_hf``). Using it to
+    gate the progress bar means a *partial* cache is treated as a cache hit, so
+    the resume runs SILENTLY — the top-bar download indicator stays dark and the
+    job looks idle while a large model quietly transfers in the background.
+
+    Cross-checking the Hub's file list against ``try_to_load_from_cache`` makes a
+    partial cache report ``False``, so the caller attaches the emitting tqdm and
+    the remainder downloads WITH progress. Only a genuinely complete snapshot
+    returns ``True`` (and skips the bar, avoiding a spurious flash).
+
+    Any error (offline, repo removed, auth) → ``False``: prefer showing progress
+    over a misleading silent download. The caller's online ``snapshot_download``
+    then surfaces any real error as before.
+    """
+    try:
+        from huggingface_hub import HfApi, try_to_load_from_cache
+
+        files = HfApi().list_repo_files(repo_id)
+        if not files:
+            return False
+        return all(
+            isinstance(try_to_load_from_cache(repo_id, f), str) for f in files
+        )
+    except Exception as e:
+        logger.debug("snapshot_cache_probe_failed", repo=repo_id, error=str(e))
+        return False
+
+
 class ModelPathResolver:
     """Resolve model component paths from local or ``huggingface:`` URIs."""
 
@@ -76,7 +111,10 @@ class ModelPathResolver:
         local_files_only: bool = False,
     ) -> str:
         """Download from HuggingFace Hub and return the local cache path."""
-        from app.api.events.download_progress import make_progress_tqdm, with_progress
+        from app.api.events.download_progress import (
+            snapshot_byte_progress,
+            with_progress,
+        )
 
         clean = path_str.replace("huggingface:", "")
         parts = clean.split(":")
@@ -109,51 +147,40 @@ class ModelPathResolver:
                     "the model first.",
                 )
 
-        # Real download — wrap with progress emits. Bind the WS metadata with a
-        # tqdm SUBCLASS (not functools.partial): snapshot_download fetches files
-        # concurrently and calls the classmethod tqdm_class.get_lock(), which a
-        # partial cannot provide ("'functools.partial' object has no attribute
-        # 'get_lock'").
-        bound_tqdm = make_progress_tqdm(
-            source="hf", model_id=progress_id, category="training",
-        )
         try:
             if filename:
                 logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
                 # hf_hub_download() does NOT accept tqdm_class (huggingface_hub
-                # >= 0.36 — only snapshot_download does); passing it raises
-                # "unexpected keyword argument 'tqdm_class'" and aborts the
-                # download. with_progress still emits coarse start/complete.
+                # >= 0.36 — only snapshot_download does), and HF never routes a
+                # custom tqdm to per-file byte transfers anyway. with_progress
+                # emits a coarse start/complete pair for the indicator.
                 with with_progress(model_id=progress_id, category="training"):
                     return hf_hub_download(repo_id=repo_id, filename=filename)
 
             # Snapshot (full repo). Only surface the download indicator on a
-            # REAL transfer: a snapshot already on disk is loaded, not
-            # downloaded, and snapshot_download's per-file "Fetching N files"
-            # bar (the only tqdm huggingface_hub routes through tqdm_class —
-            # see its docstring: "tqdm_class is not passed to each individual
-            # download") iterates cached files identically to downloaded ones,
-            # so attaching the emitting tqdm would flash the bar on a pure
-            # cache hit. Probe the cache first (local_files_only never touches
-            # the network); when the snapshot resolves locally, run the online
-            # resolve WITHOUT the emitting tqdm — it re-checks etags and
-            # transfers nothing. We deliberately re-run the *online*
-            # snapshot_download (not the probe's result) so a *partial* cache
-            # still re-fetches the files it is missing.
-            cached = False
-            try:
-                snapshot_download(repo_id=repo_id, local_files_only=True)
-                cached = True
-            except Exception:
-                cached = False
-
-            if cached:
+            # REAL transfer: a snapshot fully on disk is loaded, not downloaded.
+            # We must NOT gate that on a bare local_files_only probe — it returns
+            # a *partial* snapshot as if complete, so an interrupted download
+            # would resume SILENTLY (dark indicator, job stuck looking idle).
+            # _snapshot_fully_cached cross-checks the Hub's file list against the
+            # cache, so only a genuinely complete snapshot skips the bar.
+            if _snapshot_fully_cached(repo_id):
                 logger.info("snapshot_cache_hit", repo=repo_id)
                 return snapshot_download(repo_id=repo_id)
 
+            # A real (or partial-resume) transfer. We can't attach an emitting
+            # tqdm for BYTE progress — HF only routes tqdm_class to the coarse
+            # "Fetching N files" bar (its docstring: "tqdm_class is not passed to
+            # each individual download"), which sits frozen at 0/N while a single
+            # multi-GB shard downloads. snapshot_byte_progress instead polls the
+            # on-disk cache growth against the repo's total size for true,
+            # resume-aware byte progress. The online snapshot_download re-checks
+            # etags and fetches only what's missing, so a partial cache heals.
             logger.info("downloading_snapshot_from_hub", repo=repo_id)
-            with with_progress(model_id=progress_id, category="training"):
-                return snapshot_download(repo_id=repo_id, tqdm_class=bound_tqdm)
+            with snapshot_byte_progress(
+                repo_id=repo_id, model_id=progress_id, category="training",
+            ):
+                return snapshot_download(repo_id=repo_id)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("hf_download_failed", repo=repo_id, file=filename, error=str(e))
             raise

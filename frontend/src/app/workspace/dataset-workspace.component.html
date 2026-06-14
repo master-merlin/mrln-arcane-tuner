@@ -116,6 +116,64 @@
                             (click)="openMass('mass-edit')">
                         <app-ico name="Sliders" [size]="13"/> Mass edit
                     </button>
+
+                    <!-- Video curation — only when the dataset has video sources -->
+                    @if (hasVideos()) {
+                        <span class="ws-divider thin"></span>
+                        <button class="btn sm" type="button"
+                                data-testid="ws-cutlist-btn"
+                                (click)="openCutlist()"
+                                title="Split a video into clips from a cut list">
+                            <app-ico name="Scissors" [size]="13"/> Cut list
+                        </button>
+                        <button class="btn sm" type="button"
+                                data-testid="ws-scene-detect-btn"
+                                (click)="openSceneDetect()"
+                                title="Auto-detect scene cuts and split">
+                            <app-ico name="ScanSearch" [size]="13"/> Scene detect
+                        </button>
+                        <div class="ws-health">
+                            <button class="chip ws-health-chip"
+                                    type="button"
+                                    data-testid="ws-clip-health-chip"
+                                    [class.solid]="clipWarningCount() === 0"
+                                    [class.warning]="clipWarningCount() > 0"
+                                    (click)="toggleHealthPopover()"
+                                    [title]="clipWarningCount() > 0
+                                        ? clipWarningCount() + ' clip(s) with frame-rule warnings'
+                                        : 'All clips pass the frame rules'">
+                                <app-ico [name]="clipWarningCount() > 0 ? 'TriangleAlert' : 'Check'" [size]="11"/>
+                                @if (clipWarningCount() > 0) {
+                                    {{ clipWarningCount() }} clip warning{{ clipWarningCount() === 1 ? '' : 's' }}
+                                } @else {
+                                    Clips OK
+                                }
+                            </button>
+                            @if (showHealthPopover()) {
+                                <div class="ws-health-pop" data-testid="ws-clip-health-pop">
+                                    <div class="eyebrow">CLIP HEALTH</div>
+                                    @if (clipWarningCount() === 0) {
+                                        <div class="ws-health-empty">All {{ videoPairs().length }} clips pass the frame rules.</div>
+                                    } @else {
+                                        @for (v of videoPairs(); track v.media_file) {
+                                            @if (v.metadata?.clip_warnings; as cw) {
+                                                @if (warningList(cw).length > 0) {
+                                                    <div class="ws-health-row">
+                                                        <div class="mono ws-health-file" [title]="v.media_file">{{ v.media_file }}</div>
+                                                        <div class="ws-health-warns">
+                                                            @for (w of warningList(cw); track w) {
+                                                                <span class="ws-health-warn">{{ w }}</span>
+                                                            }
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }
+                                        }
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
                 </div>
 
                 <span class="ws-divider"></span>
@@ -216,7 +274,8 @@
                             (deleteMask)="onDeleteMaskRequested($event)"
                             (maskGenerated)="refreshPairs()"
                             (toggleMasked)="toggleMaskedView()"
-                            (toggleOverlay)="toggleOverlayView()"/>
+                            (toggleOverlay)="toggleOverlayView()"
+                            (trimSave)="onSaveTrim($event)"/>
                     } @loading {
                         <div class="defer-loading">Loading details…</div>
                     }
@@ -277,5 +336,20 @@
                 <div class="filmstrip-empty muted">No images in this dataset yet.</div>
             }
         </footer>
+
+        <!-- Video-curation modals — rendered via @if (project opens some modals
+             this way; these aren't in the global modal-layer registry). -->
+        @if (showCutlistModal()) {
+            <app-cutlist-import-modal
+                [datasetName]="dataset()?.name ?? w.datasetId"
+                [videoPairs]="videoPairs()"
+                (closed)="showCutlistModal.set(false)"/>
+        }
+        @if (showSceneDetectModal()) {
+            <app-scene-detect-modal
+                [datasetName]="dataset()?.name ?? w.datasetId"
+                [videoPairs]="videoPairs()"
+                (closed)="showSceneDetectModal.set(false)"/>
+        }
     </div>
 }

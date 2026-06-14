@@ -29,6 +29,8 @@ import { FilmstripScrubberComponent } from './filmstrip-scrubber/filmstrip-scrub
 import { BrowseMode } from './modes/browse-mode';
 import { DetailsMode } from './modes/details-mode';
 import { EditMode } from './modes/edit-mode';
+import { CutlistImportModalComponent } from '../components/dataset/video/cutlist-import-modal';
+import { SceneDetectModalComponent } from '../components/dataset/video/scene-detect-modal';
 
 /**
  * Fullscreen dataset workspace overlay.
@@ -71,6 +73,8 @@ import { EditMode } from './modes/edit-mode';
         BrowseMode,
         DetailsMode,
         EditMode,
+        CutlistImportModalComponent,
+        SceneDetectModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './dataset-workspace.component.html',
@@ -269,6 +273,29 @@ export class DatasetWorkspaceComponent {
         return m === 'details' || m === 'edit';
     });
 
+    // ── Video curation ──────────────────────────────────────────────────
+    /** Video pairs in the active dataset — feeds the cut-list / scene-detect
+     *  source pickers. */
+    protected videoPairs = computed<DatasetPair[]>(() =>
+        this.pairs().filter(p => p?.media_type === 'video'),
+    );
+    /** True when the dataset has at least one video — gates the curation
+     *  toolbar group + the health chip. */
+    protected hasVideos = computed<boolean>(() => this.videoPairs().length > 0);
+    /** Count of clips carrying any clip-health warning — derived locally from
+     *  the loaded pairs' `metadata.clip_warnings` (no extra HTTP). */
+    protected clipWarningCount = computed<number>(() =>
+        this.videoPairs().reduce((n, p) => {
+            const w = p?.metadata?.clip_warnings;
+            const hasWarn = !!w && Object.values(w).some(arr => (arr?.length ?? 0) > 0);
+            return n + (hasWarn ? 1 : 0);
+        }, 0),
+    );
+    /** Open/close state for the two video-curation modals + the health popover. */
+    protected showCutlistModal = signal<boolean>(false);
+    protected showSceneDetectModal = signal<boolean>(false);
+    protected showHealthPopover = signal<boolean>(false);
+
     /** Media file of the pair at the active cursor — null when no
      *  pair is loaded. Drives the browse-mode tile highlight + scroll. */
     protected activeMediaFile = computed<string | null>(() => {
@@ -408,6 +435,44 @@ export class DatasetWorkspaceComponent {
             // Idempotent — `ensurePatchBump` itself short-circuits on
             // subsequent calls, so back-to-back mass runs only bump once.
             onCompleted: () => this.ensurePatchBump(),
+        });
+    }
+
+    /** Flatten a pair's per-family `clip_warnings` map into a unique list of
+     *  warning strings, for the health popover. */
+    protected warningList(cw: Record<string, string[]> | undefined): string[] {
+        if (!cw) return [];
+        const out = new Set<string>();
+        for (const arr of Object.values(cw)) {
+            for (const w of arr ?? []) out.add(w);
+        }
+        return [...out];
+    }
+
+    /** Open one of the two video-curation modals (rendered via `@if`). */
+    protected openCutlist(): void { this.showCutlistModal.set(true); }
+    protected openSceneDetect(): void { this.showSceneDetectModal.set(true); }
+    protected toggleHealthPopover(): void { this.showHealthPopover.update(v => !v); }
+
+    /**
+     * Persist a committed video trim, then reconcile the media store through
+     * the canonical sync path (replace-not-merge). The PATCH returns recomputed
+     * clip warnings, but we deliberately let `refreshDataset` re-pull `/pairs`
+     * (the disk-truth source) rather than patch the store directly — that's the
+     * project's funnel-every-mutation-through-refreshDataset law.
+     */
+    protected onSaveTrim(
+        event: { media_file: string; trim_start_s: number | null; trim_end_s: number | null },
+    ): void {
+        const d = this.dataset();
+        if (!d || !event.media_file) return;
+        this.datasetsApi.saveTrim(d.name, event).subscribe({
+            next: () => {
+                this.toast.success('Trim saved.');
+                void this.sync.refreshDataset(d.name);
+                this.ensurePatchBump();
+            },
+            error: (err: unknown) => this.toast.error(this.errMsg(err, 'Could not save trim')),
         });
     }
 

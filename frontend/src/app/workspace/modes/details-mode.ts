@@ -76,6 +76,7 @@ import type { DatasetPair } from '../../services/dataset';
                         (zoomChange)="zoom.set($event)"
                         (prevRequested)="prev()"
                         (nextRequested)="next()"
+                        (trimSave)="trimSave.emit($event)"
                         (deleteRequested)="deletePair.emit(pair)"/>
 
                     <app-canvas-footer
@@ -242,6 +243,9 @@ export class DetailsMode {
     /** Canvas-footer OVR pill was clicked — workspace flips its
      *  ``showOverlay`` signal (the same one Browse toolbar toggles). */
     toggleOverlay = output<void>();
+    /** Video trim committed in the detail media container — workspace persists
+     *  it via DatasetService.saveTrim + DatasetSyncService.refreshDataset. */
+    trimSave = output<{ media_file: string; trim_start_s: number | null; trim_end_s: number | null }>();
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);

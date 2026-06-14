@@ -1,6 +1,7 @@
 import { Component, ElementRef, computed, effect, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
+import { VideoTilePreviewComponent } from './video-tile-preview';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
 
 /**
@@ -25,7 +26,7 @@ export interface GridCropRequest {
     selector: 'app-viewer-grid-view',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
-    imports: [FormsModule, StatePillsComponent],
+    imports: [FormsModule, StatePillsComponent, VideoTilePreviewComponent],
     host: { class: 'flex-1 flex flex-col overflow-hidden' },
     template: `
         <div #scrollHost class="w-full h-full overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent flex flex-col">
@@ -86,13 +87,13 @@ export interface GridCropRequest {
                              }
 
                               @if (pair.media_type === 'video') {
-                                <video [src]="getMediaUrl(pair.media_file)"
-                                       (loadeddata)="onTileLoaded($event, pair)"
-                                       class="w-full h-full object-cover transition-opacity relative z-[1]"
-                                       [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"></video>
-                                <div class="absolute bottom-2 right-2 bg-surface-low/60 text-text-primary p-1 rounded-theme-sm z-10">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
-                                </div>
+                                <app-video-tile-preview
+                                    [posterUrl]="thumbnailUrl(pair)"
+                                    [videoUrl]="getMediaUrl(pair.media_file)"
+                                    [metadata]="pair.metadata"
+                                    (loaded)="onTileLoaded($event, pair)"
+                                    class="w-full h-full transition-opacity relative z-[1]"
+                                    [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"></app-video-tile-preview>
                              } @else {
                                 <img [src]="getDisplayUrl(pair)"
                                      (load)="onTileLoaded($event, pair)"
@@ -507,6 +508,17 @@ export class ViewerGridViewComponent {
 
     getOverlayUrl(imagePath: string): string {
         return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/overlay/${encodeURIComponent(imagePath)}?t=${this.lastUpdateTime()}`;
+    }
+
+    /**
+     * 256px WebP thumbnail (poster) URL for a pair — backed by
+     * `GET /datasets/{name}/thumbnail`, which extracts the first frame for
+     * videos. Used as the at-rest poster for the lazy video tile. Cache-busted
+     * with the same `?t=lastUpdateTime` as the other media URLs.
+     */
+    thumbnailUrl(pair: GridPair): string {
+        return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/thumbnail`
+            + `?image_rel_path=${encodeURIComponent(pair.media_file)}&t=${this.lastUpdateTime()}`;
     }
 
     getDisplayUrl(pair: GridPair): string {

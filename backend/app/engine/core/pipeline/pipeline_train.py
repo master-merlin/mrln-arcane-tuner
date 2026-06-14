@@ -40,11 +40,19 @@ class PipelineTrainMixin:
                         yield [item]
             else:
                 from collections import defaultdict
+
                 while True:
                     random.shuffle(self.inventory)
-                    buckets: dict[tuple[int, int], list] = defaultdict(list)
+                    # Group by (w, h, frames) so collation shapes stay uniform
+                    # within a batch. ``target_frames`` defaults to 1 for images
+                    # → image-only runs group exactly as before.
+                    buckets: dict[tuple[int, int, int], list] = defaultdict(list)
                     for item in self.inventory:
-                        key = (item["target_w"], item["target_h"])
+                        key = (
+                            item["target_w"],
+                            item["target_h"],
+                            item.get("target_frames", 1),
+                        )
                         buckets[key].append(item)
                     all_batches = []
                     for items in buckets.values():
@@ -61,6 +69,7 @@ class PipelineTrainMixin:
 
         # Signal Manager
         from app.engine.components.signal_manager import TrainingSignalManager
+
         self.signal_manager = TrainingSignalManager(self.checkpoint_manager.output_dir)
         self.logger_component.signal_manager = self.signal_manager
 
@@ -92,7 +101,9 @@ class PipelineTrainMixin:
 
         # ── Log trainable vs total parameter counts ──
         primary = self._get_primary_model()
-        trainable_params = sum(p.numel() for p in primary.parameters() if p.requires_grad)
+        trainable_params = sum(
+            p.numel() for p in primary.parameters() if p.requires_grad
+        )
         total_params = sum(p.numel() for p in primary.parameters())
         self._trainable_params = trainable_params
         self._total_params = total_params
@@ -173,15 +184,16 @@ class PipelineTrainMixin:
                     latents = None
                     if use_cache:
                         latents = self.latent_manager.load_cached_latents(
-                            batch["ids"], batch["cache_dirs"],
+                            batch["ids"],
+                            batch["cache_dirs"],
                             source_paths=batch["paths"],
                         )
                     if latents is None:
                         # Cache miss — should only happen if pre-cache was
                         # skipped or new items were added mid-run.
-                        self._uncached_encode_count = getattr(
-                            self, "_uncached_encode_count", 0
-                        ) + 1
+                        self._uncached_encode_count = (
+                            getattr(self, "_uncached_encode_count", 0) + 1
+                        )
                         self.logger.warning(
                             "latent_cache_miss",
                             step=step,
@@ -212,11 +224,15 @@ class PipelineTrainMixin:
                     # trainers can condition the text encoder on the control image
                     # + key the TE cache by (caption, control). Ignored otherwise.
                     text_emb = self.encode_text(
-                        batch["captions"], self.autocast_dtype, batch=batch,
+                        batch["captions"],
+                        self.autocast_dtype,
+                        batch=batch,
                     )
 
                 # 3. Forward + Loss (under autocast)
-                with torch.autocast("cuda", dtype=self.autocast_dtype, enabled=self.use_amp):
+                with torch.autocast(
+                    "cuda", dtype=self.autocast_dtype, enabled=self.use_amp
+                ):
                     # Sample noise in SPATIAL space [B,C,H,W] (before any packing).
                     # This is critical: noise offset must be per-channel in spatial
                     # space, not in packed [B,L,D] space where D interleaves
@@ -227,9 +243,11 @@ class PipelineTrainMixin:
                     if noise_offset_strength > 0:
                         # Per-channel offset in spatial space: [B, C, 1, 1]
                         noise_offset = noise_offset_strength * torch.randn(
-                            latents.shape[0], latents.shape[1],
+                            latents.shape[0],
+                            latents.shape[1],
                             *([1] * (latents.ndim - 2)),
-                            device=self.device, dtype=latents.dtype,
+                            device=self.device,
+                            dtype=latents.dtype,
                         )
                         noise = noise + noise_offset
 
@@ -239,22 +257,32 @@ class PipelineTrainMixin:
                     prepared_noise = self.prepare_noise_for_training(noise)
 
                     # Timesteps (family hook)
-                    timesteps = self.sample_timesteps(prepared_latents.shape[0], latents)
+                    timesteps = self.sample_timesteps(
+                        prepared_latents.shape[0], latents
+                    )
 
                     # Add noise (family hook)
-                    noisy_input = self.add_noise(prepared_latents, prepared_noise, timesteps)
+                    noisy_input = self.add_noise(
+                        prepared_latents, prepared_noise, timesteps
+                    )
 
                     # Forward pass (family hook)
                     pred = self.forward_pass(noisy_input, timesteps, text_emb, batch)
 
                     # Target (family hook)
-                    target = self.compute_target(prepared_latents, prepared_noise, timesteps)
+                    target = self.compute_target(
+                        prepared_latents, prepared_noise, timesteps
+                    )
 
                     # Loss — family hook allows full override (e.g. pixel-space
                     # families like HiDream-O1 that bypass the latent/noise path
                     # and compute their own recipe loss in forward_pass).
                     loss = self._compute_step_loss(
-                        pred, target, timesteps, batch, grad_accum,
+                        pred,
+                        target,
+                        timesteps,
+                        batch,
+                        grad_accum,
                     )
 
                 # 4. Backward
@@ -268,7 +296,9 @@ class PipelineTrainMixin:
                             "training_aborted_nan",
                             message="10 consecutive NaN losses — aborting training",
                         )
-                        raise RuntimeError("Training aborted: 10 consecutive NaN losses")
+                        raise RuntimeError(
+                            "Training aborted: 10 consecutive NaN losses"
+                        )
                     continue  # Skip this accum step
                 else:
                     self.nan_count = 0
@@ -287,7 +317,8 @@ class PipelineTrainMixin:
             # Only clip for non-adaptive; adaptive optimizers manage their own.
             if is_adaptive:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self._get_primary_model().parameters(), max_norm=float('inf'),
+                    self._get_primary_model().parameters(),
+                    max_norm=float("inf"),
                 )
             else:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -333,6 +364,7 @@ class PipelineTrainMixin:
                     current_lr = float(raw_lr)
                 elif is_adaptive:
                     import math
+
                     t = max(step + 1, 1)
                     current_lr = min(1e-6 * t, 1.0 / math.sqrt(t))
                 else:
@@ -364,7 +396,7 @@ class PipelineTrainMixin:
                 sps_window.append(raw_sps)
                 if len(sps_window) > 10:  # 10-step simple moving average
                     sps_window.pop(0)
-                
+
                 extra["samples_per_sec"] = round(sum(sps_window) / len(sps_window), 2)
 
             # Live VRAM usage
@@ -410,7 +442,8 @@ class PipelineTrainMixin:
                 )
                 self.logger_component.resume_step_timer()
                 self.logger.info(
-                    "periodic_checkpoint_saved", step=step,
+                    "periodic_checkpoint_saved",
+                    step=step,
                     save_time=round(self.logger_component._save_times[-1], 2),
                     avg_save_time=round(self.logger_component.avg_save_time, 2),
                 )
@@ -429,9 +462,7 @@ class PipelineTrainMixin:
                 try:
                     self.sampler.generate_samples(step)
                 except Exception as e:
-                    self.logger.error(
-                        "sampling_failed", step=step, error=str(e)
-                    )
+                    self.logger.error("sampling_failed", step=step, error=str(e))
                     self._emit_warning(f"Sampling failed at step {step + 1}: {e}")
                 finally:
                     self._emit_status("Training")
@@ -523,7 +554,7 @@ class PipelineTrainMixin:
             config = dict(self.config) if self.config else {}
             job_id = config.get("job_id")
             repo = JobHistoryRepository()
-            
+
             payload = {
                 "status": "running",
                 "started_at": time.time(),
@@ -575,17 +606,22 @@ class PipelineTrainMixin:
             return
         try:
             from app.core.db.repositories.checkpoint_repo import CheckpointRepository
+
             repo = CheckpointRepository()
-            repo.add({
-                "job_id": self._job_history_id,
-                "step": step,
-                "path": self.checkpoint_manager.output_dir,
-                "is_final": is_final,
-                "loss_at_step": self.logger_component._loss_history[-1]["loss"]
-                    if self.logger_component._loss_history else None,
-                "lr_at_step": self.logger_component._loss_history[-1]["lr"]
-                    if self.logger_component._loss_history else None,
-            })
+            repo.add(
+                {
+                    "job_id": self._job_history_id,
+                    "step": step,
+                    "path": self.checkpoint_manager.output_dir,
+                    "is_final": is_final,
+                    "loss_at_step": self.logger_component._loss_history[-1]["loss"]
+                    if self.logger_component._loss_history
+                    else None,
+                    "lr_at_step": self.logger_component._loss_history[-1]["lr"]
+                    if self.logger_component._loss_history
+                    else None,
+                }
+            )
         except Exception as e:
             logger.warning("checkpoint_record_failed", step=step, error=str(e))
 
@@ -595,6 +631,7 @@ class PipelineTrainMixin:
             return
         try:
             from app.core.db.repositories.job_repo import JobHistoryRepository
+
             repo = JobHistoryRepository()
             repo.update_progress(self._job_history_id, completed_steps=step + 1)
         except Exception as e:
@@ -606,6 +643,7 @@ class PipelineTrainMixin:
             return
         try:
             from app.core.db.repositories.job_repo import JobHistoryRepository
+
             repo = JobHistoryRepository()
 
             elapsed = self.logger_component.get_total_elapsed()
@@ -624,9 +662,12 @@ class PipelineTrainMixin:
             if vram_measured:
                 self._write_vram_measured(vram_measured)
 
-            repo.complete(self._job_history_id,
+            repo.complete(
+                self._job_history_id,
                 completed_steps=max_steps,
-                completed_epochs=round(max_steps / self._steps_per_epoch, 2) if getattr(self, "_steps_per_epoch", 0) else None,
+                completed_epochs=round(max_steps / self._steps_per_epoch, 2)
+                if getattr(self, "_steps_per_epoch", 0)
+                else None,
                 duration_seconds=elapsed,
                 training_seconds=elapsed - self.logger_component._total_save_time,
                 avg_loss=sum(losses) / len(losses) if losses else None,
@@ -642,7 +683,10 @@ class PipelineTrainMixin:
             # Refresh this definition's estimation coefficients (best-effort).
             try:
                 from app.core.stats import definition_stats_service
-                definition_stats_service.recompute(self.config.get("definition_id") or None)
+
+                definition_stats_service.recompute(
+                    self.config.get("definition_id") or None
+                )
             except Exception as e:
                 logger.warning("definition_stats_recompute_failed", error=str(e))
         except Exception as e:
@@ -683,7 +727,9 @@ class PipelineTrainMixin:
             return
         try:
             self._peak_vram_train_mb = round(torch.cuda.max_memory_reserved() / 1024**2)
-            self._peak_vram_train_alloc_mb = round(torch.cuda.max_memory_allocated() / 1024**2)
+            self._peak_vram_train_alloc_mb = round(
+                torch.cuda.max_memory_allocated() / 1024**2
+            )
         except Exception:
             pass
 
@@ -713,7 +759,9 @@ class PipelineTrainMixin:
         trainable = getattr(self, "_trainable_params", 0) or 0
         gradients = round(trainable * 2 / 1024**2)
         if after_first is not None:
-            optimizer_states = round(max(after_first - resident_adapters - gradients, 0))
+            optimizer_states = round(
+                max(after_first - resident_adapters - gradients, 0)
+            )
             resident_set = after_first
         else:
             optimizer_states = 0
@@ -738,6 +786,7 @@ class PipelineTrainMixin:
         try:
             import json
             import os
+
             out_dir = getattr(self.checkpoint_manager, "output_dir", None)
             if not out_dir:
                 return
@@ -756,6 +805,7 @@ class PipelineTrainMixin:
         """Total bytes written under the run's output directory."""
         try:
             import os
+
             out_dir = getattr(self.checkpoint_manager, "output_dir", None)
             if not out_dir or not os.path.isdir(out_dir):
                 return None

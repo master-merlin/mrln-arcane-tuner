@@ -12,6 +12,12 @@ training.  It handles:
 
 Family-specific subclasses implement ``encode_prompt``, ``denoise``,
 ``decode_latents``, and ``_create_initial_noise`` hooks.
+
+A family may return either a :class:`PIL.Image.Image` (still) **or** a
+:class:`SampleArtifact` (short video clip, optionally with audio) from
+``decode_latents``.  The base persists the right artifact (``.png`` vs
+``.mp4``) and tags the broadcast event with ``media_type`` so the frontend
+can pick ``<img>`` vs ``<video>``.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ import gc
 import os
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +39,33 @@ if TYPE_CHECKING:
     from app.engine.core.pipeline import GenericTrainingPipeline
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class SampleArtifact:
+    """A decoded video sample to be persisted as an mp4.
+
+    Returned from a video-capable family's ``decode_latents`` in place of a
+    :class:`PIL.Image.Image`.  The base writes it through
+    ``VideoFrameLoader.encode_video`` (H.264 + optional AAC audio).
+
+    Canonical frame layout is **``[C, F, H, W]`` float in ``[-1, 1]``** — the
+    exact tensor ``VideoFrameLoader.load_clip`` returns and ``encode_video``
+    consumes natively (a ``[F, H, W, C]`` uint8 tensor is also accepted by
+    ``encode_video`` and therefore tolerated here, but ``[C, F, H, W]`` float
+    is the documented contract).
+
+    Attributes:
+        frames: ``[C, F, H, W]`` float tensor in ``[-1, 1]`` (canonical), or a
+            ``[F, H, W, C]`` uint8 tensor.
+        audio: Optional waveform in ``[-1, 1]`` (1-D mono / 2-D channels-first),
+            or a ``(waveform, sample_rate)`` tuple, muxed as an AAC stream.
+        fps: Output framerate for the encoded clip.
+    """
+
+    frames: Tensor
+    audio: Tensor | None = None
+    fps: float = 16.0
 
 
 class GenericSamplingPipeline(ABC):
@@ -141,14 +175,17 @@ class GenericSamplingPipeline(ABC):
 
     @torch.no_grad()
     def generate_samples(self, step: int, final: bool = False) -> list[Path]:
-        """Generate sample images, save to disk and broadcast via WebSocket.
+        """Generate samples, save to disk and broadcast via WebSocket.
+
+        Each sample is a PNG (image families) or an mp4 (video families,
+        when ``decode_latents`` returns a :class:`SampleArtifact`).
 
         Args:
             step: Current training step number (0-based internal).
             final: If True, use ``_final`` suffix instead of step number.
 
         Returns:
-            List of saved image file paths.
+            List of saved sample file paths (``.png`` or ``.mp4``).
         """
         prompts = self._get_sample_prompts()
         if not prompts:
@@ -171,7 +208,9 @@ class GenericSamplingPipeline(ABC):
 
         displayed_step = step + 1
         self.logger.info(
-            "sampling_start", step=displayed_step, num_prompts=len(prompts),
+            "sampling_start",
+            step=displayed_step,
+            num_prompts=len(prompts),
             final=final,
         )
         t0 = time.perf_counter()
@@ -220,17 +259,19 @@ class GenericSamplingPipeline(ABC):
                 raw_prompt = cfg.get("prompt", "")
                 cfg["prompt"] = self._expand_wildcards(raw_prompt)
 
-                image = self._sample_single(cfg, step)
+                artifact = self._sample_single(cfg, step)
 
-                # Filename: _final suffix or 1-based step number
-                if final:
-                    path = output_dir / f"sample_{i:02d}_final.png"
-                else:
-                    path = output_dir / f"sample_{i:02d}_step{displayed_step:06d}.png"
-                image.save(path)
+                path = self._persist_artifact(
+                    artifact, output_dir, i, displayed_step, final
+                )
                 saved_paths.append(path)
 
-                self._broadcast_sample(path, displayed_step, i, cfg, raw_prompt)
+                media_type = (
+                    "video" if isinstance(artifact, SampleArtifact) else "image"
+                )
+                self._broadcast_sample(
+                    path, displayed_step, i, cfg, raw_prompt, media_type=media_type
+                )
 
             elapsed = time.perf_counter() - t0
             self.logger.info(
@@ -292,8 +333,15 @@ class GenericSamplingPipeline(ABC):
         """
 
     @abstractmethod
-    def decode_latents(self, latents: Any) -> Image.Image:
-        """Decode latent tensor(s) to a PIL ``Image``."""
+    def decode_latents(self, latents: Any) -> Image.Image | SampleArtifact:
+        """Decode latent tensor(s) to a sample.
+
+        Returns:
+            A :class:`PIL.Image.Image` for still-image families, or a
+            :class:`SampleArtifact` for video families (a ``[C, F, H, W]``
+            float clip plus optional audio + fps).  The base persists the
+            correct file type (``.png`` vs ``.mp4``) accordingly.
+        """
 
     @abstractmethod
     def _create_initial_noise(
@@ -331,6 +379,7 @@ class GenericSamplingPipeline(ABC):
             definition = getattr(self.pipeline, "definition", None)
             if definition:
                 from app.core.naming import model_part_from_definition_id
+
                 model_part = model_part_from_definition_id(definition.id)
                 run_name = f"{lora_name}_{model_part}"
             else:
@@ -400,8 +449,14 @@ class GenericSamplingPipeline(ABC):
             return
         transformer.to(self.device)
 
-    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Image.Image:
-        """Generate one sample image from a prompt config entry.
+    def _sample_single(
+        self, prompt_cfg: dict[str, Any], step: int
+    ) -> Image.Image | SampleArtifact:
+        """Generate one sample from a prompt config entry.
+
+        Returns a :class:`PIL.Image.Image` for image families or a
+        :class:`SampleArtifact` for video families — whatever the family's
+        ``decode_latents`` produces.
 
         Uses **phased GPU management** to minimise peak VRAM:
         1. TE → GPU → encode prompt → TE → CPU  (free VRAM)
@@ -443,10 +498,48 @@ class GenericSamplingPipeline(ABC):
 
         # ── Phase 3: Decode latents (VAE on GPU) ──
         vae_moved = self._ensure_on_gpu(["vae"])
-        image = self.decode_latents(latents)
+        artifact = self.decode_latents(latents)
         self._offload_to_cpu(vae_moved)
 
-        return image
+        return artifact
+
+    def _persist_artifact(
+        self,
+        artifact: Image.Image | SampleArtifact,
+        output_dir: Path,
+        index: int,
+        displayed_step: int,
+        final: bool,
+    ) -> Path:
+        """Write a decoded sample to disk and return its path.
+
+        - :class:`PIL.Image.Image` → ``.png`` (filename pattern unchanged from
+          the original inline ``image.save`` — ``sample_{index:02d}_final.png``
+          for the final sample, ``sample_{index:02d}_step{step:06d}.png``
+          otherwise).
+        - :class:`SampleArtifact` → ``.mp4`` via ``VideoFrameLoader`` (lazy
+          import so importing this module never drags PyAV), muxing
+          ``artifact.audio`` when present.
+        """
+        if final:
+            stem = f"sample_{index:02d}_final"
+        else:
+            stem = f"sample_{index:02d}_step{displayed_step:06d}"
+
+        if isinstance(artifact, SampleArtifact):
+            # Lazy import: keeps PyAV out of this module's import graph.
+            from app.engine.components.video import VideoFrameLoader
+
+            path = output_dir / f"{stem}.mp4"
+            VideoFrameLoader().encode_video(
+                artifact.frames, artifact.audio, artifact.fps, str(path)
+            )
+            return path
+
+        # Default: still image → PNG (original behavior, pattern unchanged).
+        path = output_dir / f"{stem}.png"
+        artifact.save(path)
+        return path
 
     def _broadcast_sample(
         self,
@@ -455,11 +548,14 @@ class GenericSamplingPipeline(ABC):
         index: int,
         expanded_cfg: dict[str, Any],
         raw_prompt: str = "",
+        media_type: str = "image",
     ) -> None:
         """Broadcast a ``sample_generated`` event via the logging system.
 
         The WebSocket log handler forwards this to the frontend, which
-        auto-refreshes the job samples gallery.
+        auto-refreshes the job samples gallery.  ``media_type`` is ``"image"``
+        (default, preserves existing behavior) or ``"video"`` so the UI can
+        render ``<img>`` vs ``<video>`` for the persisted artifact.
         """
         self.logger.info(
             "sample_generated",
@@ -468,6 +564,7 @@ class GenericSamplingPipeline(ABC):
             prompt=raw_prompt[:200],
             expanded_prompt=expanded_cfg.get("prompt", "")[:200],
             path=str(path),
+            media_type=media_type,
             seed=expanded_cfg.get("seed", 42),
             guidance_scale=expanded_cfg.get("guidance_scale", 3.5),
         )

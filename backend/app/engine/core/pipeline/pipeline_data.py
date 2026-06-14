@@ -46,6 +46,31 @@ class PipelineDataMixin:
         resolutions = self.config.get("resolutions", [1024])
         self.bucket_manager = BucketManager(base_resolutions=resolutions)
 
+        # ── Video bucketing config (fields land fully in phase B6) ──
+        # Read defensively: config may not carry video knobs yet. When a frame
+        # rule is present we build a temporal-aware BucketManager; otherwise
+        # video items fall back to a single requested frame count.
+        self._video_frame_rule = self.config.get("frame_rule") or None
+        # Default target fps: native (None → use clip's own fps later).
+        self._video_target_fps = self.config.get("target_fps") or None
+        # Max frames a run is willing to train on (caps the frame ladder).
+        self._video_num_frames = int(self.config.get("num_frames", 0) or 0)
+        self._video_bucket_manager = None
+        if self._video_frame_rule:
+            from app.engine.components.bucketing import (
+                BucketManager as _BM,
+            )
+
+            ladder = _BM.frame_ladder(
+                self._video_num_frames
+                or _BM._default_max_frames(self._video_frame_rule),
+                self._video_frame_rule,
+            )
+            self._video_bucket_manager = BucketManager(
+                base_resolutions=resolutions,
+                frame_buckets=ladder,
+            )
+
         datasets_config = self.config.get("datasets", [])
         inventory: list[dict[str, Any]] = []
 
@@ -73,6 +98,7 @@ class PipelineDataMixin:
         port = 8000
         try:
             from app.core.settings_manager import get_settings_manager
+
             sm = get_settings_manager()
             app_settings = sm.get_module_settings("application")
             if app_settings:
@@ -84,7 +110,8 @@ class PipelineDataMixin:
         model_name = self.definition.id.split("/")[-1]
 
         async with httpx.AsyncClient(
-            timeout=60.0, headers=_internal_api_headers(),
+            timeout=60.0,
+            headers=_internal_api_headers(),
         ) as client:
             for ds_config in datasets_config:
                 if isinstance(ds_config, str):
@@ -97,16 +124,22 @@ class PipelineDataMixin:
 
                 # Per-dataset masking config
                 ds_masking_enabled = bool(ds_config.get("masking_enabled", False))
-                ds_original_weight = max(float(ds_config.get("original_weight", 0.70)), 0.50)
+                ds_original_weight = max(
+                    float(ds_config.get("original_weight", 0.70)), 0.50
+                )
 
                 # Per-dataset caption flags (defaults preserve old-config behavior)
                 ds_use_captions = bool(ds_config.get("use_captions", True))
-                ds_use_model_aware = bool(ds_config.get("use_model_aware_captions", True))
+                ds_use_model_aware = bool(
+                    ds_config.get("use_model_aware_captions", True)
+                )
 
                 try:
                     resp = await client.get(f"{api_url}/datasets/{name}/pairs")
                     if resp.status_code != 200:
-                        self.logger.warning("dataset_fetch_failed", name=name, status=resp.status_code)
+                        self.logger.warning(
+                            "dataset_fetch_failed", name=name, status=resp.status_code
+                        )
                         continue
 
                     pairs = resp.json()
@@ -117,7 +150,9 @@ class PipelineDataMixin:
                     dataset_kinds[name] = ds_data.get("kind", "standard")
 
                     # Recreate masked images if requested
-                    if ds_masking_enabled and bool(ds_config.get("recreate_masks", False)):
+                    if ds_masking_enabled and bool(
+                        ds_config.get("recreate_masks", False)
+                    ):
                         mask_opacity = float(ds_config.get("mask_opacity", 0.0))
                         self.logger.info(
                             "recreating_masks",
@@ -125,9 +160,12 @@ class PipelineDataMixin:
                             opacity=mask_opacity,
                         )
                         from app.core.masking.masking_service import MaskingService
+
                         masking_svc = MaskingService()
                         result = masking_svc.mass_apply(
-                            ds_path, mask_opacity, overwrite=True,
+                            ds_path,
+                            mask_opacity,
+                            overwrite=True,
                         )
                         self.logger.info(
                             "masks_recreated",
@@ -154,11 +192,15 @@ class PipelineDataMixin:
                             img_rel = pair.get("effective_target") or media_rel
                             # Partial pair (fewer controls than the model needs):
                             # skip + count. Threshold-checked after the loop.
-                            if len(pair.get("effective_controls") or []) < control_inputs:
+                            if (
+                                len(pair.get("effective_controls") or [])
+                                < control_inputs
+                            ):
                                 edit_skipped += 1
                                 self.logger.warning(
                                     "edit_pair_incomplete",
-                                    dataset=name, media=media_rel,
+                                    dataset=name,
+                                    media=media_rel,
                                     have=len(pair.get("effective_controls") or []),
                                     need=control_inputs,
                                 )
@@ -177,40 +219,123 @@ class PipelineDataMixin:
                             w = h = None
                         else:
                             w, h = meta.get("width"), meta.get("height")
-                        if not w:
+                        # ── Video item detection + temporal bucketing ──
+                        # ``meta`` (from /pairs) carries phase-A1 video fields.
+                        is_video = bool(meta.get("is_video"))
+                        vid_fps = vid_trim_start = vid_trim_end = None
+                        vid_target_frames = 1
+                        vid_target_fps = None
+                        if is_video:
+                            native_fps = float(meta.get("fps") or 0.0)
+                            duration_s = float(meta.get("duration_s") or 0.0)
+                            vid_trim_start = float(meta.get("trim_start_s") or 0.0)
+                            vid_trim_end = meta.get("trim_end_s")
+                            vid_trim_end = (
+                                float(vid_trim_end)
+                                if vid_trim_end is not None
+                                else None
+                            )
+                            # Effective usable (trimmed) duration in seconds.
+                            end_s = (
+                                vid_trim_end if vid_trim_end is not None else duration_s
+                            )
+                            eff_dur = max(end_s - vid_trim_start, 0.0)
+                            # Target fps: config override → native clip fps.
+                            vid_target_fps = float(
+                                self._video_target_fps or native_fps or 0.0
+                            )
+                            available_frames = (
+                                int(eff_dur * vid_target_fps)
+                                if vid_target_fps > 0
+                                else 0
+                            )
+                            vid_fps = vid_target_fps
+
+                        if not w and not is_video:
                             try:
                                 with Image.open(img_path) as img:
                                     w, h = img.size
                             except (OSError, ValueError):
                                 continue
+                        if not w and is_video:
+                            # Video without cached dims: fall back to meta or skip.
+                            w, h = meta.get("width"), meta.get("height")
+                            if not w:
+                                continue
 
                         # ── Masked variant info ──
                         stem = os.path.splitext(os.path.basename(img_rel))[0]
                         masked_img_path = os.path.join(ds_path, "masked", f"{stem}.jpg")
-                        has_masked = ds_masking_enabled and os.path.isfile(masked_img_path)
+                        has_masked = ds_masking_enabled and os.path.isfile(
+                            masked_img_path
+                        )
 
                         # Masked caption: read from masked/ alongside masked image
                         masked_caption = None
                         has_masked_caption = False
                         if has_masked:
-                            masked_cap_path = os.path.join(ds_path, "masked", f"{stem}.txt")
+                            masked_cap_path = os.path.join(
+                                ds_path, "masked", f"{stem}.txt"
+                            )
                             if os.path.isfile(masked_cap_path):
                                 try:
-                                    with open(masked_cap_path, "r", encoding="utf-8") as f:
+                                    with open(
+                                        masked_cap_path, "r", encoding="utf-8"
+                                    ) as f:
                                         masked_caption = f.read().strip()
                                         has_masked_caption = True
                                 except OSError:
                                     pass
 
                         bucketing_mode = self.config.get("bucketing_mode", "kohya")
-                        if bucketing_mode == "multi":
-                            buckets = self.bucket_manager.get_buckets_for_all_resolutions(w, h)
+                        if is_video:
+                            # Temporal bucket: pick the largest frame bucket that
+                            # the trimmed clip can supply. Falls back to a single
+                            # requested frame count when no frame rule is set.
+                            if self._video_bucket_manager is not None:
+                                vbucket = (
+                                    self._video_bucket_manager.get_bucket_for_video(
+                                        w,
+                                        h,
+                                        available_frames,
+                                    )
+                                )
+                                buckets = [vbucket]
+                                vid_target_frames = vbucket["frames"]
+                            else:
+                                sbucket = self.bucket_manager.get_bucket(w, h)
+                                vid_target_frames = max(
+                                    min(
+                                        self._video_num_frames or 1,
+                                        available_frames or 1,
+                                    ),
+                                    1,
+                                )
+                                buckets = [{**sbucket, "frames": vid_target_frames}]
+                        elif bucketing_mode == "multi":
+                            buckets = (
+                                self.bucket_manager.get_buckets_for_all_resolutions(
+                                    w, h
+                                )
+                            )
                         else:
                             buckets = [self.bucket_manager.get_bucket(w, h)]
 
                         for bucket in buckets:
                             target_w, target_h = bucket["width"], bucket["height"]
-                            res_str = f"{target_w}x{target_h}"
+                            if is_video:
+                                tgt_f = bucket.get("frames", vid_target_frames)
+                                # Cache resolution string carries the temporal
+                                # slice (F + fps) so image/video latents never
+                                # collide. The per-clip trim window is folded
+                                # into the FILENAME hash (extra_key) so two
+                                # trims of the same source file under the same
+                                # spatial/temporal bucket stay distinct even
+                                # though they share a cache directory.
+                                res_str = f"{target_w}x{target_h}x{tgt_f}f{vid_fps}"
+                            else:
+                                tgt_f = 1
+                                res_str = f"{target_w}x{target_h}"
                             cache_dir = LatentManager.resolve_cache_dir(
                                 ds_path, model_name, ds_version, res_str, "original"
                             )
@@ -220,7 +345,9 @@ class PipelineDataMixin:
                                 "caption": caption,
                                 "dataset_path": ds_path,
                                 "prefix": prefix,
-                                "dropout_rate": float(ds_config.get("caption_dropout_rate", 0.0)),
+                                "dropout_rate": float(
+                                    ds_config.get("caption_dropout_rate", 0.0)
+                                ),
                                 "use_captions": ds_use_captions,
                                 "use_model_aware_captions": ds_use_model_aware,
                                 "orig_w": w,
@@ -229,7 +356,15 @@ class PipelineDataMixin:
                                 "target_h": target_h,
                                 "cache_dir": cache_dir,
                                 "variant": "original",
+                                "is_video": is_video,
                             }
+
+                            # ── Video temporal fields ──
+                            if is_video:
+                                item["target_frames"] = tgt_f
+                                item["target_fps"] = vid_target_fps
+                                item["trim_start_s"] = vid_trim_start
+                                item["trim_end_s"] = vid_trim_end
 
                             # Attach masked variant data for runtime selection
                             if has_masked:
@@ -251,7 +386,9 @@ class PipelineDataMixin:
                                     build_control_fields,
                                 )
 
-                                def _cache_dir_for(rstr, variant, _p=ds_path, _v=ds_version):
+                                def _cache_dir_for(
+                                    rstr, variant, _p=ds_path, _v=ds_version
+                                ):
                                     return LatentManager.resolve_cache_dir(
                                         _p, model_name, _v, rstr, variant
                                     )
@@ -263,9 +400,13 @@ class PipelineDataMixin:
 
                                 control_fields = build_control_fields(
                                     pair.get("effective_controls") or [],
-                                    ds_path, control_inputs,
-                                    target_w, target_h, control_resolution,
-                                    _cache_dir_for, _bucket_for,
+                                    ds_path,
+                                    control_inputs,
+                                    target_w,
+                                    target_h,
+                                    control_resolution,
+                                    _cache_dir_for,
+                                    _bucket_for,
                                 )
                                 if control_fields is None:
                                     # Partial pair — skip this bucket item.
@@ -283,7 +424,9 @@ class PipelineDataMixin:
         from app.engine.core.edit_validation import validate_edit_config
 
         report = validate_edit_config(
-            self.definition, self.config, dataset_kinds.get,
+            self.definition,
+            self.config,
+            dataset_kinds.get,
         )
         for warning in report.warnings:
             self.logger.warning("edit_config_warning", message=warning)
@@ -329,7 +472,8 @@ class PipelineDataMixin:
         # and _pre_cache_latents() which run before prepare_for_training().
         vae = self.components.get("vae")
         self.latent_manager = LatentManager(
-            vae, device=self.device,
+            vae,
+            device=self.device,
             arch_params=getattr(self.definition, "architecture_params", None),
         )
 
@@ -351,9 +495,8 @@ class PipelineDataMixin:
         _def_id = getattr(getattr(self, "definition", None), "id", None)
 
         # Masked variant: weighted random selection using the item's own weight.
-        if (
-            item.get("has_masked")
-            and random.random() >= item.get("original_weight", 0.70)
+        if item.get("has_masked") and random.random() >= item.get(
+            "original_weight", 0.70
         ):
             # Route masked through the same per-definition resolver as the general
             # branch. Defensive: no masked variant → masked_caption → original.
@@ -376,30 +519,60 @@ class PipelineDataMixin:
         ids: list[str] = []
         cache_dirs: list[str] = []
         batch_paths: list[str] = []
+        extra_keys: list[str] = []
 
         trigger = self.config.get("global_triggerword", "")
         persist_trigger = bool(self.config.get("persist_triggerword_on_dropout", False))
-        transform_norm = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
+        transform_norm = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        is_video_family = bool(getattr(self, "is_video_family", False))
 
         for item in items:
             # ── Variant selection ──
             img_path, cap, cache_dir = self._select_variant(item)
-
-            img = Image.open(img_path).convert("RGB")
             tw, th = item["target_w"], item["target_h"]
 
-            # Smart resize + center crop
-            scale = max(tw / img.width, th / img.height)
-            nw, nh = int(img.width * scale), int(img.height * scale)
-            img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-            left = (nw - tw) // 2
-            top = (nh - th) // 2
-            img = img.crop((left, top, left + tw, top + th))
+            if item.get("is_video"):
+                # Decode a clip → [C, F, H, W] (flip applied later on latents,
+                # matching the image path's latent-space augmentation).
+                from app.engine.components.video import VideoFrameLoader
 
-            images.append(transform_norm(img))
+                clip = VideoFrameLoader().load_clip(
+                    img_path,
+                    target_frames=int(item["target_frames"]),
+                    target_fps=float(item["target_fps"]),
+                    trim_start_s=float(item.get("trim_start_s") or 0.0),
+                    trim_end_s=item.get("trim_end_s"),
+                    target_w=tw,
+                    target_h=th,
+                    h_flip=False,
+                )
+                images.append(clip)
+                # Trim window folds into the cache-file hash.
+                ts, te = item.get("trim_start_s") or 0.0, item.get("trim_end_s")
+                extra_keys.append(f"t{ts}-{te}")
+            else:
+                img = Image.open(img_path).convert("RGB")
+
+                # Smart resize + center crop
+                scale = max(tw / img.width, th / img.height)
+                nw, nh = int(img.width * scale), int(img.height * scale)
+                img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+                left = (nw - tw) // 2
+                top = (nh - th) // 2
+                img = img.crop((left, top, left + tw, top + th))
+
+                still = transform_norm(img)  # [C, H, W]
+                # In a video-family run, lift stills to a 1-frame clip so the
+                # whole batch collates 5D. Pure image families keep [C, H, W].
+                if is_video_family:
+                    still = still.unsqueeze(1)  # [C, 1, H, W]
+                images.append(still)
+                extra_keys.append("")
 
             # Caption construction
             is_dropped = random.random() < item["dropout_rate"]
@@ -413,7 +586,11 @@ class PipelineDataMixin:
             # Triggerword: prepend only if NOT used inline (avoid duplication).
             # Always include if persist_triggerword_on_dropout,
             # otherwise only when caption is NOT dropped.
-            if trigger and not trigger_used_inline and (not is_dropped or persist_trigger):
+            if (
+                trigger
+                and not trigger_used_inline
+                and (not is_dropped or persist_trigger)
+            ):
                 parts.append(trigger)
             if item["prefix"]:
                 parts.append(item["prefix"])
@@ -433,6 +610,10 @@ class PipelineDataMixin:
             "cache_dirs": cache_dirs,
             "paths": batch_paths,
         }
+        # Per-item cache discriminators (video trim window). Only attached when
+        # at least one item carries one, so image batches are untouched.
+        if any(extra_keys):
+            batch["extra_keys"] = extra_keys
 
         # ── Paired control images (edit runs) ──
         # All items in an edit batch carry the same control slot count
@@ -504,7 +685,9 @@ class PipelineDataMixin:
             lat = None
             if use_cache:
                 lat = self.latent_manager.load_cached_latents(
-                    ids, cache_dirs, source_paths=paths,
+                    ids,
+                    cache_dirs,
+                    source_paths=paths,
                 )
             if lat is None:
                 lat = self.latent_manager.encode_and_cache_batch(
@@ -513,7 +696,5 @@ class PipelineDataMixin:
                     cache_dirs=cache_dirs if use_cache else None,
                     source_paths=paths,
                 )
-            control_latents.append(
-                lat.to(self.device, dtype=self.autocast_dtype)
-            )
+            control_latents.append(lat.to(self.device, dtype=self.autocast_dtype))
         batch["control_latents"] = control_latents

@@ -1,0 +1,240 @@
+"""Tests for LatentManager's true 5D video path + image regression guard."""
+
+import os
+
+import torch
+import torch.nn as nn
+from unittest.mock import MagicMock
+
+from app.engine.components.latents import LatentManager
+
+
+# ── Fake 5D video VAE ────────────────────────────────────────────────────
+
+
+class FakeWanVAE(nn.Module):
+    """A stand-in for AutoencoderKLWan.
+
+    Spatial downscale 8×, temporal downscale 4× (latent_f = (F-1)/4 + 1).
+    Class NAME matters: _is_video_vae / temporal_downscale match by name.
+    """
+
+    __name__ = "AutoencoderKLWan"  # not used by MRO walk but harmless
+
+    def __init__(self, dtype=torch.float32):
+        super().__init__()
+        self._dtype = dtype
+        self.config = MagicMock()
+        self.config.scaling_factor = 1.0
+        self.config.shift_factor = None
+        self.config.latents_mean = None
+        self.config.latents_std = None
+
+    @property
+    def dtype(self):
+        return self._dtype
+
+    def encode(self, x):
+        # x is 5D [B, C, F, H, W]; compress spatially 8×, temporally 4×.
+        b, c, f, h, w = x.shape
+        lf = (f - 1) // 4 + 1
+        out = torch.randn(b, 16, lf, h // 8, w // 8, dtype=self._dtype)
+        result = MagicMock()
+        result.latent_dist.sample.return_value = out
+        return result
+
+
+# Make the class NAME match the detector (MRO walk uses type().__mro__ names).
+FakeWanVAE.__name__ = "AutoencoderKLWan"
+FakeWanVAE.__qualname__ = "AutoencoderKLWan"
+
+
+class MockImageVAE(nn.Module):
+    """Minimal still-image VAE [B,3,H,W] → [B,4,H//8,W//8]."""
+
+    def __init__(self, dtype=torch.float32):
+        super().__init__()
+        self._dtype = dtype
+        self.config = MagicMock()
+        self.config.scaling_factor = 0.18215
+        self.config.shift_factor = None
+        self.config.latents_mean = None
+        self.config.latents_std = None
+
+    @property
+    def dtype(self):
+        return self._dtype
+
+    def encode(self, x):
+        b, c, h, w = x.shape
+        out = torch.randn(b, 4, h // 8, w // 8, dtype=self._dtype)
+        result = MagicMock()
+        result.latent_dist.sample.return_value = out
+        return result
+
+
+# ── Detection + temporal-downscale formula ───────────────────────────────
+
+
+class TestVideoVaeDetection:
+    def test_wan_detected_as_video_vae(self):
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        assert lm._is_video_vae() is True
+
+    def test_image_vae_not_video(self):
+        lm = LatentManager(MockImageVAE(), device="cpu")
+        assert lm._is_video_vae() is False
+
+    def test_temporal_downscale_wan_is_4(self):
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        assert lm.temporal_downscale() == 4
+
+    def test_temporal_downscale_arch_override(self):
+        lm = LatentManager(
+            MockImageVAE(),
+            device="cpu",
+            arch_params={"vae_temporal_downsample": 8},
+        )
+        assert lm.temporal_downscale() == 8
+
+    def test_latent_frames_formula(self):
+        # (F-1)/4 + 1
+        assert LatentManager.latent_frames(13, 4) == 4  # (12/4)+1
+        assert LatentManager.latent_frames(1, 4) == 1
+        assert LatentManager.latent_frames(17, 4) == 5
+        # (F-1)/8 + 1 (LTX)
+        assert LatentManager.latent_frames(17, 8) == 3
+        # temporal=1 → identity
+        assert LatentManager.latent_frames(9, 1) == 9
+
+
+# ── 5D encode + cache ────────────────────────────────────────────────────
+
+
+class TestVideo5DEncode:
+    def test_video_latent_stays_5d(self):
+        """A genuine 5D video input produces a 5D cached latent (no squeeze)."""
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        # [B, C, F, H, W] = [1, 3, 13, 64, 64]
+        clip = torch.randn(1, 3, 13, 64, 64)
+        latents = lm.encode_and_cache_batch(clip, ["clip0"])
+        # latent_f = (13-1)/4 + 1 = 4; spatial 64/8 = 8.
+        assert latents.ndim == 5
+        assert latents.shape == (1, 16, 4, 8, 8)
+
+    def test_still_through_video_vae_stays_4d(self):
+        """A 4D still fed to a video VAE keeps the cached latent 4D."""
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        still = torch.randn(2, 3, 64, 64)
+        latents = lm.encode_and_cache_batch(still, ["a", "b"])
+        assert latents.ndim == 4
+        assert latents.shape == (2, 16, 8, 8)
+
+    def test_validate_shape_5d_accepts_correct(self, caplog):
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        latents = torch.randn(1, 16, 4, 8, 8)  # correct for F=13, 64x64
+        input_shape = torch.Size([1, 3, 13, 64, 64])
+        # Should not log a mismatch warning.
+        lm._validate_shape(latents, input_shape)  # no exception
+
+    def test_video_cache_dir_carries_frames_and_fps(self, tmp_path):
+        """The cache directory encodes the temporal slice for videos."""
+        res_str = "512x512x13f16.0"
+        cache_dir = LatentManager.resolve_cache_dir(
+            str(tmp_path),
+            "wan",
+            "1.0.0",
+            res_str,
+            "original",
+        )
+        assert res_str in cache_dir.replace("\\", "/")
+
+    def test_video_trim_in_filename_hash(self, tmp_path):
+        """Two trims of the same source file produce distinct filenames."""
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"fake-video-bytes-fake-video-bytes")
+        a = LatentManager.latent_filename("clip", str(src), extra_key="t0.0-1.0")
+        b = LatentManager.latent_filename("clip", str(src), extra_key="t1.0-2.0")
+        assert a != b
+        assert a.startswith("clip_") and a.endswith(".safetensors")
+
+    def test_video_latent_cache_roundtrip(self, tmp_path):
+        """5D latent survives save → load with a trim extra_key."""
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"abcdef-clip-bytes")
+        cache_dir = str(tmp_path / "cache")
+        lm = LatentManager(FakeWanVAE(), device="cpu", cache_dir=cache_dir)
+
+        clip = torch.randn(1, 3, 13, 64, 64)
+        original = lm.encode_and_cache_batch(
+            clip,
+            ["clip"],
+            source_paths=[str(src)],
+            extra_keys=["t0.0-1.0"],
+        )
+        loaded = lm.load_cached_latents(
+            ["clip"],
+            source_paths=[str(src)],
+            extra_keys=["t0.0-1.0"],
+        )
+        assert loaded is not None
+        assert loaded.ndim == 5
+        assert torch.allclose(original.cpu(), loaded.cpu())
+
+
+# ── Image regression guard (byte-identical cache path) ───────────────────
+
+
+class TestImageCachePathUnchanged:
+    def test_image_filename_byte_identical_to_legacy(self, tmp_path):
+        """An image item's cache filename is identical with/without the new
+        extra_key parameter (empty extra_key == legacy source-bytes-only hash).
+        """
+        src = tmp_path / "photo.jpg"
+        src.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+
+        # Legacy = hash of source bytes only.
+        import hashlib
+
+        legacy_hash = hashlib.sha256(src.read_bytes()).hexdigest()[:16]
+        expected_legacy = f"photo_001_{legacy_hash}.safetensors"
+
+        # New code path with empty extra_key must match byte-for-byte.
+        produced = LatentManager.latent_filename("photo_001", str(src))
+        produced_explicit_empty = LatentManager.latent_filename(
+            "photo_001",
+            str(src),
+            extra_key="",
+        )
+        assert produced == expected_legacy
+        assert produced_explicit_empty == expected_legacy
+
+    def test_image_cache_dir_byte_identical(self):
+        """Image cache directory (no temporal suffix) is unchanged."""
+        produced = LatentManager.resolve_cache_dir(
+            "/data/ds",
+            "sdxl",
+            "1.0.0",
+            "1024x1024",
+            "original",
+        )
+        expected = os.path.join(
+            "/data/ds",
+            ".cache",
+            "sdxl",
+            "1.0.0",
+            "latents",
+            "original",
+            "1024x1024",
+        )
+        assert produced == expected
+
+    def test_image_latent_save_load_unchanged(self, tmp_path):
+        """A still image round-trips with bare {id}.safetensors (no source_paths)."""
+        cache_dir = str(tmp_path / "cache")
+        lm = LatentManager(MockImageVAE(), device="cpu", cache_dir=cache_dir)
+        images = torch.randn(2, 3, 256, 256)
+        original = lm.encode_and_cache_batch(images, ["img1", "img2"])
+        assert os.path.exists(os.path.join(cache_dir, "img1.safetensors"))
+        loaded = lm.load_cached_latents(["img1", "img2"])
+        assert torch.allclose(original.cpu(), loaded.cpu())

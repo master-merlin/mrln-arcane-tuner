@@ -1,0 +1,86 @@
+id: ltx2-3-base
+family: ltx2
+name: LTX 2.3 (Lightricks)
+version: '1.0'
+defaults:
+  resolution: 768
+  scheduler: euler_a
+  learning_rate: 1e-5
+  # Joint audio is OPTIONAL and OFF by default — the user opts in per run.
+  train_audio: false
+components:
+  repo:
+    path: huggingface:Lightricks/LTX-2
+    type: diffusers
+    params: {}
+model_size_mb:
+  transformer: 0
+  text_encoder: 0
+  vae: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # --- Mode: a single model covers both T2V and I2V (I2V = conditioning) ---
+  mode: both
+  # --- Audio: the model HAS an audio stream; training it is per-run opt-in ---
+  has_audio: true
+  audio.loss_weight: 1.0
+  audio.vae_temporal: 4
+  audio.sampling_rate: 16000
+  # --- Video VAE geometry (spatial 32×, temporal 8× → frames must be 8n+1) ---
+  video.frame_rule: 8n+1
+  video.vae_spatial: 32
+  video.vae_temporal: 8
+  video.divisibility: 32
+  video.frame_rate: 24.0
+  # --- Transformer (LTX2VideoTransformer3DModel) ---
+  transformer._class_name: LTX2VideoTransformer3DModel
+  transformer.in_channels: 128
+  transformer.out_channels: 128
+  transformer.patch_size: 1
+  transformer.patch_size_t: 1
+  transformer.num_attention_heads: 32
+  transformer.attention_head_dim: 128
+  transformer.cross_attention_dim: 4096
+  transformer.num_layers: 48
+  transformer.audio_in_channels: 128
+  transformer.audio_num_attention_heads: 32
+  transformer.audio_attention_head_dim: 64
+  transformer.audio_cross_attention_dim: 2048
+  # --- Text encoder (Gemma3 → LTX2TextConnectors) ---
+  te.type: gemma3
+  te.max_length: 256
+  te._class_name: Gemma3ForConditionalGeneration
+# Fallback LoRA-targetable modules (video stream + audio sub-stream).  PEFT
+# matches by trailing suffix; enrichment may replace these with per-layer names.
+lora_targetable_modules:
+- attn1.to_q
+- attn1.to_k
+- attn1.to_v
+- attn1.to_out.0
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+- ff.net.0.proj
+- ff.net.2
+- audio_attn1.to_q
+- audio_attn1.to_k
+- audio_attn1.to_v
+- audio_attn1.to_out.0
+- audio_attn2.to_q
+- audio_attn2.to_k
+- audio_attn2.to_v
+- audio_attn2.to_out.0
+- audio_ff.net.0.proj
+- audio_ff.net.2
+- audio_to_video_attn.to_q
+- audio_to_video_attn.to_k
+- audio_to_video_attn.to_v
+- audio_to_video_attn.to_out.0
+- video_to_audio_attn.to_q
+- video_to_audio_attn.to_k
+- video_to_audio_attn.to_v
+- video_to_audio_attn.to_out.0

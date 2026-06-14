@@ -37,10 +37,12 @@ huggingface-hub==0.36.0
 humanfriendly==10.0
 idna==3.11
 ImageIO==2.37.2
+imageio-ffmpeg==0.6.0
 importlib_metadata==8.7.1
 iniconfig==2.3.0
 iopath==0.1.10
 Jinja2==3.1.6
+json5==0.14.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 lazy_loader==0.4
@@ -97,6 +99,7 @@ rpds-py==0.30.0
 ruff==0.15.2
 safetensors==0.8.0rc0
 sam3==0.1.2
+scenedetect==0.7  # installed with --no-deps to keep opencv-python-headless (not GUI opencv-python)
 scikit-image==0.26.0
 scipy==1.17.0
 sentencepiece==0.2.1

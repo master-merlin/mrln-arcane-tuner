@@ -181,12 +181,20 @@ class PipelineTrainMixin:
                 # 1. Encode Latents
                 with torch.no_grad():
                     use_cache = self.config.get("cache_latents", True)
+                    # Per-item cache discriminators (e.g. a video clip's trim
+                    # window) — present only for video batches. Splat only when
+                    # set so pixel-space families whose passthrough overrides
+                    # don't accept the kwarg are unaffected, and image batches
+                    # keep byte-identical legacy cache paths.
+                    extra_keys = batch.get("extra_keys")
+                    ek_kwarg = {"extra_keys": extra_keys} if extra_keys else {}
                     latents = None
                     if use_cache:
                         latents = self.latent_manager.load_cached_latents(
                             batch["ids"],
                             batch["cache_dirs"],
                             source_paths=batch["paths"],
+                            **ek_kwarg,
                         )
                     if latents is None:
                         # Cache miss — should only happen if pre-cache was
@@ -205,6 +213,7 @@ class PipelineTrainMixin:
                             ids=batch["ids"],
                             cache_dirs=batch["cache_dirs"] if use_cache else None,
                             source_paths=batch["paths"],
+                            **ek_kwarg,
                         )
                     latents = latents.to(self.device, dtype=self.autocast_dtype)
 

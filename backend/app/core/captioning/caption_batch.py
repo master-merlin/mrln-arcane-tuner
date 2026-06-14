@@ -16,11 +16,20 @@ from pathlib import Path
 
 from app.core.captioning import caption_variants
 from app.core.captioning.caption_service import CaptionService
+from app.core.captioning.models.base import (
+    VIDEO_MOTION_INSTRUCTION as VIDEO_CAPTION_PROMPT,
+)
 from app.core.logger import get_logger
 from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 logger = get_logger(__name__)
+
+# ``VIDEO_CAPTION_PROMPT`` is the default "Video (motion-aware)" prompt, used
+# when a video-caption batch supplies no user prompt. It is re-exported from the
+# model base so the on-device VLM, the API lane, and the batch worker all share
+# one motion-aware instruction (single source of truth — there is no template
+# seeder/repo for caption prompts, so a module constant is the right home).
 
 
 # ── Seams ─────────────────────────────────────────────────────────────────
@@ -60,7 +69,36 @@ def _control_paths(dataset_name: str, rel: str) -> list[str]:
     root = Path(dataset.path)
     stem = Path(rel).stem
     slots = detect_control_slots(str(root), stem)
-    return [str(root / info["rel_path"]) for info in slots.values() if info.get("rel_path")]
+    return [
+        str(root / info["rel_path"]) for info in slots.values() if info.get("rel_path")
+    ]
+
+
+def _video_meta(dataset_name: str, rel: str) -> dict:
+    """Return a video-captioning param overlay for *rel*.
+
+    Reads the media item's metadata and surfaces the fields the video caption
+    path consumes: ``is_video`` plus the user trim bounds ``trim_start_s`` /
+    ``trim_end_s``. Falls back to extension detection (``is_probeable_video``)
+    so a video clip is routed correctly even if its metadata row is sparse.
+    Returns ``{}`` for plain images.
+    """
+    from app.core.dataset.media_types import is_probeable_video
+    from app.core.dataset_manager import dataset_manager as dm
+
+    is_video = is_probeable_video(Path(rel).suffix)
+    overlay: dict = {}
+    dataset = dm.get_dataset(dataset_name)
+    if dataset is not None:
+        meta = dataset.media_metadata.get(rel.replace("\\", "/"), {})
+        if meta.get("is_video"):
+            is_video = True
+        for key in ("trim_start_s", "trim_end_s"):
+            if meta.get(key) is not None:
+                overlay[key] = meta[key]
+    if is_video:
+        overlay["is_video"] = True
+    return overlay
 
 
 def _masked_path(dataset_name: str, rel: str) -> str:
@@ -197,15 +235,42 @@ def run_caption_batch(
                 call_params = params.copy()
                 if system_prompt:
                     call_params["system_prompt"] = system_prompt
+
+                # Video items: surface is_video + trim bounds so the service
+                # samples frames and routes to model.generate_video().
+                video_overlay = _video_meta(dataset_name, rel)
+                is_video = bool(video_overlay.get("is_video"))
+                if is_video:
+                    call_params.update(video_overlay)
+                    # Masks are out of scope for video — skip the masked variant
+                    # with a per-item warning rather than failing the item.
+                    if target == "masked":
+                        logger.warning(
+                            "caption_batch_skip_masked_video",
+                            task_id=task_id,
+                            rel_path=rel,
+                        )
+                        task_manager.update(
+                            task_id, current=i + 1, item=rel, ok=ok, failed=failed
+                        )
+                        continue
+                    # Motion-aware default prompt when the user supplied none.
+                    if not call_params.get("system_prompt"):
+                        call_params["system_prompt"] = VIDEO_CAPTION_PROMPT
+
                 if model_id.startswith("api-"):
                     # Let the HTTP client's retry/backoff loop bail out as soon
                     # as the task is cancelled (instead of sleeping through the
                     # full backoff schedule).
-                    call_params["_should_abort"] = (
-                        lambda: task_manager.is_cancelled(task_id))
+                    call_params["_should_abort"] = lambda: task_manager.is_cancelled(
+                        task_id
+                    )
 
-                src = (_masked_path(dataset_name, rel) if target == "masked"
-                       else _full_path(dataset_name, rel))
+                src = (
+                    _masked_path(dataset_name, rel)
+                    if target == "masked"
+                    else _full_path(dataset_name, rel)
+                )
                 extra = _control_paths(dataset_name, rel) if include_control else None
                 caption = service.generate_caption(
                     image_path=src,
@@ -239,11 +304,13 @@ def run_caption_batch(
                 # through the whole batch (each item retries with backoff).
                 if model_id.startswith("api-") and consecutive_failures >= 5:
                     task_manager.update(
-                        task_id, current=i + 1, item=rel, ok=ok, failed=failed)
+                        task_id, current=i + 1, item=rel, ok=ok, failed=failed
+                    )
                     task_manager.fail(
                         task_id,
                         f"Aborted after {consecutive_failures} consecutive "
-                        f"API failures (last: {exc})")
+                        f"API failures (last: {exc})",
+                    )
                     return
 
             task_manager.update(task_id, current=i + 1, item=rel, ok=ok, failed=failed)

@@ -146,6 +146,24 @@ export interface PairMetadata {
     target_edited_at?: number;
     [k: string]: unknown;
   } | null;
+  // ── Per-clip video metadata (populated for trainable video clips) ──
+  /** Average framerate (frames per second). */
+  fps?: number;
+  /** Clip duration in seconds. */
+  duration_s?: number;
+  /** Total frames — exact, or estimated from duration × fps. */
+  frame_count?: number;
+  /** True when frame_count was derived (no exact count in the container). */
+  frame_count_estimated?: boolean;
+  /** Whether the clip carries an audio track. */
+  has_audio?: boolean;
+  /** Video codec name (e.g. "h264", "vp9"). */
+  video_codec?: string;
+  /** User trim bounds, in seconds (later-phase clip editing). */
+  trim_start_s?: number;
+  trim_end_s?: number;
+  /** Per-category clip-health warnings (later-phase). */
+  clip_warnings?: Record<string, string[]>;
   [extra: string]: unknown;
 }
 

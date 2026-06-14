@@ -129,11 +129,12 @@ def _make_edit_dataset(manager, name: str = "editds", slots: int = 2):
 
 
 class TestV15Migration:
-    def test_run_migrations_reaches_15(self, db_engine):
+    def test_run_migrations_reaches_latest(self, db_engine):
+        # V16 (per-clip video metadata) is the current schema tip.
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 15
+            assert row["version"] == 16
 
     def test_dataset_kind_defaults_standard(self, migrated_engine):
         with migrated_engine.write() as conn:

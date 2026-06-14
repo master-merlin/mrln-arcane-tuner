@@ -18,6 +18,7 @@ describe('buildCanvasMeta', () => {
         expect(buildCanvasMeta(null)).toEqual({
             res: null, ar: null, orientation: null, size: null,
             hpsLabel: null, hpsTone: null,
+            fps: null, duration: null, frameCount: null,
         });
     });
 
@@ -27,6 +28,7 @@ describe('buildCanvasMeta', () => {
         expect(buildCanvasMeta(undefined)).toEqual({
             res: null, ar: null, orientation: null, size: null,
             hpsLabel: null, hpsTone: null,
+            fps: null, duration: null, frameCount: null,
         });
     });
 
@@ -65,5 +67,26 @@ describe('buildCanvasMeta', () => {
     it('passes orientation through when it is a string', () => {
         expect(buildCanvasMeta({ orientation: 'landscape' }).orientation).toBe('landscape');
         expect(buildCanvasMeta({ orientation: 123 as unknown as string }).orientation).toBeNull();
+    });
+
+    it('builds video fps/duration/frame-count labels when present', () => {
+        const meta = buildCanvasMeta({
+            fps: 24, duration_s: 65, frame_count: 1560,
+        });
+        expect(meta.fps).toBe('24 fps');
+        expect(meta.duration).toBe('1:05');
+        expect(meta.frameCount).toBe('1560 frames');
+    });
+
+    it('marks an estimated frame count with a leading ~', () => {
+        const meta = buildCanvasMeta({ frame_count: 120, frame_count_estimated: true });
+        expect(meta.frameCount).toBe('~120 frames');
+    });
+
+    it('leaves video fields null for stills (no/zero video metadata)', () => {
+        const meta = buildCanvasMeta({ width: 800, height: 600 });
+        expect(meta.fps).toBeNull();
+        expect(meta.duration).toBeNull();
+        expect(meta.frameCount).toBeNull();
     });
 });

@@ -1398,7 +1398,10 @@ class DatasetManager:
             
             if ext in multimedia_exts:
                 pairs[key]["media_file"] = rel_path
-                pairs[key]["media_type"] = "video" if ext in {'.mp4', '.gif'} else "image"
+                # Canonical video set (incl. .gif) drives grid rendering as a
+                # <video>/animated tile. Trainable-video probing is gated
+                # separately by is_probeable_video (which excludes .gif).
+                pairs[key]["media_type"] = "video" if ext in VIDEO_EXTENSIONS else "image"
                 try:
                     pairs[key]["size_bytes"] = entry.stat().st_size
                 except OSError:

@@ -95,8 +95,13 @@ RUN python -m pip install --break-system-packages \
 # Native shared libraries required by OpenCV (cv2) and friends at import time
 # — the slim CUDA runtime base lacks them. Placed after the pip layer so
 # editing this list never invalidates the cached dependency install.
+# ffmpeg: the video-clip split pipeline (LosslessCut cutlist / scene-detect →
+# training clips) shells out to the ffmpeg CLI for stream-copy / libx264
+# re-encode. PyAV's bundled libs cover decode/probe/encode, but a real ffmpeg
+# binary (found first by shutil.which, ahead of the imageio-ffmpeg fallback)
+# is the robust path for re-encode + AAC mux.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 \
+        libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Ollama (local LLM sidecar for caption refinement) ---
@@ -130,7 +135,11 @@ RUN --mount=type=secret,id=git_token \
 WORKDIR /app/backend
 # Install the app's Python deps from the cloned checkout (torch is already in
 # place from the cached layer above; pip sees it satisfied and skips it).
-RUN python -m pip install --break-system-packages -r requirements.txt
+# install-deps.sh installs requirements.txt EXCEPT scenedetect, then scenedetect
+# with --no-deps — its declared GUI `opencv-python` dep would otherwise clobber
+# the pinned `opencv-python-headless`. The runtime self-update reuses the same
+# script, so the build and self-update installs never diverge.
+RUN bash install-deps.sh
 
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser

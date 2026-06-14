@@ -112,6 +112,59 @@ async def test_apply_runs_pull_build_then_drains_and_restarts(svc, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_apply_reinstalls_deps_when_requirements_changed(svc, monkeypatch):
+    # requirements blob differs before vs after the pull → deps reinstalled.
+    blobs = iter(["oldsha", "newsha"])
+    monkeypatch.setattr(svc, "_req_blob", lambda: next(blobs))
+    monkeypatch.setattr(svc, "_run_git", lambda *a, **k: (0, "", ""))
+
+    installed = {"v": False}
+
+    async def fake_install():
+        installed["v"] = True
+
+    async def fake_build():
+        pass
+
+    async def fake_restart():
+        pass
+
+    monkeypatch.setattr(svc, "_install_backend_deps", fake_install)
+    monkeypatch.setattr(svc, "_build_frontend", fake_build)
+    monkeypatch.setattr(svc, "_do_restart", fake_restart)
+    monkeypatch.setattr(svc, "active_task_count", lambda: 0)
+
+    await svc._apply_impl()
+    assert installed["v"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_deps_when_requirements_unchanged(svc, monkeypatch):
+    # Same blob before/after → no pip reinstall (fast path).
+    monkeypatch.setattr(svc, "_req_blob", lambda: "samesha")
+    monkeypatch.setattr(svc, "_run_git", lambda *a, **k: (0, "", ""))
+
+    installed = {"v": False}
+
+    async def fake_install():
+        installed["v"] = True
+
+    async def fake_build():
+        pass
+
+    async def fake_restart():
+        pass
+
+    monkeypatch.setattr(svc, "_install_backend_deps", fake_install)
+    monkeypatch.setattr(svc, "_build_frontend", fake_build)
+    monkeypatch.setattr(svc, "_do_restart", fake_restart)
+    monkeypatch.setattr(svc, "active_task_count", lambda: 0)
+
+    await svc._apply_impl()
+    assert installed["v"] is False
+
+
+@pytest.mark.asyncio
 async def test_apply_error_on_pull_failure_no_restart(svc, monkeypatch):
     monkeypatch.setattr(svc, "_run_git", lambda *a, **k: (1, "", "network down"))
     called = {"restart": False}

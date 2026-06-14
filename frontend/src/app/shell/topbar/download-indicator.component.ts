@@ -2,7 +2,7 @@ import {
     ChangeDetectionStrategy, Component, ElementRef, HostListener,
     computed, inject,
 } from '@angular/core';
-import { ModelDownloadStore, DownloadProgress, RecentDownload, FileProgress } from '../../state/model-download.store';
+import { ModelDownloadStore, DownloadProgress, RecentDownload } from '../../state/model-download.store';
 import { TopbarPanelStore } from '../../state/topbar-panel.store';
 import { IcoComponent } from '../../icons/ico.component';
 

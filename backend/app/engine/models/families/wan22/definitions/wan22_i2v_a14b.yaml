@@ -1,0 +1,61 @@
+id: wan2.2-i2v-a14b
+family: wan22
+name: WAN 2.2 I2V A14B (MoE)
+version: '1.0'
+defaults:
+  resolution: 720
+  scheduler: flow_match_euler
+  learning_rate: 1.0e-4
+  timestep_sampling: logit_normal
+  expert_switch_interval: 1
+  expert_swap_mode: auto
+components:
+  repo:
+    path: huggingface:Wan-AI/Wan2.2-I2V-A14B-Diffusers
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+  unet_low: torch.bfloat16
+architecture_params:
+  mode: i2v
+  dual_expert: true
+  moe.boundary_ratio: 0.9
+  transformer._class_name: WanTransformer3DModel
+  transformer.in_channels: 36
+  transformer.out_channels: 16
+  transformer.num_layers: 40
+  transformer.num_attention_heads: 40
+  transformer.attention_head_dim: 128
+  transformer.text_dim: 4096
+  transformer.freq_dim: 256
+  transformer_2._class_name: WanTransformer3DModel
+  transformer_2.in_channels: 36
+  transformer_2.out_channels: 16
+  te.model_type: umt5
+  te.max_length: 512
+  vae._class_name: AutoencoderKLWan
+  vae.z_dim: 16
+  video.frame_rule: 4n+1
+  video.native_fps: 16
+  video.vae_spatial: 8
+  video.vae_temporal: 4
+  i2v.noise_channels: 16
+  i2v.mask_channels: 4
+  i2v.cond_channels: 16
+  i2v.has_clip_image_encoder: false
+lora_targetable_modules:
+- attn1.to_q
+- attn1.to_k
+- attn1.to_v
+- attn1.to_out.0
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+- attn2.add_k_proj
+- attn2.add_v_proj
+- ffn.net.0.proj
+- ffn.net.2

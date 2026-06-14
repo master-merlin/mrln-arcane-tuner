@@ -67,6 +67,9 @@ FAMILY_HAS_VAE_AND_TE = {
     "ernie_image": True,
     "microsoft_lens": True,  # latent_diffusion DiT (VAE) + decoupled external TE
     "ideogram4": True,  # latent_diffusion DiT (custom 32ch VAE) + Qwen3-VL TE
+    "wan21": True,  # latent_diffusion DiT (Wan-VAE) + UMT5-XXL external TE
+    "wan22": True,  # latent_diffusion dual-expert DiT (Wan-VAE) + UMT5-XXL external TE
+    "ltx2": True,  # latent_diffusion DiT (LTX2 VAE) + Gemma3 external TE
     "hidream_o1": False,
 }
 

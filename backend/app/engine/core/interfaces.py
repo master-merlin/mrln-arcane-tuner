@@ -341,6 +341,22 @@ class IModelDriver(ABC):
         """
         return self.prepare_latents(noise)
 
+    def on_optimizer_step(self, optimizer_step: int) -> None:
+        """Hook called once per completed optimizer step.
+
+        Invoked by the training loop right after ``optimizer.step()`` /
+        ``zero_grad`` for the just-finished step ``optimizer_step``. The
+        default is a **no-op**, so existing single-model families are entirely
+        unaffected. Multi-model families (e.g. WAN 2.2's dual-expert MoE)
+        override this to advance their per-step state — e.g. choosing the
+        active expert for the next step and swapping it onto the GPU.
+
+        Args:
+            optimizer_step: The 0-based index of the optimizer step that just
+                completed (equals the training loop's ``global_step``).
+        """
+        return None
+
     # --- Phase 6: LoRA Output & Saver ---
 
     @abstractmethod

@@ -2,7 +2,7 @@ import {
     ChangeDetectionStrategy, Component, ElementRef, HostListener,
     computed, inject,
 } from '@angular/core';
-import { ModelDownloadStore, DownloadProgress, RecentDownload } from '../../state/model-download.store';
+import { ModelDownloadStore, DownloadProgress, RecentDownload, FileProgress } from '../../state/model-download.store';
 import { TopbarPanelStore } from '../../state/topbar-panel.store';
 import { IcoComponent } from '../../icons/ico.component';
 
@@ -51,6 +51,23 @@ import { IcoComponent } from '../../icons/ico.component';
                                              [style.width.%]="d.percent ?? 0"
                                              [class.indeterminate]="d.percent == null"></div>
                                     </div>
+                                    @if (d.files && d.files.length > 0) {
+                                        <div class="files">
+                                            @for (f of d.files; track f.name) {
+                                                <div class="file-row">
+                                                    <span class="fname mono">{{ f.name }}</span>
+                                                    <span class="fmeta">
+                                                        @if (f.total_bytes != null) {
+                                                            {{ mb(f.current_bytes) }} / {{ mb(f.total_bytes) }} MB
+                                                            @if (f.percent != null) { · {{ f.percent }}% }
+                                                        } @else {
+                                                            {{ mb(f.current_bytes) }} MB
+                                                        }
+                                                    </span>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
                                     <div class="row-foot">{{ d.source }} · {{ d.category }}</div>
                                 </div>
                             }
@@ -128,6 +145,10 @@ import { IcoComponent } from '../../icons/ico.component';
             0%   { transform: translateX(-100%); }
             100% { transform: translateX(330%); }
         }
+        .files { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+        .file-row { display: flex; justify-content: space-between; gap: 6px; font-size: 9.5px; color: var(--color-text-muted); }
+        .file-row .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-row .fmeta { flex-shrink: 0; font-variant-numeric: tabular-nums; }
         .row-foot { font-size: 9px; color: var(--color-text-muted); margin-top: 2px; }
         .row-foot.err { color: var(--color-danger); }
         .row.recent { display: flex; align-items: center; gap: 6px; background: transparent; padding: 4px 8px; font-size: 11px; }

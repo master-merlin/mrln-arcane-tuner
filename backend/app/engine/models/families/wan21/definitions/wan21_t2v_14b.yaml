@@ -1,0 +1,47 @@
+id: wan2.1-t2v-14b
+family: wan21
+name: WAN 2.1 T2V 14B
+version: '1.0'
+defaults:
+  resolution: 720
+  scheduler: flow_match_euler
+  learning_rate: 1.0e-4
+  timestep_sampling: logit_normal
+components:
+  repo:
+    path: huggingface:Wan-AI/Wan2.1-T2V-14B-Diffusers
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  mode: t2v
+  transformer._class_name: WanTransformer3DModel
+  transformer.in_channels: 16
+  transformer.out_channels: 16
+  transformer.num_layers: 40
+  transformer.num_attention_heads: 40
+  transformer.attention_head_dim: 128
+  transformer.text_dim: 4096
+  transformer.freq_dim: 256
+  te.model_type: umt5
+  te.max_length: 512
+  vae._class_name: AutoencoderKLWan
+  vae.z_dim: 16
+  video.frame_rule: 4n+1
+  video.native_fps: 16
+  video.vae_spatial: 8
+  video.vae_temporal: 4
+lora_targetable_modules:
+- attn1.to_q
+- attn1.to_k
+- attn1.to_v
+- attn1.to_out.0
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+- ffn.net.0.proj
+- ffn.net.2

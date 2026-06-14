@@ -327,6 +327,22 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 | **Flux.1**           | Transformer + Flow Matching   | Qwen3                   | BFL-format export for ComfyUI       |
 | **Flux.2 (Klein)**   | Transformer + Flow Matching   | Qwen3                   | No guidance embed, packed latents   |
 
+#### 🧪 Experimental: Edit (Paired) & Video Training
+
+> ⚠️ **Available but experimental.** These features ship and pass the test
+> suite, but are still being validated on real end-to-end training runs. Treat
+> results as beta-quality and expect rough edges.
+
+- **Edit / paired-image training** — two-image (control → target) edit datasets
+  and captioning for instruction-edit models (Flux.1 Kontext, Qwen-Image-Edit):
+  paired-pair production, two-image VLM captioning, and edit-aware training.
+- **Video training** — LoRA training for video diffusion models: **WAN 2.1**
+  (T2V / I2V), **WAN 2.2** (dual high/low-noise experts, single-run
+  auto-switch, dual LoRA output), and **LTX 2.3** (T2V / I2V, optional joint
+  audio). Backed by a video dataset-curation layer: lazy clip preview,
+  LosslessCut cutlist import, scene-detect auto-split, non-destructive in-app
+  trim, per-clip health checks, and multi-frame auto-captioning.
+
 #### Optimizers
 
 MRLN Arcane Tuner supports a wide range of optimizers, from proven defaults to cutting-edge research:

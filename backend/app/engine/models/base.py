@@ -163,7 +163,7 @@ class DatasetItem(BaseModel):
 class BaseTrainingConfig(BaseModel):
     """Master training configuration schema.
 
-    Groups: BASE, STRATEGY, NETWORK, OPTIMIZER, ENGINE.
+    Groups: BASE, STRATEGY, NETWORK, OPTIMIZER, ENGINE, VIDEO, SAMPLING.
     Field metadata drives the dynamic UI form generation.
     """
 
@@ -986,6 +986,76 @@ class BaseTrainingConfig(BaseModel):
             "ui_type": "layer_checklist",
             "hidden": True,
         },
+    )
+
+    # [VIDEO] Video-model training (optional; gated by family capability)
+    #
+    # All optional with sane defaults so image configs are unaffected — an
+    # image family never sees these (capability-gated by ``is_video`` /
+    # ``has_audio`` / ``dual_expert`` in ``core/archetypes.py``). The training
+    # pipeline (B1) already reads ``num_frames`` / ``target_fps`` defensively.
+    num_frames: int = Field(
+        81,
+        description="Max frames per clip (snapped to the family's frame rule at runtime)",
+        json_schema_extra={"group": "VIDEO", "min": 1, "max": 257, "step": 1},
+    )
+    target_fps: float = Field(
+        0,
+        description="Training frame rate (0 = use the model's native fps)",
+        json_schema_extra={"group": "VIDEO", "min": 0.0, "max": 60.0, "step": 1.0},
+    )
+    video_mode: Literal["t2v", "i2v"] = Field(
+        "t2v",
+        description="Text-to-video or image-to-video (first-frame conditioning)",
+        json_schema_extra={"group": "VIDEO"},
+    )
+    i2v_image_dropout: float = Field(
+        0.1,
+        description="Chance of dropping the conditioning image (enables CFG for I2V)",
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "video_mode:i2v",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+        },
+    )
+    train_audio: bool = Field(
+        False,
+        description="Jointly train the audio stream (audio-capable models only)",
+        json_schema_extra={"group": "VIDEO"},
+    )
+    audio_loss_weight: float = Field(
+        1.0,
+        description="Relative weight of the audio loss term",
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "train_audio",
+            "min": 0.0,
+            "max": 10.0,
+            "step": 0.1,
+        },
+    )
+    expert_swap_mode: Literal["auto", "swap", "resident"] = Field(
+        "auto",
+        description="Dual-expert placement: auto, swap (1 expert on GPU + pinned CPU) or resident (both on GPU)",
+        json_schema_extra={"group": "VIDEO"},
+    )
+    expert_switch_interval: int = Field(
+        1,
+        description="Steps between high/low expert swaps (swap mode only)",
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "expert_swap_mode:auto,swap",
+            "min": 1,
+            "max": 1000,
+            "step": 1,
+        },
+    )
+    boundary_ratio_override: float = Field(
+        0,
+        description="Override the MoE high/low timestep boundary (0 = use the definition default)",
+        json_schema_extra={"group": "VIDEO", "min": 0.0, "max": 1.0, "step": 0.025},
     )
 
     # [SAMPLING] Sample Generation During Training

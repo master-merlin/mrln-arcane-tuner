@@ -210,6 +210,28 @@ class VRAMEstimator:
             model_bytes = primary_params_b * 1e9 * effective_bpp
             report.model_weights_mb = model_bytes / (1024 * 1024)
 
+        # ── 1b. Dual-expert (WAN 2.2 MoE) second transformer ─────────────
+        # WAN 2.2 is a Mixture-of-Experts: a high-noise + a low-noise expert,
+        # each the same size as ``model_weights_mb`` above. How much extra GPU
+        # VRAM the second expert costs depends on the placement mode:
+        #   - "resident": BOTH experts live on the GPU → +1× weight term (2×).
+        #   - "swap":     one expert on GPU, the other pinned in CPU RAM and
+        #                 swapped in on the boundary → ~0 extra GPU bytes.
+        #   - "auto":     conservative — assume resident (worst case) so the
+        #                 budget never under-promises.
+        # Image / single-transformer families never enter this branch (guarded
+        # by ``dual_expert``), so their estimate is byte-identical.
+        caps = _resolve_caps(definition)
+        is_dual_expert = bool(caps.get("dual_expert", False))
+        if is_dual_expert:
+            swap_mode = config.get("expert_swap_mode", "auto")
+            if swap_mode == "swap":
+                # GPU holds one expert; the second is pinned in host RAM.
+                expert_weights_mb = 0.0
+            else:  # "resident" or "auto" (conservative)
+                expert_weights_mb = report.model_weights_mb
+            report.model_weights_mb += expert_weights_mb
+
         # ── 2. LoRA adapters ─────────────────────────────────────────────
         lora_rank = config.get("lora_rank", config.get("rank", 16))
         # Rough estimate: each target module gets rank×in + rank×out params
@@ -250,18 +272,46 @@ class VRAMEstimator:
         grad_checkpointing = config.get("gradient_checkpointing", True)
         # gradient_accumulation_steps doesn't affect peak VRAM (same batch in memory)
 
+        # ── 5a. Video temporal scaling ───────────────────────────────────
+        # A video clip carries a temporal axis: the transformer processes
+        # ``latent_frames`` latent timesteps at once, so its activation memory
+        # scales ~linearly with the number of *latent* frames. The VAE encodes
+        # ``num_frames`` pixel frames to ``latent_frames = (F - 1) / t + 1``
+        # latent frames, where ``t`` is the VAE temporal-compression ratio
+        # (``video.vae_temporal`` — 4 for WAN, 8 for LTX2).
+        #
+        # For an IMAGE family ``latent_frames`` collapses to 1 (temporal_ratio
+        # defaults to 1 and num_frames defaults to 1), so the activation term —
+        # and therefore the whole estimate — stays BYTE-IDENTICAL to before.
+        is_video = bool(_is_video_definition(definition))
+        latent_frames = 1
+        if is_video:
+            temporal_ratio = int(arch.get("video.vae_temporal", 1) or 1)
+            num_frames = int(config.get("num_frames", 1) or 1)
+            if temporal_ratio > 1:
+                latent_frames = max((num_frames - 1) // temporal_ratio + 1, 1)
+            else:
+                latent_frames = max(num_frames, 1)
+
         # Rough activation estimate:
         # Without grad checkpointing: ~resolution² × depth × hidden × batch × 2 bytes
         # With grad checkpointing: ~1/3 of above
         hidden_size = arch.get("hidden_size", 3072)
         depth = arch.get("depth", 19) + arch.get("depth_single_blocks", 38)
         pixels = (resolution // 8) ** 2  # latent space
-        act_bytes = pixels * depth * hidden_size * batch_size * 2  # bf16
+        # Multiply by latent_frames so more frames → more activation memory
+        # (image: latent_frames=1 → unchanged).
+        act_bytes = (
+            pixels * latent_frames * depth * hidden_size * batch_size * 2
+        )  # bf16
         act_factor = 0.33 if grad_checkpointing else 1.0
         report.activations_mb = (act_bytes * act_factor) / (1024 * 1024)
 
-        # Cap activations at a reasonable max (empirical)
-        max_act_mb = 8192 if not grad_checkpointing else 4096
+        # Cap activations at a reasonable max (empirical). Video clips legitimately
+        # need a higher ceiling than stills — scale the cap by latent_frames so a
+        # long clip's frame-driven growth isn't immediately clamped away (image:
+        # latent_frames=1 → identical caps to before).
+        max_act_mb = (8192 if not grad_checkpointing else 4096) * latent_frames
         report.activations_mb = min(report.activations_mb, max_act_mb)
 
         # ── 6. Training peak ─────────────────────────────────────────────
@@ -303,8 +353,12 @@ class VRAMEstimator:
         # ``caching_peak_mb`` scales the (single-number) caching-phase peak.
         if calibration:
             for field in (
-                "model_weights_mb", "lora_adapters_mb", "optimizer_states_mb",
-                "gradients_mb", "activations_mb", "overhead_mb",
+                "model_weights_mb",
+                "lora_adapters_mb",
+                "optimizer_states_mb",
+                "gradients_mb",
+                "activations_mb",
+                "overhead_mb",
             ):
                 k = calibration.get(field)
                 if k and k > 0:
@@ -392,6 +446,38 @@ class VRAMEstimator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_caps(definition: Any) -> dict:
+    """Resolve the merged capability descriptor for *definition*.
+
+    Returns the ``capabilities`` sub-dict from
+    :func:`app.engine.core.archetypes.resolve_capabilities` (which merges the
+    archetype template with the family's ``capability_overrides``), or an empty
+    dict when the definition can't be resolved (unknown family, dict stub in a
+    unit test, registry not initialised). Best-effort and never raises — the
+    estimator must keep working for every input.
+    """
+    try:
+        from app.engine.core.archetypes import resolve_capabilities
+
+        return resolve_capabilities(definition).get("capabilities", {}) or {}
+    except Exception:
+        return {}
+
+
+def _is_video_definition(definition: Any) -> bool:
+    """True when *definition* describes a video family.
+
+    Prefers the resolved ``is_video`` capability flag; falls back to the
+    presence of a ``video.vae_temporal`` architecture param so the temporal
+    scaling still kicks in even if the family lookup fails. Image families have
+    neither, so this returns False and the estimate is unchanged.
+    """
+    if _resolve_caps(definition).get("is_video", False):
+        return True
+    arch = getattr(definition, "architecture_params", {}) or {}
+    return "video.vae_temporal" in arch
 
 
 def _get_component_disk_mb(size_mb: dict, key: str) -> float:

@@ -21,6 +21,16 @@ class Archetype:
     supports_train_te: bool
     supports_te_quantization: bool
     supports_block_swap: bool
+    # ── Video capability flags ───────────────────────────────────────────
+    # Default False on EVERY archetype so ``asdict(arch)`` carries them for all
+    # families. ``build_field_visibility`` defaults a *missing* flag to True
+    # (shown); making these part of the base caps with default False means
+    # image families (which never flip them) HIDE the video fields, while the
+    # video families' ``capability_overrides`` flip the relevant ones True.
+    is_video: bool = False
+    has_audio: bool = False
+    dual_expert: bool = False
+    has_image_encoder: bool = False
     config_defaults: dict = field(default_factory=dict)
 
 
@@ -33,6 +43,12 @@ LATENT_DIFFUSION = Archetype(
     supports_train_te=False,  # SDXL overrides to True via capability_overrides
     supports_te_quantization=True,
     supports_block_swap=True,
+    # Video flags default False — flipped per-family via capability_overrides
+    # (wan21/wan22/ltx2 set is_video; ltx2 has_audio; wan22 dual_expert; etc.).
+    is_video=False,
+    has_audio=False,
+    dual_expert=False,
+    has_image_encoder=False,
     config_defaults={"resolution": 1024, "scheduler": "euler_a", "learning_rate": 1e-5},
 )
 
@@ -45,6 +61,11 @@ UNIFIED_TRANSFORMER = Archetype(
     supports_train_te=False,
     supports_te_quantization=False,
     supports_block_swap=False,
+    # Video flags default False — no unified-transformer video family exists yet.
+    is_video=False,
+    has_audio=False,
+    dual_expert=False,
+    has_image_encoder=False,
     config_defaults={"resolution": 1024, "scheduler": "euler_a", "learning_rate": 5e-6},
 )
 
@@ -100,6 +121,31 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         "control_resolution",
         "is_edit",
         "control resolution only applies to paired edit models",
+    ),
+    # ── Video fields (gated by the video capability flags) ───────────────
+    # ``is_video`` / ``has_audio`` / ``dual_expert`` default False on every
+    # archetype (see Archetype), so these are HIDDEN for image families and
+    # only SHOWN once a video family's capability_overrides flip the flag.
+    ("num_frames", "is_video", "image model — no video frames"),
+    ("target_fps", "is_video", "image model — no video frames"),
+    ("video_mode", "is_video", "image model — no video frames"),
+    ("i2v_image_dropout", "is_video", "image model — no video frames"),
+    ("train_audio", "has_audio", "this model has no audio modality"),
+    ("audio_loss_weight", "has_audio", "this model has no audio modality"),
+    (
+        "expert_swap_mode",
+        "dual_expert",
+        "single-transformer model — no expert routing",
+    ),
+    (
+        "expert_switch_interval",
+        "dual_expert",
+        "single-transformer model — no expert routing",
+    ),
+    (
+        "boundary_ratio_override",
+        "dual_expert",
+        "single-transformer model — no expert routing",
     ),
 ]
 

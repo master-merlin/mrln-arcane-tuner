@@ -162,3 +162,50 @@ class TestSnapshotProgressRegistry:
         from app.api.events.download_progress import SnapshotProgressRegistry
         reg = SnapshotProgressRegistry(total=None)
         assert reg.done("missing") is None
+
+
+class TestCapturePerFile:
+    def test_byte_bar_records_into_registry(self):
+        import huggingface_hub.utils.tqdm as hf_tqdm_mod
+        from app.api.events.download_progress import (
+            SnapshotProgressRegistry, _capture_per_file,
+        )
+        reg = SnapshotProgressRegistry(total=None)
+        with _capture_per_file(reg):
+            bar = hf_tqdm_mod.tqdm(
+                total=100, unit="B", desc="dit.safetensors",
+            )
+            bar.update(40)
+            snap = reg.snapshot()
+            assert snap[0].name == "dit.safetensors"
+            assert snap[0].current_bytes == 40
+            bar.close()
+            assert reg.snapshot() == []  # close() marks done
+
+    def test_file_count_bar_ignored(self):
+        import huggingface_hub.utils.tqdm as hf_tqdm_mod
+        from app.api.events.download_progress import (
+            SnapshotProgressRegistry, _capture_per_file,
+        )
+        reg = SnapshotProgressRegistry(total=None)
+        with _capture_per_file(reg):
+            # The outer "Fetching N files" bar has no unit="B" — must be ignored.
+            bar = hf_tqdm_mod.tqdm(total=5, desc="Fetching 5 files")
+            bar.update(1)
+            assert reg.snapshot() == []
+            bar.close()
+
+    def test_original_tqdm_restored_even_on_error(self):
+        import huggingface_hub.utils.tqdm as hf_tqdm_mod
+        from app.api.events.download_progress import (
+            SnapshotProgressRegistry, _capture_per_file,
+        )
+        original = hf_tqdm_mod.tqdm
+        reg = SnapshotProgressRegistry(total=None)
+        try:
+            with _capture_per_file(reg):
+                assert hf_tqdm_mod.tqdm is not original  # patched in scope
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        assert hf_tqdm_mod.tqdm is original  # restored on exception

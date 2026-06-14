@@ -149,6 +149,13 @@ export class JobsScreen {
     // ── Sample lightbox ─────────────────────────────────────────────────
     protected readonly sampleModal = signal<JobSampleMeta | null>(null);
     protected readonly sampleCacheBuster = signal<number>(0);
+    /**
+     * Video samples autoplay-loop in the lightbox; browsers only allow autoplay
+     * when the element starts muted, so we default to muted and offer an unmute
+     * toggle in the lightbox bar (shown only for video samples). LTX samples can
+     * carry audio, so unmuting is meaningful.
+     */
+    protected readonly sampleMuted = signal<boolean>(true);
 
     // ── Sampling controls (running jobs with sampling configured) ───────
     protected readonly samplingPaused = signal<boolean>(false);
@@ -636,7 +643,25 @@ export class JobsScreen {
     }
 
     // ── Sample lightbox ─────────────────────────────────────────────────
+    /**
+     * Whether a sample file is a video (WAN/LTX families emit `.mp4`; some
+     * pipelines emit `.webm`). Detected by extension — robust and dependency-free
+     * (the sample DTO does not expose a media_type field). Case-insensitive.
+     */
+    protected isVideoSample(filename: string | null | undefined): boolean {
+        if (!filename) return false;
+        return /\.(mp4|webm)$/i.test(filename);
+    }
+
+    /** Toggle audio for the current video sample (autoplay starts muted). */
+    protected toggleSampleMuted(): void {
+        this.sampleMuted.update((m) => !m);
+    }
+
     protected openSample(s: JobSampleMeta): void {
+        // Each newly opened sample starts muted so autoplay is permitted; the
+        // user can unmute video samples via the lightbox bar.
+        this.sampleMuted.set(true);
         this.sampleModal.set(s);
     }
     protected closeSample(): void {

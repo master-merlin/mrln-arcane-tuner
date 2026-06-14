@@ -45,7 +45,11 @@ class Qwen3VLModel(CaptionModel):
     def load(self, variant: str = "4B-Instruct") -> tuple[Any, Any]:
         """Load model and processor for the given variant."""
         # Skip reload if same variant already loaded
-        if self.model is not None and self.processor is not None and self.loaded_variant == variant:
+        if (
+            self.model is not None
+            and self.processor is not None
+            and self.loaded_variant == variant
+        ):
             logger.debug("qwen3_vl_already_loaded", variant=variant)
             return self.model, self.processor
 
@@ -164,7 +168,11 @@ class Qwen3VLModel(CaptionModel):
 
         # Two-image mode: default to the edit-instruction prompt unless the
         # user supplied an explicit one.
-        if extra_images and not params.get("user_prompt") and not params.get("system_prompt"):
+        if (
+            extra_images
+            and not params.get("user_prompt")
+            and not params.get("system_prompt")
+        ):
             user_prompt = MULTI_IMAGE_INSTRUCTION
 
         # Build messages in Qwen VL chat format (one image block per image)
@@ -180,12 +188,16 @@ class Qwen3VLModel(CaptionModel):
         ]
 
         # Apply chat template and process inputs
-        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.processor(text=[text], images=all_images, padding=True, return_tensors="pt")
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.processor(
+            text=[text], images=all_images, padding=True, return_tensors="pt"
+        )
 
         # Move to device
         device = next(self.model.parameters()).device
-        inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
         # Build generation config
         gen_kwargs = {
@@ -214,10 +226,99 @@ class Qwen3VLModel(CaptionModel):
         output_text = self.processor.batch_decode(
             generated_ids[:, input_len:],
             skip_special_tokens=True,
-            clean_up_tokenization_spaces=True
+            clean_up_tokenization_spaces=True,
         )[0]
 
         # For Thinking mode, remove <think>...</think> blocks
+        if is_thinking:
+            output_text = self._extract_thinking_answer(output_text)
+
+        return output_text.strip()
+
+    def generate_video(self, frames: list[Image.Image], params: dict) -> str:
+        """Caption a video clip from N evenly-spaced frames.
+
+        Qwen3-VL natively accepts a list of images in one user turn, so we feed
+        every frame to the model as a real multi-frame prompt (not a single
+        middle-frame fallback). The frames are placed in order before the text
+        instruction; a motion-aware default prompt is used unless the user
+        supplied a system/user prompt.
+        """
+        if not frames:
+            raise ValueError("generate_video requires at least one frame.")
+
+        from app.core.captioning.models.base import VIDEO_MOTION_INSTRUCTION
+
+        variant = params.get("variant", self.loaded_variant or "4B-Instruct")
+        if self.loaded_variant != variant:
+            self.load(variant)
+
+        temperature = params.get("temperature", 0.7)
+        max_tokens = params.get("max_tokens", 512)
+        top_p = params.get("top_p", 0.8)
+        num_beams = params.get("num_beams", 1)
+        repetition_penalty = params.get("repetition_penalty", 1.2)
+        is_thinking = "Thinking" in variant
+
+        max_long_side = int(params.get("max_long_side", DEFAULT_MAX_LONG_SIDE))
+        all_images = [self._resize_for_inference(f, max_long_side) for f in frames]
+
+        # System prompt: honour the user override, else a motion-aware default.
+        system_prompt = params.get("system_prompt") or (
+            "You are a helpful assistant that describes short video clips "
+            "from a sequence of frames, focusing on subject, motion and camera."
+        )
+        # User prompt: explicit override wins, else the motion-aware instruction.
+        user_prompt = params.get("user_prompt") or VIDEO_MOTION_INSTRUCTION
+
+        # Qwen3-VL video content block: a single "video" item carrying the frame
+        # list, so the model treats them as one moving scene rather than N
+        # unrelated stills.
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video", "video": all_images},
+                    {"type": "text", "text": user_prompt},
+                ],
+            },
+        ]
+
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.processor(
+            text=[text], images=all_images, padding=True, return_tensors="pt"
+        )
+
+        device = next(self.model.parameters()).device
+        inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        gen_kwargs = {
+            "max_new_tokens": max_tokens,
+            "pad_token_id": self.processor.tokenizer.pad_token_id,
+            "repetition_penalty": repetition_penalty,
+        }
+        if num_beams > 1:
+            gen_kwargs["num_beams"] = num_beams
+            gen_kwargs["do_sample"] = False
+        else:
+            gen_kwargs["do_sample"] = temperature > 0
+            if temperature > 0:
+                gen_kwargs["temperature"] = temperature
+                gen_kwargs["top_p"] = top_p
+
+        with torch.no_grad():
+            generated_ids = self.model.generate(**inputs, **gen_kwargs)
+
+        input_len = inputs["input_ids"].shape[1]
+        output_text = self.processor.batch_decode(
+            generated_ids[:, input_len:],
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True,
+        )[0]
+
         if is_thinking:
             output_text = self._extract_thinking_answer(output_text)
 
@@ -256,7 +357,6 @@ class Qwen3VLModel(CaptionModel):
 
     def _extract_thinking_answer(self, text: str) -> str:
         """Extract final answer from thinking mode output, removing <think> blocks."""
-        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        cleaned = re.sub(r'<think>.*$', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL)
         return cleaned.strip() or text.strip()
-

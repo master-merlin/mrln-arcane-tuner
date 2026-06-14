@@ -110,6 +110,48 @@ class TestSnapshotByteProgress:
         assert emits[0].percent is None
         assert emits[0].current_bytes == 50
 
+    def test_change_gate_suppresses_unchanged_emits(self, tmp_path):
+        cache_dir = self._cache_with_bytes(tmp_path, 500)
+        emits = []
+        with patch.object(dp, "_repo_total_bytes", return_value=1000), \
+             patch.object(dp, "_repo_cache_dir", return_value=cache_dir), \
+             patch.object(dp, "SNAPSHOT_POLL_INTERVAL_S", 0.01), \
+             patch.object(dp, "schedule_emit_from_thread", side_effect=emits.append):
+            with dp.snapshot_byte_progress(
+                repo_id="org/model", model_id="org/model", category="training",
+            ):
+                import time
+                time.sleep(0.1)  # several poll ticks, nothing on disk changes
+
+        # starting + complete are forced; the static downloading ticks collapse
+        # to at most one emit (nothing changed between them).
+        downloading = [e for e in emits if e.status == "downloading"]
+        assert len(downloading) <= 1
+        assert emits[0].status == "starting"
+        assert emits[-1].status == "complete"
+
+    def test_payload_includes_active_files(self, tmp_path):
+        import sys
+        import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
+        hf_tqdm_mod = sys.modules["huggingface_hub.utils.tqdm"]
+        cache_dir = self._cache_with_bytes(tmp_path, 100)
+        emits = []
+        with patch.object(dp, "_repo_total_bytes", return_value=1000), \
+             patch.object(dp, "_repo_cache_dir", return_value=cache_dir), \
+             patch.object(dp, "SNAPSHOT_POLL_INTERVAL_S", 0.01), \
+             patch.object(dp, "schedule_emit_from_thread", side_effect=emits.append):
+            with dp.snapshot_byte_progress(
+                repo_id="org/model", model_id="org/model", category="training",
+            ):
+                bar = hf_tqdm_mod.tqdm(total=200, unit="B", desc="dit.safetensors")
+                bar.update(80)
+                import time
+                time.sleep(0.05)
+                bar.close()
+
+        files_seen = [f.name for e in emits for f in e.files]
+        assert "dit.safetensors" in files_seen
+
 
 class TestFileProgressModel:
     def test_download_progress_defaults_files_empty(self):

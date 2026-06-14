@@ -476,36 +476,49 @@ def _capture_per_file(
         mod.tqdm = original
 
 
+def _progress_signature(p: DownloadProgress) -> tuple:
+    """A coarse fingerprint of a payload — used to drop unchanged ticks so the
+    poller emits only on meaningful movement (integer-percent granularity)."""
+    return (p.percent, tuple((f.name, f.percent) for f in p.files))
+
+
 @contextmanager
 def snapshot_byte_progress(
     *, repo_id: str, model_id: str, category: str,
 ) -> Generator[None, None, None]:
-    """Emit aggregate BYTE progress for an in-flight full-repo snapshot download.
+    """Emit aggregate + per-file BYTE progress for an in-flight snapshot.
 
-    Polls the repo's on-disk cache (``blobs/``) against its total size on a
-    background thread and emits throttle-free ``downloading`` events every
-    ``SNAPSHOT_POLL_INTERVAL_S``. A ``starting`` event fires on enter (carrying
-    the resume baseline so a partial cache shows its real %), and a
-    ``complete``/``error`` event fires on exit so the indicator always clears.
+    The aggregate comes from polling on-disk cache growth (resume-aware) against
+    the repo's total size; the per-file list comes from ``_capture_per_file``.
+    The poller is the SINGLE emitter — it sends one consolidated event per tick,
+    and only when the fingerprint changed (``starting``/``complete``/``error``
+    always fire). Per-file tqdm churn produces no WS frames of its own.
 
-    Best-effort: a metadata failure degrades to an indeterminate spinner
-    (``total`` unknown); poll/stat errors are swallowed.
+    Best-effort: metadata failure → indeterminate aggregate; the hook no-ops on
+    HF-internals drift; the original tqdm is always restored.
     """
     total = _repo_total_bytes(repo_id)
     cache_dir = _repo_cache_dir(repo_id)
+    registry = SnapshotProgressRegistry(total)
+    last_sig: dict = {"v": object()}  # sentinel: forces first downloading emit
 
-    def _emit(status: str, *, error: Optional[str] = None) -> None:
+    def _payload(status: str, *, error: Optional[str] = None) -> DownloadProgress:
         current = _on_disk_bytes(cache_dir)
         if total is not None:
-            current = min(current, total)  # stale extra blobs can overshoot
-        schedule_emit_from_thread(
-            _make_payload(
-                source="hf", model_id=model_id, category=category,
-                status=status, current=current, total=total, error=error,
-            )
+            current = min(current, total)
+        return _make_payload(
+            source="hf", model_id=model_id, category=category, status=status,
+            current=current, total=total, error=error, files=registry.snapshot(),
         )
 
-    _emit("starting")
+    def _emit(status: str, *, error: Optional[str] = None, force: bool = False) -> None:
+        p = _payload(status, error=error)
+        sig = _progress_signature(p)
+        if force or sig != last_sig["v"]:
+            last_sig["v"] = sig
+            schedule_emit_from_thread(p)
+
+    _emit("starting", force=True)
     stop = threading.Event()
 
     def _poll() -> None:
@@ -513,16 +526,18 @@ def snapshot_byte_progress(
             _emit("downloading")
 
     poller = threading.Thread(target=_poll, daemon=True, name="hf_dl_progress")
-    poller.start()
-    try:
-        yield
-    except Exception as exc:
-        stop.set()
-        _emit("error", error=str(exc))
-        raise
-    else:
-        stop.set()
-        _emit("complete")
-    finally:
-        stop.set()
-        poller.join(timeout=1.0)
+    with _capture_per_file(registry):
+        poller.start()
+        try:
+            yield
+        except Exception as exc:
+            stop.set()
+            _emit("error", error=str(exc), force=True)
+            raise
+        else:
+            stop.set()
+            _emit("complete", force=True)
+            logger.info("snapshot_complete", repo=repo_id, total_bytes=total)
+        finally:
+            stop.set()
+            poller.join(timeout=1.0)

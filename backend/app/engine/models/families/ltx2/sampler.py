@@ -86,11 +86,19 @@ class Ltx2Sampler(GenericSamplingPipeline):
     # ── Abstract hooks ───────────────────────────────────────────────────
 
     def encode_prompt(self, prompt: str) -> Any:
-        """Encode the prompt via the trainer's (cached) Gemma3 + connectors."""
+        """Encode the prompt via the trainer's CACHED text path.
+
+        Must call ``trainer.encode_text`` (NOT ``trainer.driver.encode_text``):
+        the 12B Gemma3 is offloaded after pre-caching, so the driver's encoder
+        is ``None`` at sample time — calling it crashed sampling with
+        "'NoneType' object is not callable". The sample prompts are warmed into
+        ``trainer.text_cache`` during ``_pre_cache_text_embeddings``, so the
+        cached path serves them without reloading the encoder. (Same pattern as
+        flux1/flux2/sdxl samplers.)
+        """
         trainer = self.pipeline
         dtype = next(trainer.transformer.parameters()).dtype
-        out = trainer.driver.encode_text([prompt], dtype)
-        return out
+        return trainer.encode_text([prompt], dtype)
 
     def _create_initial_noise(
         self, width: int, height: int, generator: torch.Generator,

@@ -29,6 +29,7 @@ import structlog
 import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
+from app.engine.models.families.wan_shared.trainer_base import WanTextCacheMixin
 
 from .driver import Wan22Driver
 from .expert_router import ExpertRouter
@@ -38,7 +39,7 @@ from .saver import Wan22Saver
 logger = structlog.get_logger(__name__)
 
 
-class Wan22Trainer(GenericTrainingPipeline):
+class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
     """WAN 2.2 (T2V-A14B / I2V-A14B) dual-expert LoRA trainer.
 
     ``is_video_family`` is inherited from :class:`PipelineBaseMixin` (derived

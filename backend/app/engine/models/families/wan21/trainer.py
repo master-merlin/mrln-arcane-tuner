@@ -25,6 +25,7 @@ import structlog
 import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
+from app.engine.models.families.wan_shared.trainer_base import WanTextCacheMixin
 
 from .driver import Wan21Driver
 from .loader import Wan21Loader
@@ -33,7 +34,7 @@ from .saver import Wan21Saver
 logger = structlog.get_logger(__name__)
 
 
-class Wan21Trainer(GenericTrainingPipeline):
+class Wan21Trainer(WanTextCacheMixin, GenericTrainingPipeline):
     """WAN 2.1 (T2V 1.3B/14B, I2V 14B) LoRA trainer.
 
     ``is_video_family`` is inherited from :class:`PipelineBaseMixin` (derived

@@ -146,6 +146,15 @@ class Flux2Driver(IModelDriver):
             r"|transformer_blocks\.\d+\.attn\.add_[qkv]_proj$"
         )
 
+    def should_fuse_qkv_projections(self) -> bool:
+        """FLUX.2 trains a single fused ``to_qkv``/``to_added_qkv`` LoRA.
+
+        Fusing the separate Q/K/V linears before PEFT gives one shared
+        ``lora_A`` per fused QKV (see :meth:`get_lora_targets`), so there is no
+        lossy SVD merge of three independent rank-r LoRAs at save time.
+        """
+        return True
+
     def init_scheduler(self) -> Any:
         """FLUX.2 uses flow matching — no external scheduler."""
         return None

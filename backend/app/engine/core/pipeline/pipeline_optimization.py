@@ -118,8 +118,17 @@ class PipelineOptimizationMixin:
         ``to_qkv`` (and ``to_added_qkv``) linear layer, so PEFT trains
         one shared ``lora_A`` — zero conversion loss at save time.
 
-        No-op for model families without fused projection support.
+        Gated per family via ``driver.should_fuse_qkv_projections()`` (default
+        ``False``).  Families that target the unfused ``to_q``/``to_k``/``to_v``
+        (LTX-2, SDXL, …) must NOT fuse: it would leave their LoRA targets
+        matching nothing, and LTX-2's audio↔video cross-modal attentions have
+        asymmetric query vs key/value dims (4096 vs 2048) that crash diffusers'
+        ``fuse_projections``.  Only FLUX.2 opts in.
         """
+        if not self.driver.should_fuse_qkv_projections():
+            self.logger.debug("qkv_fusion_skipped", reason="family_opts_out")
+            return
+
         model = self._get_primary_model()
 
         fused_count = 0

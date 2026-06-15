@@ -165,6 +165,25 @@ class IModelDriver(ABC):
         """
         return None
 
+    def should_fuse_qkv_projections(self) -> bool:
+        """Whether to fuse separate Q/K/V projections into a single ``to_qkv``
+        module (via diffusers' ``fuse_projections()``) before PEFT wrapping.
+
+        Only families whose LoRA targets reference the fused ``to_qkv`` /
+        ``to_added_qkv`` modules (currently FLUX.2) should return ``True`` — it
+        lets PEFT train one shared ``lora_A`` per QKV, avoiding lossy SVD
+        re-decomposition at save time.
+
+        Families that target the *unfused* ``to_q``/``to_k``/``to_v`` (LTX-2,
+        SDXL, …) MUST return ``False``: fusing would leave their LoRA targets
+        matching nothing, and for attentions with asymmetric query vs key/value
+        input dims (LTX-2's audio↔video cross-modal bridges) diffusers'
+        ``fuse_projections`` crashes on ``torch.cat([to_q, to_k, to_v])``.
+
+        Default: ``False``.
+        """
+        return False
+
     @abstractmethod
     def init_scheduler(self) -> Any:
         """Create and return the noise scheduler for this family."""

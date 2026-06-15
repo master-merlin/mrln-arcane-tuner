@@ -96,6 +96,10 @@ class Ltx2Driver(IModelDriver):
         self.patch_size_t: int = 1
         self.te_max_length: int = 256
         self.frame_rate: float = 24.0
+        # Transformer interface dims (for the joint forward's audio stream +
+        # the connector→caption-projection contract).
+        self.audio_in_channels: int = 128
+        self.caption_channels: int = 3840
         self._latent_shape: tuple[int, int, int] | None = None  # (F, H, W)
 
     # --- Phase 1: Loading & Component Access ---
@@ -120,6 +124,8 @@ class Ltx2Driver(IModelDriver):
         self.audio_weight = float(arch.get("audio.loss_weight", 1.0))
         self.te_max_length = int(arch.get("te.max_length", 256))
         self.frame_rate = float(arch.get("video.frame_rate", 24.0))
+        self.audio_in_channels = int(arch.get("transformer.audio_in_channels", 128))
+        self.caption_channels = int(arch.get("transformer.caption_channels", 3840))
 
         # Patch sizes come from the transformer config (default 1×1 for LTX-2).
         cfg = getattr(self.transformer, "config", None)
@@ -199,8 +205,11 @@ class Ltx2Driver(IModelDriver):
                 output_hidden_states=True,
                 use_cache=False,
             )
-            # Stack per-layer hidden states → connectors expect per-layer feats.
-            hidden = torch.stack(outputs.hidden_states, dim=0)
+            # Stack per-layer hidden states → LTX2TextConnectors expects shape
+            # ``(B, L, caption_channels, num_layers)`` (num_layers LAST), so we
+            # stack on the trailing axis — NOT dim=0, which would feed the
+            # connector a transposed tensor.
+            hidden = torch.stack(outputs.hidden_states, dim=-1)
             video_emb, audio_emb = self._run_connectors(hidden, attention_mask)
 
         return TextEncoderOutput(
@@ -277,13 +286,20 @@ class Ltx2Driver(IModelDriver):
         ``(F, H, W)`` so the sampler can unpack symmetrically.
         """
         packed = self._pack_latents(latents, self.patch_size, self.patch_size_t)
+        # Record the post-patch latent grid (F, H, W) so forward_pass can supply
+        # RoPE coords. A still image arrives 4D ([B, C, H, W]) → implicit F=1
+        # (the latent cache squeezes the dummy frame dim for stills); record it
+        # too so single-image runs get correct coordinates.
         if latents.ndim == 5:
             _, _, f, h, w = latents.shape
-            self._latent_shape = (
-                f // self.patch_size_t,
-                h // self.patch_size,
-                w // self.patch_size,
-            )
+        else:
+            _, _, h, w = latents.shape
+            f = 1
+        self._latent_shape = (
+            f // self.patch_size_t,
+            h // self.patch_size,
+            w // self.patch_size,
+        )
         return packed
 
     @staticmethod
@@ -315,26 +331,76 @@ class Ltx2Driver(IModelDriver):
         text_embeddings: Any,
         batch: dict[str, Any],
     ) -> torch.Tensor:
-        """LTX2VideoTransformer3DModel forward → video velocity prediction.
+        """``LTX2VideoTransformer3DModel`` forward → video velocity prediction.
 
-        The transformer sees the NORMALIZED timestep (``t / 1000``) and a
-        ``frame_rate`` conditioning value derived from the batch's fps (or the
-        definition default).  Audio tokens are handled in :meth:`compute_loss`
-        for the joint path; when audio is off the audio stream is omitted
-        exactly like the audio-free pipeline.
+        The real model is a JOINT audio+video transformer: ``audio_hidden_states``
+        and ``audio_encoder_hidden_states`` are required, the timestep is the raw
+        flow-match ``[0, 1000]`` value (NOT normalized — only ``add_noise``
+        divides by the scale), RoPE needs the latent ``num_frames/height/width``
+        + ``fps``, and it returns a ``(video, audio)`` tuple.
+
+        For VIDEO-ONLY training we feed a single zero audio token and set
+        ``isolate_modalities=True`` so the audio stream cannot influence the
+        video prediction (proven inert by a GPU isolation smoke); we keep only
+        the video output.  The audio-on path is wired in a later phase.
         """
-        model_timesteps = timesteps / _FLOWMATCH_SCALE
         video_emb = self._video_embeddings(text_embeddings)
-        frame_rate = self._batch_frame_rate(batch)
+        audio_h, audio_emb = self._dummy_audio_inputs(noisy_input, video_emb)
+        f, h, w = self._latent_grid()
+        fps = self._batch_frame_rate(batch)
 
         output = self.transformer(
             hidden_states=noisy_input,
+            audio_hidden_states=audio_h,
             encoder_hidden_states=video_emb,
-            timestep=model_timesteps,
-            frame_rate=frame_rate,
+            audio_encoder_hidden_states=audio_emb,
+            timestep=timesteps,  # raw [0, 1000] flow-match scale
+            sigma=timesteps,  # LTX-2.3 prompt modulation (harmless when unused)
+            num_frames=f,
+            height=h,
+            width=w,
+            fps=fps,
+            audio_num_frames=1,
+            isolate_modalities=True,  # video-only: no audio↔video leakage
             return_dict=False,
         )
         return output[0] if isinstance(output, (tuple, list)) else output
+
+    def _latent_grid(self) -> tuple[int, int, int]:
+        """Post-patch latent ``(F, H, W)`` recorded by :meth:`prepare_latents`.
+
+        Used to build the transformer's RoPE coordinates.  ``prepare_latents``
+        runs before every forward (training) / before denoise (sampling), so
+        the shape reflects the current batch / sample resolution.
+        """
+        if self._latent_shape is None:
+            raise RuntimeError(
+                "prepare_latents() must run before forward_pass() — it records "
+                "the latent (F, H, W) the transformer needs for RoPE coords."
+            )
+        return self._latent_shape
+
+    def _dummy_audio_inputs(
+        self, hidden_ref: torch.Tensor, video_emb: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Minimal zero audio stream for video-only training/sampling.
+
+        The joint transformer requires ``audio_hidden_states`` (``[B, n, audio_in_channels]``
+        → ``audio_proj_in``) and ``audio_encoder_hidden_states``
+        (``[B, l, caption_channels]`` → ``audio_caption_projection``).  With
+        ``isolate_modalities=True`` the audio stream is decoupled from video, so
+        a single zero token in each suffices (cheap; output discarded).
+        """
+        b = hidden_ref.shape[0]
+        audio_h = torch.zeros(
+            b, 1, self.audio_in_channels,
+            dtype=hidden_ref.dtype, device=hidden_ref.device,
+        )
+        audio_emb = torch.zeros(
+            b, 1, self.caption_channels,
+            dtype=video_emb.dtype, device=hidden_ref.device,
+        )
+        return audio_h, audio_emb
 
     def compute_loss(
         self,

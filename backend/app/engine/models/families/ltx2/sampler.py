@@ -134,22 +134,38 @@ class Ltx2Sampler(GenericSamplingPipeline):
         driver = self.pipeline.driver
         transformer = self.pipeline.transformer
         model_dtype = next(transformer.parameters()).dtype
-        video_emb = driver._video_embeddings(prompt_embedding)
+        # No autocast here (fp32 trajectory), so the conditioning must already
+        # be in the transformer's dtype.
+        video_emb = driver._video_embeddings(prompt_embedding).to(model_dtype)
+        f, h, w = driver._latent_grid()
 
         sigmas = torch.linspace(1.0, 0.0, num_steps + 1, device=self.device)
 
-        # Step the schedule in fp32; the per-step timestep is the sigma scaled
-        # to the [0, 1000] flow-match space, normalized (÷1000) for the forward.
+        # Step the schedule in fp32; the per-step timestep is the sigma on the
+        # [0, 1000] flow-match scale, passed RAW to the transformer (NOT ÷1000 —
+        # only add_noise normalizes). Video-only: a single zero audio token +
+        # isolate_modalities, mirroring forward_pass.
         x = noise.to(torch.float32)
         for i in range(len(sigmas) - 1):
             dt = sigmas[i + 1] - sigmas[i]
-            t_val = sigmas[i] * 1000.0
+            t_val = float(sigmas[i]) * 1000.0
+            xin = x.to(model_dtype)
+            ts = x.new_ones(x.shape[0]) * t_val  # fp32 [0, 1000]
+            audio_h, audio_emb = driver._dummy_audio_inputs(xin, video_emb)
             with torch.no_grad():
                 out = transformer(
-                    hidden_states=x.to(model_dtype),
+                    hidden_states=xin,
+                    audio_hidden_states=audio_h,
                     encoder_hidden_states=video_emb,
-                    timestep=x.new_ones(x.shape[0]) * (t_val / 1000.0),
-                    frame_rate=driver.frame_rate,
+                    audio_encoder_hidden_states=audio_emb,
+                    timestep=ts,
+                    sigma=ts,
+                    num_frames=f,
+                    height=h,
+                    width=w,
+                    fps=driver.frame_rate,
+                    audio_num_frames=1,
+                    isolate_modalities=True,
                     return_dict=False,
                 )
             v = (out[0] if isinstance(out, (tuple, list)) else out).to(torch.float32)

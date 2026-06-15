@@ -24,7 +24,7 @@ import { TargetLayersCardComponent } from '../target-layers-card/target-layers-c
 import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
-import { SchemaNode, SchemaProp } from '../schema-node';
+import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
 import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
 
 export interface TrainingTemplate {
@@ -1825,10 +1825,10 @@ export class TrainingDynamicConfigComponent {
     if (schema.$ref) {
       const refKey = schema.$ref.split('/').pop();
       if (refKey && definitions[refKey]) {
-        return { ...definitions[refKey], ...schema };
+        return collapseNullableUnion({ ...definitions[refKey], ...schema });
       }
     }
-    return schema;
+    return collapseNullableUnion(schema);
   }
 
   getFormArray(key: string): FormArray {

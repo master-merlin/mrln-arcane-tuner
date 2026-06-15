@@ -66,12 +66,24 @@ class SamplePromptConfig(BaseModel):
     num_frames: int | None = Field(
         None,
         description="Frames to sample for video models (None = still image)",
-        json_schema_extra={"group": "SAMPLING", "min": 1, "max": 256, "step": 1},
+        json_schema_extra={
+            "group": "SAMPLING",
+            "min": 1,
+            "max": 256,
+            "step": 1,
+            "video_only": True,
+        },
     )
     fps: float | None = Field(
         None,
         description="Frames-per-second for the sampled video clip (None = image)",
-        json_schema_extra={"group": "SAMPLING", "min": 1.0, "max": 60.0, "step": 1.0},
+        json_schema_extra={
+            "group": "SAMPLING",
+            "min": 1.0,
+            "max": 60.0,
+            "step": 1.0,
+            "video_only": True,
+        },
     )
 
 

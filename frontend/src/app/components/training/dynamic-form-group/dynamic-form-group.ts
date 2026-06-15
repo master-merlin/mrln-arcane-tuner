@@ -7,7 +7,7 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { StatePillsComponent, StatePillsState, datasetStatePills } from '../../../ui/state-pills/state-pills.component';
 import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-field';
 import type { TrainingConfig } from '../../../services/job';
-import { SchemaNode, SchemaProp } from '../schema-node';
+import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
 
 @Component({
   selector: 'app-dynamic-form-group',
@@ -452,10 +452,10 @@ export class DynamicFormGroupComponent {
     if (schemaOrRef.$ref) {
       const refKey = schemaOrRef.$ref.split('/').pop();
       if (refKey && definitions[refKey]) {
-        return { ...definitions[refKey], ...schemaOrRef };
+        return collapseNullableUnion({ ...definitions[refKey], ...schemaOrRef });
       }
     }
-    return schemaOrRef;
+    return collapseNullableUnion(schemaOrRef);
   }
 
   // Array Actions

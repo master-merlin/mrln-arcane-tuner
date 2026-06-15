@@ -517,6 +517,100 @@ class JobManager:
             return False
         return "run_trainer" in cmdline and job_id in cmdline
 
+    @staticmethod
+    def _terminate_process_tree(pid: int | None, timeout: float = 8.0) -> list[int]:
+        """Kill a trainer launcher PID **and all its descendants**.
+
+        On Windows the venv ``python.exe`` is a redirector that re-launches the
+        base interpreter as a CHILD — and that child is the process that holds
+        the CUDA context. Killing only the launcher (the old
+        ``os.kill(job.pid, …)``) orphaned the worker, which kept tens of GB of
+        VRAM and even kept training/sampling: the "zombie from a cancelled
+        session". Enumerating + terminating the whole tree frees the GPU for
+        real. Best-effort — already-dead PIDs are skipped.
+
+        Returns the PIDs it asked to terminate (for logging).
+        """
+        if not pid or pid <= 0:
+            return []
+        try:
+            import psutil
+        except Exception:
+            # No psutil → at least take out the launcher itself.
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+            return [pid]
+        try:
+            parent = psutil.Process(pid)
+        except Exception:
+            return []
+        try:
+            procs = parent.children(recursive=True)
+        except Exception:
+            procs = []
+        procs.append(parent)
+        targeted = [p.pid for p in procs]
+        for p in procs:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        try:
+            _, alive = psutil.wait_procs(procs, timeout=timeout)
+        except Exception:
+            alive = []
+        for p in alive:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        return targeted
+
+    @classmethod
+    def _resolve_worker_pid(cls, pid: int | None, job_id: str) -> int | None:
+        """Resolve the trainer WORKER pid to monitor.
+
+        The launcher (``job.pid``) redirects to a base-interpreter child on
+        Windows; that child is the process actually doing the work / holding the
+        GPU. Return the deepest descendant whose cmdline is THIS job's trainer,
+        or ``pid`` itself when there is no such child (POSIX / single-process).
+        """
+        if not pid or pid <= 0:
+            return pid
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            workers = [
+                c.pid
+                for c in proc.children(recursive=True)
+                if cls._is_trainer_process(c.pid, job_id)
+            ]
+            return workers[-1] if workers else pid
+        except Exception:
+            return pid
+
+    def _trainer_tree_dead(
+        self, launcher_pid: int | None, worker_pid: int | None
+    ) -> bool:
+        """True when a job's process tree is effectively dead.
+
+        Dead if the launcher is gone, OR a distinct worker we were tracking has
+        died while the launcher lingers — the redirector launcher can outlive a
+        hard-killed worker, which used to leave the queue card stuck on
+        "running" forever (the stale-UI report).
+        """
+        if not self._is_pid_alive(launcher_pid):
+            return True
+        if (
+            worker_pid
+            and worker_pid != launcher_pid
+            and not self._is_pid_alive(worker_pid)
+        ):
+            return True
+        return False
+
     def delete_job(self, job_id: str) -> None:
         """Remove a job from the registry and the database. Broadcasts entity.changed."""
         self._stop_tailer(job_id)
@@ -750,44 +844,55 @@ class JobManager:
         """
 
         def _watch() -> None:
+            # ``pid`` is the launcher; the real worker is a child on Windows
+            # (venv redirector). Track it so a hard-killed worker is detected
+            # even when the launcher lingers — otherwise the queue card stuck on
+            # "running" forever (the stale-UI report).
+            worker_pid: int | None = None
             while True:
                 time.sleep(5)
-                if not self._is_pid_alive(pid):
-                    job = self.get_job(job_id)
-                    if not job:
-                        break
-                    if job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
-                        # Give the tailer a moment to process any final lines
-                        time.sleep(2)
-                        # Re-check: the exit message handler may have already updated
-                        job = self.get_job(job_id)
-                        if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
-                            logger.warning(
-                                "pid_watchdog_process_died",
-                                job_id=job_id,
-                                pid=pid,
-                            )
-                            with self._lock:
-                                job.status = JobStatus.STOPPED
-                                job.finished_at = time.time()
-                                job.pid = None
-                                job.error = "Process exited unexpectedly (detected by watchdog)"
-                            self._persist_status(
-                                job_id, "stopped",
-                                finished_at=job.finished_at,
-                                error=job.error,
-                            )
-                            self._stop_tailer(job_id)
-                            if self._loop:
-                                asyncio.run_coroutine_threadsafe(
-                                    event_manager.broadcast("job_update", job.model_dump()),
-                                    self._loop,
-                                )
-                            # An unexpected death still frees the GPU — don't
-                            # let one crashed run stall the whole overnight
-                            # queue.
-                            self.schedule_advance_queue()
+                if worker_pid is None or worker_pid == pid:
+                    worker_pid = self._resolve_worker_pid(pid, job_id)
+                if not self._trainer_tree_dead(pid, worker_pid):
+                    continue
+                job = self.get_job(job_id)
+                if not job:
                     break
+                if job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+                    # Give the tailer a moment to process any final lines
+                    time.sleep(2)
+                    # Re-check: the exit message handler may have already updated
+                    job = self.get_job(job_id)
+                    if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+                        logger.warning(
+                            "pid_watchdog_process_died",
+                            job_id=job_id,
+                            launcher_pid=pid,
+                            worker_pid=worker_pid,
+                        )
+                        # Reap any lingering launcher/worker remnant so VRAM frees.
+                        self._terminate_process_tree(pid)
+                        with self._lock:
+                            job.status = JobStatus.STOPPED
+                            job.finished_at = time.time()
+                            job.pid = None
+                            job.error = "Process exited unexpectedly (detected by watchdog)"
+                        self._persist_status(
+                            job_id, "stopped",
+                            finished_at=job.finished_at,
+                            error=job.error,
+                        )
+                        self._stop_tailer(job_id)
+                        if self._loop:
+                            asyncio.run_coroutine_threadsafe(
+                                event_manager.broadcast("job_update", job.model_dump()),
+                                self._loop,
+                            )
+                        # An unexpected death still frees the GPU — don't
+                        # let one crashed run stall the whole overnight
+                        # queue.
+                        self.schedule_advance_queue()
+                break
 
         thread = threading.Thread(
             target=_watch,
@@ -1076,25 +1181,37 @@ class JobManager:
         ).start()
 
     def stop_job(self, job_id: str) -> None:
-        """Send SIGTERM to the training subprocess."""
+        """Force-stop a job: kill its whole process tree, then mark it stopped.
+
+        Kills the launcher AND its worker/children (see
+        :meth:`_terminate_process_tree`) so the GPU is actually freed — the old
+        ``os.kill(job.pid)`` left the real worker orphaned (the zombie). Marks
+        STOPPED unconditionally (even if the process was already gone), so the
+        user can clear a stale "running" card with one click instead of it
+        sticking as a failure.
+        """
         job = self.get_job(job_id)
         if not job:
             raise ValueError("Job not found")
 
-        if job.status in (JobStatus.RUNNING, JobStatus.PAUSED) and job.pid:
-            try:
-                os.kill(job.pid, signal.SIGTERM)
-                job.status = JobStatus.STOPPED
-                job.finished_at = time.time()
-                self._persist_status(job_id, "stopped", finished_at=job.finished_at)
-                self._stop_tailer(job_id)
-            except ProcessLookupError:
-                job.status = JobStatus.FAILED
-                job.error = "Process not found"
-                self._persist_status(job_id, "failed", error=job.error)
-                self._stop_tailer(job_id)
-            except OSError as e:
-                job.error = str(e)
+        if job.status not in (JobStatus.RUNNING, JobStatus.PAUSED):
+            return
+
+        killed = self._terminate_process_tree(job.pid)
+        logger.info(
+            "stop_job_tree_killed", job_id=job_id, root_pid=job.pid, killed_pids=killed
+        )
+        with self._lock:
+            job.status = JobStatus.STOPPED
+            job.finished_at = time.time()
+            job.pid = None
+        self._persist_status(job_id, "stopped", finished_at=job.finished_at)
+        self._stop_tailer(job_id)
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_update", job.model_dump()),
+                self._loop,
+            )
 
     def read_persisted_logs(self, job: Job, limit: int = 1000) -> list[str]:
         """Read a job's log tail from its persisted ``job_log.jsonl`` on disk.

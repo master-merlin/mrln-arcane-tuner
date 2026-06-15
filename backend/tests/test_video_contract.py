@@ -178,3 +178,24 @@ def test_invalid_expert_mode_rejected():
     r = validate_video_config(_defn(WAN22_T2V), {"expert_mode": "bogus"})
     assert not r.ok
     assert any("expert_mode" in e for e in r.errors)
+
+
+# ── per-dataset frame override (DatasetItem.num_frames; 0 = inherit) ──────
+
+
+def test_per_dataset_frame_override_valid_and_inherit():
+    # LTX-2 is 8n+1: an explicit 9 is valid; 0 inherits the run setting (exempt).
+    cfg = {
+        "datasets": [
+            {"dataset_name": "clips", "num_frames": 9},
+            {"dataset_name": "stills", "num_frames": 0},
+        ]
+    }
+    assert validate_video_config(_defn(LTX2), cfg).ok
+
+
+def test_per_dataset_frame_override_invalid_rejected():
+    cfg = {"datasets": [{"dataset_name": "clips", "num_frames": 10}]}  # not 8n+1
+    r = validate_video_config(_defn(LTX2), cfg)
+    assert not r.ok
+    assert any("num_frames=10" in e and "clips" in e for e in r.errors)

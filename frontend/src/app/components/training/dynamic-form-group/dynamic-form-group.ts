@@ -329,6 +329,9 @@ export class DynamicFormGroupComponent {
   configHelp = input<Record<string, { tip: string; detail: string }>>({});
   /** Optional: override the auto-fetched dataset names (e.g. for project-scoped filtering) */
   datasetNames = input<string[] | null>(null);
+  /** Whether the selected model is a video model. Gates `video_only` nested
+   *  fields (e.g. per-dataset num_frames). Defaults true → fail-open. */
+  isVideoModel = input<boolean>(true);
 
   // External actions
   arrayItemAdded = output<{ key: string, schemaParam: SchemaNode | undefined }>();
@@ -589,6 +592,8 @@ export class DynamicFormGroupComponent {
   }
 
   shouldHideNestedField(schema: SchemaNode, itemGroup: AbstractControl | null): boolean {
+    // video_only fields (e.g. per-dataset num_frames) only show for video models
+    if (schema.video_only && !this.isVideoModel()) return true;
     // depends_on: boolean parent → hide when parent is false
     if (schema.depends_on) {
       const parentVal = itemGroup?.get(schema.depends_on)?.value;

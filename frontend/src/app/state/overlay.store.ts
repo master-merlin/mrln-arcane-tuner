@@ -25,6 +25,7 @@ export type ModalKind =
     | 'dataset-form' | 'rescan' | 'analyze' | 'cache'
     | 'project-dialog' | 'similar-images' | 'mask-preview' | 'crop-preview'
     | 'confirm' | 'version-edit' | 'pair-order' | 'pair-health'
+    | 'pair-role-chooser'
     | 'templates-library' | 'template-edit' | 'template-json' | 'job-config'
     | 'import-dataset' | 'export-options' | 'import-archive';
 

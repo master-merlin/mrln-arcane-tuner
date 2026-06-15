@@ -13,8 +13,11 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
+from app.api._path_guard import sanitize_filename, validate_path_within
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.api.schemas.dataset_schemas import (
+    ControlAssignRequest,
+    ControlAssignResponse,
     ControlGenerateBatchRequest,
     OrphansDeletedResponse,
     PairHealthResponse,
@@ -24,7 +27,13 @@ from app.api.schemas.dataset_schemas import (
     PairOrderResponse,
 )
 from app.core.dataset.control_batch import run_control_batch
-from app.core.dataset.control_helpers import compute_pair_health
+from app.core.dataset.control_helpers import (
+    CONTROL_IMAGE_EXTS,
+    CONTROL_SLOTS,
+    compute_pair_health,
+    control_slot_dir_name,
+    prepare_control_slot_path,
+)
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
@@ -81,6 +90,81 @@ async def delete_orphan_controls(name: str):
     deleted = await asyncio.to_thread(_delete)
     logger.info("orphan_controls_deleted", dataset_name=name, deleted=deleted)
     return {"deleted": deleted}
+
+
+@router.post(
+    "/datasets/{name}/control/assign", response_model=ControlAssignResponse,
+)
+async def assign_control(name: str, request: ControlAssignRequest):
+    """Re-match an existing on-disk control file to a target stem/slot.
+
+    Moves/renames ``src_rel_path`` (a file under a control slot dir) to
+    ``control{slot}/{target_stem}{ext}`` so it pairs with an existing
+    target, then refreshes that target's control metadata (emits the
+    ``entity.changed`` event). Powers the Pairs-manager "re-match orphan"
+    action — no re-upload needed. Files only move; no logical role order
+    is touched.
+    """
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    slot = request.slot
+    if not 1 <= slot <= len(CONTROL_SLOTS):
+        raise HTTPException(
+            status_code=400, detail=f"slot must be 1..{len(CONTROL_SLOTS)}",
+        )
+
+    target_stem = sanitize_filename((request.target_stem or "").strip())
+    if not target_stem:
+        raise HTTPException(status_code=400, detail="target_stem is required")
+    stems = {os.path.splitext(k)[0] for k in (dataset.media_metadata or {})}
+    if target_stem not in stems:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No target image with stem '{target_stem}' in '{name}'",
+        )
+
+    dataset_root = dataset.path
+    src_rel = (request.src_rel_path or "").replace("\\", "/").strip()
+    # Containment first (escapes → 403), then a structural slot/ext check.
+    validate_path_within(os.path.join(dataset_root, src_rel), dataset_root)
+    src_parts = src_rel.split("/")
+    if len(src_parts) != 2 or src_parts[0] not in CONTROL_SLOTS:
+        raise HTTPException(
+            status_code=400,
+            detail="src_rel_path must be a control-slot file (e.g. control/foo.jpg)",
+        )
+    ext = os.path.splitext(src_parts[1])[1].lower()
+    if ext not in CONTROL_IMAGE_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Control images must be one of {list(CONTROL_IMAGE_EXTS)}",
+        )
+    src_abs = os.path.join(dataset_root, src_rel)
+    if not os.path.isfile(src_abs):
+        raise HTTPException(
+            status_code=400, detail=f"Control file '{src_rel}' not found",
+        )
+
+    def _move() -> str:
+        # prepare_control_slot_path makes the slot dir and purges same-stem
+        # siblings of OTHER extensions in the destination so detection stays
+        # deterministic. Skip the move when src is already the destination.
+        dest_abs = prepare_control_slot_path(dataset_root, slot, target_stem, ext)
+        if os.path.abspath(src_abs) != os.path.abspath(dest_abs):
+            os.replace(src_abs, dest_abs)
+        return f"{control_slot_dir_name(slot)}/{target_stem}{ext}"
+
+    rel_path = await asyncio.to_thread(_move)
+    await asyncio.to_thread(
+        dataset_manager.refresh_control_metadata, name, target_stem,
+    )
+    logger.info(
+        "control_assigned",
+        dataset_name=name, src=src_rel, dest=rel_path, slot=slot,
+    )
+    return {"rel_path": rel_path, "target_stem": target_stem}
 
 
 @router.post(

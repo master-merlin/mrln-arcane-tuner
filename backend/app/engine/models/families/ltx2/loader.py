@@ -5,7 +5,7 @@ Components (diffusers / Lightricks ``LTX-2`` repo layout):
 - VAE (video): ``AutoencoderKLLTX2Video``            (subfolder ``vae``)
 - Text encoder: ``Gemma3ForConditionalGeneration``  (subfolder ``text_encoder``)
 - Tokenizer: ``AutoTokenizer``                       (subfolder ``tokenizer``)
-- Connectors: ``LTX2TextConnectors``                 (subfolder ``text_connectors``)
+- Connectors: ``LTX2TextConnectors``                 (subfolder ``connectors``)
 
 Audio components are LAZY / CONDITIONAL — only declared when audio training is
 requested AND the dataset supplies audio:
@@ -60,7 +60,7 @@ class Ltx2Loader(GenericComponentLoader):
             ComponentSpec(
                 key="connectors",
                 hf_class="diffusers.pipelines.ltx2.LTX2TextConnectors",
-                subfolder="text_connectors",
+                subfolder="connectors",
                 fallback_to_root=True,
             ),
             # -- Video VAE (5D [B, C, F, H, W]; spatial 32×, temporal 8×) --

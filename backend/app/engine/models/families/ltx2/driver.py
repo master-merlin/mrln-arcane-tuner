@@ -242,6 +242,14 @@ class Ltx2Driver(IModelDriver):
             # No connectors (e.g. a fake / video-only smoke path) — pass the
             # last hidden state through as the video embedding.
             return hidden_states[-1], None
+        # The connectors are a SECOND text-encoding stage. The pipeline's TE
+        # GPU-move only relocates ``get_text_encoders()`` (the Gemma3 — the
+        # connectors deliberately stay OUT of that dict so they aren't quantized
+        # or LoRA'd as a text encoder), so the connectors can still be CPU-
+        # resident here while the Gemma3 hidden states are on the GPU → device
+        # mismatch in ``text_proj_in``. Co-locate just-in-time (a no-op once
+        # resident) so the projection always runs on the hidden states' device.
+        self.connectors.to(hidden_states.device)
         out = self.connectors(
             text_encoder_hidden_states=hidden_states,
             attention_mask=attention_mask,

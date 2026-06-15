@@ -38,9 +38,14 @@ class LatentManager:
         else:
             self.scaling_factor = 1.0
 
-        # Spatial downscale: arch_params → isinstance fallback
+        # Spatial downscale: arch_params → VAE's own ratio → isinstance fallback
         if "vae_downsample_factor" in arch:
             self.spatial_downscale = int(arch["vae_downsample_factor"])
+        elif getattr(vae, "spatial_compression_ratio", None):
+            # Video VAEs (LTX-2 32×, WAN, QwenImage, …) expose their true spatial
+            # compression directly; trust it over the 8× image-VAE default so the
+            # latent-shape validator doesn't false-alarm on every sample.
+            self.spatial_downscale = int(vae.spatial_compression_ratio)
         else:
             # Flux2 VAEs (AutoencoderKLFlux2) apply standard 8× spatial
             # downscale.  The 2×2 patchify step is separate (pack_latents).

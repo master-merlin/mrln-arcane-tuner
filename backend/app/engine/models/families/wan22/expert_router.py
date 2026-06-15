@@ -65,6 +65,11 @@ class ExpertRouter:
         seed: RNG seed for deterministic step-selection draws (tests pin this).
         mc_samples: Monte-Carlo sample count for the ``p_high`` estimate.
         scale: Timestep scale (``1000`` for FlowMatchEuler).
+        pinned_expert: If ``"high"``/``"low"``, this is a SINGLE-expert run —
+            every optimizer step routes to that one expert and its timesteps are
+            truncated to that expert's boundary range. Bernoulli step-selection
+            and the ``p_high`` Monte-Carlo estimate are skipped entirely (there
+            is nothing to switch). ``None`` (default) = dual-expert routing.
     """
 
     def __init__(
@@ -76,6 +81,7 @@ class ExpertRouter:
         seed: int = 0,
         mc_samples: int = 100_000,
         scale: float = 1000.0,
+        pinned_expert: str | None = None,
     ) -> None:
         self.boundary_frac = float(boundary)
         self.scale = float(scale)
@@ -86,20 +92,33 @@ class ExpertRouter:
         self.mc_samples = int(mc_samples)
         self.logger = structlog.get_logger(self.__class__.__name__)
 
+        pinned = pinned_expert.lower() if pinned_expert else None
+        if pinned is not None and pinned not in (HIGH, LOW):
+            raise ValueError(
+                f"pinned_expert must be 'high'/'low'/None, got {pinned_expert!r}"
+            )
+        self.pinned_expert: str | None = pinned
+
         # Deterministic CPU generator for the Bernoulli step-selection draws.
         # Kept separate from the (config-driven) timestep sampling so resuming
         # only needs to persist/restore THIS generator's state.
         self._seed = int(seed)
         self._step_rng = torch.Generator(device="cpu").manual_seed(self._seed)
 
-        # Estimate + cache p_high once.
-        self.p_high: float = self._estimate_p_high()
-
         # Per-interval-block decision cache: block_index -> "high"|"low".
         self._block_decisions: dict[int, str] = {}
-        # Active expert for the CURRENT optimizer step (advanced by the driver
-        # hook). Initialized to the decision for block 0.
-        self._active_expert: str = self._decide_block(0)
+
+        if self.pinned_expert is not None:
+            # Single-expert: no switching, no MC estimate. p_high is degenerate
+            # (1.0 for high-only, 0.0 for low-only) purely for logging/state.
+            self.p_high = 1.0 if self.pinned_expert == HIGH else 0.0
+            self._active_expert: str = self.pinned_expert
+        else:
+            # Estimate + cache p_high once, then seed the active expert.
+            self.p_high = self._estimate_p_high()
+            # Active expert for the CURRENT optimizer step (advanced by the
+            # driver hook). Initialized to the decision for block 0.
+            self._active_expert = self._decide_block(0)
 
         self.logger.info(
             "expert_router_init",
@@ -107,6 +126,7 @@ class ExpertRouter:
             switch_interval=self.switch_interval,
             mode=self.mode,
             p_high=round(self.p_high, 5),
+            pinned_expert=self.pinned_expert,
         )
 
     # ── p_high estimation (Monte-Carlo, cached once) ──────────────────────
@@ -158,10 +178,14 @@ class ExpertRouter:
     def choose_expert(self, optimizer_step: int) -> str:
         """Return the expert (``"high"``/``"low"``) for ``optimizer_step``.
 
-        Deterministic given the seed: step ``s`` belongs to interval block
+        Pinned (single-expert) runs always return the pinned expert. Otherwise
+        deterministic given the seed: step ``s`` belongs to interval block
         ``s // switch_interval``, and every step in a block shares that block's
         single Bernoulli draw.
         """
+        if self.pinned_expert is not None:
+            self._active_expert = self.pinned_expert
+            return self.pinned_expert
         block_index = int(optimizer_step) // self.switch_interval
         decision = self._decide_block(block_index)
         self._active_expert = decision
@@ -253,6 +277,7 @@ class ExpertRouter:
             "boundary_frac": self.boundary_frac,
             "switch_interval": self.switch_interval,
             "active_expert": self._active_expert,
+            "pinned_expert": self.pinned_expert,
             "rng_state": self._step_rng.get_state(),
             "block_decisions": dict(self._block_decisions),
         }
@@ -261,6 +286,9 @@ class ExpertRouter:
         """Restore router state saved by :meth:`state_dict`."""
         self._seed = int(state.get("seed", self._seed))
         self.p_high = float(state.get("p_high", self.p_high))
+        if "pinned_expert" in state:
+            pinned = state["pinned_expert"]
+            self.pinned_expert = str(pinned).lower() if pinned else None
         self._active_expert = str(state.get("active_expert", self._active_expert))
         self._block_decisions = {
             int(k): str(v) for k, v in state.get("block_decisions", {}).items()

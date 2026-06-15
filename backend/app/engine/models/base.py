@@ -1036,10 +1036,19 @@ class BaseTrainingConfig(BaseModel):
             "step": 0.1,
         },
     )
+    expert_mode: Literal["both", "high", "low"] = Field(
+        "both",
+        description=(
+            "Which WAN 2.2 experts to train: both (dual, default) or a single "
+            "noise expert (high or low) — single-expert loads ONE transformer, "
+            "halving VRAM (ai-toolkit style)"
+        ),
+        json_schema_extra={"group": "VIDEO"},
+    )
     expert_swap_mode: Literal["auto", "swap", "resident"] = Field(
         "auto",
         description="Dual-expert placement: auto, swap (1 expert on GPU + pinned CPU) or resident (both on GPU)",
-        json_schema_extra={"group": "VIDEO"},
+        json_schema_extra={"group": "VIDEO", "depends_on": "expert_mode:both"},
     )
     expert_switch_interval: int = Field(
         1,

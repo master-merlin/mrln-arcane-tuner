@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 
 from app.engine.models.families.wan_shared.driver_base import WanDriverBase
-from app.engine.models.families.wan22.expert_router import HIGH, ExpertRouter
+from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
 
 # Default expert boundaries (timestep fraction in [0, 1]). T2V≈0.875, I2V≈0.9.
 DEFAULT_BOUNDARY_T2V = 0.875
@@ -54,6 +54,8 @@ class Wan22Driver(WanDriverBase):
         self.transformer_low: nn.Module | None = None
         self._active_expert: str = HIGH
         self.router: ExpertRouter | None = None
+        # "both" (dual) | "high" | "low" — set by the trainer before loading.
+        self.expert_mode: str = "both"
 
         arch = getattr(definition, "architecture_params", {}) or {}
         default_boundary = DEFAULT_BOUNDARY_I2V if self.is_i2v else DEFAULT_BOUNDARY_T2V
@@ -63,19 +65,40 @@ class Wan22Driver(WanDriverBase):
     # ── Component wiring ──────────────────────────────────────────────────
 
     def assign_components(self, components: dict[str, Any]) -> None:
-        """Wire both experts. ``unet`` = high expert, ``unet_low`` = low expert."""
+        """Wire the expert(s) per ``expert_mode``.
+
+        - ``both``: ``unet`` = high expert, ``unet_low`` = low expert (active high).
+        - ``high``: ``unet`` = high expert, low = ``None`` (active high).
+        - ``low``: the loader put ``transformer_2/`` under ``unet`` → that IS the
+          low expert; high = ``None`` (active low). The single loaded transformer
+          is the only one resident, halving VRAM.
+        """
         super().assign_components(components)
-        # super() set self.transformer = components["unet"] (the high expert).
-        self.transformer_high = components.get("unet")
-        self.transformer_low = components.get("unet_low")
-        # Start with the high expert active (the generic loop's .train() target).
-        self._set_active(HIGH)
+        # super() set self.transformer = components["unet"] (the loaded primary).
+        if self.expert_mode == "low":
+            self.transformer_low = components.get("unet")
+            self.transformer_high = None
+            self._set_active(LOW)
+        elif self.expert_mode == "high":
+            self.transformer_high = components.get("unet")
+            self.transformer_low = None
+            self._set_active(HIGH)
+        else:  # both
+            self.transformer_high = components.get("unet")
+            self.transformer_low = components.get("unet_low")
+            self._set_active(HIGH)
         self.logger.info(
             "wan22_experts_assigned",
+            expert_mode=self.expert_mode,
             has_high=self.transformer_high is not None,
             has_low=self.transformer_low is not None,
+            active=self._active_expert,
             boundary=self.boundary,
         )
+
+    def configure_expert_mode(self, mode: str) -> None:
+        """Set ``expert_mode`` (``both``/``high``/``low``) before loading."""
+        self.expert_mode = str(mode or "both").lower()
 
     def _expert_model(self, expert: str) -> nn.Module | None:
         return self.transformer_high if expert == HIGH else self.transformer_low

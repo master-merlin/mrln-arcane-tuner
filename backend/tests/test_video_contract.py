@@ -151,3 +151,30 @@ def test_image_model_rejects_audio_but_no_derive():
     r = validate_video_config(_defn(SDXL), {})
     assert r.ok and r.derived == {}
     assert not validate_video_config(_defn(SDXL), {"train_audio": True}).ok
+
+
+# ── expert_mode (single-expert / high-low-noise-only) ─────────────────────
+
+
+def test_expert_mode_both_is_universally_ok():
+    # Default "both" is valid on every model (dual, single-transformer, image).
+    for mid in (WAN22_T2V, WAN21_T2V, SDXL):
+        assert validate_video_config(_defn(mid), {"expert_mode": "both"}).ok
+
+
+def test_single_expert_allowed_on_dual_model():
+    assert validate_video_config(_defn(WAN22_T2V), {"expert_mode": "high"}).ok
+    assert validate_video_config(_defn(WAN22_T2V), {"expert_mode": "low"}).ok
+
+
+def test_single_expert_rejected_on_single_transformer_model():
+    # WAN 2.1 is a video model but NOT dual-expert → high/low is a hard error.
+    r = validate_video_config(_defn(WAN21_T2V), {"expert_mode": "high"})
+    assert not r.ok
+    assert any("single transformer" in e.lower() for e in r.errors)
+
+
+def test_invalid_expert_mode_rejected():
+    r = validate_video_config(_defn(WAN22_T2V), {"expert_mode": "bogus"})
+    assert not r.ok
+    assert any("expert_mode" in e for e in r.errors)

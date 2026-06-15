@@ -133,6 +133,11 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     ("train_audio", "has_audio", "this model has no audio modality"),
     ("audio_loss_weight", "has_audio", "this model has no audio modality"),
     (
+        "expert_mode",
+        "dual_expert",
+        "single-transformer model — no expert routing",
+    ),
+    (
         "expert_swap_mode",
         "dual_expert",
         "single-transformer model — no expert routing",

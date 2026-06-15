@@ -139,6 +139,20 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             "This model has no audio modality — turn off 'train_audio'."
         )
 
+    # Single-expert (high/low-noise-only) training needs a dual-expert MoE model.
+    # ``both`` is the universal default; high/low on a single-transformer model
+    # is rejected hard (rather than silently ignored) so the mistake is visible.
+    expert_mode = str(config.get("expert_mode", "both") or "both").lower()
+    if expert_mode not in ("both", "high", "low"):
+        report.errors.append(
+            f"expert_mode={expert_mode!r} is invalid — use 'both', 'high', or 'low'."
+        )
+    elif expert_mode != "both" and not profile.dual_expert:
+        report.errors.append(
+            "This model has a single transformer — 'expert_mode' must be 'both'. "
+            "High/low-noise-only training requires a dual-expert (MoE) model."
+        )
+
     if not profile.is_video:
         # Image model: video knobs are inert (the data path keeps stills at F=1);
         # nothing to derive or further validate.

@@ -48,24 +48,38 @@ class Wan22Trainer(GenericTrainingPipeline):
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:
+        self.expert_mode = str(self.config.get("expert_mode", "both") or "both").lower()
         self.driver = Wan22Driver(self.definition, self.device)
-        self.loader = Wan22Loader(self.device)
+        self.driver.configure_expert_mode(self.expert_mode)
+        self.loader = Wan22Loader(self.device, expert_mode=self.expert_mode)
         self.saver = Wan22Saver(mode=self.driver.mode)
         self._build_router()
 
     def _build_router(self) -> ExpertRouter:
-        """Construct + attach the ExpertRouter from config + driver boundary."""
+        """Construct + attach the ExpertRouter from config + driver boundary.
+
+        Single-expert runs (``expert_mode`` high/low) build a PINNED router — it
+        always routes to that one expert and truncates its timesteps to the
+        expert's boundary range — and force ``resident`` placement (only one
+        transformer is loaded, so there is nothing to swap).
+        """
         switch_interval = int(self.config.get("expert_switch_interval", 1))
         seed = int(self.config.get("seed", 0) or 0)
+        mode = getattr(self, "expert_mode", "both")
+        pinned = None if mode == "both" else mode
         router = ExpertRouter(
             boundary=self.driver.boundary,
             switch_interval=switch_interval,
             timestep_cfg=self.config,
             seed=seed,
+            pinned_expert=pinned,
         )
         self.expert_router = router
         self.driver.set_router(router)
-        self.driver.configure_swap_mode(self.config.get("expert_swap_mode", "resident"))
+        swap = (
+            "resident" if pinned else self.config.get("expert_swap_mode", "resident")
+        )
+        self.driver.configure_swap_mode(swap)
         return router
 
     # ── Dual LoRA injection ──────────────────────────────────────────────
@@ -82,6 +96,13 @@ class Wan22Trainer(GenericTrainingPipeline):
 
         # 1. Base PEFT on the active/primary expert (high by default).
         super()._apply_peft()
+
+        # Single-expert: only ONE transformer is loaded — nothing more to wrap,
+        # collect, checkpoint, or save. The base wrapped the resident expert;
+        # the other slot is intentionally None (see assign_components).
+        if getattr(self, "expert_mode", "both") != "both":
+            self.logger.info("wan22_single_expert_peft", expert=self.expert_mode)
+            return
 
         # 2. Wrap the inactive expert with the SAME LoRA config.
         driver: Wan22Driver = self.driver  # type: ignore[assignment]

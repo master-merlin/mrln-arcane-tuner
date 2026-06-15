@@ -187,6 +187,19 @@ interface CheckpointInspectResponse {
           }
       }
 
+      <!-- String array (e.g. control_images): comma-separated paths bound to a
+           string[] control. A flat text mirror (signal) keeps native typing
+           free of cursor-fights; parse to the array happens on change/blur,
+           and external setValue() syncs back via valueChanges. -->
+      @if (isStringArray()) {
+          <input [type]="'text'"
+                 [value]="stringArrayText()"
+                 (change)="onStringArrayChange($event)"
+                 [attr.data-testid]="'config-input-' + fieldKey()"
+                 placeholder="path/to/image.png, path/to/other.png"
+                 class="input mono disabled:opacity-50 disabled:cursor-not-allowed">
+      }
+
       <!-- Nested Object Placeholder -->
       @if (schema().type === 'object') {
           <div class="pl-4 border-l-2 border-surface-mid space-y-4 py-2">
@@ -227,6 +240,14 @@ export class DynamicFormFieldComponent implements OnInit {
    */
   sciValue = signal<unknown>(null);
 
+  /**
+   * Text mirror of a `string[]` control (e.g. control_images), shown as
+   * comma-separated values. Seeded in ngOnInit and re-synced on external
+   * setValue() (Load config / reset) via valueChanges; user edits flow the
+   * other way through {@link onStringArrayChange}.
+   */
+  stringArrayText = signal<string>('');
+
   // Browse Dialog State
   browseActive = signal<boolean>(false);
   browsePath = signal<string>('');
@@ -239,6 +260,12 @@ export class DynamicFormFieldComponent implements OnInit {
       this.control().valueChanges
         .pipe(takeUntilDestroyed(this.destroyRef))
         .subscribe((v) => this.sciValue.set(v));
+    }
+    if (this.isStringArray()) {
+      this.stringArrayText.set(this.joinStringArray(this.control().value));
+      this.control().valueChanges
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe((v) => this.stringArrayText.set(this.joinStringArray(v)));
     }
   }
 
@@ -301,6 +328,32 @@ export class DynamicFormFieldComponent implements OnInit {
 
   isString(): boolean {
     return this.schema().type === 'string' && !this.schema().input_type?.includes('dataset');
+  }
+
+  /**
+   * A plain `string[]` field (e.g. control_images) — rendered as a
+   * comma-separated text input. Excludes the specialised `layer_checklist`
+   * arrays (those are handled by the parent group's custom card).
+   */
+  isStringArray(): boolean {
+    const s = this.schema();
+    return s.type === 'array' && s.items?.type === 'string' && s.ui_type !== 'layer_checklist';
+  }
+
+  /** Render a `string[]` (or legacy '' / null seed) as comma-separated text. */
+  private joinStringArray(value: unknown): string {
+    if (Array.isArray(value)) return value.join(', ');
+    return typeof value === 'string' ? value : '';
+  }
+
+  /** Parse comma-separated text back to a trimmed, empty-stripped `string[]`. */
+  onStringArrayChange(event: Event): void {
+    const arr = (event.target as HTMLInputElement).value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    this.control().setValue(arr);
+    this.control().markAsDirty();
   }
 
   getFilteredEnumOptions() {

@@ -100,6 +100,8 @@ class Ltx2Driver(IModelDriver):
         # the connector→caption-projection contract).
         self.audio_in_channels: int = 128
         self.caption_channels: int = 3840
+        self.audio_sampling_rate: int = 16000
+        self._audio_mel = None  # lazily-built AudioMelExtractor (audio-on runs)
         self._latent_shape: tuple[int, int, int] | None = None  # (F, H, W)
 
     # --- Phase 1: Loading & Component Access ---
@@ -126,6 +128,7 @@ class Ltx2Driver(IModelDriver):
         self.frame_rate = float(arch.get("video.frame_rate", 24.0))
         self.audio_in_channels = int(arch.get("transformer.audio_in_channels", 128))
         self.caption_channels = int(arch.get("transformer.caption_channels", 3840))
+        self.audio_sampling_rate = int(arch.get("audio.sampling_rate", 16000))
 
         # Patch sizes come from the transformer config (default 1×1 for LTX-2).
         cfg = getattr(self.transformer, "config", None)
@@ -339,32 +342,102 @@ class Ltx2Driver(IModelDriver):
         divides by the scale), RoPE needs the latent ``num_frames/height/width``
         + ``fps``, and it returns a ``(video, audio)`` tuple.
 
-        For VIDEO-ONLY training we feed a single zero audio token and set
-        ``isolate_modalities=True`` so the audio stream cannot influence the
-        video prediction (proven inert by a GPU isolation smoke); we keep only
-        the video output.  The audio-on path is wired in a later phase.
+        VIDEO-ONLY (``train_audio`` off, or a clip with no audio latents): feed a
+        single zero audio token and set ``isolate_modalities=True`` so the audio
+        stream cannot influence the video prediction; keep only the video output.
+
+        AUDIO-ON (``train_audio`` and ``batch["audio_clean"]`` present): noise the
+        clean audio latents on the SAME timestep, run the joint forward with
+        ``isolate_modalities=False``, and stash the audio prediction/target/mask
+        into ``batch`` for :meth:`Ltx2Trainer._compute_step_loss` to combine.
         """
         video_emb = self._video_embeddings(text_embeddings)
-        audio_h, audio_emb = self._dummy_audio_inputs(noisy_input, video_emb)
         f, h, w = self._latent_grid()
         fps = self._batch_frame_rate(batch)
 
+        audio_clean = batch.get("audio_clean") if self.train_audio else None
+
+        if audio_clean is None:
+            # Video-only: minimal isolated dummy audio.
+            audio_h, audio_emb = self._dummy_audio_inputs(noisy_input, video_emb)
+            output = self.transformer(
+                hidden_states=noisy_input,
+                audio_hidden_states=audio_h,
+                encoder_hidden_states=video_emb,
+                audio_encoder_hidden_states=audio_emb,
+                timestep=timesteps,  # raw [0, 1000] flow-match scale
+                sigma=timesteps,  # LTX-2.3 prompt modulation (harmless when unused)
+                num_frames=f,
+                height=h,
+                width=w,
+                fps=fps,
+                audio_num_frames=1,
+                isolate_modalities=True,  # no audio↔video leakage
+                return_dict=False,
+            )
+            return output[0] if isinstance(output, (tuple, list)) else output
+
+        # Joint audio + video: noise the audio stream on the shared timestep.
+        audio_clean = audio_clean.to(device=noisy_input.device, dtype=noisy_input.dtype)
+        audio_emb = self._audio_embeddings(text_embeddings, video_emb)
+        audio_noise = torch.randn_like(audio_clean)
+        audio_noisy = self.add_noise(audio_clean, audio_noise, timesteps)
+        audio_target = self.compute_target(audio_clean, audio_noise, timesteps)
+
         output = self.transformer(
             hidden_states=noisy_input,
-            audio_hidden_states=audio_h,
+            audio_hidden_states=audio_noisy,
             encoder_hidden_states=video_emb,
             audio_encoder_hidden_states=audio_emb,
-            timestep=timesteps,  # raw [0, 1000] flow-match scale
-            sigma=timesteps,  # LTX-2.3 prompt modulation (harmless when unused)
+            timestep=timesteps,
+            sigma=timesteps,
             num_frames=f,
             height=h,
             width=w,
             fps=fps,
-            audio_num_frames=1,
-            isolate_modalities=True,  # video-only: no audio↔video leakage
+            audio_num_frames=audio_noisy.shape[1],
+            isolate_modalities=False,  # joint: audio↔video cross-attention on
             return_dict=False,
         )
-        return output[0] if isinstance(output, (tuple, list)) else output
+        video_pred, audio_pred = output[0], output[1]
+        # Hand the audio terms to the trainer's joint-loss step (reads batch[...]).
+        batch["audio_pred"] = audio_pred
+        batch["audio_target"] = audio_target
+        if batch.get("audio_mask") is None:
+            batch["audio_mask"] = torch.ones(
+                audio_clean.shape[0], device=audio_clean.device,
+            )
+        return video_pred
+
+    @staticmethod
+    def _audio_embeddings(text_embeddings: Any, video_emb: torch.Tensor) -> torch.Tensor:
+        """Audio text embedding (connector's 2nd output, cached in ``pooled``).
+
+        Falls back to a zero tensor shaped like the video embedding when absent
+        so a malformed cache degrades to "no audio prompt" rather than crashing.
+        """
+        pooled = getattr(text_embeddings, "pooled", None)
+        return pooled if pooled is not None else torch.zeros_like(video_emb)
+
+    def encode_audio_clean(
+        self, waveform: torch.Tensor, sample_rate: int,
+    ) -> torch.Tensor:
+        """Waveform ``[B, C, N]`` → clean (packed + normalized) audio latents.
+
+        The flow-match TARGET for the audio stream.  Builds the log-mel
+        spectrogram with the exact LTX-2 transform, VAE-encodes, packs, and
+        normalizes (see :mod:`.audio_mel`).  Used by the data/caching layer.
+        """
+        from .audio_mel import AudioMelExtractor, encode_clean_audio_latents
+
+        if self._audio_mel is None:
+            self._audio_mel = AudioMelExtractor(
+                sample_rate=self.audio_sampling_rate,
+            ).to(self.device)
+        mel = self._audio_mel.waveform_to_mel(
+            waveform.to(self.device), sample_rate,
+        )
+        return encode_clean_audio_latents(self.audio_vae, mel)
 
     def _latent_grid(self) -> tuple[int, int, int]:
         """Post-patch latent ``(F, H, W)`` recorded by :meth:`prepare_latents`.

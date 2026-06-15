@@ -6,7 +6,6 @@ output directory resolution, event broadcasting, and error handling.
 """
 import os
 import asyncio
-import signal
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -224,9 +223,9 @@ class TestStopJob:
         with pytest.raises(ValueError, match="Job not found"):
             mgr.stop_job("nonexistent")
 
-    @patch("app.core.job_manager.os.kill")
-    def test_stop_running_job_sends_sigterm(self, mock_kill):
-        """stop_job on RUNNING job should call os.kill with SIGTERM."""
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345, 67890])
+    def test_stop_running_job_kills_process_tree(self, mock_tree):
+        """stop_job on a RUNNING job kills the whole tree (launcher + worker)."""
         mgr = JobManager()
         job = mgr.create_job("flux/dev", _make_config())
         job.status = JobStatus.RUNNING
@@ -234,45 +233,133 @@ class TestStopJob:
 
         mgr.stop_job(job.id)
 
-        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+        mock_tree.assert_called_once_with(12345)
         assert job.status == JobStatus.STOPPED
         assert job.finished_at is not None
+        assert job.pid is None  # cleared so a stale watchdog can't re-find it
 
-    @patch("app.core.job_manager.os.kill", side_effect=ProcessLookupError)
-    def test_stop_missing_process_sets_failed(self, mock_kill):
-        """stop_job when process already exited should set FAILED."""
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[])
+    def test_stop_already_dead_job_marks_stopped(self, mock_tree):
+        """stop_job on a job whose process already exited (stale 'running')
+        still resolves to STOPPED — one click clears the stuck card."""
         mgr = JobManager()
         job = mgr.create_job("flux/dev", _make_config())
         job.status = JobStatus.RUNNING
-        job.pid = 99999
+        job.pid = 99999  # already gone → tree-kill finds nothing
 
         mgr.stop_job(job.id)
 
-        assert job.status == JobStatus.FAILED
-        assert job.error == "Process not found"
+        mock_tree.assert_called_once_with(99999)
+        assert job.status == JobStatus.STOPPED
+        assert job.error is None  # a user stop is not a failure
 
-    def test_stop_non_running_job_is_noop(self):
-        """stop_job on PENDING job without PID should not crash."""
+    @patch.object(JobManager, "_terminate_process_tree")
+    def test_stop_non_running_job_is_noop(self, mock_tree):
+        """stop_job on a PENDING job should not kill anything or change state."""
         mgr = JobManager()
         job = mgr.create_job("flux/dev", _make_config())
-        # job.status is PENDING, job.pid is None — no kill should be attempted
+        # job.status is PENDING — no kill should be attempted
         mgr.stop_job(job.id)
-        # Status should remain PENDING since the condition wasn't met
+        mock_tree.assert_not_called()
         assert job.status == JobStatus.PENDING
 
-    @patch("app.core.job_manager.os.kill")
-    def test_stop_paused_job_sends_sigterm(self, mock_kill):
-        """stop_job on PAUSED job should call os.kill with SIGTERM."""
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345])
+    def test_stop_paused_job_kills_process_tree(self, mock_tree):
+        """stop_job on a PAUSED job kills the tree too."""
         mgr = JobManager()
         job = mgr.create_job("flux/dev", _make_config())
         job.status = JobStatus.PAUSED
         job.pid = 12345
 
         mgr.stop_job(job.id)
-
-        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+        mock_tree.assert_called_once_with(12345)
         assert job.status == JobStatus.STOPPED
         assert job.finished_at is not None
+
+
+class TestProcessTreeLifecycle:
+    """Tree-kill + worker-resolution + death-detection (the zombie / stale-UI fixes)."""
+
+    def test_terminate_process_tree_kills_parent_and_descendants(self):
+        parent = MagicMock()
+        parent.pid = 100
+        child = MagicMock()
+        child.pid = 200
+        parent.children.return_value = [child]
+
+        with patch("psutil.Process", return_value=parent) as mock_proc, \
+             patch("psutil.wait_procs", return_value=([], [])) as mock_wait:
+            killed = JobManager._terminate_process_tree(100)
+
+        mock_proc.assert_called_once_with(100)
+        parent.children.assert_called_once_with(recursive=True)
+        # Both the worker child AND the launcher are terminated.
+        child.terminate.assert_called_once()
+        parent.terminate.assert_called_once()
+        mock_wait.assert_called_once()
+        assert set(killed) == {100, 200}
+
+    def test_terminate_process_tree_kills_stragglers(self):
+        parent = MagicMock()
+        parent.pid = 100
+        parent.children.return_value = []
+        with patch("psutil.Process", return_value=parent), \
+             patch("psutil.wait_procs", return_value=([], [parent])):
+            JobManager._terminate_process_tree(100)
+        parent.terminate.assert_called_once()
+        parent.kill.assert_called_once()  # SIGTERM didn't take → SIGKILL
+
+    def test_terminate_process_tree_noop_for_none(self):
+        assert JobManager._terminate_process_tree(None) == []
+        assert JobManager._terminate_process_tree(0) == []
+
+    def test_resolve_worker_pid_returns_trainer_child(self):
+        parent = MagicMock()
+        parent.pid = 100
+        worker = MagicMock()
+        worker.pid = 200
+        unrelated = MagicMock()
+        unrelated.pid = 300
+        parent.children.return_value = [unrelated, worker]
+
+        def is_trainer(pid, job_id):
+            return pid == 200  # only the worker matches this job
+
+        with patch("psutil.Process", return_value=parent), \
+             patch.object(JobManager, "_is_trainer_process", side_effect=is_trainer):
+            assert JobManager._resolve_worker_pid(100, "job-x") == 200
+
+    def test_resolve_worker_pid_falls_back_to_launcher(self):
+        parent = MagicMock()
+        parent.pid = 100
+        parent.children.return_value = []
+        with patch("psutil.Process", return_value=parent), \
+             patch.object(JobManager, "_is_trainer_process", return_value=False):
+            # No trainer child (POSIX / single-process) → watch the launcher itself.
+            assert JobManager._resolve_worker_pid(100, "job-x") == 100
+
+    def test_trainer_tree_dead_launcher_gone(self):
+        mgr = JobManager()
+        with patch.object(JobManager, "_is_pid_alive", return_value=False):
+            assert mgr._trainer_tree_dead(100, 200) is True
+
+    def test_trainer_tree_dead_worker_killed_launcher_lingers(self):
+        """THE stale-UI case: launcher alive, worker hard-killed → dead."""
+        mgr = JobManager()
+        alive = {100: True, 200: False}
+        with patch.object(JobManager, "_is_pid_alive", side_effect=lambda p: alive.get(p, False)):
+            assert mgr._trainer_tree_dead(100, 200) is True
+
+    def test_trainer_tree_alive_when_both_running(self):
+        mgr = JobManager()
+        with patch.object(JobManager, "_is_pid_alive", return_value=True):
+            assert mgr._trainer_tree_dead(100, 200) is False
+
+    def test_trainer_tree_single_process_tracks_launcher(self):
+        """Single-process layout (worker_pid == launcher): rely on launcher liveness."""
+        mgr = JobManager()
+        with patch.object(JobManager, "_is_pid_alive", return_value=True):
+            assert mgr._trainer_tree_dead(100, 100) is False
 
 
 # ── Output Directory Resolution ──────────────────────────────────────────

@@ -19,6 +19,7 @@ import structlog
 import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
+from app.engine.core.text_encoding import TextEncoderOutput
 
 from .driver import Ltx2Driver
 from .loader import Ltx2Loader
@@ -69,6 +70,116 @@ class Ltx2Trainer(GenericTrainingPipeline):
         self.transformer = new_model
         self.components["unet"] = new_model
         self.driver.transformer = new_model
+
+    # ── Text-embedding cache (warm before the 12B Gemma3 TE is offloaded) ──
+
+    def _pre_cache_text_embeddings(self) -> None:
+        """Warm the in-memory text-embedding cache before TE offload.
+
+        ``run_trainer`` runs ``_pre_cache_text_embeddings`` → ``_offload_text_encoders``;
+        the base pre-cache is a no-op, so without this override the 12B Gemma3
+        encoder is offloaded with an EMPTY cache and the first training step has
+        no way to produce text embeddings (``encode_text`` → ``None`` →
+        ``video_emb`` ``None`` → crash in ``_dummy_audio_inputs``).
+
+        Each unique caption (the exact trigger/prefix/dropout composites the
+        train loop builds — see :meth:`_build_caption_hints`) is encoded once and
+        the FULL ``(video embeddings, audio pooled, attention mask)`` triple is
+        cached on CPU; LTX-2's joint forward consumes the audio ``pooled`` too,
+        so a video-only tensor cache would not suffice once audio is enabled.
+        """
+        if not self.config.get("cache_text_embeddings", True):
+            return
+        if self.driver.text_encoder is None:
+            return
+
+        dtype = self._resolve_loading_dtype()
+        captions = [c for c in self._build_caption_hints() if c not in self.text_cache]
+        total = len(captions)
+        if not total:
+            self.logger.info("ltx2_text_cache_complete", cached=len(self.text_cache))
+            return
+
+        if getattr(self, "_log_writer", None):
+            self._log_writer.status("Caching Text Embeddings (0%)")
+
+        batch_size = 4
+        with torch.no_grad():
+            for i in range(0, total, batch_size):
+                chunk = captions[i : i + batch_size]
+                out = self.driver.encode_text(chunk, dtype)
+                for j, cap in enumerate(chunk):
+                    self.text_cache[cap] = self._slice_te_output(out, j)
+                if getattr(self, "_log_writer", None):
+                    pct = round(min(i + batch_size, total) / total * 100)
+                    self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
+
+        self.logger.info(
+            "ltx2_text_cache_complete",
+            cached=len(self.text_cache),
+            newly_encoded=total,
+        )
+
+    def encode_text(
+        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None
+    ) -> TextEncoderOutput:
+        """Reassemble a batched :class:`TextEncoderOutput` from the warm cache.
+
+        Caching off → encode directly via the driver. A cache miss while the TE
+        is still resident is encoded on the fly (and cached); a miss AFTER the
+        TE has been offloaded is a hard error (the pre-cache should have covered
+        every caption the train loop produces).
+        """
+        if not self.config.get("cache_text_embeddings", True):
+            return self.driver.encode_text(captions, dtype)
+
+        embs: list[torch.Tensor] = []
+        pooleds: list[torch.Tensor | None] = []
+        masks: list[torch.Tensor | None] = []
+        for cap in captions:
+            entry = self.text_cache.get(cap)
+            if entry is None:
+                if self.driver.text_encoder is None:
+                    raise RuntimeError(
+                        "Text encoder offloaded and caption not pre-cached: "
+                        f"{cap[:60]!r}"
+                    )
+                out = self.driver.encode_text([cap], dtype)
+                entry = self._slice_te_output(out, 0)
+                self.text_cache[cap] = entry
+            emb_c, pooled_c, mask_c = entry
+            embs.append(emb_c)
+            pooleds.append(pooled_c)
+            masks.append(mask_c)
+
+        embeddings = torch.cat(
+            [e.to(self.device, dtype=dtype) for e in embs], dim=0
+        )
+        pooled = None
+        if all(p is not None for p in pooleds):
+            pooled = torch.cat(
+                [p.to(self.device, dtype=dtype) for p in pooleds], dim=0
+            )
+        mask = None
+        if all(m is not None for m in masks):
+            mask = torch.cat([m.to(self.device) for m in masks], dim=0)
+        return TextEncoderOutput(
+            embeddings=embeddings, attention_mask=mask, pooled=pooled
+        )
+
+    @staticmethod
+    def _slice_te_output(
+        out: Any, j: int
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Extract item ``j`` of a TE batch as CPU ``(emb, pooled, mask)``."""
+        emb = (out.embeddings if hasattr(out, "embeddings") else out)[j : j + 1].cpu()
+        pooled = getattr(out, "pooled", None)
+        mask = getattr(out, "attention_mask", None)
+        return (
+            emb,
+            pooled[j : j + 1].cpu() if pooled is not None else None,
+            mask[j : j + 1].cpu() if mask is not None else None,
+        )
 
     # ── Joint audio + video loss ─────────────────────────────────────────
 

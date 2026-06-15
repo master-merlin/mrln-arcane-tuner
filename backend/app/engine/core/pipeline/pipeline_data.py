@@ -58,6 +58,27 @@ class PipelineDataMixin:
 
     # ── Prepare Data (shared) ────────────────────────────────────────────
 
+    def _video_bucket_manager_for(self, max_frames: int):
+        """Return a frame-ladder ``BucketManager`` capped at ``max_frames``.
+
+        ``None`` when the model has no frame rule (no temporal bucketing). The
+        cap of ``0`` falls back to the family default max. Results are cached
+        per cap so a per-dataset override builds its ladder only once.
+        """
+        if not self._video_frame_rule:
+            return None
+        from app.engine.components.bucketing import BucketManager as _BM
+
+        cap = int(max_frames) or _BM._default_max_frames(self._video_frame_rule)
+        cache = self._video_bm_cache
+        if cap not in cache:
+            ladder = _BM.frame_ladder(cap, self._video_frame_rule)
+            cache[cap] = BucketManager(
+                base_resolutions=self._video_resolutions,
+                frame_buckets=ladder,
+            )
+        return cache[cap]
+
     async def prepare_data(self):
         """Fetch datasets via API, build inventory with aspect-ratio bucketing."""
         self.logger.info("preparing_data")
@@ -90,22 +111,15 @@ class PipelineDataMixin:
         # Default target fps: native (None → use clip's own fps later).
         self._video_target_fps = self.config.get("target_fps") or None
         # Max frames a run is willing to train on (caps the frame ladder).
+        # This is the GENERAL setting; a dataset may override it (see below).
         self._video_num_frames = int(self.config.get("num_frames", 0) or 0)
-        self._video_bucket_manager = None
-        if self._video_frame_rule:
-            from app.engine.components.bucketing import (
-                BucketManager as _BM,
-            )
-
-            ladder = _BM.frame_ladder(
-                self._video_num_frames
-                or _BM._default_max_frames(self._video_frame_rule),
-                self._video_frame_rule,
-            )
-            self._video_bucket_manager = BucketManager(
-                base_resolutions=resolutions,
-                frame_buckets=ladder,
-            )
+        self._video_resolutions = resolutions
+        # Cache of frame-ladder BucketManagers keyed by max-frames cap, so a
+        # per-dataset override builds its ladder once and is reused.
+        self._video_bm_cache: dict[int, Any] = {}
+        self._video_bucket_manager = self._video_bucket_manager_for(
+            self._video_num_frames
+        )
 
         datasets_config = self.config.get("datasets", [])
         inventory: list[dict[str, Any]] = []
@@ -157,6 +171,19 @@ class PipelineDataMixin:
                 repeats = int(ds_config.get("num_repeats", 1))
                 prefix = ds_config.get("caption_prefix", "")
                 ignore_filter = ds_config.get("ignore_filter", False)
+
+                # Per-dataset frame override: 0 = inherit the run's general
+                # num_frames; >0 caps THIS dataset's clips at its own ladder.
+                # (Images in any dataset stay at F=1 regardless.)
+                ds_num_frames = int(ds_config.get("num_frames", 0) or 0)
+                ds_effective_frames = (
+                    ds_num_frames if ds_num_frames > 0 else self._video_num_frames
+                )
+                ds_bucket_manager = (
+                    self._video_bucket_manager_for(ds_effective_frames)
+                    if ds_num_frames > 0
+                    else self._video_bucket_manager
+                )
 
                 # Per-dataset masking config
                 ds_masking_enabled = bool(ds_config.get("masking_enabled", False))
@@ -326,15 +353,15 @@ class PipelineDataMixin:
                         bucketing_mode = self.config.get("bucketing_mode", "kohya")
                         if is_video:
                             # Temporal bucket: pick the largest frame bucket that
-                            # the trimmed clip can supply. Falls back to a single
-                            # requested frame count when no frame rule is set.
-                            if self._video_bucket_manager is not None:
-                                vbucket = (
-                                    self._video_bucket_manager.get_bucket_for_video(
-                                        w,
-                                        h,
-                                        available_frames,
-                                    )
+                            # the trimmed clip can supply, capped at this dataset's
+                            # effective frame count (override or inherited). Falls
+                            # back to a single requested frame count when no frame
+                            # rule is set.
+                            if ds_bucket_manager is not None:
+                                vbucket = ds_bucket_manager.get_bucket_for_video(
+                                    w,
+                                    h,
+                                    available_frames,
                                 )
                                 buckets = [vbucket]
                                 vid_target_frames = vbucket["frames"]
@@ -342,7 +369,7 @@ class PipelineDataMixin:
                                 sbucket = self.bucket_manager.get_bucket(w, h)
                                 vid_target_frames = max(
                                     min(
-                                        self._video_num_frames or 1,
+                                        ds_effective_frames or 1,
                                         available_frames or 1,
                                     ),
                                     1,

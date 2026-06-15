@@ -98,6 +98,21 @@ class DatasetItem(BaseModel):
         description="Number of times to repeat this dataset",
         json_schema_extra={"group": "CONCEPTS"},
     )
+    num_frames: int = Field(
+        0,
+        description=(
+            "Frames to use from each VIDEO in this dataset. 0 = inherit the "
+            "run's general Video setting; a value overrides it for this dataset "
+            "only (snapped to the model's frame rule). Images are always 1."
+        ),
+        json_schema_extra={
+            "group": "CONCEPTS",
+            "video_only": True,
+            "min": 0,
+            "max": 257,
+            "step": 1,
+        },
+    )
     ignore_filter: bool = Field(
         False,
         description="If True, use ALL images regardless of exclusions",

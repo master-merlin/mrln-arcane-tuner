@@ -43,6 +43,9 @@ export interface SchemaNode {
   depends_on?: string;
   disabled_if?: Record<string, unknown>;
   hidden_if?: Record<string, unknown>;
+  /** Show this field only for video models (gated on the model's is_video
+   *  capability). Used by per-dataset video knobs (e.g. num_frames). */
+  video_only?: boolean;
   /** backend name → schemes that backend supports (e.g. quantization). Values
    *  are usually a plain scheme list, but some schemas wrap them as `{schemes}`. */
   backend_map?: Record<string, string[] | { schemes?: string[] }>;

@@ -415,6 +415,7 @@ export interface TrainingSegment {
                             [schema]="prop.schema"
                             [rootSchema]="schema()"
                             [parentForm]="form"
+                            [isVideoModel]="isVideoModel()"
                             [currentBackend]="form.get('backend')?.value || 'local'"
                             [outputDir]="form.get('output_dir')?.value || 'outputs'"
                             [configHelp]="configHelp()"
@@ -547,6 +548,11 @@ export class TrainingDynamicConfigComponent {
    * so template re-evaluation is tracked on OnPush when capabilities load.
    */
   protected capabilities = signal<ModelCapabilities | null>(null);
+
+  /** True when the selected model is a video model — reuses the run-level
+   *  `num_frames` capability gate (is_video). Drives `video_only` per-dataset
+   *  fields in the dataset config. Fail-open (no descriptor → visible). */
+  protected isVideoModel = computed(() => !isFieldHidden(this.capabilities(), 'num_frames'));
 
   // VRAM estimation
   vramReport = signal<VRAMReport | null>(null);

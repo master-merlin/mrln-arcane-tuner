@@ -175,6 +175,19 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             f"{_first_ladder_values(profile.frame_rule)} …)."
         )
 
+    # Per-dataset frame overrides (DatasetItem.num_frames) must also satisfy the
+    # Nn+1 rule. 0 = inherit the run-level num_frames (exempt); >0 is validated.
+    for ds in config.get("datasets", []) or []:
+        if not isinstance(ds, dict):
+            continue
+        ds_nf = _int_or_none(ds.get("num_frames")) or 0
+        if ds_nf and not profile.frame_ok(ds_nf):
+            report.errors.append(
+                f"Dataset '{ds.get('dataset_name', '?')}' num_frames={ds_nf} "
+                f"violates this model's frame rule '{profile.frame_rule}'. "
+                "Use 0 (inherit) or a valid value."
+            )
+
     # target_fps: 0 means "use native"; a set value far from native is rejected.
     fps = _to_float(config.get("target_fps"))
     if fps and profile.native_fps and abs(fps - profile.native_fps) > _FPS_TOL:

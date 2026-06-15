@@ -127,6 +127,7 @@ class _PixelPassthroughLatentManager:
         ids: list[str],
         cache_dirs: list[str] | None = None,
         source_paths: list[str] | None = None,
+        extra_keys: list[str] | None = None,
     ) -> torch.Tensor | None:
         """Always report a cache miss — pixel-space has no latent cache.
 
@@ -144,6 +145,7 @@ class _PixelPassthroughLatentManager:
         cache_dirs: list[str] | None = None,
         mirror_dir: str | None = None,
         source_paths: list[str] | None = None,
+        extra_keys: list[str] | None = None,
     ) -> torch.Tensor:
         """Return pixel values unchanged — no VAE encoding needed."""
         return image_batch
@@ -153,6 +155,7 @@ class _PixelPassthroughLatentManager:
         ids: list[str],
         cache_dirs: list[str],
         source_paths: list[str] | None = None,
+        extra_keys: list[str] | None = None,
     ) -> tuple[int, int, list[str]]:
         """Report all items as cached so pre-cache step is skipped."""
         n = len(ids)

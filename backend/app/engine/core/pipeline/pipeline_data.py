@@ -34,6 +34,25 @@ def _internal_api_headers() -> dict[str, str]:
     return {"X-Auth-Token": token} if token else {}
 
 
+def video_trim_extra_key(item: dict) -> str:
+    """Cache-filename discriminator for a clip's trim window ("" for images).
+
+    Folded into the latent-cache hash so two trims of the same source clip
+    (same spatial/temporal bucket, same cache dir) stay distinct. This MUST be
+    identical between batch building (:meth:`PipelineDataMixin._build_batch`)
+    and pre-caching (``PipelineCachingMixin._pre_cache_latents``) — otherwise a
+    pre-cached video latent is written under one name and looked up under
+    another, so it's silently re-encoded on-the-fly at train time (defeating
+    the pre-cache, and risking the VAE-fallback OOM the pre-cache exists to
+    avoid). Images return "" → byte-identical to the legacy image cache path.
+    """
+    if not item.get("is_video"):
+        return ""
+    ts = item.get("trim_start_s") or 0.0
+    te = item.get("trim_end_s")
+    return f"t{ts}-{te}"
+
+
 class PipelineDataMixin:
     """Dataset preparation, inventory building, and batch construction."""
 
@@ -569,9 +588,9 @@ class PipelineDataMixin:
                     h_flip=False,
                 )
                 images.append(clip)
-                # Trim window folds into the cache-file hash.
-                ts, te = item.get("trim_start_s") or 0.0, item.get("trim_end_s")
-                extra_keys.append(f"t{ts}-{te}")
+                # Trim window folds into the cache-file hash (shared helper so
+                # pre-caching computes the identical key).
+                extra_keys.append(video_trim_extra_key(item))
             else:
                 img = Image.open(img_path).convert("RGB")
 

@@ -32,6 +32,7 @@ def _video_driver() -> Ltx2Driver:
     drv.audio_in_channels = 128
     drv.caption_channels = 3840
     drv.frame_rate = 24.0
+    drv.train_audio = False
     drv._latent_shape = (3, 4, 5)
     return drv
 
@@ -63,6 +64,32 @@ def test_forward_pass_matches_joint_transformer_contract():
     # Video-only isolation so the dummy audio cannot leak into the video grad.
     assert call["isolate_modalities"] is True
     # Only the video prediction is returned.
+    assert torch.equal(out, noisy)
+
+
+def test_forward_pass_audio_on_runs_joint_and_stashes_audio_terms():
+    drv = _video_driver()
+    drv.train_audio = True
+    noisy = torch.zeros(2, 7, 128)
+    video_emb = torch.zeros(2, 11, 3840)
+    audio_emb = torch.ones(2, 11, 3840)  # connector audio output (pooled)
+    te = TextEncoderOutput(embeddings=video_emb, attention_mask=None, pooled=audio_emb)
+    audio_clean = torch.randn(2, 9, 128)
+    batch = {"audio_clean": audio_clean}
+
+    out = drv.forward_pass(noisy, torch.tensor([500.0, 250.0]), te, batch)
+    call = drv.transformer.calls[0]
+
+    # Joint path: cross-modal attention ON, real audio stream.
+    assert call["isolate_modalities"] is False
+    assert call["audio_hidden_states"].shape == (2, 9, 128)  # noised audio latents
+    assert torch.equal(call["audio_encoder_hidden_states"], audio_emb)
+    assert call["audio_num_frames"] == 9
+    # Audio loss terms handed to the trainer via the batch.
+    assert batch["audio_pred"].shape == (2, 9, 128)
+    assert batch["audio_target"].shape == (2, 9, 128)
+    assert batch["audio_mask"].shape == (2,)
+    # Still returns only the video prediction (output[0]).
     assert torch.equal(out, noisy)
 
 

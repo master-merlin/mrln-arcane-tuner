@@ -1846,7 +1846,11 @@ export class TrainingDynamicConfigComponent {
 
       for (const pKey in itemProps) {
         const pSchema = this.resolveSchema(itemProps[pKey]);
-        let defaultValue = pSchema.default !== undefined ? pSchema.default : '';
+        // Array-typed nested props (e.g. control_images: list[str]) must seed an
+        // array, not '' — otherwise the string[] field submits a bare string and
+        // backend `list[str]` validation rejects it.
+        const emptyDefault = pSchema.type === 'array' ? [] : '';
+        let defaultValue = pSchema.default !== undefined ? pSchema.default : emptyDefault;
 
         // Pick first enum value as default if currently empty
         if (pSchema.enum && pSchema.enum.length > 0 && (defaultValue === '' || defaultValue === undefined)) {

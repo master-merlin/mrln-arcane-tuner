@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient, withXhr } from '@angular/common/http';
+import { FormControl } from '@angular/forms';
 
 import { DynamicFormFieldComponent } from './dynamic-form-field';
 import { ToastService } from '../../../services/toast';
@@ -88,5 +89,71 @@ describe('DynamicFormFieldComponent — stepMin() spinner grid alignment', () =>
 
   it('returns null when there is no min', () => {
     expect(fieldWith({ type: 'integer', step: 10 }).stepMin()).toBeNull();
+  });
+});
+
+describe('DynamicFormFieldComponent — string[] field (control_images)', () => {
+  function fieldWith(schema: Record<string, unknown>, control: FormControl) {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      imports: [DynamicFormFieldComponent],
+      providers: [
+        provideHttpClient(withXhr()),
+        { provide: ToastService, useValue: {} },
+        { provide: RuntimeConfigService, useValue: { apiUrl: '', mediaBaseUrl: '' } },
+      ],
+    });
+    const fixture = TestBed.createComponent(DynamicFormFieldComponent);
+    fixture.componentRef.setInput('schema', schema);
+    fixture.componentRef.setInput('control', control);
+    fixture.componentRef.setInput('fieldKey', 'control_images');
+    return fixture;
+  }
+
+  const STR_ARRAY = { type: 'array', items: { type: 'string' }, title: 'Control Images' };
+
+  it('detects a plain string[] schema and renders the comma-separated input', () => {
+    const fixture = fieldWith(STR_ARRAY, new FormControl([]));
+    fixture.detectChanges();
+    const c = fixture.componentInstance;
+    expect(c.isStringArray()).toBe(true);
+    const input = fixture.nativeElement.querySelector('[data-testid="config-input-control_images"]');
+    expect(input).toBeTruthy();
+    expect(input.getAttribute('type')).toBe('text');
+  });
+
+  it('is NOT a string[] for layer_checklist arrays or scalar/number fields', () => {
+    expect(fieldWith({ type: 'array', items: { type: 'string' }, ui_type: 'layer_checklist' },
+      new FormControl([])).componentInstance.isStringArray()).toBe(false);
+    expect(fieldWith({ type: 'integer' }, new FormControl(0)).componentInstance.isStringArray()).toBe(false);
+    expect(fieldWith({ type: 'array', items: { type: 'integer' } }, new FormControl([]))
+      .componentInstance.isStringArray()).toBe(false);
+  });
+
+  it('seeds the text mirror from an existing string[] control value', () => {
+    const fixture = fieldWith(STR_ARRAY, new FormControl(['a/before.png', 'b/before.png']));
+    fixture.detectChanges(); // ngOnInit
+    expect(fixture.componentInstance.stringArrayText()).toBe('a/before.png, b/before.png');
+  });
+
+  it('tolerates a legacy "" / null seed (renders empty, no crash)', () => {
+    const fixture = fieldWith(STR_ARRAY, new FormControl(''));
+    fixture.detectChanges();
+    expect(fixture.componentInstance.stringArrayText()).toBe('');
+  });
+
+  it('parses comma-separated text back to a trimmed, empty-stripped string[]', () => {
+    const control = new FormControl<unknown>([]);
+    const c = fieldWith(STR_ARRAY, control).componentInstance;
+    c.onStringArrayChange({ target: { value: '  a.png ,, b.png ,  ' } } as unknown as Event);
+    expect(control.value).toEqual(['a.png', 'b.png']);
+    expect(control.dirty).toBe(true);
+  });
+
+  it('clears to an empty array (not "") when the input is emptied', () => {
+    const control = new FormControl<unknown>(['x.png']);
+    const c = fieldWith(STR_ARRAY, control).componentInstance;
+    c.onStringArrayChange({ target: { value: '' } } as unknown as Event);
+    expect(control.value).toEqual([]);
   });
 });

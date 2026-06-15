@@ -22,6 +22,23 @@ logger = structlog.get_logger(__name__)
 class PipelineBaseMixin(BaseTrainer):
     """Abstract hooks + component wiring for the training pipeline."""
 
+    @property
+    def is_video_family(self) -> bool:
+        """True when the selected model is a video family.
+
+        Drives 5D batch collation (still images lifted to ``[C, 1, H, W]`` in
+        :class:`PipelineDataMixin`). Derived from the model's declared
+        capabilities (``is_video``) so a new video family inherits the behavior
+        by declaration alone — no per-trainer flag to remember (LTX-2 used to
+        lack one, silently breaking its single-image path).
+        """
+        try:
+            from app.engine.core.video_contract import resolve_video_profile
+
+            return resolve_video_profile(self.definition).is_video
+        except Exception:
+            return False
+
     # ── Family Hooks (abstract) ──────────────────────────────────────────
 
     def init_scheduler(self) -> Any:

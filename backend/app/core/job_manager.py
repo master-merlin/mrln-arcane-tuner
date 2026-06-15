@@ -271,8 +271,45 @@ class JobManager:
 
         self._recovery_jobs.clear()
 
+    def _apply_video_contract(
+        self, config: dict[str, Any], definition_id: str | None
+    ) -> None:
+        """Derive model-owned video settings into ``config`` and hard-reject
+        illegal video settings (audio on a non-audio model, i2v on a t2v-only
+        model, a frame count that breaks the model's Nn+1 rule, …).
+
+        This is the single server-side choke point: the route passes the client
+        config through untouched, so the contract must be enforced here. Raises
+        ``ValueError`` on an invalid config (the training routes map that to
+        HTTP 400). Notably injects ``frame_rule`` so temporal bucketing engages.
+        """
+        if not definition_id:
+            return
+        try:
+            from app.engine.models.registry import registry
+
+            definition = registry.get_definition(definition_id)
+        except Exception as e:  # registry not ready / unknown id — don't block
+            logger.warning(
+                "video_contract_lookup_failed",
+                definition_id=definition_id,
+                error=str(e),
+            )
+            return
+        if definition is None:
+            return
+
+        from app.engine.core.video_contract import validate_video_config
+
+        report = validate_video_config(definition, config)
+        if not report.ok:
+            raise ValueError("; ".join(report.errors))
+        for key, value in report.derived.items():
+            config[key] = value
+
     def create_job(self, plugin_id: str, config: dict[str, Any]) -> Job:
         """Create a new pending job and register it."""
+        self._apply_video_contract(config, config.get("definition_id") or plugin_id)
         job = Job.create(plugin_id, config)
         job.config["job_id"] = job.id
         with self._lock:
@@ -397,6 +434,9 @@ class JobManager:
         # Keep the self-reference the rest of the pipeline relies on.
         new_config = dict(new_config)
         new_config["job_id"] = job_id
+
+        # Re-validate + re-derive video settings on edit (same contract as create).
+        self._apply_video_contract(new_config, new_config.get("definition_id"))
 
         if job is not None:
             with self._lock:

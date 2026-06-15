@@ -46,6 +46,23 @@ class PipelineDataMixin:
         resolutions = self.config.get("resolutions", [1024])
         self.bucket_manager = BucketManager(base_resolutions=resolutions)
 
+        # ── Video contract (defensive) ──
+        # Config assembly (job_manager) already derives frame_rule + validates,
+        # but a job created before the contract existed — or via a direct API
+        # call — may bypass it. Re-derive the model-owned settings and re-reject
+        # illegal combos here so the trainer is self-defending.
+        from app.engine.core.video_contract import validate_video_config
+
+        _vc = validate_video_config(self.definition, self.config)
+        for _k, _v in _vc.derived.items():
+            self.config.setdefault(_k, _v)
+        for _w in _vc.warnings:
+            self.logger.warning("video_config_warning", message=_w)
+        if not _vc.ok:
+            raise ValueError(
+                "Video configuration invalid: " + "; ".join(_vc.errors)
+            )
+
         # ── Video bucketing config (fields land fully in phase B6) ──
         # Read defensively: config may not carry video knobs yet. When a frame
         # rule is present we build a temporal-aware BucketManager; otherwise

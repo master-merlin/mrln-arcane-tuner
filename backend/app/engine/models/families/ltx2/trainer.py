@@ -167,6 +167,26 @@ class Ltx2Trainer(GenericTrainingPipeline):
             embeddings=embeddings, attention_mask=mask, pooled=pooled
         )
 
+    def _offload_text_encoders(self) -> None:
+        """Offload the Gemma3 encoder AND the connectors after caching.
+
+        The connectors are a second text-encoding stage that is intentionally
+        absent from ``get_text_encoders()`` (so they are never quantized/LoRA'd
+        as a text encoder), which means the base offload leaves them pinned on
+        the GPU after :meth:`_run_connectors` co-located them there. Push them to
+        CPU in lockstep with the Gemma3 to reclaim ~3 GB of VRAM during UNet
+        training. When caching is OFF the base keeps the Gemma3 resident for
+        live per-step encoding — mirror that and keep the connectors too.
+        """
+        super()._offload_text_encoders()
+        if not self.config.get("cache_text_embeddings", True):
+            return
+        connectors = getattr(self.driver, "connectors", None)
+        if connectors is not None and hasattr(connectors, "to"):
+            connectors.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     @staticmethod
     def _slice_te_output(
         out: Any, j: int

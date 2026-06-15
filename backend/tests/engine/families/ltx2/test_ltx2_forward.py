@@ -141,6 +141,9 @@ def test_encode_text_stacks_layers_on_last_axis():
         def __init__(self) -> None:
             self.shape: tuple | None = None
 
+        def to(self, device):  # real nn.Module: co-located onto the TE device
+            return self
+
         def __call__(self, text_encoder_hidden_states, attention_mask):
             self.shape = tuple(text_encoder_hidden_states.shape)
             b, length = attention_mask.shape

@@ -60,6 +60,17 @@ def _create_caption(path: str, text: str = "a test caption"):
         f.write(text)
 
 
+def _create_video_stub(path: str):
+    """Write a non-decodable placeholder video file (bytes only).
+
+    ``get_dataset_pairs`` classifies by extension and never decodes, so a
+    stub is enough to exercise the ingestion path end-to-end. Scan-side
+    tests mock dimension extraction since a stub won't decode via OpenCV.
+    """
+    with open(path, "wb") as f:
+        f.write(b"\x00fake-video-bytes\x00")
+
+
 # ── Dataset Pydantic Model ───────────────────────────────────────────────
 
 
@@ -294,6 +305,59 @@ class TestScanDataset:
         result = manager.scan_dataset("hidden")
         assert result.multimedia_count == 1
         assert result.file_count == 1
+
+
+# ── Video ingestion (.mkv / .avi) ──────────────────────────────────────────
+
+
+class TestVideoIngestion:
+    """Regression: ``.mkv``/``.avi`` clips must be ingested as video items.
+
+    Before the ``MULTIMEDIA_EXTENSIONS`` fix these were dropped at the
+    accept-list, so the grid showed 0 videos / empty grid / no captions AND
+    the trainer's ``/pairs`` inventory came back empty.
+    """
+
+    def test_get_dataset_pairs_includes_mkv_as_video(self, manager):
+        """The grid + trainer seam (``/pairs``) must surface an .mkv clip as a
+        video pair with its caption — no scan or decode required."""
+        ds = manager.create_dataset("vidpairs")
+        _create_video_stub(os.path.join(ds.path, "clip.mkv"))
+        _create_caption(os.path.join(ds.path, "clip.txt"), "a flying helicopter")
+
+        pairs = manager.get_dataset_pairs("vidpairs")
+
+        assert len(pairs) == 1
+        p = pairs[0]
+        assert p["media_file"] == "clip.mkv"
+        assert p["media_type"] == "video"
+        assert p["caption_content"] == "a flying helicopter"
+
+    def test_get_dataset_pairs_includes_avi_as_video(self, manager):
+        ds = manager.create_dataset("avipairs")
+        _create_video_stub(os.path.join(ds.path, "shot.avi"))
+
+        pairs = manager.get_dataset_pairs("avipairs")
+
+        assert [p["media_type"] for p in pairs] == ["video"]
+
+    @patch(
+        "app.core.dataset.scan_helpers.extract_media_dimensions",
+        return_value=(320, 240),
+    )
+    def test_scan_flags_mkv_as_video_item(self, _dims, manager):
+        """Scan must build a ``media_metadata`` entry with ``is_video=True``
+        for an .mkv — the per-item flag the trainer reads (``meta['is_video']``)
+        and the source of the card's video count."""
+        ds = manager.create_dataset("vidscan")
+        _create_video_stub(os.path.join(ds.path, "clip.mkv"))
+
+        result = manager.scan_dataset("vidscan")
+
+        assert result.multimedia_count == 1
+        meta = result.media_metadata.get("clip.mkv", {})
+        assert meta.get("is_video") is True
+        assert meta["width"] == 320 and meta["height"] == 240
 
 
 # ── Versioning ───────────────────────────────────────────────────────────

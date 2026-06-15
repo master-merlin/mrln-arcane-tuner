@@ -10,10 +10,21 @@ The three sets are intentionally distinct (NOT ``IMAGE | VIDEO``):
 * ``IMAGE_EXTENSIONS``      — still-image formats the masking/image pipelines accept.
 * ``VIDEO_EXTENSIONS``      — video/animation formats the scanner probes for dimensions
                               and skips for image-only hashing.
-* ``MULTIMEDIA_EXTENSIONS`` — the curated accept-list of files that count as a dataset
-                              "pair" source. It accepts only ``.mp4``/``.gif`` among
-                              video formats and omits ``.bmp``/``.tiff`` among images,
-                              matching the importer's long-standing behavior.
+* ``MULTIMEDIA_EXTENSIONS`` — the accept-list of files that count as a dataset
+                              "pair" source (drives the grid AND the trainer's
+                              ``/pairs`` inventory). Its image side is a curated
+                              subset (omits ``.bmp``/``.tiff`` — not display/train
+                              targets here); its video side is the FULL
+                              ``VIDEO_EXTENSIONS`` set, so every trainable clip is
+                              ingestable. Historically it re-listed only
+                              ``.mp4``/``.webm``/``.gif`` and silently dropped
+                              ``.mkv``/``.avi`` clips at the front door — those
+                              datasets then scanned to an empty grid (0 videos, no
+                              captions, no preview) AND fed the trainer an empty
+                              inventory, even though every downstream stage (probe,
+                              thumbnail, ``media_type``, collation) already handled
+                              them. Deriving the video side from ``VIDEO_EXTENSIONS``
+                              fixes that and prevents the two sets from drifting apart.
 """
 
 from __future__ import annotations
@@ -35,9 +46,17 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 # A subset of VIDEO_EXTENSIONS — .mkv/.avi are trainable but not web-native.
 BROWSER_VIDEO_EXTENSIONS: frozenset[str] = frozenset({".mp4", ".webm"})
 
-MULTIMEDIA_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".avif", ".mp4", ".webm", ".gif"}
+# Curated still-image subset accepted as dataset items (no .bmp/.tiff).
+MULTIMEDIA_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".avif"}
 )
+
+# Image subset ∪ the FULL trainable-video set. The union (rather than a second
+# hand-maintained literal) is the single source of truth: any container added
+# to VIDEO_EXTENSIONS becomes an ingestable dataset item automatically. Adds
+# .mkv/.avi over the legacy mp4/webm/gif list — the clips that previously
+# scanned to an empty grid and an empty trainer inventory.
+MULTIMEDIA_EXTENSIONS: frozenset[str] = MULTIMEDIA_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 def is_probeable_video(ext: str) -> bool:

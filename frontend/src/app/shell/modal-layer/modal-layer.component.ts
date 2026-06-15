@@ -30,6 +30,7 @@ import { ExportOptionsModalComponent } from '../../modals/export-options/export-
 import { ImportArchiveModalComponent } from '../../modals/import-archive/import-archive.component';
 import { PairOrderModalComponent } from '../../modals/pair-order/pair-order.component';
 import { PairHealthModalComponent } from '../../modals/pair-health/pair-health.component';
+import { PairRoleChooserModalComponent } from '../../modals/pair-role-chooser/pair-role-chooser.component';
 
 /**
  * Modal stack renderer.
@@ -71,6 +72,7 @@ import { PairHealthModalComponent } from '../../modals/pair-health/pair-health.c
         ImportArchiveModalComponent,
         PairOrderModalComponent,
         PairHealthModalComponent,
+        PairRoleChooserModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -151,6 +153,9 @@ import { PairHealthModalComponent } from '../../modals/pair-health/pair-health.c
                             }
                             @case ('pair-health') {
                                 @defer { <app-modal-pair-health/> }
+                            }
+                            @case ('pair-role-chooser') {
+                                @defer { <app-modal-pair-role-chooser/> }
                             }
                             @case ('templates-library') {
                                 @defer { <app-modal-templates-library/> }

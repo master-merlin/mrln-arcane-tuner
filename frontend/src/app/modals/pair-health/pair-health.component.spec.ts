@@ -11,6 +11,7 @@ import { signal } from '@angular/core';
 import { PairHealthModalComponent } from './pair-health.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService, PairHealth } from '../../services/dataset';
+import { DatasetUploadService } from '../../services/dataset-upload.service';
 import { MediaItemStore } from '../../state/media-item.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ToastService } from '../../services/toast';
@@ -57,6 +58,7 @@ function bed() {
         providers: [
             { provide: OverlayStore, useClass: StubOverlay },
             { provide: DatasetService, useClass: StubDatasetService },
+            { provide: DatasetUploadService, useValue: { uploadControls: vi.fn() } },
             { provide: MediaItemStore, useClass: StubMediaItems },
             { provide: DatasetSyncService, useClass: StubSync },
             { provide: ToastService, useClass: StubToast },

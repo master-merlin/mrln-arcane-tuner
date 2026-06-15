@@ -4,6 +4,7 @@ import type { DatasetPair } from '../../services/dataset';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
+import { DatasetUploadService } from '../../services/dataset-upload.service';
 
 /**
  * Browse mode — grid view of the dataset, wraps the existing
@@ -49,6 +50,7 @@ import { RuntimeConfigService } from '../../services/runtime-config.service';
             [variantCaptions]="variantCaptions()"
             [datasetKind]="datasetKind()"
             (pairOrderRequested)="openPairOrder($event)"
+            (filesDropped)="onFilesDropped($event)"
             (detailRequested)="openDetail($event)"
             (editRequested)="openEdit($event)"
             (captionSaved)="onCaptionSaved($event)"
@@ -103,6 +105,25 @@ export class BrowseMode {
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);
     protected rtc = inject(RuntimeConfigService);
+    private upload = inject(DatasetUploadService);
+
+    /**
+     * Files dropped onto the grid. For an edit (paired) dataset the role is
+     * ambiguous (target vs control) so we open the pair-role-chooser; for a
+     * standard dataset every file is a training target — upload straight away.
+     */
+    protected onFilesDropped(files: FileList): void {
+        if (!files || files.length === 0) return;
+        const name = this.datasetName();
+        if (this.datasetKind() === 'edit') {
+            this.overlay.openModal('pair-role-chooser', {
+                datasetName: name,
+                files: Array.from(files),
+            });
+            return;
+        }
+        this.upload.uploadTargets(name, files);
+    }
 
     /** Lookup: media_file → unfiltered index, rebuilt when pairs change. */
     private indexByMediaFile = computed<Map<string, number>>(() => {

@@ -341,6 +341,120 @@ class TestSlotUpload:
         assert os.path.exists(os.path.join(ds.path, "img9.png"))
 
 
+# ── Control reassignment (re-match an on-disk orphan to a target) ─────────
+
+
+class TestControlAssign:
+    def test_assign_orphan_renames_and_pairs(self, manager, monkeypatch):
+        # control/ghost.jpg has no target stem "ghost" → orphan.
+        ds = _make_edit_dataset(manager, controls=("ghost",), targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/editds/control/assign",
+            json={
+                "slot": 1,
+                "src_rel_path": "control/ghost.jpg",
+                "target_stem": "img1",
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["rel_path"] == "control/img1.jpg"
+        assert os.path.exists(os.path.join(ds.path, "control", "img1.jpg"))
+        assert not os.path.exists(os.path.join(ds.path, "control", "ghost.jpg"))
+        # Targeted metadata refresh ran for the new target stem.
+        assert ds.media_metadata["img1.png"]["control_count"] == 1
+
+    def test_assign_can_move_between_slots(self, manager, monkeypatch):
+        ds = _make_edit_dataset(manager, controls=("ghost",), targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/editds/control/assign",
+            json={
+                "slot": 2,
+                "src_rel_path": "control/ghost.jpg",
+                "target_stem": "img1",
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["rel_path"] == "control_2/img1.jpg"
+        assert os.path.exists(os.path.join(ds.path, "control_2", "img1.jpg"))
+
+    def test_assign_unknown_target_400(self, manager, monkeypatch):
+        _make_edit_dataset(manager, controls=("ghost",), targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/editds/control/assign",
+            json={
+                "slot": 1,
+                "src_rel_path": "control/ghost.jpg",
+                "target_stem": "nope",
+            },
+        )
+        assert res.status_code == 400
+
+    def test_assign_missing_source_400(self, manager, monkeypatch):
+        _make_edit_dataset(manager, controls=(), targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/editds/control/assign",
+            json={
+                "slot": 1,
+                "src_rel_path": "control/missing.jpg",
+                "target_stem": "img1",
+            },
+        )
+        assert res.status_code == 400
+
+    def test_assign_non_control_source_400(self, manager, monkeypatch):
+        # Root target image is not a control file → cannot be reassigned.
+        _make_edit_dataset(manager, controls=(), targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/editds/control/assign",
+            json={"slot": 1, "src_rel_path": "img1.png", "target_stem": "img1"},
+        )
+        assert res.status_code == 400
+
+    def test_assign_rejects_traversal_403(self, manager, monkeypatch):
+        _make_edit_dataset(manager, controls=("ghost",), targets=("img1",))
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/editds/control/assign",
+            json={
+                "slot": 1,
+                "src_rel_path": "../secret.jpg",
+                "target_stem": "img1",
+            },
+        )
+        assert res.status_code == 403
+
+    def test_assign_404_unknown_dataset(self, manager, monkeypatch):
+        client, mod = _client(manager)
+        monkeypatch.setattr(mod, "dataset_manager", manager)
+
+        res = client.post(
+            "/api/datasets/ghostds/control/assign",
+            json={
+                "slot": 1,
+                "src_rel_path": "control/ghost.jpg",
+                "target_stem": "img1",
+            },
+        )
+        assert res.status_code == 404
+
+
 # ── Thumbnail namespacing ────────────────────────────────────────────────
 
 

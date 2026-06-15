@@ -29,7 +29,10 @@ export interface GridCropRequest {
     imports: [FormsModule, StatePillsComponent, VideoTilePreviewComponent],
     host: { class: 'flex-1 flex flex-col overflow-hidden' },
     template: `
-        <div #scrollHost class="w-full h-full overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent flex flex-col">
+        <div #scrollHost class="w-full h-full overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent flex flex-col"
+             (dragover)="onGridDragOver($event)"
+             (dragleave)="onGridDragLeave($event)"
+             (drop)="onGridDrop($event)">
             <!-- Mass Actions Toolbar (suppressed when the workspace owns its own secondary toolbar) -->
             @if (!hideToolbar()) {
             <div class="mb-6 flex items-center justify-between bg-surface-mid/40 p-3 rounded-theme-xl border border-surface-mid/50 sticky top-0 z-30 backdrop-blur-md">
@@ -188,8 +191,42 @@ export interface GridCropRequest {
                 }
             </div>
         </div>
+        @if (isDragging()) {
+            <div class="grid-drop-overlay" data-testid="grid-drop-overlay" aria-hidden="true">
+                <span class="grid-drop-inner">
+                    <span class="grid-drop-glyph">⬆</span>
+                    Drop images to add to this dataset
+                </span>
+            </div>
+        }
     `,
     styles: [`
+        :host { position: relative; }
+        .grid-drop-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 40;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            background: color-mix(in oklab, var(--color-brand) 14%, transparent);
+            border: 2px dashed var(--color-brand);
+            border-radius: var(--radius-theme-xl, 14px);
+        }
+        .grid-drop-inner {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 18px;
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--color-text-primary);
+            background: color-mix(in oklab, var(--color-surface-low) 85%, transparent);
+            border-radius: var(--radius-theme-lg, 10px);
+            box-shadow: 0 6px 24px oklch(0 0 0 / 0.4);
+        }
+        .grid-drop-glyph { font-size: 18px; }
         .tile-active {
             border-color: var(--color-brand) !important;
             box-shadow: 0 0 0 2px oklch(0.68 0.13 55 / 0.25), 0 8px 24px oklch(0 0 0 / 0.45);
@@ -497,6 +534,36 @@ export class ViewerGridViewComponent {
     enableAllRequested = output<void>();
     /** Pair badge clicked on an edit-dataset tile — open the reorder modal. */
     pairOrderRequested = output<DatasetPair>();
+    /** Files dropped onto the grid. The parent (browse-mode/workspace) decides
+     *  routing: for an edit dataset it opens the pair-role-chooser, otherwise
+     *  it uploads them as targets. The grid stays role-agnostic. */
+    filesDropped = output<FileList>();
+
+    /** True while a file drag hovers the grid — drives the drop overlay. */
+    protected isDragging = signal<boolean>(false);
+
+    protected onGridDragOver(event: DragEvent): void {
+        if (!event.dataTransfer?.types.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        if (!this.isDragging()) this.isDragging.set(true);
+    }
+
+    protected onGridDragLeave(event: DragEvent): void {
+        // Suppress flicker when the cursor crosses between child tiles: only
+        // clear when the pointer actually leaves the scroll host subtree.
+        const related = event.relatedTarget as Node | null;
+        const host = event.currentTarget as Node;
+        if (related && host.contains(related)) return;
+        this.isDragging.set(false);
+    }
+
+    protected onGridDrop(event: DragEvent): void {
+        const files = event.dataTransfer?.files;
+        event.preventDefault();
+        this.isDragging.set(false);
+        if (files && files.length > 0) this.filesDropped.emit(files);
+    }
 
     hasAnyOverlay(): boolean {
         return this.pairs().some(p => p.metadata?.has_overlay);

@@ -138,6 +138,24 @@ class OrphansDeletedResponse(BaseModel):
     deleted: int
 
 
+class ControlAssignRequest(BaseModel):
+    """Reassign an existing on-disk control file to a target stem/slot.
+
+    ``src_rel_path`` is a control-slot file (e.g. ``control/foo.jpg``). It
+    is moved to ``control{slot}/{target_stem}{ext}`` so it pairs with an
+    existing target — re-matching an orphan without a re-upload.
+    """
+    slot: int
+    src_rel_path: str
+    target_stem: str
+
+
+class ControlAssignResponse(BaseModel):
+    """New rel-path of the reassigned control file + the target it pairs."""
+    rel_path: str
+    target_stem: str
+
+
 class ControlOpSchema(BaseModel):
     """One degradation op applied when generating control ("before") images."""
     type: Literal["grayscale", "blur", "downscale", "noise"]

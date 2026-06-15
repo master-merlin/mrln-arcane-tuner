@@ -279,6 +279,8 @@ export interface ModelRegistryResponse { category: string; folder: string; model
 export interface ModelDownloadResponse { status: string; filename: string; path: string; size_mb: number; }
 /** A control file whose stem has no target image. */
 export interface OrphanControl { slot: string; rel_path: string; }
+/** `POST /datasets/{name}/control/assign` — re-match an orphan control. */
+export interface ControlAssignResponse { rel_path: string; target_stem: string; }
 /** Per-stem pair-health warning. */
 export interface PairWarning {
   stem: string;
@@ -474,6 +476,18 @@ export class DatasetService {
   deleteControlOrphans(name: string): Observable<OrphansDeletedResponse> {
     return this.http.delete<OrphansDeletedResponse>(
       `${this.apiUrl}/${encodeURIComponent(name)}/control/orphans`);
+  }
+
+  /** Re-match an existing on-disk control file to a target stem/slot. The
+   *  backend moves/renames `srcRelPath` to `control{slot}/{targetStem}{ext}` —
+   *  no re-upload — and refreshes the pair. Powers the Pairs-manager orphan
+   *  re-match tray. */
+  assignControl(
+    name: string, srcRelPath: string, slot: number, targetStem: string,
+  ): Observable<ControlAssignResponse> {
+    return this.http.post<ControlAssignResponse>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/control/assign`,
+      { slot, src_rel_path: srcRelPath, target_stem: targetStem });
   }
 
   deleteDataset(name: string, deleteFiles: boolean = false): Observable<DatasetDeletedResponse> {

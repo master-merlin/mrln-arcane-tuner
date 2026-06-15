@@ -1,6 +1,12 @@
+import re
 from typing import TypedDict
 from collections import Counter
 import structlog
+
+# Canonical ``Nn+1`` frame-rule parser (e.g. "4n+1" → step 4, "8n+1" → step 8).
+# Defined once here so both temporal bucketing and the video contract's frame
+# predicate agree on what a rule means.
+_FRAME_RULE_RE = re.compile(r"^\s*(\d+)\s*n\s*\+\s*1\s*$", re.IGNORECASE)
 
 logger = structlog.get_logger(__name__)
 
@@ -63,32 +69,42 @@ class BucketManager:
     # ── Frame (temporal) bucketing ───────────────────────────────────────
 
     @staticmethod
+    def _parse_frame_step(rule: str | None) -> int | None:
+        """Parse an ``Nn+1`` rule → its step ``N`` (e.g. "4n+1" → 4).
+
+        Returns ``None`` for ``None`` / unrecognized rules (→ image mode).
+        Canonical for both temporal bucketing and the video contract.
+        """
+        if not rule:
+            return None
+        m = _FRAME_RULE_RE.match(str(rule))
+        if not m:
+            return None
+        step = int(m.group(1))
+        return step if step >= 1 else None
+
+    @staticmethod
     def _default_max_frames(rule: str | None) -> int:
         """Default ladder ceiling per rule (documented in ``frame_ladder``)."""
-        # 4n+1 ladder tops out at 81 frames (n=20); 8n+1 at 121 (n=15).
-        return 121 if rule == "8n+1" else 81
+        # 4n+1 ladder tops out at 81 frames (n=20); finer (>=8) rules at 121.
+        step = BucketManager._parse_frame_step(rule)
+        return 121 if (step is not None and step >= 8) else 81
 
     @staticmethod
     def frame_ladder(max_frames: int, rule: str | None) -> list[int]:
-        """Generate the temporal bucket ladder for a frame rule.
+        """Generate the temporal bucket ladder for an ``Nn+1`` frame rule.
 
-        Supported rules (both anchored at the single-frame still bucket so a
-        video manager still accepts images):
+        Rules are anchored at the single-frame still bucket so a video manager
+        still accepts images:
 
         - ``"4n+1"`` → ``[1, 5, 9, 13, ..., <= max]`` (WAN-style; ``4·k+1``).
-          With the default ceiling 81 → ``[1,5,9,...,77,81]``.
         - ``"8n+1"`` → ``[1, 9, 17, 25, ..., <= max]`` (LTX-style; ``8·k+1``).
-          With the default ceiling 121 → ``[1,9,17,...,113,121]``.
+        - any other ``"Nn+1"`` → ``[1, 1+N, 1+2N, ..., <= max]`` (future families).
 
-        Any other / ``None`` rule yields ``[1]`` (single frame only).
+        ``None`` / unrecognized rule yields ``[1]`` (single frame only).
         """
-        if max_frames < 1:
-            return [1]
-        if rule == "4n+1":
-            step = 4
-        elif rule == "8n+1":
-            step = 8
-        else:
+        step = BucketManager._parse_frame_step(rule)
+        if max_frames < 1 or step is None:
             return [1]
         ladder = [1]
         f = 1 + step

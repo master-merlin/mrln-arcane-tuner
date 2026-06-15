@@ -39,10 +39,11 @@ logger = structlog.get_logger(__name__)
 
 
 class Wan22Trainer(GenericTrainingPipeline):
-    """WAN 2.2 (T2V-A14B / I2V-A14B) dual-expert LoRA trainer."""
+    """WAN 2.2 (T2V-A14B / I2V-A14B) dual-expert LoRA trainer.
 
-    # Lift stills to 1-frame clips + collate 5D [B, C, F, H, W].
-    is_video_family = True
+    ``is_video_family`` is inherited from :class:`PipelineBaseMixin` (derived
+    from the model's ``is_video`` capability) — no per-trainer flag needed.
+    """
 
     # ── Setup ────────────────────────────────────────────────────────────
 

@@ -5,8 +5,9 @@ offset, checkpointing, signals, logging) live in ``GenericTrainingPipeline``.
 This trainer:
 
 - selects the WAN 2.1 loader/driver/saver in ``_setup_family``,
-- flags the run as a video family (``is_video_family = True``) so the data path
-  collates 5D ``[B, C, F, H, W]`` clips,
+- is treated as a video family (the base ``is_video_family`` property derives
+  this from the model's ``is_video`` capability) so the data path collates 5D
+  ``[B, C, F, H, W]`` clips,
 - delegates text encoding to the driver (UMT5-XXL) with lazy in-memory caching,
 - creates a :class:`Wan21Sampler` when sampling is configured.
 
@@ -33,10 +34,11 @@ logger = structlog.get_logger(__name__)
 
 
 class Wan21Trainer(GenericTrainingPipeline):
-    """WAN 2.1 (T2V 1.3B/14B, I2V 14B) LoRA trainer."""
+    """WAN 2.1 (T2V 1.3B/14B, I2V 14B) LoRA trainer.
 
-    # Tell the data pipeline to lift stills to 1-frame clips and collate 5D.
-    is_video_family = True
+    ``is_video_family`` is inherited from :class:`PipelineBaseMixin` (derived
+    from the model's ``is_video`` capability) — no per-trainer flag needed.
+    """
 
     # ── Setup ────────────────────────────────────────────────────────────
 

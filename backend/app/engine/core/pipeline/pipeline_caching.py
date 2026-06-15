@@ -198,19 +198,24 @@ class PipelineCachingMixin:
         if not self.config.get("cache_latents", True):
             return
 
+        from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+
         all_ids = [item["id"] for item in self.inventory]
         all_dirs = [item["cache_dir"] for item in self.inventory]
         all_paths = [item["path"] for item in self.inventory]
+        # Video items key their cache file on the trim window; images → "".
+        all_extra = [video_trim_extra_key(item) for item in self.inventory]
 
-        # Include masked variant items
+        # Include masked variant items (image-only — no trim key).
         for item in self.inventory:
             if item.get("has_masked"):
                 all_ids.append(item["id"])
                 all_dirs.append(item["masked_cache_dir"])
                 all_paths.append(item["masked_path"])
+                all_extra.append("")
 
         cached, missing, missing_ids = self.latent_manager.check_cache_coverage(
-            all_ids, all_dirs, source_paths=all_paths,
+            all_ids, all_dirs, source_paths=all_paths, extra_keys=all_extra,
         )
 
         if missing == 0:
@@ -258,17 +263,24 @@ class PipelineCachingMixin:
         if getattr(self, "_log_writer", None):
             self._log_writer.status("Caching Latents (0%)")
 
-        # Build unique work items (deduplicate by id + cache_dir)
-        # Each work item is a (path, id, cache_dir, target_w, target_h) tuple.
+        from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+
+        # Build unique work items (deduplicate by id + cache_dir + trim key).
+        # Video items carry the temporal fields + the trim cache-key so they
+        # encode through the same VideoFrameLoader path (and under the same
+        # filename) as the train loop; images stay byte-identical to before.
         seen: set[str] = set()
         work_items: list[dict] = []
 
         for item in self.inventory:
+            extra_key = video_trim_extra_key(item)
             # Original variant
-            key = f"{item['cache_dir']}/{item['id']}"
+            key = f"{item['cache_dir']}/{item['id']}/{extra_key}"
             if key not in seen:
                 seen.add(key)
-                fname = self.latent_manager.latent_filename(item["id"], item["path"])
+                fname = self.latent_manager.latent_filename(
+                    item["id"], item["path"], extra_key
+                )
                 path = os.path.join(item["cache_dir"], fname)
                 if not os.path.exists(path):
                     work_items.append({
@@ -277,9 +289,15 @@ class PipelineCachingMixin:
                         "cache_dir": item["cache_dir"],
                         "target_w": item["target_w"],
                         "target_h": item["target_h"],
+                        "is_video": item.get("is_video", False),
+                        "target_frames": item.get("target_frames", 1),
+                        "target_fps": item.get("target_fps"),
+                        "trim_start_s": item.get("trim_start_s"),
+                        "trim_end_s": item.get("trim_end_s"),
+                        "extra_key": extra_key,
                     })
 
-            # Masked variant
+            # Masked variant (image-only — no trim key).
             if item.get("has_masked"):
                 m_key = f"{item['masked_cache_dir']}/{item['id']}"
                 if m_key not in seen:
@@ -293,6 +311,8 @@ class PipelineCachingMixin:
                             "cache_dir": item["masked_cache_dir"],
                             "target_w": item["target_w"],
                             "target_h": item["target_h"],
+                            "is_video": False,
+                            "extra_key": "",
                         })
 
         total = len(work_items)
@@ -303,23 +323,42 @@ class PipelineCachingMixin:
 
         for i, item in enumerate(work_items):
             try:
-                img = Image.open(item["path"]).convert("RGB")
                 tw, th = item["target_w"], item["target_h"]
-                scale = max(tw / img.width, th / img.height)
-                nw, nh = int(img.width * scale), int(img.height * scale)
-                img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-                left = (nw - tw) // 2
-                top = (nh - th) // 2
-                img = img.crop((left, top, left + tw, top + th))
+                if item.get("is_video"):
+                    # Decode the clip via the SAME loader the train loop uses →
+                    # [C, F, H, W], already normalized to [-1, 1]. Encoding a
+                    # video frame through PIL is what produced the original
+                    # "cannot identify image file" failure.
+                    from app.engine.components.video import VideoFrameLoader
 
-                img_tensor = transform_norm(img).unsqueeze(0).to(self.device)
+                    clip = VideoFrameLoader().load_clip(
+                        item["path"],
+                        target_frames=int(item.get("target_frames", 1)),
+                        target_fps=float(item.get("target_fps") or 0.0),
+                        trim_start_s=float(item.get("trim_start_s") or 0.0),
+                        trim_end_s=item.get("trim_end_s"),
+                        target_w=tw,
+                        target_h=th,
+                        h_flip=False,
+                    )
+                    input_tensor = clip.unsqueeze(0).to(self.device)  # [1,C,F,H,W]
+                else:
+                    img = Image.open(item["path"]).convert("RGB")
+                    scale = max(tw / img.width, th / img.height)
+                    nw, nh = int(img.width * scale), int(img.height * scale)
+                    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+                    left = (nw - tw) // 2
+                    top = (nh - th) // 2
+                    img = img.crop((left, top, left + tw, top + th))
+                    input_tensor = transform_norm(img).unsqueeze(0).to(self.device)
 
                 with torch.no_grad():
                     self.latent_manager.encode_and_cache_batch(
-                        img_tensor,
+                        input_tensor,
                         ids=[item["id"]],
                         cache_dirs=[item["cache_dir"]],
                         source_paths=[item["path"]],
+                        extra_keys=[item.get("extra_key", "")],
                     )
 
                 pct = round((i + 1) / total * 100)

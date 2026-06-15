@@ -68,6 +68,32 @@ class SampleArtifact:
     fps: float = 16.0
 
 
+def expand_prompt_wildcards(prompt: str, config: dict[str, Any]) -> str:
+    """Expand ``[triggerword]`` / ``[captionprefix]`` against a run config.
+
+    Module-level so the trainer's text-embedding pre-cache can warm the EXACT
+    expanded sample-prompt string the sampler will later request (the cache key
+    must match), without the two implementations drifting.
+
+    - ``[triggerword]`` → ``global_triggerword``
+    - ``[captionprefix]`` → first dataset's ``caption_prefix``
+    """
+    triggerword = config.get("global_triggerword", "")
+    prompt = prompt.replace("[triggerword]", triggerword)
+
+    datasets = config.get("datasets", [])
+    if datasets:
+        first = datasets[0]
+        prefix = (
+            first.get("caption_prefix", "")
+            if isinstance(first, dict)
+            else getattr(first, "caption_prefix", "")
+        )
+    else:
+        prefix = ""
+    return prompt.replace("[captionprefix]", prefix)
+
+
 class GenericSamplingPipeline(ABC):
     """Base sampling pipeline — runs inference using the model being trained.
 
@@ -150,26 +176,8 @@ class GenericSamplingPipeline(ABC):
     # ── Wildcard Expansion ───────────────────────────────────────────────
 
     def _expand_wildcards(self, prompt: str) -> str:
-        """Expand ``[triggerword]`` and ``[captionprefix]`` in *prompt*.
-
-        - ``[triggerword]`` → ``global_triggerword`` from config
-        - ``[captionprefix]`` → first dataset's ``caption_prefix``
-        """
-        triggerword = self.config.get("global_triggerword", "")
-        prompt = prompt.replace("[triggerword]", triggerword)
-
-        datasets = self.config.get("datasets", [])
-        if datasets:
-            first = datasets[0]
-            prefix = (
-                first.get("caption_prefix", "")
-                if isinstance(first, dict)
-                else getattr(first, "caption_prefix", "")
-            )
-        else:
-            prefix = ""
-        prompt = prompt.replace("[captionprefix]", prefix)
-        return prompt
+        """Expand ``[triggerword]`` / ``[captionprefix]`` (see module helper)."""
+        return expand_prompt_wildcards(prompt, self.config)
 
     # ── Main Entry Point ─────────────────────────────────────────────────
 

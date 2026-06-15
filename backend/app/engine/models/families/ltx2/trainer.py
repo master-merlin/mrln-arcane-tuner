@@ -87,6 +87,11 @@ class Ltx2Trainer(GenericTrainingPipeline):
         the FULL ``(video embeddings, audio pooled, attention mask)`` triple is
         cached on CPU; LTX-2's joint forward consumes the audio ``pooled`` too,
         so a video-only tensor cache would not suffice once audio is enabled.
+
+        The expanded SAMPLE prompts are warmed here too: the sampler runs after
+        this TE offload, so it serves prompts from ``self.text_cache`` via
+        :meth:`encode_text` — without this, sampling would hit the offloaded
+        (``None``) encoder and crash with "'NoneType' object is not callable".
         """
         if not self.config.get("cache_text_embeddings", True):
             return
@@ -95,6 +100,9 @@ class Ltx2Trainer(GenericTrainingPipeline):
 
         dtype = self._resolve_loading_dtype()
         captions = [c for c in self._build_caption_hints() if c not in self.text_cache]
+        for sp in self._sample_prompt_texts():
+            if sp not in self.text_cache and sp not in captions:
+                captions.append(sp)
         total = len(captions)
         if not total:
             self.logger.info("ltx2_text_cache_complete", cached=len(self.text_cache))
@@ -119,6 +127,28 @@ class Ltx2Trainer(GenericTrainingPipeline):
             cached=len(self.text_cache),
             newly_encoded=total,
         )
+
+    def _sample_prompt_texts(self) -> list[str]:
+        """Expanded sample-prompt strings to pre-cache.
+
+        Mirrors the sampler's wildcard expansion (shared module helper) so the
+        cache key matches the exact string the sampler later requests via
+        :meth:`encode_text`.
+        """
+        from app.engine.core.sampling import expand_prompt_wildcards
+
+        texts: list[str] = []
+        for sp in self.config.get("sample_prompts", []) or []:
+            raw = (
+                sp.get("prompt", "")
+                if isinstance(sp, dict)
+                else getattr(sp, "prompt", "")
+            )
+            if raw:
+                expanded = expand_prompt_wildcards(raw, self.config)
+                if expanded not in texts:
+                    texts.append(expanded)
+        return texts
 
     def encode_text(
         self, captions: list[str], dtype: torch.dtype, batch: dict | None = None

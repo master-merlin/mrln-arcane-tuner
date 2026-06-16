@@ -22,6 +22,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 import app.engine.models.families.ltx2.audio_io as audio_io
+from app.engine.models.families.ltx2.driver import Ltx2Driver
 from app.engine.models.families.ltx2.trainer import Ltx2Trainer
 
 L = 10  # audio latent length used throughout
@@ -206,3 +207,46 @@ def test_build_batch_extra_treats_shape_mismatch_as_absent(tmp_path):
 
     assert extra["audio_clean"].shape == (2, L, 128)
     assert torch.equal(extra["audio_mask"], torch.tensor([1.0, 0.0]))
+
+
+# ── encode_audio_clean device co-location ──────────────────────────────────
+
+
+class _RecVae:
+    """Audio VAE fake that records device moves and returns a fixed latent."""
+
+    def __init__(self) -> None:
+        self.moved_to: list = []
+        self.dtype = torch.float32
+        self.latents_mean = None
+        self.latents_std = None
+
+    def to(self, dev):
+        self.moved_to.append(dev)
+        return self
+
+    def encode(self, mel):  # extract_audio_latents handles a raw-tensor return
+        b = mel.shape[0]
+        return torch.zeros(b, 8, L, 16)  # → pack_audio_latents → [B, L, 128]
+
+
+def test_encode_audio_clean_colocates_vae_with_input():
+    """Regression: the audio VAE must be moved to the mel's device before encode.
+
+    The generic orchestration only relocates the VIDEO VAE, so without an
+    explicit move the CPU-resident audio VAE meets a CUDA mel → "Input type
+    (CUDABFloat16Type) and weight type (CPUBFloat16Type) should be the same".
+    Asserted device-agnostically (CPU in CI) by checking the VAE was moved to
+    ``driver.device``.
+    """
+    drv = object.__new__(Ltx2Driver)
+    drv.device = torch.device("cpu")
+    drv.audio_sampling_rate = 16000
+    drv._audio_mel = None
+    drv.audio_vae = _RecVae()
+
+    out = drv.encode_audio_clean(torch.zeros(1, 2, 1600), 16000)  # [B, C=2, N]
+
+    assert drv.audio_vae.moved_to, "audio VAE was never co-located with the input"
+    assert torch.device(drv.audio_vae.moved_to[-1]) == drv.device
+    assert out.shape[-1] == 128  # packed audio latent feature dim

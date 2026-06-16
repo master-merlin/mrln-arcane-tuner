@@ -445,6 +445,14 @@ class Ltx2Driver(IModelDriver):
         mel = self._audio_mel.waveform_to_mel(
             waveform.to(self.device), sample_rate,
         )
+        # Co-locate the audio VAE with the mel. Like the text connectors, the
+        # audio VAE is NOT moved to the GPU by the generic component
+        # orchestration (which only knows the video VAE), so a CPU-resident audio
+        # VAE meets a CUDA mel → "Input type (CUDABFloat16Type) and weight type
+        # (CPUBFloat16Type) should be the same". Move it just-in-time; the caller
+        # (_pre_cache_aux) offloads it back to CPU after the pre-cache loop.
+        if self.audio_vae is not None and hasattr(self.audio_vae, "to"):
+            self.audio_vae.to(self.device)
         # The mel transform emits fp32; the audio VAE may be bf16/fp16. Match its
         # dtype so ``audio_vae.encode`` doesn't hit a CUDA mat-mul dtype mismatch.
         vae_dtype = getattr(self.audio_vae, "dtype", None)

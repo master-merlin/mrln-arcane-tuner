@@ -54,5 +54,12 @@ def test_new_video_knobs_hidden_for_image_models():
 
 def test_new_video_knobs_shown_for_video_models():
     vis = build_field_visibility({"is_video": True})
-    for key in ("temporal_coverage", "frame_stride"):
+    for key in (
+        "temporal_coverage",
+        "window_overlap",
+        "max_windows",
+        "frame_stride",
+        "still_resolutions",
+        "radc_seqlen_influence",
+    ):
         assert vis[key]["supported"] is True

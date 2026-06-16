@@ -744,6 +744,13 @@ class PipelineDataMixin:
         if any(extra_keys):
             batch["extra_keys"] = extra_keys
 
+        # Effective fps for the model's frame-rate / RoPE conditioning. Items in
+        # a batch share one temporal bucket (and thus one target_fps), so a
+        # single scalar suffices. Only set for video items so image batches are
+        # byte-identical to before.
+        if items and items[0].get("is_video"):
+            batch["target_fps"] = float(items[0].get("target_fps") or 0.0)
+
         # ── Paired control images (edit runs) ──
         # All items in an edit batch carry the same control slot count
         # (partial pairs were skipped at inventory time), so we transpose into

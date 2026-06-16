@@ -402,6 +402,38 @@ def test_list_job_samples_includes_video(mock_to_thread, mock_jm, client, tmp_pa
 
 @patch("app.api.training.job_routes.job_manager")
 @patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_final_video_sorts_first(mock_to_thread, mock_jm, client, tmp_path):
+    """The end-of-run final VIDEO sample (sample_NN_final.mp4) must be listed
+    and parsed as final (step 999999 → sorts to the top), same as image
+    families' sample_NN_final.png."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ltx2-3-base"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000050.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    (sdir / "sample_00_final.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    samples = response.json()
+    by_name = {s["filename"]: s for s in samples}
+    assert "sample_00_final.mp4" in by_name
+    assert by_name["sample_00_final.mp4"]["step"] == 999999  # final → sorts first
+    # Sorted newest/final-first.
+    assert samples[0]["filename"] == "sample_00_final.mp4"
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
 def test_get_sample_image_serves_video_content_type(mock_to_thread, mock_jm, client, tmp_path):
     """An .mp4 sample is served as video/mp4, not the old hard-coded image/png."""
     from app.core.naming import model_part_from_definition_id

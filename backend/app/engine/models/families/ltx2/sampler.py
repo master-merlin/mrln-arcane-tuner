@@ -126,6 +126,35 @@ class Ltx2Sampler(GenericSamplingPipeline):
         )
         return driver.prepare_latents(latents)
 
+    def _audio_enabled(self) -> bool:
+        """True when this run should denoise + decode a joint audio stream."""
+        driver = self.pipeline.driver
+        return (
+            bool(getattr(driver, "train_audio", False))
+            and getattr(driver, "audio_vae", None) is not None
+            and getattr(driver, "vocoder", None) is not None
+        )
+
+    def _audio_num_frames(self) -> int:
+        """Latent audio length for the sampled clip's duration.
+
+        Mirrors ``LTX2Pipeline``: ``audio_latents_per_second = sample_rate /
+        mel_hop / temporal_compression`` (16000/160/4 = 25), times the clip
+        duration ``num_frames / fps``. Falls back to sane LTX-2 defaults when the
+        audio VAE doesn't expose the ratios.
+        """
+        driver = self.pipeline.driver
+        audio_vae = driver.audio_vae
+        cfg = getattr(audio_vae, "config", None)
+        sr = int(getattr(cfg, "sample_rate", driver.audio_sampling_rate) or 16000)
+        hop = int(getattr(cfg, "mel_hop_length", 160) or 160)
+        temporal = int(getattr(audio_vae, "temporal_compression_ratio", 4) or 4)
+        num_frames = int(self.config.get("sample_num_frames", 25))
+        fps = float(self.config.get("sample_fps", driver.frame_rate) or driver.frame_rate or 24.0)
+        duration_s = num_frames / fps if fps > 0 else 0.0
+        per_s = sr / hop / temporal if (hop and temporal) else 25.0
+        return max(int(round(duration_s * per_s)), 1)
+
     def denoise(
         self,
         noise: Tensor,
@@ -139,6 +168,12 @@ class Ltx2Sampler(GenericSamplingPipeline):
         Builds a descending sigma schedule, then integrates in fp32 via
         :meth:`euler_denoise`.  Only the transformer forward uses the model
         dtype; the trajectory accumulation stays fp32 (no autocast wrapper).
+
+        Audio-on: a packed audio-latent stream is co-denoised on the SAME sigma
+        schedule with ``isolate_modalities=False`` (the joint forward returns
+        ``(video, audio)``), and the final audio latents are stashed on the
+        driver for :meth:`_decode_audio`. Audio-off (or no vocoder): a single
+        isolated zero audio token, mirroring the video-only training forward.
         """
         driver = self.pipeline.driver
         transformer = self.pipeline.transformer
@@ -148,23 +183,39 @@ class Ltx2Sampler(GenericSamplingPipeline):
         video_emb = driver._video_embeddings(prompt_embedding).to(model_dtype)
         f, h, w = driver._latent_grid()
 
+        audio_on = self._audio_enabled()
+        driver._last_audio_latents = None
+        audio_x = None
+        audio_emb = None
+        audio_len = 1
+        if audio_on:
+            audio_len = self._audio_num_frames()
+            gen = torch.Generator(device=self.device).manual_seed(seed + 1)
+            audio_x = torch.randn(
+                noise.shape[0], audio_len, driver.audio_in_channels,
+                generator=gen, device=self.device, dtype=torch.float32,
+            )
+            audio_emb = driver._audio_embeddings(prompt_embedding, video_emb).to(model_dtype)
+
         sigmas = torch.linspace(1.0, 0.0, num_steps + 1, device=self.device)
 
         # Step the schedule in fp32; the per-step timestep is the sigma on the
         # [0, 1000] flow-match scale, passed RAW to the transformer (NOT ÷1000 —
-        # only add_noise normalizes). Video-only: a single zero audio token +
-        # isolate_modalities, mirroring forward_pass.
+        # only add_noise normalizes).
         x = noise.to(torch.float32)
         for i in range(len(sigmas) - 1):
             dt = sigmas[i + 1] - sigmas[i]
             t_val = float(sigmas[i]) * 1000.0
             xin = x.to(model_dtype)
             ts = x.new_ones(x.shape[0]) * t_val  # fp32 [0, 1000]
-            audio_h, audio_emb = driver._dummy_audio_inputs(xin, video_emb)
+            if audio_on:
+                audio_in = audio_x.to(model_dtype)
+            else:
+                audio_in, audio_emb = driver._dummy_audio_inputs(xin, video_emb)
             with torch.no_grad():
                 out = transformer(
                     hidden_states=xin,
-                    audio_hidden_states=audio_h,
+                    audio_hidden_states=audio_in,
                     encoder_hidden_states=video_emb,
                     audio_encoder_hidden_states=audio_emb,
                     timestep=ts,
@@ -173,12 +224,21 @@ class Ltx2Sampler(GenericSamplingPipeline):
                     height=h,
                     width=w,
                     fps=driver.frame_rate,
-                    audio_num_frames=1,
-                    isolate_modalities=True,
+                    audio_num_frames=audio_len if audio_on else 1,
+                    isolate_modalities=not audio_on,
                     return_dict=False,
                 )
-            v = (out[0] if isinstance(out, (tuple, list)) else out).to(torch.float32)
-            x = x + dt * v
+            if audio_on:
+                v_video = out[0].to(torch.float32)
+                v_audio = out[1].to(torch.float32)
+                x = x + dt * v_video
+                audio_x = audio_x + dt * v_audio
+            else:
+                v = (out[0] if isinstance(out, (tuple, list)) else out).to(torch.float32)
+                x = x + dt * v
+
+        if audio_on:
+            driver._last_audio_latents = audio_x
 
         return x
 
@@ -187,15 +247,21 @@ class Ltx2Sampler(GenericSamplingPipeline):
 
         Returns a :class:`SampleArtifact` so the base persists an mp4.  Audio is
         present only when the run trained the audio stream and a vocoder is
-        loaded; otherwise ``audio=None`` (silent clip).
+        loaded; otherwise ``audio=None`` (silent clip). Audio decode is
+        best-effort: any failure degrades to a silent clip (the video sample is
+        never lost to an audio-only error).
         """
         driver = self.pipeline.driver
         vae = self.pipeline.vae
         frames = self._decode_video(vae, driver, latents)
 
         audio = None
-        if driver.train_audio and driver.vocoder is not None:
-            audio = self._decode_audio(driver)
+        if self._audio_enabled():
+            try:
+                audio = self._decode_audio(driver)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ltx2_audio_decode_failed", error=str(e))
+                audio = None
 
         fps = float(self.config.get("sample_fps", driver.frame_rate))
         return SampleArtifact(frames=frames, audio=audio, fps=fps)
@@ -223,14 +289,55 @@ class Ltx2Sampler(GenericSamplingPipeline):
         # [B, C, F, H, W] → [C, F, H, W]
         return decoded[0].float().clamp(-1.0, 1.0)
 
-    def _decode_audio(self, driver) -> Tensor | None:
-        """Vocoder-decode audio latents → waveform (best-effort, lazy)."""
+    def _decode_audio(self, driver) -> tuple[Tensor, int] | None:
+        """Audio latents → waveform: denormalize → unpack → audio VAE → vocoder.
+
+        Returns ``(waveform, sample_rate)`` at the VOCODER's output rate (LTX-2
+        upsamples the 16 kHz mel domain to ~24 kHz) so the mp4 muxer tags the
+        AAC stream correctly. The audio VAE + vocoder are phased onto the GPU for
+        the decode and pushed back to CPU afterwards (they were offloaded after
+        pre-caching). Returns ``None`` when there are no audio latents.
+        """
+        from .audio_mel import denormalize_audio_latents, unpack_audio_latents
+
         audio_latents = getattr(driver, "_last_audio_latents", None)
         if audio_latents is None:
             return None
-        with torch.no_grad():
-            wav = driver.vocoder(audio_latents)
-        return wav.float() if isinstance(wav, Tensor) else None
+        audio_vae = driver.audio_vae
+        vocoder = driver.vocoder
+        if audio_vae is None or vocoder is None:
+            return None
+
+        cfg = getattr(audio_vae, "config", None)
+        num_mel_bins = int(getattr(cfg, "mel_bins", 64) or 64)
+        mel_comp = int(getattr(audio_vae, "mel_compression_ratio", 4) or 4)
+        latent_mel_bins = max(num_mel_bins // mel_comp, 1)
+        out_sr = int(
+            getattr(getattr(vocoder, "config", None), "output_sampling_rate", 24000) or 24000
+        )
+
+        moved = self._ensure_on_gpu(["audio_vae", "vocoder"])
+        try:
+            lat = audio_latents.to(self.device)
+            mean = getattr(audio_vae, "latents_mean", None)
+            std = getattr(audio_vae, "latents_std", None)
+            if mean is not None and std is not None:
+                lat = denormalize_audio_latents(lat, mean, std)
+            # Packed [B, L, C*M] → spectrogram latent [B, C, L, M].
+            lat = unpack_audio_latents(lat, latent_mel_bins)
+            with torch.no_grad():
+                lat = lat.to(audio_vae.dtype)
+                mel = audio_vae.decode(lat, return_dict=False)[0]
+                wav = vocoder(mel)
+        finally:
+            self._offload_to_cpu(moved)
+
+        if not isinstance(wav, Tensor):
+            return None
+        wav = wav.detach().float().cpu()
+        if wav.ndim == 3:  # [B, C, N] → [C, N]
+            wav = wav[0]
+        return wav.clamp_(-1.0, 1.0), out_sr
 
     @staticmethod
     def _unpack_latents(

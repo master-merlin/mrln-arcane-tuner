@@ -64,7 +64,7 @@ class SampleArtifact:
     """
 
     frames: Tensor
-    audio: Tensor | None = None
+    audio: Tensor | tuple[Tensor, int] | None = None
     fps: float = 16.0
 
 

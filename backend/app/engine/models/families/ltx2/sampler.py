@@ -25,6 +25,7 @@ import structlog
 import torch
 from torch import Tensor
 
+from app.engine.components.latents import LatentManager
 from app.engine.core.sampling import GenericSamplingPipeline, SampleArtifact
 
 if TYPE_CHECKING:
@@ -211,6 +212,12 @@ class Ltx2Sampler(GenericSamplingPipeline):
             )
         else:
             unpacked = latents
+        # The model emits latents in the VAE's NORMALIZED space ((z-mean)/std);
+        # the decoder expects raw-scale latents. LTX-2's std≈0.15 per channel, so
+        # skipping this fed ~6.7× too-large values to the VAE → pure-noise
+        # samples. Denormalize (per-channel, on the unpacked [B,C,F,H,W] tensor,
+        # exact inverse of LatentManager.normalize_latents used at encode time).
+        unpacked = LatentManager.denormalize_latents(unpacked, vae)
         with torch.no_grad():
             decoded = vae.decode(unpacked.to(vae.dtype), return_dict=False)[0]
         # [B, C, F, H, W] → [C, F, H, W]

@@ -55,3 +55,18 @@ def test_no_window_ever_ends_past_clip():
     wins = _win(0.0, 2.3, window_span_s=1.0, overlap=0.0, max_windows=10)
     assert all(end <= 2.3 + 1e-6 for _, end in wins)
     assert len(wins) == 2  # [0,1],[1,2]; the trailing 0.3s partial is dropped
+
+
+def test_overlap_ge_one_does_not_loop_forever():
+    # Defensive: overlap>=1 would make step 0 → infinite loop without the
+    # max(step, 1e-3) clamp. max_windows still bounds the result.
+    wins = _win(0.0, 100.0, window_span_s=1.0, overlap=1.0, max_windows=5)
+    assert len(wins) == 5
+    assert all(abs((end - start) - 1.0) < 1e-6 for start, end in wins)
+
+
+def test_max_windows_zero_is_floored_to_one():
+    # Defensive: max_windows<=0 is floored to 1 (the contract rejects <1
+    # upstream, but the helper must not divide-by-zero or emit nothing here).
+    wins = _win(0.0, 100.0, window_span_s=1.0, overlap=0.0, max_windows=0)
+    assert wins == [(0.0, 1.0)]

@@ -98,6 +98,11 @@ class PipelineDataMixin:
         usable duration is shorter than a single window, returns ``[]`` and the
         caller falls back to the original (validated) single window. Trim bounds
         are rounded to 3 decimals so two runs hash to the same cache filename.
+
+        Defensive bounds (the contract validator already rejects these upstream,
+        but the helper stays safe if called directly): ``overlap >= 1`` is
+        clamped so the step is at least 1 ms (never zero → no infinite loop),
+        and ``max_windows <= 0`` is floored to 1.
         """
         usable = max(end_s - trim_start_s, 0.0)
         if window_span_s <= 0.0 or usable < window_span_s:

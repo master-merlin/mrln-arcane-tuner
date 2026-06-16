@@ -120,6 +120,18 @@ class PipelineDataMixin:
             start += step
         return windows
 
+    def _effective_fps(self, native_or_target_fps: float) -> float:
+        """Apply Axis-B frame stride: effective fps = fps / frame_stride.
+
+        Divides the NATIVE (or native-equal target) fps — never a user-lowered
+        target_fps (the contract rejects that combination). Stride is the only
+        fps lever in Phase 1.
+        """
+        stride = int(self.config.get("frame_stride", 1) or 1)
+        if stride <= 1 or native_or_target_fps <= 0.0:
+            return float(native_or_target_fps)
+        return float(native_or_target_fps) / float(stride)
+
     async def prepare_data(self):
         """Fetch datasets via API, build inventory with aspect-ratio bucketing."""
         self.logger.info("preparing_data")
@@ -155,6 +167,13 @@ class PipelineDataMixin:
         # This is the GENERAL setting; a dataset may override it (see below).
         self._video_num_frames = int(self.config.get("num_frames", 0) or 0)
         self._video_resolutions = resolutions
+        # ── Phase 1 temporal-sampling knobs (read defensively) ──
+        self._temporal_coverage = str(
+            self.config.get("temporal_coverage", "first") or "first"
+        )
+        self._window_overlap = float(self.config.get("window_overlap", 0.0) or 0.0)
+        self._max_windows = int(self.config.get("max_windows", 10) or 10)
+        self._frame_stride = int(self.config.get("frame_stride", 1) or 1)
         # Cache of frame-ladder BucketManagers keyed by max-frames cap, so a
         # per-dataset override builds its ladder once and is reused.
         self._video_bm_cache: dict[int, Any] = {}
@@ -344,10 +363,16 @@ class PipelineDataMixin:
                                 vid_trim_end if vid_trim_end is not None else duration_s
                             )
                             eff_dur = max(end_s - vid_trim_start, 0.0)
-                            # Target fps: config override → native clip fps.
-                            vid_target_fps = float(
+                            # Target fps: config override → native clip fps,
+                            # then divided by Axis-B frame stride so the model
+                            # is told the EFFECTIVE (sampled) rate. available_
+                            # frames (bucket selection) and res_str use the same
+                            # effective rate, so a strided run buckets and caches
+                            # by what it actually samples.
+                            _base_fps = float(
                                 self._video_target_fps or native_fps or 0.0
                             )
+                            vid_target_fps = self._effective_fps(_base_fps)
                             available_frames = (
                                 int(eff_dur * vid_target_fps)
                                 if vid_target_fps > 0

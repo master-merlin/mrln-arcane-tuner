@@ -133,17 +133,65 @@ class LatentManager:
         return max((int(num_frames) - 1) // int(temporal_downscale) + 1, 1)
 
     def _has_latent_norm_stats(self) -> bool:
-        """Check if the VAE has per-channel latents_mean/latents_std config.
+        """Check if the VAE uses per-channel latents_mean/latents_std normalization.
 
-        Used by QwenImage and Wan VAEs for channel-wise normalization
-        instead of a scalar scaling_factor.
+        Used by QwenImage / Wan (stats on ``vae.config``) AND LTX-2, whose
+        ``AutoencoderKLLTX2Video`` registers ``latents_mean``/``latents_std`` as
+        persistent BUFFERS (``vae.latents_mean``), not config entries — checking
+        config alone missed them, so LTX-2 latents were cached UN-normalized
+        (std≈0.15) while the model works in normalized space → decoded samples
+        were pure noise.
         """
-        cfg = getattr(self.vae, "config", None)
-        return (
-            cfg is not None
-            and getattr(cfg, "latents_mean", None) is not None
-            and getattr(cfg, "latents_std", None) is not None
-        )
+        return LatentManager._resolve_norm_stats(self.vae) is not None
+
+    @staticmethod
+    def _resolve_norm_stats(vae):
+        """Return ``(latents_mean, latents_std)`` for *vae*, or ``None``.
+
+        Prefers ``vae.config`` (Wan / QwenImage) then falls back to module
+        buffers ``vae.latents_mean`` / ``vae.latents_std`` (LTX-2).
+        """
+        cfg = getattr(vae, "config", None)
+        mean = getattr(cfg, "latents_mean", None) if cfg is not None else None
+        std = getattr(cfg, "latents_std", None) if cfg is not None else None
+        if mean is None or std is None:
+            mean = getattr(vae, "latents_mean", None)
+            std = getattr(vae, "latents_std", None)
+        if mean is None or std is None:
+            return None
+        return mean, std
+
+    @staticmethod
+    def _norm_view(latents: torch.Tensor, stat) -> torch.Tensor:
+        """Channel-broadcast a 1-D stat to ``latents`` rank ([1, C, 1, …])."""
+        t = torch.as_tensor(stat, device=latents.device, dtype=latents.dtype)
+        return t.view(1, -1, *([1] * (latents.ndim - 2)))
+
+    @staticmethod
+    def normalize_latents(latents: torch.Tensor, vae) -> torch.Tensor:
+        """``(z - mean) / std`` (scaling_factor folded in upstream; LTX-2 sf=1).
+
+        No-op for VAEs without latents_mean/std (image VAEs) — returns *latents*.
+        """
+        stats = LatentManager._resolve_norm_stats(vae)
+        if stats is None:
+            return latents
+        mean, std = stats
+        return (latents - LatentManager._norm_view(latents, mean)) / LatentManager._norm_view(latents, std)
+
+    @staticmethod
+    def denormalize_latents(latents: torch.Tensor, vae) -> torch.Tensor:
+        """Inverse of :meth:`normalize_latents` — ``z * std + mean``.
+
+        Samplers MUST call this before ``vae.decode``: the model emits latents in
+        the normalized space, but the VAE decoder expects raw-scale latents.
+        No-op for VAEs without latents_mean/std.
+        """
+        stats = LatentManager._resolve_norm_stats(vae)
+        if stats is None:
+            return latents
+        mean, std = stats
+        return latents * LatentManager._norm_view(latents, std) + LatentManager._norm_view(latents, mean)
 
     @staticmethod
     def resolve_cache_dir(
@@ -274,23 +322,13 @@ class LatentManager:
                 if isinstance(self.vae, AutoencoderKLFlux2):
                     latents = encoded.latent_dist.mode()
                 elif self._has_latent_norm_stats():
-                    # QwenImage VAE: per-channel (z - mean) / std normalization
-                    # using pretrained latents_mean and latents_std from config.
-                    latents = encoded.latent_dist.mode()
-                    mean = torch.tensor(
-                        self.vae.config.latents_mean,
-                        device=latents.device,
-                        dtype=latents.dtype,
+                    # Per-channel (z - mean) / std normalization using the VAE's
+                    # pretrained latents_mean/latents_std (QwenImage/Wan: config;
+                    # LTX-2: module buffers). Shared with the sampler's decode
+                    # denormalization so the two can't drift.
+                    latents = LatentManager.normalize_latents(
+                        encoded.latent_dist.mode(), self.vae
                     )
-                    std = torch.tensor(
-                        self.vae.config.latents_std,
-                        device=latents.device,
-                        dtype=latents.dtype,
-                    )
-                    # Reshape for broadcasting: [1, C, 1, 1]
-                    mean = mean.view(1, -1, *([1] * (latents.ndim - 2)))
-                    std = std.view(1, -1, *([1] * (latents.ndim - 2)))
-                    latents = (latents - mean) / std
                 else:
                     # Standard Diffusers AutoencoderKL uses sample() + scaling.
                     # Some VAEs (e.g. Z-Image) also have a shift_factor that

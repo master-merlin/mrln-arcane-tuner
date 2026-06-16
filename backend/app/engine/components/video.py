@@ -284,9 +284,17 @@ class VideoFrameLoader:
             return int(waveform[1])
         return 44100
 
+    @staticmethod
+    def _audio_channels(waveform) -> int:
+        """Channel count of a waveform-or-(waveform, sr) input (1-D → mono)."""
+        if isinstance(waveform, tuple) and len(waveform) == 2:
+            waveform = waveform[0]
+        t = torch.as_tensor(waveform)
+        return int(t.shape[0]) if t.ndim >= 2 else 1
+
     @classmethod
     def _add_audio_stream(cls, container, waveform):
-        """Register an AAC stream with a resolved time_base (no encoding yet)."""
+        """Register an AAC stream with a resolved time_base + channel layout."""
         from fractions import Fraction
 
         sample_rate = cls._audio_sample_rate(waveform)
@@ -294,6 +302,12 @@ class VideoFrameLoader:
         # The stream's own time_base must be set before any mux or PyAV raises
         # "Cannot rebase to zero time" (it stays unset until header write).
         astream.time_base = Fraction(1, sample_rate)
+        # Match the encoder's channel layout to the waveform (stereo for LTX-2
+        # audio samples); otherwise a stereo frame meets a default-mono encoder.
+        try:
+            astream.layout = "stereo" if cls._audio_channels(waveform) >= 2 else "mono"
+        except (AttributeError, ValueError):  # older PyAV — default layout stands
+            pass
         return astream
 
     @classmethod
@@ -322,16 +336,21 @@ class VideoFrameLoader:
         layout = "mono" if n_ch == 1 else "stereo"
         time_base = Fraction(1, sample_rate)
 
-        chunk = 1024  # AAC frame size
+        chunk = 1024  # AAC frame size (samples PER CHANNEL)
         total = samples.shape[1]
         pts = 0
         for start in range(0, total, chunk):
-            block = np.ascontiguousarray(samples[:, start : start + chunk])
-            aframe = av.AudioFrame.from_ndarray(block, format="s16", layout=layout)
+            block = samples[:, start : start + chunk]  # [n_ch, frames]
+            frames_in_block = block.shape[1]
+            # ``s16`` is a PACKED format → PyAV wants interleaved [1, frames*n_ch]
+            # (L,R,L,R,…). Passing the planar [n_ch, frames] raised "Expected
+            # packed array.shape[0] to equal 1 but got 2" for stereo audio.
+            interleaved = np.ascontiguousarray(block.T.reshape(1, -1))
+            aframe = av.AudioFrame.from_ndarray(interleaved, format="s16", layout=layout)
             aframe.sample_rate = sample_rate
             aframe.pts = pts
             aframe.time_base = time_base
-            pts += block.shape[1]
+            pts += frames_in_block
             for packet in astream.encode(aframe):
                 container.mux(packet)
         for packet in astream.encode():  # flush

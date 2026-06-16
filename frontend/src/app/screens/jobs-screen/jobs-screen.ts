@@ -690,6 +690,23 @@ export class JobsScreen {
         if (this.sampleModal()) this.navSample(1);
     }
 
+    /**
+     * Re-pull the selected job's samples + checkpoints when the tab regains
+     * focus. The sample/checkpoint strips refresh reactively off the live WS
+     * log stream, but background tabs throttle the zoneless scheduler (and the
+     * log stream is torn down at job completion), so artifacts written while
+     * the tab is hidden never trigger that refresh — they stay invisible until
+     * a manual page reload. Treating re-focus as a refresh closes that gap.
+     */
+    @HostListener('document:visibilitychange')
+    protected onVisibilityChange(): void {
+        if (document.visibilityState !== 'visible') return;
+        const j = this.selectedJob();
+        if (!j) return;
+        this.loadSamples(j.id);
+        this.loadCheckpoints(j.id);
+    }
+
     // ── Sampling controls ───────────────────────────────────────────────
     protected toggleSamplingPause(): void {
         const j = this.selectedJob();

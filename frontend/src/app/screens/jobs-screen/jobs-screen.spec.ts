@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Component } from '@angular/core';
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { of } from 'rxjs';
@@ -185,5 +185,79 @@ describe('JobsScreen lightbox rendering', () => {
         fixture.detectChanges();
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('[data-testid="sample-video-thumb"]')).toBeTruthy();
+    });
+});
+
+/**
+ * Tab re-focus refresh.
+ *
+ * Background tabs throttle the zoneless scheduler and the live WS log stream is
+ * torn down at job completion, so samples/checkpoints written while the tab is
+ * hidden never trigger the reactive refresh — they stay invisible until a full
+ * page reload. Re-focusing the tab (visibilitychange → visible) must re-pull
+ * the selected job's samples + checkpoints so freshly-written artifacts surface.
+ */
+describe('JobsScreen visibility refresh', () => {
+    function setVisibility(state: 'visible' | 'hidden'): void {
+        Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+    }
+    afterEach(() => {
+        // Drop the own-property shadow so the jsdom prototype getter is restored.
+        delete (document as unknown as { visibilityState?: string }).visibilityState;
+    });
+
+    function svcOf(): { getJobSamples: ReturnType<typeof vi.fn>; getJobCheckpoints: ReturnType<typeof vi.fn> } {
+        return TestBed.inject(JobService) as unknown as {
+            getJobSamples: ReturnType<typeof vi.fn>;
+            getJobCheckpoints: ReturnType<typeof vi.fn>;
+        };
+    }
+
+    it('re-pulls samples + checkpoints for the selected job when the tab becomes visible', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        // The select effect already fetched once on selection; reset counters so
+        // we assert the refresh fires specifically on re-focus.
+        const svc = svcOf();
+        svc.getJobSamples.mockClear();
+        svc.getJobCheckpoints.mockClear();
+
+        setVisibility('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        expect(svc.getJobSamples).toHaveBeenCalledWith(JOB_ID);
+        expect(svc.getJobCheckpoints).toHaveBeenCalledWith(JOB_ID);
+    });
+
+    it('does nothing when the tab goes hidden', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        const svc = svcOf();
+        svc.getJobSamples.mockClear();
+        svc.getJobCheckpoints.mockClear();
+
+        setVisibility('hidden');
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        expect(svc.getJobSamples).not.toHaveBeenCalled();
+        expect(svc.getJobCheckpoints).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when no job is selected', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        const svc = svcOf();
+        svc.getJobSamples.mockClear();
+        svc.getJobCheckpoints.mockClear();
+
+        setVisibility('visible');
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        expect(svc.getJobSamples).not.toHaveBeenCalled();
+        expect(svc.getJobCheckpoints).not.toHaveBeenCalled();
     });
 });

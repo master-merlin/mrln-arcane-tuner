@@ -21,7 +21,14 @@ def test_phase1_video_fields_exist_with_defaults():
 
 def test_phase1_video_fields_carry_group_and_depends_on():
     schema = BaseTrainingConfig.model_json_schema()["properties"]
-    for key in ("temporal_coverage", "window_overlap", "max_windows", "frame_stride"):
+    for key in (
+        "temporal_coverage",
+        "window_overlap",
+        "max_windows",
+        "frame_stride",
+        "still_resolutions",
+        "radc_seqlen_influence",
+    ):
         assert schema[key]["group"] == "VIDEO"
     assert schema["window_overlap"]["depends_on"] == "temporal_coverage:tiled"
     assert schema["max_windows"]["depends_on"] == "temporal_coverage:tiled"

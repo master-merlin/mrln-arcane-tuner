@@ -225,3 +225,22 @@ class TestEncodeVideo:
             assert len(container.streams.audio) == 1
         finally:
             container.close()
+
+    def test_roundtrip_with_stereo_audio(self, tmp_path):
+        """A 2-channel waveform muxes a STEREO AAC stream.
+
+        Regression: LTX-2 samples produce stereo audio ([2, N]); the muxer fed
+        that planar layout to a PACKED ``s16`` ``from_ndarray`` → "Expected packed
+        array.shape[0] to equal 1 but got 2" (caught → silent mp4).
+        """
+        out = tmp_path / "out_stereo.mp4"
+        frames = torch.rand(3, 8, 64, 64) * 2 - 1
+        wav = torch.rand(2, 22050) * 2 - 1  # [2, N] stereo, 0.5s @ 44100
+        VideoFrameLoader().encode_video(frames, wav, fps=16, out_path=str(out))
+
+        container = av.open(str(out))
+        try:
+            assert len(container.streams.audio) == 1
+            assert container.streams.audio[0].codec_context.layout.nb_channels == 2
+        finally:
+            container.close()

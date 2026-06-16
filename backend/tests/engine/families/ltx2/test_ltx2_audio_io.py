@@ -34,7 +34,7 @@ def _write_sine_wav(path, *, sr, duration_s, freq=440.0, channels=1):
         w.writeframes(bytes(frames))
 
 
-def test_returns_fixed_length_mono_at_target_sr(tmp_path):
+def test_returns_fixed_length_stereo_at_target_sr(tmp_path):
     p = tmp_path / "a.wav"
     _write_sine_wav(p, sr=8000, duration_s=2.0)
 
@@ -43,7 +43,7 @@ def test_returns_fixed_length_mono_at_target_sr(tmp_path):
     assert out is not None
     wav, sr = out
     assert sr == 16000
-    assert wav.shape == (1, 16000)  # N = round(1.0 * 16000), mono
+    assert wav.shape == (2, 16000)  # 2 channels (LTX-2 audio VAE is stereo), N = 16000
     assert wav.dtype == torch.float32
     assert wav.abs().max() <= 1.0
 
@@ -56,12 +56,24 @@ def test_short_source_is_zero_padded_to_target_length(tmp_path):
 
     assert out is not None
     wav, _ = out
-    assert wav.shape == (1, 16000)  # padded out to a full second
+    assert wav.shape == (2, 16000)  # padded out to a full second, both channels
     # ~0.25s → ~4000 samples at 16k; everything well past that must be silence.
-    assert torch.count_nonzero(wav[0, 6000:]) == 0
+    assert torch.count_nonzero(wav[:, 6000:]) == 0
 
 
-def test_stereo_is_downmixed_to_mono(tmp_path):
+def test_mono_source_upmixed_to_stereo(tmp_path):
+    p = tmp_path / "mono.wav"
+    _write_sine_wav(p, sr=8000, duration_s=1.0, channels=1)
+
+    out = load_audio_waveform(str(p), trim_start_s=0.0, duration_s=0.5, target_sr=16000)
+
+    assert out is not None
+    wav, _ = out
+    assert wav.shape == (2, 8000)  # mono duplicated into both channels
+    assert torch.allclose(wav[0], wav[1])
+
+
+def test_stereo_source_preserved_as_two_channels(tmp_path):
     p = tmp_path / "stereo.wav"
     _write_sine_wav(p, sr=8000, duration_s=1.0, channels=2)
 
@@ -69,7 +81,7 @@ def test_stereo_is_downmixed_to_mono(tmp_path):
 
     assert out is not None
     wav, _ = out
-    assert wav.shape == (1, 8000)  # single (mono) channel, 0.5s @ 16k
+    assert wav.shape == (2, 8000)  # both channels, 0.5s @ 16k
 
 
 def test_trim_start_offsets_the_window(tmp_path):
@@ -80,7 +92,7 @@ def test_trim_start_offsets_the_window(tmp_path):
     offset = load_audio_waveform(str(p), trim_start_s=1.0, duration_s=1.0, target_sr=16000)
 
     assert full is not None and offset is not None
-    # The offset window equals the back half of the full decode.
+    # The offset window equals the back half of the full decode (per channel).
     assert torch.allclose(offset[0][0], full[0][0, 16000:], atol=1e-4)
 
 

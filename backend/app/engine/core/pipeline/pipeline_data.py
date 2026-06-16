@@ -79,6 +79,42 @@ class PipelineDataMixin:
             )
         return cache[cap]
 
+    def _compute_tiled_windows(
+        self,
+        *,
+        trim_start_s: float,
+        end_s: float,
+        window_span_s: float,
+        overlap: float,
+        max_windows: int,
+    ) -> list[tuple[float, float]]:
+        """Partition ``[trim_start_s, end_s]`` into up to ``max_windows`` windows.
+
+        Each window covers ``window_span_s`` seconds — the time a clip needs to
+        supply ``target_frames`` at the effective fps — and is stepped by
+        ``(1 - overlap) * window_span_s``. Windows never extend past ``end_s``;
+        a trailing partial shorter than ``window_span_s`` is dropped (it would
+        not supply ``target_frames`` and would crash ``load_clip``). If the
+        usable duration is shorter than a single window, returns ``[]`` and the
+        caller falls back to the original (validated) single window. Trim bounds
+        are rounded to 3 decimals so two runs hash to the same cache filename.
+        """
+        usable = max(end_s - trim_start_s, 0.0)
+        if window_span_s <= 0.0 or usable < window_span_s:
+            # Cannot supply a full window → let the caller use the legacy window.
+            return []
+
+        step = max((1.0 - overlap) * window_span_s, 1e-3)
+        windows: list[tuple[float, float]] = []
+        start = trim_start_s
+        while len(windows) < max(max_windows, 1):
+            win_end = start + window_span_s
+            if win_end > end_s + 1e-6:
+                break
+            windows.append((round(start, 3), round(win_end, 3)))
+            start += step
+        return windows
+
     async def prepare_data(self):
         """Fetch datasets via API, build inventory with aspect-ratio bucketing."""
         self.logger.info("preparing_data")

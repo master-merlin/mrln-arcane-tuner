@@ -161,6 +161,9 @@ async def run_async_trainer(trainer, log_writer=None):
 
         trainer._validate_latent_cache()
         await trainer._pre_cache_latents()
+        # Second-modality cache (LTX-2 audio latents) — runs while the audio VAE
+        # is still resident; no-op for every other family.
+        trainer._pre_cache_aux()
 
         trainer._offload_vae()
 

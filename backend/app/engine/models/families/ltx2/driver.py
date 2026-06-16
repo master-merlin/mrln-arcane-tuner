@@ -445,6 +445,11 @@ class Ltx2Driver(IModelDriver):
         mel = self._audio_mel.waveform_to_mel(
             waveform.to(self.device), sample_rate,
         )
+        # The mel transform emits fp32; the audio VAE may be bf16/fp16. Match its
+        # dtype so ``audio_vae.encode`` doesn't hit a CUDA mat-mul dtype mismatch.
+        vae_dtype = getattr(self.audio_vae, "dtype", None)
+        if vae_dtype is not None:
+            mel = mel.to(dtype=vae_dtype)
         return encode_clean_audio_latents(self.audio_vae, mel)
 
     def _latent_grid(self) -> tuple[int, int, int]:

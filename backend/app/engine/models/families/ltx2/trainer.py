@@ -13,6 +13,7 @@ plain video flow-match MSE — identical to the audio-free pipeline path.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
@@ -262,3 +263,165 @@ class Ltx2Trainer(GenericTrainingPipeline):
             audio_mask=audio_mask,
         )
         return loss / grad_accum
+
+    # ── Audio latent cache (data path) ────────────────────────────────────
+
+    @staticmethod
+    def _audio_cache_dir(video_cache_dir: str) -> str:
+        """Audio latents live in an ``audio/`` sibling of the video latent dir.
+
+        Keeping them in a SEPARATE file (same content-addressed, trim-aware
+        filename) means enabling audio never disturbs an existing video-only
+        cache, and audio coverage is checked independently of video coverage.
+        """
+        return os.path.join(video_cache_dir, "audio")
+
+    def _pre_cache_aux(self) -> None:
+        """Pre-cache LTX-2 audio latents alongside the video latents.
+
+        Runs (via ``run_trainer``) right after ``_pre_cache_latents`` while the
+        audio VAE is still resident — the next step offloads VAEs. For each
+        video clip it decodes the audio of the SAME trim window, builds the
+        clean (packed + normalized) audio latent, and caches it keyed identically
+        to the video latent. Clips with no audio stream are skipped (their loss
+        is masked to zero at train time). No-op unless this run trains audio.
+
+        This is what makes ``batch["audio_clean"]`` available — without it the
+        driver's joint forward always falls back to the video-only branch and
+        the audio LoRA modules receive zero gradient.
+        """
+        if not getattr(self.driver, "train_audio", False):
+            return
+        if getattr(self.driver, "audio_vae", None) is None:
+            return
+        if not self.config.get("cache_latents", True):
+            return
+
+        from safetensors.torch import save_file
+
+        from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+
+        from .audio_io import load_audio_waveform
+
+        sr = int(self.driver.audio_sampling_rate)
+        default_fps = float(getattr(self.driver, "frame_rate", 24.0) or 24.0)
+        encoded = skipped = absent = 0
+
+        for item in self.inventory:
+            if not item.get("is_video"):
+                continue  # stills carry no temporal audio → masked at train time
+            extra_key = video_trim_extra_key(item)
+            adir = self._audio_cache_dir(item["cache_dir"])
+            fname = self.latent_manager.latent_filename(
+                item["id"], item["path"], extra_key
+            )
+            path = os.path.join(adir, fname)
+            if os.path.exists(path):
+                skipped += 1
+                continue
+
+            frames = int(item.get("target_frames", 1) or 1)
+            fps = float(item.get("target_fps") or default_fps)
+            duration = frames / fps if fps > 0 else 0.0
+            wav = load_audio_waveform(
+                item["path"],
+                trim_start_s=float(item.get("trim_start_s") or 0.0),
+                duration_s=duration,
+                target_sr=sr,
+            )
+            if wav is None:
+                absent += 1
+                continue
+
+            waveform, wav_sr = wav
+            with torch.no_grad():
+                # encode_audio_clean wants [B, C, N]; waveform is [C=1, N].
+                latent = self.driver.encode_audio_clean(
+                    waveform.unsqueeze(0).to(self.device), wav_sr,
+                )  # [1, L, 128]
+            os.makedirs(adir, exist_ok=True)
+            save_file({"audio_latents": latent[0].detach().cpu()}, path)
+            encoded += 1
+
+        self.logger.info(
+            "ltx2_audio_precache_done",
+            encoded=encoded,
+            skipped=skipped,
+            absent=absent,
+        )
+
+        # The audio VAE is unused after this point at train time — offload it so
+        # it doesn't sit in VRAM during UNet training (the base _offload_vae only
+        # handles the video VAE).
+        audio_vae = getattr(self.driver, "audio_vae", None)
+        if audio_vae is not None and hasattr(audio_vae, "to"):
+            audio_vae.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
+        """Attach cached audio latents + presence mask to the training batch.
+
+        Returns ``{"audio_clean": [B, L, 128], "audio_mask": [B]}`` so the
+        driver's joint forward noises the audio stream and the masked audio loss
+        flows. Items with no cached audio (no audio stream, or a still image) get
+        a zero latent shaped like a present sibling and ``mask = 0`` — so they
+        neither contribute to nor crash the collated batch. When NOTHING in the
+        batch carries audio, returns ``{}`` so the forward stays video-only.
+
+        Defensive on shape: a present latent whose ``L`` differs from the batch
+        reference (should not happen within a temporal bucket) is treated as
+        absent rather than crashing ``torch.stack``.
+        """
+        if not getattr(self.driver, "train_audio", False):
+            return {}
+        if not self.config.get("cache_latents", True):
+            return {}
+
+        from safetensors.torch import load_file
+
+        from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+
+        latents: list[torch.Tensor | None] = []
+        for item in items:
+            lat: torch.Tensor | None = None
+            if item.get("is_video"):
+                extra_key = video_trim_extra_key(item)
+                adir = self._audio_cache_dir(item["cache_dir"])
+                fname = self.latent_manager.latent_filename(
+                    item["id"], item["path"], extra_key
+                )
+                path = os.path.join(adir, fname)
+                if os.path.exists(path):
+                    try:
+                        lat = load_file(path)["audio_latents"]
+                    except (OSError, KeyError) as e:
+                        self.logger.warning(
+                            "ltx2_audio_cache_load_failed", path=path, error=str(e)
+                        )
+            latents.append(lat)
+
+        ref = next((latent for latent in latents if latent is not None), None)
+        if ref is None:
+            return {}  # no audio anywhere in this batch → video-only forward
+
+        filled: list[torch.Tensor] = []
+        present: list[float] = []
+        for latent in latents:
+            if latent is not None and latent.shape == ref.shape:
+                filled.append(latent)
+                present.append(1.0)
+            else:
+                if latent is not None:
+                    self.logger.warning(
+                        "ltx2_audio_latent_shape_mismatch",
+                        expected=list(ref.shape),
+                        actual=list(latent.shape),
+                    )
+                filled.append(torch.zeros_like(ref))
+                present.append(0.0)
+
+        return {
+            "audio_clean": torch.stack(filled).to(self.device),
+            "audio_mask": torch.tensor(present, device=self.device),
+        }

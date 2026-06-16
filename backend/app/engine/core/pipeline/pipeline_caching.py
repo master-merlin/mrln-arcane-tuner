@@ -24,6 +24,17 @@ class PipelineCachingMixin:
         moved off GPU.
         """
 
+    def _pre_cache_aux(self) -> None:
+        """Cache auxiliary per-item latents after the video/image latent pass.
+
+        No-op by default. Families with a SECOND cached modality (LTX-2's audio
+        stream) override this to encode + cache it while their extra VAE is still
+        resident — ``run_trainer`` offloads VAEs immediately after this runs.
+        Unlike the video pre-cache, this is not gated on the video coverage count
+        (``_latent_cache_missing``): a dataset can have complete video latents but
+        no audio yet, so this hook always runs and does its own per-item check.
+        """
+
     def _build_caption_hints(self) -> dict[str, str]:
         """Build the full set of captions needed for TE pre-caching.
 

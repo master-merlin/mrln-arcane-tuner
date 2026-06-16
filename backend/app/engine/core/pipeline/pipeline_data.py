@@ -132,6 +132,61 @@ class PipelineDataMixin:
             return float(native_or_target_fps)
         return float(native_or_target_fps) / float(stride)
 
+    def _emit_temporal_items(
+        self,
+        *,
+        base_item: dict,
+        trim_start_s: float,
+        end_s: float,
+        window_span_s: float,
+        repeats: int,
+    ) -> list[dict]:
+        """Expand one clip×bucket into per-window inventory items × repeats.
+
+        ``first`` (default) → one item per repeat with the original trim window.
+        ``tiled`` → K full windows (``_compute_tiled_windows``), each repeated
+        ``repeats`` times (K×repeats, so each window keeps the clip's repeat
+        weighting). A clip too short for one window falls back to the single
+        original window (``_compute_tiled_windows`` returns []). Every item is a
+        fresh dict (no shared mutable state).
+
+        The fallback (first mode, non-video, or short clip) clones ``base_item``
+        VERBATIM — it does NOT overwrite ``trim_start_s``/``trim_end_s`` with the
+        computed ``end_s``. This keeps the trim-cache key byte-identical to the
+        pre-tiling path: an untrimmed clip carries ``trim_end_s = None`` and must
+        keep it (``video_trim_extra_key`` formats ``t{start}-{end}``, so writing a
+        concrete end where ``None`` was would silently re-key the latent cache and
+        re-encode every untrimmed clip). Only genuine tiled sub-windows overwrite
+        the trim bounds (they are new windows → new keys by design).
+        """
+        coverage = getattr(self, "_temporal_coverage", "first")
+        windows: list[tuple[float, float]] = []
+        if base_item.get("is_video") and coverage == "tiled":
+            windows = self._compute_tiled_windows(
+                trim_start_s=trim_start_s,
+                end_s=end_s,
+                window_span_s=window_span_s,
+                overlap=getattr(self, "_window_overlap", 0.0),
+                max_windows=getattr(self, "_max_windows", 10),
+            )
+
+        out: list[dict] = []
+        if not windows:
+            # first mode, non-video, or clip shorter than one window: preserve
+            # the base item's ORIGINAL trim window verbatim (including a None
+            # end) so the cache key matches the pre-tiling path exactly.
+            for _ in range(repeats):
+                out.append(dict(base_item))
+            return out
+
+        for w_start, w_end in windows:
+            for _ in range(repeats):
+                clone = dict(base_item)
+                clone["trim_start_s"] = w_start
+                clone["trim_end_s"] = w_end
+                out.append(clone)
+        return out
+
     async def prepare_data(self):
         """Fetch datasets via API, build inventory with aspect-ratio bucketing."""
         self.logger.info("preparing_data")
@@ -542,8 +597,34 @@ class PipelineDataMixin:
                                     continue
                                 item.update(control_fields)
 
-                            for _ in range(repeats):
-                                inventory.append(item)
+                            if is_video:
+                                # Seconds a single window must cover to supply
+                                # tgt_f frames at the effective fps.
+                                _span = (
+                                    tgt_f / vid_target_fps
+                                    if vid_target_fps > 0
+                                    else 0.0
+                                )
+                                # Pass the FULL usable end (``end_s`` above is
+                                # duration-aware — it uses the clip's duration_s
+                                # for an untrimmed clip) so tiled mode enumerates
+                                # windows across the WHOLE clip. A one-window-wide
+                                # end here would silently collapse tiling to a
+                                # single window for every untrimmed clip. first /
+                                # fallback mode ignores end_s and clones the
+                                # original trim window verbatim.
+                                inventory.extend(
+                                    self._emit_temporal_items(
+                                        base_item=item,
+                                        trim_start_s=vid_trim_start,
+                                        end_s=end_s,
+                                        window_span_s=_span,
+                                        repeats=repeats,
+                                    )
+                                )
+                            else:
+                                for _ in range(repeats):
+                                    inventory.append(item)
 
                 except (httpx.HTTPError, OSError, ValueError, KeyError) as e:
                     self.logger.error("dataset_api_error", name=name, error=str(e))

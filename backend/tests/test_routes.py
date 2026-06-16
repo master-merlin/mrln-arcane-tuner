@@ -372,6 +372,58 @@ def test_get_sample_image_not_found(mock_to_thread, mock_jm, client):
     assert response.status_code == 404
 
 
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_includes_video(mock_to_thread, mock_jm, client, tmp_path):
+    """Video (.mp4) samples must be listed too — the old .png-only filter hid
+    every LTX-2/WAN video sample so the gallery looked empty."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ltx2-3-base"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000000.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    (sdir / "sample_00_step000250.png").write_bytes(b"\x89PNG\r\n")
+    (sdir / "notes.txt").write_text("ignored")  # non-media is skipped
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    names = {s["filename"] for s in response.json()}
+    assert names == {"sample_00_step000000.mp4", "sample_00_step000250.png"}
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_get_sample_image_serves_video_content_type(mock_to_thread, mock_jm, client, tmp_path):
+    """An .mp4 sample is served as video/mp4, not the old hard-coded image/png."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ltx2-3-base"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000000.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples/sample_00_step000000.mp4")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("video/mp4")
+
+
 # ── Resumable checkpoint .zip download ──────────────────────────────────
 
 

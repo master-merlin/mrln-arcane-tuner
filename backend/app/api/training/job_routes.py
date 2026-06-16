@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import os
 import re
 import tempfile
@@ -278,6 +279,14 @@ async def get_sampling_cadence(job_id: str):
 # ── Sample Images ───────────────────────────────────────────────────────
 
 
+# Sample artifacts the gallery lists: still images AND video clips (LTX-2 / WAN
+# families write .mp4). The .png-only filter here silently hid every video
+# sample — the gallery looked empty even though the files were on disk.
+_SAMPLE_EXTENSIONS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm"}
+)
+
+
 def _resolve_sample_dir(job: Job) -> Path:
     """Resolve the sample images directory for a job."""
     cfg = job.config
@@ -306,7 +315,7 @@ async def list_job_samples(job_id: str):
     def _scan_samples() -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for fpath in sample_dir.iterdir():
-            if not fpath.suffix.lower() == ".png":
+            if fpath.suffix.lower() not in _SAMPLE_EXTENSIONS:
                 continue
 
             parts = fpath.stem.split("_")
@@ -355,7 +364,10 @@ async def get_sample_image(job_id: str, filename: str):
     if not fpath.is_file():
         raise HTTPException(status_code=404, detail="Sample not found")
 
-    return FileResponse(str(fpath), media_type="image/png")
+    # Content-type by extension — a hard-coded image/png mislabels .mp4 video
+    # samples, which can stop the browser <video> element from playing them.
+    media_type, _ = mimetypes.guess_type(str(fpath))
+    return FileResponse(str(fpath), media_type=media_type or "application/octet-stream")
 
 
 def _resolve_run_dir(job: Job) -> Path:

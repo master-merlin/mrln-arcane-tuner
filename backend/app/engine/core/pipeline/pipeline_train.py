@@ -176,7 +176,14 @@ class PipelineTrainMixin:
 
             for accum_idx in range(grad_accum):
                 batch_items = next(data_iter)
-                batch = self._get_batch(batch_items)
+                # Video families pay a heavy per-clip PyAV decode that a warm
+                # latent cache turns into pure waste (the pixels are discarded
+                # for the cached latent), starving the GPU. Defer their decode
+                # and re-run it only on a cache miss; image/pixel families (incl.
+                # the pixel-space ones that read batch["images"] in forward)
+                # decode upfront, byte-identical to before.
+                defer_decode = bool(getattr(self, "is_video_family", False))
+                batch = self._get_batch(batch_items, decode_pixels=not defer_decode)
 
                 # 1. Encode Latents
                 with torch.no_grad():
@@ -198,7 +205,14 @@ class PipelineTrainMixin:
                         )
                     if latents is None:
                         # Cache miss — should only happen if pre-cache was
-                        # skipped or new items were added mid-run.
+                        # skipped or new items were added mid-run. Decode the
+                        # pixels now if we deferred them above (video families),
+                        # then encode. Re-decode uses the same variant-selected
+                        # paths so the latent it writes is keyed identically.
+                        if batch.get("images") is None:
+                            batch["images"] = self._decode_batch_images(
+                                batch_items, batch["paths"]
+                            )
                         self._uncached_encode_count = (
                             getattr(self, "_uncached_encode_count", 0) + 1
                         )

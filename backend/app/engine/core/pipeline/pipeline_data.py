@@ -717,14 +717,22 @@ class PipelineDataMixin:
         cap = select_training_caption(item, _def_id)
         return item["path"], cap, item["cache_dir"]
 
-    def _get_batch(self, items: list[dict]) -> dict[str, Any]:
+    def _get_batch(self, items: list[dict], decode_pixels: bool = True) -> dict[str, Any]:
         """Build a training batch from inventory items.
 
         When augmentation is configured, applies per-sample variant
         selection (original / masked).  Flip augmentation is applied
         later to the latent tensor in the training loop.
+
+        ``decode_pixels`` gates whether source pixels are decoded into
+        ``batch["images"]``. A video clip's PyAV decode + resize is the heaviest
+        per-step work, yet with a warm latent cache those pixels are immediately
+        discarded for the cached latent — pure waste that starves the GPU. The
+        train loop passes ``decode_pixels=False`` for video families and
+        re-decodes on demand (:meth:`_decode_batch_images`) only on the rare
+        cache miss, leaving ``batch["images"]`` ``None`` otherwise. Image/pixel
+        families decode upfront (the default) so they stay byte-identical.
         """
-        images: list[torch.Tensor] = []
         captions: list[str] = []
         ids: list[str] = []
         cache_dirs: list[str] = []
@@ -741,48 +749,26 @@ class PipelineDataMixin:
         )
         is_video_family = bool(getattr(self, "is_video_family", False))
 
+        # Pixels are only needed to ENCODE a latent; when the caller defers the
+        # decode (warm cache, video families) we still build every other field
+        # and leave images unbuilt — the train loop re-decodes only on a miss.
+        images: list[torch.Tensor] | None = [] if decode_pixels else None
+
         for item in items:
             # ── Variant selection ──
             img_path, cap, cache_dir = self._select_variant(item)
-            tw, th = item["target_w"], item["target_h"]
 
-            if item.get("is_video"):
-                # Decode a clip → [C, F, H, W] (flip applied later on latents,
-                # matching the image path's latent-space augmentation).
-                from app.engine.components.video import VideoFrameLoader
-
-                clip = VideoFrameLoader().load_clip(
-                    img_path,
-                    target_frames=int(item["target_frames"]),
-                    target_fps=float(item["target_fps"]),
-                    trim_start_s=float(item.get("trim_start_s") or 0.0),
-                    trim_end_s=item.get("trim_end_s"),
-                    target_w=tw,
-                    target_h=th,
-                    h_flip=False,
+            if images is not None:
+                # Decode now (flip applied later on latents, matching the image
+                # path's latent-space augmentation).
+                images.append(
+                    self._decode_item_image(
+                        item, img_path, transform_norm, is_video_family
+                    )
                 )
-                images.append(clip)
-                # Trim window folds into the cache-file hash (shared helper so
-                # pre-caching computes the identical key).
-                extra_keys.append(video_trim_extra_key(item))
-            else:
-                img = Image.open(img_path).convert("RGB")
-
-                # Smart resize + center crop
-                scale = max(tw / img.width, th / img.height)
-                nw, nh = int(img.width * scale), int(img.height * scale)
-                img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-                left = (nw - tw) // 2
-                top = (nh - th) // 2
-                img = img.crop((left, top, left + tw, top + th))
-
-                still = transform_norm(img)  # [C, H, W]
-                # In a video-family run, lift stills to a 1-frame clip so the
-                # whole batch collates 5D. Pure image families keep [C, H, W].
-                if is_video_family:
-                    still = still.unsqueeze(1)  # [C, 1, H, W]
-                images.append(still)
-                extra_keys.append("")
+            # Trim window folds into the cache-file hash (shared helper so
+            # pre-caching computes the identical key); "" for images.
+            extra_keys.append(video_trim_extra_key(item))
 
             # Caption construction
             is_dropped = random.random() < item["dropout_rate"]
@@ -814,7 +800,9 @@ class PipelineDataMixin:
             batch_paths.append(img_path)
 
         batch = {
-            "images": torch.stack(images).to(self.device),
+            "images": (
+                torch.stack(images).to(self.device) if images is not None else None
+            ),
             "captions": captions,
             "ids": ids,
             "cache_dirs": cache_dirs,
@@ -843,6 +831,71 @@ class PipelineDataMixin:
         # Let families add extra data (e.g. SDXL time_ids)
         batch.update(self.build_batch_extra(items))
         return batch
+
+    def _decode_item_image(
+        self,
+        item: dict,
+        img_path: str,
+        transform_norm,
+        is_video_family: bool,
+    ) -> torch.Tensor:
+        """Decode one inventory item's source pixels to a training tensor.
+
+        Video → ``[C, F, H, W]`` via the clip loader. Stills → ``[C, H, W]``
+        (smart-resized + center-cropped + normalized), lifted to ``[C, 1, H, W]``
+        in a video-family run so the whole batch collates 5D. Consumes no RNG,
+        so deferring/repeating the decode never perturbs training determinism.
+        """
+        tw, th = item["target_w"], item["target_h"]
+        if item.get("is_video"):
+            from app.engine.components.video import VideoFrameLoader
+
+            return VideoFrameLoader().load_clip(
+                img_path,
+                target_frames=int(item["target_frames"]),
+                target_fps=float(item["target_fps"]),
+                trim_start_s=float(item.get("trim_start_s") or 0.0),
+                trim_end_s=item.get("trim_end_s"),
+                target_w=tw,
+                target_h=th,
+                h_flip=False,
+            )
+
+        img = Image.open(img_path).convert("RGB")
+        # Smart resize + center crop
+        scale = max(tw / img.width, th / img.height)
+        nw, nh = int(img.width * scale), int(img.height * scale)
+        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+        left = (nw - tw) // 2
+        top = (nh - th) // 2
+        img = img.crop((left, top, left + tw, top + th))
+
+        still = transform_norm(img)  # [C, H, W]
+        if is_video_family:
+            still = still.unsqueeze(1)  # [C, 1, H, W]
+        return still
+
+    def _decode_batch_images(
+        self, items: list[dict], paths: list[str]
+    ) -> torch.Tensor:
+        """Decode pixels for a batch whose decode was deferred (cache miss).
+
+        Uses the already variant-selected ``paths`` from :meth:`_get_batch` so
+        the decoded pixels line up exactly with the ids/cache_dirs used for the
+        latent-cache lookup. Mirrors the in-loop decode byte-for-byte.
+        """
+        transform_norm = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        is_video_family = bool(getattr(self, "is_video_family", False))
+        images = [
+            self._decode_item_image(item, path, transform_norm, is_video_family)
+            for item, path in zip(items, paths)
+        ]
+        return torch.stack(images).to(self.device)
 
     @staticmethod
     def _load_image_to(path: str, tw: int, th: int, transform) -> torch.Tensor:

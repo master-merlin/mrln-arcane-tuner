@@ -215,13 +215,13 @@
                                 <figure class="sample-tile">
                                     <button class="sample-btn" type="button" (click)="openSample(s)" [title]="'View ' + s.filename">
                                         @if (isVideoSample(s.filename)) {
-                                            <!-- An <img> can't render an mp4/webm, so video thumbs are a
-                                                 lightweight placeholder tile with a play glyph; the caption
-                                                 carries the step. Clicking opens the lightbox <video>. -->
-                                            <div class="sample-img sample-video-thumb" data-testid="sample-video-thumb"
-                                                 style="display:flex;align-items:center;justify-content:center;color:var(--color-text-secondary)">
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                                            </div>
+                                            <!-- Video sample: poster (first frame) at rest, plays muted in
+                                                 place on hover — same look & feel as the dataset grid tile.
+                                                 Clicking still opens the lightbox <video>. -->
+                                            <app-sample-video-preview
+                                                class="sample-img"
+                                                [src]="sampleImageUrl(j.id, s.filename)"
+                                                data-testid="sample-video-thumb" />
                                         } @else {
                                             <img class="sample-img"
                                                  [src]="sampleImageUrl(j.id, s.filename)"

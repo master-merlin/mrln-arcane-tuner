@@ -32,6 +32,7 @@ import { SegmentedComponent } from '../../ui/segmented/segmented.component';
 import { JsonEditorComponent } from '../../ui/json-editor/json-editor.component';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { SparklineComponent } from '../../ui/sparkline/sparkline.component';
+import { SampleVideoPreviewComponent } from './sample-video-preview';
 import {
     bestLoss,
     bestLossSpark,
@@ -79,6 +80,7 @@ interface ConfigRow {
         JsonEditorComponent,
         KpiTileComponent,
         SparklineComponent,
+        SampleVideoPreviewComponent,
         UpperCasePipe,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,

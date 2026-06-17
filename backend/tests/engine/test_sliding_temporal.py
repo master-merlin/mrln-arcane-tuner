@@ -110,3 +110,15 @@ class TestSlidingFullClipManager:
         assert run_bm.frame_bucket_for(available) == 25      # run cap
         assert full_bm.frame_bucket_for(available) == 121     # full ladder
         assert full_bm.frame_bucket_for(available) > run_bm.frame_bucket_for(available)
+
+
+class TestPrecacheFrameSelection:
+    def test_sliding_uses_cache_frames(self):
+        from app.engine.core.pipeline.pipeline_caching import _frames_to_encode
+        item = {"temporal_mode": "sliding", "cache_frames": 81, "target_frames": 25}
+        assert _frames_to_encode(item) == 81
+
+    def test_non_sliding_uses_target_frames(self):
+        from app.engine.core.pipeline.pipeline_caching import _frames_to_encode
+        assert _frames_to_encode({"target_frames": 25}) == 25
+        assert _frames_to_encode({}) == 1

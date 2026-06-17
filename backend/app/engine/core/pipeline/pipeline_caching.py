@@ -13,6 +13,17 @@ from torchvision import transforms
 logger = structlog.get_logger(__name__)
 
 
+def _frames_to_encode(item: dict) -> int:
+    """Frames the pre-cache should decode+encode for an item.
+
+    Sliding caches the FULL clip (cache_frames); every other mode caches the
+    per-step window (target_frames). Images default to 1.
+    """
+    if item.get("temporal_mode") == "sliding":
+        return int(item.get("cache_frames") or item.get("target_frames", 1) or 1)
+    return int(item.get("target_frames", 1) or 1)
+
+
 class PipelineCachingMixin:
     """Text embedding cache building and latent pre-caching."""
 
@@ -305,6 +316,8 @@ class PipelineCachingMixin:
                         "target_fps": item.get("target_fps"),
                         "trim_start_s": item.get("trim_start_s"),
                         "trim_end_s": item.get("trim_end_s"),
+                        "temporal_mode": item.get("temporal_mode"),
+                        "cache_frames": item.get("cache_frames"),
                         "extra_key": extra_key,
                     })
 
@@ -344,7 +357,7 @@ class PipelineCachingMixin:
 
                     clip = VideoFrameLoader().load_clip(
                         item["path"],
-                        target_frames=int(item.get("target_frames", 1)),
+                        target_frames=_frames_to_encode(item),
                         target_fps=float(item.get("target_fps") or 0.0),
                         trim_start_s=float(item.get("trim_start_s") or 0.0),
                         trim_end_s=item.get("trim_end_s"),

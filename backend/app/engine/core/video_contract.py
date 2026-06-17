@@ -242,6 +242,14 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             "effective fps."
         )
 
+    # Sliding-mode clip-length guard (0 = disabled).
+    smcs = _to_float(config.get("sliding_max_clip_seconds"))
+    if smcs < 0.0:
+        report.errors.append(
+            f"sliding_max_clip_seconds={config.get('sliding_max_clip_seconds')} "
+            "must be >= 0."
+        )
+
     # radc_seqlen_influence is only meaningful under the radc sampler.
     if _to_float(config.get("radc_seqlen_influence")) > 0.0 and str(
         config.get("timestep_sampling", "")

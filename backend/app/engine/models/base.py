@@ -1135,6 +1135,20 @@ class BaseTrainingConfig(BaseModel):
         ),
         json_schema_extra={"group": "VIDEO", "min": 1, "max": 8, "step": 1},
     )
+    sliding_max_clip_seconds: float = Field(
+        0.0,
+        description=(
+            "Sliding mode: clips longer than this (seconds) fall back to tiled "
+            "windows instead of one full-clip latent (0 = no limit; the frame "
+            "ladder still caps the cached length)."
+        ),
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "temporal_coverage:sliding",
+            "min": 0.0,
+            "step": 1.0,
+        },
+    )
     # ── Forward-compat (Phase 3): declared now so configs validate, inert until P3 ──
     still_resolutions: list[int] = Field(
         default=[],

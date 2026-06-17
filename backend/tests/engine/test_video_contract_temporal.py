@@ -219,3 +219,37 @@ def test_radc_seqlen_influence_accepted_with_radc(monkeypatch):
         },
     )
     assert rep.ok, rep.errors
+
+
+def test_sliding_max_clip_seconds_schema_default_and_metadata():
+    schema = BaseTrainingConfig.model_json_schema()["properties"]
+    assert schema["sliding_max_clip_seconds"]["default"] == 0.0
+    assert schema["sliding_max_clip_seconds"]["group"] == "VIDEO"
+    assert schema["sliding_max_clip_seconds"]["depends_on"] == "temporal_coverage:sliding"
+
+
+def test_sliding_max_clip_seconds_hidden_for_image_models():
+    vis = build_field_visibility({"is_video": False})
+    assert vis["sliding_max_clip_seconds"]["supported"] is False
+
+
+def test_sliding_max_clip_seconds_shown_for_video_models():
+    vis = build_field_visibility({"is_video": True})
+    assert vis["sliding_max_clip_seconds"]["supported"] is True
+
+
+def test_negative_sliding_max_clip_seconds_rejected(monkeypatch):
+    rep = validate_video_config(
+        _defn(monkeypatch),
+        {"temporal_coverage": "sliding", "sliding_max_clip_seconds": -3, "num_frames": 25},
+    )
+    assert not rep.ok
+    assert any("sliding_max_clip_seconds" in e for e in rep.errors)
+
+
+def test_zero_sliding_max_clip_seconds_accepted(monkeypatch):
+    rep = validate_video_config(
+        _defn(monkeypatch),
+        {"temporal_coverage": "sliding", "sliding_max_clip_seconds": 0, "num_frames": 25},
+    )
+    assert rep.ok, rep.errors

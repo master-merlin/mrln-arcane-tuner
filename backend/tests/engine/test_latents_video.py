@@ -287,3 +287,54 @@ class TestSliceLatentWindow:
         out = LatentManager.slice_latent_window(latent, window_frames=3, start=2)
         assert out.shape == (3, 4, 3, 2, 2)
         assert torch.equal(out, latent[:, :, 2:5, :, :])
+
+
+class TestLoadCachedLatentWindows:
+    def _cache_full_clip(self, tmp_path, frames):
+        """Encode + cache a fake full-clip latent; return (lm, cache_dir, src)."""
+        cache_dir = str(tmp_path / "cache")
+        lm = LatentManager(FakeWanVAE(), device="cpu", cache_dir=cache_dir)
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"full-clip-bytes")
+        # FakeWanVAE: latent_f = (F-1)//4 + 1. F=33 → 9 latent frames.
+        clip = torch.randn(1, 3, frames, 64, 64)
+        lm.encode_and_cache_batch(
+            clip, ["clip"], source_paths=[str(src)], extra_keys=["t0.0-None-slideF33"]
+        )
+        return lm, cache_dir, str(src)
+
+    def test_loads_and_slices_to_window(self, tmp_path):
+        lm, cache_dir, src = self._cache_full_clip(tmp_path, frames=33)  # 9 latent frames
+        gen = torch.Generator().manual_seed(0)
+        out = lm.load_cached_latent_windows(
+            ["clip"], [cache_dir], source_paths=[src],
+            extra_keys=["t0.0-None-slideF33"], window_frames=3, generator=gen,
+        )
+        assert out is not None
+        # [B, C, window, h, w]
+        assert out.shape == (1, 16, 3, 8, 8)
+
+    def test_returns_none_on_miss(self, tmp_path):
+        lm, cache_dir, src = self._cache_full_clip(tmp_path, frames=33)
+        out = lm.load_cached_latent_windows(
+            ["clip"], [cache_dir], source_paths=[src],
+            extra_keys=["t0.0-None-slideF999"], window_frames=3,  # wrong key → miss
+        )
+        assert out is None
+
+    def test_window_within_bounds_over_many_draws(self, tmp_path):
+        lm, cache_dir, src = self._cache_full_clip(tmp_path, frames=33)  # 9 latent frames
+        full = lm.load_cached_latents(
+            ["clip"], [cache_dir], source_paths=[src], extra_keys=["t0.0-None-slideF33"]
+        )[0]  # [C, 9, h, w]
+        for seed in range(20):
+            gen = torch.Generator().manual_seed(seed)
+            out = lm.load_cached_latent_windows(
+                ["clip"], [cache_dir], source_paths=[src],
+                extra_keys=["t0.0-None-slideF33"], window_frames=4, generator=gen,
+            )[0]  # [C, 4, h, w]
+            assert out.shape[1] == 4
+            matched = any(
+                torch.equal(out, full[:, s : s + 4, :, :]) for s in range(9 - 4 + 1)
+            )
+            assert matched, f"window not a contiguous slice (seed {seed})"

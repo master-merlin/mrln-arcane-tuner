@@ -496,6 +496,55 @@ class LatentManager:
 
         return torch.stack(loaded).to(self.device)
 
+    def load_cached_latent_windows(
+        self,
+        ids: list[str],
+        cache_dirs: list[str] | None = None,
+        source_paths: list[str] | None = None,
+        extra_keys: list[str] | None = None,
+        window_frames: int = 1,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor | None:
+        """Load each FULL-CLIP latent, slice a random ``window_frames`` window, stack.
+
+        Sliding mode (Option A): the cache holds one full-length latent per clip
+        (keyed by a ``slideF{N}`` discriminator). Per step we cut an independent,
+        uniform-length window from each item's full latent so the batch stacks —
+        the homogeneous ``(w,h,frames)`` grouping guarantees one ``window_frames``
+        per batch. Returns ``None`` on ANY miss (same contract as
+        :meth:`load_cached_latents`) so the caller falls back to a direct encode.
+        """
+        if not cache_dirs and not self.cache_dir:
+            return None
+
+        windows: list[torch.Tensor] = []
+        for i, img_id in enumerate(ids):
+            c_dir = cache_dirs[i] if cache_dirs else self.cache_dir
+            if not c_dir:
+                return None
+            fname = self._fname_for(i, img_id, source_paths, extra_keys)
+            path = os.path.join(c_dir, fname)
+            if not os.path.exists(path):
+                return None
+            try:
+                full = load_file(path)["latents"]  # [C, f, h, w]
+            except (OSError, KeyError) as e:
+                logger.warning("latent_cache_load_failed", path=path, error=str(e))
+                return None
+
+            frame_axis = full.ndim - 3
+            f = int(full.shape[frame_axis])
+            max_start = max(f - int(window_frames), 0)
+            if max_start > 0:
+                start = int(
+                    torch.randint(0, max_start + 1, (1,), generator=generator).item()
+                )
+            else:
+                start = 0
+            windows.append(self.slice_latent_window(full, int(window_frames), start))
+
+        return torch.stack(windows).to(self.device)
+
     def _validate_shape(self, latents: torch.Tensor, input_shape: torch.Size):
         """
         Validate latent shape is consistent with input image dimensions.

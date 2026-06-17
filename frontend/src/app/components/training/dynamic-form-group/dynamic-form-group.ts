@@ -16,7 +16,7 @@ import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
   imports: [TitleCasePipe, DatePipe, ReactiveFormsModule, DynamicFormFieldComponent, StatePillsComponent],
   host: { 'class': 'contents' },
   template: `
-    <div class="md:col-span-2 space-y-4">
+    <div [class]="containerClass()">
        <div class="flex items-center justify-between">
            <div class="flex items-center gap-2">
              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-brand-light">
@@ -26,8 +26,8 @@ import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
              </svg>
              <span class="text-xs font-bold text-text-subtle uppercase tracking-widest">{{ schema().title || (fieldKey() | titlecase) }}</span>
            </div>
-           <!-- Resolutions has its own "+ Add Custom" control, so skip the duplicate generic Add here -->
-           @if (fieldKey() !== 'resolutions') {
+           <!-- Resolution-style fields have their own "+ Add Custom" control, so skip the duplicate generic Add here -->
+           @if (!isResolutionField()) {
              <button type="button" (click)="addArrayItem()"
                 [attr.data-testid]="'config-add-array-item-' + fieldKey()"
                 class="bg-brand hover:bg-brand/90 text-white text-xs font-bold py-1 px-3 rounded-full transition-all flex items-center gap-1">
@@ -42,8 +42,9 @@ import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
              <!-- Case 1: Array of Primitive Types -->
              @if (isPrimitiveArray()) {
 
-               <!-- Specialized Resolutions Array overrides standard primitive array -->
-               @if (fieldKey() === 'resolutions') {
+               <!-- Specialized resolution picker overrides standard primitive array
+                    (resolutions + still_resolutions: presets + custom + add). -->
+               @if (isResolutionField()) {
                   <div class="space-y-3">
                      <!-- Presets -->
                      <div class="flex items-center justify-between">
@@ -59,7 +60,7 @@ import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
                                    [class.text-white]="isResolutionSelected(res)"
                                    [class.bg-surface-mid]="!isResolutionSelected(res)"
                                    [class.text-text-subtle]="!isResolutionSelected(res)"
-                                   [attr.data-testid]="'config-res-preset-' + res"
+                                   [attr.data-testid]="resTestId('config-res-preset', res)"
                                    class="py-1.5 px-2.5 rounded-theme-md border border-surface-high/50 text-[11px] font-bold font-mono transition-all hover:border-brand">
                                {{ res }}
                            </button>
@@ -71,7 +72,7 @@ import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
                          <div class="flex items-center justify-between">
                              <span class="text-[11px] font-medium text-text-muted">Custom resolutions</span>
                              <button type="button" (click)="addArrayItem()"
-                                     data-testid="config-add-custom-res-btn"
+                                     [attr.data-testid]="resTestId('config-add-custom-res-btn')"
                                      class="text-brand hover:text-brand/80 text-[10px] font-bold uppercase tracking-tight">
                                  + Add Custom
                              </button>
@@ -86,11 +87,11 @@ import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
                                  @if (!isPreset(control.value)) {
                                    <div class="relative group animate-in slide-in-from-bottom-2 duration-200">
                                        <input type="number" [formControlName]="$index"
-                                              [attr.data-testid]="'config-custom-res-input-' + $index"
+                                              [attr.data-testid]="resTestId('config-custom-res-input', $index)"
                                               class="w-full text-center py-1.5 px-2.5 rounded-theme-md border border-surface-high/50 bg-surface-mid text-text-secondary text-[11px] font-bold font-mono outline-none transition-all hover:border-brand focus:border-brand [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                                               placeholder="e.g. 1440">
                                        <button type="button" (click)="removeArrayItem($index)"
-                                          [attr.data-testid]="'config-remove-custom-res-btn-' + $index"
+                                          [attr.data-testid]="resTestId('config-remove-custom-res-btn', $index)"
                                           class="absolute -top-1.5 -right-1.5 bg-surface-high border border-surface-mid rounded-full p-0.5 text-text-disabled hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
                                           title="Remove">
                                           <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -609,6 +610,28 @@ export class DynamicFormGroupComponent {
       }
     }
     return false;
+  }
+
+  /** Fields rendered with the resolution picker (presets + custom + add). */
+  isResolutionField(): boolean {
+    return this.fieldKey() === 'resolutions' || this.fieldKey() === 'still_resolutions';
+  }
+
+  /** Grid-column class for the group's root: still_resolutions gets its own
+   *  full-width row (like a standalone picker); other array fields keep the
+   *  default 2-column span. */
+  protected containerClass(): string {
+    return this.fieldKey() === 'still_resolutions'
+      ? 'col-span-full space-y-4'
+      : 'md:col-span-2 space-y-4';
+  }
+
+  /** Picker test ids: keep `resolutions` byte-identical (existing selectors)
+   *  while scoping every other resolution-style field by its key so the two
+   *  pickers never collide when both render on one screen. */
+  protected resTestId(prefix: string, suffix?: string | number): string {
+    const base = this.fieldKey() === 'resolutions' ? prefix : `${prefix}-${this.fieldKey()}`;
+    return suffix === undefined ? base : `${base}-${suffix}`;
   }
 
   isResolutionSelected(res: number): boolean {

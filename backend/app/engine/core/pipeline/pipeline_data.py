@@ -50,7 +50,14 @@ def video_trim_extra_key(item: dict) -> str:
         return ""
     ts = item.get("trim_start_s") or 0.0
     te = item.get("trim_end_s")
-    return f"t{ts}-{te}"
+    key = f"t{ts}-{te}"
+    if item.get("temporal_mode") == "sliding":
+        # The sliding latent holds the FULL clip (cache_frames); a first-mode
+        # latent of the same untrimmed clip holds only target_frames. Both hash
+        # to "t0.0-None" without this discriminator → collision + wrong frame
+        # count loaded. Fold the full-clip length in so they stay distinct.
+        key += f"-slideF{int(item.get('cache_frames') or 0)}"
+    return key
 
 
 def _coerce_fps(value: Any) -> float:

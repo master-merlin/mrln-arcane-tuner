@@ -1213,6 +1213,13 @@ class JobManager:
                 self._loop,
             )
 
+        # The GPU is now free. Advance the queue so the next pending job
+        # auto-starts — matching the natural-exit and watchdog-death paths.
+        # Without this a manual Stop strands every queued job in "pending"
+        # until a manual Start, even with auto-queue enabled. (No-op when
+        # auto-queue is off, a job is still active, or nothing is pending.)
+        self.schedule_advance_queue()
+
     def read_persisted_logs(self, job: Job, limit: int = 1000) -> list[str]:
         """Read a job's log tail from its persisted ``job_log.jsonl`` on disk.
 

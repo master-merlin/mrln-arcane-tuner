@@ -276,6 +276,32 @@ class TestStopJob:
         assert job.status == JobStatus.STOPPED
         assert job.finished_at is not None
 
+    @patch.object(JobManager, "schedule_advance_queue")
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345])
+    def test_stop_advances_the_queue(self, mock_tree, mock_advance):
+        """Stopping the running job frees the GPU, so the queue must advance —
+        otherwise a pending job strands until a manual Start (the recurring
+        auto-queue complaint). Mirrors the natural-exit / watchdog paths.
+        """
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+
+        mgr.stop_job(job.id)
+
+        mock_advance.assert_called_once()
+
+    @patch.object(JobManager, "schedule_advance_queue")
+    @patch.object(JobManager, "_terminate_process_tree")
+    def test_stop_noop_does_not_advance(self, mock_tree, mock_advance):
+        """A no-op stop (job not RUNNING/PAUSED) returns early and must not
+        touch the queue."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())  # PENDING
+        mgr.stop_job(job.id)
+        mock_advance.assert_not_called()
+
 
 class TestProcessTreeLifecycle:
     """Tree-kill + worker-resolution + death-detection (the zombie / stale-UI fixes)."""

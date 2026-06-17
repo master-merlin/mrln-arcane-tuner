@@ -193,3 +193,82 @@ describe('DynamicFormGroup — dataset row toggle placement', () => {
         expect(keys.indexOf('original_weight')).toBeLessThan(keys.indexOf('mask_opacity'));
     });
 });
+
+/**
+ * still_resolutions must reuse the `resolutions` picker (presets + custom +
+ * add) and render full-width in its own row — not the generic "Add Item"
+ * primitive-array list. Test ids are scoped by field key so the two pickers
+ * never collide when both render on one screen, while `resolutions` keeps its
+ * original (unscoped) ids.
+ */
+const RES_INT_SCHEMA: SchemaNode = {
+    type: 'array',
+    items: { type: 'integer' },
+} as SchemaNode;
+
+@Component({
+    standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    imports: [DynamicFormGroupComponent],
+    template: `<app-dynamic-form-group [fieldKey]="key" [schema]="schema" [parentForm]="form()" />`,
+})
+class ResPickerHostComponent {
+    key = 'still_resolutions';
+    schema = RES_INT_SCHEMA;
+    form = signal(new FormGroup({
+        still_resolutions: new FormArray<FormControl<number | null>>([new FormControl(1024)]),
+        resolutions: new FormArray<FormControl<number | null>>([new FormControl(1024)]),
+    }));
+}
+
+describe('DynamicFormGroup — still_resolutions reuses the resolution picker', () => {
+    function buildRes(key: string) {
+        TestBed.configureTestingModule({
+            imports: [ResPickerHostComponent],
+            providers: [
+                { provide: DatasetService, useValue: { listDatasets: () => of([]) } },
+                { provide: DatasetStore, useValue: { entities: () => [] } },
+                { provide: RuntimeConfigService, useValue: { mediaBaseUrl: '' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(ResPickerHostComponent);
+        fixture.componentInstance.key = key;
+        fixture.detectChanges();
+        return fixture;
+    }
+
+    it('renders the preset picker (not the generic add-item list) for still_resolutions', () => {
+        const el = buildRes('still_resolutions').nativeElement as HTMLElement;
+        // Presets render, scoped by field key.
+        expect(el.querySelector('[data-testid="config-res-preset-still_resolutions-1024"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="config-res-preset-still_resolutions-512"]')).toBeTruthy();
+        // The "+ Add Custom" control (scoped); the generic "Add Item" is skipped.
+        expect(el.querySelector('[data-testid="config-add-custom-res-btn-still_resolutions"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="config-add-array-item-still_resolutions"]')).toBeNull();
+    });
+
+    it('marks the currently-selected resolution as active', () => {
+        const el = buildRes('still_resolutions').nativeElement as HTMLElement;
+        const btn = el.querySelector('[data-testid="config-res-preset-still_resolutions-1024"]') as HTMLElement;
+        expect(btn.classList.contains('bg-brand')).toBe(true); // 1024 is in the array
+        const btn512 = el.querySelector('[data-testid="config-res-preset-still_resolutions-512"]') as HTMLElement;
+        expect(btn512.classList.contains('bg-brand')).toBe(false);
+    });
+
+    it('renders still_resolutions full-width in its own row', () => {
+        const el = buildRes('still_resolutions').nativeElement as HTMLElement;
+        const root = el.querySelector('div') as HTMLElement;
+        expect(root.classList.contains('col-span-full')).toBe(true);
+        expect(root.classList.contains('md:col-span-2')).toBe(false);
+    });
+
+    it('leaves the resolutions picker ids unscoped and at the default 2-col span', () => {
+        const el = buildRes('resolutions').nativeElement as HTMLElement;
+        // Original, unscoped ids preserved (no existing selector breaks).
+        expect(el.querySelector('[data-testid="config-res-preset-1024"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="config-add-custom-res-btn"]')).toBeTruthy();
+        const root = el.querySelector('div') as HTMLElement;
+        expect(root.classList.contains('md:col-span-2')).toBe(true);
+        expect(root.classList.contains('col-span-full')).toBe(false);
+    });
+});

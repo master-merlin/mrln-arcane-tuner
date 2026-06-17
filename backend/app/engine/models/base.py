@@ -1094,6 +1094,72 @@ class BaseTrainingConfig(BaseModel):
         json_schema_extra={"group": "VIDEO", "min": 0.0, "max": 1.0, "step": 0.025},
     )
 
+    # ── [VIDEO] Temporal sampling (Phase 1: Axis A tiled + Axis B stride) ──
+    temporal_coverage: Literal["first", "tiled", "sliding"] = Field(
+        "first",
+        description=(
+            "How the LoRA sees the whole clip: first (opening window only, "
+            "default/backward-compatible), tiled (K windows per clip across "
+            "epochs), sliding (Phase 2 — full-clip cache + random slice)"
+        ),
+        json_schema_extra={"group": "VIDEO"},
+    )
+    window_overlap: float = Field(
+        0.0,
+        description="Fractional overlap between tiled windows (0 = abutting)",
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "temporal_coverage:tiled",
+            "min": 0.0,
+            "max": 0.95,
+            "step": 0.05,
+        },
+    )
+    max_windows: int = Field(
+        10,
+        description="Upper bound on tiled windows emitted per clip",
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "temporal_coverage:tiled",
+            "min": 1,
+            "max": 999,
+            "step": 1,
+        },
+    )
+    frame_stride: int = Field(
+        1,
+        description=(
+            "Sample every Nth frame so a window spans N× the motion at 1/N the "
+            "effective fps (1 = native rate). The model is told the effective "
+            "fps. Keep target_fps at 0/native when using stride."
+        ),
+        json_schema_extra={"group": "VIDEO", "min": 1, "max": 8, "step": 1},
+    )
+    # ── Forward-compat (Phase 3): declared now so configs validate, inert until P3 ──
+    still_resolutions: list[int] = Field(
+        default=[],
+        description=(
+            "F=1 (stills) resolutions when mixing stills + video. Empty list "
+            "means INHERIT from `resolutions` (the Phase-3 contract). Phase 3 — "
+            "has no effect in Phase 1."
+        ),
+        json_schema_extra={"group": "VIDEO"},
+    )
+    radc_seqlen_influence: float = Field(
+        0.0,
+        description=(
+            "RADC SNR-shift weight on total sequence length F×H×W (0 = off). "
+            "Phase 3 — has no effect in Phase 1."
+        ),
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "timestep_sampling:radc",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+        },
+    )
+
     # [SAMPLING] Sample Generation During Training
     sample_every_n_steps: int = Field(
         0,

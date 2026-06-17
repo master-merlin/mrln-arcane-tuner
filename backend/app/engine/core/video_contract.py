@@ -203,6 +203,53 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             "— image-to-video is not supported."
         )
 
+    # ── Phase 1 temporal-sampling knobs ──
+    coverage = str(config.get("temporal_coverage", "first") or "first")
+    if coverage not in ("first", "tiled", "sliding"):
+        report.errors.append(
+            f"temporal_coverage={coverage!r} is invalid — use 'first', "
+            "'tiled', or 'sliding'."
+        )
+
+    if coverage == "tiled":
+        overlap = _to_float(config.get("window_overlap"))
+        if not (0.0 <= overlap < 1.0):
+            report.errors.append(
+                f"window_overlap={overlap} must be in [0.0, 1.0)."
+            )
+        # Default to the schema default (10) when omitted so a config relying
+        # on defaults validates; only an explicit bad value is rejected.
+        max_w = _int_or_none(config.get("max_windows", 10))
+        if max_w is None or max_w < 1:
+            report.errors.append(
+                f"max_windows={config.get('max_windows')} must be >= 1."
+            )
+
+    # Default to the schema default (1) when omitted (e.g. an older/partial
+    # config the defensive validator must accept); reject an explicit < 1.
+    stride = _int_or_none(config.get("frame_stride", 1))
+    if stride is None or stride < 1:
+        report.errors.append(
+            f"frame_stride={config.get('frame_stride')} must be >= 1."
+        )
+    elif stride > 1 and _to_float(config.get("target_fps")) > 0.0:
+        # Stride is the only fps lever — it divides the NATIVE rate. A manually
+        # set target_fps combined with stride would compound (or contradict),
+        # so reject it. Leave target_fps at 0/native when striding.
+        report.errors.append(
+            "frame_stride > 1 cannot be combined with a manually set "
+            "target_fps — leave target_fps at 0 (native); stride sets the "
+            "effective fps."
+        )
+
+    # radc_seqlen_influence is only meaningful under the radc sampler.
+    if _to_float(config.get("radc_seqlen_influence")) > 0.0 and str(
+        config.get("timestep_sampling", "")
+    ) != "radc":
+        report.errors.append(
+            "radc_seqlen_influence is only valid when timestep_sampling='radc'."
+        )
+
     return report
 
 

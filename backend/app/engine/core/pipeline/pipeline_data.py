@@ -79,6 +79,114 @@ class PipelineDataMixin:
             )
         return cache[cap]
 
+    def _compute_tiled_windows(
+        self,
+        *,
+        trim_start_s: float,
+        end_s: float,
+        window_span_s: float,
+        overlap: float,
+        max_windows: int,
+    ) -> list[tuple[float, float]]:
+        """Partition ``[trim_start_s, end_s]`` into up to ``max_windows`` windows.
+
+        Each window covers ``window_span_s`` seconds — the time a clip needs to
+        supply ``target_frames`` at the effective fps — and is stepped by
+        ``(1 - overlap) * window_span_s``. Windows never extend past ``end_s``;
+        a trailing partial shorter than ``window_span_s`` is dropped (it would
+        not supply ``target_frames`` and would crash ``load_clip``). If the
+        usable duration is shorter than a single window, returns ``[]`` and the
+        caller falls back to the original (validated) single window. Trim bounds
+        are rounded to 3 decimals so two runs hash to the same cache filename.
+
+        Defensive bounds (the contract validator already rejects these upstream,
+        but the helper stays safe if called directly): ``overlap >= 1`` is
+        clamped so the step is at least 1 ms (never zero → no infinite loop),
+        and ``max_windows <= 0`` is floored to 1.
+        """
+        usable = max(end_s - trim_start_s, 0.0)
+        if window_span_s <= 0.0 or usable < window_span_s:
+            # Cannot supply a full window → let the caller use the legacy window.
+            return []
+
+        step = max((1.0 - overlap) * window_span_s, 1e-3)
+        windows: list[tuple[float, float]] = []
+        start = trim_start_s
+        while len(windows) < max(max_windows, 1):
+            win_end = start + window_span_s
+            if win_end > end_s + 1e-6:
+                break
+            windows.append((round(start, 3), round(win_end, 3)))
+            start += step
+        return windows
+
+    def _effective_fps(self, native_or_target_fps: float) -> float:
+        """Apply Axis-B frame stride: effective fps = fps / frame_stride.
+
+        Divides the NATIVE (or native-equal target) fps — never a user-lowered
+        target_fps (the contract rejects that combination). Stride is the only
+        fps lever in Phase 1.
+        """
+        stride = int(self.config.get("frame_stride", 1) or 1)
+        if stride <= 1 or native_or_target_fps <= 0.0:
+            return float(native_or_target_fps)
+        return float(native_or_target_fps) / float(stride)
+
+    def _emit_temporal_items(
+        self,
+        *,
+        base_item: dict,
+        trim_start_s: float,
+        end_s: float,
+        window_span_s: float,
+        repeats: int,
+    ) -> list[dict]:
+        """Expand one clip×bucket into per-window inventory items × repeats.
+
+        ``first`` (default) → one item per repeat with the original trim window.
+        ``tiled`` → K full windows (``_compute_tiled_windows``), each repeated
+        ``repeats`` times (K×repeats, so each window keeps the clip's repeat
+        weighting). A clip too short for one window falls back to the single
+        original window (``_compute_tiled_windows`` returns []). Every item is a
+        fresh dict (no shared mutable state).
+
+        The fallback (first mode, non-video, or short clip) clones ``base_item``
+        VERBATIM — it does NOT overwrite ``trim_start_s``/``trim_end_s`` with the
+        computed ``end_s``. This keeps the trim-cache key byte-identical to the
+        pre-tiling path: an untrimmed clip carries ``trim_end_s = None`` and must
+        keep it (``video_trim_extra_key`` formats ``t{start}-{end}``, so writing a
+        concrete end where ``None`` was would silently re-key the latent cache and
+        re-encode every untrimmed clip). Only genuine tiled sub-windows overwrite
+        the trim bounds (they are new windows → new keys by design).
+        """
+        coverage = getattr(self, "_temporal_coverage", "first")
+        windows: list[tuple[float, float]] = []
+        if base_item.get("is_video") and coverage == "tiled":
+            windows = self._compute_tiled_windows(
+                trim_start_s=trim_start_s,
+                end_s=end_s,
+                window_span_s=window_span_s,
+                overlap=getattr(self, "_window_overlap", 0.0),
+                max_windows=getattr(self, "_max_windows", 10),
+            )
+
+        out: list[dict] = []
+        if not windows:
+            # first mode, non-video, or clip shorter than one window: preserve
+            # the base item's ORIGINAL trim window verbatim (including a None
+            # end) so the cache key matches the pre-tiling path exactly.
+            for _ in range(repeats):
+                out.append(dict(base_item))
+            return out
+
+        for w_start, w_end in windows:
+            for _ in range(repeats):
+                clone = dict(base_item)
+                clone["trim_start_s"] = w_start
+                clone["trim_end_s"] = w_end
+                out.append(clone)
+        return out
+
     async def prepare_data(self):
         """Fetch datasets via API, build inventory with aspect-ratio bucketing."""
         self.logger.info("preparing_data")
@@ -114,6 +222,13 @@ class PipelineDataMixin:
         # This is the GENERAL setting; a dataset may override it (see below).
         self._video_num_frames = int(self.config.get("num_frames", 0) or 0)
         self._video_resolutions = resolutions
+        # ── Phase 1 temporal-sampling knobs (read defensively) ──
+        self._temporal_coverage = str(
+            self.config.get("temporal_coverage", "first") or "first"
+        )
+        self._window_overlap = float(self.config.get("window_overlap", 0.0) or 0.0)
+        self._max_windows = int(self.config.get("max_windows", 10) or 10)
+        self._frame_stride = int(self.config.get("frame_stride", 1) or 1)
         # Cache of frame-ladder BucketManagers keyed by max-frames cap, so a
         # per-dataset override builds its ladder once and is reused.
         self._video_bm_cache: dict[int, Any] = {}
@@ -303,10 +418,16 @@ class PipelineDataMixin:
                                 vid_trim_end if vid_trim_end is not None else duration_s
                             )
                             eff_dur = max(end_s - vid_trim_start, 0.0)
-                            # Target fps: config override → native clip fps.
-                            vid_target_fps = float(
+                            # Target fps: config override → native clip fps,
+                            # then divided by Axis-B frame stride so the model
+                            # is told the EFFECTIVE (sampled) rate. available_
+                            # frames (bucket selection) and res_str use the same
+                            # effective rate, so a strided run buckets and caches
+                            # by what it actually samples.
+                            _base_fps = float(
                                 self._video_target_fps or native_fps or 0.0
                             )
+                            vid_target_fps = self._effective_fps(_base_fps)
                             available_frames = (
                                 int(eff_dur * vid_target_fps)
                                 if vid_target_fps > 0
@@ -476,8 +597,34 @@ class PipelineDataMixin:
                                     continue
                                 item.update(control_fields)
 
-                            for _ in range(repeats):
-                                inventory.append(item)
+                            if is_video:
+                                # Seconds a single window must cover to supply
+                                # tgt_f frames at the effective fps.
+                                _span = (
+                                    tgt_f / vid_target_fps
+                                    if vid_target_fps > 0
+                                    else 0.0
+                                )
+                                # Pass the FULL usable end (``end_s`` above is
+                                # duration-aware — it uses the clip's duration_s
+                                # for an untrimmed clip) so tiled mode enumerates
+                                # windows across the WHOLE clip. A one-window-wide
+                                # end here would silently collapse tiling to a
+                                # single window for every untrimmed clip. first /
+                                # fallback mode ignores end_s and clones the
+                                # original trim window verbatim.
+                                inventory.extend(
+                                    self._emit_temporal_items(
+                                        base_item=item,
+                                        trim_start_s=vid_trim_start,
+                                        end_s=end_s,
+                                        window_span_s=_span,
+                                        repeats=repeats,
+                                    )
+                                )
+                            else:
+                                for _ in range(repeats):
+                                    inventory.append(item)
 
                 except (httpx.HTTPError, OSError, ValueError, KeyError) as e:
                     self.logger.error("dataset_api_error", name=name, error=str(e))
@@ -677,6 +824,13 @@ class PipelineDataMixin:
         # at least one item carries one, so image batches are untouched.
         if any(extra_keys):
             batch["extra_keys"] = extra_keys
+
+        # Effective fps for the model's frame-rate / RoPE conditioning. Items in
+        # a batch share one temporal bucket (and thus one target_fps), so a
+        # single scalar suffices. Only set for video items so image batches are
+        # byte-identical to before.
+        if items and items[0].get("is_video"):
+            batch["target_fps"] = float(items[0].get("target_fps") or 0.0)
 
         # ── Paired control images (edit runs) ──
         # All items in an edit batch carry the same control slot count

@@ -95,3 +95,61 @@ export function collapseNullableUnion(node: SchemaNode): SchemaNode {
   // `type` key can't shadow the branch's concrete type.
   return { ...concrete[0], ...rest, type: concrete[0].type };
 }
+
+/**
+ * Coerce one form value to its schema-declared type. Numeric leaves
+ * (`integer`/`number`): a numeric STRING becomes a number; `''` → `null` (so an
+ * emptied optional clears rather than sending an invalid empty string);
+ * non-numeric junk passes through untouched. Arrays and nested objects recurse.
+ *
+ * This exists because numeric inputs render as `[type]="'number'"` (a property
+ * binding), so Angular's `NumberValueAccessor` — selected by the *static*
+ * `input[type=number]` attribute — never attaches. The string
+ * `DefaultValueAccessor` is used instead, so an EDITED numeric field holds a
+ * string ("0", "25", "0.3") while an untouched one keeps its numeric default.
+ * Both `int` `0` and string `"0"` looked the same in the UI, but the backend
+ * stores the config verbatim and the trainer reads it raw — a stray `"0"`
+ * silently zeroed video fps resolution (target_fps must be > 0). Coercing
+ * against the schema at submit makes the persisted config always correctly typed.
+ */
+export function coerceSchemaValue(value: unknown, node: SchemaNode): unknown {
+  const t = node.type;
+  if (t === 'integer' || t === 'number') {
+    if (typeof value !== 'string') return value;
+    const s = value.trim();
+    if (s === '') return null;
+    const n = Number(s);
+    if (!Number.isFinite(n)) return value;
+    return t === 'integer' ? Math.trunc(n) : n;
+  }
+  if (t === 'array' && Array.isArray(value) && node.items) {
+    const items = collapseNullableUnion(node.items);
+    return value.map((v) => coerceSchemaValue(v, items));
+  }
+  if (node.properties && value && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    for (const [k, ps] of Object.entries(node.properties)) {
+      if (k in obj) obj[k] = coerceSchemaValue(obj[k], collapseNullableUnion(ps));
+    }
+    return obj;
+  }
+  return value;
+}
+
+/**
+ * Coerce stringified numeric fields in a training-config object to real
+ * numbers, IN PLACE, against the root schema's declared properties. Recurses
+ * into nested objects (the datasets array) and numeric arrays (resolutions).
+ * Non-schema keys and already-typed values are left untouched.
+ */
+export function coerceConfigNumbers(
+  config: Record<string, unknown>,
+  schema: SchemaNode | undefined,
+): void {
+  const props = schema?.properties;
+  if (!props || !config || typeof config !== 'object') return;
+  for (const [key, rawProp] of Object.entries(props)) {
+    if (!(key in config)) continue;
+    config[key] = coerceSchemaValue(config[key], collapseNullableUnion(rawProp));
+  }
+}

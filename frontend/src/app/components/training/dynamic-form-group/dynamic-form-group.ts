@@ -8,6 +8,7 @@ import { StatePillsComponent, StatePillsState, datasetStatePills } from '../../.
 import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-field';
 import type { TrainingConfig } from '../../../services/job';
 import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
+import { datasetPreviewUrl } from '../../../shared/media-preview';
 
 @Component({
   selector: 'app-dynamic-form-group',
@@ -492,11 +493,15 @@ export class DynamicFormGroupComponent {
     return this._datasetByName.get(name) ?? this.datasetStore.entities().find(d => d.name === name);
   }
 
-  /** Thumbnail URL for the row's dataset, or null when there's no usable preview. */
+  /**
+   * Thumbnail URL for the row's dataset, or null when there's no usable preview.
+   * Video-only datasets (preview is a clip) route through the thumbnail endpoint
+   * so a first-frame poster renders instead of a blank `<img>`.
+   */
   previewUrlFor(index: number): string | null {
     const ds = this.datasetFor(index);
     if (!ds || ds.missing || !ds.preview_image) return null;
-    return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(ds.name)}/${ds.preview_image}`;
+    return datasetPreviewUrl(this.rtc.apiUrl, this.rtc.mediaBaseUrl, ds.name, ds.preview_image);
   }
 
   /** Total dataset size in MB (1 decimal) for the meta row. */

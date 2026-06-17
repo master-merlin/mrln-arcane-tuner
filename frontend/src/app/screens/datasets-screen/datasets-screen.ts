@@ -8,6 +8,7 @@ import { ToastService } from '../../services/toast';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
+import { datasetPreviewUrl } from '../../shared/media-preview';
 import {
     SearchStore,
     type DatasetSearchField,
@@ -739,12 +740,14 @@ export class DatasetsScreen {
 
     /**
      * URL of the dataset's preview thumbnail, or `null` when none is available
-     * (dataset missing on disk, or no preview chosen yet). Matches the pattern
-     * used by the legacy dataset-card: `${mediaBaseUrl}/${name}/${preview_image}`.
+     * (dataset missing on disk, or no preview chosen yet). Stills resolve to
+     * `${mediaBaseUrl}/${name}/${preview_image}`; video clips (mp4/webm/mkv/avi)
+     * route through the thumbnail endpoint for a renderable first-frame poster
+     * (a raw clip in an `<img>` is what left video-only datasets blank).
      */
     protected previewUrl(d: Dataset): string | null {
         if (!d.preview_image || d.missing) return null;
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(d.name)}/${d.preview_image}`;
+        return datasetPreviewUrl(this.rtc.apiUrl, this.rtc.mediaBaseUrl, d.name, d.preview_image);
     }
 
     /**

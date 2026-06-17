@@ -132,6 +132,22 @@ class LatentManager:
             return max(int(num_frames), 1)
         return max((int(num_frames) - 1) // int(temporal_downscale) + 1, 1)
 
+    @staticmethod
+    def slice_latent_window(
+        latents: torch.Tensor, window_frames: int, start: int
+    ) -> torch.Tensor:
+        """Slice ``window_frames`` contiguous latent frames starting at ``start``.
+
+        The temporal (frame) axis is the third-from-last: dim 1 for a per-item
+        ``[C, f, h, w]`` latent and dim 2 for a batched ``[B, C, f, h, w]``.
+        Used by sliding-mode training to cut a per-step window out of the cached
+        full-clip latent (Option A: treated as a 0-based clip — no RoPE offset).
+        """
+        frame_axis = latents.ndim - 3
+        idx = [slice(None)] * latents.ndim
+        idx[frame_axis] = slice(int(start), int(start) + int(window_frames))
+        return latents[tuple(idx)]
+
     def _has_latent_norm_stats(self) -> bool:
         """Check if the VAE uses per-channel latents_mean/latents_std normalization.
 

@@ -271,3 +271,19 @@ class TestImageCachePathUnchanged:
         assert os.path.exists(os.path.join(cache_dir, "img1.safetensors"))
         loaded = lm.load_cached_latents(["img1", "img2"])
         assert torch.allclose(original.cpu(), loaded.cpu())
+
+
+class TestSliceLatentWindow:
+    def test_slices_frame_axis_4d(self):
+        # [C, f, h, w] per-item latent → window of 2 frames at start 1.
+        latent = torch.arange(4 * 5 * 2 * 2, dtype=torch.float32).reshape(4, 5, 2, 2)
+        out = LatentManager.slice_latent_window(latent, window_frames=2, start=1)
+        assert out.shape == (4, 2, 2, 2)
+        assert torch.equal(out, latent[:, 1:3, :, :])
+
+    def test_slices_frame_axis_5d(self):
+        # [B, C, f, h, w] batched latent → frame axis is dim 2.
+        latent = torch.randn(3, 4, 6, 2, 2)
+        out = LatentManager.slice_latent_window(latent, window_frames=3, start=2)
+        assert out.shape == (3, 4, 3, 2, 2)
+        assert torch.equal(out, latent[:, :, 2:5, :, :])

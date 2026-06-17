@@ -315,11 +315,22 @@ class PipelineDataMixin:
         self._window_overlap = float(self.config.get("window_overlap", 0.0) or 0.0)
         self._max_windows = int(self.config.get("max_windows", 10) or 10)
         self._frame_stride = int(self.config.get("frame_stride", 1) or 1)
+        self._sliding_max_clip_seconds = float(
+            self.config.get("sliding_max_clip_seconds", 0.0) or 0.0
+        )
         # Cache of frame-ladder BucketManagers keyed by max-frames cap, so a
         # per-dataset override builds its ladder once and is reused.
         self._video_bm_cache: dict[int, Any] = {}
         self._video_bucket_manager = self._video_bucket_manager_for(
             self._video_num_frames
+        )
+        # Full-clip ladder snap for sliding: capped at the FAMILY ceiling
+        # (81/121), NOT the run's num_frames — otherwise cache_frames collapses
+        # to the per-step window and sliding gains nothing. cap=0 → family max.
+        self._sliding_full_bm = (
+            self._video_bucket_manager_for(0)
+            if self._temporal_coverage == "sliding"
+            else None
         )
 
         datasets_config = self.config.get("datasets", [])
@@ -703,6 +714,16 @@ class PipelineDataMixin:
                                 # single window for every untrimmed clip. first /
                                 # fallback mode ignores end_s and clones the
                                 # original trim window verbatim.
+                                full_clip_frames = 0
+                                if (
+                                    self._temporal_coverage == "sliding"
+                                    and self._sliding_full_bm is not None
+                                ):
+                                    full_clip_frames = (
+                                        self._sliding_full_bm.frame_bucket_for(
+                                            available_frames
+                                        )
+                                    )
                                 inventory.extend(
                                     self._emit_temporal_items(
                                         base_item=item,
@@ -710,6 +731,7 @@ class PipelineDataMixin:
                                         end_s=end_s,
                                         window_span_s=_span,
                                         repeats=repeats,
+                                        full_clip_frames=full_clip_frames,
                                     )
                                 )
                             else:

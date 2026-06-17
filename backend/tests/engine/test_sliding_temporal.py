@@ -92,3 +92,21 @@ class TestEmitSliding:
             window_span_s=1.0, repeats=2, full_clip_frames=81,
         )
         assert len(first) == 2 and all("temporal_mode" not in it for it in first)
+
+
+class TestSlidingFullClipManager:
+    def test_full_clip_bm_uses_family_ceiling_not_run_cap(self):
+        # A run capped at 25 frames must still cache the full clip up the ladder.
+        from app.engine.components.bucketing import BucketManager
+        run_bm = BucketManager(
+            base_resolutions=[768],
+            frame_buckets=BucketManager.frame_ladder(25, "8n+1"),
+        )
+        full_bm = BucketManager(
+            base_resolutions=[768],
+            frame_buckets=BucketManager.frame_ladder(121, "8n+1"),
+        )
+        available = 200  # long clip
+        assert run_bm.frame_bucket_for(available) == 25      # run cap
+        assert full_bm.frame_bucket_for(available) == 121     # full ladder
+        assert full_bm.frame_bucket_for(available) > run_bm.frame_bucket_for(available)

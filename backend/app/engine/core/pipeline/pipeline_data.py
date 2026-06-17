@@ -53,6 +53,43 @@ def video_trim_extra_key(item: dict) -> str:
     return f"t{ts}-{te}"
 
 
+def _coerce_fps(value: Any) -> float:
+    """Parse a config/metadata fps value to a non-negative float.
+
+    Form-layer values can arrive as strings (e.g. the literal ``"0"``); a bare
+    ``value or default`` then misfires because the non-empty string ``"0"`` is
+    truthy, so it wins the ``or`` and ``float("0")`` collapses the result to
+    0.0. Coerce explicitly: junk/``None`` → 0.0, and ``"0"`` means 0.0 (= unset
+    → use native), never a truthy override that zeroes out the fps.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f > 0.0 else 0.0
+
+
+def _resolve_clip_base_fps(
+    config_target_fps: Any, clip_fps: Any, model_native_fps: Any
+) -> float:
+    """Base fps for a clip BEFORE Axis-B frame-stride division.
+
+    Precedence: an explicit positive ``target_fps`` wins; else the clip's own
+    probed fps; else the model's native fps — so a clip whose metadata is
+    missing fps (e.g. a freshly split segment not yet re-probed) still gets a
+    usable rate instead of 0, which crashes the clip loader with
+    ``target_fps must be > 0``. All inputs are coerced so a stringified ``"0"``
+    can't masquerade as a real override.
+    """
+    target = _coerce_fps(config_target_fps)
+    if target > 0.0:
+        return target
+    clip = _coerce_fps(clip_fps)
+    if clip > 0.0:
+        return clip
+    return _coerce_fps(model_native_fps)
+
+
 class PipelineDataMixin:
     """Dataset preparation, inventory building, and batch construction."""
 
@@ -216,8 +253,13 @@ class PipelineDataMixin:
         # rule is present we build a temporal-aware BucketManager; otherwise
         # video items fall back to a single requested frame count.
         self._video_frame_rule = self.config.get("frame_rule") or None
-        # Default target fps: native (None → use clip's own fps later).
-        self._video_target_fps = self.config.get("target_fps") or None
+        # Default target fps: native (0/unset → use clip's own fps later).
+        # Coerced because the form layer can submit this as the string "0",
+        # which is truthy and would otherwise win the `or` and zero the fps.
+        self._video_target_fps = _coerce_fps(self.config.get("target_fps")) or None
+        # Model's native fps (contract-derived) — fallback when a clip's own
+        # probed fps is missing (e.g. a freshly split segment not yet re-probed).
+        self._model_native_fps = _coerce_fps(self.config.get("video_native_fps"))
         # Max frames a run is willing to train on (caps the frame ladder).
         # This is the GENERAL setting; a dataset may override it (see below).
         self._video_num_frames = int(self.config.get("num_frames", 0) or 0)
@@ -404,7 +446,6 @@ class PipelineDataMixin:
                         vid_target_frames = 1
                         vid_target_fps = None
                         if is_video:
-                            native_fps = float(meta.get("fps") or 0.0)
                             duration_s = float(meta.get("duration_s") or 0.0)
                             vid_trim_start = float(meta.get("trim_start_s") or 0.0)
                             vid_trim_end = meta.get("trim_end_s")
@@ -424,8 +465,13 @@ class PipelineDataMixin:
                             # frames (bucket selection) and res_str use the same
                             # effective rate, so a strided run buckets and caches
                             # by what it actually samples.
-                            _base_fps = float(
-                                self._video_target_fps or native_fps or 0.0
+                            # Positive target_fps → clip's own fps → model
+                            # native. Coerced so a stringified "0" can't pose as
+                            # a real override and zero out the effective rate.
+                            _base_fps = _resolve_clip_base_fps(
+                                self.config.get("target_fps"),
+                                meta.get("fps"),
+                                self._model_native_fps,
                             )
                             vid_target_fps = self._effective_fps(_base_fps)
                             available_frames = (

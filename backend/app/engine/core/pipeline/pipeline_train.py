@@ -15,6 +15,13 @@ from app.engine.factories.optimizer import OptimizerFactory
 logger = structlog.get_logger(__name__)
 
 
+def _sliding_window_frames(target_frames: int, temporal_downscale: int) -> int:
+    """Per-step sliding window length in LATENT frames for a target frame count."""
+    from app.engine.components.latents import LatentManager
+
+    return LatentManager.latent_frames(int(target_frames), int(temporal_downscale))
+
+
 class PipelineTrainMixin:
     """Main training loop with gradient accumulation, checkpointing, and sampling."""
 
@@ -197,12 +204,28 @@ class PipelineTrainMixin:
                     ek_kwarg = {"extra_keys": extra_keys} if extra_keys else {}
                     latents = None
                     if use_cache:
-                        latents = self.latent_manager.load_cached_latents(
-                            batch["ids"],
-                            batch["cache_dirs"],
-                            source_paths=batch["paths"],
-                            **ek_kwarg,
-                        )
+                        bi0 = batch_items[0] if batch_items else {}
+                        if bi0.get("temporal_mode") == "sliding":
+                            window_lf = _sliding_window_frames(
+                                int(bi0.get("target_frames", 1)),
+                                self.latent_manager.temporal_downscale(),
+                            )
+                            latents = (
+                                self.latent_manager.load_cached_latent_windows(
+                                    batch["ids"],
+                                    batch["cache_dirs"],
+                                    source_paths=batch["paths"],
+                                    window_frames=window_lf,
+                                    **ek_kwarg,
+                                )
+                            )
+                        else:
+                            latents = self.latent_manager.load_cached_latents(
+                                batch["ids"],
+                                batch["cache_dirs"],
+                                source_paths=batch["paths"],
+                                **ek_kwarg,
+                            )
                     if latents is None:
                         # Cache miss — should only happen if pre-cache was
                         # skipped or new items were added mid-run. Decode the

@@ -122,3 +122,12 @@ class TestPrecacheFrameSelection:
         from app.engine.core.pipeline.pipeline_caching import _frames_to_encode
         assert _frames_to_encode({"target_frames": 25}) == 25
         assert _frames_to_encode({}) == 1
+
+
+class TestTrainLoopRouting:
+    def test_sliding_window_frames_from_target(self):
+        from app.engine.core.pipeline.pipeline_train import _sliding_window_frames
+        # LTX 8× temporal: latent_frames(25, 8) = (24//8)+1 = 4.
+        assert _sliding_window_frames(target_frames=25, temporal_downscale=8) == 4
+        # WAN 4×: latent_frames(25, 4) = (24//4)+1 = 7.
+        assert _sliding_window_frames(target_frames=25, temporal_downscale=4) == 7

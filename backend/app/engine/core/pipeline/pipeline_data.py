@@ -184,6 +184,7 @@ class PipelineDataMixin:
         end_s: float,
         window_span_s: float,
         repeats: int,
+        full_clip_frames: int = 0,
     ) -> list[dict]:
         """Expand one clip×bucket into per-window inventory items × repeats.
 
@@ -191,21 +192,57 @@ class PipelineDataMixin:
         ``tiled`` → K full windows (``_compute_tiled_windows``), each repeated
         ``repeats`` times (K×repeats, so each window keeps the clip's repeat
         weighting). A clip too short for one window falls back to the single
-        original window (``_compute_tiled_windows`` returns []). Every item is a
-        fresh dict (no shared mutable state).
+        original window.
+        ``sliding`` → ONE full-clip item per repeat, flagged
+        ``temporal_mode="sliding"`` and carrying ``cache_frames`` (the full-clip
+        ladder count); the train loop slices a random per-step window from the
+        cached full-clip latent. A clip with no slide room
+        (``full_clip_frames <= target_frames``) falls back to ``first``; a clip
+        longer than ``sliding_max_clip_seconds`` falls back to ``tiled`` (logged)
+        — one full-clip latent would be large and the causal-slice risk grows.
 
-        The fallback (first mode, non-video, or short clip) clones ``base_item``
-        VERBATIM — it does NOT overwrite ``trim_start_s``/``trim_end_s`` with the
-        computed ``end_s``. This keeps the trim-cache key byte-identical to the
-        pre-tiling path: an untrimmed clip carries ``trim_end_s = None`` and must
-        keep it (``video_trim_extra_key`` formats ``t{start}-{end}``, so writing a
-        concrete end where ``None`` was would silently re-key the latent cache and
-        re-encode every untrimmed clip). Only genuine tiled sub-windows overwrite
-        the trim bounds (they are new windows → new keys by design).
+        The first/tiled fallback clones ``base_item`` VERBATIM — it does NOT
+        overwrite ``trim_start_s``/``trim_end_s`` with the computed ``end_s``.
+        This keeps the trim-cache key byte-identical to the pre-tiling path: an
+        untrimmed clip carries ``trim_end_s = None`` and must keep it
+        (``video_trim_extra_key`` formats ``t{start}-{end}``, so writing a
+        concrete end where ``None`` was would silently re-key the latent cache).
+        Only genuine tiled sub-windows overwrite the trim bounds.
         """
         coverage = getattr(self, "_temporal_coverage", "first")
+        is_video = bool(base_item.get("is_video"))
+
+        # ── sliding: one FULL-CLIP item per repeat (sliced per-step at train) ──
+        if is_video and coverage == "sliding":
+            usable = max(end_s - trim_start_s, 0.0)
+            max_secs = float(getattr(self, "_sliding_max_clip_seconds", 0.0) or 0.0)
+            has_room = int(full_clip_frames) > int(base_item.get("target_frames", 1))
+            if max_secs > 0.0 and usable > max_secs:
+                # Over-long clip: a single full-clip latent is large and the
+                # causal-slice risk grows — tile the clip instead (full
+                # coverage, bounded per-window). Never silently cap.
+                self.logger.info(
+                    "sliding_clip_too_long_tiling",
+                    id=base_item.get("id"),
+                    duration_s=round(usable, 1),
+                    max_clip_seconds=max_secs,
+                )
+                coverage = "tiled"
+            elif not has_room:
+                # Clip barely longer than one window → no slide room → first.
+                coverage = "first"
+            else:
+                return [
+                    {
+                        **base_item,
+                        "temporal_mode": "sliding",
+                        "cache_frames": int(full_clip_frames),
+                    }
+                    for _ in range(repeats)
+                ]
+
         windows: list[tuple[float, float]] = []
-        if base_item.get("is_video") and coverage == "tiled":
+        if is_video and coverage == "tiled":
             windows = self._compute_tiled_windows(
                 trim_start_s=trim_start_s,
                 end_s=end_s,

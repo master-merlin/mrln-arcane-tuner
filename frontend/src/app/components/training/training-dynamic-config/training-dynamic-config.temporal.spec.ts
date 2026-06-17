@@ -68,6 +68,12 @@ const SCHEMA: SchemaNode = {
       depends_on: 'temporal_coverage:tiled',
     },
     frame_stride: { type: 'integer', default: 1, group: 'VIDEO' },
+    sliding_max_clip_seconds: {
+      type: 'number',
+      default: 0.0,
+      group: 'VIDEO',
+      depends_on: 'temporal_coverage:sliding',
+    },
   },
 } as unknown as SchemaNode;
 
@@ -78,6 +84,7 @@ const VIDEO_GATED_KEYS = [
   'window_overlap',
   'max_windows',
   'frame_stride',
+  'sliding_max_clip_seconds',
 ];
 
 /** Build a `field_visibility` map with the temporal keys at `supported`. */
@@ -189,6 +196,32 @@ describe('TrainingDynamicConfig — Phase 1 temporal-sampling fields', () => {
     expect(
       fixture.nativeElement.querySelector('[data-testid="config-input-max_windows"]'),
     ).toBeTruthy();
+  });
+
+  it('shows sliding_max_clip_seconds only when temporal_coverage = sliding', () => {
+    const fixture = build();
+    setCaps(fixture, videoCaps());
+    fixture.componentInstance.form.get('temporal_coverage')?.setValue('tiled');
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('[data-testid="config-input-sliding_max_clip_seconds"]'),
+    ).toBeNull();
+
+    fixture.componentInstance.form.get('temporal_coverage')?.setValue('sliding');
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('[data-testid="config-input-sliding_max_clip_seconds"]'),
+    ).toBeTruthy();
+  });
+
+  it('hides sliding_max_clip_seconds for image-only models even under sliding', () => {
+    const fixture = build();
+    setCaps(fixture, imageCaps());
+    fixture.componentInstance.form.get('temporal_coverage')?.setValue('sliding');
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('[data-testid="config-input-sliding_max_clip_seconds"]'),
+    ).toBeNull();
   });
 
   it('hides all temporal fields for image-only models', () => {

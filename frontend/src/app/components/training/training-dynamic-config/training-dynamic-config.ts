@@ -24,7 +24,7 @@ import { TargetLayersCardComponent } from '../target-layers-card/target-layers-c
 import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
-import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
+import { SchemaNode, SchemaProp, collapseNullableUnion, coerceConfigNumbers } from '../schema-node';
 import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
 
 export interface TrainingTemplate {
@@ -2204,6 +2204,18 @@ export class TrainingDynamicConfigComponent {
           delete raw['targeted_layers'];
         }
       }
+      // Coerce numeric fields to real numbers before sending to the backend.
+      // Number inputs render as `[type]="'number'"` (a property binding), so
+      // Angular's NumberValueAccessor — whose selector is the *static*
+      // `input[type=number]` — never attaches; the string DefaultValueAccessor
+      // is used instead, and any EDITED numeric field reaches here as a string
+      // ("0", "25", "0.3"). Untouched fields keep their numeric default, which
+      // is why an untouched target_fps stayed `0` but an edited one became "0".
+      // The backend stores the config verbatim and the trainer reads it raw, so
+      // a stray "0" zeroed video fps resolution. This is the single point where
+      // the config leaves the form — coerce here so the payload is always typed.
+      coerceConfigNumbers(raw, schema);
+
       // Resolve {placeholder} tokens in lora_name before sending to backend
       if (raw.lora_name) {
         raw.lora_name = raw.lora_name.replace(/\{(\w+)\}/g, (_: string, key: string) => {

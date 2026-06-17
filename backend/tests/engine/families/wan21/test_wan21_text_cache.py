@@ -80,3 +80,52 @@ def test_uncached_after_offload_still_raises():
 
     with pytest.raises(RuntimeError, match="Text encoder unavailable"):
         t.encode_text(["never seen"], torch.float32)
+
+
+def test_warm_includes_expanded_sample_prompts():
+    """Sampling runs AFTER the TE offload and serves prompts from the cache, so
+    the expanded sample prompts must be warmed (else 'NoneType' is not callable).
+    """
+    from app.engine.core.sampling import expand_prompt_wildcards
+
+    t = _trainer()
+    t.config = {
+        "cache_text_embeddings": True,
+        "global_triggerword": "airwolf",
+        "sample_prompts": [{"prompt": "A [triggerword] flying over the desert"}],
+    }
+    t._pre_cache_text_embeddings()
+
+    # The sampler will request the wildcard-EXPANDED string — it must be cached.
+    expanded = expand_prompt_wildcards(
+        "A [triggerword] flying over the desert", t.config
+    )
+    assert "[triggerword]" not in expanded  # expansion actually happened
+    assert expanded in t.text_cache
+
+
+def test_sampler_encodes_via_trainer_cache_not_the_offloaded_driver():
+    """The WAN sampler must route prompt encoding through the trainer's cached
+    encode_text (survives TE offload), not the driver's (None after offload).
+    """
+    from app.engine.models.families.wan_shared.sampler_base import WanVideoSamplerBase
+
+    t = _trainer()
+    t._pre_cache_text_embeddings()
+    # Offload the encoder exactly as run_trainer does before sampling.
+    t.driver.text_encoder = None
+    t.text_encoder = None
+    calls_before = t.driver.calls
+
+    # get_primary_model() supplies the dtype probe the sampler needs.
+    param = torch.nn.Parameter(torch.zeros(1))
+    t.driver.get_primary_model = lambda: torch.nn.ParameterList([param])
+
+    sampler = object.__new__(WanVideoSamplerBase)
+    sampler.pipeline = t
+    sampler.device = torch.device("cpu")
+
+    emb = sampler.encode_prompt("a cat")  # a warmed training caption
+
+    assert emb.shape == (1, 5, 8)
+    assert t.driver.calls == calls_before  # served from cache; offloaded TE untouched

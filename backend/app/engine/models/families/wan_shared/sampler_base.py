@@ -122,10 +122,20 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
     # ── GenericSamplingPipeline hooks ──────────────────────────────────────
 
     def encode_prompt(self, prompt: str) -> Any:
-        """Encode a prompt to ``[1, L, D]`` UMT5 embeddings via the trainer."""
+        """Encode a prompt to ``[1, L, D]`` UMT5 embeddings via the trainer's
+        CACHED ``encode_text``.
+
+        Sampling runs after ``run_trainer`` offloads the UMT5 encoder
+        (``driver.text_encoder`` → ``None``), so going through the driver
+        directly would call ``None(...)`` → "'NoneType' object is not callable".
+        The trainer's ``encode_text`` serves from the warm text cache instead
+        (the expanded sample prompts are pre-cached by ``WanTextCacheMixin``), so
+        it survives the offload. Caching off → the trainer falls back to the
+        still-resident driver encoder.
+        """
         trainer = self.pipeline
         dtype = next(trainer.driver.get_primary_model().parameters()).dtype
-        out = trainer.driver.encode_text([prompt], dtype)
+        out = trainer.encode_text([prompt], dtype)
         emb = out.embeddings if hasattr(out, "embeddings") else out
         return emb.to(self.device, dtype=dtype)
 

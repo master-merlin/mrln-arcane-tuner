@@ -38,6 +38,13 @@ class WanTextCacheMixin:
 
         dtype = self._resolve_loading_dtype()
         captions = [c for c in self._build_caption_hints() if c not in self.text_cache]
+        # Warm the expanded SAMPLE prompts too: the sampler runs AFTER the UMT5
+        # encoder is offloaded and serves prompts from self.text_cache via
+        # encode_text, so without this it hits the offloaded (None) encoder and
+        # crashes with "'NoneType' object is not callable".
+        for sp in self._sample_prompt_texts():
+            if sp not in self.text_cache and sp not in captions:
+                captions.append(sp)
         total = len(captions)
         if not total:
             self.logger.info("wan_text_cache_complete", cached=len(self.text_cache))
@@ -63,3 +70,25 @@ class WanTextCacheMixin:
             cached=len(self.text_cache),
             newly_encoded=total,
         )
+
+    def _sample_prompt_texts(self) -> list[str]:
+        """Expanded sample-prompt strings to pre-cache.
+
+        The sampler requests the wildcard-EXPANDED prompt after the UMT5 encoder
+        is offloaded, so warming the same expansion here (shared module helper,
+        so the two can't drift) makes the cache key match exactly.
+        """
+        from app.engine.core.sampling import expand_prompt_wildcards
+
+        texts: list[str] = []
+        for sp in self.config.get("sample_prompts", []) or []:
+            raw = (
+                sp.get("prompt", "")
+                if isinstance(sp, dict)
+                else getattr(sp, "prompt", "")
+            )
+            if raw:
+                expanded = expand_prompt_wildcards(raw, self.config)
+                if expanded not in texts:
+                    texts.append(expanded)
+        return texts

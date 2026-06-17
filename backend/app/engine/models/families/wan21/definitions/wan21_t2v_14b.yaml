@@ -5,13 +5,14 @@ version: '1.0'
 defaults:
   resolution: 720
   scheduler: flow_match_euler
-  learning_rate: 1.0e-4
+  learning_rate: 0.0001
   timestep_sampling: logit_normal
 components:
   repo:
     path: huggingface:Wan-AI/Wan2.1-T2V-14B-Diffusers
     type: diffusers
     params: {}
+control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.float32
@@ -34,6 +35,122 @@ architecture_params:
   video.native_fps: 16
   video.vae_spatial: 8
   video.vae_temporal: 4
+  num_heads: 40
+  depth: 40
+  in_channels: 16
+  transformer.added_kv_proj_dim: null
+  transformer.cross_attn_norm: true
+  transformer.eps: 1.0e-06
+  transformer.ffn_dim: 13824
+  transformer.image_dim: null
+  transformer.patch_size:
+  - 1
+  - 2
+  - 2
+  transformer.qk_norm: rms_norm_across_heads
+  transformer.rope_max_seq_len: 1024
+  te.architectures:
+  - UMT5EncoderModel
+  te.classifier_dropout: 0.0
+  te.d_ff: 10240
+  te.d_kv: 64
+  te.d_model: 4096
+  te.decoder_start_token_id: 0
+  te.dense_act_fn: gelu_new
+  te.dropout_rate: 0.1
+  te.eos_token_id: 1
+  te.feed_forward_proj: gated-gelu
+  te.initializer_factor: 1.0
+  te.is_encoder_decoder: true
+  te.is_gated_act: true
+  te.layer_norm_epsilon: 1.0e-06
+  te.num_decoder_layers: 24
+  te.num_heads: 64
+  te.num_layers: 24
+  te.output_past: true
+  te.pad_token_id: 0
+  te.relative_attention_max_distance: 128
+  te.relative_attention_num_buckets: 32
+  te.scalable_attention: true
+  te.tie_word_embeddings: false
+  te.tokenizer_class: T5Tokenizer
+  te.torch_dtype: float32
+  te.use_cache: true
+  te.vocab_size: 256384
+  scheduler._class_name: UniPCMultistepScheduler
+  scheduler.beta_end: 0.02
+  scheduler.beta_schedule: linear
+  scheduler.beta_start: 0.0001
+  scheduler.disable_corrector: []
+  scheduler.dynamic_thresholding_ratio: 0.995
+  scheduler.final_sigmas_type: zero
+  scheduler.flow_shift: 3.0
+  scheduler.lower_order_final: true
+  scheduler.num_train_timesteps: 1000
+  scheduler.predict_x0: true
+  scheduler.prediction_type: flow_prediction
+  scheduler.rescale_betas_zero_snr: false
+  scheduler.sample_max_value: 1.0
+  scheduler.solver_order: 2
+  scheduler.solver_p: null
+  scheduler.solver_type: bh2
+  scheduler.steps_offset: 0
+  scheduler.thresholding: false
+  scheduler.timestep_spacing: linspace
+  scheduler.trained_betas: null
+  scheduler.use_beta_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_flow_sigmas: true
+  scheduler.use_karras_sigmas: false
+  vae.attn_scales: []
+  vae.base_dim: 96
+  vae.dim_mult:
+  - 1
+  - 2
+  - 4
+  - 4
+  vae.dropout: 0.0
+  vae.latents_mean:
+  - -0.7571
+  - -0.7089
+  - -0.9113
+  - 0.1075
+  - -0.1745
+  - 0.9653
+  - -0.1517
+  - 1.5508
+  - 0.4134
+  - -0.0715
+  - 0.5517
+  - -0.3632
+  - -0.1922
+  - -0.9497
+  - 0.2503
+  - -0.2921
+  vae.latents_std:
+  - 2.8184
+  - 1.4541
+  - 2.3275
+  - 2.6558
+  - 1.2196
+  - 1.7708
+  - 2.6052
+  - 2.0743
+  - 3.2687
+  - 2.1526
+  - 2.8652
+  - 1.5579
+  - 1.6382
+  - 1.1253
+  - 2.8251
+  - 1.916
+  vae.num_res_blocks: 2
+  vae.temperal_downsample:
+  - false
+  - true
+  - true
+  transformer.hidden_size: 5120
+model_size_mb: {}
 lora_targetable_modules:
 - attn1.to_q
 - attn1.to_k
@@ -45,3 +162,4 @@ lora_targetable_modules:
 - attn2.to_out.0
 - ffn.net.0.proj
 - ffn.net.2
+block_topology: []

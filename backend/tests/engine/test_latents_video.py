@@ -111,6 +111,39 @@ class TestVideoVaeDetection:
 # ── 5D encode + cache ────────────────────────────────────────────────────
 
 
+class TestVaeColocation:
+    """encode_and_cache_batch must co-locate the VAE with the compute device.
+
+    The VAE is offloaded to CPU after pre-caching (low_vram=True), but a
+    train-loop cache MISS still routes through encode_and_cache_batch with the
+    input already on the device. Without the JIT move the CUDA input meets CPU
+    weights → "Input type (CUDABFloat16Type) and weight type (CPUBFloat16Type)
+    should be the same" (the G1 rerun crash). Mirrors the audio-VAE / connector
+    co-location pattern.
+    """
+
+    def test_encode_colocates_offloaded_vae(self):
+        vae = FakeWanVAE()
+        seen: list = []
+        real_to = vae.to
+
+        def _record_to(*args, **kwargs):
+            if args:
+                seen.append(args[0])
+            elif "device" in kwargs:
+                seen.append(kwargs["device"])
+            return real_to(*args, **kwargs)
+
+        vae.to = _record_to  # type: ignore[method-assign]
+
+        lm = LatentManager(vae, device="cpu")
+        lm.encode_and_cache_batch(torch.randn(1, 3, 13, 64, 64), ["clip0"])
+
+        assert "cpu" in [str(d) for d in seen], (
+            f"VAE not moved to the compute device before encode; .to() saw {seen}"
+        )
+
+
 class TestVideo5DEncode:
     def test_video_latent_stays_5d(self):
         """A genuine 5D video input produces a 5D cached latent (no squeeze)."""

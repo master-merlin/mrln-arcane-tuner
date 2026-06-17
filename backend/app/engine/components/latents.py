@@ -294,6 +294,15 @@ class LatentManager:
         if self.vae is None:
             raise ValueError("VAE needed for encoding.")
 
+        # Co-locate the VAE with the compute device. After pre-caching the VAE is
+        # offloaded to CPU (low_vram), but encode can still be called afterwards —
+        # a train-loop cache MISS routes here with the input already on CUDA. Move
+        # the VAE just-in-time (a no-op when already resident) so its weights meet
+        # the input's device; otherwise: "Input type (CUDABFloat16Type) and weight
+        # type (CPUBFloat16Type) should be the same". Mirrors the audio-VAE /
+        # connector JIT co-location used elsewhere for offloaded modules.
+        self.vae.to(self.device)
+
         images = image_batch.to(self.device, dtype=self.vae.dtype)
 
         # Distinguish two 5D regimes:

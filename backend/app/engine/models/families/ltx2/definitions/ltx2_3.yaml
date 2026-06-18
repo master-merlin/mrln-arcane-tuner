@@ -5,7 +5,8 @@ version: '1.0'
 defaults:
   resolution: 768
   scheduler: euler_a
-  learning_rate: 1e-5
+  learning_rate: 1e-4
+  timestep_sampling: model_shift
   train_audio: false
 components:
   repo:

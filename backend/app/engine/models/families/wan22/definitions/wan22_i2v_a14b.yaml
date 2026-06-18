@@ -6,7 +6,7 @@ defaults:
   resolution: 720
   scheduler: flow_match_euler
   learning_rate: 1.0e-4
-  timestep_sampling: logit_normal
+  timestep_sampling: model_shift
   expert_switch_interval: 1
   expert_swap_mode: auto
 components:

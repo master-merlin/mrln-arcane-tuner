@@ -6,7 +6,7 @@ defaults:
   resolution: 480
   scheduler: flow_match_euler
   learning_rate: 1.0e-4
-  timestep_sampling: logit_normal
+  timestep_sampling: model_shift
 components:
   repo:
     path: huggingface:Wan-AI/Wan2.1-T2V-1.3B-Diffusers

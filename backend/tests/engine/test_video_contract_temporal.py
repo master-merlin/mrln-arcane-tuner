@@ -253,3 +253,47 @@ def test_zero_sliding_max_clip_seconds_accepted(monkeypatch):
         {"temporal_coverage": "sliding", "sliding_max_clip_seconds": 0, "num_frames": 25},
     )
     assert rep.ok, rep.errors
+
+
+class _DefnLtxSched(_Defn):
+    architecture_params = {
+        **_Defn.architecture_params,
+        "scheduler.use_dynamic_shifting": True,
+        "scheduler.base_shift": 0.95,
+        "scheduler.max_shift": 2.05,
+        "scheduler.base_image_seq_len": 1024,
+        "scheduler.max_image_seq_len": 4096,
+    }
+
+
+class _DefnWanSched(_Defn):
+    architecture_params = {
+        **_Defn.architecture_params,
+        "scheduler.flow_shift": 3.0,
+    }
+
+
+def _patch_video(monkeypatch):
+    import app.engine.core.archetypes as arch
+    monkeypatch.setattr(arch, "resolve_capabilities", lambda d: {
+        "capabilities": {"is_video": True, "has_audio": False,
+                         "dual_expert": False, "has_image_encoder": False}})
+
+
+def test_contract_injects_ltx_dynamic_shift(monkeypatch):
+    _patch_video(monkeypatch)
+    rep = validate_video_config(_DefnLtxSched(), {"num_frames": 25})
+    assert rep.ok, rep.errors
+    assert rep.derived["model_shift_base_shift"] == 0.95
+    assert rep.derived["model_shift_max_shift"] == 2.05
+    assert rep.derived["model_shift_base_seq"] == 1024
+    assert rep.derived["model_shift_max_seq"] == 4096
+    assert "model_shift_fixed" not in rep.derived
+
+
+def test_contract_injects_wan_fixed_shift(monkeypatch):
+    _patch_video(monkeypatch)
+    rep = validate_video_config(_DefnWanSched(), {"num_frames": 25})
+    assert rep.ok, rep.errors
+    assert rep.derived["model_shift_fixed"] == 3.0
+    assert "model_shift_base_shift" not in rep.derived

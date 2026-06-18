@@ -1065,6 +1065,20 @@ class BaseTrainingConfig(BaseModel):
             "step": 0.05,
         },
     )
+    first_frame_conditioning_probability: float = Field(
+        0.5,
+        description=(
+            "i2v: fraction of steps that condition on the first frame "
+            "(the rest train unconditional generation)"
+        ),
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "video_mode:i2v",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+        },
+    )
     train_audio: bool = Field(
         False,
         description="Jointly train the audio stream (audio-capable models only)",

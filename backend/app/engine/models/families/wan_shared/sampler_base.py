@@ -111,13 +111,15 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
     def _build_sigmas(self, num_steps: int) -> Tensor:
         """Resolution-shifted FlowMatchEuler sigma schedule, descending 1 → 0.
 
-        ``sigma_shifted = shift * sigma / (1 + (shift - 1) * sigma)``.
-        Computed in fp32.
+        Uses the shared ``shifted_sigmas`` helper. The shift is resolved from
+        config (``model_shift_fixed``, injected by the WAN contract) if present,
+        otherwise falls back to the class-level ``self.shift`` attribute (3.0 @
+        480p, 5.0 @ 720p). Computed in fp32.
         """
-        sigmas = torch.linspace(1.0, 0.0, num_steps + 1, dtype=torch.float32)
-        shift = float(self.shift)
-        shifted = shift * sigmas / (1.0 + (shift - 1.0) * sigmas)
-        return shifted
+        from app.engine.strategies.sigma_schedule import shifted_sigmas
+
+        shift = float(self.config.get("model_shift_fixed") or self.shift)
+        return shifted_sigmas(num_steps, shift)
 
     # ── GenericSamplingPipeline hooks ──────────────────────────────────────
 

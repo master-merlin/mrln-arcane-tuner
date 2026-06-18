@@ -103,6 +103,8 @@ class Ltx2Driver(IModelDriver):
         self.audio_sampling_rate: int = 16000
         self._audio_mel = None  # lazily-built AudioMelExtractor (audio-on runs)
         self._latent_shape: tuple[int, int, int] | None = None  # (F, H, W)
+        # i2v per-step flag; set by Ltx2Trainer._attach_conditioning each step.
+        self._i2v_active: bool = False
 
     # --- Phase 1: Loading & Component Access ---
 
@@ -261,6 +263,25 @@ class Ltx2Driver(IModelDriver):
 
     # --- Phase 5: Training Loop Hooks ---
 
+    # --- i2v (image-to-video) per-token timestep helpers ---
+
+    def _i2v_per_token_timestep(
+        self,
+        timesteps: torch.Tensor,
+        num_tokens: int,
+        tokens_per_frame: int,
+    ) -> torch.Tensor:
+        """[B] scalar σ → [B, num_tokens] with the first frame's tokens = 0.
+
+        Conditioning frame (first post_h*post_w tokens) is clean (t=0); the
+        rest carry the per-batch σ.  Matches the ``_pack_latents`` token order
+        where ``(post_f, post_h, post_w)`` is flattened row-major so the first
+        ``post_h*post_w`` tokens correspond to the first temporal frame.
+        """
+        t = timesteps.reshape(-1, 1).expand(-1, num_tokens).clone()
+        t[:, :tokens_per_frame] = 0.0
+        return t
+
     def add_noise(
         self,
         latents: torch.Tensor,
@@ -273,7 +294,20 @@ class Ltx2Driver(IModelDriver):
         FlowMatchEuler timestep in ``[0, 1000]``; we normalize by the scale
         here (NOT an extra ×1000).  Proven by
         ``assert_flowmatch_timestep_contract``.
+
+        i2v mode (``_i2v_active``): the first ``tokens_per_frame`` tokens
+        receive t=0 so they remain CLEAN (identity: noisy == latents); the
+        remaining tokens carry the sampled σ.  Non-i2v path is byte-identical
+        to the original scalar implementation.
         """
+        if getattr(self, "_i2v_active", False):
+            f, h, w = self._latent_grid()
+            tpf = h * w
+            num_tokens = latents.shape[1]   # packed [B, num_tokens, D]
+            t_tok = self._i2v_per_token_timestep(timesteps, num_tokens, tpf)
+            frac = (t_tok / _FLOWMATCH_SCALE).unsqueeze(-1)  # [B, num_tokens, 1]
+            return frac * noise + (1.0 - frac) * latents
+
         frac = timesteps / _FLOWMATCH_SCALE
         while frac.ndim < latents.ndim:
             frac = frac.unsqueeze(-1)
@@ -368,12 +402,24 @@ class Ltx2Driver(IModelDriver):
         if audio_clean is None:
             # Video-only: minimal isolated dummy audio.
             audio_h, audio_emb = self._dummy_audio_inputs(noisy_input, video_emb)
+
+            # i2v: replace scalar timestep with per-token tensor [B, num_tokens]
+            # so the transformer applies t=0 to the conditioning (first) frame.
+            # sigma stays [B] — it is used for prompt cross-attn modulation
+            # and should reflect the per-batch noise level.
+            if getattr(self, "_i2v_active", False):
+                num_tokens = noisy_input.shape[1]
+                tpf = h * w
+                timestep_arg = self._i2v_per_token_timestep(timesteps, num_tokens, tpf)
+            else:
+                timestep_arg = timesteps
+
             output = self.transformer(
                 hidden_states=noisy_input,
                 audio_hidden_states=audio_h,
                 encoder_hidden_states=video_emb,
                 audio_encoder_hidden_states=audio_emb,
-                timestep=timesteps,  # raw [0, 1000] flow-match scale
+                timestep=timestep_arg,  # [B, num_tokens] for i2v, [B] for t2v
                 sigma=timesteps,  # LTX-2.3 prompt modulation (harmless when unused)
                 num_frames=f,
                 height=h,

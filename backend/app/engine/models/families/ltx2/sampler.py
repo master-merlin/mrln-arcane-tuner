@@ -197,7 +197,13 @@ class Ltx2Sampler(GenericSamplingPipeline):
             )
             audio_emb = driver._audio_embeddings(prompt_embedding, video_emb).to(model_dtype)
 
-        sigmas = torch.linspace(1.0, 0.0, num_steps + 1, device=self.device)
+        from app.engine.strategies.sigma_schedule import shifted_sigmas
+        shift = float(
+            self.config.get("model_shift_fixed")
+            or self.config.get("model_shift_max_shift")
+            or 1.0
+        )
+        sigmas = shifted_sigmas(num_steps, shift, device=self.device)
 
         # Step the schedule in fp32; the per-step timestep is the sigma on the
         # [0, 1000] flow-match scale, passed RAW to the transformer (NOT ÷1000 —

@@ -33,6 +33,13 @@ class PipelineTrainMixin:
         max_steps = int(self.config.get("max_train_steps", 1000))
         self.max_train_steps = max_steps
         batch_size = int(self.config.get("train_batch_size", 1))
+
+        # Sigma distribution tracker — accumulates timestep histogram for diagnostics.
+        try:
+            from app.engine.strategies.sigma_tracker import SigmaTracker
+            self._sigma_tracker = SigmaTracker()
+        except Exception:  # noqa: BLE001
+            self._sigma_tracker = None
         grad_accum = int(self.config.get("gradient_accumulation_steps", 1))
         noise_offset_strength = float(self.config.get("noise_offset", 0.0))
 
@@ -266,6 +273,9 @@ class PipelineTrainMixin:
                     # consumes batch["control_latents"] when present.
                     self._load_control_latents(batch)
 
+                    # Pre-noise conditioning (e.g. WAN/LTX i2v first-frame latent).
+                    self._attach_conditioning(batch, latents)
+
                     # 2. Encode Text (family hook). Pass the batch so paired-edit
                     # trainers can condition the text encoder on the control image
                     # + key the TE cache by (caption, control). Ignored otherwise.
@@ -306,6 +316,13 @@ class PipelineTrainMixin:
                     timesteps = self.sample_timesteps(
                         prepared_latents.shape[0], latents
                     )
+
+                    # Track sigma distribution (non-fatal diagnostic).
+                    try:
+                        if self._sigma_tracker is not None:
+                            self._sigma_tracker.update(timesteps)
+                    except Exception:  # noqa: BLE001
+                        pass
 
                     # Add noise (family hook)
                     noisy_input = self.add_noise(
@@ -501,6 +518,14 @@ class PipelineTrainMixin:
                     save_time=round(self.logger_component._save_times[-1], 2),
                     avg_save_time=round(self.logger_component.avg_save_time, 2),
                 )
+                # Emit sigma distribution summary alongside the checkpoint log.
+                try:
+                    if self._sigma_tracker is not None:
+                        self.logger.info(
+                            "sigma_distribution", **self._sigma_tracker.summary()
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
                 # Record checkpoint in DB
                 self._record_checkpoint(step, is_final=False)
                 # Flush metrics buffer + update progress

@@ -130,6 +130,11 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     ("target_fps", "is_video", "image model — no video frames"),
     ("video_mode", "is_video", "image model — no video frames"),
     ("i2v_image_dropout", "is_video", "image model — no video frames"),
+    (
+        "first_frame_conditioning_probability",
+        "is_video",
+        "image model — no i2v conditioning",
+    ),
     ("train_audio", "has_audio", "this model has no audio modality"),
     ("audio_loss_weight", "has_audio", "this model has no audio modality"),
     (

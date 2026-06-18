@@ -215,6 +215,17 @@ class PipelineBaseMixin(BaseTrainer):
         """
         return self.driver.prepare_latents(latents)
 
+    def _attach_conditioning(self, batch: dict[str, Any], latents: torch.Tensor) -> None:
+        """Stash pre-noise conditioning (e.g. i2v first-frame latent) into *batch*.
+
+        Called in the train loop after the clean latents are loaded/flipped and
+        BEFORE noising, so families can capture a clean conditioning frame.
+        Delegates to ``driver.attach_conditioning`` when present; default no-op.
+        """
+        fn = getattr(self.driver, "attach_conditioning", None)
+        if callable(fn):
+            fn(batch, latents)
+
     def on_epoch_end(self, epoch: int) -> None:
         """Hook called at the end of each virtual epoch.
 

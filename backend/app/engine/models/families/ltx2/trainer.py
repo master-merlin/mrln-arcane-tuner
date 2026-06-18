@@ -232,6 +232,26 @@ class Ltx2Trainer(GenericTrainingPipeline):
             mask[j : j + 1].cpu() if mask is not None else None,
         )
 
+    # ── i2v first-frame conditioning gate ───────────────────────────────
+
+    def _attach_conditioning(self, batch: dict, latents: object) -> None:
+        """Per-step i2v gate. Sets driver._i2v_active for this step.
+
+        i2v is active when video_mode=='i2v' AND a Bernoulli draw with
+        first_frame_conditioning_probability succeeds (the LTX recipe trains a
+        mix of conditioned + unconditioned steps).  Video-only (no audio) for now.
+        """
+        import random as _random
+
+        active = False
+        if str(self.config.get("video_mode", "t2v")).lower() == "i2v":
+            p = float(self.config.get("first_frame_conditioning_probability", 0.5))
+            active = _random.random() < p
+        # Audio i2v not handled yet — only condition video-only steps.
+        if batch.get("audio_clean") is not None:
+            active = False
+        self.driver._i2v_active = active
+
     # ── Joint audio + video loss ─────────────────────────────────────────
 
     def _compute_step_loss(
@@ -249,10 +269,29 @@ class Ltx2Trainer(GenericTrainingPipeline):
         prediction/target/mask are read from ``batch`` (populated by the audio
         forward path) and the driver adds ``audio_weight * masked_audio_fm``,
         sharing the SAME timestep.
+
+        i2v first-frame mask: when i2v is active and the batch carries no audio
+        (video-only step), the first ``tokens_per_frame`` tokens in ``pred`` /
+        ``target`` are the conditioning frame and must be excluded from the loss
+        (their velocity target is trivially zero since t=0 → they were not noised).
+        The audio path and non-i2v path are unchanged.
         """
         audio_pred = batch.get("audio_pred")
         audio_target = batch.get("audio_target")
         audio_mask = batch.get("audio_mask")
+
+        # i2v loss mask: drop the conditioning frame tokens (first tpf).
+        # Conditions:
+        #   1. driver reports i2v active for this step
+        #   2. no audio in this batch (audio_clean absent → video-only step)
+        if (
+            getattr(self.driver, "_i2v_active", False)
+            and batch.get("audio_clean") is None
+        ):
+            _, h, w = self.driver._latent_grid()
+            tpf = h * w
+            pred = pred[:, tpf:]
+            target = target[:, tpf:]
 
         loss = self.driver.compute_loss(
             pred,

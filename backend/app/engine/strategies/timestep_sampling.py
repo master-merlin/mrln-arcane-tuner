@@ -15,6 +15,10 @@ flux_shift     – Resolution-dependent shifted logit-normal
 radc           – Resolution-Aware Dynamic Curriculum (step-aware Gaussian
                  that shifts from high-noise to low-noise over training,
                  with a resolution × progress cross-function)
+model_shift    – Inference-matched flow-match shift in logit space.
+                 LTX (dynamic): mu interpolates base_shift→max_shift with seq-len.
+                 WAN (fixed):   mu = ln(flow_shift) (seq-len independent).
+                 else (fallback): flux-style mid shift.
 """
 
 from __future__ import annotations
@@ -26,6 +30,27 @@ import structlog
 import torch
 
 logger = structlog.get_logger(__name__)
+
+
+# ── Shared seq-len helper ─────────────────────────────────────────────────
+
+
+def _patchified_seq_len(latents: torch.Tensor | None, patchify_factor: int = 1) -> int | None:
+    """Token count the transformer sees: F * (H/p) * (W/p).
+
+    4D image latent [B,C,H,W] → F=1. 5D video latent [B,C,F,H,W] → real F.
+    H,W are ALWAYS the last two dims (the prior code wrongly read shape[2],
+    shape[3], which for 5D video are F,H). Returns None for unusable input.
+    """
+    if latents is None or latents.ndim not in (4, 5):
+        return None
+    if latents.ndim == 5:
+        f, h, w = int(latents.shape[2]), int(latents.shape[3]), int(latents.shape[4])
+    else:
+        f, h, w = 1, int(latents.shape[2]), int(latents.shape[3])
+    p = max(int(patchify_factor), 1)
+    return f * (h // p) * (w // p)
+
 
 # ── RADC PDF builder ──────────────────────────────────────────────────────
 
@@ -78,9 +103,9 @@ def _radc_center(
 
     # Resolution cross-function (only when latents are available)
     if res_influence > 0 and latents is not None and latents.ndim >= 4:
-        h, w = latents.shape[2], latents.shape[3]
-        pf = int(config.get("flux_shift_patchify_factor", 1))
-        seq_len = (h // pf) * (w // pf)
+        seq_len = _patchified_seq_len(latents, int(config.get("flux_shift_patchify_factor", 1)))
+        if seq_len is None:
+            return max(0.0, min(1.0, base_center))
         # Normalize seq_len to [0, 1] range (256..4096 → 0..1)
         res_norm = max(0.0, min(1.0, (seq_len - 256) / (4096 - 256)))
         cross = res_influence * progress * (1.0 - 2.0 * res_norm)
@@ -117,6 +142,7 @@ class TimestepSampler:
         "mode",
         "flux_shift",
         "radc",
+        "model_shift",
     ]
 
     # ── Core sampler ──────────────────────────────────────────────────
@@ -177,15 +203,15 @@ class TimestepSampler:
         if mode == "flux_shift":
             base_shift = float(config.get("flux_shift_base", 0.5))
             max_shift = float(config.get("flux_shift_max", 1.16))
-            if latents is not None:
-                h, w = latents.shape[2], latents.shape[3]
+            seq_len = _patchified_seq_len(
+                latents, int(config.get("flux_shift_patchify_factor", 1))
+            )
+            if seq_len is not None:
                 # Flux2 patchifies latents (2× down per spatial dim) before
                 # the transformer, so the actual image sequence length the
                 # model sees is (h/p)*(w/p).  Without this correction the mu
                 # is far too high (3.27 instead of 1.16 for 1024px images),
                 # heavily biasing training toward extreme-noise timesteps.
-                pf = int(config.get("flux_shift_patchify_factor", 1))
-                seq_len = (h // pf) * (w // pf)
                 m = (max_shift - base_shift) / (4096 - 256)
                 b = base_shift - m * 256
                 mu = seq_len * m + b
@@ -201,6 +227,36 @@ class TimestepSampler:
             cdf = torch.cumsum(pdf / pdf.sum(), dim=0).to(device)
             indices = torch.searchsorted(cdf, u)
             return (indices.float() + 1) / 1000.0
+
+        if mode == "model_shift":
+            # Inference-matched flow-match shift, in additive logit space.
+            #   LTX  (dynamic): mu interpolates base_shift→max_shift with seq-len.
+            #   WAN  (fixed):   mu = ln(flow_shift)  (seq-len independent).
+            #   else (fallback): flux-style mid shift.
+            std = float(config.get("model_shift_std", 1.0))
+            base_shift = config.get("model_shift_base_shift", None)
+            max_shift = config.get("model_shift_max_shift", None)
+            fixed = config.get("model_shift_fixed", None)
+            seq_len = _patchified_seq_len(
+                latents, int(config.get("flux_shift_patchify_factor", 1))
+            )
+            if base_shift is not None and max_shift is not None and seq_len is not None:
+                base_seq = float(config.get("model_shift_base_seq", 1024))
+                max_seq = float(config.get("model_shift_max_seq", 4096))
+                bs_v, ms_v = float(base_shift), float(max_shift)
+                m = (ms_v - bs_v) / max(max_seq - base_seq, 1.0)
+                mu = bs_v + m * (float(seq_len) - base_seq)
+                mu = max(min(mu, max(bs_v, ms_v)), min(bs_v, ms_v))  # clamp to range
+            elif fixed is not None and float(fixed) > 0.0:
+                mu = math.log(float(fixed))
+            else:
+                mu = (0.5 + 1.16) / 2.0
+            t = torch.sigmoid(torch.randn((bs,), device=device) * std + mu)
+            uniform_prob = float(config.get("timestep_uniform_prob", 0.1))
+            if uniform_prob > 0.0:
+                u_mask = torch.rand((bs,), device=device) < uniform_prob
+                t = torch.where(u_mask, torch.rand((bs,), device=device), t)
+            return t
 
         # Unknown → fallback with warning
         logger.warning("unknown_timestep_mode", mode=mode, fallback="uniform")

@@ -419,7 +419,7 @@ class BaseTrainingConfig(BaseModel):
         json_schema_extra={"group": "STRATEGY"},
     )
     timestep_sampling: Literal[
-        "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc"
+        "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift"
     ] = Field(
         "logit_normal",
         description="Timestep sampling strategy for training",
@@ -445,6 +445,24 @@ class BaseTrainingConfig(BaseModel):
             "min": 0.1,
             "max": 3.0,
             "step": 0.1,
+        },
+    )
+    model_shift_std: float = Field(
+        1.0,
+        description="Std of the logit-normal draw for model_shift timestep sampling",
+        json_schema_extra={
+            "group": "STRATEGY",
+            "depends_on": "timestep_sampling:model_shift",
+            "min": 0.1, "max": 3.0, "step": 0.1,
+        },
+    )
+    timestep_uniform_prob: float = Field(
+        0.1,
+        description="Fraction of timesteps drawn uniformly (mixed into shifted modes)",
+        json_schema_extra={
+            "group": "STRATEGY",
+            "depends_on": "timestep_sampling:model_shift",
+            "min": 0.0, "max": 1.0, "step": 0.05,
         },
     )
     mode_scale: float = Field(
@@ -1039,6 +1057,20 @@ class BaseTrainingConfig(BaseModel):
     i2v_image_dropout: float = Field(
         0.1,
         description="Chance of dropping the conditioning image (enables CFG for I2V)",
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "video_mode:i2v",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+        },
+    )
+    first_frame_conditioning_probability: float = Field(
+        0.5,
+        description=(
+            "i2v: fraction of steps that condition on the first frame "
+            "(the rest train unconditional generation)"
+        ),
         json_schema_extra={
             "group": "VIDEO",
             "depends_on": "video_mode:i2v",

@@ -165,6 +165,25 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
         report.derived["video_native_fps"] = profile.native_fps
     report.derived["video_divisibility"] = profile.divisibility
 
+    # model_shift timestep params — match the model's inference scheduler so
+    # training-time timestep sampling reproduces the inference noise schedule.
+    arch = getattr(definition, "architecture_params", {}) or {}
+    use_dyn = arch.get("scheduler.use_dynamic_shifting")
+    base_shift = arch.get("scheduler.base_shift")
+    max_shift = arch.get("scheduler.max_shift")
+    flow_shift = arch.get("scheduler.flow_shift")
+    if use_dyn and base_shift is not None and max_shift is not None:
+        report.derived["model_shift_base_shift"] = float(base_shift)
+        report.derived["model_shift_max_shift"] = float(max_shift)
+        report.derived["model_shift_base_seq"] = float(
+            arch.get("scheduler.base_image_seq_len", 1024)
+        )
+        report.derived["model_shift_max_seq"] = float(
+            arch.get("scheduler.max_image_seq_len", 4096)
+        )
+    elif flow_shift is not None:
+        report.derived["model_shift_fixed"] = float(flow_shift)
+
     # num_frames must satisfy the family's Nn+1 rule (the UI offers only valid
     # values; a residual bad value — e.g. via direct API — is a hard error).
     num_frames = _int_or_none(config.get("num_frames")) or 0

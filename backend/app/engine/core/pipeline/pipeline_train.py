@@ -266,6 +266,9 @@ class PipelineTrainMixin:
                     # consumes batch["control_latents"] when present.
                     self._load_control_latents(batch)
 
+                    # Pre-noise conditioning (e.g. WAN/LTX i2v first-frame latent).
+                    self._attach_conditioning(batch, latents)
+
                     # 2. Encode Text (family hook). Pass the batch so paired-edit
                     # trainers can condition the text encoder on the control image
                     # + key the TE cache by (caption, control). Ignored otherwise.

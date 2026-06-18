@@ -172,6 +172,34 @@ class WanDriverBase(IModelDriver):
 
     # --- Phase 5: Training Loop Hooks ---
 
+    def prepare_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        """Lift a 4D still latent to 5D so the WAN transformer (which unpacks
+        ``b,c,f,h,w = hidden_states.shape``) accepts a single still as a 1-frame
+        clip. A still in a mixed stills+video run is cached 4D ``[B,C,H,W]`` via
+        the image path; without this lift the RoPE unpack raised
+        'not enough values to unpack (expected 5, got 4)'. Mirrors LTX-2's
+        ``_pack_latents`` 4D handling. 5D input is returned unchanged.
+        """
+        if latents.ndim == 4:
+            latents = latents.unsqueeze(2)  # [B, C, H, W] → [B, C, 1, H, W]
+        return latents
+
+    def attach_conditioning(self, batch: dict[str, Any], latents: torch.Tensor) -> None:
+        """I2V: stash the clean first-frame latent (the clip's own frame 0).
+
+        T2V is a no-op. The first-frame latent is ``[B, 16, 1, H, W]`` — the
+        forward's ``build_i2v_conditioning`` zero-pads it to F and concatenates
+        ``[noisy(16), mask(4), cond(16)]``. (CLIP image embed stays None — the
+        diffusers WAN transformer guards None; full-fidelity CLIP conditioning is
+        a documented follow-up.)
+        """
+        if not self.is_i2v:
+            return
+        if self.BATCH_FIRST_FRAME_LATENT in batch:
+            return
+        lat = latents if latents.ndim == 5 else latents.unsqueeze(2)
+        batch[self.BATCH_FIRST_FRAME_LATENT] = lat[:, :, :1, :, :].detach().clone()
+
     def add_noise(
         self,
         latents: torch.Tensor,

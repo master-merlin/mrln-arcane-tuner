@@ -127,8 +127,10 @@ def main() -> None:
         print(f"{PY} {RUN_TRAINER} --definition_id {DEFINITION_ID} --config '{json.dumps(cfg)}'")
         return
 
-    print("# launching…\n")
-    raise SystemExit(subprocess.call(cmd))
+    print("# launching...\n")
+    # Run from backend/ so the trainer resolves the SAME warm latent/text cache
+    # and ./outputs path the real server-spawned run uses (CWD-relative).
+    raise SystemExit(subprocess.call(cmd, cwd=str(REPO / "backend")))
 
 
 if __name__ == "__main__":

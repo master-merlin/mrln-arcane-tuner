@@ -432,8 +432,8 @@ class PipelineTrainMixin:
 
                 # 3. Forward + Loss (under autocast)
                 #    Profiler region "forward_loss": the compute (noise/pack/
-                #    timestep/forward/loss). Backward + optimizer fall outside any
-                #    region and show natively in the trace.
+                #    timestep/forward/loss). Backward + optimizer get their own
+                #    regions below so the full step is apportioned.
                 with torch.autocast(
                     "cuda", dtype=self.autocast_dtype, enabled=self.use_amp
                 ), self._prof_region("forward_loss"):
@@ -515,32 +515,35 @@ class PipelineTrainMixin:
                     self.nan_count = 0
                     accumulated_loss += loss.item() * grad_accum  # Unscale for logging
 
-                    if self.scaler.is_enabled():
-                        self.scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                    with self._prof_region("backward"):
+                        if self.scaler.is_enabled():
+                            self.scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
 
             # 5. Optimizer step (after all accumulation steps)
-            if self.scaler.is_enabled():
-                self.scaler.unscale_(self.optimizer)
+            #    Profiler region "optimizer": unscale + grad-norm clip + step.
+            with self._prof_region("optimizer"):
+                if self.scaler.is_enabled():
+                    self.scaler.unscale_(self.optimizer)
 
-            # Compute grad norm for ALL optimizers (monitoring).
-            # Only clip for non-adaptive; adaptive optimizers manage their own.
-            if is_adaptive:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self._get_primary_model().parameters(),
-                    max_norm=float("inf"),
-                )
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self._get_primary_model().parameters(), max_norm=1.0
-                )
+                # Compute grad norm for ALL optimizers (monitoring).
+                # Only clip for non-adaptive; adaptive optimizers manage their own.
+                if is_adaptive:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self._get_primary_model().parameters(),
+                        max_norm=float("inf"),
+                    )
+                else:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self._get_primary_model().parameters(), max_norm=1.0
+                    )
 
-            if self.scaler.is_enabled():
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
+                if self.scaler.is_enabled():
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
 
             if self.lr_scheduler:
                 self.lr_scheduler.step()

@@ -20,7 +20,10 @@ from typing import TYPE_CHECKING, Any
 import torch
 from torch import Tensor
 
-from app.engine.models.families.wan_shared.sampler_base import WanVideoSamplerBase
+from app.engine.models.families.wan_shared.sampler_base import (
+    WAN_FLOWMATCH_SCALE,
+    WanVideoSamplerBase,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.engine.core.pipeline import GenericTrainingPipeline
@@ -79,9 +82,13 @@ class Wan22Sampler(WanVideoSamplerBase):
         text = prompt_embedding
 
         def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
-            # sigma is the [0,1] timestep fraction; pick the expert by boundary.
+            # sigma is the [0,1] timestep fraction; pick the expert by boundary
+            # (boundary is the same [0,1] fraction → matches the router's
+            # boundary*1000 split in training). The transformer itself is
+            # conditioned on the RAW [0,1000] timestep (sigma*1000), like the
+            # diffusers WanPipeline — feeding the bare sigma caused pure noise.
             expert = high if float(sigma) >= self.boundary else low
-            t = sigma.reshape(1).expand(x.shape[0])
+            t = (sigma * WAN_FLOWMATCH_SCALE).reshape(1).expand(x.shape[0])
             with torch.no_grad(), torch.autocast(
                 device_type=device_type, dtype=autocast_dtype
             ):

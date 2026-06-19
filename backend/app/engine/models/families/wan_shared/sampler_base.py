@@ -38,6 +38,13 @@ logger = structlog.get_logger(__name__)
 
 WAN_NATIVE_FPS = 16.0
 
+# FlowMatchEuler timestep scale. The denoise trajectory runs in sigma ∈ [0,1],
+# but the WAN transformer (like the diffusers WanPipeline) must be conditioned on
+# the RAW timestep = sigma * 1000 — its time embedder reads the value directly
+# (sinusoidal, no internal /1000). Feeding the bare sigma makes the frozen base
+# model read every step as t≈0 → pure-noise samples.
+WAN_FLOWMATCH_SCALE = 1000.0
+
 
 class WanVideoSamplerBase(GenericSamplingPipeline):
     """Flow-match Euler video sampler (fp32 trajectory) for WAN families."""
@@ -191,11 +198,15 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         text = prompt_embedding
 
         def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
-            # Sigma is already in [0, 1] (training passes t/1000; WAN consumes
-            # [0, 1]). Inputs stay in their natural dtype — autocast casts per-op
-            # to match the training forward — and euler_integrate upcasts the
-            # result to fp32 before accumulation (no autocast around the loop).
-            t = sigma.reshape(1).expand(x.shape[0])
+            # The trajectory steps in sigma ∈ [0,1], but the transformer is
+            # conditioned on the RAW [0,1000] timestep (sigma*1000) — the scale
+            # the diffusers WanPipeline feeds and the scale training uses (the
+            # WAN driver passes raw timesteps). Feeding the bare sigma made the
+            # frozen time embedder read t≈0 → no denoising → pure noise.
+            # Inputs stay in their natural dtype — autocast casts per-op to match
+            # the training forward — and euler_integrate upcasts the result to
+            # fp32 before accumulation (no autocast around the loop).
+            t = (sigma * WAN_FLOWMATCH_SCALE).reshape(1).expand(x.shape[0])
             with torch.no_grad(), torch.autocast(
                 device_type=device_type, dtype=autocast_dtype
             ):

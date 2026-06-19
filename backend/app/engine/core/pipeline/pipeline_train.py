@@ -25,6 +25,108 @@ def _sliding_window_frames(target_frames: int, temporal_downscale: int) -> int:
 class PipelineTrainMixin:
     """Main training loop with gradient accumulation, checkpointing, and sampling."""
 
+    # ── Optional torch.profiler window (diagnostic; inert unless armed) ──────
+    #
+    # Gated entirely by ``profile_steps`` in the run config. When unset/0 every
+    # hook below is a no-op and the loop is byte-identical to before. When > 0
+    # the loop profiles ``profile_steps`` iterations after ``profile_warmup``
+    # warmup steps, writes a CPU/CUDA op breakdown + chrome trace under
+    # ``profile_dir``, and stops — used to apportion the per-step GPU-idle time
+    # (data load / H2D copy vs compute) without touching normal runs.
+
+    def _maybe_init_profiling(self) -> None:
+        """Arm the profiler window from config (fully inert when ``profile_steps`` ≤ 0)."""
+        self._profiler = None
+        self._profiling_active = int(self.config.get("profile_steps", 0) or 0)
+        if self._profiling_active <= 0:
+            return
+        self._profiling_warmup = int(self.config.get("profile_warmup", 3) or 0)
+        import os
+
+        self._profile_dir = self.config.get("profile_dir") or os.path.join(
+            str(self.checkpoint_manager.output_dir), "profile"
+        )
+        os.makedirs(self._profile_dir, exist_ok=True)
+        self.logger.info(
+            "profiling_armed",
+            active=self._profiling_active,
+            warmup=self._profiling_warmup,
+            dir=self._profile_dir,
+        )
+
+    def _prof_region(self, name: str):
+        """A ``record_function`` span when profiling is live, else a no-op context."""
+        if getattr(self, "_profiler", None) is None:
+            from contextlib import nullcontext
+
+            return nullcontext()
+        from torch.profiler import record_function
+
+        return record_function(name)
+
+    def _profiling_maybe_begin(self, step: int) -> None:
+        """Start the profiler once the warmup boundary is reached (no-op otherwise)."""
+        if (
+            getattr(self, "_profiling_active", 0) <= 0
+            or getattr(self, "_profiler", None) is not None
+            or step < self._profiling_warmup
+        ):
+            return
+        from torch.profiler import ProfilerActivity, profile
+
+        acts = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            acts.append(ProfilerActivity.CUDA)
+        self._profiler = profile(activities=acts, record_shapes=True, with_stack=False)
+        self._profiler.start()
+        self.logger.info("profiling_started", at_step=step)
+
+    def _profiling_maybe_end(self, step: int) -> bool:
+        """Stop + write the report once the active window is captured.
+
+        Returns True when profiling just finished so the caller can break the
+        training loop (a profile run does not need to train to completion).
+        """
+        if getattr(self, "_profiler", None) is None:
+            return False
+        if step + 1 < self._profiling_warmup + self._profiling_active:
+            return False
+        self._profiler.stop()
+        try:
+            self._write_profile_report(step)
+        finally:
+            self._profiler = None
+        return True
+
+    def _write_profile_report(self, step: int) -> None:
+        import os
+
+        prof = self._profiler
+        ka = prof.key_averages()
+        body = "\n".join(
+            [
+                f"# Profile window: steps {self._profiling_warmup}..{step} "
+                f"({self._profiling_active} active) — family={self.__class__.__name__}",
+                "",
+                "===== TOP OPS BY SELF CUDA TIME =====",
+                ka.table(sort_by="self_cuda_time_total", row_limit=45),
+                "",
+                "===== TOP OPS BY SELF CPU TIME =====",
+                ka.table(sort_by="self_cpu_time_total", row_limit=45),
+            ]
+        )
+        path = os.path.join(self._profile_dir, "profile_summary.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        try:
+            prof.export_chrome_trace(os.path.join(self._profile_dir, "trace.json"))
+        except Exception:  # noqa: BLE001 - trace export is best-effort
+            pass
+        self.logger.info("profiling_report_written", path=path)
+        lw = getattr(self, "_log_writer", None)
+        if lw:
+            lw.log(f"Profile written: {path}")
+
     async def train(self):
         """Execute the main training loop with gradient accumulation."""
         self.logger.info("starting_training_loop", family=self.__class__.__name__)
@@ -161,8 +263,14 @@ class PipelineTrainMixin:
         # below measures the training-phase peak (calibrates the VRAM wall).
         self._begin_training_vram_window()
 
+        # Arm the optional profiler window (no-op unless profile_steps > 0).
+        self._maybe_init_profiling()
+
         for step in range(start_step, max_steps):
             self.global_step = step
+
+            # Start the profiler once warmup steps have elapsed (no-op otherwise).
+            self._profiling_maybe_begin(step)
 
             # ── Signal check ──
             signal_action = self.signal_manager.handle_signals()
@@ -200,7 +308,10 @@ class PipelineTrainMixin:
                 batch = self._get_batch(batch_items, decode_pixels=not defer_decode)
 
                 # 1. Encode Latents
-                with torch.no_grad():
+                #    Profiler region "data_prep": cached-latent disk load + the
+                #    host→device copy + text encode — the per-step data cost that
+                #    scales with clip size (the suspected video-vs-image util gap).
+                with torch.no_grad(), self._prof_region("data_prep"):
                     use_cache = self.config.get("cache_latents", True)
                     # Per-item cache discriminators (e.g. a video clip's trim
                     # window) — present only for video batches. Splat only when
@@ -286,9 +397,12 @@ class PipelineTrainMixin:
                     )
 
                 # 3. Forward + Loss (under autocast)
+                #    Profiler region "forward_loss": the compute (noise/pack/
+                #    timestep/forward/loss). Backward + optimizer fall outside any
+                #    region and show natively in the trace.
                 with torch.autocast(
                     "cuda", dtype=self.autocast_dtype, enabled=self.use_amp
-                ):
+                ), self._prof_region("forward_loss"):
                     # Sample noise in SPATIAL space [B,C,H,W] (before any packing).
                     # This is critical: noise offset must be per-channel in spatial
                     # space, not in packed [B,L,D] space where D interleaves
@@ -550,6 +664,13 @@ class PipelineTrainMixin:
             if step > 0 and step % steps_per_epoch == 0:
                 epoch_num = step // steps_per_epoch
                 self.on_epoch_end(epoch_num)
+
+            # 10. Profiler window complete → write report and stop early
+            #     (a profile run does not need to train to completion).
+            if self._profiling_maybe_end(step):
+                self.logger.info("profiling_window_complete_stopping", step=step)
+                self._emit_status("Profiling complete")
+                return
 
         # ── Training complete ──
         self.logger.info("training_finished")

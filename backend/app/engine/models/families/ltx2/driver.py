@@ -282,6 +282,21 @@ class Ltx2Driver(IModelDriver):
         t[:, :tokens_per_frame] = 0.0
         return t
 
+    def _i2v_conditioning_engaged(self) -> bool:
+        """True only when i2v first-frame conditioning should apply THIS step.
+
+        Requires ``_i2v_active`` AND a multi-frame latent. A single still
+        (post-patch ``F == 1``) has no frames to predict beyond the conditioning
+        frame: the per-token timestep would mark EVERY token clean and the loss
+        mask would drop EVERY token (empty slice → ``nan`` mean). Such stills
+        train as t2v (full noise + full-token loss) even on an i2v run, so a
+        mixed stills+video i2v dataset trains without NaN steps.
+        """
+        if not getattr(self, "_i2v_active", False):
+            return False
+        f, _, _ = self._latent_grid()
+        return f > 1
+
     def add_noise(
         self,
         latents: torch.Tensor,
@@ -300,8 +315,8 @@ class Ltx2Driver(IModelDriver):
         remaining tokens carry the sampled σ.  Non-i2v path is byte-identical
         to the original scalar implementation.
         """
-        if getattr(self, "_i2v_active", False):
-            f, h, w = self._latent_grid()
+        if self._i2v_conditioning_engaged():
+            _, h, w = self._latent_grid()
             tpf = h * w
             num_tokens = latents.shape[1]   # packed [B, num_tokens, D]
             t_tok = self._i2v_per_token_timestep(timesteps, num_tokens, tpf)
@@ -407,7 +422,7 @@ class Ltx2Driver(IModelDriver):
             # so the transformer applies t=0 to the conditioning (first) frame.
             # sigma stays [B] — it is used for prompt cross-attn modulation
             # and should reflect the per-batch noise level.
-            if getattr(self, "_i2v_active", False):
+            if self._i2v_conditioning_engaged():
                 num_tokens = noisy_input.shape[1]
                 tpf = h * w
                 timestep_arg = self._i2v_per_token_timestep(timesteps, num_tokens, tpf)
@@ -420,6 +435,12 @@ class Ltx2Driver(IModelDriver):
                 encoder_hidden_states=video_emb,
                 audio_encoder_hidden_states=audio_emb,
                 timestep=timestep_arg,  # [B, num_tokens] for i2v, [B] for t2v
+                # The isolated dummy-audio stream takes a per-BATCH scalar timestep.
+                # diffusers LTX2 defaults audio_timestep to `timestep`; for i2v the
+                # per-token [B, num_tokens] video timestep would size the audio
+                # modulation/RoPE to the VIDEO token count and crash against the
+                # 1-token dummy audio. Always feed the scalar [B] sigma here.
+                audio_timestep=timesteps,  # [B]
                 sigma=timesteps,  # LTX-2.3 prompt modulation (harmless when unused)
                 num_frames=f,
                 height=h,

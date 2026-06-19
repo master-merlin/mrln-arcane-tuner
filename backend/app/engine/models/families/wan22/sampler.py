@@ -67,19 +67,28 @@ class Wan22Sampler(WanVideoSamplerBase):
             if m is not None:
                 self._ensure_transformer_on_device(m)
 
-        model_dtype = next(high.parameters()).dtype
+        # Both experts are MIXED-dtype under mixed-precision training (bf16 bulk
+        # + fp32 scale_shift_table/time_embedder), so a single input cast can't
+        # satisfy every layer (``next(parameters()).dtype`` is just whichever is
+        # first). Run the forward in the SAME autocast regime as training (per-op
+        # casting); the Euler trajectory stays fp32 OUTSIDE the autocast (in
+        # ``euler_integrate``), preserving the no-collapse contract.
+        autocast_dtype = getattr(self.pipeline, "autocast_dtype", None) or torch.bfloat16
+        device_type = torch.device(self.device).type
         sigmas = self._build_sigmas(num_steps).to(self.device)
         text = prompt_embedding
 
         def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
             # sigma is the [0,1] timestep fraction; pick the expert by boundary.
             expert = high if float(sigma) >= self.boundary else low
-            t = sigma.reshape(1).to(model_dtype).expand(x.shape[0])
-            with torch.no_grad():
+            t = sigma.reshape(1).expand(x.shape[0])
+            with torch.no_grad(), torch.autocast(
+                device_type=device_type, dtype=autocast_dtype
+            ):
                 out = expert(
-                    hidden_states=x.to(model_dtype),
+                    hidden_states=x,
                     timestep=t,
-                    encoder_hidden_states=text.to(model_dtype),
+                    encoder_hidden_states=text,
                     encoder_hidden_states_image=None,
                     return_dict=False,
                 )

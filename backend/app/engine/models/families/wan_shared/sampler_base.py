@@ -172,22 +172,37 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         latent accumulation stay fp32 (no autocast around the loop).
         """
         transformer = self.pipeline.driver.get_primary_model()
-        model_dtype = next(transformer.parameters()).dtype
         self._ensure_transformer_on_device(transformer)
+
+        # The WAN transformer is a MIXED-dtype module under mixed-precision
+        # training: most weights are bf16 but precision-sensitive params
+        # (scale_shift_table, time_embedder, norms) stay fp32, so
+        # ``next(parameters()).dtype`` is just whichever param is first (fp32
+        # scale_shift_table) and NO single input cast satisfies every layer —
+        # casting inputs to fp32 fed the bf16 patch_embedding and crashed
+        # ("Input type float vs bias BFloat16"). Run the forward in the SAME
+        # autocast regime as training (per-op casting handles the mixed module).
+        # The Euler trajectory stays fp32 OUTSIDE the autocast (in
+        # ``euler_integrate``), so the no-collapse contract still holds.
+        autocast_dtype = getattr(self.pipeline, "autocast_dtype", None) or torch.bfloat16
+        device_type = torch.device(self.device).type
 
         sigmas = self._build_sigmas(num_steps).to(self.device)
         text = prompt_embedding
 
         def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
-            # timestep in [0, 1000]; transformer forward divides by 1000 itself
-            # in training but the sampler passes the [0,1] sigma directly as the
-            # model timestep (WAN transformer consumes [0,1]).
-            t = sigma.reshape(1).to(model_dtype).expand(x.shape[0])
-            with torch.no_grad():
+            # Sigma is already in [0, 1] (training passes t/1000; WAN consumes
+            # [0, 1]). Inputs stay in their natural dtype — autocast casts per-op
+            # to match the training forward — and euler_integrate upcasts the
+            # result to fp32 before accumulation (no autocast around the loop).
+            t = sigma.reshape(1).expand(x.shape[0])
+            with torch.no_grad(), torch.autocast(
+                device_type=device_type, dtype=autocast_dtype
+            ):
                 out = transformer(
-                    hidden_states=x.to(model_dtype),
+                    hidden_states=x,
                     timestep=t,
-                    encoder_hidden_states=text.to(model_dtype),
+                    encoder_hidden_states=text,
                     encoder_hidden_states_image=None,
                     return_dict=False,
                 )

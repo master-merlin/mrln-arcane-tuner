@@ -285,7 +285,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
         #   1. driver reports i2v active for this step
         #   2. no audio in this batch (audio_clean absent → video-only step)
         if (
-            getattr(self.driver, "_i2v_active", False)
+            self.driver._i2v_conditioning_engaged()
             and batch.get("audio_clean") is None
         ):
             _, h, w = self.driver._latent_grid()

@@ -116,6 +116,19 @@ class TestAddNoiseLeavesFirstFrameClean:
         # frac=1 → noisy = 1*noise + 0*latents = 0
         assert torch.allclose(out, torch.zeros_like(out), atol=1e-5)
 
+    def test_single_frame_still_fully_noised(self):
+        """F=1 still under i2v: conditioning is bypassed → the WHOLE latent is
+        noised (t2v). If i2v engaged on a still, the first-frame tokens (== ALL
+        tokens) would stay clean and the loss would mask everything → NaN.
+        """
+        d = _bare_driver((1, 2, 2), i2v=True)   # F=1 → num_tokens=4, tpf=4
+        latents = torch.ones(1, 4, 4)
+        noise = torch.zeros(1, 4, 4)
+        # t=1000 → frac=1 → fully noised → zeros. i2v-engaged would leave ones.
+        out = d.add_noise(latents, noise, torch.full((1,), 1000.0))
+        assert torch.allclose(out, torch.zeros_like(out), atol=1e-5), \
+            "single-frame still must be fully noised (i2v conditioning bypassed)"
+
 
 # ---------------------------------------------------------------------------
 # 3. forward_pass — per-token timestep is passed to the transformer (i2v)
@@ -130,9 +143,11 @@ class _RecordingTransformer(torch.nn.Module):
         self._num_tokens = num_tokens
         self._d_model = d_model
         self.last_timestep = None
+        self.last_audio_timestep = None
 
     def forward(self, hidden_states, **kwargs):
         self.last_timestep = kwargs.get("timestep")
+        self.last_audio_timestep = kwargs.get("audio_timestep")
         B = hidden_states.shape[0]
         return (torch.zeros(B, self._num_tokens, self._d_model),)
 
@@ -180,6 +195,18 @@ class TestForwardPassTimestepShape:
         # Rest must carry the sampled sigma
         assert (recorded[:, tpf:] == 600.0).all(), "non-first-frame tokens must be sigma"
 
+        # REGRESSION (GPU smoke ltx2_i2v): the isolated dummy-audio stream must NOT
+        # inherit the per-token VIDEO timestep. diffusers LTX2 defaults
+        # audio_timestep to `timestep`; a per-token [B, num_tokens] video timestep
+        # then sizes the audio modulation/RoPE to the video token count and crashes
+        # against the 1-token dummy audio ("tensor a (N) must match tensor b (1)").
+        # The driver must pass a per-BATCH scalar audio_timestep [B].
+        audio_t = d.transformer.last_audio_timestep
+        assert audio_t is not None, "transformer must receive an explicit audio_timestep"
+        assert audio_t.shape == (1,), \
+            f"audio_timestep must be [B] scalar (not per-token), got {audio_t.shape}"
+        assert (audio_t == 600.0).all(), "audio_timestep must be the per-batch sigma"
+
     def test_t2v_passes_scalar_timestep(self):
         d = _driver_for_forward((3, 2, 2), i2v=False)
         num_tokens = 3 * 2 * 2
@@ -200,6 +227,25 @@ class TestForwardPassTimestepShape:
         assert recorded.shape == (1,), \
             f"t2v timestep must be [B] (scalar), got {recorded.shape}"
         assert (recorded == 400.0).all()
+        # The dummy-audio stream also takes the per-batch scalar timestep.
+        audio_t = d.transformer.last_audio_timestep
+        assert audio_t is not None and audio_t.shape == (1,), \
+            f"t2v audio_timestep must be [B] scalar, got " \
+            f"{None if audio_t is None else audio_t.shape}"
+
+    def test_i2v_single_frame_passes_scalar_timestep(self):
+        """F=1 still under i2v must pass a scalar [B] timestep (conditioning
+        bypassed) — there is no subsequent frame to predict, so per-token
+        conditioning is meaningless and would NaN the loss."""
+        d = _driver_for_forward((1, 2, 2), i2v=True)   # F=1 → num_tokens=4
+        noisy = torch.zeros(1, 4, 4)
+        text_emb = types.SimpleNamespace(
+            embeddings=torch.zeros(1, 1, 3840), pooled=None, attention_mask=None,
+        )
+        d.forward_pass(noisy, torch.full((1,), 600.0), text_emb, {})
+        recorded = d.transformer.last_timestep
+        assert recorded.shape == (1,), \
+            f"single-frame i2v must pass scalar timestep, got {recorded.shape}"
 
 
 # ---------------------------------------------------------------------------
@@ -356,3 +402,20 @@ class TestComputeStepLossI2V:
         # loss2 should be half of loss1 (mod floating point)
         assert abs(loss2.item() * 2 - loss1.item()) < 1e-5, \
             f"grad_accum=2 must halve the loss: {loss1.item()} vs {loss2.item()}"
+
+    def test_single_frame_still_full_token_loss(self):
+        """F=1 still under i2v: loss must use ALL tokens (t2v) and stay finite.
+
+        Regression for the GPU smoke ltx2_i2v NaN: masking the (only) frame
+        slices pred/target to an EMPTY tensor → mean over 0 elements → NaN.
+        A mixed stills+video i2v dataset must train every step.
+        """
+        trainer = _bare_trainer_for_loss((1, 2, 2))   # F=1 → num_tokens=4, tpf=4
+        target = torch.zeros(1, 4, 4)
+        pred = torch.zeros_like(target)
+        pred[:, :2] = 100.0   # corrupt some tokens — must be counted
+        loss = trainer._compute_step_loss(pred, target, torch.full((1,), 500.0), {}, 1)
+        assert torch.isfinite(loss).all(), \
+            f"single-frame i2v loss must be finite, got {loss.item()}"
+        assert loss.item() > 1.0, \
+            "still must use full-token loss (i2v mask bypassed)"

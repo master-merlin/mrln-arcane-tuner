@@ -63,8 +63,13 @@ def _base(definition_id: str, *, num_frames: int, video_mode: str = "t2v") -> di
         "timestep_sampling": "model_shift",   # inference-matched shift (this work)
         "max_train_steps": 20,          # just past the step-0 crashes + a few steps
         "save_every_n_steps": 0,
-        "sample_before_training": True, # exercises the sampler/preview path too
-        "sample_every_n_steps": 0,
+        # Exercise the sampler/preview path (the user's core concern): the step-0
+        # baseline only fires when a sampler exists, and _create_sampler returns
+        # None unless sample_every_n_steps > 0. main() keeps this in sync with
+        # --steps so a sample also lands at the final step. Sampling failures are
+        # non-fatal (logged as warnings), so they never mask the training result.
+        "sample_before_training": True,
+        "sample_every_n_steps": 20,
         "sample_prompts": _SAMPLE_PROMPTS,
         "mixed_precision": "bf16",
         "gradient_checkpointing": True,
@@ -104,6 +109,9 @@ def main() -> None:
     cfg["lora_name"] = f"GPU_smoke_{args.scenario}"
     if args.steps > 0:
         cfg["max_train_steps"] = args.steps
+    # Keep the end-of-run sample aligned with the (possibly overridden) budget so
+    # a sampler is always created and a final sample renders.
+    cfg["sample_every_n_steps"] = cfg["max_train_steps"]
 
     config_json = json.dumps(cfg)
     cmd = [str(PY), str(RUN_TRAINER), "--definition_id", definition_id, "--config", config_json]

@@ -8,12 +8,16 @@ both WAN 2.1 and WAN 2.2 reuse:
       noisy = (t / 1000) * noise + (1 - t / 1000) * latents
 
   with the implied velocity target ``noise - latents`` (handled by the generic
-  ``compute_target`` in the base interface, same space). This is THE
-  pure-noise-LoRA gotcha — the timestep MUST be divided by 1000 here AND in the
-  transformer forward, and nowhere multiplied by an extra factor.
+  ``compute_target`` in the base interface, same space). The ``/1000`` belongs
+  to the LERP ONLY (it needs ``sigma ∈ [0,1]``); the timestep handed to the
+  transformer stays RAW ``[0, 1000]`` (see below). This is THE pure-noise gotcha:
+  the diffusers WAN time embedder is a sinusoidal ``Timesteps`` over the raw
+  FlowMatchEuler value — feeding it ``[0,1]`` makes the frozen (non-LoRA'd)
+  embedder read every step as ``t≈0`` (clean) → ≈0 velocity → noise samples.
 
 - **``forward_pass``** calling the WAN transformer with
-  ``hidden_states=noisy[B,C,F,H,W]``, ``timestep=t/1000``,
+  ``hidden_states=noisy[B,C,F,H,W]``, ``timestep=t`` (RAW ``[0, 1000]`` — the
+  scale the diffusers ``WanPipeline`` feeds, NOT ``t/1000``),
   ``encoder_hidden_states=text``, and (I2V only) ``encoder_hidden_states_image``
   + a 36-channel concatenated input built from the batch's first-frame latent.
 
@@ -246,7 +250,6 @@ class WanDriverBase(IModelDriver):
             Velocity prediction ``[B, 16, F, H, W]``.
         """
         enc_hs = self._as_text_tensor(text_embeddings)
-        model_timesteps = timesteps / 1000.0
 
         image_embed = None
         hidden_states = noisy_input
@@ -260,9 +263,13 @@ class WanDriverBase(IModelDriver):
             hidden_states = build_i2v_conditioning(noisy_input, first_frame)
             image_embed = batch.get(self.BATCH_IMAGE_EMBED)
 
+        # RAW [0, 1000] timestep — the diffusers WAN time embedder consumes the
+        # FlowMatchEuler value directly (sinusoidal, no internal /1000). The
+        # /1000 lives in add_noise's LERP only; dividing here too made the frozen
+        # time embedder read every step as t≈0 → pure-noise samples.
         output = self.transformer(
             hidden_states=hidden_states,
-            timestep=model_timesteps,
+            timestep=timesteps,
             encoder_hidden_states=enc_hs,
             encoder_hidden_states_image=image_embed,
             return_dict=False,

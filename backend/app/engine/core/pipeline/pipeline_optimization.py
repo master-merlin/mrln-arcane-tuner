@@ -21,6 +21,26 @@ from peft import LoraConfig, get_peft_model
 logger = structlog.get_logger(__name__)
 
 
+def _merge_te_caches(
+    base: dict[str, dict] | None, overlay: dict[str, dict] | None
+) -> dict[str, dict]:
+    """Union two TE-cache dicts (``{subcache: {caption: emb}}``); overlay wins.
+
+    Used on resume: ``base`` is the restored checkpoint cache, ``overlay`` is the
+    freshly-warmed cache for THIS run (captions + sample prompts + the CFG
+    unconditional). Merging overlay-wins means new/changed sample prompts survive
+    instead of being clobbered by the checkpoint cache — otherwise sampling hits
+    the offloaded text encoder ("caption not pre-cached"). Same-caption entries
+    are identical (deterministic TE), so overlay-wins is safe.
+    """
+    base = base or {}
+    overlay = overlay or {}
+    merged: dict[str, dict] = {}
+    for sub in set(base) | set(overlay):
+        merged[sub] = {**(base.get(sub) or {}), **(overlay.get(sub) or {})}
+    return merged
+
+
 class PipelineOptimizationMixin:
     """PEFT, optimizer, gradient checkpointing, EMA, checkpoint resume."""
 
@@ -486,9 +506,15 @@ class PipelineOptimizationMixin:
             # persist the correct values.
             if checkpoint_state.config:
                 self.config.update(checkpoint_state.config)
-            # Restore text embedding cache from checkpoint
+            # Restore text embedding cache from checkpoint, MERGED over the
+            # freshly-warmed cache so NEW/changed sample prompts (warmed this run)
+            # survive. A plain restore replaces text_cache → a resumed run with a
+            # different sample prompt hits the offloaded TE at sample time
+            # ("caption not pre-cached").
             if checkpoint_state.te_cache:
-                self.set_te_cache(checkpoint_state.te_cache)
+                self.set_te_cache(
+                    _merge_te_caches(checkpoint_state.te_cache, self.get_te_cache())
+                )
             self.logger.info(
                 "resumed_at_step",
                 step=self.global_step,

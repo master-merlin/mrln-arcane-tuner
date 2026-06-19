@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -104,8 +105,31 @@ def main() -> None:
     cfg["sample_negative_prompt"] = args.negative
     if args.no_audio:
         cfg["train_audio"] = False
+
+    # resume_from_checkpoint restores global_step (>0), which suppresses
+    # sample_before_training AND empties the range(start_step, 1) loop — so we
+    # instead run ONE loop step at learning_rate=0 (the LoRA is frozen) with
+    # sample_every_n_steps=1, so the resumed weights get sampled at every CFG.
+    # No checkpoint → sample the BASE model via sample_before_training.
     if args.checkpoint:
+        m = re.search(r"checkpoint-(\d+)", args.checkpoint.replace("\\", "/"))
+        if not m:
+            raise SystemExit(
+                "--checkpoint must be a numbered dir like .../checkpoint-006000 "
+                "(the 'final' dir has no step in its name — use its checkpoint-NNNNNN)"
+            )
+        ckpt_step = int(m.group(1))
         cfg["resume_from_checkpoint"] = args.checkpoint
+        cfg["learning_rate"] = 0.0  # freeze: the 1 loop step must not move the LoRA
+        cfg["sample_before_training"] = False
+        cfg["sample_every_n_steps"] = 1
+        cfg["sample_skip_first_n_steps"] = 0
+        cfg["max_train_steps"] = ckpt_step + 2  # one iteration at step ckpt_step+1
+    else:
+        cfg["sample_before_training"] = True
+        cfg["sample_every_n_steps"] = 0
+        cfg["max_train_steps"] = 1
+
     cfg["sample_prompts"] = [
         {
             "prompt": args.prompt,

@@ -197,6 +197,24 @@ class Ltx2Sampler(GenericSamplingPipeline):
             )
             audio_emb = driver._audio_embeddings(prompt_embedding, video_emb).to(model_dtype)
 
+        # Classifier-free guidance: when guidance_scale > 1 we contrast the
+        # conditional velocity against an UNCONDITIONAL one (empty/negative
+        # prompt): v = v_u + scale * (v_c - v_u). Without it the preview is
+        # effectively CFG=1 and massively under-shows the LoRA vs ComfyUI. The
+        # negative prompt is warmed into the text cache by the trainer (the 12B
+        # TE is offloaded by sample time); default "" is the standard uncond.
+        cfg_on = guidance_scale is not None and float(guidance_scale) > 1.0
+        video_emb_uncond = None
+        audio_emb_uncond = None
+        if cfg_on:
+            neg_text = str(self.config.get("sample_negative_prompt", "") or "")
+            neg_embedding = self.encode_prompt(neg_text)
+            video_emb_uncond = driver._video_embeddings(neg_embedding).to(model_dtype)
+            if audio_on:
+                audio_emb_uncond = driver._audio_embeddings(
+                    neg_embedding, video_emb_uncond
+                ).to(model_dtype)
+
         from app.engine.strategies.sigma_schedule import shifted_sigmas
         shift = float(
             self.config.get("model_shift_fixed")
@@ -205,25 +223,28 @@ class Ltx2Sampler(GenericSamplingPipeline):
         )
         sigmas = shifted_sigmas(num_steps, shift, device=self.device)
 
-        # Step the schedule in fp32; the per-step timestep is the sigma on the
-        # [0, 1000] flow-match scale, passed RAW to the transformer (NOT ÷1000 —
-        # only add_noise normalizes).
-        x = noise.to(torch.float32)
-        for i in range(len(sigmas) - 1):
-            dt = sigmas[i + 1] - sigmas[i]
-            t_val = float(sigmas[i]) * 1000.0
-            xin = x.to(model_dtype)
-            ts = x.new_ones(x.shape[0]) * t_val  # fp32 [0, 1000]
+        # One DiT forward at the current step → (v_video_fp32, v_audio|None).
+        # Defined once (no loop-variable capture); called once per guidance
+        # branch. Audio-on feeds the live audio latents + matching audio text
+        # emb; audio-off uses the isolated dummy audio stream.
+        def _velocity(
+            xin: Tensor,
+            ts: Tensor,
+            audio_cur: Tensor | None,
+            vemb: Tensor,
+            aemb: Any,
+        ) -> tuple[Tensor, Tensor | None]:
             if audio_on:
-                audio_in = audio_x.to(model_dtype)
+                a_in = audio_cur.to(model_dtype)
+                a_emb = aemb
             else:
-                audio_in, audio_emb = driver._dummy_audio_inputs(xin, video_emb)
+                a_in, a_emb = driver._dummy_audio_inputs(xin, vemb)
             with torch.no_grad():
                 out = transformer(
                     hidden_states=xin,
-                    audio_hidden_states=audio_in,
-                    encoder_hidden_states=video_emb,
-                    audio_encoder_hidden_states=audio_emb,
+                    audio_hidden_states=a_in,
+                    encoder_hidden_states=vemb,
+                    audio_encoder_hidden_states=a_emb,
                     timestep=ts,
                     sigma=ts,
                     num_frames=f,
@@ -235,13 +256,32 @@ class Ltx2Sampler(GenericSamplingPipeline):
                     return_dict=False,
                 )
             if audio_on:
-                v_video = out[0].to(torch.float32)
-                v_audio = out[1].to(torch.float32)
-                x = x + dt * v_video
+                return out[0].to(torch.float32), out[1].to(torch.float32)
+            v = (out[0] if isinstance(out, (tuple, list)) else out).to(torch.float32)
+            return v, None
+
+        # Step the schedule in fp32; the per-step timestep is the sigma on the
+        # [0, 1000] flow-match scale, passed RAW to the transformer (NOT ÷1000 —
+        # only add_noise normalizes).
+        x = noise.to(torch.float32)
+        for i in range(len(sigmas) - 1):
+            dt = sigmas[i + 1] - sigmas[i]
+            t_val = float(sigmas[i]) * 1000.0
+            xin = x.to(model_dtype)
+            ts = x.new_ones(x.shape[0]) * t_val  # fp32 [0, 1000]
+
+            v_video, v_audio = _velocity(xin, ts, audio_x, video_emb, audio_emb)
+            if cfg_on:
+                v_video_u, v_audio_u = _velocity(
+                    xin, ts, audio_x, video_emb_uncond, audio_emb_uncond
+                )
+                v_video = v_video_u + guidance_scale * (v_video - v_video_u)
+                if audio_on:
+                    v_audio = v_audio_u + guidance_scale * (v_audio - v_audio_u)
+
+            x = x + dt * v_video
+            if audio_on:
                 audio_x = audio_x + dt * v_audio
-            else:
-                v = (out[0] if isinstance(out, (tuple, list)) else out).to(torch.float32)
-                x = x + dt * v
 
         if audio_on:
             driver._last_audio_latents = audio_x

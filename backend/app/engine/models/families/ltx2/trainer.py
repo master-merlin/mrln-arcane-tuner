@@ -101,9 +101,17 @@ class Ltx2Trainer(GenericTrainingPipeline):
 
         dtype = self._resolve_loading_dtype()
         captions = [c for c in self._build_caption_hints() if c not in self.text_cache]
-        for sp in self._sample_prompt_texts():
+        sample_texts = self._sample_prompt_texts()
+        for sp in sample_texts:
             if sp not in self.text_cache and sp not in captions:
                 captions.append(sp)
+        # CFG sampling runs a cond + UNCONDITIONAL forward when guidance_scale>1,
+        # and the 12B TE is offloaded by sample time — so the negative prompt
+        # must be warmed now. Default "" is the standard unconditional.
+        if sample_texts:
+            neg = str(self.config.get("sample_negative_prompt", "") or "")
+            if neg not in self.text_cache and neg not in captions:
+                captions.append(neg)
         total = len(captions)
         if not total:
             self.logger.info("ltx2_text_cache_complete", cached=len(self.text_cache))

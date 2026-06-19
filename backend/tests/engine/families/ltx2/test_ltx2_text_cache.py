@@ -156,3 +156,28 @@ def test_expand_prompt_wildcards_helper():
     assert expand_prompt_wildcards("a [triggerword]", cfg) == "a sks"
     assert expand_prompt_wildcards("[captionprefix] x", cfg) == "photo of x"
     assert expand_prompt_wildcards("no wildcards", cfg) == "no wildcards"
+
+
+# ── CFG unconditional warming (so guidance_scale>1 works after TE offload) ──
+
+
+def test_pre_cache_warms_default_unconditional_for_cfg():
+    """CFG needs the unconditional ('' negative) prompt cached before TE offload."""
+    t = _sampling_trainer()  # has a sample prompt, no training captions
+    t._pre_cache_text_embeddings()
+    assert "" in t.text_cache  # default negative warmed for the cond+uncond pass
+
+
+def test_pre_cache_warms_configured_negative_prompt():
+    t = _sampling_trainer()
+    t.config["sample_negative_prompt"] = "blurry, low quality"
+    t._pre_cache_text_embeddings()
+    assert "blurry, low quality" in t.text_cache
+
+
+def test_pre_cache_skips_unconditional_when_no_sample_prompts():
+    """No sampling → no need to warm the unconditional (keeps the cache minimal)."""
+    t = _trainer()  # captions {"a cat","a dog",""} but NO sample prompts
+    t._build_caption_hints = lambda: {"a cat": "h", "a dog": "h"}  # drop the ""
+    t._pre_cache_text_embeddings()
+    assert "" not in t.text_cache  # not warmed when sampling is off

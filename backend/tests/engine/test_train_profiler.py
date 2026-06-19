@@ -1,10 +1,10 @@
-"""Inert-when-off guarantee + config parsing for the train-loop profiler hooks.
+"""Inert-when-off guarantee + live region timing for the train-loop profiler.
 
-The profiler instrumentation in ``PipelineTrainMixin`` MUST be byte-identical to
-the old loop when ``profile_steps`` is unset — these are the safety tests that
-protect every normal training run. The armed path is exercised lightly (config
-parse + dir creation) without starting a real profiler, to keep the test GPU-free
-and fast.
+The profiler hooks in ``PipelineTrainMixin`` MUST be byte-identical to the old
+loop when ``profile_steps`` is unset — these are the safety tests that protect
+every normal training run. The live path (wall + CUDA-event region timing) is
+exercised on CPU (CUDA events are guarded by ``torch.cuda.is_available()``), so
+the test is GPU-agnostic.
 """
 
 import os
@@ -32,14 +32,14 @@ class _Trainer(PipelineTrainMixin):
 def test_profiling_inert_when_unset(tmp_path):
     t = _Trainer({}, str(tmp_path))
     t._maybe_init_profiling()
-    assert t._profiler is None
     assert t._profiling_active == 0
+    assert t._profiling_live is False
     # region is a true no-op context
     with t._prof_region("x"):
         pass
     # begin/end are no-ops when not armed
     t._profiling_maybe_begin(0)
-    assert t._profiler is None
+    assert t._profiling_live is False
     assert t._profiling_maybe_end(0) is False
     assert t._profiling_maybe_end(10_000) is False
 
@@ -60,8 +60,31 @@ def test_profiling_armed_parses_config_and_makes_dir(tmp_path):
     assert t._profiling_active == 8
     assert t._profiling_warmup == 3
     assert os.path.isdir(str(pdir))
-    # Profiler is created lazily AFTER warmup steps — not at init, and not
-    # before the warmup boundary.
-    assert t._profiler is None
+    # Goes live only AFTER the warmup boundary — not at init, not before warmup.
+    assert t._profiling_live is False
     t._profiling_maybe_begin(0)
-    assert t._profiler is None  # step 0 < warmup 3 → still not started
+    assert t._profiling_live is False  # step 0 < warmup 3
+
+
+def test_live_region_timing_accumulates_and_writes_report(tmp_path):
+    pdir = tmp_path / "prof"
+    t = _Trainer(
+        {"profile_steps": 2, "profile_warmup": 0, "profile_dir": str(pdir)},
+        str(tmp_path),
+    )
+    t._maybe_init_profiling()
+    t._profiling_maybe_begin(0)  # warmup 0 → live immediately
+    assert t._profiling_live is True
+    # A live region is a real timer (not the no-op context) and accumulates.
+    assert not isinstance(t._prof_region("data_prep"), type(nullcontext()))
+    with t._prof_region("data_prep"):
+        pass
+    with t._prof_region("forward_loss"):
+        pass
+    assert t._region_count["data_prep"] == 1
+    assert "forward_loss" in t._region_wall
+    # Window: stop when step+1 >= warmup(0)+active(2) == 2.
+    assert t._profiling_maybe_end(0) is False  # 0+1=1 < 2
+    assert t._profiling_maybe_end(1) is True   # 1+1=2 >= 2 → writes report
+    assert (pdir / "profile_summary.txt").exists()
+    assert t._profiling_live is False

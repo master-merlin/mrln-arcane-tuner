@@ -6,10 +6,6 @@ defaults:
   resolution: 1024
   scheduler: euler_a
   learning_rate: 5e-6
-# De-distilled Z-Image from ostris. The De-Turbo repo ships ONLY the
-# transformer (it was released before the full Tongyi-MAI/Z-Image base was
-# public), so VAE / text-encoder / tokenizer are sourced from the original
-# Z-Image-Turbo repo — matching ai-toolkit's `extras_name_or_path`.
 components:
   repo:
     path: huggingface:Tongyi-MAI/Z-Image-Turbo
@@ -19,6 +15,7 @@ components:
     path: huggingface:ostris/Z-Image-De-Turbo
     type: diffusers
     params: {}
+control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.bfloat16
@@ -84,7 +81,7 @@ architecture_params:
   scheduler._class_name: FlowMatchEulerDiscreteScheduler
   scheduler.num_train_timesteps: 1000
   scheduler.use_dynamic_shifting: false
-  scheduler.shift: 6.0
+  scheduler.shift: 3.0
   vae._class_name: AutoencoderKL
   vae.act_fn: silu
   vae.block_out_channels:

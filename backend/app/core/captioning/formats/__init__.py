@@ -33,12 +33,15 @@ def get_caption_format(family: str) -> CaptionFormat:
 
 
 def get_caption_format_for_definition(definition_id: str) -> CaptionFormat:
-    from app.engine.models.registry import registry
+    try:
+        from app.engine.models.registry import registry
 
-    defn = registry.get_definition(definition_id)
-    if defn is None:
+        defn = registry.get_definition(definition_id)
+        if defn is None:
+            return _PLAIN
+        return get_caption_format(defn.family)
+    except Exception:
         return _PLAIN
-    return get_caption_format(defn.family)
 
 
 __all__ = [

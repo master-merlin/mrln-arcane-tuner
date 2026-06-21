@@ -64,6 +64,8 @@ class Ideogram4Format(CaptionFormat):
         return ix.serialize(data)
 
     def build_refine_prompt(self, target, data: dict) -> str:
+        """Schema-preserving refine instruction. `target`/`data` are accepted for
+        interface symmetry; the current prompt is fixed (future: per-item context)."""
         return (
             "You are editing an Ideogram 4 structured JSON caption. Improve clarity "
             "and accuracy of the description fields while PRESERVING the exact JSON "

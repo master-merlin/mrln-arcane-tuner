@@ -113,261 +113,526 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
         }
     `],
     template: `
-        <!-- ===== High-level Description ===== -->
-        <div class="px-3 py-2 border-b border-surface-mid">
-            <div class="field-label">High-level description</div>
-            <textarea
-                data-testid="hld-textarea"
-                class="field-input"
-                rows="3"
-                [value]="doc().description"
-                (input)="onDescChange($any($event.target).value)"
-            ></textarea>
-        </div>
-
-        <!-- ===== Style ===== -->
-        <details open class="border-b border-surface-mid">
-            <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none flex items-center justify-between">
-                <span>Style</span>
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </summary>
-            <div class="px-3 pb-3 space-y-2">
-                <!-- Aesthetics -->
-                <div>
-                    <div class="field-label">Aesthetics</div>
-                    <input type="text" class="field-input"
-                        data-testid="style-aesthetics"
-                        [value]="doc().style.aesthetics"
-                        (input)="onStyleChange('aesthetics', $any($event.target).value)" />
-                </div>
-                <!-- Lighting -->
-                <div>
-                    <div class="field-label">Lighting</div>
-                    <input type="text" class="field-input"
-                        data-testid="style-lighting"
-                        [value]="doc().style.lighting"
-                        (input)="onStyleChange('lighting', $any($event.target).value)" />
-                </div>
-                <!-- Medium -->
-                <div>
-                    <div class="field-label">Medium</div>
-                    <select class="field-input"
-                        data-testid="style-medium"
-                        [value]="mediumSelectValue()"
-                        (change)="onMediumChange($any($event.target).value)">
-                        @for (m of canonicalMediums; track m) {
-                            <option [value]="m">{{ m }}</option>
-                        }
-                        <option value="__custom__">Custom…</option>
-                    </select>
-                </div>
-                <!-- Custom medium input — shown when Custom is selected -->
-                @if (mediumSelectValue() === '__custom__') {
-                    <div>
-                        <div class="field-label">Custom medium value</div>
-                        <input type="text" class="field-input"
-                            data-testid="style-medium-custom"
-                            [value]="doc().style.medium"
-                            (input)="onMediumChange($any($event.target).value)" />
+        @if (wide()) {
+            <!-- Wide two-pane layout: image+overlay LEFT, sections RIGHT -->
+            <div style="display:flex;height:100%;min-height:0;">
+                <!-- LEFT pane: image + bbox overlay, always visible -->
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;padding:8px;gap:6px;">
+                    <div style="flex:1 1 0;min-height:0;position:relative;">
+                        <app-bbox-overlay
+                            data-testid="wide-bbox-overlay"
+                            [imageUrl]="imageUrl() ?? ''"
+                            [boxes]="bboxItems()"
+                            [selectedId]="selectedElementId()"
+                            [drawEnabled]="drawEnabled()"
+                            (boxSelected)="selectedElementId.set($event)"
+                            (boxAdded)="onBoxAdded($event)"
+                            (boxChanged)="onBoxChanged($event)"
+                        />
                     </div>
-                }
-                <!-- Render field (photo / art_style) -->
-                <div>
-                    <div class="field-label" data-testid="render-field-label">
-                        {{ isPhoto() ? 'Photo (camera / film)' : 'Art style (rendering technique)' }}
-                    </div>
-                    <input type="text" class="field-input"
-                        data-testid="style-render"
-                        [value]="renderFieldValue()"
-                        (input)="onRenderChange($any($event.target).value)" />
-                </div>
-                <!-- Color palette -->
-                <div>
-                    <div class="field-label">Color palette (max {{ maxImagePalette }})</div>
-                    <div class="flex flex-wrap gap-1 mb-1">
-                        @for (c of doc().style.color_palette; track c; let i = $index) {
-                            <div class="flex items-center gap-0.5">
-                                <div class="swatch" [style.background]="c" [title]="c"></div>
-                                <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
-                                    [attr.data-testid]="'palette-remove-' + i"
-                                    (click)="removePaletteColor(i)">×</button>
-                            </div>
-                        }
-                    </div>
-                    <div class="flex gap-1 items-center">
-                        <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
-                            data-testid="palette-color-input"
-                            [value]="newColor()"
-                            (input)="newColor.set($any($event.target).value)" />
-                        <input type="text" class="field-input flex-1"
-                            data-testid="palette-hex-input"
-                            placeholder="#RRGGBB"
-                            [value]="newColor()"
-                            (input)="newColor.set($any($event.target).value)" />
+                    <div class="flex gap-1">
                         <button type="button"
-                            data-testid="palette-add"
+                            data-testid="wide-draw-toggle"
+                            class="px-2 py-1 text-[11px] rounded border transition-colors"
+                            [class.bg-brand]="drawEnabled()"
+                            [class.text-white]="drawEnabled()"
+                            [class.bg-surface-mid]="!drawEnabled()"
+                            [class.text-text-secondary]="!drawEnabled()"
+                            [class.border-brand]="drawEnabled()"
+                            [class.border-surface-high]="!drawEnabled()"
+                            (click)="drawEnabled.set(!drawEnabled())">
+                            {{ drawEnabled() ? 'Done Drawing' : 'Draw box' }}
+                        </button>
+                        <button type="button"
+                            data-testid="wide-add-element"
                             class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
-                            (click)="addPaletteColor()">Add</button>
+                            (click)="addElement()">+ Add Element</button>
                     </div>
                 </div>
-            </div>
-        </details>
+                <!-- RIGHT pane: scrollable text sections -->
+                <div data-testid="wide-sections-pane" style="width:420px;min-width:300px;max-width:480px;overflow-y:auto;border-left:1px solid var(--color-surface-high,#333);display:flex;flex-direction:column;">
+                    <!-- ===== High-level Description ===== -->
+                    <div class="px-3 py-2 border-b border-surface-mid">
+                        <div class="field-label">High-level description</div>
+                        <textarea
+                            data-testid="hld-textarea"
+                            class="field-input"
+                            rows="3"
+                            [value]="doc().description"
+                            (input)="onDescChange($any($event.target).value)"
+                        ></textarea>
+                    </div>
 
-        <!-- ===== Background ===== -->
-        <div class="px-3 py-2 border-b border-surface-mid">
-            <div class="field-label">Background</div>
-            <textarea class="field-input" rows="2"
-                data-testid="background-textarea"
-                [value]="doc().background"
-                (input)="onBackgroundChange($any($event.target).value)"></textarea>
-        </div>
-
-        <!-- ===== Elements ===== -->
-        <details open class="border-b border-surface-mid">
-            <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none flex items-center justify-between">
-                <span>Elements ({{ doc().elements.length }})</span>
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </summary>
-            <div class="px-3 pb-3 space-y-2">
-                <!-- Bbox overlay -->
-                <app-bbox-overlay
-                    [imageUrl]="imageUrl() ?? ''"
-                    [boxes]="bboxItems()"
-                    [selectedId]="selectedElementId()"
-                    [drawEnabled]="drawEnabled()"
-                    (boxSelected)="selectedElementId.set($event)"
-                    (boxAdded)="onBoxAdded($event)"
-                />
-                <div class="flex gap-1 mb-1">
-                    <button type="button"
-                        data-testid="draw-toggle"
-                        class="px-2 py-1 text-[11px] rounded border transition-colors"
-                        [class.bg-brand]="drawEnabled()"
-                        [class.text-white]="drawEnabled()"
-                        [class.bg-surface-mid]="!drawEnabled()"
-                        [class.text-text-secondary]="!drawEnabled()"
-                        [class.border-brand]="drawEnabled()"
-                        [class.border-surface-high]="!drawEnabled()"
-                        (click)="drawEnabled.set(!drawEnabled())">
-                        {{ drawEnabled() ? 'Done Drawing' : 'Draw box' }}
-                    </button>
-                    <button type="button"
-                        data-testid="add-element"
-                        class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
-                        (click)="addElement()">+ Add Element</button>
-                </div>
-
-                @for (el of doc().elements; track $index; let i = $index) {
-                    <div class="element-card" data-testid="element-card" [attr.data-element-index]="i">
-                        <!-- Type toggle -->
-                        <div class="flex items-center gap-2 mb-2">
-                            <button type="button" class="text-[10px] px-2 py-0.5 rounded border transition-colors"
-                                [class.bg-brand]="el.type === 'obj'"
-                                [class.text-white]="el.type === 'obj'"
-                                [class.border-brand]="el.type === 'obj'"
-                                [class.bg-surface-mid]="el.type !== 'obj'"
-                                [class.text-text-subtle]="el.type !== 'obj'"
-                                [class.border-surface-high]="el.type !== 'obj'"
-                                (click)="setElementType(i, 'obj')">obj</button>
-                            <button type="button" class="text-[10px] px-2 py-0.5 rounded border transition-colors"
-                                [class.bg-brand]="el.type === 'text'"
-                                [class.text-white]="el.type === 'text'"
-                                [class.border-brand]="el.type === 'text'"
-                                [class.bg-surface-mid]="el.type !== 'text'"
-                                [class.text-text-subtle]="el.type !== 'text'"
-                                [class.border-surface-high]="el.type !== 'text'"
-                                (click)="setElementType(i, 'text')">text</button>
-                            <button type="button" class="ml-auto text-[10px] text-text-subtle hover:text-danger"
-                                [attr.data-testid]="'remove-element-' + i"
-                                (click)="removeElement(i)">Remove</button>
-                        </div>
-
-                        <!-- Text field (only for text type) -->
-                        @if (el.type === 'text') {
-                            <div class="mb-2">
-                                <div class="field-label">Text</div>
+                    <!-- ===== Style ===== -->
+                    <details open class="border-b border-surface-mid">
+                        <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none flex items-center justify-between">
+                            <span>Style</span>
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                        </summary>
+                        <div class="px-3 pb-3 space-y-2">
+                            <!-- Aesthetics -->
+                            <div>
+                                <div class="field-label">Aesthetics</div>
                                 <input type="text" class="field-input"
-                                    [attr.data-testid]="'element-text-' + i"
-                                    [value]="el.text ?? ''"
-                                    (input)="onElementTextChange(i, $any($event.target).value)" />
+                                    data-testid="style-aesthetics"
+                                    [value]="doc().style.aesthetics"
+                                    (input)="onStyleChange('aesthetics', $any($event.target).value)" />
                             </div>
-                        }
-
-                        <!-- Description -->
-                        <div class="mb-2">
-                            <div class="field-label">Description</div>
-                            <textarea class="field-input" rows="2"
-                                [attr.data-testid]="'element-desc-' + i"
-                                [value]="el.desc"
-                                (input)="onElementDescChange(i, $any($event.target).value)"></textarea>
-                        </div>
-
-                        <!-- BBox (y1 x1 y2 x2) -->
-                        <div class="mb-2">
-                            <div class="field-label">BBox [y1, x1, y2, x2] (0–1000)</div>
-                            <div class="flex gap-1">
-                                @for (coord of ['y1','x1','y2','x2']; track coord; let ci = $index) {
-                                    <input type="number" class="field-input text-center" min="0" max="1000"
-                                        [attr.data-testid]="'element-bbox-' + i + '-' + coord"
-                                        [value]="el.bbox ? el.bbox[ci] : 0"
-                                        (input)="onElementBboxChange(i, ci, +$any($event.target).value)" />
-                                }
+                            <!-- Lighting -->
+                            <div>
+                                <div class="field-label">Lighting</div>
+                                <input type="text" class="field-input"
+                                    data-testid="style-lighting"
+                                    [value]="doc().style.lighting"
+                                    (input)="onStyleChange('lighting', $any($event.target).value)" />
+                            </div>
+                            <!-- Medium -->
+                            <div>
+                                <div class="field-label">Medium</div>
+                                <select class="field-input"
+                                    data-testid="style-medium"
+                                    [value]="mediumSelectValue()"
+                                    (change)="onMediumChange($any($event.target).value)">
+                                    @for (m of canonicalMediums; track m) {
+                                        <option [value]="m">{{ m }}</option>
+                                    }
+                                    <option value="__custom__">Custom…</option>
+                                </select>
+                            </div>
+                            <!-- Custom medium input — shown when Custom is selected -->
+                            @if (mediumSelectValue() === '__custom__') {
+                                <div>
+                                    <div class="field-label">Custom medium value</div>
+                                    <input type="text" class="field-input"
+                                        data-testid="style-medium-custom"
+                                        [value]="doc().style.medium"
+                                        (input)="onMediumChange($any($event.target).value)" />
+                                </div>
+                            }
+                            <!-- Render field (photo / art_style) -->
+                            <div>
+                                <div class="field-label" data-testid="render-field-label">
+                                    {{ isPhoto() ? 'Photo (camera / film)' : 'Art style (rendering technique)' }}
+                                </div>
+                                <input type="text" class="field-input"
+                                    data-testid="style-render"
+                                    [value]="renderFieldValue()"
+                                    (input)="onRenderChange($any($event.target).value)" />
+                            </div>
+                            <!-- Color palette -->
+                            <div>
+                                <div class="field-label">Color palette (max {{ maxImagePalette }})</div>
+                                <div class="flex flex-wrap gap-1 mb-1">
+                                    @for (c of doc().style.color_palette; track c; let i = $index) {
+                                        <div class="flex items-center gap-0.5">
+                                            <div class="swatch" [style.background]="c" [title]="c"></div>
+                                            <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
+                                                [attr.data-testid]="'palette-remove-' + i"
+                                                (click)="removePaletteColor(i)">×</button>
+                                        </div>
+                                    }
+                                </div>
+                                <div class="flex gap-1 items-center">
+                                    <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
+                                        data-testid="palette-color-input"
+                                        [value]="newColor()"
+                                        (input)="newColor.set($any($event.target).value)" />
+                                    <input type="text" class="field-input flex-1"
+                                        data-testid="palette-hex-input"
+                                        placeholder="#RRGGBB"
+                                        [value]="newColor()"
+                                        (input)="newColor.set($any($event.target).value)" />
+                                    <button type="button"
+                                        data-testid="palette-add"
+                                        class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
+                                        (click)="addPaletteColor()">Add</button>
+                                </div>
                             </div>
                         </div>
+                    </details>
 
-                        <!-- Per-element color palette (max 5) -->
-                        <div>
-                            <div class="field-label">Colors (max {{ maxElementPalette }})</div>
-                            <div class="flex flex-wrap gap-1 mb-1">
-                                @for (c of el.color_palette; track c; let ci = $index) {
-                                    <div class="flex items-center gap-0.5">
-                                        <div class="swatch" [style.background]="c" [title]="c"></div>
-                                        <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
-                                            [attr.data-testid]="'element-color-remove-' + i + '-' + ci"
-                                            (click)="removeElementColor(i, ci)">×</button>
+                    <!-- ===== Background ===== -->
+                    <div class="px-3 py-2 border-b border-surface-mid">
+                        <div class="field-label">Background</div>
+                        <textarea class="field-input" rows="2"
+                            data-testid="background-textarea"
+                            [value]="doc().background"
+                            (input)="onBackgroundChange($any($event.target).value)"></textarea>
+                    </div>
+
+                    <!-- ===== Elements (cards only — overlay is in the left pane) ===== -->
+                    <details open class="border-b border-surface-mid">
+                        <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none flex items-center justify-between">
+                            <span>Elements ({{ doc().elements.length }})</span>
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                        </summary>
+                        <div class="px-3 pb-3 space-y-2">
+                            @for (el of doc().elements; track $index; let i = $index) {
+                                <div class="element-card" data-testid="element-card" [attr.data-element-index]="i">
+                                    <!-- Type toggle -->
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <button type="button" class="text-[10px] px-2 py-0.5 rounded border transition-colors"
+                                            [class.bg-brand]="el.type === 'obj'"
+                                            [class.text-white]="el.type === 'obj'"
+                                            [class.border-brand]="el.type === 'obj'"
+                                            [class.bg-surface-mid]="el.type !== 'obj'"
+                                            [class.text-text-subtle]="el.type !== 'obj'"
+                                            [class.border-surface-high]="el.type !== 'obj'"
+                                            (click)="setElementType(i, 'obj')">obj</button>
+                                        <button type="button" class="text-[10px] px-2 py-0.5 rounded border transition-colors"
+                                            [class.bg-brand]="el.type === 'text'"
+                                            [class.text-white]="el.type === 'text'"
+                                            [class.border-brand]="el.type === 'text'"
+                                            [class.bg-surface-mid]="el.type !== 'text'"
+                                            [class.text-text-subtle]="el.type !== 'text'"
+                                            [class.border-surface-high]="el.type !== 'text'"
+                                            (click)="setElementType(i, 'text')">text</button>
+                                        <button type="button" class="ml-auto text-[10px] text-text-subtle hover:text-danger"
+                                            [attr.data-testid]="'remove-element-' + i"
+                                            (click)="removeElement(i)">Remove</button>
                                     </div>
-                                }
-                            </div>
-                            <div class="flex gap-1 items-center">
-                                <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
-                                    [attr.data-testid]="'element-color-input-' + i"
-                                    [value]="elementNewColors()[i] ?? '#000000'"
-                                    (input)="onElementNewColorChange(i, $any($event.target).value)" />
-                                <input type="text" class="field-input flex-1"
-                                    [attr.data-testid]="'element-color-hex-' + i"
-                                    placeholder="#RRGGBB"
-                                    [value]="elementNewColors()[i] ?? '#000000'"
-                                    (input)="onElementNewColorChange(i, $any($event.target).value)" />
-                                <button type="button"
-                                    [attr.data-testid]="'element-color-add-' + i"
-                                    class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
-                                    [disabled]="el.color_palette.length >= maxElementPalette"
-                                    (click)="addElementColor(i, elementNewColors()[i] ?? '#000000')">Add</button>
-                            </div>
+
+                                    <!-- Text field (only for text type) -->
+                                    @if (el.type === 'text') {
+                                        <div class="mb-2">
+                                            <div class="field-label">Text</div>
+                                            <input type="text" class="field-input"
+                                                [attr.data-testid]="'element-text-' + i"
+                                                [value]="el.text ?? ''"
+                                                (input)="onElementTextChange(i, $any($event.target).value)" />
+                                        </div>
+                                    }
+
+                                    <!-- Description -->
+                                    <div class="mb-2">
+                                        <div class="field-label">Description</div>
+                                        <textarea class="field-input" rows="2"
+                                            [attr.data-testid]="'element-desc-' + i"
+                                            [value]="el.desc"
+                                            (input)="onElementDescChange(i, $any($event.target).value)"></textarea>
+                                    </div>
+
+                                    <!-- BBox (y1 x1 y2 x2) -->
+                                    <div class="mb-2">
+                                        <div class="field-label">BBox [y1, x1, y2, x2] (0–1000)</div>
+                                        <div class="flex gap-1">
+                                            @for (coord of ['y1','x1','y2','x2']; track coord; let ci = $index) {
+                                                <input type="number" class="field-input text-center" min="0" max="1000"
+                                                    [attr.data-testid]="'element-bbox-' + i + '-' + coord"
+                                                    [value]="el.bbox ? el.bbox[ci] : 0"
+                                                    (input)="onElementBboxChange(i, ci, +$any($event.target).value)" />
+                                            }
+                                        </div>
+                                    </div>
+
+                                    <!-- Per-element color palette (max 5) -->
+                                    <div>
+                                        <div class="field-label">Colors (max {{ maxElementPalette }})</div>
+                                        <div class="flex flex-wrap gap-1 mb-1">
+                                            @for (c of el.color_palette; track c; let ci = $index) {
+                                                <div class="flex items-center gap-0.5">
+                                                    <div class="swatch" [style.background]="c" [title]="c"></div>
+                                                    <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
+                                                        [attr.data-testid]="'element-color-remove-' + i + '-' + ci"
+                                                        (click)="removeElementColor(i, ci)">×</button>
+                                                </div>
+                                            }
+                                        </div>
+                                        <div class="flex gap-1 items-center">
+                                            <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
+                                                [attr.data-testid]="'element-color-input-' + i"
+                                                [value]="elementNewColors()[i] ?? '#000000'"
+                                                (input)="onElementNewColorChange(i, $any($event.target).value)" />
+                                            <input type="text" class="field-input flex-1"
+                                                [attr.data-testid]="'element-color-hex-' + i"
+                                                placeholder="#RRGGBB"
+                                                [value]="elementNewColors()[i] ?? '#000000'"
+                                                (input)="onElementNewColorChange(i, $any($event.target).value)" />
+                                            <button type="button"
+                                                [attr.data-testid]="'element-color-add-' + i"
+                                                class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
+                                                [disabled]="el.color_palette.length >= maxElementPalette"
+                                                (click)="addElementColor(i, elementNewColors()[i] ?? '#000000')">Add</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </details>
+
+                    <!-- ===== Raw JSON ===== -->
+                    <details class="border-b border-surface-mid">
+                        <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none">
+                            Raw JSON
+                        </summary>
+                        <div class="px-3 pb-3">
+                            <textarea class="field-input font-mono text-[10px]" rows="8"
+                                data-testid="raw-json-textarea"
+                                [value]="value() ?? ''"
+                                (input)="onRawJsonInput($any($event.target).value)"></textarea>
+                        </div>
+                    </details>
+                </div>
+            </div>
+        } @else {
+            <!-- ===== High-level Description ===== -->
+            <div class="px-3 py-2 border-b border-surface-mid">
+                <div class="field-label">High-level description</div>
+                <textarea
+                    data-testid="hld-textarea"
+                    class="field-input"
+                    rows="3"
+                    [value]="doc().description"
+                    (input)="onDescChange($any($event.target).value)"
+                ></textarea>
+            </div>
+
+            <!-- ===== Style ===== -->
+            <details open class="border-b border-surface-mid">
+                <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none flex items-center justify-between">
+                    <span>Style</span>
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </summary>
+                <div class="px-3 pb-3 space-y-2">
+                    <!-- Aesthetics -->
+                    <div>
+                        <div class="field-label">Aesthetics</div>
+                        <input type="text" class="field-input"
+                            data-testid="style-aesthetics"
+                            [value]="doc().style.aesthetics"
+                            (input)="onStyleChange('aesthetics', $any($event.target).value)" />
+                    </div>
+                    <!-- Lighting -->
+                    <div>
+                        <div class="field-label">Lighting</div>
+                        <input type="text" class="field-input"
+                            data-testid="style-lighting"
+                            [value]="doc().style.lighting"
+                            (input)="onStyleChange('lighting', $any($event.target).value)" />
+                    </div>
+                    <!-- Medium -->
+                    <div>
+                        <div class="field-label">Medium</div>
+                        <select class="field-input"
+                            data-testid="style-medium"
+                            [value]="mediumSelectValue()"
+                            (change)="onMediumChange($any($event.target).value)">
+                            @for (m of canonicalMediums; track m) {
+                                <option [value]="m">{{ m }}</option>
+                            }
+                            <option value="__custom__">Custom…</option>
+                        </select>
+                    </div>
+                    <!-- Custom medium input — shown when Custom is selected -->
+                    @if (mediumSelectValue() === '__custom__') {
+                        <div>
+                            <div class="field-label">Custom medium value</div>
+                            <input type="text" class="field-input"
+                                data-testid="style-medium-custom"
+                                [value]="doc().style.medium"
+                                (input)="onMediumChange($any($event.target).value)" />
+                        </div>
+                    }
+                    <!-- Render field (photo / art_style) -->
+                    <div>
+                        <div class="field-label" data-testid="render-field-label">
+                            {{ isPhoto() ? 'Photo (camera / film)' : 'Art style (rendering technique)' }}
+                        </div>
+                        <input type="text" class="field-input"
+                            data-testid="style-render"
+                            [value]="renderFieldValue()"
+                            (input)="onRenderChange($any($event.target).value)" />
+                    </div>
+                    <!-- Color palette -->
+                    <div>
+                        <div class="field-label">Color palette (max {{ maxImagePalette }})</div>
+                        <div class="flex flex-wrap gap-1 mb-1">
+                            @for (c of doc().style.color_palette; track c; let i = $index) {
+                                <div class="flex items-center gap-0.5">
+                                    <div class="swatch" [style.background]="c" [title]="c"></div>
+                                    <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
+                                        [attr.data-testid]="'palette-remove-' + i"
+                                        (click)="removePaletteColor(i)">×</button>
+                                </div>
+                            }
+                        </div>
+                        <div class="flex gap-1 items-center">
+                            <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
+                                data-testid="palette-color-input"
+                                [value]="newColor()"
+                                (input)="newColor.set($any($event.target).value)" />
+                            <input type="text" class="field-input flex-1"
+                                data-testid="palette-hex-input"
+                                placeholder="#RRGGBB"
+                                [value]="newColor()"
+                                (input)="newColor.set($any($event.target).value)" />
+                            <button type="button"
+                                data-testid="palette-add"
+                                class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
+                                (click)="addPaletteColor()">Add</button>
                         </div>
                     </div>
-                }
-            </div>
-        </details>
+                </div>
+            </details>
 
-        <!-- ===== Raw JSON ===== -->
-        <details class="border-b border-surface-mid">
-            <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none">
-                Raw JSON
-            </summary>
-            <div class="px-3 pb-3">
-                <textarea class="field-input font-mono text-[10px]" rows="8"
-                    data-testid="raw-json-textarea"
-                    [value]="value() ?? ''"
-                    (input)="onRawJsonInput($any($event.target).value)"></textarea>
+            <!-- ===== Background ===== -->
+            <div class="px-3 py-2 border-b border-surface-mid">
+                <div class="field-label">Background</div>
+                <textarea class="field-input" rows="2"
+                    data-testid="background-textarea"
+                    [value]="doc().background"
+                    (input)="onBackgroundChange($any($event.target).value)"></textarea>
             </div>
-        </details>
+
+            <!-- ===== Elements ===== -->
+            <details open class="border-b border-surface-mid">
+                <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none flex items-center justify-between">
+                    <span>Elements ({{ doc().elements.length }})</span>
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </summary>
+                <div class="px-3 pb-3 space-y-2">
+                    <!-- Bbox overlay -->
+                    <app-bbox-overlay
+                        [imageUrl]="imageUrl() ?? ''"
+                        [boxes]="bboxItems()"
+                        [selectedId]="selectedElementId()"
+                        [drawEnabled]="drawEnabled()"
+                        (boxSelected)="selectedElementId.set($event)"
+                        (boxAdded)="onBoxAdded($event)"
+                        (boxChanged)="onBoxChanged($event)"
+                    />
+                    <div class="flex gap-1 mb-1">
+                        <button type="button"
+                            data-testid="draw-toggle"
+                            class="px-2 py-1 text-[11px] rounded border transition-colors"
+                            [class.bg-brand]="drawEnabled()"
+                            [class.text-white]="drawEnabled()"
+                            [class.bg-surface-mid]="!drawEnabled()"
+                            [class.text-text-secondary]="!drawEnabled()"
+                            [class.border-brand]="drawEnabled()"
+                            [class.border-surface-high]="!drawEnabled()"
+                            (click)="drawEnabled.set(!drawEnabled())">
+                            {{ drawEnabled() ? 'Done Drawing' : 'Draw box' }}
+                        </button>
+                        <button type="button"
+                            data-testid="add-element"
+                            class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
+                            (click)="addElement()">+ Add Element</button>
+                    </div>
+
+                    @for (el of doc().elements; track $index; let i = $index) {
+                        <div class="element-card" data-testid="element-card" [attr.data-element-index]="i">
+                            <!-- Type toggle -->
+                            <div class="flex items-center gap-2 mb-2">
+                                <button type="button" class="text-[10px] px-2 py-0.5 rounded border transition-colors"
+                                    [class.bg-brand]="el.type === 'obj'"
+                                    [class.text-white]="el.type === 'obj'"
+                                    [class.border-brand]="el.type === 'obj'"
+                                    [class.bg-surface-mid]="el.type !== 'obj'"
+                                    [class.text-text-subtle]="el.type !== 'obj'"
+                                    [class.border-surface-high]="el.type !== 'obj'"
+                                    (click)="setElementType(i, 'obj')">obj</button>
+                                <button type="button" class="text-[10px] px-2 py-0.5 rounded border transition-colors"
+                                    [class.bg-brand]="el.type === 'text'"
+                                    [class.text-white]="el.type === 'text'"
+                                    [class.border-brand]="el.type === 'text'"
+                                    [class.bg-surface-mid]="el.type !== 'text'"
+                                    [class.text-text-subtle]="el.type !== 'text'"
+                                    [class.border-surface-high]="el.type !== 'text'"
+                                    (click)="setElementType(i, 'text')">text</button>
+                                <button type="button" class="ml-auto text-[10px] text-text-subtle hover:text-danger"
+                                    [attr.data-testid]="'remove-element-' + i"
+                                    (click)="removeElement(i)">Remove</button>
+                            </div>
+
+                            <!-- Text field (only for text type) -->
+                            @if (el.type === 'text') {
+                                <div class="mb-2">
+                                    <div class="field-label">Text</div>
+                                    <input type="text" class="field-input"
+                                        [attr.data-testid]="'element-text-' + i"
+                                        [value]="el.text ?? ''"
+                                        (input)="onElementTextChange(i, $any($event.target).value)" />
+                                </div>
+                            }
+
+                            <!-- Description -->
+                            <div class="mb-2">
+                                <div class="field-label">Description</div>
+                                <textarea class="field-input" rows="2"
+                                    [attr.data-testid]="'element-desc-' + i"
+                                    [value]="el.desc"
+                                    (input)="onElementDescChange(i, $any($event.target).value)"></textarea>
+                            </div>
+
+                            <!-- BBox (y1 x1 y2 x2) -->
+                            <div class="mb-2">
+                                <div class="field-label">BBox [y1, x1, y2, x2] (0–1000)</div>
+                                <div class="flex gap-1">
+                                    @for (coord of ['y1','x1','y2','x2']; track coord; let ci = $index) {
+                                        <input type="number" class="field-input text-center" min="0" max="1000"
+                                            [attr.data-testid]="'element-bbox-' + i + '-' + coord"
+                                            [value]="el.bbox ? el.bbox[ci] : 0"
+                                            (input)="onElementBboxChange(i, ci, +$any($event.target).value)" />
+                                    }
+                                </div>
+                            </div>
+
+                            <!-- Per-element color palette (max 5) -->
+                            <div>
+                                <div class="field-label">Colors (max {{ maxElementPalette }})</div>
+                                <div class="flex flex-wrap gap-1 mb-1">
+                                    @for (c of el.color_palette; track c; let ci = $index) {
+                                        <div class="flex items-center gap-0.5">
+                                            <div class="swatch" [style.background]="c" [title]="c"></div>
+                                            <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
+                                                [attr.data-testid]="'element-color-remove-' + i + '-' + ci"
+                                                (click)="removeElementColor(i, ci)">×</button>
+                                        </div>
+                                    }
+                                </div>
+                                <div class="flex gap-1 items-center">
+                                    <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
+                                        [attr.data-testid]="'element-color-input-' + i"
+                                        [value]="elementNewColors()[i] ?? '#000000'"
+                                        (input)="onElementNewColorChange(i, $any($event.target).value)" />
+                                    <input type="text" class="field-input flex-1"
+                                        [attr.data-testid]="'element-color-hex-' + i"
+                                        placeholder="#RRGGBB"
+                                        [value]="elementNewColors()[i] ?? '#000000'"
+                                        (input)="onElementNewColorChange(i, $any($event.target).value)" />
+                                    <button type="button"
+                                        [attr.data-testid]="'element-color-add-' + i"
+                                        class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
+                                        [disabled]="el.color_palette.length >= maxElementPalette"
+                                        (click)="addElementColor(i, elementNewColors()[i] ?? '#000000')">Add</button>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </details>
+
+            <!-- ===== Raw JSON ===== -->
+            <details class="border-b border-surface-mid">
+                <summary class="section-header px-3 py-2 text-text-subtle hover:text-brand transition-colors list-none">
+                    Raw JSON
+                </summary>
+                <div class="px-3 pb-3">
+                    <textarea class="field-input font-mono text-[10px]" rows="8"
+                        data-testid="raw-json-textarea"
+                        [value]="value() ?? ''"
+                        (input)="onRawJsonInput($any($event.target).value)"></textarea>
+                </div>
+            </details>
+        }
     `,
 })
 export class IdeogramCaptionEditorComponent {
     // Public API — two-way bound compact JSON string (single source of truth)
     readonly value = model<string>();
     readonly imageUrl = input<string>();
+    readonly wide = input<boolean>(false);
 
     // doc() is a computed() that always reflects value() — no effect timing issues.
     // User edits call commit() which writes value(), and doc() auto-updates via computed().
@@ -551,6 +816,14 @@ export class IdeogramCaptionEditorComponent {
             if (i !== elIdx) return el;
             return { ...el, color_palette: el.color_palette.filter((_, ci) => ci !== colorIdx) };
         });
+        this.commit({ ...this.doc(), elements });
+    }
+
+    protected onBoxChanged(e: { id: string; bbox: number[] }): void {
+        const idx = Number(e.id);
+        const elements = this.doc().elements.map((el, i) =>
+            i === idx ? { ...el, bbox: e.bbox } : el
+        );
         this.commit({ ...this.doc(), elements });
     }
 

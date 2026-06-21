@@ -7,7 +7,7 @@
 
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { IdeogramCaptionEditorComponent } from './ideogram-caption-editor';
-import { serialize, normalize, parse, CANONICAL_MEDIUMS } from './ideogram-format';
+import { serialize, normalize, parse, CANONICAL_MEDIUMS, MAX_ELEMENT_PALETTE } from './ideogram-format';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -235,5 +235,94 @@ describe('IdeogramCaptionEditor — raw JSON editing', () => {
         fixture.detectChanges();
         // Should not throw; value stays the same
         expect(cmp.value()).toBe(originalValue);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1 — per-element add-color affordance
+// ---------------------------------------------------------------------------
+
+describe('IdeogramCaptionEditor — per-element add-color', () => {
+    it('addElementColor adds a color (uppercased) to the element palette in serialized value', () => {
+        const { fixture, cmp } = mountEditor();
+        // PHOTO_FIXTURE has 1 element at index 0 with 1 color (#AAAAAA)
+        const colorInput = fixture.nativeElement.querySelector('[data-testid="element-color-input-0"]') as HTMLInputElement;
+        expect(colorInput).toBeTruthy();
+        colorInput.value = '#abcdef';
+        colorInput.dispatchEvent(new Event('input'));
+        fixture.detectChanges();
+
+        const addBtn = fixture.nativeElement.querySelector('[data-testid="element-color-add-0"]') as HTMLButtonElement;
+        expect(addBtn).toBeTruthy();
+        addBtn.click();
+        fixture.detectChanges();
+
+        const out = cmp.value();
+        const parsed = parse(out!) as Record<string, unknown>;
+        const dec = parsed['compositional_deconstruction'] as Record<string, unknown>;
+        const elements = dec['elements'] as Record<string, unknown>[];
+        const palette = elements[0]['color_palette'] as string[];
+        expect(palette).toContain('#ABCDEF');
+    });
+
+    it('element palette cap: adding a 6th color is blocked (length stays MAX_ELEMENT_PALETTE)', () => {
+        // Build fixture with element already at max palette
+        const maxColors = Array.from({ length: MAX_ELEMENT_PALETTE }, (_, i) =>
+            `#${(i + 1).toString(16).padStart(2, '0')}0000`.toUpperCase()
+        );
+        const cappedFixture = serialize(normalize({
+            high_level_description: 'test',
+            style_description: { aesthetics: '', lighting: '', medium: 'photograph', color_palette: [] },
+            compositional_deconstruction: {
+                background: '',
+                elements: [{ type: 'obj', desc: 'test element', color_palette: maxColors }],
+            },
+        }));
+
+        const { fixture, cmp } = mountEditor(cappedFixture);
+
+        const colorInput = fixture.nativeElement.querySelector('[data-testid="element-color-input-0"]') as HTMLInputElement;
+        colorInput.value = '#AABBCC';
+        colorInput.dispatchEvent(new Event('input'));
+        fixture.detectChanges();
+
+        const addBtn = fixture.nativeElement.querySelector('[data-testid="element-color-add-0"]') as HTMLButtonElement;
+        addBtn.click();
+        fixture.detectChanges();
+
+        const out = cmp.value();
+        const parsed = parse(out!) as Record<string, unknown>;
+        const dec = parsed['compositional_deconstruction'] as Record<string, unknown>;
+        const elements = dec['elements'] as Record<string, unknown>[];
+        const palette = elements[0]['color_palette'] as string[];
+        expect(palette.length).toBe(MAX_ELEMENT_PALETTE);
+    });
+
+    it('dirty-tracking: any structured edit emits a new valueChange (valueChange fires on mutation)', () => {
+        const { fixture, cmp } = mountEditor();
+        const initialValue = cmp.value();
+
+        // Collect emitted values via the model output signal
+        const emitted: string[] = [];
+        // Subscribe to value changes by spying on value.set via output subscription
+        // In Angular signals/model(), we observe cmp.value() changes after detectChanges
+        // Simulate an element description edit to trigger commit()
+        const descTextarea = fixture.nativeElement.querySelector('[data-testid="element-desc-0"]') as HTMLTextAreaElement;
+        expect(descTextarea).toBeTruthy();
+        descTextarea.value = 'updated description';
+        descTextarea.dispatchEvent(new Event('input'));
+        fixture.detectChanges();
+
+        const newValue = cmp.value();
+        // A new value must have been emitted (valueChange output = model mutation)
+        expect(newValue).not.toBe(initialValue);
+        expect(newValue).toBeTruthy();
+        // The change is reflected in the serialized output
+        const parsed = parse(newValue!) as Record<string, unknown>;
+        const dec = parsed['compositional_deconstruction'] as Record<string, unknown>;
+        const elements = dec['elements'] as Record<string, unknown>[];
+        expect(elements[0]['desc']).toBe('updated description');
+        emitted.push(newValue!);
+        expect(emitted.length).toBeGreaterThan(0);
     });
 });

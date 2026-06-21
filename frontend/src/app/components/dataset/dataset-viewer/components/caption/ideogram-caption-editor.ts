@@ -323,9 +323,26 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
                                     <div class="flex items-center gap-0.5">
                                         <div class="swatch" [style.background]="c" [title]="c"></div>
                                         <button type="button" class="text-text-subtle hover:text-danger text-[10px] px-0.5"
+                                            [attr.data-testid]="'element-color-remove-' + i + '-' + ci"
                                             (click)="removeElementColor(i, ci)">×</button>
                                     </div>
                                 }
+                            </div>
+                            <div class="flex gap-1 items-center">
+                                <input type="color" class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent"
+                                    [attr.data-testid]="'element-color-input-' + i"
+                                    [value]="elementNewColors()[i] ?? '#000000'"
+                                    (input)="onElementNewColorChange(i, $any($event.target).value)" />
+                                <input type="text" class="field-input flex-1"
+                                    [attr.data-testid]="'element-color-hex-' + i"
+                                    placeholder="#RRGGBB"
+                                    [value]="elementNewColors()[i] ?? '#000000'"
+                                    (input)="onElementNewColorChange(i, $any($event.target).value)" />
+                                <button type="button"
+                                    [attr.data-testid]="'element-color-add-' + i"
+                                    class="px-2 py-1 bg-surface-mid hover:bg-surface-high text-text-secondary text-[11px] rounded border border-surface-high/40"
+                                    [disabled]="el.color_palette.length >= maxElementPalette"
+                                    (click)="addElementColor(i, elementNewColors()[i] ?? '#000000')">Add</button>
                             </div>
                         </div>
                     </div>
@@ -364,6 +381,8 @@ export class IdeogramCaptionEditorComponent {
 
     // UI state
     protected readonly newColor = signal<string>('#000000');
+    /** Per-element pending color values (index → hex string). */
+    protected readonly elementNewColors = signal<Partial<Record<number, string>>>({});
     protected readonly selectedElementId = signal<string | null>(null);
     protected readonly drawEnabled = signal<boolean>(false);
 
@@ -508,6 +527,22 @@ export class IdeogramCaptionEditorComponent {
             bbox[coordIdx] = Math.max(0, Math.min(1000, Math.round(Number(val) || 0)));
             return { ...el, bbox };
         });
+        this.commit({ ...this.doc(), elements });
+    }
+
+    protected onElementNewColorChange(elIdx: number, val: string): void {
+        this.elementNewColors.update(m => ({ ...m, [elIdx]: val }));
+    }
+
+    protected addElementColor(elementIndex: number, color: string): void {
+        const nc = normalizeColor(color);
+        if (!nc) return;
+        const palette = this.doc().elements[elementIndex]?.color_palette ?? [];
+        if (palette.length >= MAX_ELEMENT_PALETTE) return;
+        if (palette.includes(nc)) return;
+        const elements = this.doc().elements.map((el, i) =>
+            i === elementIndex ? { ...el, color_palette: [...el.color_palette, nc] } : el
+        );
         this.commit({ ...this.doc(), elements });
     }
 

@@ -7,6 +7,7 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
 import { DatasetService } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
+import { serialize, normalize } from './caption/ideogram-format';
 
 function mount() {
     localStorage.clear();
@@ -354,6 +355,99 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         // listing). Drain everything left iteratively (the children chain
         // requests), flushing list endpoints with an array and others with a
         // suggestions-shaped object so response handlers don't throw.
+        const http = TestBed.inject(HttpTestingController);
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] : { definition_id: null, items: [] });
+            });
+        }
+        http.verify();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Structured editor swap — ideogram4_json + variant mode + structured caption
+// ---------------------------------------------------------------------------
+
+const STRUCTURED_CAPTION = serialize(normalize({
+    high_level_description: 'A red sports car on a racetrack',
+    style_description: { aesthetics: 'sleek', lighting: 'dramatic', medium: 'photograph', color_palette: [] },
+    compositional_deconstruction: { background: 'blurred track', elements: [] },
+}));
+
+describe('DetailCaptionSidebar — structured editor swap', () => {
+    function mountSwap() {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('currentPair', { media_file: 'car.png', caption_file: 'car.txt', caption_content: STRUCTURED_CAPTION });
+        const http = TestBed.inject(HttpTestingController);
+        const store = TestBed.inject(ModelContextStore);
+        return { fixture, http, store };
+    }
+
+    function drainRequests(http: HttpTestingController) {
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] :
+                    r.request.url.includes('/caption-suggestions') ? { definition_id: null, items: [] } :
+                    r.request.url.includes('/caption-variant') ? { text: STRUCTURED_CAPTION, has_variant: true } :
+                    {});
+            });
+        }
+    }
+
+    it('renders the textarea when model-aware is off', () => {
+        const { fixture, http } = mountSwap();
+        fixture.detectChanges();
+        drainRequests(http);
+        fixture.detectChanges();
+        const textarea = fixture.nativeElement.querySelector('textarea[placeholder="Enter caption for this image..."]');
+        const editor = fixture.nativeElement.querySelector('[data-testid="structured-editor"]');
+        expect(textarea).toBeTruthy();
+        expect(editor).toBeNull();
+        http.verify();
+    });
+
+    it('renders the textarea when definition has plain format (not ideogram4_json)', () => {
+        const { fixture, http, store } = mountSwap();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell', caption_format: 'plain' });
+        fixture.detectChanges();
+        drainRequests(http);
+        fixture.detectChanges();
+        const textarea = fixture.nativeElement.querySelector('textarea[placeholder="Enter caption for this image..."]');
+        expect(textarea).toBeTruthy();
+        http.verify();
+    });
+
+    it('renders the structured editor when ideogram4_json format + variant mode + structured caption', () => {
+        const { fixture, http, store } = mountSwap();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+        fixture.detectChanges();
+        drainRequests(http);
+        fixture.detectChanges();
+        const editor = fixture.nativeElement.querySelector('[data-testid="structured-editor"]');
+        expect(editor).toBeTruthy();
+        http.verify();
+    });
+
+    afterEach(() => {
         const http = TestBed.inject(HttpTestingController);
         for (let i = 0; i < 10; i++) {
             const pending = http.match(() => true);

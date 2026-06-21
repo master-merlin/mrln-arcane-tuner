@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 async def list_model_definitions():
     """List all available model definitions with introspection data."""
     from app.engine.models.registry import registry
+    from app.core.captioning.formats import get_caption_format_for_definition
 
     # R-API-07: batch-load overrides once at the top instead of calling
     # ModelOverrideManager.get_override per definition (was N+1 settings.json reads).
@@ -47,6 +48,7 @@ async def list_model_definitions():
         }
         override = all_settings.overrides.get(def_id)
         data["source_override"] = override.model_dump() if override else None
+        data["caption_format"] = get_caption_format_for_definition(def_id).id
         results.append(data)
     return results
 
@@ -289,6 +291,7 @@ async def update_model_settings(body: dict[str, Any]):
     # Re-apply HF auth so the new token takes effect without a restart
     # (env-provided token still wins — see app.core.hf_auth).
     from app.core.hf_auth import apply_hf_auth
+
     apply_hf_auth(settings.hf_token)
 
     logger.info(

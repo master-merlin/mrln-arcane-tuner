@@ -412,6 +412,9 @@ export class DetailCaptionSidebarComponent {
         const defId = this.modelContext.activeDefinitionId();
         const captionInstructions = this.currentSettings.captionInstructions ?? '';
 
+        // Guard only controls whether caption_instructions is added to params.
+        // definition_id is passed independently as a top-level generateCaption()
+        // argument (matching GenerateCaptionRequest), so empty instructions still send it.
         const enrichedParams = isStructured && captionInstructions
             ? { ...this.currentSettings.params, caption_instructions: captionInstructions }
             : this.currentSettings.params;

@@ -275,13 +275,13 @@ describe('DatasetCaptionSettings — Additional instructions (structured caption
         expect(last.captionInstructions).toBe('focus on the composition');
     });
 
-    it('captionInstructions is empty string in emitted state when plain format', () => {
+    it('emits captionInstructions value through state even when plain (UI hides the field)', () => {
         const { comp } = buildWithFormat('plain');
         let last: any;
         comp.settingsChanged.subscribe((s: any) => (last = s));
         comp.captionInstructions.set('should not appear');
         comp.onModelChange('joycaption');
-        expect(last).toBeDefined();
+        expect(last.captionInstructions).toBe('should not appear');
     });
 });
 

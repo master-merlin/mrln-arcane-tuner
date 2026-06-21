@@ -82,7 +82,13 @@ def _palette(colors, cap: int) -> list[str]:
 
 
 def swap_bbox_xy(bbox: list) -> list:
-    """[x1,y1,x2,y2] -> [y1,x1,y2,x2] (and vice-versa)."""
+    """[x1,y1,x2,y2] -> [y1,x1,y2,x2] (and vice-versa).
+
+    X-first <-> y-first conversion helper for callers that hold x-first data,
+    e.g. the frontend overlay (pixel-space x-first) or importers of
+    ai-toolkit-style captions (x-first).  Call this BEFORE normalize() when
+    your source bboxes are x-first.
+    """
     if not bbox or len(bbox) != 4:
         return bbox
     a, b, c, d = bbox
@@ -90,6 +96,10 @@ def swap_bbox_xy(bbox: list) -> list:
 
 
 def _clamp_bbox(bbox) -> list | None:
+    # Incoming bboxes are assumed y-first [y_min, x_min, y_max, x_max].
+    # The generation prompt instructs the VLM to emit y-first, so normalize()
+    # only clamps values to [0, BBOX_MAX] and rounds — it does NOT swap axes.
+    # Use swap_bbox_xy() to convert x-first data before calling normalize().
     if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
         return None
     try:
@@ -112,11 +122,15 @@ def _normalize_style(style: dict) -> dict:
     if medium == PHOTO_MEDIUM:
         out["photo"] = str(render or "")
         out["medium"] = medium
-        ordered = {k: out.get(k) for k in _STYLE_PHOTO_ORDER if k != "color_palette"}
+        ordered = {
+            k: out[k] for k in _STYLE_PHOTO_ORDER if k in out and k != "color_palette"
+        }
     else:
         out["medium"] = medium
         out["art_style"] = str(render or "")
-        ordered = {k: out.get(k) for k in _STYLE_ART_ORDER if k != "color_palette"}
+        ordered = {
+            k: out[k] for k in _STYLE_ART_ORDER if k in out and k != "color_palette"
+        }
     ordered["color_palette"] = _palette(style.get("color_palette"), MAX_IMAGE_PALETTE)
     return ordered
 

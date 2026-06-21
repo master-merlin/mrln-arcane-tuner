@@ -79,14 +79,25 @@ def test_normalize_nonphoto_branch_migrates_photo_to_art_style():
     assert sd["art_style"] == "oil on canvas"
 
 
-def test_normalize_swaps_bbox_to_y_first_when_marked_xy():
+def test_normalize_clamps_out_of_range_bbox():
     d = _doc()
-    # simulate a captioner emitting x-first; normalize() leaves stored y-first.
-    # We assert clamping + ordering invariants on a y-first input here.
+    # Bboxes are stored y-first [y_min, x_min, y_max, x_max]; the VLM emits
+    # y-first per the generation prompt.  normalize() only clamps to [0, BBOX_MAX]
+    # and rounds — it does not swap axes.  Verify out-of-range values are clamped.
     d["compositional_deconstruction"]["elements"][0]["bbox"] = [1200, -5, 500, 500]
     out = ix.normalize(d)
     bb = out["compositional_deconstruction"]["elements"][0]["bbox"]
     assert all(0 <= v <= ix.BBOX_MAX for v in bb)
+    # Verify a clearly in-range y-first bbox passes through unchanged.
+    d2 = _doc()
+    d2["compositional_deconstruction"]["elements"][0]["bbox"] = [100, 200, 300, 400]
+    out2 = ix.normalize(d2)
+    assert out2["compositional_deconstruction"]["elements"][0]["bbox"] == [
+        100,
+        200,
+        300,
+        400,
+    ]
 
 
 def test_swap_bbox_xy_swaps_pairs():
@@ -139,6 +150,20 @@ def test_parse_extracts_json_from_fenced_block():
     parsed = ix.parse(raw)
     assert parsed is not None
     assert "compositional_deconstruction" in parsed
+
+
+def test_normalize_enforces_key_order_nonphoto_branch():
+    d = _doc()
+    d["style_description"]["medium"] = "illustration"
+    # Only `photo` present; non-photo branch surfaces it as art_style.
+    out = ix.normalize(d)
+    assert list(out["style_description"].keys()) == [
+        "aesthetics",
+        "lighting",
+        "medium",
+        "art_style",
+        "color_palette",
+    ]
 
 
 def test_migrate_old_format_color_before_desc_and_titlecase_medium():

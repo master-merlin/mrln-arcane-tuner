@@ -13,10 +13,7 @@ import {
     ChangeDetectionStrategy,
     Component,
     ElementRef,
-    OnDestroy,
-    Signal,
     ViewChild,
-    computed,
     input,
     output,
     signal,
@@ -91,11 +88,13 @@ export interface BboxItem {
 }
 
 interface DrawState {
-    startX: number; // client X at pointerdown
-    startY: number; // client Y at pointerdown
+    startX: number; // image-relative X at pointerdown
+    startY: number; // image-relative Y at pointerdown
     curX: number;
     curY: number;
     active: boolean;
+    imgW: number;  // rendered image width captured at pointerdown
+    imgH: number;  // rendered image height captured at pointerdown
 }
 
 @Component({
@@ -183,7 +182,7 @@ interface DrawState {
         </div>
     `,
 })
-export class BboxOverlayComponent implements OnDestroy {
+export class BboxOverlayComponent {
     // Inputs
     readonly imageUrl = input<string>('');
     readonly boxes = input<BboxItem[]>([]);
@@ -193,6 +192,7 @@ export class BboxOverlayComponent implements OnDestroy {
     // Outputs
     readonly boxAdded = output<number[]>();
     readonly boxSelected = output<string>();
+    // TODO (v2): emit on drag-resize; declared now for stable public contract
     readonly boxChanged = output<{ id: string; bbox: number[] }>();
 
     @ViewChild('imgEl') private imgEl?: ElementRef<HTMLImageElement>;
@@ -204,6 +204,8 @@ export class BboxOverlayComponent implements OnDestroy {
         curX: 0,
         curY: 0,
         active: false,
+        imgW: 0,
+        imgH: 0,
     });
 
     /**
@@ -245,16 +247,28 @@ export class BboxOverlayComponent implements OnDestroy {
         return `left:${left}px;top:${top}px;width:${width}px;height:${height}px`;
     }
 
-    /** Pointer relative to the container element's top-left. */
+    /**
+     * Pointer relative to the image element's top-left.
+     * Using the image rect keeps pointer coords in the same space as boxStyle(),
+     * which also measures from the image element — avoiding any offset under
+     * letterboxing (object-fit:contain with aspect-ratio mismatch).
+     *
+     * Falls back to the container element when the image is not yet rendered
+     * (e.g. no imageUrl set), so the guard in finalizeDraw (W===0||H===0) still
+     * fires correctly in jsdom tests.
+     */
     private pointerOffset(
         e: PointerEvent,
-    ): { x: number; y: number } | null {
-        const container = (e.currentTarget as HTMLElement);
-        if (!container) return null;
-        const rect = container.getBoundingClientRect();
+    ): { x: number; y: number; imgW: number; imgH: number } | null {
+        const imgEl = this.imgEl?.nativeElement;
+        const ref: Element = imgEl ?? (e.currentTarget as HTMLElement);
+        if (!ref) return null;
+        const rect = ref.getBoundingClientRect();
         return {
             x: e.clientX - rect.left,
             y: e.clientY - rect.top,
+            imgW: rect.width,
+            imgH: rect.height,
         };
     }
 
@@ -269,6 +283,8 @@ export class BboxOverlayComponent implements OnDestroy {
             curX: offset.x,
             curY: offset.y,
             active: true,
+            imgW: offset.imgW,
+            imgH: offset.imgH,
         });
     }
 
@@ -285,7 +301,7 @@ export class BboxOverlayComponent implements OnDestroy {
         if (!d.active) return;
         const offset = this.pointerOffset(e);
         if (offset) {
-            this.finalizeDraw(d, offset.x, offset.y, e.currentTarget as HTMLElement);
+            this.finalizeDraw(d, offset.x, offset.y);
         }
         this.draw.set({ ...d, active: false });
     }
@@ -301,7 +317,6 @@ export class BboxOverlayComponent implements OnDestroy {
         d: DrawState,
         endX: number,
         endY: number,
-        container: HTMLElement,
     ): void {
         if (!this.drawEnabled()) return;
         const pxLeft = Math.min(d.startX, endX);
@@ -309,9 +324,9 @@ export class BboxOverlayComponent implements OnDestroy {
         const pxRight = Math.max(d.startX, endX);
         const pxBottom = Math.max(d.startY, endY);
 
-        // Need the container's rendered size for normalization
-        const W = container.getBoundingClientRect().width || container.offsetWidth;
-        const H = container.getBoundingClientRect().height || container.offsetHeight;
+        // Use the image dimensions captured at pointerdown (same origin as boxStyle)
+        const W = d.imgW;
+        const H = d.imgH;
 
         if (W === 0 || H === 0 || (pxRight - pxLeft < 2 && pxBottom - pxTop < 2)) {
             // Degenerate — ignore
@@ -327,7 +342,4 @@ export class BboxOverlayComponent implements OnDestroy {
         this.boxSelected.emit(id);
     }
 
-    ngOnDestroy(): void {
-        // Nothing to tear down — Angular handles signal/effect cleanup
-    }
 }

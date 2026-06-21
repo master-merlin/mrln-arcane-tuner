@@ -166,6 +166,18 @@ def _write_caption(
         dm._persist_media_item(dataset, lookup_key)
 
 
+def _get_caption_format(definition_id: str | None):
+    """Resolve the caption format for a definition (PlainFormat when None/unknown)."""
+    from app.core.captioning.formats import (
+        get_caption_format_for_definition,
+        PlainFormat,
+    )
+
+    if not definition_id:
+        return PlainFormat()
+    return get_caption_format_for_definition(definition_id)
+
+
 def _emit_caption_written(
     *,
     dataset_name: str,
@@ -223,6 +235,8 @@ def run_caption_batch(
     if definition_id is None:
         definition_id = params.get("definition_id")
 
+    caption_format = _get_caption_format(definition_id)
+
     try:
         service = _get_service()
 
@@ -258,6 +272,17 @@ def run_caption_batch(
                     if not call_params.get("system_prompt"):
                         call_params["system_prompt"] = VIDEO_CAPTION_PROMPT
 
+                if caption_format.is_structured:
+                    if not call_params.get("system_prompt"):
+                        call_params["system_prompt"] = (
+                            caption_format.build_generation_prompt(
+                                call_params.get("caption_instructions")
+                            )
+                        )
+                    call_params.update(caption_format.generation_overrides())
+                    if model_id.startswith("api-") and caption_format.json_schema():
+                        call_params["response_format"] = {"type": "json_object"}
+
                 if model_id.startswith("api-"):
                     # Let the HTTP client's retry/backoff loop bail out as soon
                     # as the task is cancelled (instead of sleeping through the
@@ -278,6 +303,10 @@ def run_caption_batch(
                     params=call_params,
                     extra_image_paths=extra,
                 )
+                if caption_format.is_structured:
+                    caption = caption_format.serialize(
+                        caption_format.parse_and_normalize(caption)
+                    )
                 if definition_id:
                     _write_caption(dataset_name, rel, caption, target, definition_id)
                 else:

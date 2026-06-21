@@ -297,7 +297,7 @@ def run_caption_batch(
                 )
                 if caption_format.is_structured:
                     caption = caption_format.serialize(
-                        caption_format.parse_and_normalize(caption)
+                        caption_format.ingest_generated(caption)
                     )
                 if definition_id:
                     _write_caption(dataset_name, rel, caption, target, definition_id)

@@ -11,6 +11,16 @@ class CaptionFormat(ABC):
     @abstractmethod
     def serialize(self, data: dict) -> str: ...
 
+    def ingest_generated(self, raw: str) -> dict:
+        """Parse + normalize raw output FROM A CAPTIONING MODEL (generation path).
+
+        Distinct from :meth:`parse_and_normalize` (used by the refine/editor
+        round-trip on already-canonical captions) so a format can apply
+        ingest-only transforms — e.g. swapping a VLM's x-first bboxes to the
+        canonical y-first storage order. Default: no extra transform.
+        """
+        return self.parse_and_normalize(raw)
+
     def build_generation_prompt(
         self, user_instructions: str | None = None
     ) -> str | None:

@@ -121,21 +121,18 @@ async def generate_caption_api(request: GenerateCaptionRequest):
 
         # Resolve the definition's CaptionFormat (if provided) and inject
         # its generation prompt + overrides before calling the captioner.
-        from app.core.captioning.formats import get_caption_format_for_definition
+        from app.core.captioning.formats import (
+            apply_generation_seam,
+            get_caption_format_for_definition,
+        )
 
         caption_format = (
             get_caption_format_for_definition(request.definition_id)
             if request.definition_id
             else None
         )
-        if caption_format and caption_format.is_structured:
-            if not params.get("system_prompt"):
-                params["system_prompt"] = caption_format.build_generation_prompt(
-                    params.get("caption_instructions")
-                )
-            params.update(caption_format.generation_overrides())
-            if request.model_id.startswith("api-") and caption_format.json_schema():
-                params["response_format"] = {"type": "json_object"}
+        if caption_format:
+            apply_generation_seam(params, caption_format, request.model_id)
 
         caption = await asyncio.to_thread(
             service.generate_caption,

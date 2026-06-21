@@ -51,7 +51,19 @@ export class ModelSelectorComponent {
         effect(() => {
             if (this.ctx.modelAware() && !this.loaded()) {
                 this.loaded.set(true);
-                this.api.listDefinitions().subscribe(defs => this.definitions.set(defs));
+                this.api.listDefinitions().subscribe(defs => {
+                    this.definitions.set(defs);
+                    // Self-heal a persisted active definition that predates a
+                    // backend schema change (e.g. one stored before
+                    // caption_format was served): refresh it from the freshly
+                    // fetched list so activeCaptionFormat() reflects the current
+                    // backend without forcing the user to re-pick.
+                    const active = this.ctx.activeDefinition();
+                    if (active) {
+                        const fresh = defs.find(d => d.id === active.id);
+                        if (fresh) this.ctx.setDefinition(fresh);
+                    }
+                });
             }
         });
 

@@ -4,12 +4,13 @@
  * TDD spec for:
  *  1. ModelContextStore.activeCaptionFormat signal
  *  2. pxToNorm / normToPx coordinate helpers
- *  3. BboxOverlayComponent render + select behavior
+ *  3. movedBbox / resizedBbox geometry helpers (move + resize)
+ *  4. BboxOverlayComponent render + select + handle render behavior
  */
 
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ModelContextStore, type DefinitionRef } from '../../../../../state/model-context.store';
-import { BboxOverlayComponent, pxToNorm, normToPx } from './bbox-overlay';
+import { BboxOverlayComponent, pxToNorm, normToPx, movedBbox, resizedBbox } from './bbox-overlay';
 
 // ---------------------------------------------------------------------------
 // 1. ModelContextStore.activeCaptionFormat
@@ -131,7 +132,179 @@ describe('normToPx', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. BboxOverlayComponent — render + select
+// 3. movedBbox — pure geometry helper for translating a box
+// ---------------------------------------------------------------------------
+
+describe('movedBbox', () => {
+    // Starting box: y_min=200, x_min=100, y_max=500, x_max=400 (300h × 300w)
+    const box: number[] = [200, 100, 500, 400];
+
+    it('translates down and right by the given deltas', () => {
+        // dy=+50, dx=+100 → y_min=250, x_min=200, y_max=550, x_max=500
+        const result = movedBbox(box, 50, 100);
+        expect(result).toEqual([250, 200, 550, 500]);
+    });
+
+    it('translates up and left by negative deltas', () => {
+        // dy=-50, dx=-50 → y_min=150, x_min=50, y_max=450, x_max=350
+        const result = movedBbox(box, -50, -50);
+        expect(result).toEqual([150, 50, 450, 350]);
+    });
+
+    it('preserves the original width and height after translation', () => {
+        const result = movedBbox(box, 30, 70);
+        const origH = box[2] - box[0];
+        const origW = box[3] - box[1];
+        expect(result[2] - result[0]).toBe(origH);
+        expect(result[3] - result[1]).toBe(origW);
+    });
+
+    it('clamps at the top-left boundary (cannot go negative)', () => {
+        // dy=-9999, dx=-9999 → clamped to top-left corner, preserving size
+        const result = movedBbox(box, -9999, -9999);
+        expect(result[0]).toBe(0);   // y_min = 0
+        expect(result[1]).toBe(0);   // x_min = 0
+        expect(result[2]).toBe(300); // y_max = 0 + (500-200)
+        expect(result[3]).toBe(300); // x_max = 0 + (400-100)
+    });
+
+    it('clamps at the bottom-right boundary (cannot exceed 1000)', () => {
+        // dy=+9999, dx=+9999 → clamped so trailing edge stays at 1000
+        const result = movedBbox(box, 9999, 9999);
+        const origH = box[2] - box[0]; // 300
+        const origW = box[3] - box[1]; // 300
+        expect(result[2]).toBe(1000);               // y_max = 1000
+        expect(result[3]).toBe(1000);               // x_max = 1000
+        expect(result[0]).toBe(1000 - origH);        // y_min
+        expect(result[1]).toBe(1000 - origW);        // x_min
+    });
+
+    it('zero delta is a no-op (returns rounded copy of original)', () => {
+        const result = movedBbox(box, 0, 0);
+        expect(result).toEqual([200, 100, 500, 400]);
+    });
+
+    it('handles fractional normalized deltas (rounds to integers)', () => {
+        // 0.4 in normalized space — should be rounded
+        const result = movedBbox([100, 100, 200, 200], 0.4, 0.6);
+        // ny_min: round(100 + 0.4) = round(100.4) = 100
+        // nx_min: round(100 + 0.6) = round(100.6) = 101
+        // height = 200-100 = 100; width = 200-100 = 100
+        expect(result[0]).toBe(100);  // ny_min
+        expect(result[1]).toBe(101);  // nx_min
+        expect(result[2]).toBe(200);  // ny_min + h = 100 + 100
+        expect(result[3]).toBe(201);  // nx_min + w = 101 + 100
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 4. resizedBbox — pure geometry helper for corner resize
+// ---------------------------------------------------------------------------
+
+describe('resizedBbox', () => {
+    // Starting box: [y_min=100, x_min=100, y_max=500, x_max=500]
+    const box: number[] = [100, 100, 500, 500];
+
+    describe('tl (top-left) corner — opposite is bottom-right (500,500)', () => {
+        it('moves the top-left corner to new position', () => {
+            // Drag tl to (50, 50) → new box [50,50,500,500]
+            const result = resizedBbox(box, 'tl', 50, 50);
+            expect(result).toEqual([50, 50, 500, 500]);
+        });
+
+        it('clamps to [0,0] at the min boundary', () => {
+            const result = resizedBbox(box, 'tl', -100, -100);
+            expect(result).toEqual([0, 0, 500, 500]);
+        });
+
+        it('handles cross-over: dragging past bottom-right flips y_min/y_max and x_min/x_max', () => {
+            // Drag tl to (700, 700) — past the fixed corner at (500,500)
+            // → sorted: y_min=500, x_min=500, y_max=700, x_max=700
+            const result = resizedBbox(box, 'tl', 700, 700);
+            expect(result).toEqual([500, 500, 700, 700]);
+        });
+    });
+
+    describe('tr (top-right) corner — opposite is bottom-left (500,100)', () => {
+        it('moves the top-right corner to new position', () => {
+            // Drag tr to (50, 700) → new box [50,100,500,700]
+            const result = resizedBbox(box, 'tr', 50, 700);
+            expect(result).toEqual([50, 100, 500, 700]);
+        });
+
+        it('clamps x_max to 1000', () => {
+            const result = resizedBbox(box, 'tr', 50, 1200);
+            expect(result[3]).toBe(1000);
+        });
+
+        it('cross-over: dragging past the fixed x (x_min=100) swaps x columns', () => {
+            // Drag tr to (50, 50) — x=50 is left of fixed x_min=100
+            // → x sorted: min(100,50)=50, max(100,50)=100
+            const result = resizedBbox(box, 'tr', 50, 50);
+            expect(result[1]).toBe(50);
+            expect(result[3]).toBe(100);
+        });
+    });
+
+    describe('bl (bottom-left) corner — opposite is top-right (100,500)', () => {
+        it('moves the bottom-left corner to new position', () => {
+            // Drag bl to (700, 50) → new box [100,50,700,500]
+            const result = resizedBbox(box, 'bl', 700, 50);
+            expect(result).toEqual([100, 50, 700, 500]);
+        });
+
+        it('cross-over: dragging y above top flips y rows', () => {
+            // Drag bl to (50, 50) — y=50 is above fixed y_min=100
+            // → y sorted: min(100,50)=50, max(100,50)=100
+            const result = resizedBbox(box, 'bl', 50, 50);
+            expect(result[0]).toBe(50);
+            expect(result[2]).toBe(100);
+        });
+    });
+
+    describe('br (bottom-right) corner — opposite is top-left (100,100)', () => {
+        it('moves the bottom-right corner to new position', () => {
+            // Drag br to (700, 700) → new box [100,100,700,700]
+            const result = resizedBbox(box, 'br', 700, 700);
+            expect(result).toEqual([100, 100, 700, 700]);
+        });
+
+        it('clamps to [0,BBOX_MAX]', () => {
+            const result = resizedBbox(box, 'br', 1200, 1200);
+            expect(result[2]).toBe(1000);
+            expect(result[3]).toBe(1000);
+        });
+
+        it('cross-over past top-left produces sorted output', () => {
+            // Drag br to (50, 50) — past the fixed corner at (100,100)
+            // → sorted: y_min=50, x_min=50, y_max=100, x_max=100
+            const result = resizedBbox(box, 'br', 50, 50);
+            expect(result).toEqual([50, 50, 100, 100]);
+        });
+    });
+
+    it('result always has y_min <= y_max and x_min <= x_max regardless of corner or direction', () => {
+        const corners: Array<'tl' | 'tr' | 'bl' | 'br'> = ['tl', 'tr', 'bl', 'br'];
+        const positions = [
+            [0, 0], [1000, 1000], [50, 900], [900, 50],
+            [500, 500], [200, 800], [800, 200],
+        ];
+        for (const corner of corners) {
+            for (const [y, x] of positions) {
+                const result = resizedBbox(box, corner, y, x);
+                expect(result[0]).toBeLessThanOrEqual(result[2]);
+                expect(result[1]).toBeLessThanOrEqual(result[3]);
+                expect(result[0]).toBeGreaterThanOrEqual(0);
+                expect(result[1]).toBeGreaterThanOrEqual(0);
+                expect(result[2]).toBeLessThanOrEqual(1000);
+                expect(result[3]).toBeLessThanOrEqual(1000);
+            }
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 5. BboxOverlayComponent — render + select + handle render
 // ---------------------------------------------------------------------------
 
 describe('BboxOverlayComponent', () => {
@@ -221,4 +394,88 @@ describe('BboxOverlayComponent', () => {
         }
         expect(emitted).toEqual([]);
     });
+
+    // -------------------------------------------------------------------------
+    // Handle rendering (jsdom-compatible: checks presence in DOM, not pixel pos)
+    // -------------------------------------------------------------------------
+
+    it('renders four corner handles only for the selected box', () => {
+        const fixture: ComponentFixture<BboxOverlayComponent> = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [
+            { id: 'a', bbox: [100, 100, 500, 500] },
+            { id: 'b', bbox: [600, 200, 900, 800] },
+        ]);
+        fixture.componentRef.setInput('selectedId', 'a');
+        fixture.detectChanges();
+
+        // All four handles present for box 'a'
+        expect(fixture.nativeElement.querySelectorAll('[data-testid="bbox-handle-tl"]').length).toBe(1);
+        expect(fixture.nativeElement.querySelectorAll('[data-testid="bbox-handle-tr"]').length).toBe(1);
+        expect(fixture.nativeElement.querySelectorAll('[data-testid="bbox-handle-bl"]').length).toBe(1);
+        expect(fixture.nativeElement.querySelectorAll('[data-testid="bbox-handle-br"]').length).toBe(1);
+    });
+
+    it('renders no handles when no box is selected', () => {
+        const fixture: ComponentFixture<BboxOverlayComponent> = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [
+            { id: 'a', bbox: [100, 100, 500, 500] },
+        ]);
+        fixture.componentRef.setInput('selectedId', null);
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelectorAll('[data-testid^="bbox-handle-"]').length).toBe(0);
+    });
+
+    it('switches handles to the newly selected box when selectedId changes', () => {
+        const fixture: ComponentFixture<BboxOverlayComponent> = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [
+            { id: 'a', bbox: [100, 100, 500, 500] },
+            { id: 'b', bbox: [600, 200, 900, 800] },
+        ]);
+        fixture.componentRef.setInput('selectedId', 'a');
+        fixture.detectChanges();
+
+        // Initially handles on box 'a' — 4 handles total
+        expect(fixture.nativeElement.querySelectorAll('[data-testid^="bbox-handle-"]').length).toBe(4);
+
+        // Select box 'b'
+        fixture.componentRef.setInput('selectedId', 'b');
+        fixture.detectChanges();
+
+        // Still 4 handles total (now on box 'b')
+        expect(fixture.nativeElement.querySelectorAll('[data-testid^="bbox-handle-"]').length).toBe(4);
+    });
+
+    // -------------------------------------------------------------------------
+    // boxChanged via helpers — pointer-drag emit exercised via helper math
+    // (jsdom getBoundingClientRect returns zero-rect so DOM drag can't be tested)
+    // -------------------------------------------------------------------------
+
+    it('movedBbox helper produces correct y-first clamped output (unit integration)', () => {
+        // Validates the exact math that onPointerMove / onPointerUp call
+        const orig = [200, 100, 500, 400]; // h=300, w=300
+        const moved = movedBbox(orig, 50, 100);
+        expect(moved).toEqual([250, 200, 550, 500]);
+        // Width/height preserved
+        expect(moved[2] - moved[0]).toBe(orig[2] - orig[0]);
+        expect(moved[3] - moved[1]).toBe(orig[3] - orig[1]);
+    });
+
+    it('resizedBbox helper produces sorted clamped output for all corners (unit integration)', () => {
+        const orig = [100, 100, 500, 500];
+        // br drag to (800, 800)
+        expect(resizedBbox(orig, 'br', 800, 800)).toEqual([100, 100, 800, 800]);
+        // tl drag to (0, 0)
+        expect(resizedBbox(orig, 'tl', 0, 0)).toEqual([0, 0, 500, 500]);
+        // Cross-over: tl dragged past br
+        const crossed = resizedBbox(orig, 'tl', 700, 700);
+        expect(crossed[0]).toBeLessThanOrEqual(crossed[2]);
+        expect(crossed[1]).toBeLessThanOrEqual(crossed[3]);
+    });
+
+    // NOTE: Full pointer-drag → boxChanged emit path cannot be exercised in jsdom
+    // because getBoundingClientRect() always returns zero-sized rects, causing
+    // imgW/imgH === 0 guards to short-circuit both move and resize emission.
+    // The pure-helper tests above validate the geometry math directly.
+    // E2E / Playwright tests would cover the full interaction path.
 });

@@ -2,7 +2,8 @@
  * bbox-overlay.ts
  *
  * Overlay component that draws bounding boxes over an image and supports
- * selection and rubber-band draw mode.
+ * selection, rubber-band draw mode, MOVE (drag interior), and RESIZE
+ * (drag corner handles on the selected box).
  *
  * Coordinate convention (mirrors backend ideogram4 schema):
  *   All bboxes are y-first, normalized 0–1000:
@@ -78,6 +79,68 @@ export function normToPx(
     };
 }
 
+/**
+ * Translate a y-first bbox by (dyNorm, dxNorm) in normalized units.
+ * The box retains its original width/height and is clamped so it stays within [0, BBOX_MAX].
+ *
+ * @param bbox    [y_min, x_min, y_max, x_max] normalized 0–BBOX_MAX
+ * @param dyNorm  Delta in y (normalized), positive = down
+ * @param dxNorm  Delta in x (normalized), positive = right
+ * @returns new [y_min, x_min, y_max, x_max] clamped so both corners stay in [0, BBOX_MAX]
+ */
+export function movedBbox(bbox: number[], dyNorm: number, dxNorm: number): number[] {
+    const [y_min, x_min, y_max, x_max] = bbox;
+    const h = y_max - y_min;
+    const w = x_max - x_min;
+
+    // Translate then clamp the leading edge and adjust the trailing edge accordingly
+    let ny_min = Math.max(0, Math.min(BBOX_MAX - h, y_min + dyNorm));
+    let nx_min = Math.max(0, Math.min(BBOX_MAX - w, x_min + dxNorm));
+
+    // Round to integers (same convention as pxToNorm)
+    ny_min = Math.round(ny_min);
+    nx_min = Math.round(nx_min);
+
+    return [ny_min, nx_min, Math.min(BBOX_MAX, ny_min + h), Math.min(BBOX_MAX, nx_min + w)];
+}
+
+/**
+ * Resize a y-first bbox by dragging one corner.
+ * The opposite corner stays fixed; the dragged corner moves to (yNorm, xNorm).
+ * Output is sorted so y_min < y_max and x_min < x_max (cross-over flip handled),
+ * and all values are clamped to [0, BBOX_MAX].
+ *
+ * @param bbox    original [y_min, x_min, y_max, x_max]
+ * @param corner  which corner is being dragged: 'tl'|'tr'|'bl'|'br'
+ * @param yNorm   new y of the dragged corner (normalized 0–BBOX_MAX)
+ * @param xNorm   new x of the dragged corner (normalized 0–BBOX_MAX)
+ * @returns new [y_min, x_min, y_max, x_max] sorted and clamped
+ */
+export function resizedBbox(
+    bbox: number[],
+    corner: 'tl' | 'tr' | 'bl' | 'br',
+    yNorm: number,
+    xNorm: number,
+): number[] {
+    const clamp = (v: number) => Math.max(0, Math.min(BBOX_MAX, Math.round(v)));
+    const cy = clamp(yNorm);
+    const cx = clamp(xNorm);
+
+    const [y_min, x_min, y_max, x_max] = bbox;
+
+    // Fixed corner depends on which handle is being dragged
+    let ay: number, ax: number, by: number, bx: number;
+    switch (corner) {
+        case 'tl': { ay = cy; ax = cx; by = y_max; bx = x_max; break; }
+        case 'tr': { ay = cy; ax = x_min; by = y_max; bx = cx; break; }
+        case 'bl': { ay = y_min; ax = cx; by = cy; bx = x_max; break; }
+        case 'br': { ay = y_min; ax = x_min; by = cy; bx = cx; break; }
+    }
+
+    // Sort so y_min < y_max and x_min < x_max (cross-over flip)
+    return [Math.min(ay, by), Math.min(ax, bx), Math.max(ay, by), Math.max(ax, bx)];
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -86,6 +149,13 @@ export interface BboxItem {
     id: string;
     bbox: number[]; // [y_min, x_min, y_max, x_max] 0–1000
 }
+
+/** What kind of drag is in progress. */
+type DragMode =
+    | { kind: 'none' }
+    | { kind: 'draw' }
+    | { kind: 'move'; id: string; origBbox: number[]; startY: number; startX: number; imgW: number; imgH: number }
+    | { kind: 'resize'; id: string; origBbox: number[]; corner: 'tl' | 'tr' | 'bl' | 'br'; imgW: number; imgH: number };
 
 interface DrawState {
     startX: number; // image-relative X at pointerdown
@@ -96,6 +166,9 @@ interface DrawState {
     imgW: number;  // rendered image width captured at pointerdown
     imgH: number;  // rendered image height captured at pointerdown
 }
+
+/** Size of corner resize handles in pixels (visual + hit area). */
+const HANDLE_PX = 8;
 
 @Component({
     selector: 'app-bbox-overlay',
@@ -116,6 +189,7 @@ interface DrawState {
             border-color: #f6e05e;
             border-width: 2px;
             box-shadow: 0 0 0 1px rgba(246, 224, 94, 0.4);
+            cursor: move;
         }
         .bbox-box:hover {
             border-color: rgba(144, 205, 244, 1);
@@ -140,6 +214,21 @@ interface DrawState {
             display: inline-block;
             width: 100%;
         }
+        .bbox-handle {
+            position: absolute;
+            width: ${HANDLE_PX}px;
+            height: ${HANDLE_PX}px;
+            background: #f6e05e;
+            border: 1px solid rgba(0,0,0,0.4);
+            box-sizing: border-box;
+            border-radius: 2px;
+            pointer-events: auto;
+            z-index: 10;
+        }
+        .bbox-handle-tl { top: -${HANDLE_PX / 2}px; left: -${HANDLE_PX / 2}px; cursor: nwse-resize; }
+        .bbox-handle-tr { top: -${HANDLE_PX / 2}px; right: -${HANDLE_PX / 2}px; cursor: nesw-resize; }
+        .bbox-handle-bl { bottom: -${HANDLE_PX / 2}px; left: -${HANDLE_PX / 2}px; cursor: nesw-resize; }
+        .bbox-handle-br { bottom: -${HANDLE_PX / 2}px; right: -${HANDLE_PX / 2}px; cursor: nwse-resize; }
     `],
     template: `
         <div
@@ -169,7 +258,31 @@ interface DrawState {
                     data-testid="bbox-box"
                     [attr.data-bbox-id]="box.id"
                     (click)="onBoxClick($event, box.id)"
-                ></div>
+                    (pointerdown)="onBoxPointerDown($event, box.id, box.bbox)"
+                >
+                    @if (box.id === selectedId()) {
+                        <div
+                            class="bbox-handle bbox-handle-tl"
+                            data-testid="bbox-handle-tl"
+                            (pointerdown)="onHandlePointerDown($event, box.id, box.bbox, 'tl')"
+                        ></div>
+                        <div
+                            class="bbox-handle bbox-handle-tr"
+                            data-testid="bbox-handle-tr"
+                            (pointerdown)="onHandlePointerDown($event, box.id, box.bbox, 'tr')"
+                        ></div>
+                        <div
+                            class="bbox-handle bbox-handle-bl"
+                            data-testid="bbox-handle-bl"
+                            (pointerdown)="onHandlePointerDown($event, box.id, box.bbox, 'bl')"
+                        ></div>
+                        <div
+                            class="bbox-handle bbox-handle-br"
+                            data-testid="bbox-handle-br"
+                            (pointerdown)="onHandlePointerDown($event, box.id, box.bbox, 'br')"
+                        ></div>
+                    }
+                </div>
             }
 
             @if (draw().active) {
@@ -192,12 +305,11 @@ export class BboxOverlayComponent {
     // Outputs
     readonly boxAdded = output<number[]>();
     readonly boxSelected = output<string>();
-    // TODO (v2): emit on drag-resize; declared now for stable public contract
     readonly boxChanged = output<{ id: string; bbox: number[] }>();
 
     @ViewChild('imgEl') private imgEl?: ElementRef<HTMLImageElement>;
 
-    // Internal draw state
+    // Internal draw state (rubber-band)
     protected readonly draw = signal<DrawState>({
         startX: 0,
         startY: 0,
@@ -207,6 +319,12 @@ export class BboxOverlayComponent {
         imgW: 0,
         imgH: 0,
     });
+
+    // Current drag mode (move / resize / draw / none)
+    private dragMode: DragMode = { kind: 'none' };
+
+    // Track whether a meaningful drag happened (to distinguish click-to-select from drag-to-move)
+    private dragMoved = false;
 
     /**
      * Compute CSS style for a normalized bbox div.
@@ -272,11 +390,73 @@ export class BboxOverlayComponent {
         };
     }
 
+    // ---------------------------------------------------------------------------
+    // Box + handle pointer events (move / resize)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Called when the user presses a pointer button down on an existing box interior.
+     * Begins a potential move drag.
+     */
+    protected onBoxPointerDown(e: PointerEvent, id: string, bbox: number[]): void {
+        // Prevent the container's onPointerDown from also starting a draw
+        e.stopPropagation();
+        const offset = this.pointerOffset(e);
+        if (!offset) return;
+
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        this.dragMoved = false;
+        this.dragMode = {
+            kind: 'move',
+            id,
+            origBbox: [...bbox],
+            startY: offset.y,
+            startX: offset.x,
+            imgW: offset.imgW,
+            imgH: offset.imgH,
+        };
+    }
+
+    /**
+     * Called when the user presses a pointer button down on a corner resize handle.
+     * Begins a resize drag.
+     */
+    protected onHandlePointerDown(
+        e: PointerEvent,
+        id: string,
+        bbox: number[],
+        corner: 'tl' | 'tr' | 'bl' | 'br',
+    ): void {
+        e.stopPropagation();
+        const offset = this.pointerOffset(e);
+        if (!offset) return;
+
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        this.dragMoved = false;
+        this.dragMode = {
+            kind: 'resize',
+            id,
+            origBbox: [...bbox],
+            corner,
+            imgW: offset.imgW,
+            imgH: offset.imgH,
+        };
+    }
+
+    // ---------------------------------------------------------------------------
+    // Container pointer events (draw + move/resize forwarding)
+    // ---------------------------------------------------------------------------
+
     protected onPointerDown(e: PointerEvent): void {
+        // Move/resize start from onBoxPointerDown / onHandlePointerDown — don't
+        // accidentally start a draw when the mode is already set.
+        if (this.dragMode.kind !== 'none') return;
+
         if (!this.drawEnabled()) return;
         const offset = this.pointerOffset(e);
         if (!offset) return;
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        this.dragMode = { kind: 'draw' };
         this.draw.set({
             startX: offset.x,
             startY: offset.y,
@@ -289,28 +469,99 @@ export class BboxOverlayComponent {
     }
 
     protected onPointerMove(e: PointerEvent): void {
-        const d = this.draw();
-        if (!d.active) return;
-        const offset = this.pointerOffset(e);
-        if (!offset) return;
-        this.draw.set({ ...d, curX: offset.x, curY: offset.y });
+        const mode = this.dragMode;
+
+        if (mode.kind === 'draw') {
+            const d = this.draw();
+            if (!d.active) return;
+            const offset = this.pointerOffset(e);
+            if (!offset) return;
+            this.draw.set({ ...d, curX: offset.x, curY: offset.y });
+            return;
+        }
+
+        if (mode.kind === 'move') {
+            const offset = this.pointerOffset(e);
+            if (!offset || mode.imgW === 0 || mode.imgH === 0) return;
+            this.dragMoved = true;
+            const dyNorm = ((offset.y - mode.startY) / mode.imgH) * BBOX_MAX;
+            const dxNorm = ((offset.x - mode.startX) / mode.imgW) * BBOX_MAX;
+            const newBbox = movedBbox(mode.origBbox, dyNorm, dxNorm);
+            // Update the live bbox on the box so boxStyle re-renders it
+            this._updateLiveBbox(mode.id, newBbox);
+            return;
+        }
+
+        if (mode.kind === 'resize') {
+            const offset = this.pointerOffset(e);
+            if (!offset || mode.imgW === 0 || mode.imgH === 0) return;
+            this.dragMoved = true;
+            const yNorm = (offset.y / mode.imgH) * BBOX_MAX;
+            const xNorm = (offset.x / mode.imgW) * BBOX_MAX;
+            const newBbox = resizedBbox(mode.origBbox, mode.corner, yNorm, xNorm);
+            this._updateLiveBbox(mode.id, newBbox);
+            return;
+        }
     }
 
     protected onPointerUp(e: PointerEvent): void {
-        const d = this.draw();
-        if (!d.active) return;
-        const offset = this.pointerOffset(e);
-        if (offset) {
-            this.finalizeDraw(d, offset.x, offset.y);
+        const mode = this.dragMode;
+
+        if (mode.kind === 'draw') {
+            const d = this.draw();
+            if (d.active) {
+                const offset = this.pointerOffset(e);
+                if (offset) {
+                    this.finalizeDraw(d, offset.x, offset.y);
+                }
+                this.draw.set({ ...d, active: false });
+            }
+            this.dragMode = { kind: 'none' };
+            return;
         }
-        this.draw.set({ ...d, active: false });
+
+        if (mode.kind === 'move') {
+            if (this.dragMoved) {
+                const offset = this.pointerOffset(e);
+                if (offset && mode.imgW > 0 && mode.imgH > 0) {
+                    const dyNorm = ((offset.y - mode.startY) / mode.imgH) * BBOX_MAX;
+                    const dxNorm = ((offset.x - mode.startX) / mode.imgW) * BBOX_MAX;
+                    const newBbox = movedBbox(mode.origBbox, dyNorm, dxNorm);
+                    this.boxChanged.emit({ id: mode.id, bbox: newBbox });
+                }
+            }
+            this.dragMode = { kind: 'none' };
+            this.dragMoved = false;
+            return;
+        }
+
+        if (mode.kind === 'resize') {
+            if (this.dragMoved) {
+                const offset = this.pointerOffset(e);
+                if (offset && mode.imgW > 0 && mode.imgH > 0) {
+                    const yNorm = (offset.y / mode.imgH) * BBOX_MAX;
+                    const xNorm = (offset.x / mode.imgW) * BBOX_MAX;
+                    const newBbox = resizedBbox(mode.origBbox, mode.corner, yNorm, xNorm);
+                    this.boxChanged.emit({ id: mode.id, bbox: newBbox });
+                }
+            }
+            this.dragMode = { kind: 'none' };
+            this.dragMoved = false;
+            return;
+        }
     }
 
     protected onPointerLeave(e: PointerEvent): void {
-        const d = this.draw();
-        if (!d.active) return;
-        // Cancel rubber-band; user released outside the container
-        this.draw.set({ ...d, active: false });
+        const mode = this.dragMode;
+        if (mode.kind === 'draw') {
+            const d = this.draw();
+            if (d.active) {
+                this.draw.set({ ...d, active: false });
+            }
+            this.dragMode = { kind: 'none' };
+        }
+        // For move/resize, pointer capture keeps events flowing even outside the
+        // container, so we do NOT cancel on pointerleave.
     }
 
     private finalizeDraw(
@@ -339,7 +590,38 @@ export class BboxOverlayComponent {
 
     protected onBoxClick(e: MouseEvent, id: string): void {
         e.stopPropagation();
-        this.boxSelected.emit(id);
+        // Only emit select if this was a pure click (no drag movement)
+        if (!this.dragMoved) {
+            this.boxSelected.emit(id);
+        }
     }
 
+    /**
+     * Temporarily update the live bbox of a box during drag so boxStyle()
+     * re-renders it. We mutate the array reference on the BboxItem directly
+     * since Angular passes objects by reference; for OnPush this is sufficient
+     * with markForCheck(). To avoid importing ChangeDetectorRef we rely on the
+     * signal update pattern: store a live-override signal map keyed by id.
+     *
+     * NOTE: This is a best-effort visual feedback mechanism during drag.
+     * The authoritative state lives in the parent component which receives
+     * boxChanged on pointerup. The boxes() input array is readonly from the
+     * parent's perspective, so live-preview during drag simply mutates the
+     * referenced bbox array (which Angular @for tracks by box.id, not by
+     * bbox value). The parent will replace the array on boxChanged anyway.
+     */
+    private _updateLiveBbox(id: string, newBbox: number[]): void {
+        const list = this.boxes();
+        for (const box of list) {
+            if (box.id === id) {
+                // Mutate in-place so boxStyle() picks up the new coords on next
+                // change detection tick. For OnPush this is triggered by the
+                // parent's signal update or by our draw signal mutation below.
+                box.bbox.splice(0, 4, ...newBbox);
+                // Nudge the draw signal to trigger change detection in this OnPush component
+                this.draw.set({ ...this.draw() });
+                break;
+            }
+        }
+    }
 }

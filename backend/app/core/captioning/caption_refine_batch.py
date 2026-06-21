@@ -113,6 +113,11 @@ def run_caption_refine_batch(
         logger.warning("refine_caption_target_unresolved", definition_id=definition_id)
         cap_target = None
 
+    # Resolve the caption format ONCE for structured-output validation/normalisation.
+    from app.core.captioning.formats import get_caption_format_for_definition
+
+    fmt = get_caption_format_for_definition(definition_id)
+
     async def _run() -> None:
         ok = 0
         failed = 0
@@ -121,7 +126,9 @@ def run_caption_refine_batch(
                 break
             stem = Path(rel).stem
             masked = target == "masked"
-            source = caption_variants.resolve_caption(ds_path, stem, None, masked=masked)
+            source = caption_variants.resolve_caption(
+                ds_path, stem, None, masked=masked
+            )
             system_prompt = (
                 caption_refine.build_refine_system_prompt(cap_target, preset, style)
                 if cap_target is not None
@@ -131,12 +138,25 @@ def run_caption_refine_batch(
                 refined = await caption_refine.refine_caption(
                     client, model, source, preset, system_prompt=system_prompt
                 )
-                caption_suggestions.write_suggestion(ds_path, definition_id, stem, refined, masked=masked)
+                if fmt.is_structured:
+                    if not fmt.detect(refined):
+                        logger.warning("refine_structured_parse_failed", rel=rel)
+                        failed += 1
+                        task_manager.update(
+                            task_id, current=i + 1, item=rel, ok=ok, failed=failed
+                        )
+                        continue
+                    refined = fmt.serialize(fmt.parse_and_normalize(refined))
+                caption_suggestions.write_suggestion(
+                    ds_path, definition_id, stem, refined, masked=masked
+                )
                 ok += 1
                 if auto_accept:
                     # Promote straight to the live variant (snapshot + clear the
                     # suggestion) — no review step — and notify the grid/editor.
-                    caption_suggestions.accept_suggestion(ds_path, definition_id, stem, masked=masked)
+                    caption_suggestions.accept_suggestion(
+                        ds_path, definition_id, stem, masked=masked
+                    )
                     _emit_variant_written(
                         dataset_name=dataset_name,
                         stem=stem,

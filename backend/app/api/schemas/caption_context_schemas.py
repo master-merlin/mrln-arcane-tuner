@@ -6,9 +6,15 @@ from pydantic import BaseModel, Field
 
 class DefinitionRef(BaseModel):
     """Lightweight definition entry for the top-bar selector."""
+
     id: str
     family: str
     name: str
+    # Structured caption format key for this definition's family ("plain" =
+    # flat text/tags; "ideogram4_json" = structured). Drives the frontend's
+    # model-aware structured editor swap, so it MUST be served on this
+    # selector route (not only the training definition list).
+    caption_format: str = "plain"
 
 
 class TokenCountRequest(BaseModel):

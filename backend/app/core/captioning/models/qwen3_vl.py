@@ -135,6 +135,7 @@ class Qwen3VLModel(CaptionModel):
         top_p = params.get("top_p", 0.8)
         num_beams = params.get("num_beams", 1)
         repetition_penalty = params.get("repetition_penalty", 1.2)
+        min_new_tokens = params.get("min_new_tokens")
 
         is_thinking = "Thinking" in variant
 
@@ -205,6 +206,8 @@ class Qwen3VLModel(CaptionModel):
             "pad_token_id": self.processor.tokenizer.pad_token_id,
             "repetition_penalty": repetition_penalty,
         }
+        if min_new_tokens:
+            gen_kwargs["min_new_tokens"] = int(min_new_tokens)
 
         if num_beams > 1:
             # Beam search mode - do_sample must be False
@@ -258,6 +261,7 @@ class Qwen3VLModel(CaptionModel):
         top_p = params.get("top_p", 0.8)
         num_beams = params.get("num_beams", 1)
         repetition_penalty = params.get("repetition_penalty", 1.2)
+        min_new_tokens = params.get("min_new_tokens")
         is_thinking = "Thinking" in variant
 
         max_long_side = int(params.get("max_long_side", DEFAULT_MAX_LONG_SIDE))
@@ -300,6 +304,8 @@ class Qwen3VLModel(CaptionModel):
             "pad_token_id": self.processor.tokenizer.pad_token_id,
             "repetition_penalty": repetition_penalty,
         }
+        if min_new_tokens:
+            gen_kwargs["min_new_tokens"] = int(min_new_tokens)
         if num_beams > 1:
             gen_kwargs["num_beams"] = num_beams
             gen_kwargs["do_sample"] = False

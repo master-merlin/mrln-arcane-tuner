@@ -49,7 +49,7 @@ def provider_from_model_id(model_id: str) -> str | None:
     """Map an ``api-*`` caption model id to its provider name, else None."""
     if not model_id.startswith(API_MODEL_PREFIX):
         return None
-    provider = model_id[len(API_MODEL_PREFIX):]
+    provider = model_id[len(API_MODEL_PREFIX) :]
     return provider if provider in PROVIDER_BASE_URLS else None
 
 
@@ -74,6 +74,7 @@ def chat_vision(
     timeout: float = 120.0,
     transport: httpx.BaseTransport | None = None,
     should_abort: Callable[[], bool] | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """POST a text+image(s) chat completion and return the caption.
 
@@ -104,6 +105,8 @@ def chat_vision(
         "top_p": top_p,
         "max_tokens": max_tokens,
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
 
     last_error: Exception | None = None
     with httpx.Client(timeout=timeout, transport=transport) as client:
@@ -113,16 +116,14 @@ def chat_vision(
                 resp = client.post(url, json=payload, headers=_headers(api_key))
                 if resp.status_code == 429 or resp.status_code >= 500:
                     raise _RetryableHTTPError(
-                        resp.status_code, resp.headers.get("retry-after"))
+                        resp.status_code, resp.headers.get("retry-after")
+                    )
                 if resp.status_code >= 400:
                     snippet = resp.text[:300]
-                    raise RuntimeError(
-                        f"Provider error {resp.status_code}: {snippet}")
+                    raise RuntimeError(f"Provider error {resp.status_code}: {snippet}")
                 body = resp.json()
                 content = (
-                    (body.get("choices") or [{}])[0]
-                    .get("message", {})
-                    .get("content")
+                    (body.get("choices") or [{}])[0].get("message", {}).get("content")
                 )
                 if not content or not content.strip():
                     raise RuntimeError("Provider returned an empty caption.")
@@ -139,8 +140,11 @@ def chat_vision(
                     except ValueError:
                         pass
                 logger.warning(
-                    "api_caption_retry", attempt=attempt + 1, delay=delay,
-                    error=str(exc))
+                    "api_caption_retry",
+                    attempt=attempt + 1,
+                    delay=delay,
+                    error=str(exc),
+                )
                 # Sleep in ≤1s slices so cancellation is honoured mid-backoff.
                 remaining = delay
                 while remaining > 0:

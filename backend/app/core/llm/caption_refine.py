@@ -50,7 +50,9 @@ _OPERATION_INTENT: dict[str, dict[str, str]] = {
     },
 }
 
-_PRESERVE = "Preserve every concept and all meaning; do NOT add, remove, or invent concepts. "
+_PRESERVE = (
+    "Preserve every concept and all meaning; do NOT add, remove, or invent concepts. "
+)
 _RETURN_ONLY = "Return ONLY the rewritten caption with no preamble."
 
 
@@ -66,14 +68,32 @@ def caption_style_for(target: CaptionTarget) -> str:
     return STYLE_NATURAL
 
 
-def build_refine_system_prompt(target: CaptionTarget, preset: str, style: str = "auto") -> str:
+def build_refine_system_prompt(
+    target: CaptionTarget, preset: str, style: str = "auto"
+) -> str:
     """Build a model-aware refine system prompt.
 
     ``style`` is ``"auto"`` (derive from the model), ``"tags"``, or
     ``"natural_language"`` (explicit user override). The model's usable token
     budget is baked in so the LLM targets the right length for that encoder.
+
+    When the target's family has a structured :class:`CaptionFormat`, delegates
+    to ``fmt.build_refine_prompt`` so structured captions (e.g. Ideogram 4 JSON)
+    get a schema-preserving instruction instead of a plain prose/tag prompt.
     """
-    effective = style if style in (STYLE_TAGS, STYLE_NATURAL) else caption_style_for(target)
+    from app.core.captioning.formats import (
+        get_caption_format,
+    )  # lazy – avoids circular import
+
+    fmt = get_caption_format(target.family)
+    if fmt.is_structured:
+        structured = fmt.build_refine_prompt(target, {})
+        if structured:
+            return structured
+
+    effective = (
+        style if style in (STYLE_TAGS, STYLE_NATURAL) else caption_style_for(target)
+    )
     budget = target.usable_limit
     operation = _OPERATION_INTENT.get(preset, {}).get(effective, "")
 

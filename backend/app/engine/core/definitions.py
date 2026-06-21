@@ -57,6 +57,8 @@ class ModelFamily(ABC):
     Abstract Base Class for a Model Logic Provider.
     """
     family_id: str
+    # Structured caption format id for this family ("plain" = flat text/tags).
+    caption_format: str = "plain"
 
     def __init__(self, definition: ModelDefinition, config: dict[str, Any]):
         self.definition = definition

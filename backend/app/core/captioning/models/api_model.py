@@ -65,6 +65,7 @@ class ApiCaptionModel(CaptionModel):
             from app.core.captioning.models.base import MULTI_IMAGE_INSTRUCTION
 
             prompt = MULTI_IMAGE_INSTRUCTION
+        response_format = params.get("response_format")
         return chat_vision(
             base_url=cfg.base_url,
             api_key=cfg.api_key,
@@ -76,6 +77,7 @@ class ApiCaptionModel(CaptionModel):
             top_p=float(params.get("top_p", 1.0)),
             max_tokens=int(params.get("max_tokens", 512)),
             should_abort=params.get("_should_abort"),
+            response_format=response_format,
         )
 
     def generate_video(self, frames: list[Image.Image], params: dict) -> str:

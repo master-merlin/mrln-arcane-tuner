@@ -12,13 +12,15 @@ import { ModelContextStore } from '../../../../state/model-context.store';
 import { CaptionContextService, type TokenCountResult } from '../../../../services/caption-context.service';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 import { WebSocketService } from '../../../../services/websocket.service';
+import { detect } from './caption/ideogram-format';
+import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-editor';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'w-80 h-full flex flex-col' },
-    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent],
+    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
             <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
@@ -43,21 +45,30 @@ import { WebSocketService } from '../../../../services/websocket.service';
                     </div>
                 </div>
 
-                <!-- Textarea (with truncation overlay backdrop) -->
-                <div class="relative flex-1 min-h-0">
-                    @if (tokenInfo()?.will_truncate) {
-                        <div aria-hidden="true" data-testid="caption-overflow-backdrop"
-                             class="absolute inset-0 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-auto pointer-events-none text-text-secondary">
-                            <span>{{ captionHead() }}</span><span class="text-danger opacity-60">{{ captionOverflow() }}</span>
-                        </div>
+                <!-- Textarea or structured editor (with truncation overlay backdrop) -->
+                <div class="relative flex-1 min-h-0 overflow-y-auto">
+                    @if (useStructuredEditor()) {
+                        <app-ideogram-caption-editor
+                            data-testid="structured-editor"
+                            [(value)]="captionText"
+                            (valueChange)="onCaptionChange()"
+                            [imageUrl]="currentImageUrl()"
+                        />
+                    } @else {
+                        @if (tokenInfo()?.will_truncate) {
+                            <div aria-hidden="true" data-testid="caption-overflow-backdrop"
+                                 class="absolute inset-0 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-auto pointer-events-none text-text-secondary">
+                                <span>{{ captionHead() }}</span><span class="text-danger opacity-60">{{ captionOverflow() }}</span>
+                            </div>
+                        }
+                        <textarea
+                            [(ngModel)]="captionText"
+                            (ngModelChange)="onCaptionChange()"
+                            [class.text-transparent]="tokenInfo()?.will_truncate"
+                            class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
+                            placeholder="Enter caption for this image..."
+                        ></textarea>
                     }
-                    <textarea
-                        [(ngModel)]="captionText"
-                        (ngModelChange)="onCaptionChange()"
-                        [class.text-transparent]="tokenInfo()?.will_truncate"
-                        class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
-                        placeholder="Enter caption for this image..."
-                    ></textarea>
                 </div>
 
                 <!-- Token / char count — own row directly under the editor. -->
@@ -222,6 +233,18 @@ export class DetailCaptionSidebarComponent {
     protected variantMode = computed(() =>
         this.modelContext.modelAware() && !!this.modelContext.activeDefinitionId() && !this.showMasked());
 
+    /** True when all three conditions for the structured editor are met:
+     *  the active definition uses ideogram4_json format, the editor is in variant
+     *  mode, and the current caption text is valid ideogram4 structured JSON. */
+    protected useStructuredEditor = computed(() =>
+        this.modelContext.activeCaptionFormat() === 'ideogram4_json' &&
+        this.variantMode() &&
+        detect(this.captionText()));
+
+    /** Thumbnail URL for the current image — passed to the structured editor's bbox overlay. */
+    protected currentImageUrl = computed(() =>
+        this.datasetService.thumbnailUrl(this.datasetName(), this.currentPair().media_file));
+
     /** The text the load effect last published — the revert target in
      *  variant mode (where there's no `pair.caption_content` to fall back to). */
     private baseline = signal('');
@@ -385,13 +408,27 @@ export class DetailCaptionSidebarComponent {
             return;
         }
 
+        const isStructured = this.modelContext.activeCaptionFormat() !== 'plain';
+        const defId = this.modelContext.activeDefinitionId();
+        const captionInstructions = this.currentSettings.captionInstructions ?? '';
+
+        // Guard only controls whether caption_instructions is added to params.
+        // definition_id is passed independently as a top-level generateCaption()
+        // argument (matching GenerateCaptionRequest), so empty instructions still send it.
+        const enrichedParams = isStructured && captionInstructions
+            ? { ...this.currentSettings.params, caption_instructions: captionInstructions }
+            : this.currentSettings.params;
+
         this.isGeneratingCaption.set(true);
         this.datasetService.generateCaption(
             this.datasetName(),
             pair.media_file,
             this.currentSettings.resolvedModelId,
-            this.currentSettings.params,
-            this.currentSettings.resolvedSystemPrompt
+            enrichedParams,
+            this.currentSettings.resolvedSystemPrompt,
+            'original',
+            undefined,
+            isStructured && defId ? defId : undefined
         ).subscribe({
             next: (res) => {
                 this.suggestedCaption.set(res.caption);

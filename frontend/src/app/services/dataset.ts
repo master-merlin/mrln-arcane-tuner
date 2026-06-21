@@ -583,7 +583,7 @@ export class DatasetService {
       aspect_ratio: aspectRatio
     });
   }
-  generateCaption(datasetName: string, imagePath: string, modelId: string, params: Record<string, unknown>, systemPrompt?: string, target: string = 'original', extraImagePaths?: string[]): Observable<{ caption: string }> {
+  generateCaption(datasetName: string, imagePath: string, modelId: string, params: Record<string, unknown>, systemPrompt?: string, target: string = 'original', extraImagePaths?: string[], definitionId?: string): Observable<{ caption: string }> {
     return this.http.post<{ caption: string }>(`${this.rtc.apiUrl}/captions/generate`, {
       dataset_name: datasetName,
       image_rel_path: imagePath,
@@ -591,7 +591,8 @@ export class DatasetService {
       params: params,
       system_prompt: systemPrompt || params['system_prompt'] || null,
       target,
-      ...(extraImagePaths?.length ? { extra_image_paths: extraImagePaths } : {})
+      ...(extraImagePaths?.length ? { extra_image_paths: extraImagePaths } : {}),
+      ...(definitionId ? { definition_id: definitionId } : {})
     });
   }
 

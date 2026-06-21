@@ -9,6 +9,7 @@ class IdeogramV4Family(ModelFamily):
 
     family_name = "ideogram4"
     archetype = "latent_diffusion"
+    caption_format = "ideogram4_json"
 
     def get_trainer_class(self):
         return IdeogramV4Trainer

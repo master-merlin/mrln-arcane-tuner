@@ -48,6 +48,10 @@ class GenerateCaptionRequest(BaseModel):
     # Extra (e.g. control/"before") image rel-paths for two-image edit
     # captioning. Only honoured by multi-image-capable models.
     extra_image_paths: list[str] = []
+    # When set, resolves the definition's CaptionFormat and injects its
+    # generation prompt + overrides before captioning, then normalizes the
+    # returned string to the format's canonical representation.
+    definition_id: str | None = None
 
 
 @router.post("/generate", response_model=GenerateCaptionResponse)
@@ -75,7 +79,8 @@ async def generate_caption_api(request: GenerateCaptionRequest):
 
     dataset_root = Path(dataset.path)
     full_path = validate_path_within(
-        dataset_root / request.image_rel_path, dataset_root,
+        dataset_root / request.image_rel_path,
+        dataset_root,
     )
 
     # When target is "masked", remap to masked/{stem}.jpg
@@ -99,18 +104,35 @@ async def generate_caption_api(request: GenerateCaptionRequest):
             raise HTTPException(
                 status_code=400,
                 detail=f"Model '{request.model_id}' does not support multi-image "
-                       "captioning.",
+                "captioning.",
             )
         for rel in request.extra_image_paths:
             p = validate_path_within(dataset_root / rel, dataset_root)
             if not p.exists():
-                raise HTTPException(status_code=404, detail=f"Control image not found: {rel}")
+                raise HTTPException(
+                    status_code=404, detail=f"Control image not found: {rel}"
+                )
             extra_paths.append(str(p))
 
     try:
         params = request.params.copy()
         if request.system_prompt:
             params["system_prompt"] = request.system_prompt
+
+        # Resolve the definition's CaptionFormat (if provided) and inject
+        # its generation prompt + overrides before calling the captioner.
+        from app.core.captioning.formats import (
+            apply_generation_seam,
+            get_caption_format_for_definition,
+        )
+
+        caption_format = (
+            get_caption_format_for_definition(request.definition_id)
+            if request.definition_id
+            else None
+        )
+        if caption_format:
+            apply_generation_seam(params, caption_format, request.model_id)
 
         caption = await asyncio.to_thread(
             service.generate_caption,
@@ -119,6 +141,13 @@ async def generate_caption_api(request: GenerateCaptionRequest):
             params=params,
             extra_image_paths=extra_paths or None,
         )
+
+        # Normalize the raw caption through the format's parse + serialize
+        # so the returned string is always in canonical JSON form.
+        if caption_format and caption_format.is_structured:
+            caption = caption_format.serialize(
+                caption_format.parse_and_normalize(caption)
+            )
 
         # When target is "masked", auto-save caption alongside masked image
         if request.target == "masked":
@@ -163,7 +192,7 @@ async def unload_models_api():
         return {
             "status": "success",
             "message": "Unload skipped — a captioning batch is in progress; "
-                       "models are freed when it finishes.",
+            "models are freed when it finishes.",
         }
     try:
         logger.info("unloading_caption_models")
@@ -198,13 +227,14 @@ async def batch_caption_api(request: BatchCaptionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if request.include_control and not CaptionService.get_instance().supports_multi_image(
-        request.model_id
+    if (
+        request.include_control
+        and not CaptionService.get_instance().supports_multi_image(request.model_id)
     ):
         raise HTTPException(
             status_code=400,
             detail=f"Model '{request.model_id}' does not support multi-image "
-                   "captioning; disable 'include control' or pick a multi-image model.",
+            "captioning; disable 'include control' or pick a multi-image model.",
         )
 
     # Distinguish masked-caption runs in the Task Center — they target the
@@ -213,8 +243,10 @@ async def batch_caption_api(request: BatchCaptionRequest):
     kind = "Captioning (masked)" if request.target == "masked" else "Captioning"
     title = f"{kind} · {request.dataset_name}"
     task = task_manager.create(
-        type="caption_batch", title=title,
-        total=len(request.image_rel_paths), dataset_name=request.dataset_name,
+        type="caption_batch",
+        title=title,
+        total=len(request.image_rel_paths),
+        dataset_name=request.dataset_name,
         target=request.target,
     )
     task_manager.enqueue(

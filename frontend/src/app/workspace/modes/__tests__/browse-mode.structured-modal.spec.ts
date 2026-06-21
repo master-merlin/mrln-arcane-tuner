@@ -8,11 +8,13 @@
  */
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { of } from 'rxjs';
 import { BrowseMode } from '../browse-mode';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { DatasetUploadService } from '../../../services/dataset-upload.service';
+import { DatasetService } from '../../../services/dataset';
 import { ModelContextStore } from '../../../state/model-context.store';
 import { serialize, normalize } from '../../../components/dataset/dataset-viewer/components/caption/ideogram-format';
 import type { DatasetPair } from '../../../services/dataset';
@@ -67,15 +69,19 @@ const STRUCTURED_JSON = serialize(normalize({
 // Setup
 // ---------------------------------------------------------------------------
 
-function make() {
+function make(fetched: { text: string; has_variant: boolean } = { text: STRUCTURED_JSON, has_variant: true }) {
     const saveCaptionSpy = vi.fn();
     const uploadTargets = vi.fn();
+    // Backend variant fetch — openStructuredModal pulls the authoritative variant
+    // on open (the cached map can be stale right after a generation).
+    const getCaptionVariant = vi.fn().mockReturnValue(of(fetched));
     TestBed.configureTestingModule({
         providers: [
             { provide: OverlayStore, useClass: StubOverlay },
             { provide: MediaItemStore, useClass: StubMedia },
             { provide: RuntimeConfigService, useClass: StubRtc },
             { provide: DatasetUploadService, useValue: { uploadTargets } },
+            { provide: DatasetService, useValue: { getCaptionVariant } },
             { provide: ModelContextStore, useClass: StubModelContext },
         ],
     });
@@ -93,6 +99,7 @@ function make() {
     return {
         cmp: fixture.componentInstance as any,
         saveCaptionSpy,
+        getCaptionVariant,
         fixture,
     };
 }
@@ -149,5 +156,35 @@ describe('BrowseMode — structured modal wiring', () => {
         t.cmp.onModalCancel();
         expect(t.cmp.editingPair()).toBeNull();
         expect(t.saveCaptionSpy).not.toHaveBeenCalled();
+    });
+
+    it('opens seeded with the freshly fetched variant, not the (possibly stale) map', () => {
+        const FRESH = serialize(normalize({
+            high_level_description: 'Freshly generated.',
+            style_description: { aesthetics: 'a', lighting: 'l', medium: 'photograph', color_palette: [] },
+            compositional_deconstruction: { background: 'bg', elements: [] },
+        }));
+        // Map holds an OLD/empty value; backend returns the fresh one.
+        const t = make({ text: FRESH, has_variant: true });
+        t.fixture.componentRef.setInput('variantCaptions', { img1: '' });
+        const pair = makePair(); // no _variantCaption → must fetch
+        t.cmp.openStructuredModal(pair);
+        expect(t.getCaptionVariant).toHaveBeenCalledWith('ds', 'def1', 'img1');
+        expect(t.cmp.modalValue()).toBe(FRESH);
+        expect(t.cmp.editingPair()).toBeTruthy();
+    });
+
+    it('prefers an in-flight inline edit (_variantCaption) and does NOT fetch', () => {
+        const INFLIGHT = serialize(normalize({
+            high_level_description: 'Edited inline, not yet saved.',
+            style_description: { aesthetics: 'a', lighting: 'l', medium: 'photograph', color_palette: [] },
+            compositional_deconstruction: { background: 'bg', elements: [] },
+        }));
+        const t = make();
+        const pair = makePair();
+        (pair as GridPair)._variantCaption = INFLIGHT;
+        t.cmp.openStructuredModal(pair);
+        expect(t.getCaptionVariant).not.toHaveBeenCalled();
+        expect(t.cmp.modalValue()).toBe(INFLIGHT);
     });
 });

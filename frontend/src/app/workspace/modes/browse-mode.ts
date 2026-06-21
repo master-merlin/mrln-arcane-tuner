@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal } from '@angular/core';
 import { ViewerGridViewComponent, type GridCropRequest } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
-import type { DatasetPair } from '../../services/dataset';
+import { DatasetService, type DatasetPair } from '../../services/dataset';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -118,6 +118,7 @@ export class BrowseMode {
     protected mediaItems = inject(MediaItemStore);
     protected rtc = inject(RuntimeConfigService);
     private upload = inject(DatasetUploadService);
+    private datasets = inject(DatasetService);
 
     /** The pair currently open in the structured-caption modal, or null. */
     readonly editingPair = signal<GridPair | null>(null);
@@ -232,17 +233,44 @@ export class BrowseMode {
         return dot > 0 ? base.slice(0, dot) : base;
     }
 
-    /** Open the structured-caption modal for a pair. */
+    /** Open the structured-caption modal for a pair.
+     *
+     *  The modal seeds its working copy ONCE from the value present when it
+     *  mounts, so we must supply the correct JSON before setting editingPair
+     *  (which renders the modal). Priority:
+     *   1. An in-flight inline summary edit (`_variantCaption`) — never clobber it.
+     *   2. Otherwise fetch the authoritative variant from the backend and open
+     *      on the response. The cached variantCaptions map can be STALE right
+     *      after a fresh generation (which emits caption.written, not the
+     *      variant.written that triggers a map reload), so reading the map alone
+     *      opened the modal blank until a model-aware toggle forced a refetch.
+     */
     openStructuredModal(pair: GridPair): void {
-        // Guard: bail if media_file is missing.
         if (!pair?.media_file) return;
-        // Seed the modal with the pair's current variant JSON (may be in _variantCaption
-        // if the user already edited the summary inline; otherwise use variantCaptions map).
-        // Stem derivation must match the grid's variantKey logic.
         const stem = this.variantKey(pair);
-        const json = pair._variantCaption ?? this.variantCaptions()[stem] ?? '';
-        this.editingPair.set(pair);
-        this.modalValue.set(json);
+        const def = this.definitionId();
+        const inflight = pair._variantCaption;
+        if (inflight !== undefined && inflight !== null) {
+            this.modalValue.set(inflight);
+            this.editingPair.set(pair);
+            return;
+        }
+        const fallback = this.variantCaptions()[stem] ?? '';
+        if (!def) {
+            this.modalValue.set(fallback);
+            this.editingPair.set(pair);
+            return;
+        }
+        this.datasets.getCaptionVariant(this.datasetName(), def, stem).subscribe({
+            next: r => {
+                this.modalValue.set(r?.has_variant && r.text ? r.text : fallback);
+                this.editingPair.set(pair);
+            },
+            error: () => {
+                this.modalValue.set(fallback);
+                this.editingPair.set(pair);
+            },
+        });
     }
 
     /** Modal Save — route the full JSON through the variant save path and close. */

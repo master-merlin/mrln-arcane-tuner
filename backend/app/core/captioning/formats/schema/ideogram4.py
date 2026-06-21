@@ -97,6 +97,30 @@ def swap_bbox_xy(bbox: list) -> list:
     return [b, a, d, c]
 
 
+def swap_element_bboxes(data: dict) -> dict:
+    """Return a copy of *data* with every element's bbox x<->y swapped.
+
+    Used on the GENERATION ingest path only: captioner VLMs (Qwen3-VL et al.)
+    emit boxes x-first ``[x_min,y_min,x_max,y_max]`` regardless of the prompt,
+    but our canonical storage is y-first. Must NOT be applied to already-stored
+    captions (editor/refine round-trips), which are already y-first.
+    """
+    data = dict(data or {})
+    dec = data.get("compositional_deconstruction")
+    if not isinstance(dec, dict):
+        return data
+    elements = dec.get("elements")
+    if not isinstance(elements, list):
+        return data
+    new_elements = []
+    for el in elements:
+        if isinstance(el, dict) and isinstance(el.get("bbox"), (list, tuple)):
+            el = {**el, "bbox": swap_bbox_xy(list(el["bbox"]))}
+        new_elements.append(el)
+    data["compositional_deconstruction"] = {**dec, "elements": new_elements}
+    return data
+
+
 def _clamp_bbox(bbox) -> list | None:
     # Incoming bboxes are assumed y-first [y_min, x_min, y_max, x_max].
     # The generation prompt instructs the VLM to emit y-first, so normalize()

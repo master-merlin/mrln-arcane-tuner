@@ -142,12 +142,11 @@ async def generate_caption_api(request: GenerateCaptionRequest):
             extra_image_paths=extra_paths or None,
         )
 
-        # Normalize the raw caption through the format's parse + serialize
-        # so the returned string is always in canonical JSON form.
+        # Normalize the raw caption through the format's generation ingest
+        # (parse + bbox x->y swap + serialize) so the returned string is always
+        # in canonical JSON form with y-first bboxes.
         if caption_format and caption_format.is_structured:
-            caption = caption_format.serialize(
-                caption_format.parse_and_normalize(caption)
-            )
+            caption = caption_format.serialize(caption_format.ingest_generated(caption))
 
         # When target is "masked", auto-save caption alongside masked image
         if request.target == "masked":

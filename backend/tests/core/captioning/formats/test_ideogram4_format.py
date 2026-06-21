@@ -38,6 +38,53 @@ def test_parse_and_normalize_recovers_messy_json():
     assert data["compositional_deconstruction"]["background"] == "b"
 
 
+def test_ingest_generated_swaps_xfirst_bbox_to_yfirst():
+    # A captioner emits x-first [x_min,y_min,x_max,y_max]; the PAGANI-text case:
+    # x 386..636 (wide), y 175..225 (thin band near top).
+    raw = json.dumps(
+        {
+            "high_level_description": "x",
+            "compositional_deconstruction": {
+                "background": "b",
+                "elements": [
+                    {
+                        "type": "text",
+                        "text": "PAGANI",
+                        "bbox": [386, 175, 636, 225],
+                        "desc": "badge",
+                    }
+                ],
+            },
+        }
+    )
+    data = Ideogram4Format().ingest_generated(raw)
+    bb = data["compositional_deconstruction"]["elements"][0]["bbox"]
+    # Stored canonical y-first: [y_min, x_min, y_max, x_max].
+    assert bb == [175, 386, 225, 636]
+
+
+def test_parse_and_normalize_does_not_swap_bbox():
+    # Refine/editor round-trip on already-canonical y-first data must NOT swap.
+    raw = json.dumps(
+        {
+            "high_level_description": "x",
+            "compositional_deconstruction": {
+                "background": "b",
+                "elements": [
+                    {"type": "obj", "bbox": [175, 386, 225, 636], "desc": "d"}
+                ],
+            },
+        }
+    )
+    data = Ideogram4Format().parse_and_normalize(raw)
+    assert data["compositional_deconstruction"]["elements"][0]["bbox"] == [
+        175,
+        386,
+        225,
+        636,
+    ]
+
+
 def test_parse_and_normalize_wraps_garbage_in_skeleton():
     fmt = Ideogram4Format()
     data = fmt.parse_and_normalize("this is not json at all")

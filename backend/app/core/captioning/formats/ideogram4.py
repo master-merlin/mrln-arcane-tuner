@@ -15,9 +15,10 @@ style_description keys, in order: "aesthetics", "lighting", then for photographs
 
 compositional_deconstruction has "background" (string) and "elements" (array). \
 Each element has "type" ("obj" or "text"), an optional "bbox" as \
-[y_min, x_min, y_max, x_max] normalized 0-1000 (top-left origin), a "desc", a \
-"color_palette" of up to 5 UPPERCASE #RRGGBB colors, and "text" (the literal string) \
-for text elements. Describe every salient element."""
+[x_min, y_min, x_max, y_max] (left, top, right, bottom) normalized 0-1000 with \
+the origin at the top-left corner, a "desc", a "color_palette" of up to 5 \
+UPPERCASE #RRGGBB colors, and "text" (the literal string) for text elements. \
+Describe every salient element."""
 
 
 class Ideogram4Format(CaptionFormat):
@@ -64,6 +65,16 @@ class Ideogram4Format(CaptionFormat):
         if parsed is None:
             return ix.skeleton(raw)
         return ix.normalize(parsed)
+
+    def ingest_generated(self, raw: str) -> dict:
+        # Generation path: the captioner emits bboxes x-first
+        # [x_min,y_min,x_max,y_max]; swap to canonical y-first BEFORE normalize.
+        # (parse_and_normalize, used by refine/editor on already-y-first data,
+        # deliberately does NOT swap.)
+        parsed = ix.parse(raw)
+        if parsed is None:
+            return ix.skeleton(raw)
+        return ix.normalize(ix.swap_element_bboxes(parsed))
 
     def serialize(self, data: dict) -> str:
         return ix.serialize(data)

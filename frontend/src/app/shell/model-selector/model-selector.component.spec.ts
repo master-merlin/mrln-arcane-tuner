@@ -77,5 +77,20 @@ describe('ModelSelectorComponent', () => {
         expect(selectedFamily).toBe('flux1');
     });
 
+    it('refreshes a stale persisted definition (missing caption_format) from the fetched list', () => {
+        const { fixture, http, store } = setup();
+        store.setModelAware(true);
+        // Persisted before the backend served caption_format → stale object.
+        store.setDefinition({ id: 'ideogram4-fp8', family: 'ideogram4', name: 'Ideogram 4' });
+        expect(store.activeCaptionFormat()).toBe('plain');
+        fixture.detectChanges();
+        http.expectOne('/api/caption-context/definitions').flush([
+            { id: 'ideogram4-fp8', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' },
+        ]);
+        fixture.detectChanges();
+        // Self-healed: the active definition now carries the backend's format.
+        expect(store.activeCaptionFormat()).toBe('ideogram4_json');
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

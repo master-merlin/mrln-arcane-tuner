@@ -23,13 +23,21 @@ logger = get_logger(__name__)
 @router.get("/definitions", response_model=list[DefinitionRef])
 async def list_definitions() -> list[DefinitionRef]:
     """List registered model definitions (id, family, name) for the selector."""
+    from app.core.captioning.formats import get_caption_format_for_definition
     from app.engine.models.registry import registry
 
     out: list[DefinitionRef] = []
     for def_id in registry.list_models():
         defn = registry.get_definition(def_id)
         if defn is not None:
-            out.append(DefinitionRef(id=defn.id, family=defn.family, name=defn.name))
+            out.append(
+                DefinitionRef(
+                    id=defn.id,
+                    family=defn.family,
+                    name=defn.name,
+                    caption_format=get_caption_format_for_definition(defn.id).id,
+                )
+            )
     return out
 
 

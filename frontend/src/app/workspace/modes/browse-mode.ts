@@ -122,7 +122,7 @@ export class BrowseMode {
     /** The pair currently open in the structured-caption modal, or null. */
     readonly editingPair = signal<GridPair | null>(null);
     /** Working copy of the JSON seeded into the modal. */
-    protected readonly modalValue = signal<string | undefined>(undefined);
+    protected readonly modalValue = signal<string>('');
 
     /**
      * Files dropped onto the grid. For an edit (paired) dataset the role is
@@ -222,11 +222,24 @@ export class BrowseMode {
         return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(pair.media_file)}`;
     }
 
+    /**
+     * Derive variant key from a pair's media_file by matching grid logic:
+     * split on path separators, take basename, strip extension.
+     */
+    private variantKey(pair: GridPair): string {
+        const base = (pair.media_file ?? '').split(/[\\/]/).pop() ?? '';
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
+    }
+
     /** Open the structured-caption modal for a pair. */
     openStructuredModal(pair: GridPair): void {
+        // Guard: bail if media_file is missing.
+        if (!pair?.media_file) return;
         // Seed the modal with the pair's current variant JSON (may be in _variantCaption
         // if the user already edited the summary inline; otherwise use variantCaptions map).
-        const stem = pair.media_file.replace(/\.[^.]+$/, '');
+        // Stem derivation must match the grid's variantKey logic.
+        const stem = this.variantKey(pair);
         const json = pair._variantCaption ?? this.variantCaptions()[stem] ?? '';
         this.editingPair.set(pair);
         this.modalValue.set(json);

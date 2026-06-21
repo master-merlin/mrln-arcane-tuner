@@ -115,7 +115,13 @@ type Tab = 'generate' | 'refine';
                                 (click)="strategy.set('keep')">
                             @if (strategy() === 'keep') { <span class="mc-choice-dot"></span> }
                             <div class="mc-choice-title">Incremental</div>
-                            <div class="mc-choice-desc">Only caption images without a text file. Existing captions are preserved.</div>
+                            <div class="mc-choice-desc">
+                                @if (modelContext.activeDefinitionId()) {
+                                    Only images missing the <em>{{ modelContext.activeDefinition()?.name }}</em> variant caption.
+                                } @else {
+                                    Only caption images without a text file. Existing captions are preserved.
+                                }
+                            </div>
                         </button>
                         <button type="button" class="mc-choice"
                                 [class.active]="strategy() === 'overwrite'"
@@ -410,7 +416,7 @@ export class MassCaptionModalComponent implements OnInit {
     private toast = inject(ToastService);
     private tasks = inject(TaskStore);
     private sync = inject(DatasetSyncService);
-    private modelContext = inject(ModelContextStore);
+    protected modelContext = inject(ModelContextStore);
 
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
@@ -464,6 +470,23 @@ export class MassCaptionModalComponent implements OnInit {
     protected canStart = computed(() => this.tab() === 'refine'
         ? !!this.refineSettings()
         : (this.settingsReady() && !this.apiBlocked()));
+
+    /** Variant caption map (stem → text) for the active definition, fetched
+     *  whenever model-aware mode is on. Empty when not model-aware. */
+    protected variantMap = signal<Record<string, string>>({});
+
+    /** Fetches the variant map for the currently active definition whenever the
+     *  definition or dataset changes.  Runs only when a definitionId is present
+     *  and a datasetName is available. */
+    private _variantMapEffect = effect(() => {
+        const defId = this.modelContext.activeDefinitionId();
+        const name  = this.data.datasetName;
+        if (!defId || !name) { this.variantMap.set({}); return; }
+        this.datasetsApi.getCaptionVariantMap(name, defId).subscribe({
+            next: r  => this.variantMap.set(r.variants ?? {}),
+            error: () => this.variantMap.set({}),
+        });
+    });
 
     /** Guard: prevents the completion effect from firing more than once. */
     private _finalized = false;
@@ -553,12 +576,18 @@ export class MassCaptionModalComponent implements OnInit {
         const target = this.target();
         const mode = this.strategy();
 
+        const defId = this.modelContext.activeDefinitionId();
+        const vmap  = this.variantMap();
         const candidates = target === 'masked'
             ? (mode === 'keep'
                 ? all.filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
                 : all.filter(p => p.metadata?.has_mask))
             : (mode === 'keep'
-                ? all.filter(p => !p.caption_content?.trim())
+                ? (defId
+                    // Model-aware: keep images missing the per-definition variant
+                    ? all.filter(p => !vmap[this.stemOf(p.media_file)]?.trim())
+                    // Generic: keep images missing the generic caption
+                    : all.filter(p => !p.caption_content?.trim()))
                 : [...all]);
 
         if (candidates.length === 0) {
@@ -570,7 +599,6 @@ export class MassCaptionModalComponent implements OnInit {
         if (!confirm(`Start captioning ${candidates.length} ${target} images?`)) return;
 
         const isStructured = this.modelContext.activeCaptionFormat() !== 'plain';
-        const defId = this.modelContext.activeDefinitionId();
         const captionInstructions = this.currentSettings.captionInstructions ?? '';
 
         const enrichedParams = isStructured

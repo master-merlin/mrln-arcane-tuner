@@ -14,13 +14,14 @@ import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 import { WebSocketService } from '../../../../services/websocket.service';
 import { detect } from './caption/ideogram-format';
 import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-editor';
+import { StructuredCaptionModalComponent } from './caption/structured-caption-modal';
 
 @Component({
     selector: 'app-detail-caption-sidebar',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     host: { class: 'w-80 h-full flex flex-col' },
-    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent],
+    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent, StructuredCaptionModalComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
             <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
@@ -39,9 +40,20 @@ import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-edito
                      The token count moved to its own row under the editor so a long
                      model name has the full width here and no longer wraps. -->
                 <div class="shrink-0 px-4 py-2 border-b border-surface-mid bg-surface-mid">
-                    <div class="min-w-0">
-                        <h4 class="text-[11px] font-bold uppercase tracking-widest mb-0.5 truncate" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : (variantMode() ? 'Caption · ' + modelContext.activeDefinitionId() : 'Caption') }}</h4>
-                        <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
+                    <div class="flex items-start justify-between gap-2 min-w-0">
+                        <div class="min-w-0 flex-1">
+                            <h4 class="text-[11px] font-bold uppercase tracking-widest mb-0.5 truncate" [class.text-text-subtle]="!showMasked()" [class.text-success]="showMasked()">{{ showMasked() ? 'Masked Caption' : (variantMode() ? 'Caption · ' + modelContext.activeDefinitionId() : 'Caption') }}</h4>
+                            <p class="text-[10px] text-text-muted truncate font-mono">{{ currentPair().caption_file || '(New File)' }}</p>
+                        </div>
+                        @if (useStructuredEditor()) {
+                            <button type="button"
+                                    data-testid="structured-expand-btn"
+                                    title="Open in full editor"
+                                    (click)="showModal.set(true)"
+                                    class="shrink-0 p-1 rounded-theme-md text-text-subtle hover:text-brand hover:bg-surface-high transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+                            </button>
+                        }
                     </div>
                 </div>
 
@@ -198,6 +210,17 @@ import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-edito
                 </div>
             }
         </div>
+
+        @if (showModal()) {
+            <app-structured-caption-modal
+                data-testid="structured-expand-modal"
+                [value]="captionText()"
+                [imageUrl]="currentImageUrl()"
+                title="Edit structured caption"
+                (save)="onModalSave($event)"
+                (cancel)="showModal.set(false)"
+            />
+        }
     `,
     styles: []
 })
@@ -253,6 +276,9 @@ export class DetailCaptionSidebarComponent {
      *  suggestion is accepted, so the editor reflects the promoted variant
      *  immediately instead of only on the next navigation. */
     private reloadTrigger = signal(0);
+
+    /** Controls the expand-to-modal overlay for structured (ideogram4_json) captions. */
+    protected showModal = signal<boolean>(false);
 
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
@@ -374,6 +400,13 @@ export class DetailCaptionSidebarComponent {
 
     onCaptionChange() {
         this.captionChanged.emit();
+    }
+
+    /** Called when the user saves from the expand modal — update caption and mark dirty. */
+    onModalSave(json: string): void {
+        this.captionText.set(json);
+        this.onCaptionChange();
+        this.showModal.set(false);
     }
 
     applyDedupe(): void {

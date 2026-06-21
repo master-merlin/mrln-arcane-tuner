@@ -8,6 +8,7 @@ import { DatasetService } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 import { serialize, normalize } from './caption/ideogram-format';
+import { StructuredCaptionModalComponent } from './caption/structured-caption-modal';
 
 function mount() {
     localStorage.clear();
@@ -445,6 +446,160 @@ describe('DetailCaptionSidebar — structured editor swap', () => {
         const editor = fixture.nativeElement.querySelector('[data-testid="structured-editor"]');
         expect(editor).toBeTruthy();
         http.verify();
+    });
+
+    afterEach(() => {
+        const http = TestBed.inject(HttpTestingController);
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] : { definition_id: null, items: [] });
+            });
+        }
+        http.verify();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Expand-to-modal button — structured captions get an expand icon that opens
+// StructuredCaptionModalComponent; plain captions do not.
+// ---------------------------------------------------------------------------
+
+describe('DetailCaptionSidebar — expand-to-modal', () => {
+    function mountExpand({ structured }: { structured: boolean }) {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('currentPair', {
+            media_file: 'car.png',
+            caption_file: 'car.txt',
+            caption_content: structured ? STRUCTURED_CAPTION : 'plain caption',
+        });
+        const http = TestBed.inject(HttpTestingController);
+        const store = TestBed.inject(ModelContextStore);
+
+        if (structured) {
+            store.setModelAware(true);
+            store.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+        }
+
+        fixture.detectChanges();
+
+        // Drain all pending HTTP requests (variant GET, templates, suggestions…)
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] :
+                    r.request.url.includes('/caption-suggestions') ? { definition_id: null, items: [] } :
+                    r.request.url.includes('/caption-variant') ? { text: STRUCTURED_CAPTION, has_variant: true } :
+                    {});
+            });
+        }
+        fixture.detectChanges();
+
+        return { fixture, http, store };
+    }
+
+    it('renders the expand icon when structured editor is active', () => {
+        const { fixture } = mountExpand({ structured: true });
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        expect(btn).toBeTruthy();
+    });
+
+    it('does NOT render the expand icon when caption is plain (textarea mode)', () => {
+        const { fixture } = mountExpand({ structured: false });
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        expect(btn).toBeNull();
+    });
+
+    it('clicking expand opens the structured caption modal', () => {
+        const { fixture } = mountExpand({ structured: true });
+        // Modal should not be present initially
+        expect(fixture.nativeElement.querySelector('[data-testid="structured-expand-modal"]')).toBeNull();
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        btn.click();
+        fixture.detectChanges();
+        const modal = fixture.nativeElement.querySelector('[data-testid="structured-expand-modal"]');
+        expect(modal).toBeTruthy();
+    });
+
+    it('modal is seeded with the current captionText', () => {
+        const { fixture } = mountExpand({ structured: true });
+        const cmp = fixture.componentInstance;
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        btn.click();
+        fixture.detectChanges();
+        // The modal component should have been passed value = captionText()
+        const modalEl = fixture.nativeElement.querySelector('app-structured-caption-modal');
+        expect(modalEl).toBeTruthy();
+        // Verify the component instance received the right input via the signal model
+        const modalCmp = fixture.debugElement.query(
+            el => el.componentInstance instanceof StructuredCaptionModalComponent
+        )?.componentInstance as StructuredCaptionModalComponent | undefined;
+        expect(modalCmp).toBeTruthy();
+        expect(modalCmp?.value()).toBe(cmp.captionText());
+    });
+
+    it('modal (save) updates captionText and fires captionChanged (dirty signal)', () => {
+        const { fixture } = mountExpand({ structured: true });
+        const cmp = fixture.componentInstance;
+        // Spy on onCaptionChange — the canonical dirty-marking path
+        const changeSpy = vi.spyOn(cmp, 'onCaptionChange');
+
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        btn.click();
+        fixture.detectChanges();
+
+        const newJson = serialize(normalize({ high_level_description: 'Updated car caption' }));
+        (cmp as unknown as { onModalSave: (s: string) => void }).onModalSave(newJson);
+        fixture.detectChanges();
+
+        expect(cmp.captionText()).toBe(newJson);
+        expect(changeSpy).toHaveBeenCalled();
+    });
+
+    it('modal (save) closes the modal', () => {
+        const { fixture } = mountExpand({ structured: true });
+        const cmp = fixture.componentInstance;
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        btn.click();
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="structured-expand-modal"]')).toBeTruthy();
+
+        const newJson = serialize(normalize({ high_level_description: 'Another caption' }));
+        (cmp as unknown as { onModalSave: (s: string) => void }).onModalSave(newJson);
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('[data-testid="structured-expand-modal"]')).toBeNull();
+    });
+
+    it('modal (cancel) hides the modal without changing captionText', () => {
+        const { fixture } = mountExpand({ structured: true });
+        const cmp = fixture.componentInstance;
+        const originalText = cmp.captionText();
+
+        const btn = fixture.nativeElement.querySelector('[data-testid="structured-expand-btn"]');
+        btn.click();
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="structured-expand-modal"]')).toBeTruthy();
+
+        (cmp as unknown as { showModal: { set: (v: boolean) => void } }).showModal.set(false);
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('[data-testid="structured-expand-modal"]')).toBeNull();
+        expect(cmp.captionText()).toBe(originalText);
     });
 
     afterEach(() => {

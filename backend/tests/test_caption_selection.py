@@ -1,5 +1,8 @@
 from app.core.captioning import caption_variants as cv
-from app.engine.core.pipeline.caption_selection import select_training_caption
+from app.engine.core.pipeline.caption_selection import (
+    select_training_caption,
+    summarize_caption_sources,
+)
 
 
 def test_returns_general_when_no_definition():
@@ -81,3 +84,54 @@ def test_missing_flags_default_to_captions_on_and_model_aware_on(tmp_path):
     cv.write_variant(ds, "flux1-schnell", "img1", "variant cap")
     item = {"caption": "general cap", "path": f"{ds}/img1.png", "dataset_path": ds}
     assert select_training_caption(item, "flux1-schnell") == "variant cap"
+
+
+# ── summarize_caption_sources (training caption-source audit) ──────────────
+
+
+def test_audit_counts_variant_hits(tmp_path):
+    # Two images, one has a model-aware JSON variant, one falls back to general.
+    ds = str(tmp_path)
+    cv.write_variant(ds, "ideogram4", "img1", '{"high_level_description": "x"}')
+    items = [
+        {"caption": "general 1", "path": f"{ds}/img1.png", "dataset_path": ds},
+        {"caption": "general 2", "path": f"{ds}/img2.png", "dataset_path": ds},
+    ]
+    [s] = summarize_caption_sources(items, "ideogram4")
+    assert s["dataset_path"] == ds
+    assert s["definition_id"] == "ideogram4"
+    assert s["model_aware"] is True
+    assert s["total"] == 2
+    assert s["variant"] == 1
+    assert s["base"] == 1
+    assert s["empty"] == 0
+    # The example surfaced is the variant hit, and it's recognised as JSON.
+    assert s["example_stem"] == "img1"
+    assert s["example_is_json"] is True
+
+
+def test_audit_model_aware_off_reports_all_base(tmp_path):
+    ds = str(tmp_path)
+    cv.write_variant(ds, "ideogram4", "img1", '{"high_level_description": "x"}')
+    items = [
+        {
+            "caption": "general 1", "path": f"{ds}/img1.png", "dataset_path": ds,
+            "use_model_aware_captions": False,
+        },
+    ]
+    [s] = summarize_caption_sources(items, "ideogram4")
+    assert s["model_aware"] is False
+    assert s["variant"] == 0
+    assert s["base"] == 1
+
+
+def test_audit_groups_by_dataset_and_never_raises():
+    # Bad/empty items must not raise, and each dataset_path is its own group.
+    summaries = summarize_caption_sources(
+        [{}, {"dataset_path": "/a", "caption": "c", "path": "/a/x.png"}],
+        None,
+    )
+    by_ds = {s["dataset_path"]: s for s in summaries}
+    assert by_ds["/a"]["base"] == 1
+    # No definition → never a variant hit.
+    assert by_ds["/a"]["variant"] == 0

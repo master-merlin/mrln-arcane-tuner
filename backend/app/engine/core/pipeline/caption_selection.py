@@ -58,3 +58,76 @@ def select_training_caption(
     except Exception:  # noqa: BLE001 — never break training over a caption variant
         logger.exception("variant_caption_resolution_failed")
     return base
+
+
+def summarize_caption_sources(
+    items: list[dict[str, Any]], definition_id: str | None
+) -> list[dict[str, Any]]:
+    """Read-only audit of which caption SOURCE each item trains on, by dataset.
+
+    Mirrors ``select_training_caption``'s decision on the original axis so a
+    training log can PROVE whether the per-definition *model-aware* variant was
+    actually consumed for this run (vs. the generic caption). Pure / read-only;
+    never raises.
+
+    One entry per ``dataset_path`` with::
+
+        dataset_path, definition_id, model_aware, use_captions,
+        total, variant, base, empty, example_stem, example_is_json
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for item in items:
+        ds = item.get("dataset_path") or "?"
+        g = groups.get(ds)
+        if g is None:
+            g = groups[ds] = {
+                "dataset_path": ds,
+                "definition_id": definition_id,
+                "model_aware": bool(item.get("use_model_aware_captions", True)),
+                "use_captions": bool(item.get("use_captions", True)),
+                "total": 0,
+                "variant": 0,
+                "base": 0,
+                "empty": 0,
+                "example_stem": None,
+                "example_is_json": False,
+            }
+        g["total"] += 1
+
+        try:
+            resolved = select_training_caption(item, definition_id)
+        except Exception:  # noqa: BLE001
+            resolved = ""
+
+        # Did the resolved caption come from a per-definition variant? Mirror the
+        # selector's gate exactly (use_captions + model_aware + def_id + a
+        # non-empty variant file), so the audit can't disagree with training.
+        is_variant = False
+        if (
+            item.get("use_captions", True)
+            and item.get("use_model_aware_captions", True)
+            and definition_id
+        ):
+            path = item.get("path")
+            if ds != "?" and path:
+                stem = os.path.splitext(os.path.basename(path))[0]
+                try:
+                    is_variant = bool(
+                        caption_variants.read_variant(ds, definition_id, stem)
+                    )
+                except Exception:  # noqa: BLE001
+                    is_variant = False
+
+        if not resolved:
+            g["empty"] += 1
+        elif is_variant:
+            g["variant"] += 1
+            if g["example_stem"] is None:
+                g["example_stem"] = os.path.splitext(
+                    os.path.basename(item.get("path", ""))
+                )[0]
+                g["example_is_json"] = resolved.lstrip().startswith("{")
+        else:
+            g["base"] += 1
+
+    return list(groups.values())

@@ -147,6 +147,19 @@ class PipelineCachingMixin:
                 if expanded not in caption_hints:
                     caption_hints[expanded] = f"sample_{idx}"
 
+        # Caption-source audit — one INFO line per dataset proving whether this
+        # run consumed the per-definition (model-aware) variant captions or the
+        # generic ones. Lands in job_log.jsonl. Read-only; never breaks precache.
+        try:
+            from app.engine.core.pipeline.caption_selection import (
+                summarize_caption_sources,
+            )
+
+            for s in summarize_caption_sources(self.inventory, _def_id):
+                logger.info("caption_source_audit", **s)
+        except Exception:  # noqa: BLE001
+            logger.exception("caption_source_audit_failed")
+
         return caption_hints
 
     def _expand_wildcards_for_precache(self, prompt: str) -> str:

@@ -194,6 +194,12 @@ const HANDLE_PX = 8;
         .bbox-box:hover {
             border-color: rgba(144, 205, 244, 1);
         }
+        /* During draw mode, existing boxes are inert so a press starts a NEW
+           box (rubber-band) instead of grabbing/moving the box underneath.
+           Normal move/resize is restored when draw mode turns off. */
+        .bbox-box.bbox-inert {
+            pointer-events: none;
+        }
         .bbox-rubber {
             position: absolute;
             border: 1.5px dashed rgba(99, 179, 237, 0.9);
@@ -254,13 +260,14 @@ const HANDLE_PX = 8;
                 <div
                     class="bbox-box"
                     [class.bbox-selected]="box.id === selectedId()"
+                    [class.bbox-inert]="drawEnabled()"
                     [style]="boxStyle(box)"
                     data-testid="bbox-box"
                     [attr.data-bbox-id]="box.id"
                     (click)="onBoxClick($event, box.id)"
                     (pointerdown)="onBoxPointerDown($event, box.id, box.bbox)"
                 >
-                    @if (box.id === selectedId()) {
+                    @if (box.id === selectedId() && !drawEnabled()) {
                         <div
                             class="bbox-handle bbox-handle-tl"
                             data-testid="bbox-handle-tl"
@@ -415,6 +422,9 @@ export class BboxOverlayComponent {
      * Begins a potential move drag.
      */
     protected onBoxPointerDown(e: PointerEvent, id: string, bbox: number[]): void {
+        // In draw mode, boxes are inert (CSS pointer-events:none) so this should
+        // not fire; guard anyway so a stray event can't start a move mid-draw.
+        if (this.drawEnabled()) return;
         // Prevent the container's onPointerDown from also starting a draw
         e.stopPropagation();
         const offset = this.pointerOffset(e);

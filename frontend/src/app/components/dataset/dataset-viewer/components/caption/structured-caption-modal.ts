@@ -53,6 +53,11 @@ import { IdeogramCaptionEditorComponent } from './ideogram-caption-editor';
             box-shadow: var(--shadow-lg), 0 0 0 1px oklch(1 0 0 / 0.04);
             width: 100%;
             max-width: min(1280px, 92vw);
+            /* Definite height (not just max-height) so the flex children get a
+               definite height to resolve against — required for the editor's
+               wide layout to fill and the sections pane's overflow-y:auto to
+               actually scroll. max-height alone leaves the height indefinite. */
+            height: 92vh;
             max-height: 92vh;
             display: flex; flex-direction: column;
             overflow: hidden;

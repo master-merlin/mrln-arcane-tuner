@@ -11,6 +11,7 @@ import { DatasetService } from '../../services/dataset';
 import { WebSocketService } from '../../services/websocket.service';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
+import { ModelContextStore } from '../../state/model-context.store';
 import { CaptionContextService } from '../../services/caption-context.service';
 
 function makeTask(status: string) {
@@ -310,5 +311,109 @@ describe('MassCaptionComponent — Refine tab', () => {
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         await comp.startRefine();
         expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'masked', 'tags', false);
+    });
+});
+
+describe('MassCaptionComponent — incremental (keep) candidate selection', () => {
+    let api: any;
+    let overlay: OverlayStore;
+
+    function setup(variantMap: Record<string, string> = {}) {
+        api = {
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            getCaptionVariantMap: vi.fn().mockReturnValue(of({ variants: variantMap })),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                OverlayStore, MediaItemStore, CaptionCacheStore,
+                { provide: DatasetService, useValue: api },
+                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: vi.fn() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+            ],
+        });
+        overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('mass-caption', { datasetName: 'ds1' });
+    }
+
+    it('model-aware keep: selects images MISSING the variant even when all have a generic caption', () => {
+        // variant map: a.png has a variant, b.png and c.png do not
+        setup({ 'a': 'ideogram4 caption for a' });
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        // Inject the fetched variant map directly (the effect fires async; shortcut for unit test)
+        comp.variantMap.set({ 'a': 'ideogram4 caption for a' });
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        // All three images have a generic caption — without the fix, all would be filtered out
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'generic caption a' },
+            { media_file: 'b.png', caption_content: 'generic caption b' },
+            { media_file: 'c.png', caption_content: 'generic caption c' },
+        ]);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.startGenerate();
+        // Only b.png and c.png are missing the variant → those are the candidates
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
+            image_rel_paths: ['b.png', 'c.png'],
+        }));
+    });
+
+    it('non-model-aware keep: filters by generic caption absence (unchanged behaviour)', () => {
+        setup();
+        // Explicitly reset model-aware state in case a previous test set it
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(false);
+        modelContext.setDefinition(null);
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'already captioned' },
+            { media_file: 'b.png', caption_content: '' },
+            { media_file: 'c.png', caption_content: '   ' },
+        ]);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.startGenerate();
+        // a.png is skipped (has generic caption); b.png and c.png are selected
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
+            image_rel_paths: ['b.png', 'c.png'],
+        }));
+    });
+
+    it('overwrite: sends all images regardless of generic or variant captions', () => {
+        setup({ 'a': 'existing variant', 'b': 'existing variant' });
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.variantMap.set({ 'a': 'existing variant', 'b': 'existing variant' });
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('overwrite');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'generic a' },
+            { media_file: 'b.png', caption_content: 'generic b' },
+        ]);
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        comp.startGenerate();
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
+            image_rel_paths: ['a.png', 'b.png'],
+        }));
     });
 });

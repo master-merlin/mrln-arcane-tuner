@@ -65,6 +65,15 @@ import { IdeogramCaptionEditorComponent } from './ideogram-caption-editor';
             display: flex;
             flex-direction: column;
         }
+        /* Stretch the hosted editor to fill the body height so its wide-layout
+           height:100% resolves and the right-hand sections pane can actually
+           scroll (overflow-y:auto) when there are many elements. Without this
+           the editor host is auto-height and the pane grows past the dialog. */
+        .scm-body > app-ideogram-caption-editor {
+            flex: 1;
+            min-height: 0;
+            display: block;
+        }
         @keyframes pop-in {
             from { opacity: 0; }
             to   { opacity: 1; }

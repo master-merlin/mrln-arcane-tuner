@@ -422,4 +422,20 @@ describe('IdeogramCaptionEditor — wide layout', () => {
         const overlay = fixture.nativeElement.querySelector('[data-testid="wide-bbox-overlay"]');
         expect(overlay).toBeFalsy();
     });
+
+    it('wide=true applies the wide-host class (fills parent height so panes scroll, buttons stay pinned)', () => {
+        const { fixture } = mountWide();
+        expect(fixture.nativeElement.classList.contains('wide-host')).toBe(true);
+    });
+
+    it('wide=false does NOT apply the wide-host class', () => {
+        const { fixture } = mountEditor();
+        expect(fixture.nativeElement.classList.contains('wide-host')).toBe(false);
+    });
+
+    it('wide=true keeps the draw + add-element buttons present (left button bar)', () => {
+        const { fixture } = mountWide();
+        expect(fixture.nativeElement.querySelector('[data-testid="wide-draw-toggle"]')).toBeTruthy();
+        expect(fixture.nativeElement.querySelector('[data-testid="wide-add-element"]')).toBeTruthy();
+    });
 });

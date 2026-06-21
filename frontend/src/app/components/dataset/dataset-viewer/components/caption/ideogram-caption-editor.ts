@@ -81,8 +81,15 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [FormsModule, BboxOverlayComponent],
+    // In wide (modal) mode the host must fill its parent's height so the
+    // two-pane layout's height:100% resolves — otherwise the panes grow with
+    // content, the right pane stops scrolling, and the left pane's button bar
+    // gets pushed out of view. Self-sufficient (does not depend on the modal
+    // styling this host).
+    host: { '[class.wide-host]': 'wide()' },
     styles: [`
         :host { display: block; }
+        :host(.wide-host) { height: 100%; min-height: 0; }
         .section-header {
             font-size: 10px;
             font-weight: 700;
@@ -117,7 +124,7 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
             <!-- Wide two-pane layout: image+overlay LEFT, sections RIGHT -->
             <div style="display:flex;height:100%;min-height:0;">
                 <!-- LEFT pane: image + bbox overlay, always visible -->
-                <div style="flex:1;min-width:0;display:flex;flex-direction:column;padding:8px;gap:6px;">
+                <div style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;padding:8px;gap:6px;">
                     <div style="flex:1 1 0;min-height:0;position:relative;">
                         <app-bbox-overlay
                             data-testid="wide-bbox-overlay"
@@ -130,7 +137,7 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
                             (boxChanged)="onBoxChanged($event)"
                         />
                     </div>
-                    <div class="flex gap-1">
+                    <div class="flex gap-1" style="flex-shrink:0;">
                         <button type="button"
                             data-testid="wide-draw-toggle"
                             class="px-2 py-1 text-[11px] rounded border transition-colors"
@@ -150,7 +157,7 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
                     </div>
                 </div>
                 <!-- RIGHT pane: scrollable text sections -->
-                <div data-testid="wide-sections-pane" style="width:420px;min-width:300px;max-width:480px;overflow-y:auto;border-left:1px solid var(--color-surface-high,#333);display:flex;flex-direction:column;">
+                <div data-testid="wide-sections-pane" style="width:420px;min-width:300px;max-width:480px;min-height:0;overflow-y:auto;border-left:1px solid var(--color-surface-high,#333);display:flex;flex-direction:column;">
                     <!-- ===== High-level Description ===== -->
                     <div class="px-3 py-2 border-b border-surface-mid">
                         <div class="field-label">High-level description</div>

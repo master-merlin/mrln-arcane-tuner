@@ -346,6 +346,34 @@ describe('BboxOverlayComponent', () => {
         expect(boxes[1].classList.contains('bbox-selected')).toBe(true);
     });
 
+    it('draw mode makes boxes inert and hides resize handles (so a press draws a new box)', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [
+            { id: 'a', bbox: [100, 100, 500, 500] },
+            { id: 'b', bbox: [600, 200, 900, 800] },
+        ]);
+        fixture.componentRef.setInput('selectedId', 'b');
+        fixture.componentRef.setInput('drawEnabled', true);
+        fixture.detectChanges();
+        const boxes = fixture.nativeElement.querySelectorAll('[data-testid="bbox-box"]');
+        // Both boxes inert during draw mode.
+        expect(boxes[0].classList.contains('bbox-inert')).toBe(true);
+        expect(boxes[1].classList.contains('bbox-inert')).toBe(true);
+        // No resize handles, even on the selected box.
+        expect(fixture.nativeElement.querySelector('[data-testid="bbox-handle-br"]')).toBeFalsy();
+    });
+
+    it('without draw mode the selected box is interactive (not inert) and shows handles', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [{ id: 'b', bbox: [600, 200, 900, 800] }]);
+        fixture.componentRef.setInput('selectedId', 'b');
+        fixture.componentRef.setInput('drawEnabled', false);
+        fixture.detectChanges();
+        const box = fixture.nativeElement.querySelector('[data-testid="bbox-box"]');
+        expect(box.classList.contains('bbox-inert')).toBe(false);
+        expect(fixture.nativeElement.querySelector('[data-testid="bbox-handle-br"]')).toBeTruthy();
+    });
+
     it('emits boxSelected with the box id when a box is clicked', () => {
         const fixture: ComponentFixture<BboxOverlayComponent> = TestBed.createComponent(BboxOverlayComponent);
         fixture.componentRef.setInput('boxes', [

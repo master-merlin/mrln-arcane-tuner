@@ -15,17 +15,25 @@ def test_generation_prompt_appends_user_instructions():
     assert "focus on the sword" in p
 
 
-def test_generation_overrides_set_token_floor():
+def test_generation_overrides_raise_ceiling_without_a_floor():
     o = Ideogram4Format().generation_overrides()
-    assert o["min_new_tokens"] >= 3072
-    assert o["max_tokens"] >= o["min_new_tokens"]
+    # A high ceiling for the long structured JSON, but NO min-token floor — a
+    # floor forces a finished model to keep emitting tokens -> trailing garbage.
+    assert o["max_tokens"] >= 4096
+    assert "min_new_tokens" not in o
 
 
 def test_parse_and_normalize_recovers_messy_json():
-    raw = "```json\n" + json.dumps({
-        "high_level_description": "x",
-        "compositional_deconstruction": {"background": "b", "elements": []},
-    }) + "\n```"
+    raw = (
+        "```json\n"
+        + json.dumps(
+            {
+                "high_level_description": "x",
+                "compositional_deconstruction": {"background": "b", "elements": []},
+            }
+        )
+        + "\n```"
+    )
     data = Ideogram4Format().parse_and_normalize(raw)
     assert data["compositional_deconstruction"]["background"] == "b"
 

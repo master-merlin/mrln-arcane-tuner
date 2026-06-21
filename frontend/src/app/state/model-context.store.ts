@@ -5,6 +5,8 @@ export interface DefinitionRef {
     id: string;
     family: string;
     name: string;
+    /** Caption format key returned by the backend (e.g. 'plain', 'ideogram4_json'). Defaults to 'plain' when absent. */
+    caption_format?: string;
 }
 
 interface PersistedState {
@@ -42,6 +44,11 @@ export class ModelContextStore {
 
     readonly activeDefinitionId = computed<string | null>(
         () => this.activeDefinition()?.id ?? null,
+    );
+
+    /** The caption format of the active definition, or 'plain' when none/unknown. */
+    readonly activeCaptionFormat = computed<string>(
+        () => this.activeDefinition()?.caption_format ?? 'plain',
     );
 
     private persist(): void {

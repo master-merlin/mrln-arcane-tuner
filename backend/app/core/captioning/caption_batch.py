@@ -16,6 +16,7 @@ from pathlib import Path
 
 from app.core.captioning import caption_variants
 from app.core.captioning.caption_service import CaptionService
+from app.core.captioning.formats import apply_generation_seam
 from app.core.captioning.models.base import (
     VIDEO_MOTION_INSTRUCTION as VIDEO_CAPTION_PROMPT,
 )
@@ -272,16 +273,7 @@ def run_caption_batch(
                     if not call_params.get("system_prompt"):
                         call_params["system_prompt"] = VIDEO_CAPTION_PROMPT
 
-                if caption_format.is_structured:
-                    if not call_params.get("system_prompt"):
-                        call_params["system_prompt"] = (
-                            caption_format.build_generation_prompt(
-                                call_params.get("caption_instructions")
-                            )
-                        )
-                    call_params.update(caption_format.generation_overrides())
-                    if model_id.startswith("api-") and caption_format.json_schema():
-                        call_params["response_format"] = {"type": "json_object"}
+                apply_generation_seam(call_params, caption_format, model_id)
 
                 if model_id.startswith("api-"):
                     # Let the HTTP client's retry/backoff loop bail out as soon

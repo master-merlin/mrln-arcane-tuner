@@ -52,6 +52,8 @@ _ELEM_TEXT_ORDER = ["type", "bbox", "text", "desc", "color_palette"]
 
 
 def canon_medium(m: str) -> str:
+    """Canonicalize a medium string. Unrecognized mediums are snake-cased and
+    passed through unchanged -- custom mediums are allowed but discouraged."""
     key = (m or "").strip().lower().rstrip(".").strip()
     if key in _MEDIUM_ALIASES:
         return _MEDIUM_ALIASES[key]

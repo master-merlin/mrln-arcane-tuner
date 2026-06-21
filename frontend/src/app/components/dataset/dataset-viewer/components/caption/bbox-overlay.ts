@@ -320,6 +320,15 @@ export class BboxOverlayComponent {
         imgH: 0,
     });
 
+    /**
+     * Live-preview override for the box currently being dragged.
+     * Only one box can be dragged at a time, so a single slot is sufficient.
+     * Set during pointermove (move/resize); cleared on pointerup or drag-abort.
+     * boxStyle() prefers this over the input bbox when the id matches.
+     * NEVER mutates the input boxes() array.
+     */
+    private readonly _liveBbox = signal<{ id: string; bbox: number[] } | null>(null);
+
     // Current drag mode (move / resize / draw / none)
     private dragMode: DragMode = { kind: 'none' };
 
@@ -330,15 +339,22 @@ export class BboxOverlayComponent {
      * Compute CSS style for a normalized bbox div.
      * Falls back to covering the full area if the container rect is unavailable
      * (e.g. in jsdom tests without layout).
+     *
+     * During a drag, prefers the _liveBbox override for the dragged box so the
+     * visual updates in real-time without touching the input boxes() array.
      */
     protected boxStyle(box: BboxItem): string {
+        // Prefer the internal live-drag override over the (immutable) input bbox.
+        const live = this._liveBbox();
+        const bbox = (live && live.id === box.id) ? live.bbox : box.bbox;
+
         const imgRect = this.imgEl?.nativeElement?.getBoundingClientRect();
         const W = imgRect?.width ?? 0;
         const H = imgRect?.height ?? 0;
         if (W === 0 || H === 0) {
             // Fallback: render as percentages so boxes are visually present even
             // without a real layout engine.
-            const [y_min, x_min, y_max, x_max] = box.bbox;
+            const [y_min, x_min, y_max, x_max] = bbox;
             return [
                 `left:${(x_min / BBOX_MAX) * 100}%`,
                 `top:${(y_min / BBOX_MAX) * 100}%`,
@@ -346,7 +362,7 @@ export class BboxOverlayComponent {
                 `height:${((y_max - y_min) / BBOX_MAX) * 100}%`,
             ].join(';');
         }
-        const rect = normToPx(box.bbox, W, H);
+        const rect = normToPx(bbox, W, H);
         return [
             `left:${rect.left}px`,
             `top:${rect.top}px`,
@@ -530,6 +546,7 @@ export class BboxOverlayComponent {
                     this.boxChanged.emit({ id: mode.id, bbox: newBbox });
                 }
             }
+            this._liveBbox.set(null); // clear override after emit (or if aborted by imgW/H guard)
             this.dragMode = { kind: 'none' };
             this.dragMoved = false;
             return;
@@ -545,6 +562,7 @@ export class BboxOverlayComponent {
                     this.boxChanged.emit({ id: mode.id, bbox: newBbox });
                 }
             }
+            this._liveBbox.set(null); // clear override after emit (or if aborted by imgW/H guard)
             this.dragMode = { kind: 'none' };
             this.dragMoved = false;
             return;
@@ -559,9 +577,10 @@ export class BboxOverlayComponent {
                 this.draw.set({ ...d, active: false });
             }
             this.dragMode = { kind: 'none' };
+            this.dragMoved = false;
         }
         // For move/resize, pointer capture keeps events flowing even outside the
-        // container, so we do NOT cancel on pointerleave.
+        // container, so we do NOT cancel on pointerleave — the drag continues.
     }
 
     private finalizeDraw(
@@ -597,31 +616,12 @@ export class BboxOverlayComponent {
     }
 
     /**
-     * Temporarily update the live bbox of a box during drag so boxStyle()
-     * re-renders it. We mutate the array reference on the BboxItem directly
-     * since Angular passes objects by reference; for OnPush this is sufficient
-     * with markForCheck(). To avoid importing ChangeDetectorRef we rely on the
-     * signal update pattern: store a live-override signal map keyed by id.
-     *
-     * NOTE: This is a best-effort visual feedback mechanism during drag.
-     * The authoritative state lives in the parent component which receives
-     * boxChanged on pointerup. The boxes() input array is readonly from the
-     * parent's perspective, so live-preview during drag simply mutates the
-     * referenced bbox array (which Angular @for tracks by box.id, not by
-     * bbox value). The parent will replace the array on boxChanged anyway.
+     * Store a live bbox override for the box currently being dragged.
+     * Setting the _liveBbox signal is sufficient to trigger OnPush change
+     * detection; boxStyle() reads _liveBbox() and prefers it over the input
+     * bbox when the id matches. The input boxes() array is NEVER mutated.
      */
     private _updateLiveBbox(id: string, newBbox: number[]): void {
-        const list = this.boxes();
-        for (const box of list) {
-            if (box.id === id) {
-                // Mutate in-place so boxStyle() picks up the new coords on next
-                // change detection tick. For OnPush this is triggered by the
-                // parent's signal update or by our draw signal mutation below.
-                box.bbox.splice(0, 4, ...newBbox);
-                // Nudge the draw signal to trigger change detection in this OnPush component
-                this.draw.set({ ...this.draw() });
-                break;
-            }
-        }
+        this._liveBbox.set({ id, bbox: newBbox });
     }
 }

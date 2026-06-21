@@ -10,7 +10,7 @@
 
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ModelContextStore, type DefinitionRef } from '../../../../../state/model-context.store';
-import { BboxOverlayComponent, pxToNorm, normToPx, movedBbox, resizedBbox } from './bbox-overlay';
+import { BboxOverlayComponent, BboxItem, pxToNorm, normToPx, movedBbox, resizedBbox } from './bbox-overlay';
 
 // ---------------------------------------------------------------------------
 // 1. ModelContextStore.activeCaptionFormat
@@ -478,4 +478,160 @@ describe('BboxOverlayComponent', () => {
     // imgW/imgH === 0 guards to short-circuit both move and resize emission.
     // The pure-helper tests above validate the geometry math directly.
     // E2E / Playwright tests would cover the full interaction path.
+});
+
+// ---------------------------------------------------------------------------
+// 6. Input-array immutability during drag — _liveBbox signal-based override
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper to access the private _liveBbox signal for test assertions.
+ * Using `(comp as any)` is standard Angular test practice for private fields.
+ */
+function getLiveBbox(comp: BboxOverlayComponent): { id: string; bbox: number[] } | null {
+    return (comp as any)._liveBbox();
+}
+
+/**
+ * Helper to drive the internal live-preview setter directly, bypassing the
+ * pointer-event path that jsdom cannot exercise (getBoundingClientRect → zero rect).
+ */
+function callUpdateLiveBbox(comp: BboxOverlayComponent, id: string, bbox: number[]): void {
+    (comp as any)._updateLiveBbox(id, bbox);
+}
+
+describe('BboxOverlayComponent — input-array immutability during drag', () => {
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            imports: [BboxOverlayComponent],
+        });
+    });
+
+    it('does NOT mutate the input bbox array when _updateLiveBbox is called during a drag', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        const origBbox = [100, 100, 500, 500];
+        const inputBoxes: BboxItem[] = [{ id: 'box1', bbox: origBbox }];
+        fixture.componentRef.setInput('boxes', inputBoxes);
+        fixture.detectChanges();
+
+        // Capture reference to the original array
+        const bboxRef = inputBoxes[0].bbox;
+        const bboxSnapshot = [...bboxRef];
+
+        // Simulate mid-drag live-preview update (as onPointerMove would call it)
+        const movedPreview = [150, 150, 550, 550];
+        callUpdateLiveBbox(fixture.componentInstance, 'box1', movedPreview);
+
+        // The input array must be unchanged
+        expect(bboxRef).toEqual(bboxSnapshot);
+        // Array identity must be preserved (no splice/mutation)
+        expect(bboxRef[0]).toBe(bboxSnapshot[0]);
+        expect(bboxRef[1]).toBe(bboxSnapshot[1]);
+        expect(bboxRef[2]).toBe(bboxSnapshot[2]);
+        expect(bboxRef[3]).toBe(bboxSnapshot[3]);
+    });
+
+    it('_liveBbox signal holds the override after _updateLiveBbox', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [{ id: 'box1', bbox: [100, 100, 500, 500] }]);
+        fixture.detectChanges();
+
+        const preview = [200, 200, 600, 600];
+        callUpdateLiveBbox(fixture.componentInstance, 'box1', preview);
+
+        const live = getLiveBbox(fixture.componentInstance);
+        expect(live).not.toBeNull();
+        expect(live!.id).toBe('box1');
+        expect(live!.bbox).toEqual(preview);
+    });
+
+    it('boxStyle() returns style based on _liveBbox override for the dragged box, not the input bbox', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        // jsdom: no real layout, so boxStyle falls back to %-based style using bbox values
+        const inputBbox = [100, 100, 500, 500];
+        fixture.componentRef.setInput('boxes', [{ id: 'box1', bbox: inputBbox }]);
+        fixture.detectChanges();
+
+        // Before drag: style reflects the input bbox
+        const comp = fixture.componentInstance;
+        const styleBefore = (comp as any).boxStyle({ id: 'box1', bbox: inputBbox });
+        expect(styleBefore).toContain('left:10%'); // x_min=100 → 10%
+
+        // Simulate drag: set live preview
+        const livePreviewBbox = [200, 300, 600, 700];
+        callUpdateLiveBbox(comp, 'box1', livePreviewBbox);
+
+        // During drag: style should reflect the live override, not the (unchanged) input
+        const styleDuring = (comp as any).boxStyle({ id: 'box1', bbox: inputBbox });
+        expect(styleDuring).toContain('left:30%'); // x_min=300 → 30%
+        expect(styleDuring).not.toContain('left:10%');
+
+        // Input array still unchanged
+        expect(inputBbox).toEqual([100, 100, 500, 500]);
+    });
+
+    it('boxStyle() falls back to input bbox for boxes whose id does NOT match the live override', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        const box1Bbox = [100, 100, 500, 500];
+        const box2Bbox = [600, 200, 900, 800];
+        fixture.componentRef.setInput('boxes', [
+            { id: 'box1', bbox: box1Bbox },
+            { id: 'box2', bbox: box2Bbox },
+        ]);
+        fixture.detectChanges();
+
+        const comp = fixture.componentInstance;
+        // Set override only for box1
+        callUpdateLiveBbox(comp, 'box1', [200, 300, 600, 700]);
+
+        // box2 must still use its own bbox (left = x_min=200 → 20%)
+        const styleBox2 = (comp as any).boxStyle({ id: 'box2', bbox: box2Bbox });
+        expect(styleBox2).toContain('left:20%'); // x_min=200 → 20%
+    });
+
+    it('clearing _liveBbox (set null) reverts boxStyle() to the input bbox', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        const inputBbox = [100, 100, 500, 500];
+        fixture.componentRef.setInput('boxes', [{ id: 'box1', bbox: inputBbox }]);
+        fixture.detectChanges();
+
+        const comp = fixture.componentInstance;
+
+        // Set live override
+        callUpdateLiveBbox(comp, 'box1', [200, 300, 600, 700]);
+        expect((comp as any).boxStyle({ id: 'box1', bbox: inputBbox })).toContain('left:30%');
+
+        // Clear override (as onPointerUp does)
+        (comp as any)._liveBbox.set(null);
+
+        // boxStyle must revert to the original input bbox
+        const styleAfter = (comp as any).boxStyle({ id: 'box1', bbox: inputBbox });
+        expect(styleAfter).toContain('left:10%'); // back to x_min=100 → 10%
+    });
+
+    it('_liveBbox is null initially (no drag in progress)', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        fixture.componentRef.setInput('boxes', [{ id: 'box1', bbox: [100, 100, 500, 500] }]);
+        fixture.detectChanges();
+
+        expect(getLiveBbox(fixture.componentInstance)).toBeNull();
+    });
+
+    it('does not mutate input bbox array during a resize live-preview update either', () => {
+        const fixture = TestBed.createComponent(BboxOverlayComponent);
+        const origBbox = [100, 100, 500, 500];
+        const inputBoxes: BboxItem[] = [{ id: 'r1', bbox: origBbox }];
+        fixture.componentRef.setInput('boxes', inputBoxes);
+        fixture.detectChanges();
+
+        const bboxRef = inputBoxes[0].bbox;
+        const snapshot = [...bboxRef];
+
+        // Simulate a resize live-preview (what onPointerMove resize path calls)
+        const resizedPreview = resizedBbox(origBbox, 'br', 800, 800);
+        callUpdateLiveBbox(fixture.componentInstance, 'r1', resizedPreview);
+
+        // Input array untouched
+        expect(bboxRef).toEqual(snapshot);
+    });
 });

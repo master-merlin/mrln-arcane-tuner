@@ -5,6 +5,7 @@ import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
 import { ApiCaptionService, ApiProviderStatus } from '../../../services/api-caption.service';
+import { ModelContextStore } from '../../../state/model-context.store';
 import { Subject } from 'rxjs';
 import { debounceTime, switchMap } from 'rxjs/operators';
 
@@ -69,6 +70,9 @@ export interface CaptionSettingsState {
     /** Whether the selected model can caption from control + target together
      *  (edit-instruction captions). Hosts gate the "include control" toggle. */
     supportsMultiImage?: boolean;
+    /** Additional instructions for structured-caption (model-aware) generation.
+     *  Empty string when plain format or no instructions entered. */
+    captionInstructions: string;
 }
 
 @Component({
@@ -249,6 +253,23 @@ export interface CaptionSettingsState {
                             placeholder="System Prompt..."></textarea>
                     </div>
 
+                    <!-- Additional instructions — only shown for structured (model-aware) formats -->
+                    @if (modelContext.activeCaptionFormat() !== 'plain') {
+                        <div>
+                            <label class="text-[10px] text-text-subtle mb-1 block"
+                                title="Optional extra guidance appended to the structured caption prompt. Use to focus on specific aspects, style, or details.">
+                                Additional instructions
+                                <span class="text-text-disabled font-normal normal-case ml-1">— optional guidance for this re-caption</span>
+                            </label>
+                            <textarea [value]="captionInstructions()"
+                                (input)="captionInstructions.set($any($event.target).value)"
+                                data-testid="caption-additional-instructions"
+                                rows="2"
+                                class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand transition-colors resize-none placeholder-gray-600"
+                                placeholder="e.g. focus on composition and lighting…"></textarea>
+                        </div>
+                    }
+
                         <!-- Detailed Settings (collapsible) — all model params live here -->
                     @if (activeModelConfig(); as config) {
                         <div class="border-t border-surface-mid/50 pt-2">
@@ -378,6 +399,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     private templateService = inject(TemplateService);
     /** Injected now; the API connection UI (Task 9) consumes it. */
     private apiCaptionService = inject(ApiCaptionService);
+    /** Exposes activeCaptionFormat() and activeDefinitionId() for the template. */
+    protected modelContext = inject(ModelContextStore);
 
     projectId = input<string | null>(null);
     effectiveProjectId = computed(() => this.projectId() ?? this.projectService.activeDatasetProject());
@@ -521,6 +544,10 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     /** Collapsible holding all model-detail params. Collapsed by default so the
      *  top items (System Prompt) get the room; expanding shrinks the prompt. */
     showDetailedSettings = signal<boolean>(false);
+    /** Additional instructions sent as `caption_instructions` param for
+     *  structured-caption (model-aware) generation. Not persisted in templates;
+     *  user sets it per session. Empty string means no extra instructions. */
+    captionInstructions = signal<string>('');
 
     // ── API provider connection state ──
     providerStatuses = signal<ApiProviderStatus[]>([]);
@@ -965,6 +992,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
                 ? (this.activeProviderStatus()?.configured ?? false)
                 : undefined,
             supportsMultiImage: modelConfig?.supportsMultiImage ?? false,
+            captionInstructions: this.captionInstructions(),
         });
     }
 }

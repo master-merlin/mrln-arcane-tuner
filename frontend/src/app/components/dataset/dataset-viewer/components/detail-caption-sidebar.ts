@@ -408,13 +408,24 @@ export class DetailCaptionSidebarComponent {
             return;
         }
 
+        const isStructured = this.modelContext.activeCaptionFormat() !== 'plain';
+        const defId = this.modelContext.activeDefinitionId();
+        const captionInstructions = this.currentSettings.captionInstructions ?? '';
+
+        const enrichedParams = isStructured && captionInstructions
+            ? { ...this.currentSettings.params, caption_instructions: captionInstructions }
+            : this.currentSettings.params;
+
         this.isGeneratingCaption.set(true);
         this.datasetService.generateCaption(
             this.datasetName(),
             pair.media_file,
             this.currentSettings.resolvedModelId,
-            this.currentSettings.params,
-            this.currentSettings.resolvedSystemPrompt
+            enrichedParams,
+            this.currentSettings.resolvedSystemPrompt,
+            'original',
+            undefined,
+            isStructured && defId ? defId : undefined
         ).subscribe({
             next: (res) => {
                 this.suggestedCaption.set(res.caption);

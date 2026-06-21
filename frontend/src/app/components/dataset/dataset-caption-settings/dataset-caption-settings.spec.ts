@@ -1,11 +1,13 @@
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
+import { signal } from '@angular/core';
 import { of, throwError, Subject } from 'rxjs';
 import { DatasetCaptionSettingsComponent } from './dataset-caption-settings';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
 import { ApiCaptionService } from '../../../services/api-caption.service';
+import { ModelContextStore } from '../../../state/model-context.store';
 
 function makeTemplate(modelId: string, id = `tpl-${modelId}`) {
     return {
@@ -201,6 +203,85 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
         api.listModels.mockReturnValue(throwError(() => new Error('502')));
         comp.fetchProviderModels();
         expect(comp.fetchModelsError()).toContain('Could not fetch');
+    });
+});
+
+describe('DatasetCaptionSettings — Additional instructions (structured caption)', () => {
+    function buildWithFormat(format: string, defId: string | null = 'def1') {
+        const templateApi = {
+            listCaptioningTemplates: vi.fn((modelId: string) => of([{
+                id: `tpl-${modelId}`, name: 'Default', project_id: null, config: {},
+                created_at: 0, updated_at: 0, used_count: 0,
+                is_default: true, readonly: true,
+                system_prompt: 'Describe this image in detail.', wildcard: '',
+                model_id: modelId,
+            }])),
+            createCaptioningTemplate: vi.fn().mockReturnValue(of({
+                id: 'new-id', name: 'Custom Settings', project_id: null, config: {},
+                created_at: 0, updated_at: 0, used_count: 0,
+                is_default: false, readonly: false, model_id: 'florence-2',
+                system_prompt: '', wildcard: '',
+            })),
+            updateTemplate: vi.fn().mockReturnValue(of({})),
+        };
+        const mockModelContext = {
+            activeCaptionFormat: signal(format),
+            activeDefinitionId: signal(defId),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                { provide: DatasetService, useValue: { unloadModels: vi.fn().mockReturnValue(of({})) } },
+                {
+                    provide: ProjectService, useValue: {
+                        activeDatasetProject: () => null,
+                        getPreferences: vi.fn(() => of({ selected_caption_model: 'florence-2', qwen3_variant: '4B-Instruct', active_caption_template: null })),
+                        updatePreferences: vi.fn().mockReturnValue(of({})),
+                    },
+                },
+                { provide: TemplateService, useValue: templateApi },
+                { provide: ApiCaptionService, useValue: {
+                    listProviders: vi.fn().mockReturnValue(of([])),
+                    updateProvider: vi.fn().mockReturnValue(of({})),
+                    listModels: vi.fn().mockReturnValue(of([])),
+                } },
+                { provide: ModelContextStore, useValue: mockModelContext },
+            ],
+        });
+        const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
+        fixture.detectChanges();
+        return { fixture, comp: fixture.componentInstance as any };
+    }
+
+    it('renders the Additional instructions textarea when format is structured', () => {
+        const { fixture } = buildWithFormat('ideogram4_json');
+        const el: HTMLElement = fixture.nativeElement;
+        const textarea = el.querySelector('[data-testid="caption-additional-instructions"]');
+        expect(textarea).not.toBeNull();
+    });
+
+    it('does NOT render the Additional instructions textarea when format is plain', () => {
+        const { fixture } = buildWithFormat('plain');
+        const el: HTMLElement = fixture.nativeElement;
+        const textarea = el.querySelector('[data-testid="caption-additional-instructions"]');
+        expect(textarea).toBeNull();
+    });
+
+    it('captionInstructions value flows into the emitted CaptionSettingsState', () => {
+        const { comp } = buildWithFormat('ideogram4_json');
+        let last: any;
+        comp.settingsChanged.subscribe((s: any) => (last = s));
+        comp.captionInstructions.set('focus on the composition');
+        comp.onModelChange('joycaption');
+        expect(last.captionInstructions).toBe('focus on the composition');
+    });
+
+    it('captionInstructions is empty string in emitted state when plain format', () => {
+        const { comp } = buildWithFormat('plain');
+        let last: any;
+        comp.settingsChanged.subscribe((s: any) => (last = s));
+        comp.captionInstructions.set('should not appear');
+        comp.onModelChange('joycaption');
+        expect(last).toBeDefined();
     });
 });
 

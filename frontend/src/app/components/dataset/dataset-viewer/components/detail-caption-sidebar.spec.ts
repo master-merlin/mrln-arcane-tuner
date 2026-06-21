@@ -62,7 +62,7 @@ describe('DetailCaptionSidebar — API gating', () => {
         cmp.currentSettings = {
             modelId: 'api-openai', resolvedModelId: 'api-openai',
             systemPrompt: '', resolvedSystemPrompt: '', wildcard: '',
-            params: {}, apiConfigured: false,
+            params: {}, apiConfigured: false, captionInstructions: '',
         };
         cmp.generateCaption();
         expect(spy).not.toHaveBeenCalled();

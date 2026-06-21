@@ -16,6 +16,7 @@ import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
+import { ModelContextStore } from '../../state/model-context.store';
 import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
@@ -409,6 +410,7 @@ export class MassCaptionModalComponent implements OnInit {
     private toast = inject(ToastService);
     private tasks = inject(TaskStore);
     private sync = inject(DatasetSyncService);
+    private modelContext = inject(ModelContextStore);
 
     protected data: MassCaptionModalData = (this.overlay.topModal()?.data as MassCaptionModalData) ?? {};
 
@@ -567,12 +569,24 @@ export class MassCaptionModalComponent implements OnInit {
         }
         if (!confirm(`Start captioning ${candidates.length} ${target} images?`)) return;
 
+        const isStructured = this.modelContext.activeCaptionFormat() !== 'plain';
+        const defId = this.modelContext.activeDefinitionId();
+        const captionInstructions = this.currentSettings.captionInstructions ?? '';
+
+        const enrichedParams = isStructured
+            ? {
+                ...this.currentSettings.params,
+                ...(captionInstructions ? { caption_instructions: captionInstructions } : {}),
+                ...(defId ? { definition_id: defId } : {}),
+              }
+            : this.currentSettings.params;
+
         this._finalized = false;
         this.launch(this.datasetsApi.batchCaption({
             dataset_name: name,
             image_rel_paths: candidates.map(p => p.media_file),
             model_id: this.currentSettings.resolvedModelId,
-            params: this.currentSettings.params,
+            params: enrichedParams,
             system_prompt: this.currentSettings.resolvedSystemPrompt,
             target: target,
             include_control: this.includeControl() && this.multiImageModel()

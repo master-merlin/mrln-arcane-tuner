@@ -1,10 +1,13 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal } from '@angular/core';
 import { ViewerGridViewComponent, type GridCropRequest } from '../../components/dataset/dataset-viewer/components/viewer-grid-view';
 import type { DatasetPair } from '../../services/dataset';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { DatasetUploadService } from '../../services/dataset-upload.service';
+import { StructuredCaptionModalComponent } from '../../components/dataset/dataset-viewer/components/caption/structured-caption-modal';
+
+type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: string };
 
 /**
  * Browse mode — grid view of the dataset, wraps the existing
@@ -32,7 +35,7 @@ import { DatasetUploadService } from '../../services/dataset-upload.service';
 @Component({
     selector: 'app-workspace-browse',
     standalone: true,
-    imports: [ViewerGridViewComponent],
+    imports: [ViewerGridViewComponent, StructuredCaptionModalComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <app-viewer-grid-view
@@ -56,7 +59,16 @@ import { DatasetUploadService } from '../../services/dataset-upload.service';
             (captionSaved)="onCaptionSaved($event)"
             (exclusionToggled)="toggleExclusion.emit($event)"
             (cropRequested)="onCropRequested($event)"
-            (pairDeleted)="deletePair.emit($event)"/>
+            (pairDeleted)="deletePair.emit($event)"
+            (editStructured)="openStructuredModal($event)"/>
+        @if (editingPair(); as ep) {
+            <app-structured-caption-modal
+                [value]="modalValue()"
+                [imageUrl]="modalImageUrl(ep)"
+                title="Edit structured caption"
+                (save)="onModalSave(ep, $event)"
+                (cancel)="onModalCancel()"/>
+        }
     `,
     styles: [`
         :host {
@@ -106,6 +118,11 @@ export class BrowseMode {
     protected mediaItems = inject(MediaItemStore);
     protected rtc = inject(RuntimeConfigService);
     private upload = inject(DatasetUploadService);
+
+    /** The pair currently open in the structured-caption modal, or null. */
+    readonly editingPair = signal<GridPair | null>(null);
+    /** Working copy of the JSON seeded into the modal. */
+    protected readonly modalValue = signal<string>('');
 
     /**
      * Files dropped onto the grid. For an edit (paired) dataset the role is
@@ -194,5 +211,54 @@ export class BrowseMode {
             datasetName: this.datasetName(),
             ...event,
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // Structured caption modal
+    // -----------------------------------------------------------------------
+
+    /** Image URL for the modal left-pane — mirrors getMediaUrl in the grid. */
+    protected modalImageUrl(pair: GridPair): string {
+        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(this.datasetName())}/${encodeURIComponent(pair.media_file)}`;
+    }
+
+    /**
+     * Derive variant key from a pair's media_file by matching grid logic:
+     * split on path separators, take basename, strip extension.
+     */
+    private variantKey(pair: GridPair): string {
+        const base = (pair.media_file ?? '').split(/[\\/]/).pop() ?? '';
+        const dot = base.lastIndexOf('.');
+        return dot > 0 ? base.slice(0, dot) : base;
+    }
+
+    /** Open the structured-caption modal for a pair. */
+    openStructuredModal(pair: GridPair): void {
+        // Guard: bail if media_file is missing.
+        if (!pair?.media_file) return;
+        // Seed the modal with the pair's current variant JSON (may be in _variantCaption
+        // if the user already edited the summary inline; otherwise use variantCaptions map).
+        // Stem derivation must match the grid's variantKey logic.
+        const stem = this.variantKey(pair);
+        const json = pair._variantCaption ?? this.variantCaptions()[stem] ?? '';
+        this.editingPair.set(pair);
+        this.modalValue.set(json);
+    }
+
+    /** Modal Save — route the full JSON through the variant save path and close. */
+    onModalSave(pair: GridPair, fullJson: string): void {
+        this.editingPair.set(null);
+        const def = this.definitionId();
+        this.saveCaption.emit({
+            pair,
+            content: fullJson,
+            isMasked: false,
+            definitionId: def,
+        });
+    }
+
+    /** Modal Cancel — close without writing. */
+    onModalCancel(): void {
+        this.editingPair.set(null);
     }
 }

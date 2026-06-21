@@ -31,7 +31,12 @@ class Ideogram4Format(CaptionFormat):
         return prompt
 
     def generation_overrides(self) -> dict:
-        return {"min_new_tokens": 3072, "max_tokens": 4096}
+        # Ceiling only — the structured JSON for a rich scene can be long, so we
+        # raise max_tokens. We deliberately do NOT set a min-token FLOOR: forcing
+        # a minimum makes a model that has already emitted a complete JSON object
+        # keep generating, which spirals into garbage appended after the JSON
+        # (and is slow). Let the prompt drive length and EOS stop naturally.
+        return {"max_tokens": 4096}
 
     def json_schema(self) -> dict | None:
         return {

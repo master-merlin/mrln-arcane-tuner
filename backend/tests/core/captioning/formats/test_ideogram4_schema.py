@@ -152,6 +152,16 @@ def test_parse_extracts_json_from_fenced_block():
     assert "compositional_deconstruction" in parsed
 
 
+def test_parse_extracts_json_object_followed_by_trailing_prose():
+    # Real-world failure: a model emits a valid JSON object, then keeps chatting
+    # (word counts, hashtags, sign-offs, text containing stray braces). The first
+    # balanced object must be extracted cleanly, not widened to a later brace.
+    raw = json.dumps(_doc()) + "\n\n(Word count: 157) Done! #ready {not json}"
+    parsed = ix.parse(raw)
+    assert parsed is not None
+    assert parsed["compositional_deconstruction"]["background"] == "near-black interior"
+
+
 def test_normalize_enforces_key_order_nonphoto_branch():
     d = _doc()
     d["style_description"]["medium"] = "illustration"

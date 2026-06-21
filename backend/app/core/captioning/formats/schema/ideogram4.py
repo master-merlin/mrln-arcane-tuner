@@ -184,6 +184,39 @@ def serialize(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
+def _first_json_object(s: str) -> str | None:
+    """Return the substring of the FIRST balanced ``{...}`` object in *s*, or None.
+
+    String-aware brace matching (ignores braces inside JSON strings and handles
+    escapes), so a valid JSON object followed by trailing prose — a common VLM
+    failure mode when a model keeps chatting after the caption — is extracted
+    cleanly instead of being widened to a stray ``}`` later in the text."""
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    return None
+
+
 def parse(text: str) -> dict | None:
     if not text:
         return None
@@ -197,12 +230,11 @@ def parse(text: str) -> dict | None:
         return obj if isinstance(obj, dict) else None
     except json.JSONDecodeError:
         pass
-    # Fallback: first balanced {...} block.
-    start = s.find("{")
-    end = s.rfind("}")
-    if start != -1 and end > start:
+    # Fallback: the first balanced {...} object (tolerates trailing prose).
+    block = _first_json_object(s)
+    if block is not None:
         try:
-            obj = json.loads(s[start : end + 1])
+            obj = json.loads(block)
             return obj if isinstance(obj, dict) else None
         except json.JSONDecodeError:
             return None

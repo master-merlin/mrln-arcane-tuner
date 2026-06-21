@@ -122,7 +122,7 @@ describe('IdeogramCaptionEditor — medium flip migrates render field', () => {
         expect(style['medium']).toBe('illustration');
         // photo key should be gone, art_style present
         expect('photo' in style).toBe(false);
-        expect('art_style' in style).toBeDefined();
+        expect('art_style' in style).toBe(true);
     });
 });
 

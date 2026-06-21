@@ -51,6 +51,7 @@ import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-edito
                         <app-ideogram-caption-editor
                             data-testid="structured-editor"
                             [(value)]="captionText"
+                            (valueChange)="onCaptionChange()"
                             [imageUrl]="currentImageUrl()"
                         />
                     } @else {

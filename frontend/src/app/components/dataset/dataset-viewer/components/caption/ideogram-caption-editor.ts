@@ -257,7 +257,7 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
                         (click)="addElement()">+ Add Element</button>
                 </div>
 
-                @for (el of doc().elements; track el; let i = $index) {
+                @for (el of doc().elements; track $index; let i = $index) {
                     <div class="element-card" data-testid="element-card" [attr.data-element-index]="i">
                         <!-- Type toggle -->
                         <div class="flex items-center gap-2 mb-2">

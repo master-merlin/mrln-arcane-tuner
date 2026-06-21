@@ -326,3 +326,100 @@ describe('IdeogramCaptionEditor — per-element add-color', () => {
         expect(emitted.length).toBeGreaterThan(0);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Test: onBoxChanged updates element bbox in serialized value
+// ---------------------------------------------------------------------------
+
+describe('IdeogramCaptionEditor — onBoxChanged', () => {
+    it('updates the element bbox via boxChanged event and commits to value', () => {
+        const { fixture, cmp } = mountEditor();
+        // PHOTO_FIXTURE has element[0] with bbox [10, 20, 300, 400]
+        // We call the handler directly since overlay is JSDOM with no real pointer events
+        // Access protected method via any cast
+        (cmp as unknown as { onBoxChanged(e: { id: string; bbox: number[] }): void })
+            .onBoxChanged({ id: '0', bbox: [50, 60, 500, 600] });
+        fixture.detectChanges();
+
+        const out = cmp.value();
+        const parsed = parse(out!) as Record<string, unknown>;
+        const dec = parsed['compositional_deconstruction'] as Record<string, unknown>;
+        const elements = dec['elements'] as Record<string, unknown>[];
+        expect(elements[0]['bbox']).toEqual([50, 60, 500, 600]);
+    });
+
+    it('onBoxChanged only updates the targeted element index, leaving others unchanged', () => {
+        // Build a fixture with 2 elements
+        const twoElFixture = serialize(normalize({
+            high_level_description: 'Two elements',
+            style_description: { aesthetics: '', lighting: '', medium: 'photograph', color_palette: [] },
+            compositional_deconstruction: {
+                background: '',
+                elements: [
+                    { type: 'obj', bbox: [10, 20, 100, 200], desc: 'first', color_palette: [] },
+                    { type: 'obj', bbox: [200, 300, 400, 500], desc: 'second', color_palette: [] },
+                ],
+            },
+        }));
+        const { fixture, cmp } = mountEditor(twoElFixture);
+
+        (cmp as unknown as { onBoxChanged(e: { id: string; bbox: number[] }): void })
+            .onBoxChanged({ id: '1', bbox: [50, 60, 500, 600] });
+        fixture.detectChanges();
+
+        const out = cmp.value();
+        const parsed = parse(out!) as Record<string, unknown>;
+        const dec = parsed['compositional_deconstruction'] as Record<string, unknown>;
+        const elements = dec['elements'] as Record<string, unknown>[];
+        // Element 0 unchanged
+        expect(elements[0]['bbox']).toEqual([10, 20, 100, 200]);
+        // Element 1 updated
+        expect(elements[1]['bbox']).toEqual([50, 60, 500, 600]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Test: wide layout renders two-pane
+// ---------------------------------------------------------------------------
+
+describe('IdeogramCaptionEditor — wide layout', () => {
+    function mountWide(initialValue = PHOTO_FIXTURE): {
+        fixture: ComponentFixture<IdeogramCaptionEditorComponent>;
+        cmp: IdeogramCaptionEditorComponent;
+    } {
+        TestBed.configureTestingModule({
+            imports: [IdeogramCaptionEditorComponent],
+        });
+        const fixture = TestBed.createComponent(IdeogramCaptionEditorComponent);
+        fixture.componentRef.setInput('value', initialValue);
+        fixture.componentRef.setInput('imageUrl', '/api/datasets/test/thumbnail?image_rel_path=img.png');
+        fixture.componentRef.setInput('wide', true);
+        fixture.detectChanges();
+        fixture.detectChanges();
+        return { fixture, cmp: fixture.componentInstance };
+    }
+
+    it('wide=true renders the overlay in the left pane (wide-bbox-overlay present)', () => {
+        const { fixture } = mountWide();
+        const overlay = fixture.nativeElement.querySelector('[data-testid="wide-bbox-overlay"]');
+        expect(overlay).toBeTruthy();
+    });
+
+    it('wide=true renders the sections pane (wide-sections-pane present)', () => {
+        const { fixture } = mountWide();
+        const sections = fixture.nativeElement.querySelector('[data-testid="wide-sections-pane"]');
+        expect(sections).toBeTruthy();
+    });
+
+    it('wide=true still renders the hld-textarea in the sections pane', () => {
+        const { fixture } = mountWide();
+        const textarea = fixture.nativeElement.querySelector('[data-testid="hld-textarea"]');
+        expect(textarea).toBeTruthy();
+    });
+
+    it('wide=false (default) does NOT render wide-bbox-overlay', () => {
+        const { fixture } = mountEditor(); // wide defaults to false
+        const overlay = fixture.nativeElement.querySelector('[data-testid="wide-bbox-overlay"]');
+        expect(overlay).toBeFalsy();
+    });
+});

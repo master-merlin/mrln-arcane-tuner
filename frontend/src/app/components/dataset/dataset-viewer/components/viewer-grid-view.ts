@@ -1,8 +1,10 @@
-import { Component, ElementRef, computed, effect, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ElementRef, computed, effect, inject, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
 import { VideoTilePreviewComponent } from './video-tile-preview';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
+import { ModelContextStore } from '../../../../state/model-context.store';
+import { detect, parse, serialize, normalize } from './caption/ideogram-format';
 
 /**
  * A grid row: a dataset pair plus two transient fields the textarea stamps in
@@ -179,13 +181,36 @@ export interface GridCropRequest {
                         
                          <!-- Editable Caption Area -->
                          <div class="flex-1 flex flex-col bg-surface-mid border-t border-surface-high">
-                            <textarea
-                                [ngModel]="displayCaption(pair)"
-                                (ngModelChange)="onCaptionEdit(pair, $event)"
-                                (blur)="onCaptionBlur(pair)"
-                                class="w-full h-full bg-transparent text-text-secondary text-xs p-3 focus:bg-base focus:outline-none resize-none font-mono"
-                                [placeholder]="datasetKind() === 'edit' ? 'Describe the edit (e.g. \\'make it a watercolor painting\\')...' : 'Add caption...'"
-                            ></textarea>
+                            @if (isStructured(pair)) {
+                                <!-- Structured (ideogram4 JSON): show summary + expand icon -->
+                                <div class="relative flex flex-col h-full">
+                                    <textarea
+                                        data-testid="structured-summary"
+                                        [ngModel]="summaryOf(pair)"
+                                        (ngModelChange)="onSummaryEdit(pair, $event)"
+                                        (blur)="onCaptionBlur(pair)"
+                                        class="w-full flex-1 bg-transparent text-text-secondary text-xs p-3 pr-8 focus:bg-base focus:outline-none resize-none font-mono"
+                                        placeholder="High-level description…"
+                                    ></textarea>
+                                    <button
+                                        data-testid="structured-expand-btn"
+                                        type="button"
+                                        class="absolute top-2 right-2 p-1 text-text-subtle hover:text-brand transition-colors"
+                                        title="Edit full structured caption"
+                                        (click)="editStructured.emit(pair)">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                                    </button>
+                                </div>
+                            } @else {
+                                <textarea
+                                    data-testid="plain-caption"
+                                    [ngModel]="displayCaption(pair)"
+                                    (ngModelChange)="onCaptionEdit(pair, $event)"
+                                    (blur)="onCaptionBlur(pair)"
+                                    class="w-full h-full bg-transparent text-text-secondary text-xs p-3 focus:bg-base focus:outline-none resize-none font-mono"
+                                    [placeholder]="datasetKind() === 'edit' ? 'Describe the edit (e.g. \\'make it a watercolor painting\\')...' : 'Add caption...'"
+                                ></textarea>
+                            }
                         </div>
                     </div>
                 }
@@ -346,6 +371,8 @@ export interface GridCropRequest {
     `]
 })
 export class ViewerGridViewComponent {
+    private modelContext = inject(ModelContextStore);
+
     pairs = input.required<GridPair[]>();
     datasetName = input.required<string>();
     mediaBaseUrl = input.required<string>();
@@ -539,6 +566,10 @@ export class ViewerGridViewComponent {
      *  it uploads them as targets. The grid stays role-agnostic. */
     filesDropped = output<FileList>();
 
+    /** Expand icon clicked on a structured (ideogram4 JSON) tile — the parent
+     *  should open the StructuredCaptionModal seeded with this pair. */
+    editStructured = output<GridPair>();
+
     /** True while a file drag hovers the grid — drives the drop overlay. */
     protected isDragging = signal<boolean>(false);
 
@@ -642,6 +673,43 @@ export class ViewerGridViewComponent {
     onEditClick(pair: GridPair, event: Event, index: number) {
         event.stopPropagation();
         this.editRequested.emit(index);
+    }
+
+    /**
+     * Returns true when the tile should render structured-caption UX:
+     *  - variant mode is active (a definition is selected, not masked)
+     *  - the caption format of the active definition is ideogram4_json
+     *  - the displayed text parses as a structured JSON document
+     */
+    isStructured(pair: GridPair): boolean {
+        if (!this.variantMode()) return false;
+        if (this.modelContext.activeCaptionFormat() !== 'ideogram4_json') return false;
+        return detect(this.displayCaption(pair));
+    }
+
+    /**
+     * Extract the human-readable summary from a structured caption.
+     * Falls back to empty string when the variant has not been generated yet.
+     */
+    summaryOf(pair: GridPair): string {
+        const raw = this.displayCaption(pair);
+        const parsed = parse(raw);
+        if (!parsed) return '';
+        return String(parsed['high_level_description'] ?? '');
+    }
+
+    /**
+     * Summary textarea edit handler for structured tiles. Parses the current
+     * variant JSON, replaces high_level_description with the new text,
+     * re-serializes via normalize+serialize, then routes through the same
+     * onCaptionEdit path so dirty/_variantCaption/save work as before.
+     */
+    onSummaryEdit(pair: GridPair, text: string): void {
+        const raw = this.displayCaption(pair);
+        const parsed = parse(raw) ?? {};
+        const updated = { ...parsed, high_level_description: text };
+        const serialized = serialize(normalize(updated as Record<string, unknown>));
+        this.onCaptionEdit(pair, serialized);
     }
 
     /**

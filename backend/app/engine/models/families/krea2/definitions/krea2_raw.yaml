@@ -1,0 +1,295 @@
+id: krea2-raw
+family: krea2
+name: Krea-2 Raw
+version: '1.0'
+control_inputs: 0
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-5
+  is_distilled: false
+components:
+  repo:
+    path: huggingface:krea/Krea-2-Raw
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer._class_name: Krea2Transformer2DModel
+  transformer.attention_head_dim: 128
+  transformer.axes_dims_rope:
+  - 32
+  - 48
+  - 48
+  transformer.in_channels: 64
+  transformer.intermediate_size: 16384
+  transformer.norm_eps: 1.0e-05
+  transformer.num_attention_heads: 48
+  transformer.num_key_value_heads: 12
+  transformer.num_layers: 28
+  transformer.num_layerwise_text_blocks: 2
+  transformer.num_refiner_text_blocks: 2
+  transformer.num_text_layers: 12
+  transformer.rope_theta: 1000.0
+  transformer.text_hidden_dim: 2560
+  transformer.text_intermediate_size: 6912
+  transformer.text_num_attention_heads: 20
+  transformer.text_num_key_value_heads: 20
+  transformer.timestep_embed_dim: 256
+  transformer.out_channels: 64
+  transformer.patch_size: 2
+  vae._class_name: AutoencoderKLQwenImage
+  vae.latent_channels: 16
+  vae.vae_scale_factor: 8
+  te.type: qwen3_vl
+  te.architectures:
+  - Qwen3VLModel
+  te.text_encoder_select_layers:
+  - 2
+  - 5
+  - 8
+  - 11
+  - 14
+  - 17
+  - 20
+  - 23
+  - 26
+  - 29
+  - 32
+  - 35
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.use_dynamic_shifting: true
+  scheduler.shift: 1.0
+lora_targetable_modules:
+- transformer_blocks.0.attn.to_q
+- transformer_blocks.0.attn.to_k
+- transformer_blocks.0.attn.to_v
+- transformer_blocks.0.attn.to_gate
+- transformer_blocks.0.attn.to_out.0
+- transformer_blocks.0.ff.gate
+- transformer_blocks.0.ff.up
+- transformer_blocks.0.ff.down
+- transformer_blocks.1.attn.to_q
+- transformer_blocks.1.attn.to_k
+- transformer_blocks.1.attn.to_v
+- transformer_blocks.1.attn.to_gate
+- transformer_blocks.1.attn.to_out.0
+- transformer_blocks.1.ff.gate
+- transformer_blocks.1.ff.up
+- transformer_blocks.1.ff.down
+- transformer_blocks.2.attn.to_q
+- transformer_blocks.2.attn.to_k
+- transformer_blocks.2.attn.to_v
+- transformer_blocks.2.attn.to_gate
+- transformer_blocks.2.attn.to_out.0
+- transformer_blocks.2.ff.gate
+- transformer_blocks.2.ff.up
+- transformer_blocks.2.ff.down
+- transformer_blocks.3.attn.to_q
+- transformer_blocks.3.attn.to_k
+- transformer_blocks.3.attn.to_v
+- transformer_blocks.3.attn.to_gate
+- transformer_blocks.3.attn.to_out.0
+- transformer_blocks.3.ff.gate
+- transformer_blocks.3.ff.up
+- transformer_blocks.3.ff.down
+- transformer_blocks.4.attn.to_q
+- transformer_blocks.4.attn.to_k
+- transformer_blocks.4.attn.to_v
+- transformer_blocks.4.attn.to_gate
+- transformer_blocks.4.attn.to_out.0
+- transformer_blocks.4.ff.gate
+- transformer_blocks.4.ff.up
+- transformer_blocks.4.ff.down
+- transformer_blocks.5.attn.to_q
+- transformer_blocks.5.attn.to_k
+- transformer_blocks.5.attn.to_v
+- transformer_blocks.5.attn.to_gate
+- transformer_blocks.5.attn.to_out.0
+- transformer_blocks.5.ff.gate
+- transformer_blocks.5.ff.up
+- transformer_blocks.5.ff.down
+- transformer_blocks.6.attn.to_q
+- transformer_blocks.6.attn.to_k
+- transformer_blocks.6.attn.to_v
+- transformer_blocks.6.attn.to_gate
+- transformer_blocks.6.attn.to_out.0
+- transformer_blocks.6.ff.gate
+- transformer_blocks.6.ff.up
+- transformer_blocks.6.ff.down
+- transformer_blocks.7.attn.to_q
+- transformer_blocks.7.attn.to_k
+- transformer_blocks.7.attn.to_v
+- transformer_blocks.7.attn.to_gate
+- transformer_blocks.7.attn.to_out.0
+- transformer_blocks.7.ff.gate
+- transformer_blocks.7.ff.up
+- transformer_blocks.7.ff.down
+- transformer_blocks.8.attn.to_q
+- transformer_blocks.8.attn.to_k
+- transformer_blocks.8.attn.to_v
+- transformer_blocks.8.attn.to_gate
+- transformer_blocks.8.attn.to_out.0
+- transformer_blocks.8.ff.gate
+- transformer_blocks.8.ff.up
+- transformer_blocks.8.ff.down
+- transformer_blocks.9.attn.to_q
+- transformer_blocks.9.attn.to_k
+- transformer_blocks.9.attn.to_v
+- transformer_blocks.9.attn.to_gate
+- transformer_blocks.9.attn.to_out.0
+- transformer_blocks.9.ff.gate
+- transformer_blocks.9.ff.up
+- transformer_blocks.9.ff.down
+- transformer_blocks.10.attn.to_q
+- transformer_blocks.10.attn.to_k
+- transformer_blocks.10.attn.to_v
+- transformer_blocks.10.attn.to_gate
+- transformer_blocks.10.attn.to_out.0
+- transformer_blocks.10.ff.gate
+- transformer_blocks.10.ff.up
+- transformer_blocks.10.ff.down
+- transformer_blocks.11.attn.to_q
+- transformer_blocks.11.attn.to_k
+- transformer_blocks.11.attn.to_v
+- transformer_blocks.11.attn.to_gate
+- transformer_blocks.11.attn.to_out.0
+- transformer_blocks.11.ff.gate
+- transformer_blocks.11.ff.up
+- transformer_blocks.11.ff.down
+- transformer_blocks.12.attn.to_q
+- transformer_blocks.12.attn.to_k
+- transformer_blocks.12.attn.to_v
+- transformer_blocks.12.attn.to_gate
+- transformer_blocks.12.attn.to_out.0
+- transformer_blocks.12.ff.gate
+- transformer_blocks.12.ff.up
+- transformer_blocks.12.ff.down
+- transformer_blocks.13.attn.to_q
+- transformer_blocks.13.attn.to_k
+- transformer_blocks.13.attn.to_v
+- transformer_blocks.13.attn.to_gate
+- transformer_blocks.13.attn.to_out.0
+- transformer_blocks.13.ff.gate
+- transformer_blocks.13.ff.up
+- transformer_blocks.13.ff.down
+- transformer_blocks.14.attn.to_q
+- transformer_blocks.14.attn.to_k
+- transformer_blocks.14.attn.to_v
+- transformer_blocks.14.attn.to_gate
+- transformer_blocks.14.attn.to_out.0
+- transformer_blocks.14.ff.gate
+- transformer_blocks.14.ff.up
+- transformer_blocks.14.ff.down
+- transformer_blocks.15.attn.to_q
+- transformer_blocks.15.attn.to_k
+- transformer_blocks.15.attn.to_v
+- transformer_blocks.15.attn.to_gate
+- transformer_blocks.15.attn.to_out.0
+- transformer_blocks.15.ff.gate
+- transformer_blocks.15.ff.up
+- transformer_blocks.15.ff.down
+- transformer_blocks.16.attn.to_q
+- transformer_blocks.16.attn.to_k
+- transformer_blocks.16.attn.to_v
+- transformer_blocks.16.attn.to_gate
+- transformer_blocks.16.attn.to_out.0
+- transformer_blocks.16.ff.gate
+- transformer_blocks.16.ff.up
+- transformer_blocks.16.ff.down
+- transformer_blocks.17.attn.to_q
+- transformer_blocks.17.attn.to_k
+- transformer_blocks.17.attn.to_v
+- transformer_blocks.17.attn.to_gate
+- transformer_blocks.17.attn.to_out.0
+- transformer_blocks.17.ff.gate
+- transformer_blocks.17.ff.up
+- transformer_blocks.17.ff.down
+- transformer_blocks.18.attn.to_q
+- transformer_blocks.18.attn.to_k
+- transformer_blocks.18.attn.to_v
+- transformer_blocks.18.attn.to_gate
+- transformer_blocks.18.attn.to_out.0
+- transformer_blocks.18.ff.gate
+- transformer_blocks.18.ff.up
+- transformer_blocks.18.ff.down
+- transformer_blocks.19.attn.to_q
+- transformer_blocks.19.attn.to_k
+- transformer_blocks.19.attn.to_v
+- transformer_blocks.19.attn.to_gate
+- transformer_blocks.19.attn.to_out.0
+- transformer_blocks.19.ff.gate
+- transformer_blocks.19.ff.up
+- transformer_blocks.19.ff.down
+- transformer_blocks.20.attn.to_q
+- transformer_blocks.20.attn.to_k
+- transformer_blocks.20.attn.to_v
+- transformer_blocks.20.attn.to_gate
+- transformer_blocks.20.attn.to_out.0
+- transformer_blocks.20.ff.gate
+- transformer_blocks.20.ff.up
+- transformer_blocks.20.ff.down
+- transformer_blocks.21.attn.to_q
+- transformer_blocks.21.attn.to_k
+- transformer_blocks.21.attn.to_v
+- transformer_blocks.21.attn.to_gate
+- transformer_blocks.21.attn.to_out.0
+- transformer_blocks.21.ff.gate
+- transformer_blocks.21.ff.up
+- transformer_blocks.21.ff.down
+- transformer_blocks.22.attn.to_q
+- transformer_blocks.22.attn.to_k
+- transformer_blocks.22.attn.to_v
+- transformer_blocks.22.attn.to_gate
+- transformer_blocks.22.attn.to_out.0
+- transformer_blocks.22.ff.gate
+- transformer_blocks.22.ff.up
+- transformer_blocks.22.ff.down
+- transformer_blocks.23.attn.to_q
+- transformer_blocks.23.attn.to_k
+- transformer_blocks.23.attn.to_v
+- transformer_blocks.23.attn.to_gate
+- transformer_blocks.23.attn.to_out.0
+- transformer_blocks.23.ff.gate
+- transformer_blocks.23.ff.up
+- transformer_blocks.23.ff.down
+- transformer_blocks.24.attn.to_q
+- transformer_blocks.24.attn.to_k
+- transformer_blocks.24.attn.to_v
+- transformer_blocks.24.attn.to_gate
+- transformer_blocks.24.attn.to_out.0
+- transformer_blocks.24.ff.gate
+- transformer_blocks.24.ff.up
+- transformer_blocks.24.ff.down
+- transformer_blocks.25.attn.to_q
+- transformer_blocks.25.attn.to_k
+- transformer_blocks.25.attn.to_v
+- transformer_blocks.25.attn.to_gate
+- transformer_blocks.25.attn.to_out.0
+- transformer_blocks.25.ff.gate
+- transformer_blocks.25.ff.up
+- transformer_blocks.25.ff.down
+- transformer_blocks.26.attn.to_q
+- transformer_blocks.26.attn.to_k
+- transformer_blocks.26.attn.to_v
+- transformer_blocks.26.attn.to_gate
+- transformer_blocks.26.attn.to_out.0
+- transformer_blocks.26.ff.gate
+- transformer_blocks.26.ff.up
+- transformer_blocks.26.ff.down
+- transformer_blocks.27.attn.to_q
+- transformer_blocks.27.attn.to_k
+- transformer_blocks.27.attn.to_v
+- transformer_blocks.27.attn.to_gate
+- transformer_blocks.27.attn.to_out.0
+- transformer_blocks.27.ff.gate
+- transformer_blocks.27.ff.up
+- transformer_blocks.27.ff.down
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 28
+  approx_vram_mb: 500

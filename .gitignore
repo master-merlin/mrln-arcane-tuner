@@ -12,6 +12,7 @@
 # ========================
 backend/datasets/
 backend/outputs/
+/outputs/
 backend/venv/
 backend/models/
 backend/.*

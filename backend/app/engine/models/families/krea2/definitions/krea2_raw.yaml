@@ -2,7 +2,6 @@ id: krea2-raw
 family: krea2
 name: Krea-2 Raw
 version: '1.0'
-control_inputs: 0
 defaults:
   resolution: 1024
   scheduler: flow_match
@@ -13,6 +12,7 @@ components:
     path: huggingface:krea/Krea-2-Raw
     type: diffusers
     params: {}
+control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.bfloat16
@@ -63,6 +63,181 @@ architecture_params:
   scheduler._class_name: FlowMatchEulerDiscreteScheduler
   scheduler.use_dynamic_shifting: true
   scheduler.shift: 1.0
+  hidden_size: 6144
+  num_heads: 48
+  depth: 28
+  in_channels: 64
+  te.dtype: bfloat16
+  te.image_token_id: 151655
+  te.model_type: qwen3_vl
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 2560
+    initializer_range: 0.02
+    intermediate_size: 9728
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 32
+    num_hidden_layers: 36
+    num_key_value_heads: 8
+    pad_token_id: null
+    rms_norm_eps: 1.0e-06
+    rope_parameters:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_theta: 5000000
+      rope_type: default
+    tie_word_embeddings: true
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 2560
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 9728
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 32
+  te.text_config.num_hidden_layers: 36
+  te.text_config.num_key_value_heads: 8
+  te.text_config.pad_token_id: null
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_parameters:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_theta: 5000000
+    rope_type: default
+  te.text_config.rope_parameters.mrope_interleaved: true
+  te.text_config.rope_parameters.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_parameters.rope_theta: 5000000
+  te.text_config.rope_parameters.rope_type: default
+  te.text_config.tie_word_embeddings: true
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: true
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 5
+    - 11
+    - 17
+    depth: 24
+    dtype: bfloat16
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1024
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4096
+    model_type: qwen3_vl
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 2560
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 5
+  - 11
+  - 17
+  te.vision_config.depth: 24
+  te.vision_config.dtype: bfloat16
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1024
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4096
+  te.vision_config.model_type: qwen3_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 2560
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 6400
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift_terminal: null
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae.attn_scales: []
+  vae.base_dim: 96
+  vae.dim_mult:
+  - 1
+  - 2
+  - 4
+  - 4
+  vae.dropout: 0.0
+  vae.input_channels: 3
+  vae.latents_mean:
+  - -0.7571
+  - -0.7089
+  - -0.9113
+  - 0.1075
+  - -0.1745
+  - 0.9653
+  - -0.1517
+  - 1.5508
+  - 0.4134
+  - -0.0715
+  - 0.5517
+  - -0.3632
+  - -0.1922
+  - -0.9497
+  - 0.2503
+  - -0.2921
+  vae.latents_std:
+  - 2.8184
+  - 1.4541
+  - 2.3275
+  - 2.6558
+  - 1.2196
+  - 1.7708
+  - 2.6052
+  - 2.0743
+  - 3.2687
+  - 2.1526
+  - 2.8652
+  - 1.5579
+  - 1.6382
+  - 1.1253
+  - 2.8251
+  - 1.916
+  vae.num_res_blocks: 2
+  vae.temperal_downsample:
+  - false
+  - true
+  - true
+  vae.z_dim: 16
+  transformer.hidden_size: 6144
+model_size_mb: {}
 lora_targetable_modules:
 - transformer_blocks.0.attn.to_q
 - transformer_blocks.0.attn.to_k

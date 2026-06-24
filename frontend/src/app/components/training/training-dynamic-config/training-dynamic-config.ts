@@ -1,4 +1,4 @@
-import { Component, ChangeDetectionStrategy, output, input, inject, signal, computed, effect, DestroyRef, ViewChild } from '@angular/core';
+import { Component, ChangeDetectionStrategy, output, input, inject, signal, computed, effect, untracked, DestroyRef, ViewChild } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
 import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, FormsModule, type AbstractControl, type ValidationErrors } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
@@ -752,17 +752,27 @@ export class TrainingDynamicConfigComponent {
 
     effect(() => {
       const schema = this.schema();
-      if (schema) {
+      // Explicit reactive triggers: rebuild the form only when the schema
+      // changes (e.g. scope switch reloads it) or the model list first arrives.
+      const models = this.availableModels();
+      if (!schema) return;
+
+      // The rebuild mutates many of this component's signals (`properties`,
+      // `groups`, `modelSelectionProps`, …) — each a fresh array/object every
+      // run. Running it tracked would make this effect depend on its own
+      // writes and re-fire forever (the scope-switch freeze). `untracked`
+      // confines the writes so the effect re-runs ONLY on schema/models change.
+      untracked(() => {
         this.buildForm();
 
         // Ensure definition_id is initialized if form is empty
         const currentDef = this.form.get('definition_id')?.value;
-        const model = this.availableModels().find(m => m.id === currentDef);
+        const model = models.find(m => m.id === currentDef);
 
         if (model) {
           this.selectedFamily.set(model.family ?? '');
-        } else if (this.availableModels().length > 0) {
-          const firstModel = this.availableModels()[0];
+        } else if (models.length > 0) {
+          const firstModel = models[0];
           this.selectedFamily.set(firstModel.family ?? '');
           this.form.get('definition_id')?.setValue(firstModel.id);
         }
@@ -786,7 +796,7 @@ export class TrainingDynamicConfigComponent {
             this.templateSelector.triggerAutoSave(newVal, defId);
           }
         });
-      }
+      });
     });
   }
 

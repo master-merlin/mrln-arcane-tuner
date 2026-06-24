@@ -37,6 +37,28 @@ _FALLBACK_MAP: dict[str, list[str]] = {
     "qfloat8_e5m2": ["fp8", "int8", "none"],
 }
 
+
+def _is_blackwell() -> bool:
+    """True if the active CUDA device is an NVIDIA Blackwell GPU.
+
+    Blackwell is compute capability major >= 10 (sm_100 datacenter B100/B200/GB200,
+    sm_120 workstation/consumer e.g. RTX PRO 6000 Blackwell, RTX 50-series). Hopper
+    is sm_90, Ada sm_89, Ampere sm_80/86 — all below 10.
+
+    On Blackwell, FP8 training is a runtime module swap (``nn.Linear`` →
+    ``Float8Linear``) rather than weight-only compression, so the quantized-weight
+    disk cache does not apply (see ``_quantize_primary_model``). Returns ``False``
+    when CUDA is unavailable or the capability cannot be read.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        major, _ = torch.cuda.get_device_capability()
+    except Exception:
+        return False
+    return major >= 10
+
+
 class QuantizationFactory:
     """Factory and registry for quantization backends."""
 

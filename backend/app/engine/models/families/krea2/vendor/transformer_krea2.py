@@ -108,6 +108,9 @@ class Krea2AttnProcessor:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
+        # Tensors are (B, L, H, D); diffusers' dispatch_attention_fn accepts this layout natively
+        # (see diffusers.models.attention_dispatch convention at lines 497-499) and transposes to
+        # (B, H, L, D) internally for scaled dot-product attention (lines 916-918). No transpose needed here.
         hidden_states = dispatch_attention_fn(
             query,
             key,

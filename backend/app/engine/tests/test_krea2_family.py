@@ -62,6 +62,8 @@ def test_krea2_vendor_forward_shape():
         )[0]
 
     assert out.shape == (B, img_seq, 64), f"unexpected output shape: {out.shape}"
+    assert out.isfinite().all(), "output contains NaN or inf"
+    assert out.float().std() > 0, "output is degenerate (zero std)"
 
 
 def test_krea2_conditioning_helpers():

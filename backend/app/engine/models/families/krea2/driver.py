@@ -281,17 +281,19 @@ class Krea2Driver(IModelDriver):
     def get_saver(self):
         """Return Krea-2 LoRA saver.
 
-        Intentionally reuses ``QwenImageSaver`` because ``GenericLoRASaver``
-        (its base) derives saved key names purely from the PEFT-wrapped model's
-        actual module paths — no family-specific prefix is hardcoded.  For
+        Uses ``Krea2Saver``, which inherits from ``GenericLoRASaver``.  Key
+        derivation is family-agnostic — based purely on the PEFT-wrapped model's
+        actual module paths with no family-specific prefix hardcoded.  For
         Krea-2 this yields canonical ``diffusion_model.transformer_blocks.N.
         attn/ff.*.lora_A/B.weight`` keys that round-trip identically onto
         Krea-2-Raw and Krea-2-Turbo (same ``Krea2Transformer2DModel``
-        architecture).  Validated by ``test_krea2_lora_portability.py``.
+        architecture).  Only the ``architecture_name`` metadata differs,
+        correctly identifying saved LoRAs as "krea2" instead of "qwen_image".
+        Validated by ``test_krea2_lora_portability.py``.
         """
-        from app.engine.models.families.qwen_image.saver import QwenImageSaver
+        from app.engine.models.families.krea2.saver import Krea2Saver
 
-        return QwenImageSaver()
+        return Krea2Saver()
 
     # --- Phase 9: Advanced Memory & Training Features ---
 

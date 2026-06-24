@@ -221,12 +221,12 @@ def test_krea2_saver_key_format():
 
 
 def test_krea2_saver_is_family_agnostic():
-    """QwenImageSaver (the current krea2 saver) uses family-agnostic key derivation.
+    """Krea2Saver uses family-agnostic key derivation.
 
     Key format is based purely on the PEFT-wrapped model's module paths,
     NOT on any qwen-specific hardcoded prefix.  This test confirms that
     Krea2Transformer2DModel module paths appear verbatim in the saved keys,
-    proving the saver is safe to reuse for krea2.
+    proving the saver correctly derives canonical keys.
     """
     from safetensors.torch import load_file
     from unittest.mock import MagicMock
@@ -267,4 +267,47 @@ def test_krea2_saver_is_family_agnostic():
         assert expected in sd, (
             f"Expected key {expected!r} not found in saved dict.\n"
             f"Available keys (sample): {list(sd.keys())[:5]}"
+        )
+
+
+def test_krea2_saver_architecture_metadata():
+    """Krea2Saver writes correct modelspec.architecture metadata.
+
+    The saved safetensors file must contain ``modelspec.architecture: "krea2"``
+    (not "qwen_image" or any other value) to ensure proper identification
+    and roundtrip onto Krea-2 inference pipelines.
+    """
+    from safetensors import safe_open
+    from unittest.mock import MagicMock
+
+    from app.engine.models.families.krea2.driver import Krea2Driver
+
+    definition = MagicMock()
+    definition.family = "krea2"
+    definition.id = "krea2-test"
+    definition.lora_targetable_modules = _LORA_TARGETS
+    definition.architecture_params = {}
+
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as td:
+        saved_path = pathlib.Path(td) / "test.safetensors"
+
+        raw = _build_peft_model()
+        drv = Krea2Driver(definition, torch.device("cpu"))
+        saver = drv.get_saver()
+        saver.save(components={"unet": raw, "config": {}}, path=saved_path)
+
+        # Read metadata using safe_open
+        with safe_open(str(saved_path), framework="pt") as f:
+            metadata = f.metadata()
+
+        # Assert that modelspec.architecture is set to "krea2"
+        assert metadata is not None, "Safetensors metadata is None"
+        assert "modelspec.architecture" in metadata, (
+            f"modelspec.architecture key not found in metadata. "
+            f"Available keys: {list(metadata.keys())}"
+        )
+        assert metadata["modelspec.architecture"] == "krea2", (
+            f"modelspec.architecture is {metadata['modelspec.architecture']!r}, "
+            f"expected 'krea2'"
         )

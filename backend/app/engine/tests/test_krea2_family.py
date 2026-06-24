@@ -406,3 +406,214 @@ def test_krea2_driver_wired_in_trainer():
         # loader and driver must both be assigned.
         assert trainer.loader is mock_loader_instance
         assert trainer.driver is mock_driver_instance
+
+
+# ── Step 6 — Real-seam integration: encode_text→forward_pass, PEFT sync ────
+
+def _build_real_trainer_shell() -> "Krea2Trainer":
+    """Build a minimal Krea2Trainer shell with real driver + tiny transformer.
+
+    Does NOT call setup() (which is async and requires full component loading).
+    Instead wires up the driver and transformer directly so the encode_text→
+    forward_pass seam can be tested without hitting disk or GPU.
+    """
+    import torch
+    from unittest.mock import MagicMock
+    from app.engine.models.families.krea2.trainer import Krea2Trainer
+    from app.engine.models.families.krea2.driver import Krea2Driver
+    from app.engine.models.families.krea2.vendor.transformer_krea2 import (
+        Krea2Transformer2DModel,
+    )
+
+    definition = MagicMock()
+    definition.family = "krea2"
+    definition.id = "krea2-test"
+    definition.lora_targetable_modules = []
+    definition.architecture_params = {
+        "te.text_encoder_select_layers": [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35],
+    }
+
+    # Use a real MagicMock for the trainer but bind the real methods we want to test
+    trainer = MagicMock(spec=Krea2Trainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+    trainer.config = {"cache_text_embeddings": False}
+    trainer.text_cache = {}
+
+    # Real driver
+    drv = Krea2Driver(definition, torch.device("cpu"))
+
+    # Tiny real transformer
+    tiny_cfg = dict(**_TINY_CFG)
+    tiny_model = Krea2Transformer2DModel.from_config(tiny_cfg).eval()
+
+    # Stub tokenizer/TE that satisfies the Krea2 12-layer stacking contract.
+    # D must match _TINY_CFG text_hidden_dim=128 (not the real 2560) so the
+    # tiny transformer's text_fusion layer accepts the stacked embeddings.
+    #
+    # get_text_hidden_states calls tokenizer TWICE (text + suffix), then
+    # concatenates and calls the TE with the combined input. The stub must
+    # produce correct (B, seq_len, D) hidden states for whatever seq_len
+    # the TE receives — so we generate fake_hs per-call based on input shape.
+    D = 128  # matches _TINY_CFG text_hidden_dim
+    PREFIX_IDX = 34  # tokens to drop (krea2_conditioning._PROMPT_TEMPLATE_ENCODE_START_IDX)
+
+    stub_tok = MagicMock()
+    def _fake_tokenize(texts, **kwargs):
+        n = len(texts)
+        max_len = kwargs.get("max_length", 20)
+        tok_out = MagicMock()
+        tok_out.input_ids = torch.zeros(n, max_len, dtype=torch.long)
+        tok_out.attention_mask = torch.ones(n, max_len, dtype=torch.long)
+        tok_out.to = lambda device: tok_out
+        return tok_out
+    stub_tok.side_effect = _fake_tokenize
+
+    stub_te = MagicMock()
+    def _fake_te_forward(**kwargs):
+        # Respond to whatever input shape the TE receives
+        inp = kwargs.get("input_ids")
+        B_in, seq_in = inp.shape
+        out = MagicMock()
+        out.hidden_states = tuple(torch.randn(B_in, seq_in, D) for _ in range(36))
+        return out
+    stub_te.side_effect = _fake_te_forward
+    stub_te.parameters = lambda: iter([torch.zeros(1)])
+
+    # Assign components
+    drv.assign_components({
+        "unet": tiny_model,
+        "vae": None,
+        "text_encoder": stub_te,
+        "tokenizer": stub_tok,
+    })
+    trainer.driver = drv
+
+    # Bind the real trainer methods (unbound → bound) so MagicMock doesn't stub them
+    trainer.encode_text = lambda captions, dtype, batch=None: Krea2Trainer.encode_text(
+        trainer, captions, dtype, batch
+    )
+    trainer._encode_text_direct = lambda captions, dtype: Krea2Trainer._encode_text_direct(
+        trainer, captions, dtype
+    )
+    trainer._get_cached_text_embeddings = (
+        lambda captions, dtype: Krea2Trainer._get_cached_text_embeddings(
+            trainer, captions, dtype
+        )
+    )
+    trainer.forward_pass = lambda noisy_input, timesteps, text_embeddings, batch: (
+        Krea2Trainer.forward_pass(trainer, noisy_input, timesteps, text_embeddings, batch)
+    )
+
+    return trainer
+
+
+def test_krea2_trainer_encode_to_forward_real_seam():
+    """C1/C2: trainer.encode_text result must be consumable by driver.forward_pass.
+
+    Before the fix, the base encode_text returns a TextEncoderOutput (not a
+    tuple), which causes AttributeError in driver.forward_pass at:
+        enc_hs, enc_mask = text_embeddings  # → TypeError: cannot unpack non-tuple
+
+    After the fix, Krea2Trainer.encode_text returns (embeddings, mask) and the
+    whole encode→forward round trip must produce a finite 4-D prediction.
+    """
+    import torch
+    from app.engine.models.families.krea2.trainer import Krea2Trainer
+
+    trainer = _build_real_trainer_shell()
+
+    B, C, H, W = 1, 16, 8, 8
+    noisy_input = torch.randn(B, C, H, W)
+    timesteps = torch.tensor([500.0])
+
+    # encode_text via the real trainer method (not the base)
+    text_emb = trainer.encode_text(["a krea test caption"], torch.float32)
+
+    # The result MUST be a 2-tuple (embeddings, mask) — not a TextEncoderOutput
+    assert isinstance(text_emb, tuple) and len(text_emb) == 2, (
+        f"encode_text must return a 2-tuple, got {type(text_emb)}"
+    )
+    emb, mask = text_emb
+    assert emb.ndim == 4, f"embeddings must be 4-D [B,L,12,D], got {emb.ndim}-D"
+
+    # Forward pass must not raise and must produce correct shape
+    with torch.no_grad():
+        pred = trainer.forward_pass(
+            noisy_input=noisy_input,
+            timesteps=timesteps,
+            text_embeddings=text_emb,
+            batch={},
+        )
+
+    assert pred.shape == (B, C, H, W), f"unexpected pred shape: {pred.shape}"
+    assert pred.isfinite().all(), "forward_pass output contains NaN/inf"
+
+
+def test_krea2_trainer_peft_model_sync():
+    """C3/C4: after _update_primary_model, driver.model + trainer.transformer sync.
+
+    Before the fix:
+    - C3: driver.model stays as the original unwrapped model (LoRA absent from graph).
+    - C4: trainer.transformer is None (driver has no .transformer attr).
+
+    After the fix:
+    - driver.model IS the peft-wrapped model.
+    - trainer.transformer is not None and is the same object as driver.model.
+    """
+    import torch
+    import torch.nn as nn
+    from unittest.mock import MagicMock
+    from app.engine.models.families.krea2.trainer import Krea2Trainer
+    from app.engine.models.families.krea2.driver import Krea2Driver
+    from app.engine.models.families.krea2.vendor.transformer_krea2 import (
+        Krea2Transformer2DModel,
+    )
+
+    definition = MagicMock()
+    definition.family = "krea2"
+    definition.id = "krea2-test"
+    definition.lora_targetable_modules = []
+    definition.architecture_params = {}
+
+    trainer = MagicMock(spec=Krea2Trainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+    trainer.components = {}
+
+    drv = Krea2Driver(definition, torch.device("cpu"))
+    tiny_model = Krea2Transformer2DModel.from_config(_TINY_CFG).eval()
+    drv.assign_components({
+        "unet": tiny_model, "vae": None, "text_encoder": None, "tokenizer": None,
+    })
+    trainer.driver = drv
+    trainer.components = {"unet": tiny_model}
+
+    # Simulate trainer-level self.model alias (set during _assign_components)
+    trainer.model = tiny_model
+
+    # Call real _update_primary_model with a fake "peft-wrapped" model
+    class _FakePEFT(nn.Module):
+        pass
+    peft_wrapped = _FakePEFT()
+
+    Krea2Trainer._update_primary_model(trainer, peft_wrapped)
+
+    # C3: driver.model must be updated
+    assert trainer.driver.model is peft_wrapped, (
+        "C3: driver.model was NOT updated after _update_primary_model"
+    )
+    # trainer.components must also be updated
+    assert trainer.components.get("unet") is peft_wrapped, (
+        "components['unet'] was NOT updated after _update_primary_model"
+    )
+
+    # C4: trainer.transformer property must return driver.model (not None)
+    # We call the property getter directly on the class with the trainer as self
+    transformer_val = Krea2Trainer.transformer.fget(trainer)
+    assert transformer_val is not None, (
+        "C4: trainer.transformer returned None (driver.model not wired)"
+    )
+    assert transformer_val is peft_wrapped, (
+        f"C4: trainer.transformer is {transformer_val!r}, expected peft_wrapped"
+    )

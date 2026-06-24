@@ -135,7 +135,7 @@ def test_krea2_family_registered():
 # ── Step B: Loader Manifest ───────────────────────────────────────────────────
 
 def test_krea2_manifest_components():
-    """Krea2Loader manifest must declare tokenizer, text_encoder, and vae."""
+    """Krea2Loader manifest declares tokenizer + vae; TE/transformer load by hand."""
     from app.engine.models.families.krea2.loader import Krea2Loader
 
     loader = Krea2Loader(torch.device("cpu"))
@@ -143,21 +143,60 @@ def test_krea2_manifest_components():
     specs = loader.get_component_manifest(definition)
 
     keys = {s.key for s in specs}
-    assert {"tokenizer", "text_encoder", "vae"} <= keys, (
+    assert {"tokenizer", "vae"} <= keys, (
         f"missing required manifest keys; got {keys}"
+    )
+    # text_encoder (Qwen3-VL) and the vendored transformer are loaded by hand in
+    # load() — NOT via the manifest (TE needs a transformers-5.x config translation).
+    assert "text_encoder" not in keys, (
+        "text_encoder must be loaded by hand (config translation), not via manifest"
     )
 
     # Verify specific hf_classes
     spec_map = {s.key: s for s in specs}
-    assert "Qwen2Tokenizer" in spec_map["tokenizer"].hf_class, (
+    # AutoTokenizer, not the slow Qwen2Tokenizer: the checkpoint ships only a
+    # fast tokenizer.json (no vocab.json/merges.txt), so the slow class fails.
+    assert "AutoTokenizer" in spec_map["tokenizer"].hf_class, (
         f"tokenizer hf_class wrong: {spec_map['tokenizer'].hf_class}"
     )
-    assert "Qwen3VLModel" in spec_map["text_encoder"].hf_class, (
-        f"text_encoder hf_class wrong: {spec_map['text_encoder'].hf_class}"
+    # extra_special_tokens override: tokenizer_config.json stores it as a list
+    # (newer-transformers format) which crashes transformers 4.57's dict-expecting
+    # _set_model_specific_special_tokens; {} override avoids the crash.
+    assert spec_map["tokenizer"].load_kwargs.get("extra_special_tokens") == {}, (
+        "tokenizer must override extra_special_tokens={} for transformers 4.57 compat"
     )
     assert "AutoencoderKLQwenImage" in spec_map["vae"].hf_class or (
         "AutoencoderKL" in spec_map["vae"].hf_class
     ), f"vae hf_class wrong: {spec_map['vae'].hf_class}"
+
+
+def test_krea2_translate_qwen3vl_rope_config():
+    """rope_parameters (transformers 5.x) is translated to rope_scaling (4.57)."""
+    from types import SimpleNamespace
+    from app.engine.models.families.krea2.loader import Krea2Loader
+
+    # Simulate a transformers-5.2 Qwen3-VL config: rope under text_config.rope_parameters
+    tc = SimpleNamespace(
+        rope_parameters={
+            "mrope_interleaved": True,
+            "mrope_section": [24, 20, 20],
+            "rope_theta": 5000000,
+            "rope_type": "default",
+        },
+        rope_scaling=None,
+    )
+    cfg = SimpleNamespace(text_config=tc)
+    Krea2Loader._translate_qwen3vl_rope_config(cfg)
+    assert tc.rope_scaling is not None, "rope_scaling must be injected"
+    assert tc.rope_scaling["mrope_section"] == [24, 20, 20]
+    assert tc.rope_scaling["rope_type"] == "default"
+    assert tc.rope_theta == 5000000
+
+    # No-op when rope_scaling already present (4.57-format config)
+    tc2 = SimpleNamespace(rope_parameters=None, rope_scaling={"mrope_section": [1, 2, 3]})
+    cfg2 = SimpleNamespace(text_config=tc2)
+    Krea2Loader._translate_qwen3vl_rope_config(cfg2)
+    assert tc2.rope_scaling == {"mrope_section": [1, 2, 3]}
 
 
 # ── Step C: Definitions ───────────────────────────────────────────────────────

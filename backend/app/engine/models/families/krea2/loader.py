@@ -40,20 +40,30 @@ class Krea2Loader(GenericComponentLoader):
 
         return [
             # -- Tokenizer --
+            # AutoTokenizer (NOT the slow Qwen2Tokenizer named in model_index.json):
+            # the checkpoint ships only a fast tokenizer.json (no vocab.json/merges.txt),
+            # so the slow class fails with vocab_file=None. AutoTokenizer loads the fast one.
             ComponentSpec(
                 key="tokenizer",
-                hf_class="transformers.Qwen2Tokenizer",
+                hf_class="transformers.AutoTokenizer",
                 subfolder="tokenizer",
                 candidates=["tokenizer"],
                 is_torch_model=False,
+                # The checkpoint's tokenizer_config.json stores
+                # ``extra_special_tokens`` as a LIST (newer-transformers format),
+                # but transformers 4.57 expects a dict and crashes on
+                # ``list.keys()``. Override with {} — the 13 ChatML/vision
+                # special tokens are already defined as special added-tokens in
+                # tokenizer.json, so they remain functional (verified:
+                # <|im_start|>=151644, <|im_end|>=151645 stay single tokens).
+                load_kwargs={"extra_special_tokens": {}},
             ),
-            # -- Text Encoder (Qwen3-VL base model) --
-            ComponentSpec(
-                key="text_encoder",
-                hf_class="transformers.Qwen3VLModel",
-                subfolder="text_encoder",
-                candidates=["text_encoder"],
-            ),
+            # NOTE: text_encoder (Qwen3-VL) is NOT in the manifest — it is loaded
+            # by hand in load() with a config translation. The checkpoint's
+            # text_encoder/config.json was saved by transformers 5.2 (it uses the
+            # 5.x ``rope_parameters`` key); pinned transformers 4.57 reads
+            # ``rope_scaling`` and crashes on ``NoneType.get``. The weights load
+            # fine on 4.57 once the config is translated (verified: 4.44B params).
             # -- VAE (AutoencoderKLQwenImage — same as qwen_image) --
             ComponentSpec(
                 key="vae",
@@ -72,6 +82,30 @@ class Krea2Loader(GenericComponentLoader):
             return "diffusers.models.AutoencoderKLQwenImage"
         except ImportError:
             return "diffusers.AutoencoderKL"
+
+    @staticmethod
+    def _translate_qwen3vl_rope_config(config: Any) -> Any:
+        """Translate a transformers-5.x Qwen3-VL config for pinned 4.57.
+
+        The Krea-2 text_encoder config is saved by transformers 5.2, which stores
+        rotary config under ``text_config.rope_parameters``. transformers 4.57's
+        ``Qwen3VLTextRotaryEmbedding`` reads ``config.rope_scaling`` and calls
+        ``.get(...)`` on it unconditionally → ``AttributeError`` when it is None.
+        Inject a 4.57-shaped ``rope_scaling`` derived from ``rope_parameters`` so
+        the (otherwise-compatible) weights load. No-op if ``rope_scaling`` is
+        already present. Mutates and returns ``config``.
+        """
+        tc = getattr(config, "text_config", config)
+        rp = getattr(tc, "rope_parameters", None)
+        if rp is not None and getattr(tc, "rope_scaling", None) is None:
+            tc.rope_scaling = {
+                "rope_type": rp.get("rope_type", "default"),
+                "mrope_section": rp.get("mrope_section", [24, 20, 20]),
+                "mrope_interleaved": rp.get("mrope_interleaved", True),
+            }
+            if "rope_theta" in rp:
+                tc.rope_theta = rp["rope_theta"]
+        return config
 
     async def load(
         self,
@@ -95,16 +129,38 @@ class Krea2Loader(GenericComponentLoader):
         Returns:
             Dict of loaded components including ``"unet"`` for the transformer.
         """
-        # 1. Load stock components (tokenizer, text_encoder, vae) via the
-        #    generic manifest path.  This also sets self._root_path.
+        # 1. Load stock components (tokenizer, vae) via the generic manifest path.
+        #    (text_encoder + transformer are loaded by hand below.)
+        #    This also sets self._root_path.
         components = await super().load(definition, torch_dtype, initial_device)
 
-        # 2. Load the vendored transformer by hand.
         dtype = torch_dtype or torch.bfloat16
         target_device = torch.device(
             initial_device if initial_device is not None else str(self.device),
         )
         root = Path(self._root_path)
+
+        # 2. Load the Qwen3-VL text encoder by hand with a config translation
+        #    (the checkpoint config is transformers-5.2 format; see manifest note).
+        te_dir = root / "text_encoder"
+        if te_dir.is_dir():
+            from transformers import AutoConfig, Qwen3VLModel
+
+            te_config = self._translate_qwen3vl_rope_config(
+                AutoConfig.from_pretrained(str(te_dir)),
+            )
+            self.logger.info("krea2.loading_text_encoder", path=str(te_dir))
+            text_encoder = Qwen3VLModel.from_pretrained(
+                str(te_dir),
+                config=te_config,
+                dtype=dtype,
+                low_cpu_mem_usage=True,
+            )
+            text_encoder = text_encoder.to(target_device)
+            text_encoder.eval()
+            components["text_encoder"] = text_encoder
+
+        # 3. Load the vendored transformer by hand.
         transformer_dir = root / "transformer"
         if not transformer_dir.is_dir():
             if not (root / "config.json").is_file():

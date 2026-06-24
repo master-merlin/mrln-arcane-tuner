@@ -4,10 +4,26 @@ TDD order:
   1. test_krea2_vendor_imports_and_instantiates  — module exists + builds on CPU
   2. test_krea2_vendor_forward_shape             — forward pass produces correct shape
   3. test_krea2_conditioning_helpers             — pack/unpack/prepare_position_ids
+  4. test_krea2_family_registered               — family in ModelRegistry
+  5. test_krea2_manifest_components             — loader manifest has required keys
+  6. test_krea2_definitions_loaded              — Raw + Turbo definitions loaded
 """
 
 import torch
 import pytest
+from unittest.mock import MagicMock
+
+from app.engine.core.definitions import ModelDefinition
+
+
+def _make_krea2_definition(**kwargs) -> MagicMock:
+    """Build a mock Krea2 ModelDefinition for loader tests."""
+    definition = MagicMock(spec=ModelDefinition)
+    definition.family = "krea2"
+    definition.id = kwargs.get("id", "krea2-test")
+    definition.components = {}
+    definition.architecture_params = kwargs.get("architecture_params", {})
+    return definition
 
 # ── Tiny config shared by both model tests ──────────────────────────────────
 _TINY_CFG = dict(
@@ -96,3 +112,90 @@ def test_krea2_conditioning_helpers():
     unpacked = unpack_latents(packed, Hpx, Wpx, patch_size=patch_size)
     # unpack_latents returns (B, C, 1, H, W) matching Krea2 pipeline convention
     assert unpacked.shape == (B, C, 1, Hpx, Wpx), f"unexpected unpack shape: {unpacked.shape}"
+
+
+# ── Step A: Family Registration ──────────────────────────────────────────────
+
+def test_krea2_family_registered():
+    """krea2 family must appear in ModelRegistry with the correct archetype."""
+    from app.engine.models.registry import ModelRegistry
+
+    # Reset discovery state so this test is hermetic
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry.discover_families()
+
+    fam = ModelRegistry._families.get("krea2")
+    assert fam is not None, "krea2 family not registered"
+    assert fam.archetype == "latent_diffusion", (
+        f"expected archetype='latent_diffusion', got {fam.archetype!r}"
+    )
+
+
+# ── Step B: Loader Manifest ───────────────────────────────────────────────────
+
+def test_krea2_manifest_components():
+    """Krea2Loader manifest must declare tokenizer, text_encoder, and vae."""
+    from app.engine.models.families.krea2.loader import Krea2Loader
+
+    loader = Krea2Loader(torch.device("cpu"))
+    definition = _make_krea2_definition()
+    specs = loader.get_component_manifest(definition)
+
+    keys = {s.key for s in specs}
+    assert {"tokenizer", "text_encoder", "vae"} <= keys, (
+        f"missing required manifest keys; got {keys}"
+    )
+
+    # Verify specific hf_classes
+    spec_map = {s.key: s for s in specs}
+    assert "Qwen2Tokenizer" in spec_map["tokenizer"].hf_class, (
+        f"tokenizer hf_class wrong: {spec_map['tokenizer'].hf_class}"
+    )
+    assert "Qwen3VLModel" in spec_map["text_encoder"].hf_class, (
+        f"text_encoder hf_class wrong: {spec_map['text_encoder'].hf_class}"
+    )
+    assert "AutoencoderKLQwenImage" in spec_map["vae"].hf_class or (
+        "AutoencoderKL" in spec_map["vae"].hf_class
+    ), f"vae hf_class wrong: {spec_map['vae'].hf_class}"
+
+
+# ── Step C: Definitions ───────────────────────────────────────────────────────
+
+def test_krea2_definitions_loaded():
+    """krea2-raw and krea2-turbo definitions must load from their YAML files."""
+    from app.engine.models.registry import ModelRegistry
+
+    # Full reset so definitions are re-scanned
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry._definitions = {}
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+
+    fam_defs = {d.id: d for d in ModelRegistry._definitions.values() if d.family == "krea2"}
+    assert {"krea2-raw", "krea2-turbo"} <= set(fam_defs), (
+        f"missing krea2 definitions; found: {set(fam_defs)}"
+    )
+
+    raw_def = fam_defs["krea2-raw"]
+    turbo_def = fam_defs["krea2-turbo"]
+
+    assert raw_def.defaults.get("is_distilled") is False, (
+        f"krea2-raw.defaults.is_distilled should be False, got {raw_def.defaults.get('is_distilled')!r}"
+    )
+    assert turbo_def.defaults.get("is_distilled") is True, (
+        f"krea2-turbo.defaults.is_distilled should be True, got {turbo_def.defaults.get('is_distilled')!r}"
+    )
+
+    # Both must have lora_targetable_modules from the arch JSON
+    expected_suffixes = {
+        "attn.to_q", "attn.to_k", "attn.to_v", "attn.to_gate",
+        "attn.to_out.0", "ff.gate", "ff.up", "ff.down",
+    }
+    for def_id, defn in [("krea2-raw", raw_def), ("krea2-turbo", turbo_def)]:
+        actual_suffixes = {m.split(".", 2)[-1] for m in defn.lora_targetable_modules}
+        missing = expected_suffixes - actual_suffixes
+        assert not missing, (
+            f"{def_id}: missing lora_targetable_modules suffixes: {missing}"
+        )

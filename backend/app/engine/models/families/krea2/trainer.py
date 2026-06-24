@@ -34,5 +34,9 @@ class Krea2Trainer(GenericTrainingPipeline):
         self.driver = Krea2Driver(self.definition, self.device)
 
     def _create_sampler(self):
-        """Sampler arrives in Phase 3 — return None for now."""
+        """Create a Krea2Sampler if sampling is configured."""
+        interval = int(self.config.get("sample_every_n_steps", 0))
+        if interval > 0:
+            from .sampler import Krea2Sampler  # noqa: PLC0415
+            return Krea2Sampler(self)
         return None

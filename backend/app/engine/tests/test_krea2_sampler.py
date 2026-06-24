@@ -426,3 +426,125 @@ class TestPrecisionContract:
             f"CFG should call forward 2× per step (4 total for 2 steps), "
             f"got {len(forward_calls)}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 5 — TE warm: sample + negative prompts pre-cached during precache
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTEWarmPrecache:
+    """Verify _pre_cache_text_embeddings warms sample + negative prompts."""
+
+    def _build_trainer_stub(self, config: dict):
+        """Build a minimal Krea2Trainer-shaped stub for precache tests.
+
+        Uses MagicMock(spec=Krea2Trainer) so real method implementations
+        are callable via Krea2Trainer.<method>(trainer, ...).  Methods that
+        must use the real implementation are patched via side_effect.
+        """
+        from app.engine.models.families.krea2.trainer import Krea2Trainer
+
+        trainer = MagicMock(spec=Krea2Trainer)
+        trainer.config = config
+        trainer.device = torch.device("cpu")
+        trainer.text_cache = {}
+        trainer.logger = MagicMock()
+
+        # Stub _build_caption_hints to return a minimal set (one dataset caption)
+        trainer._build_caption_hints.return_value = {"a dataset caption": "hint0"}
+
+        # Stub _resolve_te_cache_dirs to return no dirs (no disk cache)
+        trainer._resolve_te_cache_dirs.return_value = []
+
+        # Stub _resolve_loading_dtype
+        trainer._resolve_loading_dtype.return_value = torch.float32
+
+        # Stub _log_writer to None (no-op status calls)
+        trainer._log_writer = None
+
+        # text_encoder must be non-None so the method proceeds
+        trainer.text_encoder = MagicMock()
+
+        # _encode_text_direct returns (emb [B, L, 12, 2560], mask [B, L])
+        # Use tiny dims in tests: L=4, 12 layers, dim=8
+        def _fake_encode(captions, dtype):
+            B = len(captions)
+            emb = torch.zeros(B, 4, 12, 8)
+            mask = torch.zeros(B, 4, dtype=torch.long)
+            return emb, mask
+
+        trainer._encode_text_direct = _fake_encode
+
+        # _sample_prompt_texts must use the real implementation so wildcards
+        # are expanded correctly and the cache key matches the sampler's request.
+        trainer._sample_prompt_texts.side_effect = (
+            lambda: Krea2Trainer._sample_prompt_texts(trainer)
+        )
+
+        return trainer
+
+    def test_krea2_warms_sample_prompts_into_cache(self):
+        """_pre_cache_text_embeddings must add expanded sample + negative to cache.
+
+        This is the primary VRAM fix: before this, the 8GB Qwen3-VL TE reloaded
+        from CPU on the first sampling call (cache miss). After the fix, both the
+        expanded sample prompt and the negative prompt are keys in self.text_cache
+        after precache completes.
+        """
+        from app.engine.models.families.krea2.trainer import Krea2Trainer
+
+        config = {
+            "cache_text_embeddings": True,
+            "sample_prompts": [{"prompt": "a red car"}],
+            "sample_negative_prompt": "blurry",
+        }
+        trainer = self._build_trainer_stub(config)
+
+        # Run the real implementation
+        Krea2Trainer._pre_cache_text_embeddings(trainer)
+
+        # Both the expanded sample prompt AND the negative must be cached
+        assert "a red car" in trainer.text_cache, (
+            "expanded sample prompt 'a red car' must be in text_cache after precache"
+        )
+        assert "blurry" in trainer.text_cache, (
+            "negative prompt 'blurry' must be in text_cache after precache"
+        )
+
+    def test_krea2_warms_negative_only_when_sample_prompts_present(self):
+        """Negative prompt is NOT pre-cached when there are no sample prompts."""
+        from app.engine.models.families.krea2.trainer import Krea2Trainer
+
+        config = {
+            "cache_text_embeddings": True,
+            "sample_prompts": [],
+            "sample_negative_prompt": "blurry",
+        }
+        trainer = self._build_trainer_stub(config)
+        Krea2Trainer._pre_cache_text_embeddings(trainer)
+
+        # With no sample prompts, negative should NOT be cached (no sampler will run)
+        assert "blurry" not in trainer.text_cache, (
+            "negative prompt must NOT be cached when there are no sample prompts"
+        )
+
+    def test_krea2_sample_prompt_texts_expands_wildcards(self):
+        """_sample_prompt_texts must expand [triggerword] via expand_prompt_wildcards.
+
+        expand_prompt_wildcards replaces [triggerword] with config["global_triggerword"].
+        """
+        from app.engine.models.families.krea2.trainer import Krea2Trainer
+
+        trainer = MagicMock(spec=Krea2Trainer)
+        trainer.config = {
+            "sample_prompts": [{"prompt": "[triggerword] in space"}],
+            "global_triggerword": "astronaut",
+        }
+
+        texts = Krea2Trainer._sample_prompt_texts(trainer)
+
+        assert len(texts) == 1
+        # expand_prompt_wildcards replaces [triggerword] with global_triggerword
+        assert texts[0] == "astronaut in space", (
+            f"wildcard not expanded: got {texts[0]!r}"
+        )

@@ -8,8 +8,10 @@ singleton ``job_manager`` instance.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json as _json
 import os
+import re
 import signal
 import threading
 import time
@@ -64,6 +66,11 @@ def _parse_persisted_log_lines(log_path: str, limit: int = 1000) -> list[str]:
 
 
 _MIRROR_LEVEL = {"log": "info", "warning": "warning"}
+
+# Training-state folder names a job can resume from (mirrors the saver +
+# the validation regex in job_routes.py). Anchored, so it also blocks path
+# traversal in the user-supplied checkpoint_dir.
+_RESUMABLE_DIR_RE = re.compile(r"^(final|checkpoint-\d{3,})$")
 
 
 def _trainer_msg_for_server_log(msg_type: str, data: Any) -> tuple[str, str] | None:
@@ -476,6 +483,14 @@ class JobManager:
             JobHistoryRepository().set_priority(job_id, priority)
         except Exception as e:
             logger.warning("persist_priority_failed", job_id=job_id, error=str(e))
+
+    def _persist_config(self, job_id: str, config: dict[str, Any]) -> None:
+        """Sync an edited config to the database (fire-and-forget)."""
+        try:
+            from app.core.db.repositories.job_repo import JobHistoryRepository
+            JobHistoryRepository().update_config(job_id, config)
+        except Exception as e:
+            logger.warning("persist_config_failed", job_id=job_id, error=str(e))
 
     def _persist_delete(self, job_id: str) -> None:
         """Remove a job record from the database."""
@@ -1379,6 +1394,48 @@ class JobManager:
             return
 
         self.start_job(job_id)
+
+    def resume_from_checkpoint(self, job_id: str, checkpoint_dir: str) -> None:
+        """Continue a stopped/terminal job from one of its checkpoints.
+
+        Reuses the SAME job record (no new queue item): sets
+        ``resume_from_checkpoint`` (+ cache reuse) on its config, persists, and
+        re-launches via ``restart_job(fresh=False)`` so the run picks up the
+        optimizer/scheduler/EMA state via the pipeline's resume path. The
+        ``checkpoint_dir`` must be a resumable training-state folder
+        (``training_state.json`` present).
+        """
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if job.status in [JobStatus.RUNNING, JobStatus.PENDING]:
+            raise ValueError(f"Cannot resume job in state {job.status}")
+        if not _RESUMABLE_DIR_RE.match(checkpoint_dir):
+            raise ValueError(f"Invalid checkpoint directory: {checkpoint_dir}")
+
+        run_dir = self._get_job_output_dir(job)
+        ckpt_path = os.path.abspath(os.path.join(run_dir, checkpoint_dir))
+        if not os.path.isfile(os.path.join(ckpt_path, "training_state.json")):
+            raise ValueError(f"Checkpoint is not resumable: {checkpoint_dir}")
+
+        logger.info("resuming_job_from_checkpoint", job_id=job_id, checkpoint=ckpt_path)
+
+        new_config = copy.deepcopy(job.config)
+        new_config["resume_from_checkpoint"] = ckpt_path
+        # Same dataset on a resume — reuse the existing latent/embedding caches.
+        new_config["use_cached_latents"] = True
+        new_config["use_cached_embeddings"] = True
+        with self._lock:
+            job.config = new_config
+
+        self._persist_config(job_id, new_config)
+        # Record which checkpoint this run picked up from (audit trail). Writes
+        # the unchanged current status alongside resumed_from; restart_job
+        # immediately persists the pending transition next.
+        self._persist_status(job_id, job.status.value, resumed_from=ckpt_path)
+
+        # Re-launch the same record (or queue it behind an active job).
+        self.restart_job(job_id, fresh=False)
 
     def _reset_job_log_state(self, job: Job) -> None:
         """Rotate the job's log file + drop its tailer offset.

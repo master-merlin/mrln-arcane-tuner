@@ -1517,3 +1517,62 @@ class TestStaleActiveReconciliation:
         assert mgr.get_job("db-live").status == JobStatus.RUNNING
         assert any(r["id"] == "db-live" for r in mgr._recovery_jobs)
 
+
+class TestResumeFromCheckpoint:
+    """resume_from_checkpoint reuses the SAME job, setting resume_from_checkpoint."""
+
+    def _make_resumable(self, mgr, tmp_path, lora="resume_run"):
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name=lora))
+        job.status = JobStatus.STOPPED
+        ckpt = tmp_path / f"{lora}_dev" / "checkpoint-000500"
+        ckpt.mkdir(parents=True)
+        (ckpt / "training_state.json").write_text("{}", encoding="utf-8")
+        return job, ckpt
+
+    def test_resume_sets_config_and_relaunches_same_job(self, tmp_path):
+        mgr = JobManager()
+        job, ckpt = self._make_resumable(mgr, tmp_path)
+        with patch.object(mgr, "start_job") as mock_start, \
+                patch.object(mgr, "_stop_tailer"), \
+                patch.object(mgr, "_reset_job_log_state"), \
+                patch.object(mgr, "_persist_status"), \
+                patch.object(mgr, "_persist_config") as mock_pc:
+            mgr.resume_from_checkpoint(job.id, "checkpoint-000500")
+
+        assert os.path.normpath(job.config["resume_from_checkpoint"]) == os.path.normpath(str(ckpt))
+        assert job.config["use_cached_latents"] is True
+        assert job.config["use_cached_embeddings"] is True
+        assert job.status == JobStatus.PENDING
+        mock_start.assert_called_once_with(job.id)
+        mock_pc.assert_called_once()
+        # No new queue item — the same record is reused.
+        assert len(mgr.list_jobs()) == 1
+
+    def test_resume_rejects_non_resumable_dir(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="r2"))
+        job.status = JobStatus.STOPPED
+        # Folder exists but has no training_state.json.
+        (tmp_path / "r2_dev" / "checkpoint-000100").mkdir(parents=True)
+        with pytest.raises(ValueError, match="not resumable"):
+            mgr.resume_from_checkpoint(job.id, "checkpoint-000100")
+
+    def test_resume_rejects_bad_dir_name(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="r3"))
+        job.status = JobStatus.STOPPED
+        with pytest.raises(ValueError, match="Invalid checkpoint"):
+            mgr.resume_from_checkpoint(job.id, "../secrets")
+
+    def test_resume_unknown_job_raises(self):
+        mgr = JobManager()
+        with pytest.raises(ValueError, match="not found"):
+            mgr.resume_from_checkpoint("nope", "checkpoint-000500")
+
+    def test_resume_running_job_raises(self, tmp_path):
+        mgr = JobManager()
+        job, _ = self._make_resumable(mgr, tmp_path, lora="r4")
+        job.status = JobStatus.RUNNING
+        with pytest.raises(ValueError, match="Cannot resume"):
+            mgr.resume_from_checkpoint(job.id, "checkpoint-000500")
+

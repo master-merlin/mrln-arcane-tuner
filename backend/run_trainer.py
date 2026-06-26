@@ -11,6 +11,24 @@ import os
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
+# CUDA caching-allocator config — MUST be set before torch initialises CUDA
+# (read lazily at first CUDA use, so setting it here, before any app/torch
+# import below, is in time). Set HERE in the trainer entry point (not only in
+# the launching plugin) so it takes effect on every trainer launch even when
+# the backend server wasn't restarted to pick up new plugin code.
+#   - expandable_segments:True  → one growable segment per stream instead of a
+#     fresh fixed segment per tensor shape. Aspect-ratio bucketing trains many
+#     distinct latent shapes (e.g. 448x576 … 1888x1056); without this the
+#     reserved pool ratchets up per new shape until it spills past physical
+#     VRAM into Windows/WDDM shared memory (a non-recovering "freeze").
+#   - garbage_collection_threshold:0.8 → proactively reclaim cached blocks once
+#     reserved crosses 80% of total, before fragmentation compounds.
+# setdefault → an explicit user/parent value is respected.
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "expandable_segments:True,garbage_collection_threshold:0.8",
+)
+
 import sys
 import traceback
 import argparse

@@ -196,16 +196,18 @@ class PipelineTrainMixin:
         # Bucket-aware infinite iterator: groups items by target resolution
         # so torch.stack works when batch_size > 1.
         #
-        # VRAM-safe ordering (default on): emit buckets LARGEST-first each epoch
-        # instead of fully random. The CUDA caching allocator grows its reserved
-        # pool in allocation-arrival order; with random order, small buckets grow
-        # it incrementally and a later large bucket strands those blocks →
-        # ~20-30 GB of order-dependent fragmentation that varies run-to-run and
-        # can spill past the card (a "freeze"). Feeding the largest bucket first
-        # makes the allocator reserve the true peak segment up front; every
-        # smaller bucket then reuses it — deterministic, no stranding. Within
-        # each bucket order stays shuffled, so training randomness is preserved
-        # at the (negligible for bucketed LoRA) cost of inter-bucket ordering.
+        # VRAM-safe warmup (default on): training order stays FULLY RANDOM, but
+        # the FIRST batch of each epoch — and the first batch after each sample —
+        # is forced to the largest bucket. Rationale: the CUDA caching allocator
+        # grows its reserved pool in allocation-arrival order; with pure random
+        # order, small buckets grow it incrementally and a later large bucket
+        # strands those blocks → ~20-30 GB of order-dependent fragmentation that
+        # varies run-to-run and can spill past the card (a "freeze"). Reserving
+        # the largest bucket's peak segment FIRST means every later (smaller)
+        # step just reuses it, no stranding — so only one warmup step per epoch
+        # is needed and the rest of the order is untouched. The sampler calls
+        # empty_cache (to fit the TE/denoise), which releases the pool, so we
+        # re-warm on the first step after each sample via ``_vram_rewarm_pending``.
         from collections import defaultdict
 
         vram_safe_order = bool(self.config.get("vram_safe_bucket_order", True))
@@ -217,49 +219,55 @@ class PipelineTrainMixin:
                 item.get("target_frames", 1),
             )
 
-        def _bucketed_descending() -> list[list]:
-            """All batches for one epoch, ordered largest-bucket-first.
+        # Items of the single largest bucket (by pixel/voxel count) — the peak.
+        _largest_items: list = []
+        if self.inventory:
+            _bk = defaultdict(list)
+            for _it in self.inventory:
+                _bk[_bucket_key(_it)].append(_it)
+            _largest_key = max(_bk, key=lambda k: k[0] * k[1] * k[2])
+            _largest_items = _bk[_largest_key]
 
-            Within a bucket: shuffled (preserves per-bucket randomness).
-            Across buckets: descending by pixel/voxel count (largest peak first).
-            """
-            buckets: dict[tuple[int, int, int], list] = defaultdict(list)
-            for item in self.inventory:
-                buckets[_bucket_key(item)].append(item)
-            ordered_keys = sorted(
-                buckets, key=lambda k: k[0] * k[1] * k[2], reverse=True
+        def _warm_batch() -> list:
+            """One batch from the largest bucket (reserves the peak segment)."""
+            return random.sample(
+                _largest_items, min(batch_size, len(_largest_items))
             )
+
+        def _random_batches() -> list[list]:
+            """One epoch of batches, fully random. BS>1 groups by bucket so
+            collated shapes stay uniform; BS<=1 is a flat shuffle."""
+            if batch_size <= 1:
+                pool = list(self.inventory)
+                random.shuffle(pool)
+                return [[it] for it in pool]
+            random.shuffle(self.inventory)
+            buckets: dict[tuple[int, int, int], list] = defaultdict(list)
+            for it in self.inventory:
+                buckets[_bucket_key(it)].append(it)
             batches: list[list] = []
-            for key in ordered_keys:
-                items = buckets[key]
-                random.shuffle(items)
+            for items in buckets.values():
                 for i in range(0, len(items), batch_size):
                     batches.append(items[i : i + batch_size])
+            random.shuffle(batches)
             return batches
 
         def get_iterator():
-            if vram_safe_order:
+            if not vram_safe_order:
                 while True:
-                    yield from _bucketed_descending()
-            elif batch_size <= 1:
-                # Legacy fully-random path (BS=1)
-                while True:
-                    random.shuffle(self.inventory)
-                    for item in self.inventory:
-                        yield [item]
-            else:
-                # Legacy fully-random path (BS>1): group by bucket, shuffle batches
-                while True:
-                    random.shuffle(self.inventory)
-                    buckets: dict[tuple[int, int, int], list] = defaultdict(list)
-                    for item in self.inventory:
-                        buckets[_bucket_key(item)].append(item)
-                    all_batches = []
-                    for items in buckets.values():
-                        for i in range(0, len(items), batch_size):
-                            all_batches.append(items[i : i + batch_size])
-                    random.shuffle(all_batches)
-                    yield from all_batches
+                    yield from _random_batches()
+                return
+            self._vram_rewarm_pending = True  # warm once at the very start
+            while True:
+                for batch in _random_batches():
+                    # Warm the largest bucket first at epoch start / after a
+                    # sample's empty_cache, so the peak segment is reserved
+                    # before any smaller batch can fragment the pool.
+                    if getattr(self, "_vram_rewarm_pending", False) and _largest_items:
+                        self._vram_rewarm_pending = False
+                        yield _warm_batch()
+                    yield batch
+                self._vram_rewarm_pending = True  # re-warm at the next epoch
 
         data_iter = get_iterator()
 
@@ -755,6 +763,9 @@ class PipelineTrainMixin:
                     self._emit_warning(f"Sampling failed at step {step + 1}: {e}")
                 finally:
                     self._emit_status("Training")
+                    # Sampling ran empty_cache → re-warm the largest bucket on the
+                    # next step so random order can't re-fragment the freed pool.
+                    self._vram_rewarm_pending = True
 
             # 9. Virtual epoch boundary
             if step > 0 and step % steps_per_epoch == 0:

@@ -1005,6 +1005,17 @@ class BaseTrainingConfig(BaseModel):
         description="Offload model blocks to CPU to save VRAM",
         json_schema_extra={"group": "ENGINE"},
     )
+    vram_safe_bucket_order: bool = Field(
+        True,
+        description=(
+            "Feed the largest aspect-ratio bucket first each epoch so the CUDA "
+            "allocator reserves its peak segment up front; smaller buckets then "
+            "reuse it. Eliminates the order-dependent fragmentation that makes "
+            "reserved VRAM vary run-to-run and spill past the card. Order stays "
+            "shuffled within each bucket. Disable for fully-random bucket order."
+        ),
+        json_schema_extra={"group": "ENGINE"},
+    )
     cache_text_embeddings: bool = Field(
         True,
         description="Cache text embeddings and offload text encoders to CPU (frees VRAM for training)",

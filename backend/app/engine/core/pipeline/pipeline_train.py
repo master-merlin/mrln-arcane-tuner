@@ -195,29 +195,65 @@ class PipelineTrainMixin:
 
         # Bucket-aware infinite iterator: groups items by target resolution
         # so torch.stack works when batch_size > 1.
+        #
+        # VRAM-safe ordering (default on): emit buckets LARGEST-first each epoch
+        # instead of fully random. The CUDA caching allocator grows its reserved
+        # pool in allocation-arrival order; with random order, small buckets grow
+        # it incrementally and a later large bucket strands those blocks →
+        # ~20-30 GB of order-dependent fragmentation that varies run-to-run and
+        # can spill past the card (a "freeze"). Feeding the largest bucket first
+        # makes the allocator reserve the true peak segment up front; every
+        # smaller bucket then reuses it — deterministic, no stranding. Within
+        # each bucket order stays shuffled, so training randomness is preserved
+        # at the (negligible for bucketed LoRA) cost of inter-bucket ordering.
+        from collections import defaultdict
+
+        vram_safe_order = bool(self.config.get("vram_safe_bucket_order", True))
+
+        def _bucket_key(item: dict) -> tuple[int, int, int]:
+            return (
+                item["target_w"],
+                item["target_h"],
+                item.get("target_frames", 1),
+            )
+
+        def _bucketed_descending() -> list[list]:
+            """All batches for one epoch, ordered largest-bucket-first.
+
+            Within a bucket: shuffled (preserves per-bucket randomness).
+            Across buckets: descending by pixel/voxel count (largest peak first).
+            """
+            buckets: dict[tuple[int, int, int], list] = defaultdict(list)
+            for item in self.inventory:
+                buckets[_bucket_key(item)].append(item)
+            ordered_keys = sorted(
+                buckets, key=lambda k: k[0] * k[1] * k[2], reverse=True
+            )
+            batches: list[list] = []
+            for key in ordered_keys:
+                items = buckets[key]
+                random.shuffle(items)
+                for i in range(0, len(items), batch_size):
+                    batches.append(items[i : i + batch_size])
+            return batches
+
         def get_iterator():
-            if batch_size <= 1:
-                # Simple path: no stacking issues at BS=1
+            if vram_safe_order:
+                while True:
+                    yield from _bucketed_descending()
+            elif batch_size <= 1:
+                # Legacy fully-random path (BS=1)
                 while True:
                     random.shuffle(self.inventory)
                     for item in self.inventory:
                         yield [item]
             else:
-                from collections import defaultdict
-
+                # Legacy fully-random path (BS>1): group by bucket, shuffle batches
                 while True:
                     random.shuffle(self.inventory)
-                    # Group by (w, h, frames) so collation shapes stay uniform
-                    # within a batch. ``target_frames`` defaults to 1 for images
-                    # → image-only runs group exactly as before.
                     buckets: dict[tuple[int, int, int], list] = defaultdict(list)
                     for item in self.inventory:
-                        key = (
-                            item["target_w"],
-                            item["target_h"],
-                            item.get("target_frames", 1),
-                        )
-                        buckets[key].append(item)
+                        buckets[_bucket_key(item)].append(item)
                     all_batches = []
                     for items in buckets.values():
                         for i in range(0, len(items), batch_size):

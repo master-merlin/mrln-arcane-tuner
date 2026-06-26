@@ -1,7 +1,7 @@
 ﻿import { Component, ChangeDetectionStrategy, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
-import { JobService, Job, JobStatus, type JobSample, type TrainingConfig } from '../../../services/job';
+import { JobService, Job, JobStatus, type JobSample, type TrainingConfig, type JobCheckpointMeta } from '../../../services/job';
 import { JobStore } from '../../../state/job.store';
 import { WebSocketService, type WsEvent } from '../../../services/websocket.service';
 import { interval } from 'rxjs';
@@ -19,6 +19,7 @@ import { RegistryStore } from '../../../state/registry.store';
 import { JobsViewState } from '../../../state/jobs-view.state';
 import { OverlayStore } from '../../../state/overlay.store';
 import type { JobConfigData } from '../../../modals/job-config/job-config.component';
+import { ResumeJobService } from '../../../services/resume-job.service';
 
 @Component({
   selector: 'app-training-job-queue',
@@ -35,6 +36,11 @@ export class TrainingJobQueueComponent implements OnInit {
   jobs = signal<Job[]>([]);
   historicalJobs = signal<Job[]>([]);
   JobStatus = JobStatus;
+
+  /** Resumable checkpoints per archived job id (only FAILED/STOPPED rows are
+   *  fetched). Empty array = fetched, none resumable; absent = not yet fetched. */
+  private resumableByJob = signal<Map<string, JobCheckpointMeta[]>>(new Map());
+  private resumableFetched = new Set<string>();
 
   // IDs we've optimistically retired into the archive (user stop, or a
   // terminal WS update) ahead of the authoritative history fetch. Acts as a
@@ -98,6 +104,7 @@ export class TrainingJobQueueComponent implements OnInit {
   private registryStore = inject(RegistryStore);
   private viewState = inject(JobsViewState);
   private overlay = inject(OverlayStore);
+  private resumeJobs = inject(ResumeJobService);
 
   /** States whose config may be edited — pending (changes what runs) or any
    *  terminal state (edits the record). Running/paused stay locked, matching
@@ -211,6 +218,24 @@ export class TrainingJobQueueComponent implements OnInit {
     });
     effect(() => {
       this.viewState.archivedJobs.set(this.historicalJobs());
+    });
+
+    // Lazily fetch checkpoints for FAILED/STOPPED archived rows so the row can
+    // show a Resume icon (≥1 resumable checkpoint) vs plain Restart. Only these
+    // statuses fetch — completed rows never do — so this stays bounded.
+    effect(() => {
+      for (const job of this.archivedJobs()) {
+        if (job.status !== JobStatus.FAILED && job.status !== JobStatus.STOPPED) continue;
+        if (this.resumableFetched.has(job.id)) continue;
+        this.resumableFetched.add(job.id);
+        this.jobService.getJobCheckpoints(job.id).subscribe({
+          next: (cks) => {
+            const resumable = (cks ?? []).filter((c) => c.resumable);
+            this.resumableByJob.update((m) => new Map(m).set(job.id, resumable));
+          },
+          error: () => this.resumableFetched.delete(job.id),
+        });
+      }
     });
   }
 
@@ -698,6 +723,22 @@ export class TrainingJobQueueComponent implements OnInit {
       next: () => this.loadJobs(),
       error: (e) => console.error('Failed to restart job', e)
     });
+  }
+
+  /** Resumable checkpoints discovered for an archived job (empty until fetched). */
+  resumableCheckpoints(jobId: string): JobCheckpointMeta[] {
+    return this.resumableByJob().get(jobId) ?? [];
+  }
+
+  /** True once a FAILED/STOPPED row is known to have ≥1 resumable checkpoint. */
+  hasResumable(jobId: string): boolean {
+    return this.resumableCheckpoints(jobId).length > 0;
+  }
+
+  /** Open the Resume modal for an archived row (continue-from-checkpoint /
+   *  restart-from-0); refreshes the queue on success. */
+  openResume(job: Job): void {
+    this.resumeJobs.open(job.id, this.resumableCheckpoints(job.id), () => this.loadJobs());
   }
 
   deleteJob(id: string) {

@@ -31,6 +31,7 @@ import { ImportArchiveModalComponent } from '../../modals/import-archive/import-
 import { PairOrderModalComponent } from '../../modals/pair-order/pair-order.component';
 import { PairHealthModalComponent } from '../../modals/pair-health/pair-health.component';
 import { PairRoleChooserModalComponent } from '../../modals/pair-role-chooser/pair-role-chooser.component';
+import { ResumeJobModalComponent } from '../../modals/resume-job/resume-job.component';
 
 /**
  * Modal stack renderer.
@@ -73,6 +74,7 @@ import { PairRoleChooserModalComponent } from '../../modals/pair-role-chooser/pa
         PairOrderModalComponent,
         PairHealthModalComponent,
         PairRoleChooserModalComponent,
+        ResumeJobModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -177,6 +179,9 @@ import { PairRoleChooserModalComponent } from '../../modals/pair-role-chooser/pa
                             }
                             @case ('import-archive') {
                                 @defer { <app-modal-import-archive/> }
+                            }
+                            @case ('resume-job') {
+                                @defer (on immediate) { <app-modal-resume-job/> }
                             }
                             @default {
                                 <div class="modal-head">

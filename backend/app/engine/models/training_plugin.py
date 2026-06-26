@@ -122,17 +122,23 @@ class StandardPlugin(TrainingPlugin):
             boot_log_file = subprocess.DEVNULL
 
         # Anti-fragmentation allocator config for the trainer subprocess.
-        # The in-training sampler produces large, variably-sized transient
-        # allocations; without a GC threshold the caching allocator's reserved
-        # pool ratchets up across sampling rounds until, on Windows/WDDM, it
-        # silently spills into shared system memory (a ~10-50x slowdown that
-        # reads as a "freeze"). garbage_collection_threshold makes the allocator
-        # proactively reclaim cached blocks before fragmentation compounds.
+        # Both bucketed training (many distinct latent shapes) and the
+        # in-training sampler produce large, variably-sized allocations; without
+        # this the caching allocator's reserved pool ratchets up per new shape
+        # until, on Windows/WDDM, it silently spills into shared system memory
+        # (a ~10-50x slowdown that reads as a "freeze").
+        #   - expandable_segments:True → reuse a growable segment across shapes
+        #     instead of reserving a fresh fixed segment per shape.
+        #   - garbage_collection_threshold:0.8 → reclaim cached blocks before
+        #     fragmentation compounds.
+        # NOTE: run_trainer.py also sets this (so it applies even when the
+        # backend wasn't restarted); kept here too for the subprocess-env path.
         # Read at CUDA init in the child (well after the env is set at spawn).
         # setdefault → a user-provided PYTORCH_CUDA_ALLOC_CONF is respected.
         child_env = os.environ.copy()
         child_env.setdefault(
-            "PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0.8"
+            "PYTORCH_CUDA_ALLOC_CONF",
+            "expandable_segments:True,garbage_collection_threshold:0.8",
         )
 
         process = subprocess.Popen(

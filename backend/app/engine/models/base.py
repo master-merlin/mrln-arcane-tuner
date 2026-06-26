@@ -1230,6 +1230,22 @@ class BaseTrainingConfig(BaseModel):
             "depends_on": "sample_every_n_steps:!0",
         },
     )
+    sampling_min_free_vram_fraction: float = Field(
+        0.15,
+        description=(
+            "Skip a training sample if free VRAM is below this fraction of "
+            "total. Prevents the sampling spike from spilling into Windows "
+            "shared system memory (a freeze). Training continues uninterrupted. "
+            "0 = never skip."
+        ),
+        json_schema_extra={
+            "group": "SAMPLING",
+            "depends_on": "sample_every_n_steps:!0",
+            "min": 0.0,
+            "max": 0.9,
+            "step": 0.05,
+        },
+    )
 
 
 class TrainingPlugin(ABC):

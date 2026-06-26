@@ -214,3 +214,126 @@ def test_persist_unknown_type_raises(tmp_path):
     s = _make_sampler()
     with pytest.raises(AttributeError):
         s._persist_artifact(object(), tmp_path, 0, 1, False)
+
+
+# ── VRAM headroom guard (pre-sample skip to avoid WDDM shared-memory spill) ──
+
+
+def _gpu(free_mb, total_mb=96000):
+    return SimpleNamespace(vram_free_mb=free_mb, vram_total_mb=total_mb)
+
+
+def _patch_snapshot(monkeypatch, gpus):
+    monkeypatch.setattr(
+        "app.core.system_monitor.system_monitor.snapshot",
+        lambda: SimpleNamespace(gpus=gpus),
+    )
+
+
+def test_headroom_ok_when_ample_free(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    _patch_snapshot(monkeypatch, [_gpu(free_mb=80000)])
+    s = _make_sampler()
+    s.config["sampling_min_free_vram_fraction"] = 0.15
+    assert s._vram_headroom_ok() is True
+
+
+def test_headroom_not_ok_when_low_free(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    _patch_snapshot(monkeypatch, [_gpu(free_mb=5000)])  # ~5% of 96 GB
+    s = _make_sampler()
+    s.config["sampling_min_free_vram_fraction"] = 0.15
+    assert s._vram_headroom_ok() is False
+
+
+def test_headroom_disabled_with_zero_fraction(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    _patch_snapshot(monkeypatch, [_gpu(free_mb=1)])  # almost nothing free
+    s = _make_sampler()
+    s.config["sampling_min_free_vram_fraction"] = 0.0
+    assert s._vram_headroom_ok() is True  # 0 = never skip
+
+
+def test_headroom_ok_when_cuda_unavailable(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    s = _make_sampler()
+    s.config["sampling_min_free_vram_fraction"] = 0.5
+    assert s._vram_headroom_ok() is True  # can't check → don't skip
+
+
+def test_headroom_ok_when_no_gpu_in_snapshot(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    _patch_snapshot(monkeypatch, [])  # NVML returned no GPUs
+    s = _make_sampler()
+    s.config["sampling_min_free_vram_fraction"] = 0.5
+    assert s._vram_headroom_ok() is True
+
+
+def test_headroom_ok_when_snapshot_raises(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def _boom():
+        raise RuntimeError("nvml exploded")
+
+    monkeypatch.setattr(
+        "app.core.system_monitor.system_monitor.snapshot", _boom
+    )
+    s = _make_sampler()
+    s.config["sampling_min_free_vram_fraction"] = 0.5
+    assert s._vram_headroom_ok() is True
+
+
+# ── generate_samples: low VRAM skips the whole round, training continues ──────
+
+
+class _RunSampler(_MinimalSampler):
+    """Counts _sample_single calls and reclaim calls for generate_samples."""
+
+    def __init__(self, pipeline):
+        super().__init__(pipeline)
+        self.singled = 0
+
+    def _sample_single(self, prompt_cfg, step):
+        self.singled += 1
+        return Image.new("RGB", (8, 8))
+
+
+def _make_run_sampler(tmp_path, prompts, fraction=0.0):
+    model = torch.nn.Linear(2, 2)  # real nn.Module: .eval()/.train()/.training
+    pipeline = SimpleNamespace(
+        config={
+            "sample_prompts": prompts,
+            "output_dir": str(tmp_path),
+            "lora_name": "t",
+            "quantization": "none",
+            "sampling_min_free_vram_fraction": fraction,
+        },
+        device=torch.device("cpu"),
+        _get_primary_model=lambda: model,
+    )
+    return _RunSampler(pipeline)
+
+
+def test_generate_samples_skips_when_low_vram(tmp_path, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    _patch_snapshot(monkeypatch, [_gpu(free_mb=3000)])
+    s = _make_run_sampler(tmp_path, [{"prompt": "a"}, {"prompt": "b"}], fraction=0.15)
+    paths = s.generate_samples(step=100)
+    assert paths == []
+    assert s.singled == 0  # never entered the per-prompt loop
+
+
+def test_generate_samples_reclaims_between_images(tmp_path, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    calls = {"empty": 0}
+    monkeypatch.setattr(
+        torch.cuda, "empty_cache", lambda: calls.__setitem__("empty", calls["empty"] + 1)
+    )
+    # fraction 0 → headroom guard disabled so we isolate the reclaim behaviour
+    s = _make_run_sampler(tmp_path, [{"prompt": "a"}, {"prompt": "b"}], fraction=0.0)
+    paths = s.generate_samples(step=100)
+    assert len(paths) == 2
+    assert s.singled == 2
+    # One reclaim per image (2) + the existing single reclaim in the finally (1)
+    assert calls["empty"] >= 3

@@ -121,13 +121,27 @@ class StandardPlugin(TrainingPlugin):
         except Exception:
             boot_log_file = subprocess.DEVNULL
 
+        # Anti-fragmentation allocator config for the trainer subprocess.
+        # The in-training sampler produces large, variably-sized transient
+        # allocations; without a GC threshold the caching allocator's reserved
+        # pool ratchets up across sampling rounds until, on Windows/WDDM, it
+        # silently spills into shared system memory (a ~10-50x slowdown that
+        # reads as a "freeze"). garbage_collection_threshold makes the allocator
+        # proactively reclaim cached blocks before fragmentation compounds.
+        # Read at CUDA init in the child (well after the env is set at spawn).
+        # setdefault → a user-provided PYTORCH_CUDA_ALLOC_CONF is respected.
+        child_env = os.environ.copy()
+        child_env.setdefault(
+            "PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0.8"
+        )
+
         process = subprocess.Popen(
             cmd,
             stdout=boot_log_file,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             text=True,
-            env=os.environ.copy(),
+            env=child_env,
             cwd=backend_root,
             creationflags=creation_flags,
             start_new_session=(os.name != "nt"),

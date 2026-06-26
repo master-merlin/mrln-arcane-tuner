@@ -214,6 +214,27 @@ class GenericSamplingPipeline(ABC):
                 )
             return []
 
+        # Guard: skip this sampling round if free VRAM is too low.  The sampling
+        # transient (no grad-checkpointing, CFG = 2x forwards) can spike the
+        # allocator past physical VRAM; on Windows/WDDM that silently spills
+        # into shared system memory and freezes the run.  Skipping a sample and
+        # continuing training is strictly better than a multi-hour thrash.
+        if not self._vram_headroom_ok():
+            self.logger.warning(
+                "sampling_skipped_low_vram",
+                step=step + 1,
+                min_free_fraction=float(
+                    self.config.get("sampling_min_free_vram_fraction", 0.15)
+                ),
+                reason="free VRAM below safety margin; skipping to avoid shared-memory spill",
+            )
+            if getattr(self, "_log_writer", None):
+                self._log_writer.warning(
+                    f"Sampling skipped at step {step + 1} — low free VRAM "
+                    "(raise it or lower sampling_min_free_vram_fraction)"
+                )
+            return []
+
         displayed_step = step + 1
         self.logger.info(
             "sampling_start",
@@ -280,6 +301,12 @@ class GenericSamplingPipeline(ABC):
                 self._broadcast_sample(
                     path, displayed_step, i, cfg, raw_prompt, media_type=media_type
                 )
+
+                # Reclaim between images so a multi-prompt round doesn't let
+                # the caching-allocator pool ratchet up across prompts (the
+                # outer finally only reclaims once, after the last image).
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             elapsed = time.perf_counter() - t0
             self.logger.info(
@@ -397,6 +424,49 @@ class GenericSamplingPipeline(ABC):
         sample_dir = base / "samples"
         sample_dir.mkdir(parents=True, exist_ok=True)
         return sample_dir
+
+    # ── VRAM headroom guard ────────────────────────────────────────────
+
+    def _vram_headroom_ok(self) -> bool:
+        """Whether there is enough free VRAM to sample without spilling.
+
+        Returns ``False`` only when free device VRAM is below
+        ``sampling_min_free_vram_fraction`` of total — in which case sampling
+        should be skipped this round so the transient sampling spike cannot
+        push the allocator past physical VRAM (on Windows/WDDM that silently
+        spills into shared system memory and effectively freezes the run).
+
+        Conservative by design: returns ``True`` (proceed) whenever the check
+        cannot be performed — fraction disabled (``<= 0``), CUDA unavailable,
+        NVML returns no GPU, or any error reading the snapshot. Uses the
+        device-wide NVML figure (``system_monitor``), which — unlike
+        ``torch.cuda.memory_reserved`` — reflects a shared-memory spill and
+        other processes on the card.
+        """
+        min_free_frac = float(self.config.get("sampling_min_free_vram_fraction", 0.15))
+        if min_free_frac <= 0:
+            return True
+        if not torch.cuda.is_available():
+            return True
+        try:
+            from app.core.system_monitor import system_monitor
+
+            gpus = system_monitor.snapshot().gpus
+        except Exception:  # noqa: BLE001 - never let a monitoring hiccup block sampling
+            return True
+        if not gpus:
+            return True
+        idx = (
+            self.device.index
+            if self.device.type == "cuda" and self.device.index is not None
+            else 0
+        )
+        gpu = gpus[idx] if idx < len(gpus) else gpus[0]
+        total = getattr(gpu, "vram_total_mb", 0) or 0
+        free = getattr(gpu, "vram_free_mb", 0) or 0
+        if total <= 0:
+            return True
+        return free >= min_free_frac * total
 
     # ── Device helpers for phased sampling ─────────────────────────────
 

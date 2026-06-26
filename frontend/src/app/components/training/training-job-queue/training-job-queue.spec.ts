@@ -152,4 +152,40 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         expect(resumeSvc.open.mock.calls[0][0]).toBe(STOPPED_ID);
         expect(resumeSvc.open.mock.calls[0][1]).toBe(cks);
     });
+
+    it('openResume() clears resumableFetched and resumableByJob for the job when onDone fires (staleness reset)', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        TestBed.tick();
+
+        type PrivateAccess = {
+            resumableFetched: Set<string>;
+            resumableByJob: ReturnType<typeof signal<Map<string, unknown[]>>>;
+            resumeJobs: { open: ReturnType<typeof vi.fn> };
+            openResume: (j: Job) => void;
+        };
+        const priv = component as unknown as PrivateAccess;
+
+        // Seed cached state as if a prior fetch already ran
+        const cks = [{ filename: 'a', step: 500, is_final: false, size_bytes: 1, created_at: 0, resumable: true, checkpoint_dir: 'checkpoint-000500' }];
+        priv.resumableFetched.add(STOPPED_ID);
+        priv.resumableByJob.set(new Map([[STOPPED_ID, cks]]));
+
+        // Call openResume; capture the onDone callback (3rd arg of ResumeJobService.open)
+        const stoppedJob = makeJob(STOPPED_ID, JobStatus.STOPPED);
+        priv.openResume(stoppedJob);
+
+        expect(priv.resumeJobs.open).toHaveBeenCalledTimes(1);
+        const onDone = priv.resumeJobs.open.mock.calls[0][2] as () => void;
+
+        // Before onDone: cache entries are present
+        expect(priv.resumableFetched.has(STOPPED_ID)).toBe(true);
+        expect(priv.resumableByJob().has(STOPPED_ID)).toBe(true);
+
+        // Fire onDone — this simulates a successful resume
+        onDone();
+
+        // After onDone: staleness reset must have cleared both caches
+        expect(priv.resumableFetched.has(STOPPED_ID)).toBe(false);
+        expect(priv.resumableByJob().has(STOPPED_ID)).toBe(false);
+    });
 });

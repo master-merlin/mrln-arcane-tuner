@@ -738,7 +738,13 @@ export class TrainingJobQueueComponent implements OnInit {
   /** Open the Resume modal for an archived row (continue-from-checkpoint /
    *  restart-from-0); refreshes the queue on success. */
   openResume(job: Job): void {
-    this.resumeJobs.open(job.id, this.resumableCheckpoints(job.id), () => this.loadJobs());
+    this.resumeJobs.open(job.id, this.resumableCheckpoints(job.id), () => {
+      // Force a fresh checkpoint fetch next time this job re-archives — the
+      // resumed run may add/remove checkpoints, so the cached list is stale.
+      this.resumableFetched.delete(job.id);
+      this.resumableByJob.update((m) => { const next = new Map(m); next.delete(job.id); return next; });
+      this.loadJobs();
+    });
   }
 
   deleteJob(id: string) {

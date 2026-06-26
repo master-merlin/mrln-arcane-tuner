@@ -23,6 +23,7 @@ from app.core.logger import get_logger
 from app.api.schemas.job_schemas import (
     CreateJobRequest,
     UpdateJobConfigRequest,
+    ResumeFromCheckpointRequest,
     SetSamplingCadenceRequest,
     SetAutoQueueRequest,
     JobActionResponse,
@@ -177,6 +178,27 @@ async def restart_job(job_id: str, fresh: bool = False):
         raise HTTPException(status_code=400, detail=str(e))
     except (OSError, RuntimeError) as e:
         logger.error("job_restart_failed", job_id=job_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/jobs/{job_id}/resume-from-checkpoint", response_model=Job)
+async def resume_from_checkpoint(job_id: str, request: ResumeFromCheckpointRequest):
+    """Continue a stopped/terminal job from one of its checkpoints.
+
+    Reuses the same job record (no new queue item); sets ``resume_from_checkpoint``
+    on its config and re-launches. Returns the refreshed job.
+    """
+    try:
+        logger.info("resuming_job_from_checkpoint", job_id=job_id, checkpoint_dir=request.checkpoint_dir)
+        await asyncio.to_thread(job_manager.resume_from_checkpoint, job_id, request.checkpoint_dir)
+        job = await asyncio.to_thread(job_manager.get_job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except (OSError, RuntimeError) as e:
+        logger.error("job_resume_from_checkpoint_failed", job_id=job_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

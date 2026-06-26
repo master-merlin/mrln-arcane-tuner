@@ -311,6 +311,40 @@ def test_restart_job_server_error(mock_to_thread, mock_jm, client):
 
 @patch("app.api.training.job_routes.job_manager")
 @patch("app.api.training.job_routes.asyncio.to_thread")
+def test_resume_from_checkpoint_success(mock_to_thread, mock_jm, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.resume_from_checkpoint.return_value = None
+    mock_jm.get_job.return_value = {
+        "id": "job-1", "plugin_id": "std", "status": "pending",
+        "config": {}, "created_at": 1.0, "logs": [],
+    }
+    response = client.post(
+        "/api/jobs/job-1/resume-from-checkpoint",
+        json={"checkpoint_dir": "checkpoint-000500"},
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == "job-1"
+    mock_jm.resume_from_checkpoint.assert_called_once_with("job-1", "checkpoint-000500")
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_resume_from_checkpoint_bad_request(mock_to_thread, mock_jm, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.resume_from_checkpoint.side_effect = ValueError("Checkpoint is not resumable")
+    response = client.post(
+        "/api/jobs/job-1/resume-from-checkpoint",
+        json={"checkpoint_dir": "checkpoint-000100"},
+    )
+    assert response.status_code == 400
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
 def test_get_job_logs_success(mock_to_thread, mock_jm, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)

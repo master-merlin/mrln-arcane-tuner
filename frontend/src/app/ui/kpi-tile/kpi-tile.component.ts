@@ -1,4 +1,13 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import {
+    ChangeDetectionStrategy,
+    Component,
+    computed,
+    effect,
+    input,
+    signal,
+    untracked,
+} from '@angular/core';
+import { shouldTween, tweenStep } from './kpi-tween';
 
 export type KpiAccent = 'brand' | 'success' | 'warning' | 'danger' | 'teal' | 'violet';
 
@@ -23,7 +32,7 @@ export type KpiAccent = 'brand' | 'success' | 'warning' | 'danger' | 'teal' | 'v
             }
             <div class="kpi-label" data-testid="kpi-tile-label">{{ label() }}</div>
             <div class="kpi-value" data-testid="kpi-tile-value">
-                {{ value() }}@if (unit(); as u) {<span class="unit">{{ u }}</span>}
+                {{ displayValue() ?? value() }}@if (unit(); as u) {<span class="unit">{{ u }}</span>}
             </div>
             @if (sub(); as s) { <div class="kpi-sub">{{ s }}</div> }
             <ng-content/>
@@ -37,7 +46,50 @@ export class KpiTileComponent {
     sub = input<string | undefined>(undefined);
     accent = input<KpiAccent | undefined>(undefined);
     compact = input<boolean>(false);
+    /**
+     * Opt-in count-up animation for numeric values. When enabled, the tile
+     * glides between values (e.g. a live training "Step" counter) instead of
+     * hard-jumping when updates arrive in bursts. Off by default, so every
+     * non-live tile renders its value verbatim and unchanged.
+     */
+    animate = input<boolean>(false);
 
     // Exposed for tests that want to assert tone class without parsing DOM.
     protected accentClass = computed(() => this.accent() ?? '');
+
+    /**
+     * Animated display value. `null` means "no animation in effect" and the
+     * template falls back to `value()` verbatim — so the default path is
+     * byte-identical to a plain binding.
+     */
+    protected readonly displayValue = signal<number | string | null>(null);
+
+    constructor() {
+        // Drive the count-up when `animate` is on and the value is numeric.
+        // Reads of `displayValue` are untracked so the rAF writes below never
+        // re-trigger this effect (self-retrigger = an infinite render loop).
+        effect((onCleanup) => {
+            const v = this.value();
+            if (!this.animate() || typeof v !== 'number') {
+                this.displayValue.set(null);
+                return;
+            }
+            const current = untracked(() => this.displayValue());
+            const from = typeof current === 'number' ? current : v;
+            if (!shouldTween(from, v)) {
+                this.displayValue.set(v);
+                return;
+            }
+            const start = performance.now();
+            const DURATION_MS = 400;
+            let raf = 0;
+            const tick = (now: number) => {
+                const t = (now - start) / DURATION_MS;
+                this.displayValue.set(tweenStep(from, v, t));
+                if (t < 1) raf = requestAnimationFrame(tick);
+            };
+            raf = requestAnimationFrame(tick);
+            onCleanup(() => cancelAnimationFrame(raf));
+        });
+    }
 }

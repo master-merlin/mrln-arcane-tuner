@@ -169,6 +169,27 @@ def test_log_exception_no_writer_state_corruption(tmp_path):
     assert types[-1] == "exit"
 
 
+def test_default_poll_interval_is_responsive_for_live_progress(tmp_path):
+    """The tailer's default poll cadence bounds how fresh live progress is.
+
+    Sampling/training step messages reach the UI only as fast as the tailer
+    drains ``job_log.jsonl``. At the legacy 500 ms default, a fast run's steps
+    arrive in coarse 2 Hz bursts, which the user sees as the progress counter
+    "jumping" (e.g. 0 → 3 → 11 → 19) rather than counting smoothly. The default
+    must stay responsive (≤ 200 ms) so live progress streams near real-time.
+    """
+    tailer = LogTailer(
+        job_id="test-job",
+        log_path=str(tmp_path / "job_log.jsonl"),
+        dispatcher=lambda _job_id, _entry: None,
+    )
+    assert tailer.poll_interval == pytest.approx(0.15)
+    assert tailer.poll_interval <= 0.2, (
+        "Default poll interval must stay responsive (≤200ms) so live "
+        "sampling/training progress streams smoothly instead of in bursts."
+    )
+
+
 def test_dispatcher_stopping_tailer_advances_offset_past_dispatched_line(tmp_path):
     # Regression: the exit-message handler in JobManager calls
     # _stop_tailer from inside the dispatched callback. Before the fix,

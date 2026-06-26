@@ -89,7 +89,7 @@
             <!-- ── KPI row ───────────────────────────────────────────── -->
             @if (metrics(); as m) {
                 <div class="kpi-row">
-                    <app-kpi-tile label="Step" [value]="m.step" [unit]="stepUnit()" [sub]="progressLabel()" accent="brand" [compact]="true">
+                    <app-kpi-tile label="Step" [value]="m.step" [unit]="stepUnit()" [sub]="progressLabel()" accent="brand" [compact]="true" [animate]="true">
                         <div class="kpi-viz"><div class="bar lg"><i [style.width.%]="progressPct()"></i></div></div>
                     </app-kpi-tile>
 

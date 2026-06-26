@@ -6,7 +6,8 @@ trainer subprocess and dispatches parsed entries to a callback.
 Features:
     - Persistent offset tracking (survives backend restarts)
     - File rotation / truncation detection
-    - Configurable poll interval (default 500 ms)
+    - Configurable poll interval (default 150 ms — keeps live sampling /
+      training progress streaming near real-time instead of in 2 Hz bursts)
     - Graceful shutdown via stop event
 """
 
@@ -44,7 +45,7 @@ class LogTailer:
         job_id: str,
         log_path: str,
         dispatcher: Callable[[str, dict[str, Any]], None],
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.15,
     ) -> None:
         self.job_id = job_id
         self.log_path = log_path

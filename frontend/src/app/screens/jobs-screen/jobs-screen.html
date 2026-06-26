@@ -38,9 +38,13 @@
                         <button class="btn danger-out" (click)="stopJob()">Stop</button>
                     }
                     @if (isArchived()) {
-                        <button class="btn" (click)="restartJob()" title="Re-queue this run (reuse existing output)">Restart</button>
-                        @if (!diskMissing()) {
-                            <button class="btn danger-out" (click)="restartFresh()" title="Delete output folder and restart from scratch">Restart fresh</button>
+                        @if (hasResumableCheckpoint()) {
+                            <button class="btn" (click)="openResumeDialog()" title="Restart from 0 or continue from a checkpoint">Resume</button>
+                        } @else {
+                            <button class="btn" (click)="restartJob()" title="Re-queue this run (reuse existing output)">Restart</button>
+                            @if (!diskMissing()) {
+                                <button class="btn danger-out" (click)="restartFresh()" title="Delete output folder and restart from scratch">Restart fresh</button>
+                            }
                         }
                     }
                 </div>

@@ -18,6 +18,11 @@ class UpdateJobConfigRequest(BaseModel):
     config: dict[str, Any]
 
 
+class ResumeFromCheckpointRequest(BaseModel):
+    """Request body for continuing a job from one of its checkpoints."""
+    checkpoint_dir: str
+
+
 class SetSamplingCadenceRequest(BaseModel):
     """Request body for changing the sampling cadence at runtime."""
     interval: int

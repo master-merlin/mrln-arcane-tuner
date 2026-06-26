@@ -19,6 +19,7 @@ import { TrainingJobQueueComponent } from '../../components/training/training-jo
 import { JobService, type Job, JobStatus, type JobCheckpointMeta } from '../../services/job';
 import { JobStore } from '../../state/job.store';
 import { JobsViewState } from '../../state/jobs-view.state';
+import { OverlayStore } from '../../state/overlay.store';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { ScopeStore } from '../../state/scope.store';
 import { TemplateService } from '../../services/template.service';
@@ -91,6 +92,7 @@ export class JobsScreen {
     private jobService = inject(JobService);
     private jobStore = inject(JobStore);
     private viewState = inject(JobsViewState);
+    private overlay = inject(OverlayStore);
     private handoff = inject(TrainingHandoffService);
     private scope = inject(ScopeStore);
     private templateService = inject(TemplateService);
@@ -452,6 +454,11 @@ export class JobsScreen {
         if (!j) return [];
         return this.checkpointsByJob().get(j.id) ?? [];
     });
+
+    /** True when the selected job has ≥1 resumable checkpoint (training-state
+     *  folder present) — gates Resume (modal) vs plain Restart. */
+    protected readonly hasResumableCheckpoint = computed<boolean>(() =>
+        this.currentCheckpoints().some((c) => c.resumable));
 
     protected readonly expanded = signal<Record<SectionKey, boolean>>({
         curves: true,
@@ -885,6 +892,39 @@ export class JobsScreen {
             },
             error: (e: { error?: { detail?: string } }) =>
                 this.toast.error('Restart failed: ' + (e?.error?.detail ?? 'unknown error')),
+        });
+    }
+
+    /** Open the resume modal for an archived job with resumable checkpoints. */
+    protected openResumeDialog(): void {
+        const j = this.selectedJob();
+        if (!j) return;
+        const resumable = this.currentCheckpoints().filter((c) => c.resumable);
+        this.overlay.openModal('resume-job', {
+            jobId: j.id,
+            checkpoints: resumable,
+            onRestart: (wipe: boolean) => this.doRestart(wipe),
+            onContinue: (checkpointDir: string) => this.doContinue(checkpointDir),
+        });
+    }
+
+    /** Continue the selected job from a checkpoint (reuses the same record). */
+    private doContinue(checkpointDir: string): void {
+        const j = this.selectedJob();
+        if (!j) return;
+        this.jobService.resumeFromCheckpoint(j.id, checkpointDir).subscribe({
+            next: () => {
+                this.toast.success('Continuing from checkpoint.');
+                // Drop any cached replay so the relaunched run shows live data.
+                this.replayByJob.update((m) => {
+                    const next = new Map(m);
+                    next.delete(j.id);
+                    return next;
+                });
+                void this.jobStore.loadAll();
+            },
+            error: (e: { error?: { detail?: string } }) =>
+                this.toast.error('Continue failed: ' + (e?.error?.detail ?? 'unknown error')),
         });
     }
 

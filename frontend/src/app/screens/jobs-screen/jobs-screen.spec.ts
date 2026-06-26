@@ -7,6 +7,7 @@ import { JobsScreen } from './jobs-screen';
 import { JobService, JobStatus, type Job } from '../../services/job';
 import { JobStore } from '../../state/job.store';
 import { JobsViewState } from '../../state/jobs-view.state';
+import { OverlayStore } from '../../state/overlay.store';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { ScopeStore } from '../../state/scope.store';
 import { TemplateService } from '../../services/template.service';
@@ -64,6 +65,10 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
         getJobLogs: vi.fn().mockReturnValue(of([])),
         getSamplingStatus: vi.fn().mockReturnValue(of({ job_id: JOB_ID, sampling_paused: false })),
         getSamplingCadence: vi.fn().mockReturnValue(of({ job_id: JOB_ID, interval: 100, default_interval: 100 })),
+        restartJob: vi.fn().mockReturnValue(of({ status: 'restarted', job_id: JOB_ID, fresh: false })),
+        resumeFromCheckpoint: vi.fn().mockReturnValue(of(makeJob({ status: JobStatus.PENDING }))),
+        checkpointDownloadUrl: vi.fn().mockReturnValue('http://test/download'),
+        checkpointZipDownloadUrl: vi.fn().mockReturnValue('http://test/zip'),
     };
 
     TestBed.configureTestingModule({
@@ -72,6 +77,7 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
             JobsViewState,
             { provide: JobService, useValue: jobService },
             { provide: JobStore, useValue: { loadAll: vi.fn().mockResolvedValue(undefined), loadHistory: vi.fn().mockResolvedValue(undefined) } },
+            { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             { provide: TrainingHandoffService, useValue: { set: vi.fn() } },
             { provide: ScopeStore, useValue: { setProject: vi.fn(), setGlobal: vi.fn() } },
             { provide: TemplateService, useValue: { createTrainingTemplate: vi.fn().mockReturnValue(of({})) } },
@@ -259,5 +265,42 @@ describe('JobsScreen visibility refresh', () => {
 
         expect(svc.getJobSamples).not.toHaveBeenCalled();
         expect(svc.getJobCheckpoints).not.toHaveBeenCalled();
+    });
+});
+
+describe('JobsScreen resume/restart buttons', () => {
+    it('shows Resume (not Restart) for a stopped job with a resumable checkpoint', () => {
+        const { fixture, view, comp } = setup();
+        view.archivedJobs.set([makeJob({ status: JobStatus.STOPPED })]);
+        view.selectedId.set(JOB_ID);
+        // Seed a resumable checkpoint for the selected job.
+        (comp as unknown as { checkpointsByJob: { set: (m: Map<string, unknown[]>) => void } })
+            .checkpointsByJob.set(new Map([[JOB_ID, [{
+                filename: 'l.safetensors', step: 500, is_final: false, size_bytes: 1,
+                created_at: 0, resumable: true, checkpoint_dir: 'checkpoint-000500',
+            }]]]));
+        fixture.detectChanges();
+        const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+        expect(text).toContain('Resume');
+        expect(text).not.toContain('Restart fresh');
+    });
+
+    it('shows Restart for a stopped job with no resumable checkpoint', () => {
+        const { fixture, view } = setup();
+        view.archivedJobs.set([makeJob({ status: JobStatus.STOPPED })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+        expect(text).toContain('Restart');
+    });
+
+    it('doContinue calls resumeFromCheckpoint with the chosen dir', () => {
+        const { view, comp } = setup();
+        const job = makeJob({ status: JobStatus.STOPPED });
+        view.archivedJobs.set([job]);
+        view.selectedId.set(JOB_ID);
+        const svc = (comp as unknown as { jobService: { resumeFromCheckpoint: ReturnType<typeof vi.fn> } }).jobService;
+        (comp as unknown as { doContinue: (d: string) => void }).doContinue('checkpoint-000500');
+        expect(svc.resumeFromCheckpoint).toHaveBeenCalledWith(JOB_ID, 'checkpoint-000500');
     });
 });

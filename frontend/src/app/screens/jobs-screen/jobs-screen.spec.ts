@@ -5,6 +5,7 @@ import { of } from 'rxjs';
 
 import { JobsScreen } from './jobs-screen';
 import { JobService, JobStatus, type Job } from '../../services/job';
+import { ResumeJobService } from '../../services/resume-job.service';
 import { JobStore } from '../../state/job.store';
 import { JobsViewState } from '../../state/jobs-view.state';
 import { OverlayStore } from '../../state/overlay.store';
@@ -84,6 +85,7 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
             { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn() } },
             { provide: RuntimeConfigService, useValue: { apiUrl: 'http://test' } },
             { provide: Router, useValue: { navigate: vi.fn() } },
+            { provide: ResumeJobService, useValue: { open: vi.fn() } },
         ],
     });
 
@@ -294,13 +296,24 @@ describe('JobsScreen resume/restart buttons', () => {
         expect(text).toContain('Restart');
     });
 
-    it('doContinue calls resumeFromCheckpoint with the chosen dir', () => {
+    it('openResumeDialog delegates to ResumeJobService with the job id and resumable checkpoints', () => {
         const { view, comp } = setup();
         const job = makeJob({ status: JobStatus.STOPPED });
         view.archivedJobs.set([job]);
         view.selectedId.set(JOB_ID);
-        const svc = (comp as unknown as { jobService: { resumeFromCheckpoint: ReturnType<typeof vi.fn> } }).jobService;
-        (comp as unknown as { doContinue: (d: string) => void }).doContinue('checkpoint-000500');
-        expect(svc.resumeFromCheckpoint).toHaveBeenCalledWith(JOB_ID, 'checkpoint-000500');
+        // Seed checkpoints: one resumable, one not.
+        (comp as unknown as { checkpointsByJob: { set: (m: Map<string, unknown[]>) => void } })
+            .checkpointsByJob.set(new Map([[JOB_ID, [
+                { filename: 'a', step: 500, is_final: false, size_bytes: 1, created_at: 0, resumable: true, checkpoint_dir: 'checkpoint-000500' },
+                { filename: 'b', step: 250, is_final: false, size_bytes: 1, created_at: 0, resumable: false, checkpoint_dir: null },
+            ]]]));
+        const svc = (comp as unknown as { resumeJobs: { open: ReturnType<typeof vi.fn> } }).resumeJobs;
+        (comp as unknown as { openResumeDialog: () => void }).openResumeDialog();
+        expect(svc.open).toHaveBeenCalledTimes(1);
+        const [jobId, checkpoints] = svc.open.mock.calls[0];
+        expect(jobId).toBe(JOB_ID);
+        // Only the resumable checkpoint is passed.
+        expect(checkpoints).toHaveLength(1);
+        expect(checkpoints[0].checkpoint_dir).toBe('checkpoint-000500');
     });
 });

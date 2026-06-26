@@ -19,12 +19,12 @@ import { TrainingJobQueueComponent } from '../../components/training/training-jo
 import { JobService, type Job, JobStatus, type JobCheckpointMeta } from '../../services/job';
 import { JobStore } from '../../state/job.store';
 import { JobsViewState } from '../../state/jobs-view.state';
-import { OverlayStore } from '../../state/overlay.store';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { ScopeStore } from '../../state/scope.store';
 import { TemplateService } from '../../services/template.service';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
+import { ResumeJobService } from '../../services/resume-job.service';
 import {
     TrainingChartComponent,
     type SmoothingMode,
@@ -92,8 +92,8 @@ export class JobsScreen {
     private jobService = inject(JobService);
     private jobStore = inject(JobStore);
     private viewState = inject(JobsViewState);
-    private overlay = inject(OverlayStore);
     private handoff = inject(TrainingHandoffService);
+    private resumeJobs = inject(ResumeJobService);
     private scope = inject(ScopeStore);
     private templateService = inject(TemplateService);
     private toast = inject(ToastService);
@@ -900,31 +900,14 @@ export class JobsScreen {
         const j = this.selectedJob();
         if (!j) return;
         const resumable = this.currentCheckpoints().filter((c) => c.resumable);
-        this.overlay.openModal('resume-job', {
-            jobId: j.id,
-            checkpoints: resumable,
-            onRestart: (wipe: boolean) => this.doRestart(wipe),
-            onContinue: (checkpointDir: string) => this.doContinue(checkpointDir),
-        });
-    }
-
-    /** Continue the selected job from a checkpoint (reuses the same record). */
-    private doContinue(checkpointDir: string): void {
-        const j = this.selectedJob();
-        if (!j) return;
-        this.jobService.resumeFromCheckpoint(j.id, checkpointDir).subscribe({
-            next: () => {
-                this.toast.success('Continuing from checkpoint.');
-                // Drop any cached replay so the relaunched run shows live data.
-                this.replayByJob.update((m) => {
-                    const next = new Map(m);
-                    next.delete(j.id);
-                    return next;
-                });
-                void this.jobStore.loadAll();
-            },
-            error: (e: { error?: { detail?: string } }) =>
-                this.toast.error('Continue failed: ' + (e?.error?.detail ?? 'unknown error')),
+        this.resumeJobs.open(j.id, resumable, () => {
+            // Drop any cached replay so the relaunched run shows live data.
+            this.replayByJob.update((m) => {
+                const next = new Map(m);
+                next.delete(j.id);
+                return next;
+            });
+            void this.jobStore.loadAll();
         });
     }
 

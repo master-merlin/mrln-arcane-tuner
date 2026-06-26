@@ -1005,21 +1005,6 @@ class BaseTrainingConfig(BaseModel):
         description="Offload model blocks to CPU to save VRAM",
         json_schema_extra={"group": "ENGINE"},
     )
-    training_vram_reclaim_fraction: float = Field(
-        0.9,
-        description=(
-            "Release the caching allocator's free blocks (empty_cache) when "
-            "reserved VRAM exceeds this fraction of total. Defragments the pool "
-            "so aspect-ratio bucketing can't ratchet reserved past the card "
-            "into Windows shared memory (a freeze). 0 = disabled."
-        ),
-        json_schema_extra={
-            "group": "ENGINE",
-            "min": 0.0,
-            "max": 0.98,
-            "step": 0.01,
-        },
-    )
     cache_text_embeddings: bool = Field(
         True,
         description="Cache text embeddings and offload text encoders to CPU (frees VRAM for training)",

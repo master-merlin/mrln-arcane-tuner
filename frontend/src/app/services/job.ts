@@ -197,6 +197,15 @@ export class JobService {
     return this.http.post<JobActionResponse & { fresh: boolean }>(`${this.apiUrl}/${jobId}/restart${q}`, {});
   }
 
+  /** Continue a stopped/terminal job from a resumable checkpoint (reuses the
+   *  same job record — no new queue item). */
+  resumeFromCheckpoint(jobId: string, checkpointDir: string): Observable<Job> {
+    return this.http.post<Job>(
+      `${this.apiUrl}/${jobId}/resume-from-checkpoint`,
+      { checkpoint_dir: checkpointDir },
+    );
+  }
+
   /** Move a pending job up/down in the run queue (priority reorder). */
   reorderJob(jobId: string, direction: 'up' | 'down'): Observable<JobActionResponse & { direction: string }> {
     return this.http.post<JobActionResponse & { direction: string }>(`${this.apiUrl}/${jobId}/reorder?direction=${direction}`, {});

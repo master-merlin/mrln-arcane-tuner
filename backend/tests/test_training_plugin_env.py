@@ -47,8 +47,7 @@ def _exec_run_trainer_prefix(preset_value: str | None) -> str:
 
 def test_run_trainer_sets_alloc_conf_when_absent():
     val = _exec_run_trainer_prefix(preset_value=None)
-    assert "expandable_segments:True" in val
-    assert "garbage_collection_threshold:0.8" in val
+    assert val == "expandable_segments:True"
 
 
 def test_run_trainer_respects_preset_alloc_conf():
@@ -81,9 +80,7 @@ def _run_start_training(monkeypatch, tmp_path, parent_env):
 def test_injects_alloc_conf_when_absent(monkeypatch, tmp_path):
     env = _run_start_training(monkeypatch, tmp_path, {"PATH": "/x"})
     child_env = env["env"]
-    val = child_env["PYTORCH_CUDA_ALLOC_CONF"]
-    assert "expandable_segments:True" in val
-    assert "garbage_collection_threshold:0.8" in val
+    assert child_env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
 
 
 def test_respects_user_provided_alloc_conf(monkeypatch, tmp_path):

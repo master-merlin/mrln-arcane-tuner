@@ -122,23 +122,20 @@ class StandardPlugin(TrainingPlugin):
             boot_log_file = subprocess.DEVNULL
 
         # Anti-fragmentation allocator config for the trainer subprocess.
-        # Both bucketed training (many distinct latent shapes) and the
-        # in-training sampler produce large, variably-sized allocations; without
-        # this the caching allocator's reserved pool ratchets up per new shape
-        # until, on Windows/WDDM, it silently spills into shared system memory
-        # (a ~10-50x slowdown that reads as a "freeze").
+        # Bucketed training (many distinct latent shapes) produces variably-sized
+        # allocations; without this the caching allocator's reserved pool
+        # fragments per new shape until, on Windows/WDDM, it spills into shared
+        # system memory (a slowdown that reads as a "freeze").
         #   - expandable_segments:True → reuse a growable segment across shapes
         #     instead of reserving a fresh fixed segment per shape.
-        #   - garbage_collection_threshold:0.8 → reclaim cached blocks before
-        #     fragmentation compounds.
-        # NOTE: run_trainer.py also sets this (so it applies even when the
-        # backend wasn't restarted); kept here too for the subprocess-env path.
-        # Read at CUDA init in the child (well after the env is set at spawn).
-        # setdefault → a user-provided PYTORCH_CUDA_ALLOC_CONF is respected.
+        # garbage_collection_threshold was removed — it fired below the reserved
+        # plateau and re-fragmented the pool each step (see run_trainer.py).
+        # run_trainer.py also sets this (applies even without a backend restart);
+        # kept here too for the subprocess-env path. Read at CUDA init in the
+        # child. setdefault → a user-provided value is respected.
         child_env = os.environ.copy()
         child_env.setdefault(
-            "PYTORCH_CUDA_ALLOC_CONF",
-            "expandable_segments:True,garbage_collection_threshold:0.8",
+            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
         )
 
         process = subprocess.Popen(

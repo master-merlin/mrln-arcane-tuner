@@ -47,6 +47,8 @@ import {
     lossStatus,
     CONVERGENCE_WINDOW,
     metricSpark,
+    resolutionToMpx,
+    resolutionMpxSpark,
     type LogLine,
     type LossPoint,
     type LossStatus,
@@ -249,6 +251,14 @@ export class JobsScreen {
     protected readonly stepTimeSparkData = computed<number[]>(() =>
         metricSpark(this.selectedJob()?.logs, 'step_time'),
     );
+    /** Per-step megapixels (×frames) — visualises the warmup spikes + bucket mix. */
+    protected readonly resolutionSparkData = computed<number[]>(() =>
+        resolutionMpxSpark(this.selectedJob()?.logs),
+    );
+    protected readonly resolutionMpxLabel = computed<string>(() => {
+        const mpx = resolutionToMpx(this.metrics()?.resolution);
+        return mpx != null ? `${mpx.toFixed(1)} Mpx` : 'bucket dims';
+    });
 
     /** Live elapsed wall-clock for the selected job. */
     protected readonly elapsed = computed<string>(() => {

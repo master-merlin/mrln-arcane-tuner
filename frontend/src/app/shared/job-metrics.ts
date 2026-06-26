@@ -168,6 +168,33 @@ export function metricSpark(
     return out.slice(-n);
 }
 
+/**
+ * Parse a bucket `resolution` string to megapixels (×frames for video).
+ * Accepts "WxH" (image) and "WxHxFf" (video, F frames), e.g. "1888x1056" → 2.0,
+ * "1888x1056x25f" → 49.8. Returns null for unparseable/absent input.
+ */
+export function resolutionToMpx(res: string | undefined | null): number | null {
+    if (!res) return null;
+    const m = /^(\d+)x(\d+)(?:x(\d+)f)?$/.exec(res.trim());
+    if (!m) return null;
+    const frames = m[3] ? Number(m[3]) : 1;
+    return (Number(m[1]) * Number(m[2]) * frames) / 1e6;
+}
+
+/** Last `n` per-step megapixel values, derived from the `resolution` field. */
+export function resolutionMpxSpark(
+    logs: ReadonlyArray<string> | undefined,
+    n = 24,
+): number[] {
+    if (!logs) return [];
+    const out: number[] = [];
+    for (const line of logs) {
+        const mpx = resolutionToMpx(parseStepLog(line)?.resolution);
+        if (mpx != null && Number.isFinite(mpx)) out.push(mpx);
+    }
+    return out.slice(-n);
+}
+
 export interface LogLine {
     tone: 'teal' | 'warning' | 'danger';
     level: string;

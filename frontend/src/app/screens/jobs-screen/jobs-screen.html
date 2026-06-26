@@ -119,7 +119,9 @@
                     </app-kpi-tile>
 
                     @if (m.resolution) {
-                        <app-kpi-tile label="Resolution" [value]="m.resolution" [sub]="'bucket dims'" [compact]="true"></app-kpi-tile>
+                        <app-kpi-tile label="Resolution" [value]="m.resolution" [sub]="resolutionMpxLabel()" accent="warning" [compact]="true">
+                            <div class="kpi-viz"><app-sparkline [data]="resolutionSparkData()" color="var(--color-warning)" [height]="22"/></div>
+                        </app-kpi-tile>
                     }
 
                     <app-kpi-tile label="ETA" [value]="etaLabel()" [compact]="true">

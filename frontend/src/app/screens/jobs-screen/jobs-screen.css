@@ -97,7 +97,9 @@
 /* ── KPI row ────────────────────────────────────────────────────── */
 .kpi-row {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    /* auto-fit so the row absorbs an extra tile (e.g. Resolution) without
+       wrapping — collapses to as many equal columns as the tiles need. */
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
     gap: 10px;
 }
 .kpi-viz {

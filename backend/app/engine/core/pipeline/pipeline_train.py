@@ -2,6 +2,7 @@
 Pipeline Train Mixin — the main training loop with gradient accumulation.
 """
 
+import os
 import random
 import time
 import uuid
@@ -164,6 +165,22 @@ class PipelineTrainMixin:
     async def train(self):
         """Execute the main training loop with gradient accumulation."""
         self.logger.info("starting_training_loop", family=self.__class__.__name__)
+        # Surface the active allocator config + VRAM safety valve so a job log
+        # makes it obvious whether the anti-fragmentation settings are in effect
+        # (they only take effect when the trainer process was launched with them
+        # — e.g. after a backend restart for the plugin-injected path).
+        if torch.cuda.is_available():
+            try:
+                self.logger.info(
+                    "vram_config",
+                    alloc_conf=os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "<unset>"),
+                    allocator_backend=torch.cuda.get_allocator_backend(),
+                    reclaim_fraction=float(
+                        self.config.get("training_vram_reclaim_fraction", 0.9)
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         self._get_primary_model().train()
 
         max_steps = int(self.config.get("max_train_steps", 1000))
@@ -623,12 +640,23 @@ class PipelineTrainMixin:
 
             # Live VRAM usage
             if torch.cuda.is_available():
+                reserved_b = torch.cuda.memory_reserved()
                 extra["vram_allocated_mb"] = round(
                     torch.cuda.memory_allocated() / 1024**2
                 )
-                extra["vram_reserved_mb"] = round(
-                    torch.cuda.memory_reserved() / 1024**2
-                )
+                extra["vram_reserved_mb"] = round(reserved_b / 1024**2)
+
+                # Safety valve: aspect-ratio bucketing trains many distinct
+                # latent shapes; the caching allocator can ratchet its reserved
+                # pool up per new shape (it differs by bucket order, so a RESUME
+                # fragments worse than the fresh run) until it spills past the
+                # card into Windows shared memory — a non-recovering freeze.
+                # When reserved crosses the configured fraction of total, release
+                # the free-but-cached blocks so the pool stays compact. Only the
+                # free blocks are returned (allocated tensors are untouched), so
+                # this is correctness-safe; it fires only when memory is tight,
+                # so a healthy run pays nothing.
+                self._maybe_reclaim_vram(reserved_b)
 
             self.logger_component.log_step(
                 step,
@@ -762,6 +790,34 @@ class PipelineTrainMixin:
                     self._emit_warning(f"Final sampling failed: {e}")
                 finally:
                     self._emit_status("Training")
+
+    # ── VRAM safety valve ─────────────────────────────────────────────
+
+    def _maybe_reclaim_vram(self, reserved_b: int) -> None:
+        """Release free cached blocks when the reserved pool grows too large.
+
+        Keeps the caching-allocator pool from ratcheting past the card (and
+        spilling into Windows shared memory) when bucketed training reserves a
+        new segment per latent shape. No-op when disabled (fraction <= 0) or
+        when reserved is below the configured fraction of total VRAM.
+        """
+        frac = float(self.config.get("training_vram_reclaim_fraction", 0.9))
+        if frac <= 0:
+            return
+        try:
+            total_b = torch.cuda.get_device_properties(self.device).total_memory
+        except Exception:  # noqa: BLE001 - never let a probe break the step
+            return
+        if total_b <= 0 or reserved_b < frac * total_b:
+            return
+        # Free blocks only (allocated tensors untouched) → correctness-safe.
+        torch.cuda.empty_cache()
+        self.logger.info(
+            "vram_reclaim_triggered",
+            reserved_mb=round(reserved_b / 1024**2),
+            total_mb=round(total_b / 1024**2),
+            fraction=frac,
+        )
 
     # ── File-based IPC helpers ────────────────────────────────────────
 

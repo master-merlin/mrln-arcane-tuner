@@ -656,9 +656,18 @@ class PipelineTrainMixin:
             # Epoch progress
             extra["epoch"] = round((step + 1) / self._steps_per_epoch, 2)
 
-            # Batch resolution (from last accumulation batch)
-            if batch.get("target_w") and batch.get("target_h"):
-                extra["resolution"] = f"{batch['target_w']}x{batch['target_h']}"
+            # Batch resolution / bucket dims (from last accumulation batch).
+            # Read from batch_items[0] — the bucket key the iterator grouped on —
+            # which always carries target_w/h/frames (the batch dict drops them
+            # at BS=1, which is why this logged as None before).
+            _bi = batch_items[0] if batch_items else {}
+            _bw = _bi.get("target_w") or batch.get("target_w")
+            _bh = _bi.get("target_h") or batch.get("target_h")
+            if _bw and _bh:
+                _bf = int(_bi.get("target_frames", 1) or 1)
+                extra["resolution"] = (
+                    f"{_bw}x{_bh}" if _bf <= 1 else f"{_bw}x{_bh}x{_bf}f"
+                )
 
             # NaN event counter (early warning before abort)
             nan_count = getattr(self, "nan_count", 0)

@@ -7,11 +7,18 @@
   <div class="px-3.5 pt-3.5 pb-2.5 border-b border-surface-mid/60">
     <div class="flex items-center justify-between">
       <div class="eyebrow">QUEUE</div>
-      <label class="flex items-center gap-1.5 text-[11px] cursor-pointer group" title="Auto-start the next pending job when idle">
-        <input type="checkbox" [checked]="autoQueue()" (change)="toggleAutoQueue()" data-testid="auto-queue-toggle" class="sr-only peer">
-        <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 rounded-full peer peer-checked:bg-brand peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-text-muted peer-checked:after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all relative transition-colors"></div>
-        <span class="text-text-muted group-hover:text-text-secondary transition-colors">auto-queue</span>
-      </label>
+      <div class="flex items-center gap-3">
+        <label class="flex items-center gap-1.5 text-[11px] cursor-pointer group" title="Auto-resume a run from its last checkpoint if it dies on a transient GPU fault (TDR / driver reset)">
+          <input type="checkbox" [checked]="autoResume()" (change)="toggleAutoResume()" data-testid="auto-resume-toggle" class="sr-only peer">
+          <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 rounded-full peer peer-checked:bg-brand peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-text-muted peer-checked:after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all relative transition-colors"></div>
+          <span class="text-text-muted group-hover:text-text-secondary transition-colors">auto-resume</span>
+        </label>
+        <label class="flex items-center gap-1.5 text-[11px] cursor-pointer group" title="Auto-start the next pending job when idle">
+          <input type="checkbox" [checked]="autoQueue()" (change)="toggleAutoQueue()" data-testid="auto-queue-toggle" class="sr-only peer">
+          <div class="w-7 h-4 bg-surface-high border border-surface-mid/50 rounded-full peer peer-checked:bg-brand peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-text-muted peer-checked:after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all relative transition-colors"></div>
+          <span class="text-text-muted group-hover:text-text-secondary transition-colors">auto-queue</span>
+        </label>
+      </div>
     </div>
     <div class="page-title">Job Queue</div>
     <div class="flex items-center gap-2 px-2 py-1.5 mt-2.5 bg-surface-mid border border-surface-mid rounded-theme-md text-text-muted">

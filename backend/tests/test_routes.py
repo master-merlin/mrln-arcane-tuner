@@ -790,3 +790,38 @@ def test_get_sampling_cadence(mock_to_thread, mock_jm, client):
     assert response.status_code == 200
     assert "interval" in response.json()
 
+
+
+# ── Auto-resume-on-GPU-fault setting ─────────────────────────────────────
+
+
+@patch("app.api.training.job_routes.asyncio.to_thread")
+@patch("app.api.training.job_routes.get_settings_manager")
+def test_get_auto_resume_defaults_on(mock_sm, mock_to_thread, client):
+    """When the preference was never set, it reads as ON (safe recovery)."""
+    async def run_sync(func, *a, **kw):
+        return func(*a, **kw)
+    mock_to_thread.side_effect = run_sync
+    sm = MagicMock()
+    sm.get_module_settings.return_value = {}  # unset
+    mock_sm.return_value = sm
+    response = client.get("/api/jobs/settings/auto-resume")
+    assert response.status_code == 200
+    assert response.json() == {"auto_resume": True}
+
+
+@patch("app.api.training.job_routes.asyncio.to_thread")
+@patch("app.api.training.job_routes.get_settings_manager")
+def test_set_auto_resume_persists(mock_sm, mock_to_thread, client):
+    """PUT stores under the jobs module key the JobManager reads."""
+    async def run_sync(func, *a, **kw):
+        return func(*a, **kw)
+    mock_to_thread.side_effect = run_sync
+    sm = MagicMock()
+    mock_sm.return_value = sm
+    response = client.put("/api/jobs/settings/auto-resume", json={"enabled": False})
+    assert response.status_code == 200
+    assert response.json() == {"auto_resume": False}
+    sm.update_module_settings.assert_called_once_with(
+        "jobs", {"auto_resume_on_gpu_fault": False}
+    )

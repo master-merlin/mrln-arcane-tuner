@@ -264,4 +264,14 @@ export class JobService {
   setAutoQueue(enabled: boolean): Observable<{ auto_queue: boolean }> {
     return this.http.put<{ auto_queue: boolean }>(`${this.apiUrl}/settings/auto-queue`, { enabled });
   }
+
+  /** Read the auto-resume-on-GPU-fault preference (relaunch from last checkpoint after a TDR/RC-reset). */
+  getAutoResume(): Observable<{ auto_resume: boolean }> {
+    return this.http.get<{ auto_resume: boolean }>(`${this.apiUrl}/settings/auto-resume`);
+  }
+
+  /** Persist the auto-resume-on-GPU-fault preference server-side. */
+  setAutoResume(enabled: boolean): Observable<{ auto_resume: boolean }> {
+    return this.http.put<{ auto_resume: boolean }>(`${this.apiUrl}/settings/auto-resume`, { enabled });
+  }
 }

@@ -33,6 +33,11 @@ class SetAutoQueueRequest(BaseModel):
     enabled: bool
 
 
+class SetAutoResumeRequest(BaseModel):
+    """Request body for toggling auto-resume after a transient GPU fault."""
+    enabled: bool
+
+
 class JobActionResponse(BaseModel):
     """Status + job id returned by a job lifecycle action."""
     status: str
@@ -57,6 +62,11 @@ class JobCadenceSetResponse(JobActionResponse):
 class AutoQueueResponse(BaseModel):
     """Current backend auto-queue preference."""
     auto_queue: bool
+
+
+class AutoResumeResponse(BaseModel):
+    """Current auto-resume-on-GPU-fault preference."""
+    auto_resume: bool
 
 
 class SamplingStatusResponse(BaseModel):

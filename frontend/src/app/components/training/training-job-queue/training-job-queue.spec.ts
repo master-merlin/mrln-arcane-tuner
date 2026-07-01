@@ -26,6 +26,8 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         listJobHistory: Mock;
         deleteJob: Mock;
         getJobCheckpoints: Mock;
+        getAutoResume: Mock;
+        setAutoResume: Mock;
     };
 
     beforeEach(() => {
@@ -34,6 +36,8 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
             listJobHistory: vi.fn().mockReturnValue(of([makeJob('archived-1'), makeJob('archived-2')])),
             deleteJob: vi.fn().mockReturnValue(of({ status: 'deleted' })),
             getJobCheckpoints: vi.fn().mockReturnValue(of([])),
+            getAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
+            setAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
         };
 
         const wsStub = {
@@ -107,6 +111,19 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         // store back to the component's local historicalJobs via the
         // bidirectional reconciliation effect.
         expect(component.historicalJobs().map(j => j.id).sort()).toEqual(['archived-1', 'archived-2']);
+    });
+
+    it('toggleAutoResume() flips the signal and persists server-side', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        expect(component.autoResume()).toBe(true);  // on by default
+
+        component.toggleAutoResume();
+        expect(component.autoResume()).toBe(false);
+        expect(api.setAutoResume).toHaveBeenCalledWith(false);
+
+        component.toggleAutoResume();
+        expect(component.autoResume()).toBe(true);
+        expect(api.setAutoResume).toHaveBeenLastCalledWith(true);
     });
 
     it('hasResumable() returns true for a STOPPED job once a resumable checkpoint is fetched', async () => {

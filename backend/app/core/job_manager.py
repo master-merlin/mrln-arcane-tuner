@@ -93,9 +93,31 @@ def _trainer_msg_for_server_log(msg_type: str, data: Any) -> tuple[str, str] | N
 class JobManager:
     """Manages the lifecycle of training jobs (create → run → finish)."""
 
+    # ── Auto-resume on transient GPU fault ───────────────────────────────
+    # A TDR / ``GpuRcReset`` wedges the device and the trainer dies with
+    # ``cudaErrorUnknown`` (surfaced at whatever CUDA call touches the dead
+    # context — usually ``loss.backward()``). The run's checkpoints are intact,
+    # so we relaunch from the latest one instead of stranding it FAILED.
+    _AUTO_RESUME_ERROR_MARKERS = (
+        "cuda error: unknown error",        # cudaErrorUnknown (post-TDR context death)
+        "cudaerrorunknown",
+        "the launch timed out",             # cudaErrorLaunchTimeout (classic TDR)
+        "unspecified launch failure",       # cudaErrorLaunchFailure
+        "gpurcreset",                       # NVIDIA Robust-Channel reset
+    )
+    # Give up after this many consecutive resumes that made NO forward progress
+    # (crash at the same checkpoint) — that smells deterministic, not transient.
+    _AUTO_RESUME_MAX_STALL = 2
+    # Absolute backstop per job per backend session against a slow crash-loop.
+    _AUTO_RESUME_MAX_TOTAL = 20
+    # Let the driver/GPU settle after a reset before relaunching.
+    _AUTO_RESUME_COOLDOWN_S = 45.0
+
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        # Auto-resume bookkeeping keyed by job_id: {"total", "stall", "from_step"}.
+        self._auto_resume_state: dict[str, dict[str, Any]] = {}
         # Reference to the main event loop for scheduling async broadcasts from threads
         self._loop: asyncio.AbstractEventLoop | None = None
         # Jobs needing post-startup recovery (re-launch paused, re-attach alive)
@@ -846,8 +868,146 @@ class JobManager:
         # A run that ended on its own (completed or failed) frees the GPU —
         # advance the queue. A user hard-stop leaves status STOPPED here and is
         # intentionally skipped: stopping is a deliberate intervention.
-        if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+        if job.status == JobStatus.COMPLETED:
+            self._auto_resume_state.pop(job_id, None)  # success clears the budget
             self.schedule_advance_queue()
+        elif job.status == JobStatus.FAILED:
+            # A transient GPU device fault (TDR/RC-reset) leaves valid
+            # checkpoints — relaunch from the latest one instead of stranding
+            # the run. Only advance the queue if we're NOT auto-resuming (the
+            # resumed job reclaims the GPU after a short cooldown).
+            if not self._maybe_auto_resume(job, job.error):
+                self.schedule_advance_queue()
+
+    # ── Auto-resume on transient GPU fault ───────────────────────────────
+
+    @staticmethod
+    def _auto_resume_enabled() -> bool:
+        """Read the persisted ``jobs.auto_resume_on_gpu_fault`` preference.
+
+        Defaults ON (including on read error): resuming a crashed run from its
+        last checkpoint after a transient device fault is the safe recovery.
+        """
+        try:
+            from app.core.settings_manager import get_settings_manager
+            mod = get_settings_manager().get_module_settings("jobs")
+            return bool(mod.get("auto_resume_on_gpu_fault", True))
+        except Exception as e:
+            logger.warning("auto_resume_setting_read_failed", error=str(e))
+            return True
+
+    def _is_gpu_fault_error(self, error: str | None) -> bool:
+        """True when ``error`` looks like a transient, resume-worthy device
+        fault. Deterministic failures (OOM, illegal access, shape/value errors)
+        are deliberately excluded so we don't crash-loop on a real bug."""
+        if not error:
+            return False
+        low = error.lower()
+        if "out of memory" in low:  # will just OOM again — not transient
+            return False
+        return any(m in low for m in self._AUTO_RESUME_ERROR_MARKERS)
+
+    def _latest_resumable_checkpoint(self, job: Job) -> tuple[str, int] | None:
+        """Highest-step ``(dir_name, step)`` under the run that has a
+        ``training_state.json`` (i.e. is actually resumable), or None."""
+        try:
+            run_dir = self._get_job_output_dir(job)
+        except Exception:
+            return None
+        if not run_dir or not os.path.isdir(run_dir):
+            return None
+        best: tuple[int, str] | None = None
+        try:
+            for entry in os.scandir(run_dir):
+                if not entry.is_dir() or not _RESUMABLE_DIR_RE.match(entry.name):
+                    continue
+                if not os.path.isfile(os.path.join(entry.path, "training_state.json")):
+                    continue
+                if entry.name == "final":
+                    step = 10**9  # a final checkpoint outranks any numbered step
+                else:
+                    m = re.match(r"checkpoint-(\d+)$", entry.name)
+                    step = int(m.group(1)) if m else 0
+                if best is None or step > best[0]:
+                    best = (step, entry.name)
+        except OSError:
+            return None
+        return (best[1], best[0]) if best else None
+
+    def _maybe_auto_resume(self, job: Job, error: str | None) -> bool:
+        """If a FAILED job died on a transient GPU fault and has a resumable
+        checkpoint (within budget), schedule an auto-resume and return True so
+        the caller skips the normal queue advance."""
+        if not self._auto_resume_enabled():
+            return False
+        if not self._is_gpu_fault_error(error):
+            return False
+        ckpt = self._latest_resumable_checkpoint(job)
+        if not ckpt:
+            logger.warning("auto_resume_no_checkpoint", job_id=job.id)
+            return False
+        name, step = ckpt
+
+        state = self._auto_resume_state.setdefault(
+            job.id, {"total": 0, "stall": 0, "from_step": None}
+        )
+        prev = state["from_step"]
+        # No new checkpoint since the last resume → this attempt made no progress.
+        state["stall"] = state["stall"] + 1 if (prev is not None and step <= prev) else 0
+        if state["stall"] >= self._AUTO_RESUME_MAX_STALL or \
+                state["total"] >= self._AUTO_RESUME_MAX_TOTAL:
+            logger.warning(
+                "auto_resume_budget_exhausted", job_id=job.id,
+                stall=state["stall"], total=state["total"], step=step,
+            )
+            return False
+
+        state["total"] += 1
+        state["from_step"] = step
+        job.status_label = f"GPU fault — auto-resuming from {name} (try {state['total']})"
+        logger.warning(
+            "auto_resume_scheduled", job_id=job.id, checkpoint=name, step=step,
+            attempt=state["total"], cooldown_s=self._AUTO_RESUME_COOLDOWN_S,
+            error=(error or "")[:200],
+        )
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_update", job.model_dump()), self._loop,
+            )
+        self._schedule_auto_resume(job.id, name)
+        return True
+
+    def _schedule_auto_resume(self, job_id: str, checkpoint_dir: str) -> None:
+        """Relaunch ``job_id`` from ``checkpoint_dir`` after a cooldown, on a
+        daemon timer so the GPU/driver can settle after the reset. Cancels
+        itself if the user intervenes (stop/delete/manual relaunch) meanwhile."""
+        def _fire() -> None:
+            try:
+                job = self.get_job(job_id)
+                if not job:
+                    return
+                # User (or another path) acted during the cooldown → stand down.
+                if job.status in (
+                    JobStatus.RUNNING, JobStatus.PENDING,
+                    JobStatus.PAUSED, JobStatus.STOPPED,
+                ):
+                    logger.info(
+                        "auto_resume_cancelled", job_id=job_id, status=str(job.status),
+                    )
+                    return
+                logger.warning("auto_resume_firing", job_id=job_id, checkpoint=checkpoint_dir)
+                self.resume_from_checkpoint(job_id, checkpoint_dir)
+            except Exception as e:
+                logger.error("auto_resume_failed", job_id=job_id, error=str(e))
+                # Don't strand the queue if the resume itself blew up.
+                try:
+                    self.schedule_advance_queue()
+                except Exception:
+                    pass
+
+        timer = threading.Timer(self._AUTO_RESUME_COOLDOWN_S, _fire)
+        timer.daemon = True
+        timer.start()
 
     # ── PID Watchdog ─────────────────────────────────────────────────
 
@@ -1342,6 +1502,7 @@ class JobManager:
 
         if fresh:
             self._delete_job_output_dir(job)
+            self._auto_resume_state.pop(job_id, None)  # clean slate → reset budget
 
         self._stop_tailer(job_id)
         self._reset_job_log_state(job)

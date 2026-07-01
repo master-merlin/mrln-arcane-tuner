@@ -1221,6 +1221,129 @@ class TestAutoQueue:
         ms.assert_not_called()
 
 
+class TestAutoResumeOnGpuFault:
+    """A transient GPU device fault (TDR / ``GpuRcReset`` → ``cudaErrorUnknown``)
+    kills the trainer process but leaves valid checkpoints. Rather than stranding
+    the run as FAILED, the manager auto-resumes it from the latest resumable
+    checkpoint (bounded so a deterministic bug can't crash-loop forever)."""
+
+    def _job_with_checkpoint(self, mgr, tmp_path, step=2750):
+        job = mgr.create_job("krea2/raw", _make_config())
+        job.status = JobStatus.RUNNING
+        run = tmp_path / "run"
+        ckpt = run / f"checkpoint-{step:06d}"
+        ckpt.mkdir(parents=True)
+        (ckpt / "training_state.json").write_text("{}")
+        return job, run
+
+    def _patches(self, mgr, run):
+        return (
+            patch.object(mgr, "_get_job_output_dir", return_value=str(run)),
+            patch.object(mgr, "_schedule_auto_resume"),
+            patch.object(mgr, "schedule_advance_queue"),
+            patch.object(mgr, "_persist_status"),
+            patch.object(mgr, "_stop_tailer"),
+        )
+
+    def test_cuda_unknown_error_schedules_auto_resume(self, tmp_path):
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            mgr._handle_exit_message(
+                job.id,
+                {"code": 1, "error": "CUDA error: unknown error\ncudaErrorUnknown"},
+            )
+        sched.assert_called_once_with(job.id, "checkpoint-002750")
+        adv.assert_not_called()  # GPU reserved for the imminent resume
+        assert job.status == JobStatus.FAILED
+
+    def test_non_gpu_error_does_not_auto_resume(self, tmp_path):
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            mgr._handle_exit_message(
+                job.id, {"code": 1, "error": "ValueError: bad tensor shape"}
+            )
+        sched.assert_not_called()
+        adv.assert_called_once()
+
+    def test_oom_does_not_auto_resume(self, tmp_path):
+        """OOM will just OOM again on resume — not a transient fault."""
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            mgr._handle_exit_message(
+                job.id, {"code": 1, "error": "CUDA out of memory. Tried to allocate 4 GiB"}
+            )
+        sched.assert_not_called()
+        adv.assert_called_once()
+
+    def test_no_resumable_checkpoint_does_not_auto_resume(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job("krea2/raw", _make_config())
+        job.status = JobStatus.RUNNING
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, empty)
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            mgr._handle_exit_message(
+                job.id, {"code": 1, "error": "CUDA error: unknown error"}
+            )
+        sched.assert_not_called()
+        adv.assert_called_once()
+
+    def test_stall_budget_gives_up_after_repeated_no_progress(self, tmp_path):
+        """Crashing at the SAME checkpoint step (no forward progress) exhausts
+        the stall budget and falls back to a plain FAILED + queue advance."""
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path, step=2750)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        err = {"code": 1, "error": "cudaErrorUnknown"}
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            # Each crash re-enters from RUNNING (a real resume would set RUNNING).
+            for _ in range(mgr._AUTO_RESUME_MAX_STALL + 1):
+                job.status = JobStatus.RUNNING
+                mgr._handle_exit_message(job.id, err)
+        # Scheduled while stall budget remained, then gave up on the last crash.
+        assert sched.call_count == mgr._AUTO_RESUME_MAX_STALL
+        assert adv.call_count == 1
+
+    def test_progress_resets_stall_budget(self, tmp_path):
+        """A resume that reaches a NEW checkpoint resets the stall counter, so a
+        flaky-but-progressing run keeps auto-resuming."""
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path, step=2750)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        err = {"code": 1, "error": "cudaErrorUnknown"}
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            job.status = JobStatus.RUNNING
+            mgr._handle_exit_message(job.id, err)  # crash @2750 → resume
+            # Simulate forward progress: a newer checkpoint appears.
+            newck = run / "checkpoint-003000"
+            newck.mkdir()
+            (newck / "training_state.json").write_text("{}")
+            job.status = JobStatus.RUNNING
+            mgr._handle_exit_message(job.id, err)  # crash @3000 → resume again
+        assert sched.call_count == 2
+        assert sched.call_args_list[-1][0] == (job.id, "checkpoint-003000")
+        adv.assert_not_called()
+
+    def test_disabled_setting_skips_auto_resume(self, tmp_path):
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st, \
+                patch.object(mgr, "_auto_resume_enabled", return_value=False):
+            mgr._handle_exit_message(
+                job.id, {"code": 1, "error": "CUDA error: unknown error"}
+            )
+        sched.assert_not_called()
+        adv.assert_called_once()
+
+
 class TestPriorityPersistence:
     """Manual pending-queue order (priority) must survive a backend restart.
 

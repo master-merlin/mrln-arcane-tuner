@@ -93,6 +93,7 @@ export class TrainingJobQueueComponent implements OnInit {
   smoothingFactor = signal<number>(0.9);
   smoothingMode = signal<SmoothingMode>('ema');
   autoQueue = signal<boolean>(false);
+  autoResume = signal<boolean>(true);
   stopModalJobId = signal<string | null>(null);
 
   // Model source overrides cache (definition_id â†’ source info)
@@ -256,6 +257,12 @@ export class TrainingJobQueueComponent implements OnInit {
         error: () => {},
       });
     }
+
+    // Auto-resume after a transient GPU fault (TDR/RC-reset) — server-side, on by default.
+    this.jobService.getAutoResume().subscribe({
+      next: (r) => this.autoResume.set(r.auto_resume),
+      error: () => {},
+    });
 
     // Restore archive scope preference
     const savedScope = localStorage.getItem('archiveProjectScope');
@@ -630,6 +637,14 @@ export class TrainingJobQueueComponent implements OnInit {
     // client-side start here — that's what made unattended queues stall when
     // no browser was open.
     this.jobService.setAutoQueue(enabled).subscribe({ error: () => {} });
+  }
+
+  toggleAutoResume() {
+    const enabled = !this.autoResume();
+    this.autoResume.set(enabled);
+    // Server-side setting: when on, a run that dies on a transient GPU fault
+    // (TDR/RC-reset → cudaErrorUnknown) auto-relaunches from its last checkpoint.
+    this.jobService.setAutoResume(enabled).subscribe({ error: () => {} });
   }
 
   /** Latest `status:'training'` metrics — delegates to the shared parser

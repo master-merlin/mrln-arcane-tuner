@@ -26,11 +26,13 @@ from app.api.schemas.job_schemas import (
     ResumeFromCheckpointRequest,
     SetSamplingCadenceRequest,
     SetAutoQueueRequest,
+    SetAutoResumeRequest,
     JobActionResponse,
     JobRestartResponse,
     JobReorderResponse,
     JobCadenceSetResponse,
     AutoQueueResponse,
+    AutoResumeResponse,
     SamplingStatusResponse,
     SamplingCadenceResponse,
     JobSampleResponse,
@@ -104,6 +106,30 @@ async def set_auto_queue(request: SetAutoQueueRequest):
         # Idle GPU + pending jobs → start draining now (off-thread, non-blocking).
         job_manager.schedule_advance_queue()
     return {"auto_queue": request.enabled}
+
+
+@router.get("/jobs/settings/auto-resume", response_model=AutoResumeResponse)
+async def get_auto_resume():
+    """Return the persisted auto-resume-on-GPU-fault preference (default on)."""
+    sm = get_settings_manager()
+    mod = await asyncio.to_thread(sm.get_module_settings, "jobs")
+    return {"auto_resume": bool(mod.get("auto_resume_on_gpu_fault", True))}
+
+
+@router.put("/jobs/settings/auto-resume", response_model=AutoResumeResponse)
+async def set_auto_resume(request: SetAutoResumeRequest):
+    """Persist the auto-resume-on-GPU-fault preference server-side.
+
+    When on, a run that dies on a transient GPU device fault (TDR / RC-reset →
+    ``cudaErrorUnknown``) is automatically relaunched from its latest checkpoint
+    instead of being stranded FAILED. Bounded against crash-loops in JobManager.
+    """
+    sm = get_settings_manager()
+    await asyncio.to_thread(
+        sm.update_module_settings, "jobs", {"auto_resume_on_gpu_fault": request.enabled}
+    )
+    logger.info("auto_resume_setting_changed", enabled=request.enabled)
+    return {"auto_resume": request.enabled}
 
 
 @router.post("/jobs/{job_id}/start", response_model=JobActionResponse)

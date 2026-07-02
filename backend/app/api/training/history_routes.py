@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api._deps import dataset_or_404
 
@@ -129,6 +129,36 @@ class JobReplayResponse(BaseModel):
     loss: list[Any]
 
 
+class JobHistoryRow(BaseModel):
+    """One raw ``job_history`` table row (``SELECT *``, with
+    config/datasets_used/loss_history/targeted_layers/tags JSON-decoded by
+    the repo's ``_from_row``). Open model: this table has grown via 7+ ALTER
+    TABLE migrations and the frontend consumes it as an open ``Job`` record
+    (``job.ts`` — ``config`` is explicitly typed ``Record<string, unknown>``
+    there) — only the NOT-NULL core is declared here; every other (and any
+    future) column passes through untouched via ``extra=\"allow\"``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    lora_name: str
+    definition_id: str
+    status: str
+    created_at: float
+
+
+class JobHistoryDetail(JobHistoryRow):
+    """Full job detail: the history row plus its linked checkpoints, sample
+    images, and dataset-linkage rows."""
+
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    samples: list[SampleImage] = Field(default_factory=list)
+    # `job_datasets` join-table rows — small/stable shape, but kept as an
+    # open dict (not a named model) since it isn't otherwise exposed as a
+    # standalone contract elsewhere.
+    datasets_linkage: list[dict[str, Any]] = Field(default_factory=list)
+
+
 @router.get("/jobs/history/stats", response_model=JobStatsResponse)
 async def get_job_stats():
     """Aggregate training statistics for the dashboard card (read-only)."""
@@ -161,7 +191,7 @@ async def get_definition_stats(definition_id: str):
     return await asyncio.to_thread(definition_stats_service.get, definition_id)
 
 
-@router.get("/jobs/history")
+@router.get("/jobs/history", response_model=list[JobHistoryRow])
 async def list_job_history(
     limit: int = 50,
     offset: int = 0,
@@ -178,7 +208,7 @@ async def list_job_history(
     )
 
 
-@router.get("/jobs/history/{job_id}")
+@router.get("/jobs/history/{job_id}", response_model=JobHistoryDetail)
 async def get_job_history_detail(job_id: str):
     """Full job detail with checkpoints and samples."""
     from app.core.db.repositories.job_repo import JobHistoryRepository
@@ -278,9 +308,14 @@ async def get_job_replay(job_id: str):
     return await asyncio.to_thread(_load)
 
 
-@router.get("/jobs/history/{job_id}/rerun-config")
+@router.get("/jobs/history/{job_id}/rerun-config", response_model=dict[str, Any])
 async def get_rerun_config(job_id: str):
-    """Extract config from a past job for re-submission."""
+    """Extract config from a past job for re-submission.
+
+    The training config is a plugin-schema-driven blob whose fields vary per
+    model family (mirrors ``TrainingConfig`` in job.ts) — ``dict[str, Any]``
+    is an intentional open passthrough, not a stand-in for an unwritten model.
+    """
     from app.core.db.repositories.job_repo import JobHistoryRepository
     repo = JobHistoryRepository()
     config = await asyncio.to_thread(repo.get_config_for_rerun, job_id)
@@ -289,7 +324,7 @@ async def get_rerun_config(job_id: str):
     return config
 
 
-@router.get("/datasets/{name}/jobs")
+@router.get("/datasets/{name}/jobs", response_model=list[JobHistoryRow])
 async def get_dataset_jobs(ds=Depends(get_dataset_or_404)):
     """All jobs that used a specific dataset."""
     from app.core.db.repositories.job_repo import JobHistoryRepository

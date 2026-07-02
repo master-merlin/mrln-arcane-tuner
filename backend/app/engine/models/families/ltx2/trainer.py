@@ -75,7 +75,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
     # ── Text-embedding cache (warm before the 12B Gemma3 TE is offloaded) ──
 
     def _pre_cache_text_embeddings(self) -> None:
-        """Warm the in-memory text-embedding cache before TE offload.
+        """Warm the text-embedding cache (disk + memory) before TE offload.
 
         ``run_trainer`` runs ``_pre_cache_text_embeddings`` → ``_offload_text_encoders``;
         the base pre-cache is a no-op, so without this override the 12B Gemma3
@@ -89,9 +89,27 @@ class Ltx2Trainer(GenericTrainingPipeline):
         cached on CPU; LTX-2's joint forward consumes the audio ``pooled`` too,
         so a video-only tensor cache would not suffice once audio is enabled.
 
-        The expanded SAMPLE prompts are warmed here too: the sampler runs after
-        this TE offload, so it serves prompts from ``self.text_cache`` via
-        :meth:`encode_text` — without this, sampling would hit the offloaded
+        Disk-backed cache (P1c): mirroring the image families (``qwen_image`` /
+        ``krea2``), the triple is persisted via the shared
+        :class:`TextEmbeddingCache` under
+        ``{ds}/.cache/{model}/{ver}/embeddings/{te_quant}/{te1,te2,te3}/`` —
+        te1=video emb, te2=audio pooled, te3=attention mask — keyed on the
+        caption hash. A warm run loads the whole set from disk and NEVER
+        re-encodes through the 12B Gemma3 + connectors, closing the
+        "re-encode every run" gap.
+
+        Cache-key soundness (audio/i2v): the text embedding is a PURE function of
+        the caption text and the (Gemma3 + connectors) identity — the connectors
+        always produce BOTH the video and audio text embeddings from the caption
+        alone. audio_timestep / i2v first-frame conditioning enters only LATER in
+        the DiT forward (via timesteps + latents), never text encoding, so the
+        caption hash (plus the ``te_quant`` path segment) fully keys the cache and
+        no conditioning variant can cross-contaminate a hit.
+
+        The expanded SAMPLE prompts + the CFG negative prompt round-trip through
+        the SAME disk cache as the training captions: the sampler runs after this
+        TE offload and serves prompts from ``self.text_cache`` via
+        :meth:`encode_text` — without warming, sampling would hit the offloaded
         (``None``) encoder and crash with "'NoneType' object is not callable".
         """
         if not self.config.get("cache_text_embeddings", True):
@@ -99,34 +117,91 @@ class Ltx2Trainer(GenericTrainingPipeline):
         if self.driver.text_encoder is None:
             return
 
+        from app.engine.components.text_embeddings import TextEmbeddingCache
+
+        # Disk cache dirs (te_quant path segment keeps FP8/bf16 embeddings apart).
+        te_cache_dirs = self._resolve_te_cache_dirs()
+        te_quant = self.config.get("te_quantization", "none")
+
+        def _slot_dir(slot: str) -> str:
+            return (
+                os.path.join(te_cache_dirs[0], "embeddings", te_quant, slot)
+                if te_cache_dirs
+                else ""
+            )
+
+        te1_dir, te2_dir, te3_dir = _slot_dir("te1"), _slot_dir("te2"), _slot_dir("te3")
+
         dtype = self._resolve_loading_dtype()
-        captions = [c for c in self._build_caption_hints() if c not in self.text_cache]
+
+        # ── Full ordered work set: training captions, expanded sample prompts,
+        # then the CFG negative (default "" = standard unconditional). ──
+        work: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(cap: str, hint: str) -> None:
+            if cap in self.text_cache or cap in seen:
+                return
+            seen.add(cap)
+            work.append((cap, hint))
+
+        for cap, hint in self._build_caption_hints().items():
+            _add(cap, hint)
         sample_texts = self._sample_prompt_texts()
         for sp in sample_texts:
-            if sp not in self.text_cache and sp not in captions:
-                captions.append(sp)
-        # CFG sampling runs a cond + UNCONDITIONAL forward when guidance_scale>1,
-        # and the 12B TE is offloaded by sample time — so the negative prompt
-        # must be warmed now. Default "" is the standard unconditional.
+            _add(sp, "")
         if sample_texts:
-            neg = str(self.config.get("sample_negative_prompt", "") or "")
-            if neg not in self.text_cache and neg not in captions:
-                captions.append(neg)
-        total = len(captions)
-        if not total:
-            self.logger.info("ltx2_text_cache_complete", cached=len(self.text_cache))
+            _add(str(self.config.get("sample_negative_prompt", "") or ""), "")
+
+        # ── Phase 1: load the triple from disk (te1 presence gates the hit) ──
+        disk_loaded = 0
+        need_encode: list[tuple[str, str]] = []
+        for cap, hint in work:
+            if te1_dir:
+                emb = TextEmbeddingCache.load(cap, te1_dir, hint)
+                if emb is not None:
+                    pooled = (
+                        TextEmbeddingCache.load(cap, te2_dir, hint) if te2_dir else None
+                    )
+                    mask = (
+                        TextEmbeddingCache.load(cap, te3_dir, hint) if te3_dir else None
+                    )
+                    self.text_cache[cap] = (emb, pooled, mask)
+                    disk_loaded += 1
+                    continue
+            need_encode.append((cap, hint))
+
+        if not need_encode:
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status("TE Cache Loaded from Disk")
+            self.logger.info(
+                "ltx2_text_cache_complete",
+                cached=len(self.text_cache),
+                from_disk=disk_loaded,
+                source="disk",
+            )
             return
 
+        # ── Phase 2: encode the misses (batched) + persist the triple ──
         if getattr(self, "_log_writer", None):
             self._log_writer.status("Caching Text Embeddings (0%)")
 
+        total = len(need_encode)
         batch_size = 4
         with torch.no_grad():
             for i in range(0, total, batch_size):
-                chunk = captions[i : i + batch_size]
+                batch_items = need_encode[i : i + batch_size]
+                chunk = [cap for cap, _ in batch_items]
                 out = self.driver.encode_text(chunk, dtype)
-                for j, cap in enumerate(chunk):
-                    self.text_cache[cap] = self._slice_te_output(out, j)
+                for j, (cap, hint) in enumerate(batch_items):
+                    emb, pooled, mask = self._slice_te_output(out, j)
+                    self.text_cache[cap] = (emb, pooled, mask)
+                    if te1_dir:
+                        TextEmbeddingCache.save(cap, emb, te1_dir, hint)
+                    if te2_dir and pooled is not None:
+                        TextEmbeddingCache.save(cap, pooled, te2_dir, hint)
+                    if te3_dir and mask is not None:
+                        TextEmbeddingCache.save(cap, mask, te3_dir, hint)
                 if getattr(self, "_log_writer", None):
                     pct = round(min(i + batch_size, total) / total * 100)
                     self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
@@ -134,6 +209,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
         self.logger.info(
             "ltx2_text_cache_complete",
             cached=len(self.text_cache),
+            from_disk=disk_loaded,
             newly_encoded=total,
         )
 

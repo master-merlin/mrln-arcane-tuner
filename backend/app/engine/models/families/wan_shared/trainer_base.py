@@ -42,9 +42,19 @@ class WanTextCacheMixin:
         # encoder is offloaded and serves prompts from self.text_cache via
         # encode_text, so without this it hits the offloaded (None) encoder and
         # crashes with "'NoneType' object is not callable".
-        for sp in self._sample_prompt_texts():
+        sample_texts = self._sample_prompt_texts()
+        for sp in sample_texts:
             if sp not in self.text_cache and sp not in captions:
                 captions.append(sp)
+        # CFG preview sampling runs a cond + UNCONDITIONAL forward when
+        # guidance_scale > 1 (the default 3.5), and the UMT5 encoder is offloaded
+        # by sample time — so the negative prompt must be warmed now, exactly
+        # like the sample prompts. Default "" is the standard unconditional; a
+        # configured ``sample_negative_prompt`` is warmed under its own key.
+        if sample_texts:
+            neg = str(self.config.get("sample_negative_prompt", "") or "")
+            if neg not in self.text_cache and neg not in captions:
+                captions.append(neg)
         total = len(captions)
         if not total:
             self.logger.info("wan_text_cache_complete", cached=len(self.text_cache))

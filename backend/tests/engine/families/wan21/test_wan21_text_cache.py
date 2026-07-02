@@ -104,6 +104,43 @@ def test_warm_includes_expanded_sample_prompts():
     assert expanded in t.text_cache
 
 
+# ── CFG unconditional warming (so guidance_scale>1 works after TE offload) ──
+
+
+def _sampling_trainer() -> Wan21Trainer:
+    """Trainer with a sample prompt + triggerword, no training captions."""
+    t = _trainer()
+    t.config = {
+        "cache_text_embeddings": True,
+        "sample_prompts": [{"prompt": "a [triggerword] flying over the desert"}],
+        "global_triggerword": "sks",
+    }
+    t._build_caption_hints = lambda: {}  # isolate sample-prompt warming
+    return t
+
+
+def test_pre_cache_warms_default_unconditional_for_cfg():
+    """CFG needs the unconditional ('' negative) prompt cached before TE offload."""
+    t = _sampling_trainer()  # has a sample prompt, no training captions
+    t._pre_cache_text_embeddings()
+    assert "" in t.text_cache  # default negative warmed for the cond+uncond pass
+
+
+def test_pre_cache_warms_configured_negative_prompt():
+    t = _sampling_trainer()
+    t.config["sample_negative_prompt"] = "blurry, low quality"
+    t._pre_cache_text_embeddings()
+    assert "blurry, low quality" in t.text_cache
+
+
+def test_pre_cache_skips_unconditional_when_no_sample_prompts():
+    """No sampling → no need to warm the unconditional (keeps the cache minimal)."""
+    t = _trainer()  # captions {"a cat","a dog",""} but NO sample prompts
+    t._build_caption_hints = lambda: {"a cat": "h", "a dog": "h"}  # drop the ""
+    t._pre_cache_text_embeddings()
+    assert "" not in t.text_cache  # not warmed when sampling is off
+
+
 def test_sampler_encodes_via_trainer_cache_not_the_offloaded_driver():
     """The WAN sampler must route prompt encoding through the trainer's cached
     encode_text (survives TE offload), not the driver's (None after offload).

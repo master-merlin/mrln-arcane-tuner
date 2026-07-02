@@ -197,7 +197,21 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         sigmas = self._build_sigmas(num_steps).to(self.device)
         text = prompt_embedding
 
-        def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
+        # Classifier-free guidance: when guidance_scale > 1 we contrast the
+        # conditional velocity against an UNCONDITIONAL one (empty/negative
+        # prompt): v = v_u + scale * (v_c - v_u). Without it the preview is
+        # effectively CFG=1 and massively under-shows the LoRA vs ComfyUI. The
+        # negative prompt is warmed into the text cache by the trainer (the UMT5
+        # encoder is offloaded by sample time); default "" is the standard
+        # unconditional. guidance_scale <= 1 keeps the single conditional forward
+        # (byte-identical to before).
+        cfg_on = guidance_scale is not None and float(guidance_scale) > 1.0
+        text_uncond = None
+        if cfg_on:
+            neg_text = str(self.config.get("sample_negative_prompt", "") or "")
+            text_uncond = self.encode_prompt(neg_text)
+
+        def _forward(x: Tensor, sigma: Tensor, cond: Any) -> Tensor:
             # The trajectory steps in sigma ∈ [0,1], but the transformer is
             # conditioned on the RAW [0,1000] timestep (sigma*1000) — the scale
             # the diffusers WanPipeline feeds and the scale training uses (the
@@ -213,12 +227,21 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
                 out = transformer(
                     hidden_states=x,
                     timestep=t,
-                    encoder_hidden_states=text,
+                    encoder_hidden_states=cond,
                     encoder_hidden_states_image=None,
                     return_dict=False,
                 )
-            pred = out[0] if isinstance(out, tuple) else out
-            return pred
+            return out[0] if isinstance(out, tuple) else out
+
+        def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
+            v_c = _forward(x, sigma, text)
+            if not cfg_on:
+                return v_c
+            # Combine in fp32 (the uncond forward shares the exact cond regime),
+            # matching euler_integrate's fp32 accumulation contract.
+            v_c = v_c.to(torch.float32)
+            v_u = _forward(x, sigma, text_uncond).to(torch.float32)
+            return v_u + guidance_scale * (v_c - v_u)
 
         latents = self.euler_integrate(noise, sigmas, _velocity)
         return latents

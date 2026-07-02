@@ -25,6 +25,11 @@ export interface BuiltCanvasMetaCore {
     frameCount: string | null;
 }
 
+// NOTE: intentionally NOT consolidated with `shared/format-bytes.ts`'s
+// formatBytes — this variant lacks the `bytes <= 0` guard (e.g. formats
+// -5 as "-5 B" instead of "0 B") and prints fractional sub-KB byte counts
+// verbatim instead of rounding (e.g. 500.7 -> "500.7 B" vs "501 B"); kept
+// separate rather than risk changing the media panel's rendered strings.
 export function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

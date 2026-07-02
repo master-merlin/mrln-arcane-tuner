@@ -94,8 +94,20 @@ class _StubModel:
 
 
 def _make_edit_trainer(stub):
+    from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.families.qwen_image.driver import QwenImageDriver
+
     t = object.__new__(QwenImageEditTrainer)
     t.model = stub
+    # The no-control path delegates to the base forward → driver.forward_pass;
+    # wire a driver whose primary model is the same stub so the seam runs.
+    drv = QwenImageDriver(
+        ModelDefinition(id="qwen-image", family="qwen_image", name="Qwen-Image",
+                        defaults={}, components={}),
+        torch.device("cpu"),
+    )
+    drv.model = stub
+    t.driver = drv
     return t
 
 

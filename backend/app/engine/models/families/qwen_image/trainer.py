@@ -10,7 +10,6 @@ This module implements Qwen-Image-specific behaviour:
 """
 
 import os
-from typing import Any
 
 import structlog
 import torch
@@ -22,15 +21,11 @@ from .saver import QwenImageSaver
 
 logger = structlog.get_logger(__name__)
 
-# ── Prompt template (from QwenImagePipeline.__init__) ────────────────────
-PROMPT_TEMPLATE = (
-    "<|im_start|>system\n"
-    "Describe the image by detailing the color, shape, size, texture, "
-    "quantity, text, spatial relationships of the objects and background:"
-    "<|im_end|>\n"
-    "<|im_start|>user\n{}<|im_end|>\n"
-    "<|im_start|>assistant\n"
-)
+# The prompt template + preamble-drop encoding now lives solely in
+# ``QwenImageDriver`` (single source of truth; the trainer delegates via
+# ``driver.encode_text``).  ``PROMPT_TEMPLATE_DROP_IDX`` is retained here for the
+# edit subclass import; ``TOKENIZER_MAX_LENGTH`` is the production context window
+# the trainer syncs onto the driver in ``_assign_components``.
 PROMPT_TEMPLATE_DROP_IDX = 34  # system preamble tokens to drop
 TOKENIZER_MAX_LENGTH = 1024
 
@@ -66,6 +61,10 @@ class QwenImageTrainer(GenericTrainingPipeline):
         self.model = self.components["unet"]
         # Architecture params
         self.max_length = TOKENIZER_MAX_LENGTH
+        # The trainer's text path delegates to ``driver.encode_text``; keep the
+        # driver's context window in lock-step with the trainer's production
+        # value (the driver default drifted to 512 historically).
+        self.driver.max_length = self.max_length
 
     def _update_primary_model(self, new_model: torch.nn.Module) -> None:
         """Keep self.model in sync after PEFT/quantization wrapping."""
@@ -202,71 +201,21 @@ class QwenImageTrainer(GenericTrainingPipeline):
 
         return self._encode_text_direct(captions, dtype)
 
-    @staticmethod
-    def _extract_masked_hidden(
-        hidden_states: torch.Tensor, mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, ...]:
-        """Extract only non-padding tokens per batch element."""
-        bool_mask = mask.bool()
-        valid_lengths = bool_mask.sum(dim=1)
-        selected = hidden_states[bool_mask]
-        return torch.split(selected, valid_lengths.tolist(), dim=0)
-
     def _encode_text_direct(
         self, captions: list[str], dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Text encoding matching ``QwenImagePipeline._get_qwen_prompt_embeds``.
+        """Encode captions directly via the driver (no cache).
 
-        1. Wrap each caption in the system/user/assistant template
-        2. Tokenize with ``max_length = 1024 + 34``
-        3. Extract non-padding tokens via ``_extract_masked_hidden``
-        4. Drop first 34 tokens (system preamble)
-        5. Re-pad to max actual length in batch
+        Delegates to ``driver.encode_text`` (single source of truth for the
+        Qwen2.5-VL template + preamble-drop encoding) and unwraps the
+        ``TextEncoderOutput`` to the ``(embeddings, attention_mask)`` tuple
+        contract the base pipeline hands opaquely to ``forward_pass``.
 
         Returns:
             (hidden_states [B, L, D], attention_mask [B, L]).
         """
-        # 1. Wrap in template
-        txt = [PROMPT_TEMPLATE.format(cap) for cap in captions]
-
-        # 2. Tokenize
-        max_len = self.max_length + PROMPT_TEMPLATE_DROP_IDX
-        text_inputs = self.tokenizer(
-            txt, max_length=max_len, padding=True,
-            truncation=True, return_tensors="pt",
-        )
-        input_ids = text_inputs.input_ids.to(self.device)
-        attn_mask = text_inputs.attention_mask.to(self.device)
-
-        # 3. Forward through text encoder
-        with torch.no_grad():
-            outputs = self.text_encoder(
-                input_ids=input_ids,
-                attention_mask=attn_mask,
-                output_hidden_states=True,
-            )
-        hidden_states = outputs.hidden_states[-1]
-
-        # 4. Extract non-padding tokens
-        split_hs = self._extract_masked_hidden(hidden_states, attn_mask)
-
-        # 5. Drop first 34 tokens (system preamble), re-pad
-        split_hs = [e[PROMPT_TEMPLATE_DROP_IDX:] for e in split_hs]
-        attn_mask_list = [
-            torch.ones(e.size(0), dtype=torch.long, device=self.device)
-            for e in split_hs
-        ]
-        max_seq_len = max(e.size(0) for e in split_hs)
-        prompt_embeds = torch.stack([
-            torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))])
-            for u in split_hs
-        ])
-        encoder_attn_mask = torch.stack([
-            torch.cat([u, u.new_zeros(max_seq_len - u.size(0))])
-            for u in attn_mask_list
-        ])
-
-        return prompt_embeds.to(dtype=dtype), encoder_attn_mask
+        out = self.driver.encode_text(captions, dtype)
+        return out.embeddings, out.attention_mask
 
     def _get_cached_text_embeddings(
         self, captions: list[str], dtype: torch.dtype,
@@ -325,82 +274,9 @@ class QwenImageTrainer(GenericTrainingPipeline):
 
         return torch.stack(emb_results, dim=0), torch.stack(mask_results, dim=0)
 
-
     # -- Forward Pass --
-
-    def forward_pass(
-        self,
-        noisy_input: torch.Tensor,
-        timesteps: torch.Tensor,
-        text_embeddings: tuple[torch.Tensor, torch.Tensor] | torch.Tensor,
-        batch: dict[str, Any],
-    ) -> torch.Tensor:
-        """QwenImageTransformer2DModel forward pass.
-
-        The transformer expects patchified sequence input:
-            hidden_states: [B, (H/p)*(W/p), C*p*p]  (e.g. p=2, C=16 → 64)
-        Plus spatial metadata for RoPE positional embeddings.
-
-        Args:
-            noisy_input: Noisy latents [B, C, H, W].
-            timesteps: Scaled timesteps [0, 1000].
-            text_embeddings: ``(embeddings [B, L, D], attention_mask [B, L])``
-                tuple from ``encode_text()``.  Falls back gracefully if
-                only a plain tensor is passed (legacy path).
-            batch: Full batch dict.
-
-        Returns:
-            Model prediction [B, C, H, W].
-        """
-        # Unpack (embeddings, mask) tuple from encode_text()
-        if isinstance(text_embeddings, tuple):
-            enc_hs, enc_mask = text_embeddings
-        else:
-            enc_hs = text_embeddings
-            enc_mask = None
-
-        B, C, H, W = noisy_input.shape
-        patch_size = getattr(self.model.config, "patch_size", 2)
-
-        # Patchify: [B, C, H, W] → [B, (H/p)*(W/p), C*p*p]
-        pH = H // patch_size
-        pW = W // patch_size
-        # Reshape: [B, C, pH, p, pW, p] → [B, pH*pW, C*p*p]
-        x = noisy_input.reshape(B, C, pH, patch_size, pW, patch_size)
-        x = x.permute(0, 2, 4, 1, 3, 5)       # [B, pH, pW, C, p, p]
-        x = x.reshape(B, pH * pW, C * patch_size * patch_size)
-
-        # Qwen-Image model expects timesteps in [0, 1]
-        model_timesteps = timesteps / 1000.0
-
-        # img_shapes: [(1, pH, pW)] per sample — single-frame image
-        img_shapes = [(1, pH, pW)] * B
-
-        # txt_seq_lens: actual valid token count from attention mask
-        # (matches reference QwenImagePipeline)
-        if enc_mask is not None:
-            txt_seq_lens = enc_mask.sum(dim=1).tolist()
-        else:
-            txt_seq_lens = [enc_hs.shape[1]] * B
-
-        output = self.model(
-            hidden_states=x,
-            encoder_hidden_states=enc_hs,
-            encoder_hidden_states_mask=enc_mask,
-            timestep=model_timesteps,
-            img_shapes=img_shapes,
-            txt_seq_lens=txt_seq_lens,
-            return_dict=False,
-        )
-
-        # Handle tuple output — first element is the noise prediction
-        pred = output[0] if isinstance(output, tuple) else output
-
-        # Unpatchify: [B, pH*pW, out_channels*p*p] → [B, out_channels, H, W]
-        out_channels = getattr(self.model.config, "out_channels", C)
-        pred = pred.reshape(B, pH, pW, out_channels, patch_size, patch_size)
-        pred = pred.permute(0, 3, 1, 4, 2, 5)  # [B, out_C, pH, p, pW, p]
-        pred = pred.reshape(B, out_channels, H, W)
-
-        return pred
+    # Delegated to ``QwenImageDriver.forward_pass`` via the base
+    # ``PipelineBaseMixin.forward_pass`` (patchify → transformer → unpatchify).
+    # The edit subclass keeps its own override for the control-concat path and
+    # calls ``super().forward_pass`` (→ driver) for standard batches.
 

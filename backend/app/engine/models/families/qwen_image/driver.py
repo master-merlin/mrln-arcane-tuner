@@ -19,8 +19,11 @@ from app.engine.core.text_encoding import TextEncoderOutput
 
 logger = structlog.get_logger(__name__)
 
-# From QwenImageTrainer — Qwen2.5-VL context window
-TOKENIZER_MAX_LENGTH = 512
+# From QwenImageTrainer — Qwen2.5-VL context window.  Matches the trainer's
+# production value (``QwenImageTrainer.TOKENIZER_MAX_LENGTH``); the trainer also
+# syncs ``driver.max_length`` in ``_assign_components`` so the delegated encode
+# uses the run's exact context window.
+TOKENIZER_MAX_LENGTH = 1024
 
 # Prompt template (from QwenImagePipeline.__init__)
 PROMPT_TEMPLATE = (

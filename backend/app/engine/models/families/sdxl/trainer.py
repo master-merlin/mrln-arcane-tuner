@@ -199,27 +199,15 @@ class SDXLTrainer(GenericTrainingPipeline):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Dual CLIP encoding without caching.
 
+        Delegates to ``driver.encode_dual_clip`` (single source of truth) and
+        unwraps the ``TextEncoderOutput`` to the ``(prompt_embeds, pooled)``
+        tuple contract the caching layer + ``forward_pass`` expect.
+
         Returns:
             (prompt_embeds [B, L, D1+D2], pooled_embeds [B, D2]).
         """
-        t1 = self.components["tokenizer_1"](
-            captions, padding="max_length", max_length=self.te_max_length,
-            truncation=True, return_tensors="pt",
-        ).input_ids.to(self.device)
-        t2 = self.components["tokenizer_2"](
-            captions, padding="max_length", max_length=self.te_max_length,
-            truncation=True, return_tensors="pt",
-        ).input_ids.to(self.device)
-
-        e1 = self.text_encoder_1(t1, output_hidden_states=True)
-        e2 = self.text_encoder_2(t2, output_hidden_states=True)
-
-        h1 = e1.hidden_states[-2]
-        h2 = e2.hidden_states[-2]
-        prompt_embeds = torch.cat([h1, h2], dim=-1).to(dtype=dtype)
-        pooled_embeds = e2.text_embeds.to(dtype=dtype)
-
-        return prompt_embeds, pooled_embeds
+        out = self.driver.encode_text(captions, dtype)
+        return out.embeddings, out.pooled
 
     def encode_text(
         self, captions: list[str], dtype: torch.dtype, batch: dict | None = None
@@ -237,6 +225,10 @@ class SDXLTrainer(GenericTrainingPipeline):
         with torch.no_grad():
             prompt_embeds, pooled_embeds = self._encode_text_direct(captions, dtype)
             self._pooled_embeds = pooled_embeds
+            # forward_pass is delegated to driver.forward_pass, which reads the
+            # pooled off the driver — keep it in sync (sampler still reads
+            # trainer._pooled_embeds).
+            self.driver._pooled_embeds = self._pooled_embeds
         return prompt_embeds
 
     def _get_cached_text_embeddings(
@@ -289,6 +281,8 @@ class SDXLTrainer(GenericTrainingPipeline):
             pooled_results.append(self._pooled_cache[cap].to(self.device, dtype=dtype))
 
         self._pooled_embeds = torch.stack(pooled_results, dim=0)
+        # Mirror onto the driver for the delegated forward_pass (see encode_text).
+        self.driver._pooled_embeds = self._pooled_embeds
         return torch.stack(prompt_results, dim=0)
 
     # ── Timestep Sampling ────────────────────────────────────────────────
@@ -314,28 +308,10 @@ class SDXLTrainer(GenericTrainingPipeline):
         return self.scheduler.add_noise(latents, noise, timesteps)
 
     # ── Forward Pass ─────────────────────────────────────────────────────
-
-    def forward_pass(
-        self,
-        noisy_input: torch.Tensor,
-        timesteps: torch.Tensor,
-        text_embeddings: torch.Tensor,
-        batch: dict[str, Any],
-    ) -> torch.Tensor:
-        """UNet forward with SDXL conditioning (text_embeds + time_ids).
-
-        Returns:
-            UNet epsilon prediction [B, C, H, W].
-        """
-        return self.unet(
-            noisy_input,
-            timesteps,
-            encoder_hidden_states=text_embeddings,
-            added_cond_kwargs={
-                "text_embeds": self._pooled_embeds,
-                "time_ids": batch["time_ids"],
-            },
-        ).sample
+    # Delegated to ``SDXLDriver.forward_pass`` via the base
+    # ``PipelineBaseMixin.forward_pass`` (UNet + added_cond_kwargs).  The pooled
+    # embedding is synced onto the driver in the encode path above; ``time_ids``
+    # arrive on the batch from ``build_batch_extra``.
 
     # ── Loss Target ──────────────────────────────────────────────────────
 

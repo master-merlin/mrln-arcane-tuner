@@ -228,6 +228,11 @@ class Flux1Driver(IModelDriver):
         """
         model_timesteps = timesteps / 1000.0
 
+        # Model-boundary dtype: the trainer resolves ``autocast_dtype`` (bf16 for
+        # Flux) and syncs it onto the driver each step.  Fall back to the input
+        # dtype for standalone driver calls (no trainer plumbing).
+        model_dtype = getattr(self, "autocast_dtype", None) or noisy_input.dtype
+
         # txt_ids: zeros [L_txt, 3]
         txt_seq_len = text_embeddings.shape[1]
         txt_ids = torch.zeros(
@@ -241,16 +246,18 @@ class Flux1Driver(IModelDriver):
             pooled_dim = self.transformer.config.pooled_projection_dim
             pooled = torch.zeros(
                 noisy_input.shape[0], pooled_dim,
-                device=self.device, dtype=noisy_input.dtype,
+                device=self.device, dtype=model_dtype,
             )
 
-        # Guidance (Dev uses guidance_embed; Schnell does not)
+        # Guidance (Dev uses guidance_embed; Schnell does not).  The scale is
+        # config-driven — the trainer syncs ``guidance_scale`` from the run
+        # config; 3.5 is the historical default for standalone calls.
         guidance = None
         if self.use_guidance_embed:
-            guidance_scale = 3.5  # Default guidance scale
+            guidance_scale = float(getattr(self, "guidance_scale", 3.5))
             guidance = torch.full(
                 (noisy_input.shape[0],), guidance_scale,
-                device=self.device, dtype=noisy_input.dtype,
+                device=self.device, dtype=model_dtype,
             )
 
         output = self.transformer(

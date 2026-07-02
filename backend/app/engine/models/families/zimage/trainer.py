@@ -10,7 +10,6 @@ This module implements Z-Image-specific behaviour:
 """
 
 import os
-from typing import Any
 
 import structlog
 import torch
@@ -184,51 +183,13 @@ class ZImageTrainer(GenericTrainingPipeline):
     def _encode_text_direct(
         self, captions: list[str], dtype: torch.dtype,
     ) -> list[torch.Tensor]:
-        """Text encoding matching ``ZImagePipeline._encode_prompt``.
+        """Encode captions directly via the driver (no cache).
 
-        1. Wrap each caption via Qwen3 chat template (enable_thinking=True)
-        2. Tokenize with max_length padding
-        3. Forward through TE, take hidden_states[-2]
-        4. Extract only non-padding tokens per sample
-
-        Returns:
-            List of tensors ``[Li, D]`` (variable length, no padding).
+        Delegates to ``driver.encode_text`` (single source of truth for the
+        Qwen3 variable-length encoding) and unwraps the ``TextEncoderOutput``
+        to the ``list[Tensor]`` ``[Li, D]`` contract the training loop expects.
         """
-        # 1. Apply Qwen3 chat template
-        templated: list[str] = []
-        for cap in captions:
-            messages = [{"role": "user", "content": cap}]
-            txt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            )
-            templated.append(txt)
-
-        # 2. Tokenize
-        text_inputs = self.tokenizer(
-            templated, padding="max_length", max_length=self.max_length,
-            truncation=True, return_tensors="pt",
-        )
-        input_ids = text_inputs.input_ids.to(self.device)
-        attn_mask = text_inputs.attention_mask.to(self.device).bool()
-
-        # 3. Forward — use hidden_states[-2] (second-to-last)
-        with torch.no_grad():
-            outputs = self.text_encoder(
-                input_ids=input_ids,
-                attention_mask=attn_mask,
-                output_hidden_states=True,
-            )
-        hidden = outputs.hidden_states[-2]
-
-        # 4. Extract non-padding tokens per sample
-        embeddings_list: list[torch.Tensor] = []
-        for i in range(len(hidden)):
-            embeddings_list.append(hidden[i][attn_mask[i]].to(dtype=dtype))
-
-        return embeddings_list
+        return self.driver.encode_text(captions, dtype).embeddings
 
     def _get_cached_text_embeddings(
         self, captions: list[str], dtype: torch.dtype,
@@ -293,57 +254,7 @@ class ZImageTrainer(GenericTrainingPipeline):
         """
         return latents - noise
 
-
     # -- Forward Pass --
-
-    def forward_pass(
-        self,
-        noisy_input: torch.Tensor,
-        timesteps: torch.Tensor,
-        text_embeddings: list[torch.Tensor],
-        batch: dict[str, Any],
-    ) -> torch.Tensor:
-        """ZImageTransformer2DModel forward pass.
-
-        The Z-Image S3-DiT uses a non-standard forward() signature:
-            forward(x: list[Tensor], t, cap_feats: list[Tensor], ...)
-        - ``x``: list of per-sample latent tensors [C, 1, H, W]
-        - ``t``: timestep tensor [B]
-        - ``cap_feats``: list of per-sample text embeddings [Li, D]
-            (variable length, non-padding only)
-
-        Args:
-            noisy_input: Noisy latents [B, C, H, W].
-            timesteps: Scaled timesteps [0, 1000].
-            text_embeddings: List of per-sample embeddings [Li, D]
-                from ``encode_text()``.
-            batch: Full batch dict.
-
-        Returns:
-            Model prediction [B, C, H, W].
-        """
-        # Z-Image convention: t=1 → clean, t=0 → noise (inverted).
-        # Our training loop uses [0, 1000] with 0=clean, 1000=noise,
-        # so invert: (1000-t)/1000 maps 0→1.0 (clean), 1000→0.0 (noise).
-        model_timesteps = (1000.0 - timesteps) / 1000.0
-
-        # Z-Image forward() expects lists of per-sample tensors
-        # patchify_and_embed expects [C, F, H, W] (4D with frame dim)
-        # Per-sample slicing gives [C, H, W], so add frame dim: [C, 1, H, W]
-        x_list = [noisy_input[i].unsqueeze(1) for i in range(noisy_input.shape[0])]
-
-        # text_embeddings is already a list of per-sample [Li, D] tensors
-        cap_list = text_embeddings
-
-        output = self.model(
-            x=x_list,
-            t=model_timesteps,
-            cap_feats=cap_list,
-            return_dict=False,
-        )
-
-        # output is (list_of_tensors,) where each tensor is [C, F, H, W]
-        # Need to squeeze frame dim (F=1) and re-batch to [B, C, H, W]
-        sample_list = output[0] if isinstance(output, tuple) else output
-        # Each sample: [C, 1, H, W] → [C, H, W], then stack to [B, C, H, W]
-        return torch.stack([s.squeeze(1) for s in sample_list], dim=0)
+    # Delegated to ``ZImageDriver.forward_pass`` via the base
+    # ``PipelineBaseMixin.forward_pass``.  The driver forward is self-contained
+    # (inverted timestep + per-sample list API); no trainer-level copy needed.

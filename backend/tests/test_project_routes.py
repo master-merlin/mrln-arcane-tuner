@@ -79,6 +79,40 @@ def test_project_crud_roundtrip(client, tmp_path):
         assert client.delete(f"/api/projects/{pid}").status_code == 404
 
 
+def test_project_full_payload_create_list_get_update(client, tmp_path):
+    """P3c pin: ProjectRow/ProjectWithStats — exact key set on create/list/
+    get/update, including the `stats` sub-object only list/get inject."""
+    with _isolated_db(tmp_path):
+        resp = client.post(
+            "/api/projects", json={"name": "Gamma", "description": "d", "color": "#111111"}
+        )
+        assert resp.status_code == 201
+        proj = resp.json()
+        pid = proj["id"]
+        assert set(proj) == {"id", "name", "description", "color", "created_at", "updated_at"}
+        assert proj["name"] == "Gamma"
+        assert proj["description"] == "d"
+        assert proj["color"] == "#111111"
+
+        listing = client.get("/api/projects").json()
+        assert set(listing[0]) == {
+            "id", "name", "description", "color", "created_at", "updated_at", "stats",
+        }
+        assert listing[0]["stats"] == {
+            "captioning_templates": 0, "masking_templates": 0,
+            "training_templates": 0, "datasets": 0, "jobs": 0,
+        }
+
+        got = client.get(f"/api/projects/{pid}").json()
+        assert set(got) == {
+            "id", "name", "description", "color", "created_at", "updated_at", "stats",
+        }
+
+        updated = client.patch(f"/api/projects/{pid}", json={"description": "e"}).json()
+        assert set(updated) == {"id", "name", "description", "color", "created_at", "updated_at"}
+        assert updated["description"] == "e"
+
+
 def test_project_datasets_association(client, tmp_path):
     with _isolated_db(tmp_path) as eng:
         proj = client.post("/api/projects", json={"name": "Beta"}).json()
@@ -101,6 +135,16 @@ def test_project_datasets_association(client, tmp_path):
 
         datasets = client.get(f"/api/projects/{pid}/datasets").json()
         assert [d["id"] for d in datasets] == ["ds-1"]
+        # P3c pin: ProjectDatasetRow is open (extra=allow) — every column of
+        # the `datasets` table (not just id/name) must survive untouched.
+        assert set(datasets[0]) == {
+            "id", "name", "path", "description", "created_at", "last_scanned_at",
+            "file_count", "total_size_bytes", "multimedia_count", "caption_count",
+            "mask_count", "caption_coverage", "missing", "preview_image",
+            "majority_ar", "harmonization_score", "classifier", "version",
+            "has_cache", "source_type", "license", "updated_at",
+            "trigger_word", "tags", "notes", "kind",
+        }
 
         assert (
             client.delete(f"/api/projects/{pid}/datasets/ds-1").status_code == 204
@@ -129,3 +173,32 @@ def test_project_preferences(client, tmp_path):
         )
         assert resp.status_code == 200
         assert resp.json()["selected_caption_model"] == "florence-2"
+
+
+def test_project_preferences_full_payload(client, tmp_path):
+    """P3c pin: ProjectPreferencesRow — exact key set, training_selections
+    stays a decoded dict (not a raw JSON string)."""
+    with _isolated_db(tmp_path):
+        resp = client.get("/api/projects/general/preferences")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == {
+            "id", "project_id", "selected_caption_model", "active_caption_template",
+            "qwen3_variant", "selected_mask_model", "active_mask_template",
+            "training_selections",
+        }
+        assert body["project_id"] is None
+        assert body["training_selections"] == {}
+
+        resp = client.put(
+            "/api/projects/general/preferences",
+            json={"training_selections": {"lr": 1e-4, "steps": 100}},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == {
+            "id", "project_id", "selected_caption_model", "active_caption_template",
+            "qwen3_variant", "selected_mask_model", "active_mask_template",
+            "training_selections",
+        }
+        assert body["training_selections"] == {"lr": 1e-4, "steps": 100}

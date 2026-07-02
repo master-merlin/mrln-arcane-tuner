@@ -249,6 +249,16 @@ class ModelRegistry:
         """Return all registered model definition IDs."""
         return list(cls._definitions.keys())
 
+    @classmethod
+    def count(cls) -> int:
+        """Return the number of registered model definitions.
+
+        Public accessor for callers (e.g. the ``/system/health`` KPI rail)
+        that only need the count — avoids reaching into the private
+        ``_definitions`` dict directly.
+        """
+        return len(cls._definitions)
+
 # ── Block Topology Derivation ────────────────────────────────────────────
 
 def _derive_block_topology(family: str, arch: dict) -> list[dict]:

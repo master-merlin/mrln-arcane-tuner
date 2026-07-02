@@ -1,5 +1,5 @@
 """
-E2E tests for api/system_routes.py — logs, system status, GPU status.
+E2E tests for api/system_routes.py — logs, health, self-update status.
 """
 
 from unittest.mock import patch, MagicMock
@@ -58,26 +58,10 @@ def test_health_counts_running_and_paused_jobs(client):
     assert response.json()["active_jobs"] == 2
 
 
-@patch("app.core.system_monitor.system_monitor")
-def test_get_system_status(mock_mon, client):
-    """Should return system snapshot dict."""
-    mock_snapshot = MagicMock()
-    mock_snapshot.to_dict.return_value = {"cpu_percent": 10.0, "memory_percent": 50.0}
-    mock_mon.snapshot.return_value = mock_snapshot
-    response = client.get("/api/system/status")
-    assert response.status_code == 200
-    assert "cpu_percent" in response.json()
-
-
-@patch("app.core.system_monitor.system_monitor")
-def test_get_gpu_status(mock_mon, client):
-    """Should return GPU info dict."""
-    mock_gpu = MagicMock()
-    mock_gpu.to_dict.return_value = {"name": "RTX 4090", "vram_used_mb": 1000}
-    mock_snapshot = MagicMock()
-    mock_snapshot.gpus = [mock_gpu]
-    mock_mon.snapshot.return_value = mock_snapshot
-    response = client.get("/api/system/gpu")
-    assert response.status_code == 200
-    assert "gpus" in response.json()
-    assert len(response.json()["gpus"]) == 1
+def test_system_status_and_gpu_routes_removed(client):
+    """B-CLEAN-8: GET /system/status and /system/gpu were orphaned (zero
+    frontend callers — live telemetry flows over WebSocket; system.service.ts
+    only calls /system/health) and have been removed. Pin that both paths are
+    genuinely gone (404), not just failing for some other reason."""
+    assert client.get("/api/system/status").status_code == 404
+    assert client.get("/api/system/gpu").status_code == 404

@@ -151,24 +151,9 @@ async def get_health():
     return {
         "status": "healthy",
         "uptime_seconds": max(0.0, time.time() - _BOOT_TIME),
-        "model_count": len(registry._definitions),
+        "model_count": registry.count(),
         "active_jobs": active_jobs,
     }
-
-
-@router.get("/status")
-async def get_system_status():
-    """Full system + GPU health snapshot."""
-    from app.core.system_monitor import system_monitor
-    return system_monitor.snapshot().to_dict()
-
-
-@router.get("/gpu")
-async def get_gpu_status():
-    """GPU-only snapshot (VRAM, temp, power, clocks, utilization)."""
-    from app.core.system_monitor import system_monitor
-    snap = system_monitor.snapshot()
-    return {"gpus": [g.to_dict() for g in snap.gpus]}
 
 
 # ── Self-Update ──────────────────────────────────────────────────────────

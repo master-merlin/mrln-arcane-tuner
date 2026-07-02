@@ -1,16 +1,15 @@
 
-import gc
 import os
 
 import numpy as np
 import structlog
-import torch
 from PIL import Image
 
 from app.core.dataset.media_types import (
     IMAGE_EXTENSION_PREFERENCE,
     IMAGE_EXTENSIONS,
 )
+from app.core.gpu_unload import unload_gpu_plugins
 from app.core.masking.models import (
     MaskingModel,
     RemBGModel,
@@ -205,14 +204,9 @@ class MaskingService:
 
     def unload_models(self):
         """Unload all model plugins and clear memory."""
-        if self.__class__._active_model_id:
-            logger.info("unloading_masking_models", active_model=self.__class__._active_model_id)
-        
-        for plugin in self.plugins.values():
-            plugin.unload()
-            
-        self.__class__._active_model_id = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        logger.info("all_masking_models_unloaded")
+        unload_gpu_plugins(
+            self.__class__,
+            plugins=self.plugins,
+            active_attr="_active_model_id",
+            service_label="masking",
+        )

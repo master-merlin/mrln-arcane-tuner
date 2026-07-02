@@ -98,6 +98,13 @@ class TaskManager:
         if ev:
             ev.set()
 
+    def finish_cancelled(self, task_id: str) -> None:
+        """Public counterpart to complete()/fail() for the CANCELLED terminal
+        state — batch workers call this from their own finally/epilogue when
+        they observe a mid-run cancellation, instead of reaching into the
+        private _finish()."""
+        self._finish(task_id, TaskStatus.CANCELLED)
+
     def is_cancelled(self, task_id: str) -> bool:
         ev = self._cancels.get(task_id)
         return bool(ev and ev.is_set())

@@ -75,6 +75,34 @@ class TestCaptionServiceGenerate:
         CaptionService._instance = None
 
 
+class TestCaptionServiceUnload:
+    def test_unload_models_unloads_plugins_and_resets_active_key(self, monkeypatch):
+        """Real (non-mocked) unload_models() call, routed through the shared
+        gpu_unload helper (P2c / B-CLEAN-9): every plugin unloaded, active key
+        reset, CUDA cache released."""
+        import torch
+        from app.core.captioning.caption_service import CaptionService
+
+        calls: list[str] = []
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda: calls.append("synchronize"))
+        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+
+        CaptionService._instance = None
+        svc = CaptionService.get_instance()
+        CaptionService._active_model_key = "florence-2"
+        mock_a, mock_b = MagicMock(), MagicMock()
+        svc.plugins = {"florence-2": mock_a, "joycaption": mock_b}
+
+        CaptionService.unload_models()
+
+        mock_a.unload.assert_called_once()
+        mock_b.unload.assert_called_once()
+        assert "synchronize" in calls and "empty_cache" in calls
+        assert CaptionService._active_model_key is None
+        CaptionService._instance = None
+
+
 class TestCaptionServiceLoadImage:
     def test_load_rgb(self, tmp_path):
         from app.core.captioning.caption_service import CaptionService

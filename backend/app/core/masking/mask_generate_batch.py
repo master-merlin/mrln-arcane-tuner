@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 from app.core.logger import get_logger
 from app.core.masking.masking_service import MaskingService
-from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 if TYPE_CHECKING:
@@ -131,6 +130,6 @@ def run_mask_generate_batch(
             logger.warning("mask_count_reconcile_failed", dataset=dataset_name, error=str(exc))
 
     if cancelled:
-        task_manager._finish(task_id, TaskStatus.CANCELLED)
+        task_manager.finish_cancelled(task_id)
     else:
         task_manager.complete(task_id)

@@ -264,7 +264,12 @@ class Ltx2Sampler(GenericSamplingPipeline):
         # [0, 1000] flow-match scale, passed RAW to the transformer (NOT ÷1000 —
         # only add_noise normalizes).
         x = noise.to(torch.float32)
-        for i in range(len(sigmas) - 1):
+        total_steps = len(sigmas) - 1
+        for i in range(total_steps):
+            # Per-step progress for the UI (byte-identical to the image
+            # families' format — job_log.jsonl → LogTailer parses it).
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status(f"Sampling {i + 1}/{total_steps}")
             dt = sigmas[i + 1] - sigmas[i]
             t_val = float(sigmas[i]) * 1000.0
             xin = x.to(model_dtype)

@@ -25,6 +25,10 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Well-known model sizes (B params) — used when introspection is unavailable
 # ---------------------------------------------------------------------------
+# NOTE: a definition YAML's ``model_size_mb`` is authoritative when present —
+# the estimator prefers it; this table is the fallback-only path. (Several
+# families currently ship an empty/zero ``model_size_mb``, so for those the
+# fallback is what actually drives the estimate.)
 _FAMILY_PARAMS: dict[str, dict[str, float]] = {
     "sdxl": {
         "unet": 2.6,
@@ -70,6 +74,50 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "transformer": 8.0,  # ~8B DiT (≈16 GB bf16)
         "text_encoder": 3.0,  # Mistral3/Ministral-3B + Pixtral vision (≈6 GB bf16)
         "vae": 0.17,  # AutoencoderKLFlux2 (≈335 MB)
+    },
+    "ideogram4": {
+        # Counts meta-instantiated from the vendored Ideogram4Transformer2DModel
+        # (34 layers, hidden 4608) — matches the definition's "9.3B" name.
+        "transformer": 9.3,
+        "text_encoder": 8.8,  # Qwen3-VL-8B (hidden 4096, 36 layers + vision)
+        "vae": 0.08,  # AutoencoderKLFlux2 (84M params)
+    },
+    "krea2": {
+        # Meta-instantiated from the vendored Krea2Transformer2DModel defaults
+        # (28 SwiGLU blocks, hidden 6144 — mirrors krea2_raw.yaml).
+        "transformer": 12.8,
+        "text_encoder": 4.4,  # Qwen3-VL-4B (12-layer-stacked features)
+        "vae": 0.13,  # AutoencoderKLQwenImage (127M params)
+    },
+    "ltx2": {
+        # Meta-instantiated diffusers LTX2VideoTransformer3DModel with the
+        # ltx2_3.yaml arch (48 layers, hidden 4096, joint audio+video streams).
+        "transformer": 18.9,
+        "text_encoder": 12.0,  # Gemma3-12B (hidden 3840)
+        "vae": 1.2,  # AutoencoderKLLTX2Video (1.22B params)
+    },
+    "microsoft_lens": {
+        # lens_base.yaml ships concrete model_size_mb (transformer 7600 MB,
+        # TE 40000 MB, VAE 335 MB) which the estimator prefers; these are
+        # fallbacks calibrated to those on-disk sizes (size_mb / 2 for bf16).
+        "transformer": 3.8,  # Lens Base 3.8B DiT
+        "text_encoder": 20.0,  # GPT-OSS-20B
+        "vae": 0.17,
+    },
+    "wan21": {
+        # Meta-instantiated diffusers WanTransformer3DModel with the definition
+        # arch (40 layers, hidden 5120, ffn 13824). 14B T2V default; the I2V
+        # 14B variant is ≈16.4B and the 1.3B variant ≈1.4B.
+        "transformer": 14.3,
+        "text_encoder": 5.7,  # UMT5-XXL encoder
+        "vae": 0.13,  # AutoencoderKLWan (127M params)
+    },
+    "wan22": {
+        # PER-EXPERT size (same arch as wan21 14B). The MoE second expert is
+        # added by the dual_expert branch in VRAMEstimator.estimate, not here.
+        "transformer": 14.3,
+        "text_encoder": 5.7,  # UMT5-XXL encoder
+        "vae": 0.13,  # AutoencoderKLWan (127M params)
     },
 }
 

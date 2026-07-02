@@ -7,8 +7,9 @@ model dtype. Wrapping the loop in ``autocast(bf16)`` collapses multi-step
 sampling toward the conditional mean even when training is correct; this is THE
 sampler-collapse gotcha that :func:`assert_no_autocast_collapse` guards.
 
-The fp32 Euler integration is factored into :meth:`euler_integrate`, a pure
-function over ``(x0, sigmas, velocity_fn)``. The precision-contract test drives
+The fp32 Euler integration is factored into :meth:`euler_integrate`, a method
+over ``(x0, sigmas, velocity_fn)`` (side-effect-free except the per-step
+``Sampling {i}/{N}`` status emit). The precision-contract test drives
 THIS REAL method with a ``LinearVelocityFakeTransformer`` velocity field and
 compares the endpoint to the fp64 analytic solution — so the test exercises the
 exact code path training/sampling uses, not a copy.
@@ -60,8 +61,8 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
 
     # ── fp32 Euler integration core (the precision-critical path) ──────────
 
-    @staticmethod
     def euler_integrate(
+        self,
         x0: Tensor,
         sigmas: Tensor,
         velocity_fn: Callable[[Tensor, Tensor], Tensor],
@@ -73,6 +74,12 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         result is cast back to fp32 before accumulation so the loop never
         accumulates in reduced precision (the autocast-collapse guard).
 
+        Emits the per-step ``Sampling {i}/{N}`` status (1-based, byte-identical
+        to the image families' format — e.g. krea2's sampler) through the
+        JobLogWriter when one is attached. This is the SHARED seam both wan21
+        (base ``denoise``) and wan22 (dual-expert ``denoise`` override)
+        integrate through, so both emit without duplicating the logic.
+
         Args:
             x0: Initial latent (any dtype; promoted to fp32 internally).
             sigmas: 1-D descending schedule (e.g. 1 → 0), ``steps + 1`` values.
@@ -83,7 +90,10 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         """
         x = x0.to(torch.float32)
         s = sigmas.to(torch.float32)
-        for i in range(len(s) - 1):
+        total_steps = len(s) - 1
+        for i in range(total_steps):
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status(f"Sampling {i + 1}/{total_steps}")
             dt = (s[i + 1] - s[i]).to(torch.float32)
             v = velocity_fn(x, s[i]).to(torch.float32)
             x = x + dt * v

@@ -104,8 +104,14 @@ def test_create_training_template_from_job_broadcasts_created(MockRepo, mock_bro
 @patch.object(event_manager, "broadcast")
 @patch(_TRAIN_REPO)
 def test_update_template_broadcasts_updated(MockRepo, mock_broadcast, client):
-    MockRepo.return_value.get_by_id.return_value = {"id": "t1", "name": "Old", "readonly": False}
-    MockRepo.return_value.update.return_value = {"id": "t1", "name": "Updated"}
+    # created_at is a NOT-NULL column the TemplateRow response_model requires.
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "t1", "definition_id": "sdxl_base_1.0", "name": "Old",
+        "readonly": False, "created_at": 0.0,
+    }
+    MockRepo.return_value.update.return_value = {
+        "id": "t1", "definition_id": "sdxl_base_1.0", "name": "Updated", "created_at": 0.0,
+    }
     response = client.put("/api/templates/training/t1", json={"name": "Updated"})
     assert response.status_code == 200, response.text
 

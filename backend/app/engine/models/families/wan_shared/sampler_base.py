@@ -7,8 +7,9 @@ model dtype. Wrapping the loop in ``autocast(bf16)`` collapses multi-step
 sampling toward the conditional mean even when training is correct; this is THE
 sampler-collapse gotcha that :func:`assert_no_autocast_collapse` guards.
 
-The fp32 Euler integration is factored into :meth:`euler_integrate`, a pure
-function over ``(x0, sigmas, velocity_fn)``. The precision-contract test drives
+The fp32 Euler integration is factored into :meth:`euler_integrate`, a method
+over ``(x0, sigmas, velocity_fn)`` (side-effect-free except the per-step
+``Sampling {i}/{N}`` status emit). The precision-contract test drives
 THIS REAL method with a ``LinearVelocityFakeTransformer`` velocity field and
 compares the endpoint to the fp64 analytic solution — so the test exercises the
 exact code path training/sampling uses, not a copy.
@@ -60,8 +61,8 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
 
     # ── fp32 Euler integration core (the precision-critical path) ──────────
 
-    @staticmethod
     def euler_integrate(
+        self,
         x0: Tensor,
         sigmas: Tensor,
         velocity_fn: Callable[[Tensor, Tensor], Tensor],
@@ -73,6 +74,12 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         result is cast back to fp32 before accumulation so the loop never
         accumulates in reduced precision (the autocast-collapse guard).
 
+        Emits the per-step ``Sampling {i}/{N}`` status (1-based, byte-identical
+        to the image families' format — e.g. krea2's sampler) through the
+        JobLogWriter when one is attached. This is the SHARED seam both wan21
+        (base ``denoise``) and wan22 (dual-expert ``denoise`` override)
+        integrate through, so both emit without duplicating the logic.
+
         Args:
             x0: Initial latent (any dtype; promoted to fp32 internally).
             sigmas: 1-D descending schedule (e.g. 1 → 0), ``steps + 1`` values.
@@ -83,7 +90,10 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         """
         x = x0.to(torch.float32)
         s = sigmas.to(torch.float32)
-        for i in range(len(s) - 1):
+        total_steps = len(s) - 1
+        for i in range(total_steps):
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status(f"Sampling {i + 1}/{total_steps}")
             dt = (s[i + 1] - s[i]).to(torch.float32)
             v = velocity_fn(x, s[i]).to(torch.float32)
             x = x + dt * v
@@ -197,7 +207,21 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         sigmas = self._build_sigmas(num_steps).to(self.device)
         text = prompt_embedding
 
-        def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
+        # Classifier-free guidance: when guidance_scale > 1 we contrast the
+        # conditional velocity against an UNCONDITIONAL one (empty/negative
+        # prompt): v = v_u + scale * (v_c - v_u). Without it the preview is
+        # effectively CFG=1 and massively under-shows the LoRA vs ComfyUI. The
+        # negative prompt is warmed into the text cache by the trainer (the UMT5
+        # encoder is offloaded by sample time); default "" is the standard
+        # unconditional. guidance_scale <= 1 keeps the single conditional forward
+        # (byte-identical to before).
+        cfg_on = guidance_scale is not None and float(guidance_scale) > 1.0
+        text_uncond = None
+        if cfg_on:
+            neg_text = str(self.config.get("sample_negative_prompt", "") or "")
+            text_uncond = self.encode_prompt(neg_text)
+
+        def _forward(x: Tensor, sigma: Tensor, cond: Any) -> Tensor:
             # The trajectory steps in sigma ∈ [0,1], but the transformer is
             # conditioned on the RAW [0,1000] timestep (sigma*1000) — the scale
             # the diffusers WanPipeline feeds and the scale training uses (the
@@ -213,12 +237,21 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
                 out = transformer(
                     hidden_states=x,
                     timestep=t,
-                    encoder_hidden_states=text,
+                    encoder_hidden_states=cond,
                     encoder_hidden_states_image=None,
                     return_dict=False,
                 )
-            pred = out[0] if isinstance(out, tuple) else out
-            return pred
+            return out[0] if isinstance(out, tuple) else out
+
+        def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
+            v_c = _forward(x, sigma, text)
+            if not cfg_on:
+                return v_c
+            # Combine in fp32 (the uncond forward shares the exact cond regime),
+            # matching euler_integrate's fp32 accumulation contract.
+            v_c = v_c.to(torch.float32)
+            v_u = _forward(x, sigma, text_uncond).to(torch.float32)
+            return v_u + guidance_scale * (v_c - v_u)
 
         latents = self.euler_integrate(noise, sigmas, _velocity)
         return latents

@@ -7,11 +7,13 @@ in-memory cache).
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 
 class WanTextCacheMixin:
-    """Warm the in-memory text cache before the UMT5 encoder is offloaded.
+    """Warm the text cache (disk + memory) before the UMT5 encoder is offloaded.
 
     ``run_trainer`` runs ``_pre_cache_text_embeddings`` → ``_offload_text_encoders``.
     WAN's ``encode_text`` caches lazily and re-encodes on a miss, but the base
@@ -21,12 +23,17 @@ class WanTextCacheMixin:
     "Text encoder unavailable for uncached caption(s)". (Same class of bug LTX-2
     hit; LTX-2's fix is the sibling :class:`Ltx2Trainer._pre_cache_text_embeddings`.)
 
-    Warming here encodes every unique caption the train loop will request — the
-    exact trigger/prefix/dropout composites built by ``_build_caption_hints`` —
-    and stores each ``[1, L, D]`` tensor on CPU under the same key the lazy path
-    + train loop use, so encoding still works once the encoder is gone. UMT5 has
-    no audio pair, so a plain tensor cache (matching ``_get_cached_text_embeddings``)
-    suffices.
+    Disk-backed cache (P1c): like the image families (see
+    ``qwen_image``/``krea2``), each ``[1, L, D]`` embedding is persisted via the
+    shared :class:`TextEmbeddingCache` under
+    ``{ds}/.cache/{model}/{ver}/embeddings/{te_quant}/te1/`` keyed on the caption
+    hash. A warm run loads the whole set from disk and NEVER re-encodes through
+    the 12B-class UMT5-XXL encoder — closing the "re-encode every run" gap.
+    UMT5 has no audio pair, so a single ``te1`` slot (matching
+    ``_get_cached_text_embeddings``) suffices; the sample prompts AND the CFG
+    negative prompt round-trip through the SAME disk cache as the training
+    captions (mirroring the image families, where sample prompts ride in
+    ``_build_caption_hints`` and therefore also persist to disk).
     """
 
     def _pre_cache_text_embeddings(self) -> None:
@@ -36,31 +43,85 @@ class WanTextCacheMixin:
         if getattr(self.driver, "text_encoder", None) is None:
             return
 
+        from app.engine.components.text_embeddings import TextEmbeddingCache
+
+        # Disk cache dir — include the TE quantization scheme so FP8/bf16
+        # embeddings never collide (same convention as the image families).
+        te_cache_dirs = self._resolve_te_cache_dirs()
+        te_quant = self.config.get("te_quantization", "none")
+        te1_dir = (
+            os.path.join(te_cache_dirs[0], "embeddings", te_quant, "te1")
+            if te_cache_dirs
+            else ""
+        )
+
         dtype = self._resolve_loading_dtype()
-        captions = [c for c in self._build_caption_hints() if c not in self.text_cache]
-        # Warm the expanded SAMPLE prompts too: the sampler runs AFTER the UMT5
-        # encoder is offloaded and serves prompts from self.text_cache via
-        # encode_text, so without this it hits the offloaded (None) encoder and
-        # crashes with "'NoneType' object is not callable".
-        for sp in self._sample_prompt_texts():
-            if sp not in self.text_cache and sp not in captions:
-                captions.append(sp)
-        total = len(captions)
-        if not total:
-            self.logger.info("wan_text_cache_complete", cached=len(self.text_cache))
+
+        # ── Build the full ordered work set: training captions, then the
+        # expanded SAMPLE prompts, then the CFG negative. Sampling runs AFTER the
+        # UMT5 encoder is offloaded and serves prompts from self.text_cache via
+        # encode_text, so every one of these must be warmed now (else the sampler
+        # hits the offloaded (None) encoder → "'NoneType' object is not callable"
+        # for a sample prompt, or a broken cond+uncond pass for the negative).
+        work: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(cap: str, hint: str) -> None:
+            if cap in self.text_cache or cap in seen:
+                return
+            seen.add(cap)
+            work.append((cap, hint))
+
+        for cap, hint in self._build_caption_hints().items():
+            _add(cap, hint)
+        sample_texts = self._sample_prompt_texts()
+        for sp in sample_texts:
+            _add(sp, "")
+        if sample_texts:
+            # Default "" is the standard unconditional; a configured
+            # sample_negative_prompt is warmed (and persisted) under its own key.
+            _add(str(self.config.get("sample_negative_prompt", "") or ""), "")
+
+        # ── Phase 1: load from disk (skip the encoder entirely on a hit) ──
+        disk_loaded = 0
+        need_encode: list[tuple[str, str]] = []
+        for cap, hint in work:
+            if te1_dir:
+                emb = TextEmbeddingCache.load(cap, te1_dir, hint)
+                if emb is not None:
+                    self.text_cache[cap] = emb
+                    disk_loaded += 1
+                    continue
+            need_encode.append((cap, hint))
+
+        if not need_encode:
+            if getattr(self, "_log_writer", None):
+                self._log_writer.status("TE Cache Loaded from Disk")
+            self.logger.info(
+                "wan_text_cache_complete",
+                cached=len(self.text_cache),
+                from_disk=disk_loaded,
+                source="disk",
+            )
             return
 
+        # ── Phase 2: encode the misses (batched) + persist to disk ──
         if getattr(self, "_log_writer", None):
             self._log_writer.status("Caching Text Embeddings (0%)")
 
+        total = len(need_encode)
         batch_size = 4
         with torch.no_grad():
             for i in range(0, total, batch_size):
-                chunk = captions[i : i + batch_size]
+                batch_items = need_encode[i : i + batch_size]
+                chunk = [cap for cap, _ in batch_items]
                 out = self.driver.encode_text(chunk, dtype)
                 emb = out.embeddings if hasattr(out, "embeddings") else out
-                for j, cap in enumerate(chunk):
-                    self.text_cache[cap] = emb[j : j + 1].cpu()
+                for j, (cap, hint) in enumerate(batch_items):
+                    emb_cpu = emb[j : j + 1].cpu()
+                    self.text_cache[cap] = emb_cpu
+                    if te1_dir:
+                        TextEmbeddingCache.save(cap, emb_cpu, te1_dir, hint)
                 if getattr(self, "_log_writer", None):
                     pct = round(min(i + batch_size, total) / total * 100)
                     self._log_writer.status(f"Caching Text Embeddings ({pct}%)")
@@ -68,6 +129,7 @@ class WanTextCacheMixin:
         self.logger.info(
             "wan_text_cache_complete",
             cached=len(self.text_cache),
+            from_disk=disk_loaded,
             newly_encoded=total,
         )
 

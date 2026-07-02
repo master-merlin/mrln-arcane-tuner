@@ -81,7 +81,19 @@ class Wan22Sampler(WanVideoSamplerBase):
         sigmas = self._build_sigmas(num_steps).to(self.device)
         text = prompt_embedding
 
-        def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
+        # Classifier-free guidance (see WanVideoSamplerBase.denoise): contrast a
+        # conditional vs UNCONDITIONAL velocity when guidance_scale > 1,
+        # v = v_u + scale * (v_c - v_u). Both branches at a given step share the
+        # SAME sigma → the SAME boundary-based expert selection, so the uncond
+        # forward always routes through the expert the cond forward used.
+        # guidance_scale <= 1 keeps the single conditional forward.
+        cfg_on = guidance_scale is not None and float(guidance_scale) > 1.0
+        text_uncond = None
+        if cfg_on:
+            neg_text = str(self.config.get("sample_negative_prompt", "") or "")
+            text_uncond = self.encode_prompt(neg_text)
+
+        def _forward(x: Tensor, sigma: Tensor, cond: Any) -> Tensor:
             # sigma is the [0,1] timestep fraction; pick the expert by boundary
             # (boundary is the same [0,1] fraction → matches the router's
             # boundary*1000 split in training). The transformer itself is
@@ -95,11 +107,21 @@ class Wan22Sampler(WanVideoSamplerBase):
                 out = expert(
                     hidden_states=x,
                     timestep=t,
-                    encoder_hidden_states=text,
+                    encoder_hidden_states=cond,
                     encoder_hidden_states_image=None,
                     return_dict=False,
                 )
             return out[0] if isinstance(out, tuple) else out
+
+        def _velocity(x: Tensor, sigma: Tensor) -> Tensor:
+            v_c = _forward(x, sigma, text)
+            if not cfg_on:
+                return v_c
+            # Combine in fp32; the uncond forward shares the cond regime and
+            # (same sigma) the same expert.
+            v_c = v_c.to(torch.float32)
+            v_u = _forward(x, sigma, text_uncond).to(torch.float32)
+            return v_u + guidance_scale * (v_c - v_u)
 
         # euler_integrate forces the trajectory to fp32 (no autocast wrapper).
         return self.euler_integrate(noise, sigmas, _velocity)

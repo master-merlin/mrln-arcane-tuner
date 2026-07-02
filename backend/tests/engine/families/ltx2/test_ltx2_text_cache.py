@@ -45,6 +45,7 @@ def _trainer(cache: bool = True) -> Ltx2Trainer:
     t._log_writer = None
     t._build_caption_hints = lambda: {"a cat": "h", "a dog": "h", "": "d"}
     t._resolve_loading_dtype = lambda: torch.float32
+    t._resolve_te_cache_dirs = lambda: []  # disk cache off by default (in-memory tests)
     return t
 
 
@@ -181,3 +182,89 @@ def test_pre_cache_skips_unconditional_when_no_sample_prompts():
     t._build_caption_hints = lambda: {"a cat": "h", "a dog": "h"}  # drop the ""
     t._pre_cache_text_embeddings()
     assert "" not in t.text_cache  # not warmed when sampling is off
+
+
+# ── Disk-backed cache (P1c — mirror the image families' TextEmbeddingCache) ──
+
+
+class _FakeLogWriter:
+    def __init__(self) -> None:
+        self.statuses: list[str] = []
+
+    def status(self, msg: str) -> None:
+        self.statuses.append(msg)
+
+
+def _disk_trainer(tmp: str, log_writer=None) -> Ltx2Trainer:
+    t = _trainer()
+    t._log_writer = log_writer
+    t._resolve_te_cache_dirs = lambda: [tmp]
+    return t
+
+
+def test_cold_run_writes_full_triple_to_disk(tmp_path):
+    """First run encodes via the stub TE and persists emb/pooled/mask to te1-3."""
+    import os
+
+    t = _disk_trainer(str(tmp_path))
+    t._pre_cache_text_embeddings()
+
+    base = os.path.join(str(tmp_path), "embeddings", "none")
+    for slot in ("te1", "te2", "te3"):
+        files = [f for f in os.listdir(os.path.join(base, slot)) if f.endswith(".safetensors")]
+        assert len(files) == 3, f"{slot} should hold 3 caption files"
+    assert t.driver.calls > 0
+
+
+def test_warm_run_loads_triple_from_disk_without_re_encoding(tmp_path):
+    """Second run over the same captions never touches the stub TE."""
+    log = _FakeLogWriter()
+    cold = _disk_trainer(str(tmp_path), log)
+    cold._pre_cache_text_embeddings()
+
+    warm = _disk_trainer(str(tmp_path), log)
+    warm._pre_cache_text_embeddings()
+
+    assert warm.driver.calls == 0  # every caption served from disk
+    assert set(warm.text_cache) == {"a cat", "a dog", ""}
+    emb, pooled, mask = warm.text_cache["a cat"]
+    assert emb.shape == (1, 5, 8) and emb.device.type == "cpu"
+    assert pooled.shape == (1, 5, 8)  # audio pooled preserved across disk round-trip
+    assert mask.shape == (1, 5)
+    assert "TE Cache Loaded from Disk" in log.statuses
+
+
+def test_changed_caption_re_encodes_only_the_delta(tmp_path):
+    cold = _disk_trainer(str(tmp_path))
+    cold._build_caption_hints = lambda: {"a cat": "h", "": "d"}
+    cold._pre_cache_text_embeddings()
+
+    warm = _disk_trainer(str(tmp_path))
+    warm._build_caption_hints = lambda: {"a dog": "h", "": "d"}  # cat → dog
+    warm._pre_cache_text_embeddings()
+
+    assert warm.driver.calls == 1  # only the new "a dog" re-encoded
+    assert "a dog" in warm.text_cache
+    assert "" in warm.text_cache  # unchanged → from disk
+
+
+def test_disk_cache_persists_negative_prompt(tmp_path):
+    """The P1a negative prompt round-trips through disk like sample prompts."""
+    cfg = {
+        "cache_text_embeddings": True,
+        "sample_prompts": [{"prompt": "a cat"}],
+        "sample_negative_prompt": "blurry, low quality",
+        "datasets": [],
+    }
+    cold = _disk_trainer(str(tmp_path))
+    cold.config = dict(cfg)
+    cold._build_caption_hints = lambda: {}
+    cold._pre_cache_text_embeddings()
+    assert "blurry, low quality" in cold.text_cache  # P1a warming preserved
+
+    warm = _disk_trainer(str(tmp_path))
+    warm.config = dict(cfg)
+    warm._build_caption_hints = lambda: {}
+    warm._pre_cache_text_embeddings()
+    assert "blurry, low quality" in warm.text_cache
+    assert warm.driver.calls == 0  # negative + sample served from disk

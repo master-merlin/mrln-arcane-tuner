@@ -14,7 +14,13 @@ import math
 import pytest
 
 from app.engine.models.registry import registry
-from app.engine.utils.vram_estimator import _FAMILY_PARAMS, VRAMEstimator
+from app.engine.utils.vram_estimator import (
+    _FAMILY_PARAMS,
+    VRAMEstimator,
+    _get_primary_params,
+    _get_te_params,
+    _get_vae_params,
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -64,3 +70,68 @@ def test_ernie_estimate_is_reasonable():
     if sdxl is not None:
         sdxl_d = VRAMEstimator.estimate(sdxl, {"quantization": "none"}).to_dict()
         assert ernie_d["model_weights_mb"] > sdxl_d["model_weights_mb"]
+
+
+# ── Audit P1b (FAM-7): 6 families missing from the fallback table ──────────
+#
+# ideogram4 / krea2 / wan21 / wan22 ship ``model_size_mb: {}`` and ltx2 ships
+# all-zero sizes, so for THOSE definitions the "fallback" table is the PRIMARY
+# estimation path today (no definition carries ``total_params`` either).
+# Without entries they all fell to the generic 2.0 B default.
+
+_P1B_FAMILIES = ("ideogram4", "krea2", "ltx2", "microsoft_lens", "wan21", "wan22")
+
+# family → (definition id, min expected primary-weights MB). All six primaries
+# are far above the generic 2.0 B fallback (~3.8 GB bf16), so the lower bound
+# also proves the entry (not the default) produced the estimate.
+_P1B_DEFINITIONS = {
+    "ideogram4": ("ideogram4-fp8", 15_000),  # 9.3 B bf16 ≈ 17.7 GB
+    "krea2": ("krea2-raw", 20_000),  # 12.8 B bf16 ≈ 24.4 GB
+    "ltx2": ("ltx2-3-base", 30_000),  # 18.9 B bf16 ≈ 36.0 GB
+    "wan21": ("wan2.1-t2v-14b", 20_000),  # 14.3 B bf16 ≈ 27.3 GB
+    "wan22": ("wan2.2-t2v-a14b", 20_000),  # ≥ one 14.3 B expert (MoE may double)
+}
+
+
+def test_estimator_registers_p1b_families():
+    for family in _P1B_FAMILIES:
+        assert family in _FAMILY_PARAMS, f"{family} missing from _FAMILY_PARAMS"
+
+
+def test_p1b_family_entries_are_sane_and_schema_consistent():
+    for family in _P1B_FAMILIES:
+        entry = _FAMILY_PARAMS[family]
+        # Same schema as existing entries: a primary + text_encoder + vae key.
+        assert _get_primary_params(family, {}) > 1.0, family
+        assert any("text_encoder" in k for k in entry), family
+        assert "vae" in entry, family
+        assert _get_te_params(family) > 0.0, family
+        assert _get_vae_params(family) > 0.0, family
+
+
+def test_p1b_fallback_estimates_are_realistic():
+    """The families whose definitions ship empty/zero model_size_mb must get
+    realistic primary-weight estimates from the table (fallback path IS the
+    live path for them)."""
+    for family, (def_id, min_mb) in _P1B_DEFINITIONS.items():
+        defn = registry.get_definition(def_id)
+        assert defn is not None, f"definition {def_id} not found"
+        d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+        assert d["model_weights_mb"] > min_mb, (family, d["model_weights_mb"])
+        assert d["model_weights_mb"] < 80_000, (family, d["model_weights_mb"])
+        assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, family
+
+
+def test_microsoft_lens_fallback_matches_on_disk_sizes():
+    """lens ships real model_size_mb (7600/40000/335) — its table entry is a
+    true fallback, calibrated to those on-disk bf16 sizes (size_mb / 2)."""
+    assert _get_primary_params("microsoft_lens", {}) == pytest.approx(3.8)
+    assert _get_te_params("microsoft_lens") == pytest.approx(20.0)
+    assert _get_vae_params("microsoft_lens") == pytest.approx(0.17)
+
+
+def test_wan21_te_is_umt5_xxl_not_generic_default():
+    """Without a wan21 entry _get_te_params returned the generic 0.35 —
+    UMT5-XXL is ~5.7 B, a 16× underestimate of the caching peak."""
+    assert _get_te_params("wan21") == pytest.approx(5.7)
+    assert _get_te_params("wan22") == pytest.approx(5.7)

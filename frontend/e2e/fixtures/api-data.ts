@@ -20,7 +20,7 @@ export const runtimeConfig = {
     frontendPort: 4200,
 };
 
-/** GET / (sidebar app-version probe). */
+/** GET /api/system/version — sidebar's ngOnInit app-version probe (every page). */
 export const version = { version: 'e2e' };
 
 /** GET /api/projects — shell loads this on boot. Empty list keeps the scope
@@ -565,3 +565,23 @@ export const overlayRecipe = {
 
 /** POST /api/datasets/{name}/render-pipeline/batch — the batch-apply task ack. */
 export const batchRenderResponse = { task_id: 'task-e2e' };
+
+/** GET /api/llm-refine/models — topbar's app-init LLM-endpoint availability probe. */
+export const llmRefineModels = { curated: [], installed: [], available: false };
+
+/** GET /api/captions/api-providers — dataset-caption-settings loads this list on
+ *  init. Empty = no API captioning providers configured (idle default). */
+export const apiCaptionProviders: unknown[] = [];
+
+/** GET /api/system/update/status — SystemUpdateService's constructor refreshStatus(). */
+export const systemUpdateStatus = {
+    state: 'idle',
+    available: false,
+    branch: 'main',
+    commit: 'e2e0000',
+    dirty: false,
+    is_repo: true,
+    behind: 0,
+    active: 0,
+    error: null,
+};

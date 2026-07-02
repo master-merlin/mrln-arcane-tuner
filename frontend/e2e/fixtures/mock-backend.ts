@@ -23,6 +23,9 @@ import {
     renderPipelineResponse,
     overlayRecipe,
     batchRenderResponse,
+    llmRefineModels,
+    systemUpdateStatus,
+    apiCaptionProviders,
 } from './api-data';
 
 /**
@@ -70,6 +73,12 @@ export interface ApiRoute {
  * carry distinct GET/POST/PATCH/DELETE handlers.
  */
 export const bootApiRoutes: ApiRoute[] = [
+    // Sidebar app-init probe (every page, SidebarComponent.ngOnInit()).
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/system/version'),
+        handler: (route) => json(route, version),
+    },
     // datasets sub-resources (specific → general)
     {
         method: 'GET',
@@ -117,6 +126,18 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'GET',
         test: (p) => p.endsWith('/api/tasks'),
         handler: (route) => json(route, tasks),
+    },
+    // Topbar app-init probe (every page, TopbarComponent ctor → LlmAvailabilityStore.refresh()).
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/llm-refine/models'),
+        handler: (route) => json(route, llmRefineModels),
+    },
+    // Topbar app-init probe (every page, SystemUpdateService ctor → refreshStatus()).
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/system/update/status'),
+        handler: (route) => json(route, systemUpdateStatus),
     },
 
     // ── Training screen (Flow B) ──────────────────────────────────────────
@@ -189,6 +210,12 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'DELETE',
         test: (p) => p.endsWith('/api/captions/unload'),
         handler: (route) => json(route, { status: 'ok' }),
+    },
+    // dataset-caption-settings loads the API-captioning provider list on init.
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/captions/api-providers'),
+        handler: (route) => json(route, apiCaptionProviders),
     },
     // Template lists drive the caption/masking `Settings Template` selects. The
     // `?model_id=…` query is stripped before `test` runs, so a bare endsWith
@@ -335,9 +362,11 @@ export async function installMockBackend(
             return;
         }
 
-        // 4. The sidebar version probe: HttpClient GET of `/api`.replace('/api','/')
-        //    === `/`. Only intercept the fetch/xhr — never the index.html
-        //    document navigation (which has resourceType 'document').
+        // 4. Legacy bare-`/` version probe fallback (the sidebar's live probe is
+        //    `GET /api/system/version`, handled in the table above). Kept as a
+        //    harmless catch-all in case anything still hits bare `/`. Only
+        //    intercept fetch/xhr — never the index.html document navigation
+        //    (which has resourceType 'document').
         if (pathname === '/' && (resourceType === 'fetch' || resourceType === 'xhr')) {
             await json(route, version);
             return;

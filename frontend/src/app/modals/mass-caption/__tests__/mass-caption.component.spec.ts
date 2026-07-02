@@ -42,6 +42,7 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
         api = {
             getDatasetPairs: vi.fn().mockReturnValue(of([])),
             batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            getCaptionVariantMap: vi.fn().mockReturnValue(of({ variants: {} })),
         };
         taskStoreSpy = { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() };
         TestBed.configureTestingModule({

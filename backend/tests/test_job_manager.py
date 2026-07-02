@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from app.core.job import Job, JobStatus
 from app.core.job_manager import JobManager
+from app.engine.models.registry import registry
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -1030,17 +1031,32 @@ class TestStartJobPreflightDownload:
         plugin.start_training.return_value = MagicMock(spec=[])
         return plugin
 
+    def _fake_definition(self):
+        """Bare mock with a real registered family so
+        _apply_video_contract -> resolve_capabilities(definition.family)
+        doesn't blow up on a MagicMock family name. discover_families() is
+        idempotent (guarded by ModelRegistry._discovered) so this is safe to
+        call regardless of what ran before this test in the session."""
+        registry.discover_families()
+        fake_def = MagicMock()
+        fake_def.family = "sdxl"
+        return fake_def
+
     @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
     @patch("app.engine.models.registry.registry.get_definition")
     @patch("app.core.job_manager.plugin_manager")
     def test_start_job_prefetches_model(self, mock_pm, mock_get_def, mock_prefetch, tmp_path):
         mock_pm.get_plugin.return_value = self._mock_plugin()
-        fake_def = MagicMock()
+        fake_def = self._fake_definition()
         mock_get_def.return_value = fake_def
         mgr = JobManager()
         job = mgr.create_job(
             "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pf"),
         )
+        # create_job's own video-contract validation (_apply_video_contract)
+        # also resolves the definition; reset so the assertion below isolates
+        # start_job's preflight call, which is what this test targets.
+        mock_get_def.reset_mock()
 
         mgr.start_job(job.id)
 
@@ -1052,7 +1068,7 @@ class TestStartJobPreflightDownload:
     @patch("app.core.job_manager.plugin_manager")
     def test_start_job_skips_prefetch_on_recovery(self, mock_pm, mock_get_def, mock_prefetch, tmp_path):
         mock_pm.get_plugin.return_value = self._mock_plugin()
-        mock_get_def.return_value = MagicMock()
+        mock_get_def.return_value = self._fake_definition()
         mgr = JobManager()
         job = mgr.create_job(
             "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="recpf"),
@@ -1070,7 +1086,7 @@ class TestStartJobPreflightDownload:
         surfaces the real error via the job log as before)."""
         plugin = self._mock_plugin()
         mock_pm.get_plugin.return_value = plugin
-        mock_get_def.return_value = MagicMock()
+        mock_get_def.return_value = self._fake_definition()
         mock_prefetch.side_effect = RuntimeError("hub down")
         mgr = JobManager()
         job = mgr.create_job(

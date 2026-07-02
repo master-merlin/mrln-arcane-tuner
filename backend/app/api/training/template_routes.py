@@ -14,6 +14,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.core.events import emit_entity_change, event_manager
+
 router = APIRouter()
 
 
@@ -163,7 +165,9 @@ async def create_captioning_template(
 ) -> dict[str, Any]:
     from app.core.db.repositories.captioning_template_repo import CaptioningTemplateRepository
     repo = CaptioningTemplateRepository()
-    return await asyncio.to_thread(repo.create, req.model_dump())
+    row = await asyncio.to_thread(repo.create, req.model_dump())
+    await _emit_template_change("created", row)
+    return row
 
 
 # ── Masking templates ────────────────────────────────────────────────────
@@ -185,7 +189,9 @@ async def create_masking_template(
 ) -> dict[str, Any]:
     from app.core.db.repositories.masking_template_repo import MaskingTemplateRepository
     repo = MaskingTemplateRepository()
-    return await asyncio.to_thread(repo.create, req.model_dump())
+    row = await asyncio.to_thread(repo.create, req.model_dump())
+    await _emit_template_change("created", row)
+    return row
 
 
 # ── Training templates ───────────────────────────────────────────────────
@@ -207,7 +213,9 @@ async def create_training_template(
 ) -> dict[str, Any]:
     from app.core.db.repositories.training_template_repo import TrainingTemplateRepository
     repo = TrainingTemplateRepository()
-    return await asyncio.to_thread(repo.create, req.model_dump())
+    row = await asyncio.to_thread(repo.create, req.model_dump())
+    await _emit_template_change("created", row)
+    return row
 
 
 @router.post("/templates/training/from-job", status_code=201, response_model=TrainingTemplate)
@@ -229,12 +237,31 @@ async def create_training_template_from_job(
         config = json.loads(config)
 
     repo = TrainingTemplateRepository()
-    return await asyncio.to_thread(
+    row = await asyncio.to_thread(
         repo.create_from_job, config, req.name, req.project_id
     )
+    await _emit_template_change("created", row)
+    return row
 
 
 # ── Shared CRUD (any domain) ────────────────────────────────────────────
+
+
+async def _emit_template_change(
+    op: str, row: dict[str, Any] | None, *, template_id: str | None = None,
+) -> None:
+    """Broadcast entity.changed for a template mutation (any domain).
+
+    One shared `template` entity name covers all three domains (captioning/
+    masking/training) — template ids are unique regardless of domain.
+    """
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="template",
+        op=op,
+        id=template_id or (row or {}).get("id", ""),
+        payload=row,
+    )
 
 
 def _get_repo(domain: str):
@@ -275,7 +302,9 @@ async def update_template(
 
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = await asyncio.to_thread(repo.update, template_id, updates)
-    return result or existing
+    result = result or existing
+    await _emit_template_change("updated", result, template_id=template_id)
+    return result
 
 
 @router.delete("/templates/{domain}/{template_id}", response_model=StatusResponse)
@@ -288,6 +317,7 @@ async def delete_template(domain: str, template_id: str) -> dict[str, str]:
     if existing.get("readonly"):
         raise HTTPException(403, "Cannot delete a readonly default template")
     await asyncio.to_thread(repo.delete, template_id)
+    await _emit_template_change("deleted", None, template_id=template_id)
     return {"status": "deleted"}
 
 

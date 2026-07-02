@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.core.db.repositories.project_repo import ProjectRepository
 from app.core.db.repositories.preference_repo import PreferenceRepository
+from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -96,7 +97,12 @@ async def create_project(req: CreateProjectRequest) -> dict[str, Any]:
             raise HTTPException(409, f"Project '{req.name}' already exists")
         return _projects.create(req.model_dump())
 
-    return await asyncio.to_thread(_work)
+    project = await asyncio.to_thread(_work)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="project", op="created", id=project["id"], payload=project,
+    )
+    return project
 
 
 @router.get("/{project_id}")
@@ -127,7 +133,12 @@ async def update_project(
             raise HTTPException(400, "No updates provided")
         return _projects.update(project_id, updates)
 
-    return await asyncio.to_thread(_work)
+    project = await asyncio.to_thread(_work)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="project", op="updated", id=project_id, payload=project,
+    )
+    return project
 
 
 @router.delete("/{project_id}", status_code=204)
@@ -140,6 +151,10 @@ async def delete_project(project_id: str) -> None:
         _projects.delete(project_id)
 
     await asyncio.to_thread(_work)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="project", op="deleted", id=project_id, payload=None,
+    )
 
 
 # ── Dataset associations ─────────────────────────────────────────────────
@@ -169,13 +184,31 @@ async def add_project_dataset(
         _projects.add_dataset(project_id, req.dataset_id)
         return {"status": "added"}
 
-    return await asyncio.to_thread(_work)
+    result = await asyncio.to_thread(_work)
+    await _emit_project_membership_updated(project_id)
+    return result
 
 
 @router.delete("/{project_id}/datasets/{dataset_id}", status_code=204)
 async def remove_project_dataset(project_id: str, dataset_id: str) -> None:
     """Remove a dataset association from a project."""
     await asyncio.to_thread(_projects.remove_dataset, project_id, dataset_id)
+    await _emit_project_membership_updated(project_id)
+
+
+async def _emit_project_membership_updated(project_id: str) -> None:
+    """Broadcast a project `updated` event after a dataset-association change.
+
+    Membership changes (add/remove a dataset) count as project updates —
+    the project row itself (name/description/color) is unchanged, but its
+    dataset associations are part of its externally-visible state.
+    """
+    project = await asyncio.to_thread(_projects.get_by_id, project_id)
+    if project is not None:
+        await emit_entity_change(
+            event_manager.broadcast,
+            entity="project", op="updated", id=project_id, payload=project,
+        )
 
 
 # ── Preferences ──────────────────────────────────────────────────────────

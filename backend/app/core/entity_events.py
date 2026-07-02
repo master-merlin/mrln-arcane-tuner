@@ -6,7 +6,8 @@ to broadcast generic CRUD events that the frontend EntityStore subscribes to.
 from typing import Any, Awaitable, Callable, Literal, TypedDict
 
 EntityName = Literal[
-    "job", "dataset", "media_item", "settings", "registry_model", "overlay"
+    "job", "dataset", "media_item", "settings", "registry_model", "overlay",
+    "project", "template",
 ]
 EntityOp = Literal["created", "updated", "deleted", "bulk_deleted"]
 

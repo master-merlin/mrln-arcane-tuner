@@ -40,3 +40,17 @@ async def test_emit_entity_change_bulk_deleted_carries_ids():
         "entity.changed",
         {"entity": "job", "op": "bulk_deleted", "id": "", "payload": {"ids": ["a", "b", "c"]}},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity", ["project", "template"])
+async def test_emit_entity_change_accepts_project_and_template(entity):
+    """B-ARCH-4: project/template CRUD (project_routes.py, training/
+    template_routes.py) now broadcasts entity.changed like every other
+    domain — pin that the two new EntityName members round-trip."""
+    broadcast = AsyncMock()
+    await emit_entity_change(broadcast, entity=entity, op="created", id="x1", payload={"id": "x1"})
+    broadcast.assert_awaited_once_with(
+        "entity.changed",
+        {"entity": entity, "op": "created", "id": "x1", "payload": {"id": "x1"}},
+    )

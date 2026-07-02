@@ -100,6 +100,102 @@ class JobHistoryRepository:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_stats(self) -> dict[str, Any]:
+        """Aggregate training statistics for the dashboard card.
+
+        Read-only: computes core counts, completed-run averages, model-family
+        and optimizer breakdowns, dataset usage and the most-recent job. Legacy
+        ``definition_id = 'standard'`` placeholder repair is handled once by the
+        v17 migration, NOT here — this method never writes.
+        """
+        conn = get_db().connection()
+
+        # ── Core counts ──────────────────────────────────────────
+        totals = conn.execute("""
+            SELECT
+                COUNT(*)                                              AS total_jobs,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status = 'stopped'   THEN 1 ELSE 0 END) AS stopped,
+                SUM(CASE WHEN status = 'running'   THEN 1 ELSE 0 END) AS running,
+                SUM(CASE WHEN status = 'paused'    THEN 1 ELSE 0 END) AS paused,
+                COALESCE(SUM(completed_steps), 0)                      AS total_steps,
+                COALESCE(SUM(duration_seconds), 0)                     AS total_runtime_sec,
+                COALESCE(SUM(training_seconds), 0)                     AS total_training_sec
+            FROM job_history
+        """).fetchone()
+
+        total_jobs = totals["total_jobs"] or 0
+        completed  = totals["completed"] or 0
+
+        # ── Averages (completed only) ────────────────────────────
+        avgs = conn.execute("""
+            SELECT
+                AVG(completed_steps) AS avg_steps,
+                AVG(avg_loss)        AS avg_loss,
+                AVG(min_loss)        AS avg_min_loss,
+                AVG(avg_step_time)   AS avg_step_time_sec,
+                AVG(duration_seconds) AS avg_runtime_sec
+            FROM job_history WHERE status = 'completed'
+        """).fetchone()
+
+        # ── Model family breakdown ───────────────────────────────
+        families = conn.execute("""
+            SELECT definition_id, COUNT(*) AS count
+            FROM job_history
+            GROUP BY definition_id
+            ORDER BY count DESC
+        """).fetchall()
+
+        # ── Optimizer breakdown ──────────────────────────────────
+        optimizers = conn.execute("""
+            SELECT optimizer_type, COUNT(*) AS count
+            FROM job_history
+            WHERE optimizer_type IS NOT NULL
+            GROUP BY optimizer_type
+            ORDER BY count DESC
+        """).fetchall()
+
+        # ── Dataset usage ────────────────────────────────────────
+        dataset_stats = conn.execute("""
+            SELECT COUNT(DISTINCT dataset_name) AS unique_datasets
+            FROM job_datasets
+        """).fetchone()
+
+        # ── Most recent job ──────────────────────────────────────
+        last_job = conn.execute("""
+            SELECT lora_name, definition_id, status, created_at
+            FROM job_history ORDER BY created_at DESC LIMIT 1
+        """).fetchone()
+
+        return {
+            "total_jobs": total_jobs,
+            "completed": completed,
+            "failed": totals["failed"] or 0,
+            "stopped": totals["stopped"] or 0,
+            "running": totals["running"] or 0,
+            "paused": totals["paused"] or 0,
+            "success_rate": round(completed / total_jobs * 100, 1) if total_jobs > 0 else 0,
+            "total_steps": totals["total_steps"],
+            "total_runtime_sec": round(totals["total_runtime_sec"], 1),
+            "total_training_sec": round(totals["total_training_sec"], 1),
+            "avg_steps": round(avgs["avg_steps"] or 0),
+            "avg_loss": round(avgs["avg_loss"] or 0, 6),
+            "avg_min_loss": round(avgs["avg_min_loss"] or 0, 6),
+            "avg_step_time_sec": round(avgs["avg_step_time_sec"] or 0, 3),
+            "avg_runtime_sec": round(avgs["avg_runtime_sec"] or 0, 1),
+            "model_families": [
+                {"id": r["definition_id"], "count": r["count"]}
+                for r in families
+            ],
+            "optimizers": [
+                {"name": r["optimizer_type"], "count": r["count"]}
+                for r in optimizers
+            ],
+            "unique_datasets": dataset_stats["unique_datasets"] or 0,
+            "last_job": dict(last_job) if last_job else None,
+        }
+
     # ── Writes ───────────────────────────────────────────────────────
 
     def create(self, data: dict[str, Any]) -> None:

@@ -2,6 +2,7 @@
 E2E tests for api/training/history_routes.py — job history, checkpoints, samples, metrics, rerun.
 """
 
+import contextlib
 from unittest.mock import MagicMock, patch
 
 
@@ -156,3 +157,107 @@ def test_get_dataset_jobs_not_found(mock_dm, client):
     mock_dm.get_dataset.return_value = None
     response = client.get("/api/datasets/ghost/jobs")
     assert response.status_code == 404
+
+
+# ── GET /jobs/history/stats — read-only + byte-identical payload ─────────
+
+
+@contextlib.contextmanager
+def _isolated_db(tmp_path):
+    """Swap the DatabaseEngine singleton for a throwaway DB so the stats
+    aggregates are computed against a known seed, not whatever other tests
+    left in the shared session DB."""
+    from app.core.db.engine import DatabaseEngine
+
+    prev = DatabaseEngine._instance
+    eng = DatabaseEngine(db_path=str(tmp_path / "stats.db"))
+    eng.initialize()
+    DatabaseEngine._instance = eng
+    try:
+        yield eng
+    finally:
+        eng.close()
+        DatabaseEngine._instance = prev
+
+
+def _seed_stats_db(eng) -> None:
+    jobs = [
+        # id, lora, def_id, status, created_at, steps, dur, train, avg_loss,
+        # min_loss, step_time, optimizer
+        ("jA", "a", "flux", "completed", 100.0, 100, 60.0, 50.0, 0.2, 0.1, 0.5, "adamw"),
+        ("jB", "b", "flux", "completed", 200.0, 200, 120.0, 100.0, 0.4, 0.2, 0.7, "adamw"),
+        ("jC", "c", "sdxl", "failed", 300.0, 0, None, None, None, None, None, None),
+    ]
+    with eng.write() as conn:
+        for j in jobs:
+            conn.execute(
+                "INSERT INTO job_history "
+                "(id, lora_name, definition_id, status, config, created_at, "
+                " completed_steps, duration_seconds, training_seconds, avg_loss, "
+                " min_loss, avg_step_time, optimizer_type) "
+                "VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?)",
+                j,
+            )
+        conn.execute(
+            "INSERT INTO job_datasets (job_id, dataset_name) VALUES ('jA', 'ds1')"
+        )
+        conn.execute(
+            "INSERT INTO job_datasets (job_id, dataset_name) VALUES ('jB', 'ds2')"
+        )
+
+
+_EXPECTED_STATS = {
+    "total_jobs": 3,
+    "completed": 2,
+    "failed": 1,
+    "stopped": 0,
+    "running": 0,
+    "paused": 0,
+    "success_rate": 66.7,
+    "total_steps": 300,
+    "total_runtime_sec": 180.0,
+    "total_training_sec": 150.0,
+    "avg_steps": 150,
+    "avg_loss": 0.3,
+    "avg_min_loss": 0.15,
+    "avg_step_time_sec": 0.6,
+    "avg_runtime_sec": 90.0,
+    "model_families": [
+        {"id": "flux", "count": 2},
+        {"id": "sdxl", "count": 1},
+    ],
+    "optimizers": [{"name": "adamw", "count": 2}],
+    "unique_datasets": 2,
+    "last_job": {
+        "lora_name": "c",
+        "definition_id": "sdxl",
+        "status": "failed",
+        "created_at": 300.0,
+    },
+}
+
+
+def test_stats_payload_byte_identical(client, tmp_path):
+    """Pin the exact stats payload (keys + aggregation semantics) the
+    frontend consumes; must survive the repo-extraction refactor."""
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        response = client.get("/api/jobs/history/stats")
+    assert response.status_code == 200
+    assert response.json() == _EXPECTED_STATS
+
+
+def test_stats_get_is_write_free(client, tmp_path):
+    """GET /jobs/history/stats must never open a write transaction."""
+    from app.core.db.engine import DatabaseEngine
+
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        with patch.object(
+            DatabaseEngine,
+            "write",
+            side_effect=AssertionError("GET /jobs/history/stats must not write"),
+        ):
+            response = client.get("/api/jobs/history/stats")
+    assert response.status_code == 200
+    assert response.json() == _EXPECTED_STATS

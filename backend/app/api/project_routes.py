@@ -77,28 +77,40 @@ class ExportProjectRequest(BaseModel):
 @router.get("")
 async def list_projects() -> list[dict[str, Any]]:
     """List all projects with stats."""
-    projects = _projects.list_all()
-    for p in projects:
-        p["stats"] = _projects.get_stats(p["id"])
-    return projects
+
+    def _work() -> list[dict[str, Any]]:
+        projects = _projects.list_all()
+        for p in projects:
+            p["stats"] = _projects.get_stats(p["id"])
+        return projects
+
+    return await asyncio.to_thread(_work)
 
 
 @router.post("", status_code=201)
 async def create_project(req: CreateProjectRequest) -> dict[str, Any]:
     """Create a new project."""
-    if _projects.get_by_name(req.name):
-        raise HTTPException(409, f"Project '{req.name}' already exists")
-    return _projects.create(req.model_dump())
+
+    def _work() -> dict[str, Any]:
+        if _projects.get_by_name(req.name):
+            raise HTTPException(409, f"Project '{req.name}' already exists")
+        return _projects.create(req.model_dump())
+
+    return await asyncio.to_thread(_work)
 
 
 @router.get("/{project_id}")
 async def get_project(project_id: str) -> dict[str, Any]:
     """Get a single project with stats."""
-    project = _projects.get_by_id(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    project["stats"] = _projects.get_stats(project_id)
-    return project
+
+    def _work() -> dict[str, Any]:
+        project = _projects.get_by_id(project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        project["stats"] = _projects.get_stats(project_id)
+        return project
+
+    return await asyncio.to_thread(_work)
 
 
 @router.patch("/{project_id}")
@@ -106,20 +118,28 @@ async def update_project(
     project_id: str, req: UpdateProjectRequest
 ) -> dict[str, Any]:
     """Update project metadata."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    updates = req.model_dump(exclude_none=True)
-    if not updates:
-        raise HTTPException(400, "No updates provided")
-    return _projects.update(project_id, updates)
+
+    def _work() -> dict[str, Any]:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        updates = req.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(400, "No updates provided")
+        return _projects.update(project_id, updates)
+
+    return await asyncio.to_thread(_work)
 
 
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(project_id: str) -> None:
     """Delete a project (cascades templates, preferences)."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    _projects.delete(project_id)
+
+    def _work() -> None:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        _projects.delete(project_id)
+
+    await asyncio.to_thread(_work)
 
 
 # ── Dataset associations ─────────────────────────────────────────────────
@@ -128,9 +148,13 @@ async def delete_project(project_id: str) -> None:
 @router.get("/{project_id}/datasets")
 async def get_project_datasets(project_id: str) -> list[dict[str, Any]]:
     """Get datasets associated with a project."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    return _projects.get_datasets(project_id)
+
+    def _work() -> list[dict[str, Any]]:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        return _projects.get_datasets(project_id)
+
+    return await asyncio.to_thread(_work)
 
 
 @router.post("/{project_id}/datasets", status_code=201, response_model=DatasetAssociationResponse)
@@ -138,16 +162,20 @@ async def add_project_dataset(
     project_id: str, req: DatasetAssociationRequest
 ) -> dict[str, str]:
     """Associate a dataset with a project."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    _projects.add_dataset(project_id, req.dataset_id)
-    return {"status": "added"}
+
+    def _work() -> dict[str, str]:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        _projects.add_dataset(project_id, req.dataset_id)
+        return {"status": "added"}
+
+    return await asyncio.to_thread(_work)
 
 
 @router.delete("/{project_id}/datasets/{dataset_id}", status_code=204)
 async def remove_project_dataset(project_id: str, dataset_id: str) -> None:
     """Remove a dataset association from a project."""
-    _projects.remove_dataset(project_id, dataset_id)
+    await asyncio.to_thread(_projects.remove_dataset, project_id, dataset_id)
 
 
 # ── Preferences ──────────────────────────────────────────────────────────
@@ -156,7 +184,8 @@ async def remove_project_dataset(project_id: str, dataset_id: str) -> None:
 @router.get("/{project_id}/preferences")
 async def get_preferences(project_id: str) -> dict[str, Any]:
     """Get preferences for a project."""
-    return _prefs.get(project_id if project_id != "general" else None)
+    pid = project_id if project_id != "general" else None
+    return await asyncio.to_thread(_prefs.get, pid)
 
 
 @router.put("/{project_id}/preferences")
@@ -166,7 +195,7 @@ async def update_preferences(
     """Update preferences for a project."""
     pid = project_id if project_id != "general" else None
     updates = req.model_dump(exclude_none=True)
-    return _prefs.upsert(pid, updates)
+    return await asyncio.to_thread(_prefs.upsert, pid, updates)
 
 
 # ── Export ───────────────────────────────────────────────────────────────

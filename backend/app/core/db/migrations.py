@@ -48,6 +48,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v14,
         _migrate_v15,
         _migrate_v16,
+        _migrate_v17,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -955,4 +956,30 @@ def _migrate_v16(conn) -> None:
             conn.execute(ddl)
         except Exception:
             pass  # Column already exists
+
+
+# ── V17: Repair legacy 'standard' definition_id placeholders ────────────
+
+def _migrate_v17(conn) -> None:
+    """One-time repair of legacy ``job_history`` rows whose ``definition_id``
+    was persisted as the plugin_id placeholder ``'standard'`` instead of the
+    real model ID.
+
+    This mutation used to run on *every* ``GET /jobs/history/stats`` request
+    (a write inside an idempotent GET). Moving it here makes it run exactly
+    once per database, on the upgrade to v17, and keeps the stats endpoint
+    read-only. The ``config`` snapshot still carries the true ``definition_id``,
+    so we recover it via ``json_extract``.
+
+    Idempotent: the WHERE clause only matches rows still at the placeholder
+    with a usable id in config, so re-running (or running on a fresh/already
+    -repaired DB) is a no-op.
+    """
+    conn.execute("""
+        UPDATE job_history
+        SET definition_id = json_extract(config, '$.definition_id')
+        WHERE definition_id = 'standard'
+          AND json_extract(config, '$.definition_id') IS NOT NULL
+          AND json_extract(config, '$.definition_id') != ''
+    """)
 

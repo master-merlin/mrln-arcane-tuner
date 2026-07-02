@@ -4,10 +4,6 @@ Captioning Service for generating image captions using AI models.
 Uses a plugin architecture where each model is implemented as a separate class.
 """
 
-import gc
-
-import structlog
-import torch
 from PIL import Image
 
 from app.core.captioning.models import (
@@ -17,8 +13,7 @@ from app.core.captioning.models import (
     JoyCaptionModel,
     YoutuVLModel,
 )
-
-logger = structlog.get_logger(__name__)
+from app.core.gpu_unload import unload_gpu_plugins
 
 # Default number of frames sampled per video clip for captioning. Overridable
 # per-call via ``params['video_frames']`` (threaded through the batch/route the
@@ -68,19 +63,12 @@ class CaptionService:
     @classmethod
     def unload_models(cls):
         """Unload all models from memory and clear CUDA cache."""
-        if cls._active_model_key:
-            logger.info("unloading_caption_models", active_model=cls._active_model_key)
-
-        if cls._instance:
-            for plugin in cls._instance.plugins.values():
-                plugin.unload()
-
-        cls._active_model_key = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        logger.info("all_caption_models_unloaded")
+        unload_gpu_plugins(
+            cls,
+            plugins=cls._instance.plugins if cls._instance else {},
+            active_attr="_active_model_key",
+            service_label="caption",
+        )
 
     def supports_multi_image(self, model_id: str) -> bool:
         """Whether *model_id* can caption from multiple images (edit captions)."""

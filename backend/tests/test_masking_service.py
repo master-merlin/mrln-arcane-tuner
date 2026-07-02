@@ -27,6 +27,32 @@ class TestMaskingServiceSingleton:
         assert MaskingService._active_model_id is None
         MaskingService._instance = None
 
+    def test_unload_synchronizes_cuda_and_unloads_every_plugin(self, monkeypatch):
+        """P2c fix: masking's unload used to be missing torch.cuda.synchronize()
+        (present in caption/scoring's copies) — now shared, so all three call it."""
+        import torch
+        from app.core.masking.masking_service import MaskingService
+
+        calls: list[str] = []
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda: calls.append("synchronize"))
+        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+
+        MaskingService._instance = None
+        svc = MaskingService.get_instance()
+        MaskingService._active_model_id = "rembg"
+        mock_a, mock_b = MagicMock(), MagicMock()
+        svc.plugins = {"rembg": mock_a, "sam3": mock_b}
+
+        svc.unload_models()
+
+        mock_a.unload.assert_called_once()
+        mock_b.unload.assert_called_once()
+        assert "synchronize" in calls
+        assert "empty_cache" in calls
+        assert MaskingService._active_model_id is None
+        MaskingService._instance = None
+
 
 class TestMaskingServiceGenerate:
     def test_unknown_model_raises(self, tmp_path):

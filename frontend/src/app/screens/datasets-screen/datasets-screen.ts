@@ -9,6 +9,7 @@ import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
 import { datasetPreviewUrl } from '../../shared/media-preview';
+import { formatBytes } from '../../shared/format-bytes';
 import {
     SearchStore,
     type DatasetSearchField,
@@ -619,15 +620,9 @@ export class DatasetsScreen {
 
     /** Human-readable byte formatter — "1.5 GB", "149.6 MB", "0 B". Used by
      *  the DATASETS + CACHED sub-lines, the per-card size pill, and the
-     *  DATASETS tile's corner indicator. Non-byte units always carry one
-     *  decimal so `149,600,000` reads as "149.6 MB" rather than rounding to
-     *  "150 MB"; raw bytes stay as integers. */
+     *  DATASETS tile's corner indicator. See `shared/format-bytes.ts`. */
     protected formatBytes(n: number): string {
-        if (!Number.isFinite(n) || n <= 0) return '0 B';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let i = 0;
-        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-        return `${n.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+        return formatBytes(n);
     }
 
     /** Project badge lookup for cards (only shown in Global scope). */

@@ -33,7 +33,6 @@ import shutil
 from pathlib import Path
 
 from app.core.logger import get_logger
-from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 logger = get_logger(__name__)
@@ -244,6 +243,6 @@ def run_video_split_batch(
             logger.warning("video_split_rescan_failed", task_id=task_id, error=str(exc))
 
     if cancelled:
-        task_manager._finish(task_id, TaskStatus.CANCELLED)
+        task_manager.finish_cancelled(task_id)
     else:
         task_manager.complete(task_id)

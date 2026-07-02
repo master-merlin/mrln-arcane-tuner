@@ -6,16 +6,12 @@ following the same pattern as CaptionService and MaskingService.
 """
 from __future__ import annotations
 
-import gc
 import os
 
-import structlog
-import torch
 from PIL import Image
 
+from app.core.gpu_unload import unload_gpu_plugins
 from app.core.scoring.models import ScoringModel, HPSv2Model
-
-logger = structlog.get_logger(__name__)
 
 
 class ScoringService:
@@ -50,19 +46,12 @@ class ScoringService:
     @classmethod
     def unload_models(cls) -> None:
         """Unload all models from memory and clear CUDA cache."""
-        if cls._active_model_id:
-            logger.info("unloading_scoring_models", active_model=cls._active_model_id)
-
-        if cls._instance:
-            for plugin in cls._instance.plugins.values():
-                plugin.unload()
-
-        cls._active_model_id = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        logger.info("all_scoring_models_unloaded")
+        unload_gpu_plugins(
+            cls,
+            plugins=cls._instance.plugins if cls._instance else {},
+            active_attr="_active_model_id",
+            service_label="scoring",
+        )
 
     def score_image(self, image_path: str, model_id: str, params: dict) -> float:
         """

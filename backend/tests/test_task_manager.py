@@ -42,6 +42,27 @@ def test_cancel_flag(tm):
     assert tm.is_cancelled(t.id) is True
 
 
+def test_finish_cancelled_marks_task_cancelled(tm):
+    """Public finish_cancelled() (P2c / B-CLEAN-10) must behave identically to
+    the old private _finish(task_id, TaskStatus.CANCELLED) call that the 7
+    batch workers used to reach into directly."""
+    t = tm.create(type="caption_batch", title="x", total=5)
+    tm.start(t.id)
+    tm.finish_cancelled(t.id)
+    assert t.status == TaskStatus.CANCELLED and t.finished_at is not None
+
+
+def test_finish_cancelled_emits_dataset_invalidated_when_scoped(tm, monkeypatch):
+    """Same dataset-reconcile broadcast as complete()/fail() — cancelled runs
+    can still have written/renamed files before the cancel was observed."""
+    calls: list[str] = []
+    monkeypatch.setattr(tm, "_emit_dataset_invalidated", lambda name: calls.append(name))
+    t = tm.create(type="caption_batch", title="x", total=1, dataset_name="ds")
+    tm.start(t.id)
+    tm.finish_cancelled(t.id)
+    assert calls == ["ds"]
+
+
 def test_list_is_insertion_ordered(tm):
     a = tm.create(type="caption_batch", title="a", total=1)
     b = tm.create(type="caption_batch", title="b", total=1)

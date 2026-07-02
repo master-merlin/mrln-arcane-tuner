@@ -54,6 +54,7 @@ import {
     type LossStatus,
     type StepMetrics,
 } from '../../shared/job-metrics';
+import { formatBytes } from '../../shared/format-bytes';
 
 type SectionKey = 'curves' | 'samples' | 'checkpoints' | 'config' | 'log';
 
@@ -851,13 +852,10 @@ export class JobsScreen {
         return this.jobService.checkpointZipDownloadUrl(jobId, folder);
     }
 
-    /** Human-readable file size — "1.5 GB", "149.6 MB", "0 B". */
+    /** Human-readable file size — "1.5 GB", "149.6 MB", "0 B". See
+     *  `shared/format-bytes.ts`. */
     protected formatBytes(n: number): string {
-        if (!Number.isFinite(n) || n <= 0) return '0 B';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let i = 0;
-        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-        return `${n.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+        return formatBytes(n);
     }
 
     /** Compact local date-time for a checkpoint's mtime (unix seconds). */

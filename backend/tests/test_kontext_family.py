@@ -62,6 +62,8 @@ class _StubTransformer:
 
 
 def _make_kontext_trainer(stub):
+    from app.engine.models.families.flux1.driver import Flux1Driver
+
     t = object.__new__(Flux1KontextTrainer)
     t.device = torch.device("cpu")
     t.autocast_dtype = torch.float32
@@ -69,6 +71,18 @@ def _make_kontext_trainer(stub):
     t.use_guidance_embed = True
     t.config = {"guidance_scale": 1.0}
     t._clip_pooled = None
+    # The no-control path delegates to the base forward → driver.forward_pass;
+    # wire a driver mirroring the trainer state the driver reads.
+    drv = Flux1Driver(
+        ModelDefinition(id="flux1-dev", family="flux1", name="Dev"),
+        torch.device("cpu"),
+    )
+    drv.transformer = stub
+    drv.use_guidance_embed = True
+    drv.guidance_scale = 1.0
+    drv.autocast_dtype = torch.float32
+    drv._clip_pooled = None
+    t.driver = drv
     return t
 
 
@@ -121,6 +135,7 @@ class TestKontextForwardContract:
         trainer = _make_kontext_trainer(stub)
         packed_target, target_ids = _packed_target()
         trainer._current_img_ids = target_ids
+        trainer.driver._current_img_ids = target_ids  # synced by prepare_latents live
         out = trainer.forward_pass(
             packed_target, torch.tensor([500.0]), torch.randn(1, 7, 4096),
             {"control_latents": []},

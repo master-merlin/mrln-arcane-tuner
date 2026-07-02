@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.logger import get_logger
-from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 logger = get_logger(__name__)
@@ -194,6 +193,6 @@ def run_pipeline_batch(
         return
 
     if cancelled:
-        task_manager._finish(task_id, TaskStatus.CANCELLED)
+        task_manager.finish_cancelled(task_id)
     else:
         task_manager.complete(task_id)

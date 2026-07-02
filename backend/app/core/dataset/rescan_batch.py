@@ -16,7 +16,6 @@ datasets leaves already-scanned datasets fully persisted and the rest untouched
 from __future__ import annotations
 
 from app.core.logger import get_logger
-from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 logger = get_logger(__name__)
@@ -122,6 +121,6 @@ def run_rescan_batch(
         _unload()
 
     if cancelled:
-        task_manager._finish(task_id, TaskStatus.CANCELLED)
+        task_manager.finish_cancelled(task_id)
     else:
         task_manager.complete(task_id)

@@ -7,12 +7,12 @@ only models that are known to work well with Spandrel's auto-architecture detect
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import httpx
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model Database
@@ -126,11 +126,11 @@ async def download_model(
     target_path = target_dir / filename
 
     if target_path.is_file():
-        logger.info("Model already exists, skipping: %s", target_path)
+        logger.info("model_download_skip_exists", target_path=str(target_path))
         return target_path
 
     url = entry["url"]
-    logger.info("Downloading %s → %s", url, target_path)
+    logger.info("model_download_start", url=url, target_path=str(target_path))
 
     rate = RateLimiter()
     base = dict(source="curated", model_id=filename, category=category)
@@ -162,15 +162,15 @@ async def download_model(
                             ))
                         if total and downloaded % (5 * 1024 * 1024) < 65536:
                             logger.info(
-                                "  %s: %d%% (%d / %d MB)",
-                                filename, pct or 0,
-                                downloaded // (1024 * 1024),
-                                total // (1024 * 1024),
+                                "model_download_progress",
+                                filename=filename, percent=pct or 0,
+                                downloaded_mb=downloaded // (1024 * 1024),
+                                total_mb=total // (1024 * 1024),
                             )
 
         # Atomic rename on success
         tmp_path.rename(target_path)
-        logger.info("Download complete: %s", target_path)
+        logger.info("model_download_complete", target_path=str(target_path))
         await emit_download_progress(DownloadProgress(
             **base, status="complete",
             current_bytes=downloaded, total_bytes=total, percent=100 if total else None,

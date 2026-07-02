@@ -131,3 +131,23 @@ def client():
     from app.main import app
 
     return TestClient(app)
+
+
+def pytest_collection_finish(session):
+    """Guard against silent collection breakage (audit P0 item 0.6).
+
+    A broken import (e.g. the `__init__.py`-collision that motivated this
+    guard) can make pytest silently collect 0 tests and exit green instead
+    of loudly failing. Skip the check for deliberately narrow runs (`-k`/
+    `-m`/explicit node-ids) where 0 matches can be legitimate.
+    """
+    if session.config.getoption("-k") or session.config.getoption("-m"):
+        return
+    if session.config.args and any("::" in a for a in session.config.args):
+        return
+    if len(session.items) == 0:
+        pytest.exit(
+            "Collected 0 tests — collection is likely broken (see "
+            "backend/tests/conftest.py::pytest_collection_finish).",
+            returncode=1,
+        )

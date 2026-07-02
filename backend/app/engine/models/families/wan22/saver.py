@@ -8,8 +8,8 @@ following the ComfyUI / community WAN 2.2 naming:
 
 Each file uses the SAME ``diffusion_model.blocks.*`` key mapping as WAN 2.1
 (``self_attn`` / ``cross_attn`` / ``ffn.{0,2}`` + ``lora_{down,up}``) — reused
-directly from :mod:`wan21.saver` so the two families never drift. Per-file
-metadata records ``modelspec.architecture: wan2.2-{t2v,i2v}-{high,low}``.
+directly from :mod:`wan_shared.saver_base` so the two families never drift.
+Per-file metadata records ``modelspec.architecture: wan2.2-{t2v,i2v}-{high,low}``.
 
 The saver is handed both PEFT models via the components dict
 (``unet_high`` / ``unet_low``) plus the single output path; it derives the two
@@ -27,7 +27,9 @@ import torch
 from peft import get_peft_model_state_dict
 
 from app.engine.core.interfaces import ModelSaver
-from app.engine.models.families.wan21.saver import _convert_diffusers_to_comfy
+from app.engine.models.families.wan_shared.saver_base import (
+    _convert_diffusers_to_comfy,
+)
 from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)

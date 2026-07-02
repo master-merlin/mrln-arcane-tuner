@@ -34,12 +34,8 @@ class Wan22Sampler(WanVideoSamplerBase):
 
     def __init__(self, pipeline: GenericTrainingPipeline) -> None:
         super().__init__(pipeline)
-        # Resolution-dependent shift: 5.0 for >=720p, else 3.0.
-        try:
-            res = int((pipeline.config.get("resolutions") or [480])[0])
-        except (TypeError, ValueError, IndexError):
-            res = 480
-        self.shift = 5.0 if res >= 720 else 3.0
+        # Resolution-dependent shift (3.0/5.0) is set by the shared base
+        # __init__; wan22 layers the dual-expert boundary on top.
         driver = getattr(pipeline, "driver", None)
         self.boundary: float = float(getattr(driver, "boundary", 0.875))
 

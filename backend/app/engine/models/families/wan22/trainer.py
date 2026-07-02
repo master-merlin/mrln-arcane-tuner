@@ -227,44 +227,8 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
         return comps
 
     # ── Text Encoding (UMT5-XXL via driver, with lazy cache) ─────────────
-
-    def encode_text(
-        self, captions: list[str], dtype: torch.dtype, batch: dict | None = None
-    ) -> Any:
-        """Encode captions through UMT5-XXL with in-memory caching."""
-        if not self.config.get("cache_text_embeddings", True):
-            out = self.driver.encode_text(captions, dtype)
-            return out.embeddings if hasattr(out, "embeddings") else out
-        return self._get_cached_text_embeddings(captions, dtype)
-
-    def _get_cached_text_embeddings(
-        self, captions: list[str], dtype: torch.dtype
-    ) -> torch.Tensor:
-        results: list[torch.Tensor | None] = []
-        uncached: list[tuple[int, str]] = []
-
-        for i, cap in enumerate(captions):
-            if cap in self.text_cache:
-                results.append(self.text_cache[cap])
-            else:
-                uncached.append((i, cap))
-                results.append(None)
-
-        if uncached and self.text_encoder is not None:
-            for orig_idx, cap in uncached:
-                out = self.driver.encode_text([cap], dtype)
-                emb = out.embeddings if hasattr(out, "embeddings") else out
-                self.text_cache[cap] = emb.cpu()
-                results[orig_idx] = emb.cpu()
-        elif uncached:
-            raise RuntimeError(
-                "Text encoder unavailable for uncached caption(s): "
-                + ", ".join(cap[:50] for _, cap in uncached)
-            )
-
-        return torch.cat(
-            [r.to(self.device, dtype=dtype) for r in results if r is not None], dim=0
-        )
+    # encode_text / _get_cached_text_embeddings live in WanTextCacheMixin
+    # (byte-identical between wan21 and wan22; hoisted to wan_shared).
 
     # ── Sampler ──────────────────────────────────────────────────────────
 

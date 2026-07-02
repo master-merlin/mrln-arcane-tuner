@@ -58,6 +58,13 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
     def __init__(self, pipeline: GenericTrainingPipeline) -> None:
         super().__init__(pipeline)
         self._scheduler = None
+        # Resolution-dependent shift: 5.0 for >=720p, else 3.0. Shared by
+        # wan21 and wan22 (byte-identical; only wan22 layers boundary on top).
+        try:
+            res = int((pipeline.config.get("resolutions") or [480])[0])
+        except (TypeError, ValueError, IndexError):
+            res = 480
+        self.shift = 5.0 if res >= 720 else 3.0
 
     # ── fp32 Euler integration core (the precision-critical path) ──────────
 

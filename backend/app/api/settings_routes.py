@@ -24,8 +24,16 @@ logger = get_logger(__name__)
 # Modules holding secrets — served only through dedicated masked endpoints
 _PROTECTED_MODULES = frozenset({"api_captioning"})
 
+# response_model intentionally left as the bare `dict[str, Any]` FastAPI/
+# Pydantic type (not a named BaseModel) for BOTH routes below. This module is
+# a schemaless per-module key-value store — any module name is valid and its
+# value shape is whatever the caller last PUT, so there is no fixed field set
+# to declare without risking silently stripping a module's keys the day a new
+# settings field is added on the frontend. `dict[str, Any]` documents the
+# contract (a JSON object) without filtering it — see task-p3c-brief.md rule 3.
 
-@router.get("/{module}")
+
+@router.get("/{module}", response_model=dict[str, Any])
 async def get_settings(module: str) -> dict[str, Any]:
     """Return settings for a specific module."""
     if module in _PROTECTED_MODULES:
@@ -39,7 +47,7 @@ async def get_settings(module: str) -> dict[str, Any]:
     return manager.get_module_settings(module)
 
 
-@router.put("/{module}")
+@router.put("/{module}", response_model=dict[str, Any])
 async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, Any]:
     """Update settings for a specific module."""
     if module in _PROTECTED_MODULES:

@@ -40,6 +40,29 @@ class VersionResponse(BaseModel):
 
     version: str
 
+
+class UpdateStatusResponse(BaseModel):
+    """Current git/version info + update-state, mirrors
+    ``SelfUpdateService.status_payload()`` exactly (also broadcast verbatim
+    over the ``update.status`` WebSocket event)."""
+
+    state: str
+    available: bool
+    branch: str | None = None
+    commit: str | None = None
+    dirty: bool
+    is_repo: bool
+    behind: int | None = None
+    active: int
+    error: str | None = None
+
+
+class UpdateCheckResponse(BaseModel):
+    """How many commits behind ``origin/<branch>`` we are + their subjects."""
+
+    behind: int
+    commits: list[str]
+
 _LOG_FILE = SERVER_LOG_PATH
 
 # Captured at import (≈ process start). A graceful restart spawns a fresh
@@ -159,13 +182,13 @@ async def get_health():
 # ── Self-Update ──────────────────────────────────────────────────────────
 
 
-@router.get("/update/status")
+@router.get("/update/status", response_model=UpdateStatusResponse)
 async def get_update_status():
     """Current git/version info + update-state for the Server screen + top-bar."""
     return self_update_service.status_payload()
 
 
-@router.post("/update/check")
+@router.post("/update/check", response_model=UpdateCheckResponse)
 async def check_update():
     """Fetch and report how many commits behind origin/<branch> we are."""
     if not self_update_service.available:

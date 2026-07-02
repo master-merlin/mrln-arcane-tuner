@@ -5,10 +5,24 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api._deps import dataset_or_404
+
 router = APIRouter()
+
+
+def get_dataset_or_404(name: str):
+    """Path-operation dependency: resolve a dataset by name or 404.
+
+    Lazy-imports ``dataset_manager`` (matching this module's existing
+    local-import style) so ``@patch("app.core.dataset_manager.dataset_manager")``
+    — this file's established test-mocking convention — is observed.
+    """
+    from app.core.dataset_manager import dataset_manager
+
+    return dataset_or_404(dataset_manager.get_dataset(name))
 
 
 # ── Response schemas ─────────────────────────────────────────────────────
@@ -276,14 +290,9 @@ async def get_rerun_config(job_id: str):
 
 
 @router.get("/datasets/{name}/jobs")
-async def get_dataset_jobs(name: str):
+async def get_dataset_jobs(ds=Depends(get_dataset_or_404)):
     """All jobs that used a specific dataset."""
     from app.core.db.repositories.job_repo import JobHistoryRepository
-    from app.core.dataset_manager import dataset_manager
-
-    ds = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not ds:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     repo = JobHistoryRepository()
     return await asyncio.to_thread(repo.get_by_dataset, ds.id)

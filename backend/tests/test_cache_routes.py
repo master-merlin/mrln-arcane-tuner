@@ -16,6 +16,21 @@ from app.api.cache_routes import _aggregate_cache_stats, _purge_cache
 from app.core.dataset_manager import Dataset
 
 
+# ── Route-level 404s (via the shared get_dataset_or_404 dependency) ────────
+
+
+def test_list_cache_404_unknown_dataset(client):
+    response = client.get("/api/datasets/__ghost_ds__/cache/list")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Dataset not found"
+
+
+def test_purge_cache_404_unknown_dataset(client):
+    response = client.post("/api/datasets/__ghost_ds__/cache/purge", json={})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Dataset not found"
+
+
 def _make_dataset(path: Path, name: str = "ds") -> Dataset:
     """Build a minimal Dataset pointing at *path* — the only fields the
     aggregator touches are `path`. Other required fields get filler values."""

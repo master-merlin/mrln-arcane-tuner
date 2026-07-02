@@ -7,11 +7,12 @@ import io
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from PIL import Image
 
-from app.core.dataset_manager import dataset_manager
+from app.api._deps import dataset_or_404
+from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.adjustment_schemas import (
     AdjustmentRequest,
@@ -25,6 +26,11 @@ from app.api.schemas.adjustment_schemas import (
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def get_dataset_or_404(name: str) -> Dataset:
+    """Path-operation dependency: resolve a dataset by name or 404."""
+    return dataset_or_404(dataset_manager.get_dataset(name))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -131,15 +137,13 @@ async def adjust_media_batch(name: str, request: BatchAdjustmentRequest):
 
 
 @router.post("/datasets/{name}/color-match")
-async def color_match_preview(name: str, request: ColorMatchRequest):
+async def color_match_preview(
+    name: str, request: ColorMatchRequest, dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Return a color-matched preview image as JPEG (non-destructive)."""
     from app.core.image_adjustments import apply_color_match
 
     try:
-        dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-        if not dataset:
-            raise HTTPException(status_code=404, detail="Dataset not found")
-
         dataset_root = Path(dataset.path)
         src_path = dataset_root / request.source_path
         ref_path = dataset_root / request.reference_path
@@ -174,13 +178,11 @@ async def color_match_preview(name: str, request: ColorMatchRequest):
 
 
 @router.get("/datasets/{name}/histogram", response_model=HistogramResponse)
-async def get_histogram(name: str, image_path: str = Query(...)):
+async def get_histogram(
+    name: str, image_path: str = Query(...), dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Return per-channel histogram data for an image."""
     from app.core.image_adjustments import compute_histogram
-
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     full_path = Path(dataset.path) / image_path
     if not full_path.exists():

@@ -7,15 +7,21 @@ import time as _time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api._deps import dataset_or_404
 from app.api._path_guard import safe_rmtree
-from app.core.dataset_manager import dataset_manager
+from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def get_dataset_or_404(name: str) -> Dataset:
+    """Path-operation dependency: resolve a dataset by name or 404."""
+    return dataset_or_404(dataset_manager.get_dataset(name))
 
 
 # ── Request Models ───────────────────────────────────────────────────────
@@ -349,24 +355,18 @@ async def cache_stats():
 
 
 @router.get("/datasets/{name}/cache/list")
-async def list_cache(name: str):
+async def list_cache(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
     """List the cache tree for a dataset."""
-    dataset = dataset_manager.get_dataset(name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     cache_root = Path(dataset.path) / ".cache"
     tree = await asyncio.to_thread(_scan_cache_tree, cache_root)
     return {"dataset": name, "cache": tree}
 
 
 @router.post("/datasets/{name}/cache/purge", response_model=PurgeCacheResponse)
-async def purge_cache(name: str, request: PurgeCacheRequest):
+async def purge_cache(
+    name: str, request: PurgeCacheRequest, dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Purge selected cache subtrees for a dataset."""
-    dataset = dataset_manager.get_dataset(name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     cache_root = Path(dataset.path) / ".cache"
     logger.info(
         "cache_purge_requested",

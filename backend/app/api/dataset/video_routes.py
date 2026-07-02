@@ -25,6 +25,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from app.api._deps import dataset_or_404
 from app.api._path_guard import validate_path_within
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.api.schemas.video_schemas import (
@@ -53,10 +54,7 @@ logger = get_logger(__name__)
 
 def _resolve_dataset(name: str):
     """Resolve a dataset or 404. Returns the Dataset object."""
-    dataset = dataset_manager.get_dataset(name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    return dataset
+    return dataset_or_404(dataset_manager.get_dataset(name))
 
 
 def _guard_source(dataset, source_rel_path: str) -> Path:

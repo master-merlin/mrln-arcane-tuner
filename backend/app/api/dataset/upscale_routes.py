@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api._deps import dataset_or_404
 from app.api._path_guard import safe_remove
-from app.core.dataset_manager import dataset_manager
+from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.upscale_schemas import (
     UpscaleListRequest, UpscaleApplyRequest,
@@ -17,6 +18,12 @@ from app.api.schemas.upscale_schemas import (
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def get_dataset_or_404(name: str) -> Dataset:
+    """Path-operation dependency: resolve a dataset by name or 404."""
+    return dataset_or_404(dataset_manager.get_dataset(name))
+
 
 _DEFAULT_UPSCALE_FOLDER = (
     Path(__file__).resolve().parents[2] / "engine" / "models" / "upscale"
@@ -61,7 +68,9 @@ async def list_upscale_models(request: UpscaleListRequest):
 
 
 @router.post("/datasets/{name}/upscale", response_model=UpscaleApplyResponse)
-async def upscale_media(name: str, request: UpscaleApplyRequest):
+async def upscale_media(
+    name: str, request: UpscaleApplyRequest, dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Upscale an image using a selected model with tiled inference."""
     try:
         import torch  # noqa: F401 — verify availability
@@ -71,10 +80,6 @@ async def upscale_media(name: str, request: UpscaleApplyRequest):
             status_code=500,
             detail="Missing dependencies: pip install spandrel torch"
         )
-
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     dataset_root = Path(dataset.path)
     img_path = dataset_root / request.image_path

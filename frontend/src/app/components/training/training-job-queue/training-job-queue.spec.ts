@@ -28,7 +28,10 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         getJobCheckpoints: Mock;
         getAutoResume: Mock;
         setAutoResume: Mock;
+        getAutoQueue: Mock;
+        setAutoQueue: Mock;
     };
+    let toast: { error: Mock; success: Mock; info: Mock; warning: Mock };
 
     beforeEach(() => {
         api = {
@@ -38,7 +41,10 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
             getJobCheckpoints: vi.fn().mockReturnValue(of([])),
             getAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
             setAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
+            getAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
+            setAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
         };
+        toast = { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() };
 
         const wsStub = {
             entityChanged: signal(null),
@@ -56,15 +62,7 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
                 TrainingJobQueueComponent,
                 { provide: JobService, useValue: api },
                 { provide: WebSocketService, useValue: wsStub },
-                {
-                    provide: ToastService,
-                    useValue: {
-                        error: vi.fn(),
-                        success: () => { },
-                        info: () => { },
-                        warning: () => { },
-                    },
-                },
+                { provide: ToastService, useValue: toast },
                 {
                     provide: ProjectService,
                     useValue: {
@@ -124,6 +122,43 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         component.toggleAutoResume();
         expect(component.autoResume()).toBe(true);
         expect(api.setAutoResume).toHaveBeenLastCalledWith(true);
+
+        // Success path must not toast.
+        expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('toggleAutoResume() rolls the signal back and toasts an error when the persist call fails', () => {
+        api.setAutoResume.mockReturnValue(throwError(() => new Error('boom')));
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        expect(component.autoResume()).toBe(true);  // on by default
+
+        component.toggleAutoResume();
+
+        // Optimistic flip must be rolled back to its pre-toggle value on failure.
+        expect(component.autoResume()).toBe(true);
+        expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('toggleAutoQueue() flips the signal and persists server-side (success path unchanged)', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        expect(component.autoQueue()).toBe(false);
+
+        component.toggleAutoQueue();
+        expect(component.autoQueue()).toBe(true);
+        expect(api.setAutoQueue).toHaveBeenCalledWith(true);
+        expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('toggleAutoQueue() rolls the signal back and toasts an error when the persist call fails', () => {
+        api.setAutoQueue.mockReturnValue(throwError(() => new Error('boom')));
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        expect(component.autoQueue()).toBe(false);
+
+        component.toggleAutoQueue();
+
+        // Optimistic flip must be rolled back to its pre-toggle value on failure.
+        expect(component.autoQueue()).toBe(false);
+        expect(toast.error).toHaveBeenCalledTimes(1);
     });
 
     it('hasResumable() returns true for a STOPPED job once a resumable checkpoint is fetched', async () => {

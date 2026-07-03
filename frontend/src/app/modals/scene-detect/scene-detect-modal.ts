@@ -46,7 +46,8 @@ export interface SceneDetectData {
                         <div class="eyebrow">SCENE DETECT</div>
                         <div class="modal-title">Auto-detect scene cuts and split into clips</div>
                     </div>
-                    <button class="icon-btn" type="button" (click)="close()" aria-label="Close">×</button>
+                    <button class="icon-btn" type="button" (click)="close()"
+                            data-testid="scene-detect-close" aria-label="Close">×</button>
                 </div>
 
                 <div class="modal-body sd-body">
@@ -118,7 +119,8 @@ export interface SceneDetectData {
                 </div>
 
                 <div class="modal-foot">
-                    <button class="btn ghost" type="button" (click)="close()">Cancel</button>
+                    <button class="btn ghost" type="button" (click)="close()"
+                            data-testid="scene-detect-cancel">Cancel</button>
                     @if (step() === 'config') {
                         <button class="btn primary" type="button"
                                 data-testid="scene-detect-btn"

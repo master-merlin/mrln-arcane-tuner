@@ -46,7 +46,8 @@ export interface InputModalData {
     template: `
         <div class="modal-head">
             <div class="modal-title">{{ data().title ?? 'Enter a value' }}</div>
-            <button class="icon-btn" type="button" (click)="cancel()" aria-label="Close">×</button>
+            <button class="icon-btn" type="button" (click)="cancel()"
+                    data-testid="input-modal-close" aria-label="Close">×</button>
         </div>
         <div class="modal-body">
             @if (data().label) {
@@ -63,13 +64,15 @@ export interface InputModalData {
                    autofocus>
         </div>
         <div class="modal-foot">
-            <button class="btn ghost" type="button" (click)="cancel()">
+            <button class="btn ghost" type="button" (click)="cancel()"
+                    data-testid="input-modal-cancel">
                 {{ data().cancelLabel ?? 'Cancel' }}
             </button>
             <button class="btn primary"
                     type="button"
                     [disabled]="!value().trim()"
-                    (click)="confirm()">
+                    (click)="confirm()"
+                    data-testid="input-modal-confirm">
                 {{ data().confirmLabel ?? 'OK' }}
             </button>
         </div>

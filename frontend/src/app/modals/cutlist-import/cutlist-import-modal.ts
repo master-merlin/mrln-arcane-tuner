@@ -47,7 +47,8 @@ export interface CutlistImportData {
                         <div class="eyebrow">CUT LIST IMPORT</div>
                         <div class="modal-title">Split a video into clips from a cut list</div>
                     </div>
-                    <button class="icon-btn" type="button" (click)="close()" aria-label="Close">×</button>
+                    <button class="icon-btn" type="button" (click)="close()"
+                            data-testid="cutlist-import-close" aria-label="Close">×</button>
                 </div>
 
                 <div class="modal-body cl-body">
@@ -142,7 +143,8 @@ export interface CutlistImportData {
                                 data-testid="cutlist-back"
                                 (click)="step.set('pick')">Back</button>
                     }
-                    <button class="btn ghost" type="button" (click)="close()">Cancel</button>
+                    <button class="btn ghost" type="button" (click)="close()"
+                            data-testid="cutlist-import-cancel">Cancel</button>
                     @if (step() === 'pick') {
                         <button class="btn primary" type="button"
                                 data-testid="cutlist-parse-btn"

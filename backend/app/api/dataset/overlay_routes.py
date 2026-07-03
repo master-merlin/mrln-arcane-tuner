@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from app.api._deps import dataset_or_404
 from app.api._path_guard import safe_remove
 from app.core.dataset_manager import dataset_manager
 from app.core.events import emit_entity_change, event_manager
@@ -81,9 +82,7 @@ def _compute_file_hash(file_path: Path) -> str:
 
 def _resolve_dataset(name: str) -> tuple:
     """Resolve dataset and return (dataset, dataset_root). Raises HTTPException if not found."""
-    dataset = dataset_manager.get_dataset(name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset = dataset_or_404(dataset_manager.get_dataset(name))
     return dataset, Path(dataset.path)
 
 

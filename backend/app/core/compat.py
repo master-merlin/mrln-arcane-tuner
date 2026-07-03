@@ -8,10 +8,11 @@ time module-level code runs.
 from __future__ import annotations
 
 import importlib.metadata
-import logging
 from pathlib import Path
 
-_logger = logging.getLogger(__name__)
+import structlog
+
+_logger = structlog.get_logger(__name__)
 
 # Sentinel: track whether the on-disk patch was applied this session.
 _PATCH_APPLIED = False
@@ -104,15 +105,12 @@ def _apply_logger_fix(filepath: str, diffusers_version: str) -> None:
             fh.write(patched)
         _PATCH_APPLIED = True
         _logger.info(
-            "Applied diffusers torchao_quantizer compatibility patch "
-            "(diffusers==%s, file=%s)",
-            diffusers_version,
-            filepath,
+            "diffusers_torchao_patch_applied",
+            diffusers_version=diffusers_version,
+            file=filepath,
         )
     except OSError as exc:
-        _logger.warning(
-            "Could not write diffusers compatibility patch: %s", exc
-        )
+        _logger.warning("diffusers_patch_write_failed", error=str(exc))
 
 
 def apply_hpsv2_patches() -> None:
@@ -149,10 +147,6 @@ def apply_hpsv2_patches() -> None:
     try:
         bpe_path.parent.mkdir(parents=True, exist_ok=True)
         urllib.request.urlretrieve(bpe_url, str(bpe_path))
-        _logger.info(
-            "Downloaded missing hpsv2 BPE vocabulary to %s", bpe_path
-        )
+        _logger.info("hpsv2_bpe_vocab_downloaded", bpe_path=str(bpe_path))
     except OSError as exc:
-        _logger.warning(
-            "Could not download hpsv2 BPE vocabulary: %s", exc
-        )
+        _logger.warning("hpsv2_bpe_vocab_download_failed", error=str(exc))

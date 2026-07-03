@@ -27,3 +27,75 @@ def test_update_settings(mock_settings_manager_cls, client):
     assert response.status_code == 200
     assert response.json() == payload
     mock_instance.update_module_settings_async.assert_awaited_once_with("ui", payload)
+
+
+# ── B-CLEAN-5: the 410 migration-guard is gone; former + unknown modules ──
+# flow through to the generic (schemaless, per-module) settings store.
+
+
+@patch("app.api.settings_routes.SettingsManager")
+def test_get_settings_no_longer_410s_formerly_migrated_modules(mock_settings_manager_cls, client):
+    """`training`/`captioning`/`masking` used to 410 — the guard is removed
+    now that the frontend no longer calls them; they behave like any other
+    module (empty dict if never written)."""
+    mock_instance = MagicMock()
+    mock_instance.get_module_settings.return_value = {}
+    mock_settings_manager_cls.get_instance.return_value = mock_instance
+
+    for module in ("training", "captioning", "masking"):
+        response = client.get(f"/api/settings/{module}")
+        assert response.status_code == 200
+        assert response.json() == {}
+
+
+@patch("app.api.settings_routes.SettingsManager")
+def test_put_settings_no_longer_410s_formerly_migrated_modules(mock_settings_manager_cls, client):
+    mock_instance = MagicMock()
+    mock_instance.update_module_settings_async = AsyncMock(return_value=None)
+    mock_settings_manager_cls.get_instance.return_value = mock_instance
+
+    for module in ("training", "captioning", "masking"):
+        response = client.put(f"/api/settings/{module}", json={"x": 1})
+        assert response.status_code == 200
+        assert response.json() == {"x": 1}
+
+
+@patch("app.api.settings_routes.SettingsManager")
+def test_get_settings_nested_shape_survives_open_response_model(
+    mock_settings_manager_cls, client,
+):
+    """P3c: the `dict[str, Any]` response_model must not filter/coerce a
+    module blob with nested objects, lists, and null — proving the open
+    contract doesn't silently drop keys the way a named schema could."""
+    mock_instance = MagicMock()
+    payload = {
+        "nested": {"a": 1, "b": [1, 2, 3]},
+        "list_of_objects": [{"x": True}, {"y": None}],
+        "null_field": None,
+        "bool_field": False,
+    }
+    mock_instance.get_module_settings.return_value = payload
+    mock_settings_manager_cls.get_instance.return_value = mock_instance
+
+    response = client.get("/api/settings/some_module")
+    assert response.status_code == 200
+    assert response.json() == payload
+
+
+@patch("app.api.settings_routes.SettingsManager")
+def test_get_settings_unknown_module_is_sane_empty_dict_not_500(
+    mock_settings_manager_cls, client,
+):
+    """The settings store is a schemaless per-module key-value blob (see
+    module docstring / SettingsService) — a module nobody has written to
+    yet is not an "unknown resource" 404 candidate, it is a legitimate
+    empty read, mirroring `dict.get(key, {})`. Pin that this stays a sane
+    200 + `{}` and never a 500."""
+    mock_instance = MagicMock()
+    mock_instance.get_module_settings.return_value = {}
+    mock_settings_manager_cls.get_instance.return_value = mock_instance
+
+    response = client.get("/api/settings/__never_configured_module__")
+
+    assert response.status_code == 200
+    assert response.json() == {}

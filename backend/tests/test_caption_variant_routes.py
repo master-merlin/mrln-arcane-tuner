@@ -28,6 +28,7 @@ def test_list_and_accept_suggestion(mock_dm, client, tmp_path):
     r2 = client.post("/api/datasets/ds/caption-suggestions/accept",
                      json={"definition_id": "flux1-schnell", "stem": "img1"})
     assert r2.status_code == 200
+    assert r2.json() == {"status": "accepted"}
     assert cv.read_variant(str(tmp_path), "flux1-schnell", "img1") == "new cap"
 
 
@@ -40,6 +41,7 @@ def test_reject_suggestion(mock_dm, client, tmp_path):
     r = client.post("/api/datasets/ds/caption-suggestions/reject",
                     json={"definition_id": "flux1-schnell", "stem": "img1"})
     assert r.status_code == 200
+    assert r.json() == {"status": "rejected"}
     assert sg.read_suggestion(str(tmp_path), "flux1-schnell", "img1") is None
 
 
@@ -53,7 +55,7 @@ def test_accept_all(mock_dm, client, tmp_path):
     r = client.post("/api/datasets/ds/caption-suggestions/accept-all",
                     json={"definition_id": "flux1-schnell"})
     assert r.status_code == 200
-    assert r.json()["accepted"] == 2
+    assert r.json() == {"accepted": 2}
     assert cv.read_variant(str(tmp_path), "flux1-schnell", "a") == "ca"
     assert cv.read_variant(str(tmp_path), "flux1-schnell", "b") == "cb"
 
@@ -98,7 +100,7 @@ def test_list_variant_definitions(mock_dm, client, tmp_path):
     cv.write_variant(str(tmp_path), "flux1-schnell", "a", "x")
     r = client.get("/api/datasets/ds/caption-variants")
     assert r.status_code == 200
-    assert "flux1-schnell" in r.json()["definition_ids"]
+    assert r.json() == {"definition_ids": ["flux1-schnell"]}
 
 
 @patch(f"{_MOD}.dataset_manager")
@@ -143,4 +145,22 @@ def test_put_caption_variant_writes_variant(mock_dm, client, tmp_path):
     resp = client.put("/api/datasets/ds/caption-variant",
                       json={"definition_id": "flux1-schnell", "stem": "img1", "text": "edited variant"})
     assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
     assert cv.read_variant(str(tmp_path), "flux1-schnell", "img1") == "edited variant"
+
+
+@patch(f"{_MOD}.dataset_manager")
+def test_get_caption_variant_map_full_payload(mock_dm, client, tmp_path):
+    """Pin the full {'variants': {stem: text}} payload for the grid overlay."""
+    ds = MagicMock()
+    ds.path = str(tmp_path)
+    mock_dm.get_dataset.return_value = ds
+    cv.write_variant(str(tmp_path), "flux1-schnell", "img1", "variant one")
+    cv.write_variant(str(tmp_path), "flux1-schnell", "img2", "variant two")
+
+    resp = client.get("/api/datasets/ds/caption-variant-map",
+                      params={"definition_id": "flux1-schnell"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "variants": {"img1": "variant one", "img2": "variant two"}
+    }

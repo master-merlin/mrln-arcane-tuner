@@ -71,10 +71,29 @@ def test_list_masking_templates(MockRepo, client):
 
 @patch(_TRAIN_REPO)
 def test_get_template_found(MockRepo, client):
-    MockRepo.return_value.get_by_id.return_value = {"id": "t1", "name": "Default"}
+    # created_at is a NOT-NULL column the TemplateRow response_model requires.
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "t1", "definition_id": "sdxl_base_1.0", "name": "Default", "created_at": 0.0,
+    }
     response = client.get("/api/templates/training/t1")
     assert response.status_code == 200
     assert response.json()["id"] == "t1"
+
+
+@patch(_TRAIN_REPO)
+def test_get_template_full_payload(MockRepo, client):
+    """P3c pin: TemplateRow (open, extra=allow) must not strip a domain-
+    specific field (definition_id) it doesn't declare as a named field."""
+    row = {
+        "id": "t1", "project_id": None, "definition_id": "sdxl_base_1.0",
+        "name": "Default", "is_default": True, "readonly": False,
+        "config": {"lr": 1e-4}, "created_at": 0.0, "updated_at": None,
+        "used_count": 3, "last_used_at": 5.0, "branched_from": None,
+    }
+    MockRepo.return_value.get_by_id.return_value = row
+    response = client.get("/api/templates/training/t1")
+    assert response.status_code == 200
+    assert response.json() == row
 
 
 @patch(_TRAIN_REPO)
@@ -107,8 +126,13 @@ def test_create_training_template(MockRepo, client):
 
 @patch(_TRAIN_REPO)
 def test_update_template(MockRepo, client):
-    MockRepo.return_value.get_by_id.return_value = {"id": "t1", "name": "Old", "readonly": False}
-    MockRepo.return_value.update.return_value = {"id": "t1", "name": "Updated"}
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "t1", "definition_id": "sdxl_base_1.0", "name": "Old",
+        "readonly": False, "created_at": 0.0,
+    }
+    MockRepo.return_value.update.return_value = {
+        "id": "t1", "definition_id": "sdxl_base_1.0", "name": "Updated", "created_at": 0.0,
+    }
     response = client.put("/api/templates/training/t1", json={"name": "Updated"})
     assert response.status_code == 200
     assert response.json()["name"] == "Updated"
@@ -144,6 +168,104 @@ def test_delete_template_not_found(MockRepo, client):
     MockRepo.return_value.get_by_id.return_value = None
     response = client.delete("/api/templates/training/ghost")
     assert response.status_code == 404
+
+
+# ── Branch ───────────────────────────────────────────────────────────────
+
+
+@patch(_TRAIN_REPO)
+def test_branch_template_full_payload(MockRepo, client):
+    """P3c pin: branch returns the new (branched) row via TemplateRow."""
+    branched = {
+        "id": "t2", "project_id": "proj-1", "definition_id": "sdxl_base_1.0",
+        "name": "Default (branched)", "is_default": False, "readonly": False,
+        "config": {}, "created_at": 1.0, "updated_at": None,
+        "used_count": 0, "last_used_at": None, "branched_from": "t1",
+    }
+    MockRepo.return_value.branch.return_value = branched
+    response = client.post(
+        "/api/templates/training/t1/branch", json={"target_project_id": "proj-1"}
+    )
+    assert response.status_code == 200
+    assert response.json() == branched
+
+
+@patch(_TRAIN_REPO)
+def test_branch_template_not_found(MockRepo, client):
+    MockRepo.return_value.branch.side_effect = ValueError("not found")
+    response = client.post(
+        "/api/templates/training/ghost/branch", json={"target_project_id": "proj-1"}
+    )
+    assert response.status_code == 404
+
+
+# ── Import: plan + apply ────────────────────────────────────────────────
+
+
+def test_plan_template_import_full_payload(client):
+    """P3c pin: TemplateImportPlanResponse — entries stay open (extra=allow)
+    so domain-specific plan fields (model_id/model_available for
+    captioning/masking) survive alongside the common fields."""
+    from app.core.portable.archive import write_manifest_zip
+    from app.core.template import portable
+
+    entry = {
+        "domain": "captioning", "name": "My Template", "model_id": "florence-2",
+        "config": {}, "system_prompt": "Describe.", "wildcard": "",
+    }
+    manifest = portable.build_template_manifest([entry], "0.0.0-test")
+    zb = write_manifest_zip(manifest).getvalue()
+    with patch(
+        "app.core.template.import_service.model_available", return_value=True
+    ), patch(
+        "app.core.template.import_service.validate_config", return_value=None
+    ):
+        response = client.post(
+            "/api/templates/import/plan",
+            files={"file": ("t.zip", zb, "application/zip")},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project_id"] is None
+    assert body["importable_count"] == 1
+    assert len(body["entries"]) == 1
+    entry = body["entries"][0]
+    assert entry["index"] == 0
+    assert entry["domain"] == "captioning"
+    assert entry["name"] == "My Template"
+    assert entry["duplicate_name"] is False
+    assert entry["blocker"] is False
+    # domain-specific fields pass through untouched
+    assert entry["model_id"] == "florence-2"
+    assert entry["model_available"] is True
+
+
+@patch(_CAP_REPO)
+def test_apply_template_import_full_payload(MockRepo, client):
+    """P3c pin: TemplateImportApplyResponse — created/skipped/installed_definitions."""
+    from app.core.portable.archive import write_manifest_zip
+    from app.core.template import portable
+
+    entry = {
+        "domain": "captioning", "name": "My Template", "model_id": "florence-2",
+        "config": {},
+    }
+    manifest = portable.build_template_manifest([entry], "0.0.0-test")
+    zb = write_manifest_zip(manifest).getvalue()
+    MockRepo.return_value.create.return_value = {"id": "new-id", "name": "My Template"}
+    with patch(
+        "app.core.template.import_service.model_available", return_value=True
+    ):
+        response = client.post(
+            "/api/templates/import/apply",
+            files={"file": ("t.zip", zb, "application/zip")},
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "created": [{"index": 0, "id": "new-id", "name": "My Template"}],
+        "skipped": [],
+        "installed_definitions": [],
+    }
 
 
 # ── Usage counter ────────────────────────────────────────────────────────

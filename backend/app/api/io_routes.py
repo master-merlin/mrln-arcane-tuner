@@ -8,11 +8,24 @@ import zipfile
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/import", tags=["import"])
 
 
-@router.post("/peek")
+class ArchivePeekResponse(BaseModel):
+    """Archive manifest header — lets the client route a dropped archive to
+    the correct importer (project/template/dataset). Mirrors
+    ``portable.envelope.peek_manifest`` exactly: ``kind`` is required by that
+    function (it raises if absent), the versions are best-effort echoes of
+    whatever the manifest carried."""
+
+    kind: str
+    format_version: Any = None
+    app_version: Any = None
+
+
+@router.post("/peek", response_model=ArchivePeekResponse)
 async def peek_archive(file: UploadFile = File(...)) -> dict[str, Any]:
     """Return the archive's manifest header (``kind`` + versions) so the client
     can route it to the correct importer."""

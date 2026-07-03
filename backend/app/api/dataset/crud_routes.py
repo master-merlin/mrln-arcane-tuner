@@ -12,9 +12,10 @@ import time
 from typing import Literal
 import zipfile
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.api._deps import dataset_or_404
 from app.api._path_guard import sanitize_filename, validate_path_within
 from app.core.dataset_manager import dataset_manager, Dataset
 from app.core.logger import get_logger
@@ -43,6 +44,11 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def get_dataset_or_404(name: str) -> Dataset:
+    """Path-operation dependency: resolve a dataset by name or 404."""
+    return dataset_or_404(dataset_manager.get_dataset(name))
+
+
 # ── Dataset CRUD ─────────────────────────────────────────────────────────
 
 
@@ -53,11 +59,8 @@ async def list_datasets():
 
 
 @router.get("/datasets/{name}", response_model=Dataset)
-async def get_dataset(name: str):
+async def get_dataset(dataset: Dataset = Depends(get_dataset_or_404)):
     """Return a single dataset by name."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
     return dataset
 
 
@@ -132,12 +135,11 @@ async def scan_all_datasets(force_full: bool = Query(False)):
 
 
 @router.post("/datasets/{name}/scan/batch", response_model=TaskEnqueuedResponse)
-async def scan_dataset_batch(name: str, force_full: bool = Query(False)):
+async def scan_dataset_batch(
+    name: str, force_full: bool = Query(False), dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Start a backend-owned single-dataset rescan task. Queued on the GPU lane
     (shared with captioning); returns the task id immediately."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
     total = await asyncio.to_thread(count_multimedia, [name])
     task = task_manager.create(
         type="rescan_batch", title=f"Rescan · {name}",
@@ -182,6 +184,7 @@ async def upload_file(
     file: UploadFile = File(...),
     slot: int = Form(default=0),
     target_stem: str | None = Form(default=None),
+    dataset: Dataset = Depends(get_dataset_or_404),
 ):
     """Upload a file into a dataset directory.
 
@@ -194,10 +197,6 @@ async def upload_file(
         CONTROL_IMAGE_EXTS,
         CONTROL_SLOTS,
     )
-
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     # Sanitize filename to prevent directory traversal via crafted names
     safe_name = sanitize_filename(file.filename or "upload")
@@ -278,12 +277,10 @@ async def get_dataset_pairs(name: str):
 
 
 @router.get("/datasets/{name}/media")
-async def get_dataset_media(name: str, image_rel_path: str = Query(...)):
+async def get_dataset_media(
+    image_rel_path: str = Query(...), dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Serve a media file from a dataset."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     dataset_root = Path(dataset.path)
     # Validate the resolved path stays inside the dataset directory
     file_path = validate_path_within(dataset_root / image_rel_path, dataset_root)
@@ -295,13 +292,11 @@ async def get_dataset_media(name: str, image_rel_path: str = Query(...)):
 
 
 @router.get("/datasets/{name}/thumbnail")
-async def get_dataset_thumbnail(name: str, image_rel_path: str = Query(...)):
+async def get_dataset_thumbnail(
+    image_rel_path: str = Query(...), dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Serve a 256px WebP thumbnail for a dataset image; generates if missing."""
     from app.core.dataset import thumbnails
-
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     dataset_root = Path(dataset.path)
     # Validate the resolved source path stays inside the dataset directory.
@@ -389,12 +384,8 @@ async def enable_all_images(name: str):
 
 
 @router.get("/datasets/{name}/download")
-async def download_dataset(name: str):
+async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
     """Download a dataset as a zip file (DatasetName_Version.zip)."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     dataset_root = Path(dataset.path)
     if not dataset_root.is_dir():
         raise HTTPException(status_code=404, detail="Dataset directory not found on disk")
@@ -424,12 +415,8 @@ async def download_dataset(name: str):
 
 
 @router.get("/datasets/{name}/export")
-async def export_dataset(name: str):
+async def export_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
     """Export a dataset as a portable zip (files + manifest.json metadata)."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     dataset_root = Path(dataset.path)
     if not dataset_root.is_dir():
         raise HTTPException(status_code=404, detail="Dataset directory not found on disk")

@@ -46,6 +46,47 @@ class VariantWriteRequest(BaseModel):
     masked: bool = False
 
 
+# ── Response schemas ─────────────────────────────────────────────────────
+
+
+class VariantDefinitionIdsResponse(BaseModel):
+    """Definition ids that have any caption-variant file for a dataset."""
+
+    definition_ids: list[str]
+
+
+class VariantMapResponse(BaseModel):
+    """All variant texts for one definition, keyed by stem."""
+
+    variants: dict[str, str]
+
+
+class VariantTextResponse(BaseModel):
+    """Resolved caption text (variant, or general fallback) + whether a
+    variant actually exists for this stem."""
+
+    text: str
+    has_variant: bool
+
+
+class OkResponse(BaseModel):
+    """Simple ``{"ok": true}`` acknowledgement."""
+
+    ok: bool = True
+
+
+class SuggestionActionResponse(BaseModel):
+    """Ack for accept/reject on a single suggestion."""
+
+    status: str
+
+
+class AcceptAllResponse(BaseModel):
+    """Count of suggestions accepted in bulk."""
+
+    accepted: int
+
+
 def _ds_path(name: str) -> str:
     ds = dataset_manager.get_dataset(name)
     if ds is None:
@@ -53,14 +94,14 @@ def _ds_path(name: str) -> str:
     return ds.path
 
 
-@router.get("/datasets/{name}/caption-variants")
+@router.get("/datasets/{name}/caption-variants", response_model=VariantDefinitionIdsResponse)
 async def list_variants(name: str) -> dict:
     path = _ds_path(name)
     ids = await asyncio.to_thread(cv.list_variant_definition_ids, path)
     return {"definition_ids": ids}
 
 
-@router.get("/datasets/{name}/caption-variant-map")
+@router.get("/datasets/{name}/caption-variant-map", response_model=VariantMapResponse)
 async def get_caption_variant_map(name: str, definition_id: str, masked: bool = False) -> dict:
     """All variant texts for a definition as ``{stem: text}`` — lets the grid
     overlay model-aware captions for the whole dataset in one request (stems
@@ -71,7 +112,7 @@ async def get_caption_variant_map(name: str, definition_id: str, masked: bool = 
     return {"variants": variants}
 
 
-@router.get("/datasets/{name}/caption-variant")
+@router.get("/datasets/{name}/caption-variant", response_model=VariantTextResponse)
 async def get_caption_variant(name: str, definition_id: str, stem: str, masked: bool = False) -> dict:
     path = _ds_path(name)
 
@@ -84,7 +125,7 @@ async def get_caption_variant(name: str, definition_id: str, stem: str, masked: 
     return await asyncio.to_thread(_read)
 
 
-@router.put("/datasets/{name}/caption-variant")
+@router.put("/datasets/{name}/caption-variant", response_model=OkResponse)
 async def put_caption_variant(name: str, req: VariantWriteRequest) -> dict:
     path = _ds_path(name)
     await asyncio.to_thread(cv.write_variant, path, req.definition_id, req.stem, req.text, req.masked)
@@ -109,21 +150,21 @@ async def list_suggestions(name: str, definition_id: str, masked: bool = False) 
     return SuggestionsResponse(definition_id=definition_id, items=items)
 
 
-@router.post("/datasets/{name}/caption-suggestions/accept")
+@router.post("/datasets/{name}/caption-suggestions/accept", response_model=SuggestionActionResponse)
 async def accept(name: str, req: AcceptRejectRequest) -> dict:
     path = _ds_path(name)
     await asyncio.to_thread(sg.accept_suggestion, path, req.definition_id, req.stem, req.masked)
     return {"status": "accepted"}
 
 
-@router.post("/datasets/{name}/caption-suggestions/reject")
+@router.post("/datasets/{name}/caption-suggestions/reject", response_model=SuggestionActionResponse)
 async def reject(name: str, req: AcceptRejectRequest) -> dict:
     path = _ds_path(name)
     await asyncio.to_thread(sg.reject_suggestion, path, req.definition_id, req.stem, req.masked)
     return {"status": "rejected"}
 
 
-@router.post("/datasets/{name}/caption-suggestions/accept-all")
+@router.post("/datasets/{name}/caption-suggestions/accept-all", response_model=AcceptAllResponse)
 async def accept_all(name: str, req: AcceptAllRequest) -> dict:
     path = _ds_path(name)
 

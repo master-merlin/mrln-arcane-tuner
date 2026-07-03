@@ -1,7 +1,12 @@
 """Settings API — read and update application-level settings only.
 
 Training, captioning, and masking templates have been moved to
-domain-specific template APIs and the project system as of V4.
+domain-specific template APIs and the project system as of V4. The
+generic ``/{module}`` GET/PUT is a schemaless per-module key-value store
+(see ``SettingsManager`` / ``frontend/src/app/services/settings.service.ts``)
+— any module name is valid, and a module that has never been written yet
+simply reads back as ``{}``. There is deliberately no fixed enum of "known"
+module names to 404 against.
 """
 
 from __future__ import annotations
@@ -16,14 +21,19 @@ from app.core.settings_manager import SettingsManager
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 logger = get_logger(__name__)
 
-# Modules that have been migrated to the project/template system
-_MIGRATED_MODULES = frozenset({"training", "captioning", "masking"})
-
 # Modules holding secrets — served only through dedicated masked endpoints
 _PROTECTED_MODULES = frozenset({"api_captioning"})
 
+# response_model intentionally left as the bare `dict[str, Any]` FastAPI/
+# Pydantic type (not a named BaseModel) for BOTH routes below. This module is
+# a schemaless per-module key-value store — any module name is valid and its
+# value shape is whatever the caller last PUT, so there is no fixed field set
+# to declare without risking silently stripping a module's keys the day a new
+# settings field is added on the frontend. `dict[str, Any]` documents the
+# contract (a JSON object) without filtering it — see task-p3c-brief.md rule 3.
 
-@router.get("/{module}")
+
+@router.get("/{module}", response_model=dict[str, Any])
 async def get_settings(module: str) -> dict[str, Any]:
     """Return settings for a specific module."""
     if module in _PROTECTED_MODULES:
@@ -32,18 +42,12 @@ async def get_settings(module: str) -> dict[str, Any]:
             f"'{module}' holds credentials and is only accessible via "
             "/api/captions/api-providers.",
         )
-    if module in _MIGRATED_MODULES:
-        raise HTTPException(
-            410,
-            f"'{module}' settings have been moved to the project/template API. "
-            "Use /api/templates/{domain} and /api/projects endpoints instead.",
-        )
 
     manager = SettingsManager.get_instance()
     return manager.get_module_settings(module)
 
 
-@router.put("/{module}")
+@router.put("/{module}", response_model=dict[str, Any])
 async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, Any]:
     """Update settings for a specific module."""
     if module in _PROTECTED_MODULES:
@@ -51,12 +55,6 @@ async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, An
             403,
             f"'{module}' holds credentials and is only accessible via "
             "/api/captions/api-providers.",
-        )
-    if module in _MIGRATED_MODULES:
-        raise HTTPException(
-            410,
-            f"'{module}' settings have been moved to the project/template API. "
-            "Use /api/templates/{domain} and /api/projects endpoints instead.",
         )
 
     logger.info("updating_settings", module=module)

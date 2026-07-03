@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api._deps import dataset_or_404
 from app.api._path_guard import sanitize_filename, validate_path_within
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.api.schemas.dataset_schemas import (
@@ -34,12 +35,17 @@ from app.core.dataset.control_helpers import (
     control_slot_dir_name,
     prepare_control_slot_path,
 )
-from app.core.dataset_manager import dataset_manager
+from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def get_dataset_or_404(name: str) -> Dataset:
+    """Path-operation dependency: resolve a dataset by name or 404."""
+    return dataset_or_404(dataset_manager.get_dataset(name))
 
 
 def _value_error_status(exc: ValueError) -> int:
@@ -50,28 +56,21 @@ def _value_error_status(exc: ValueError) -> int:
 @router.get(
     "/datasets/{name}/control/health", response_model=PairHealthResponse,
 )
-async def get_pair_health(name: str):
+async def get_pair_health(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
     """On-demand pair-health report (disk walk; warnings never block)."""
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
     return await asyncio.to_thread(compute_pair_health, dataset)
 
 
 @router.delete(
     "/datasets/{name}/control/orphans", response_model=OrphansDeletedResponse,
 )
-async def delete_orphan_controls(name: str):
+async def delete_orphan_controls(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
     """Delete every control file whose stem has no target image.
 
     Orphans have no ``media_items`` row, so this is pure filesystem
     cleanup — the health report is the only thing that changes.
     """
     import os
-
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     def _delete() -> int:
         health = compute_pair_health(dataset)
@@ -95,7 +94,9 @@ async def delete_orphan_controls(name: str):
 @router.post(
     "/datasets/{name}/control/assign", response_model=ControlAssignResponse,
 )
-async def assign_control(name: str, request: ControlAssignRequest):
+async def assign_control(
+    name: str, request: ControlAssignRequest, dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Re-match an existing on-disk control file to a target stem/slot.
 
     Moves/renames ``src_rel_path`` (a file under a control slot dir) to
@@ -105,10 +106,6 @@ async def assign_control(name: str, request: ControlAssignRequest):
     action — no re-upload needed. Files only move; no logical role order
     is touched.
     """
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     slot = request.slot
     if not 1 <= slot <= len(CONTROL_SLOTS):
         raise HTTPException(
@@ -171,16 +168,15 @@ async def assign_control(name: str, request: ControlAssignRequest):
     "/datasets/{name}/control/generate-batch",
     response_model=TaskEnqueuedResponse,
 )
-async def generate_control_batch(name: str, request: ControlGenerateBatchRequest):
+async def generate_control_batch(
+    name: str, request: ControlGenerateBatchRequest,
+    dataset: Dataset = Depends(get_dataset_or_404),
+):
     """Enqueue a PIL-only batch that degrades each target into a control slot.
 
     Runs on the non-GPU ``background`` lane (never blocks training/caption);
     skips targets that already have a control in the slot unless ``overwrite``.
     """
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-
     wanted = set(request.stems) if request.stems else None
     total = sum(
         1

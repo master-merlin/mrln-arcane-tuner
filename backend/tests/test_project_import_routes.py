@@ -52,9 +52,17 @@ def test_plan_reports_reference_dataset_presence(MockProjects, mock_dsmgr, clien
         {"mode": "reference", "name": "gone"}])
     resp = _upload(client, "/api/projects/import/plan", zb)
     assert resp.status_code == 200
-    ds = {d["name"]: d for d in resp.json()["datasets"]}
+    body = resp.json()
+    ds = {d["name"]: d for d in body["datasets"]}
     assert ds["here"]["reference_present"] is True
     assert ds["gone"]["reference_present"] is False
+    # P3c pin: ProjectImportPlanResponse top-level key set + per-item shape
+    # (mirrors the frontend's ProjectDatasetPlan: reference items get
+    # `reference_present`, never `embed_conflict`).
+    assert set(body) == {"project", "templates", "datasets"}
+    assert body["templates"] == []
+    assert set(ds["here"]) == {"name", "mode", "reference_present", "embed_conflict"}
+    assert ds["here"]["embed_conflict"] is None
 
 
 @patch(_DSMGR)
@@ -125,6 +133,17 @@ def test_apply_creates_project_and_links_references(MockProjects, mock_dsmgr, Mo
     assert body["missing_references"] == ["gone"]
     MockProjects.add_dataset.assert_any_call("new_p", "d_here")
     MockPrefs.upsert.assert_called_once()
+    # P3c pin: ProjectImportApplyResponse — exact key set, no template entries
+    # (this archive carries none) → empty created/skipped lists.
+    assert body == {
+        "project_id": "new_p",
+        "project_name": "P",
+        "imported_datasets": [],
+        "linked_references": ["here"],
+        "missing_references": ["gone"],
+        "templates": {"created": [], "skipped": []},
+        "installed_definitions": [],
+    }
 
 
 @patch(_PROJECTS)
@@ -180,7 +199,8 @@ def test_user_triggered_rollback_undoes_a_kept_import(MockProjects, mock_dsmgr, 
         "project_id": "p_keep", "imported_datasets": ["ds1"],
         "installed_definitions": []})
     assert resp.status_code == 200
-    assert resp.json()["status"] == "rolled_back"
+    # P3c pin: ProjectImportRollbackResponse — exact {status, project_id}.
+    assert resp.json() == {"status": "rolled_back", "project_id": "p_keep"}
     MockProjects.delete.assert_called_once_with("p_keep")
     mock_dsmgr.delete_dataset.assert_called_once_with("ds1", delete_files=True)
 

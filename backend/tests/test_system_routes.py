@@ -1,5 +1,5 @@
 """
-E2E tests for api/system_routes.py — logs, system status, GPU status.
+E2E tests for api/system_routes.py — logs, health, self-update status.
 """
 
 from unittest.mock import patch, MagicMock
@@ -58,26 +58,71 @@ def test_health_counts_running_and_paused_jobs(client):
     assert response.json()["active_jobs"] == 2
 
 
-@patch("app.core.system_monitor.system_monitor")
-def test_get_system_status(mock_mon, client):
-    """Should return system snapshot dict."""
-    mock_snapshot = MagicMock()
-    mock_snapshot.to_dict.return_value = {"cpu_percent": 10.0, "memory_percent": 50.0}
-    mock_mon.snapshot.return_value = mock_snapshot
-    response = client.get("/api/system/status")
+def test_update_status_full_payload(client):
+    """Pin GET /system/update/status — mirrors SelfUpdateService.status_payload()
+    verbatim (also the shape broadcast over the update.status WS event)."""
+    from app.core.self_update import self_update_service
+
+    with patch.object(
+        self_update_service,
+        "status_payload",
+        return_value={
+            "state": "idle",
+            "available": True,
+            "branch": "main",
+            "commit": "abc1234",
+            "dirty": False,
+            "is_repo": True,
+            "behind": 2,
+            "active": 0,
+            "error": None,
+        },
+    ):
+        response = client.get("/api/system/update/status")
     assert response.status_code == 200
-    assert "cpu_percent" in response.json()
+    assert response.json() == {
+        "state": "idle",
+        "available": True,
+        "branch": "main",
+        "commit": "abc1234",
+        "dirty": False,
+        "is_repo": True,
+        "behind": 2,
+        "active": 0,
+        "error": None,
+    }
 
 
-@patch("app.core.system_monitor.system_monitor")
-def test_get_gpu_status(mock_mon, client):
-    """Should return GPU info dict."""
-    mock_gpu = MagicMock()
-    mock_gpu.to_dict.return_value = {"name": "RTX 4090", "vram_used_mb": 1000}
-    mock_snapshot = MagicMock()
-    mock_snapshot.gpus = [mock_gpu]
-    mock_mon.snapshot.return_value = mock_snapshot
-    response = client.get("/api/system/gpu")
+def test_update_check_full_payload(client):
+    """Pin POST /system/update/check — {behind, commits}."""
+    from app.core.self_update import self_update_service
+
+    async def _fake_check():
+        return {"behind": 3, "commits": ["fix: a", "feat: b", "chore: c"]}
+
+    with patch.object(self_update_service, "available", True), patch.object(
+        self_update_service, "check", side_effect=_fake_check
+    ):
+        response = client.post("/api/system/update/check")
     assert response.status_code == 200
-    assert "gpus" in response.json()
-    assert len(response.json()["gpus"]) == 1
+    assert response.json() == {
+        "behind": 3,
+        "commits": ["fix: a", "feat: b", "chore: c"],
+    }
+
+
+def test_update_check_unavailable_403(client):
+    from app.core.self_update import self_update_service
+
+    with patch.object(self_update_service, "available", False):
+        response = client.post("/api/system/update/check")
+    assert response.status_code == 403
+
+
+def test_system_status_and_gpu_routes_removed(client):
+    """B-CLEAN-8: GET /system/status and /system/gpu were orphaned (zero
+    frontend callers — live telemetry flows over WebSocket; system.service.ts
+    only calls /system/health) and have been removed. Pin that both paths are
+    genuinely gone (404), not just failing for some other reason."""
+    assert client.get("/api/system/status").status_code == 404
+    assert client.get("/api/system/gpu").status_code == 404

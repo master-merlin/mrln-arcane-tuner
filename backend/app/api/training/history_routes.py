@@ -5,10 +5,24 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.api._deps import dataset_or_404
 
 router = APIRouter()
+
+
+def get_dataset_or_404(name: str):
+    """Path-operation dependency: resolve a dataset by name or 404.
+
+    Lazy-imports ``dataset_manager`` (matching this module's existing
+    local-import style) so ``@patch("app.core.dataset_manager.dataset_manager")``
+    — this file's established test-mocking convention — is observed.
+    """
+    from app.core.dataset_manager import dataset_manager
+
+    return dataset_or_404(dataset_manager.get_dataset(name))
 
 
 # ── Response schemas ─────────────────────────────────────────────────────
@@ -115,113 +129,42 @@ class JobReplayResponse(BaseModel):
     loss: list[Any]
 
 
+class JobHistoryRow(BaseModel):
+    """One raw ``job_history`` table row (``SELECT *``, with
+    config/datasets_used/loss_history/targeted_layers/tags JSON-decoded by
+    the repo's ``_from_row``). Open model: this table has grown via 7+ ALTER
+    TABLE migrations and the frontend consumes it as an open ``Job`` record
+    (``job.ts`` — ``config`` is explicitly typed ``Record<string, unknown>``
+    there) — only the NOT-NULL core is declared here; every other (and any
+    future) column passes through untouched via ``extra=\"allow\"``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    lora_name: str
+    definition_id: str
+    status: str
+    created_at: float
+
+
+class JobHistoryDetail(JobHistoryRow):
+    """Full job detail: the history row plus its linked checkpoints, sample
+    images, and dataset-linkage rows."""
+
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    samples: list[SampleImage] = Field(default_factory=list)
+    # `job_datasets` join-table rows — small/stable shape, but kept as an
+    # open dict (not a named model) since it isn't otherwise exposed as a
+    # standalone contract elsewhere.
+    datasets_linkage: list[dict[str, Any]] = Field(default_factory=list)
+
+
 @router.get("/jobs/history/stats", response_model=JobStatsResponse)
 async def get_job_stats():
-    """Aggregate training statistics for the dashboard card."""
-    from app.core.db.engine import get_db
+    """Aggregate training statistics for the dashboard card (read-only)."""
+    from app.core.db.repositories.job_repo import JobHistoryRepository
 
-    def _compute():
-        conn = get_db().connection()
-
-        # ── Core counts ──────────────────────────────────────────
-        totals = conn.execute("""
-            SELECT
-                COUNT(*)                                              AS total_jobs,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
-                SUM(CASE WHEN status = 'stopped'   THEN 1 ELSE 0 END) AS stopped,
-                SUM(CASE WHEN status = 'running'   THEN 1 ELSE 0 END) AS running,
-                SUM(CASE WHEN status = 'paused'    THEN 1 ELSE 0 END) AS paused,
-                COALESCE(SUM(completed_steps), 0)                      AS total_steps,
-                COALESCE(SUM(duration_seconds), 0)                     AS total_runtime_sec,
-                COALESCE(SUM(training_seconds), 0)                     AS total_training_sec
-            FROM job_history
-        """).fetchone()
-
-        total_jobs = totals["total_jobs"] or 0
-        completed  = totals["completed"] or 0
-
-        # ── Averages (completed only) ────────────────────────────
-        avgs = conn.execute("""
-            SELECT
-                AVG(completed_steps) AS avg_steps,
-                AVG(avg_loss)        AS avg_loss,
-                AVG(min_loss)        AS avg_min_loss,
-                AVG(avg_step_time)   AS avg_step_time_sec,
-                AVG(duration_seconds) AS avg_runtime_sec
-            FROM job_history WHERE status = 'completed'
-        """).fetchone()
-
-        # ── Model family breakdown ───────────────────────────────
-        # Auto-repair legacy records where definition_id was stored as
-        # the plugin_id placeholder "standard" instead of the real model ID.
-        db = get_db()
-        with db.write() as wconn:
-            wconn.execute("""
-                UPDATE job_history
-                SET definition_id = json_extract(config, '$.definition_id')
-                WHERE definition_id = 'standard'
-                  AND json_extract(config, '$.definition_id') IS NOT NULL
-                  AND json_extract(config, '$.definition_id') != ''
-            """)
-
-        families = conn.execute("""
-            SELECT definition_id, COUNT(*) AS count
-            FROM job_history
-            GROUP BY definition_id
-            ORDER BY count DESC
-        """).fetchall()
-
-        # ── Optimizer breakdown ──────────────────────────────────
-        optimizers = conn.execute("""
-            SELECT optimizer_type, COUNT(*) AS count
-            FROM job_history
-            WHERE optimizer_type IS NOT NULL
-            GROUP BY optimizer_type
-            ORDER BY count DESC
-        """).fetchall()
-
-        # ── Dataset usage ────────────────────────────────────────
-        dataset_stats = conn.execute("""
-            SELECT COUNT(DISTINCT dataset_name) AS unique_datasets
-            FROM job_datasets
-        """).fetchone()
-
-        # ── Most recent job ──────────────────────────────────────
-        last_job = conn.execute("""
-            SELECT lora_name, definition_id, status, created_at
-            FROM job_history ORDER BY created_at DESC LIMIT 1
-        """).fetchone()
-
-        return {
-            "total_jobs": total_jobs,
-            "completed": completed,
-            "failed": totals["failed"] or 0,
-            "stopped": totals["stopped"] or 0,
-            "running": totals["running"] or 0,
-            "paused": totals["paused"] or 0,
-            "success_rate": round(completed / total_jobs * 100, 1) if total_jobs > 0 else 0,
-            "total_steps": totals["total_steps"],
-            "total_runtime_sec": round(totals["total_runtime_sec"], 1),
-            "total_training_sec": round(totals["total_training_sec"], 1),
-            "avg_steps": round(avgs["avg_steps"] or 0),
-            "avg_loss": round(avgs["avg_loss"] or 0, 6),
-            "avg_min_loss": round(avgs["avg_min_loss"] or 0, 6),
-            "avg_step_time_sec": round(avgs["avg_step_time_sec"] or 0, 3),
-            "avg_runtime_sec": round(avgs["avg_runtime_sec"] or 0, 1),
-            "model_families": [
-                {"id": r["definition_id"], "count": r["count"]}
-                for r in families
-            ],
-            "optimizers": [
-                {"name": r["optimizer_type"], "count": r["count"]}
-                for r in optimizers
-            ],
-            "unique_datasets": dataset_stats["unique_datasets"] or 0,
-            "last_job": dict(last_job) if last_job else None,
-        }
-
-    return await asyncio.to_thread(_compute)
+    return await asyncio.to_thread(JobHistoryRepository().get_stats)
 
 
 # ── Estimation-wall statistics ──────────────────────────────────────────
@@ -248,7 +191,7 @@ async def get_definition_stats(definition_id: str):
     return await asyncio.to_thread(definition_stats_service.get, definition_id)
 
 
-@router.get("/jobs/history")
+@router.get("/jobs/history", response_model=list[JobHistoryRow])
 async def list_job_history(
     limit: int = 50,
     offset: int = 0,
@@ -265,7 +208,7 @@ async def list_job_history(
     )
 
 
-@router.get("/jobs/history/{job_id}")
+@router.get("/jobs/history/{job_id}", response_model=JobHistoryDetail)
 async def get_job_history_detail(job_id: str):
     """Full job detail with checkpoints and samples."""
     from app.core.db.repositories.job_repo import JobHistoryRepository
@@ -365,9 +308,14 @@ async def get_job_replay(job_id: str):
     return await asyncio.to_thread(_load)
 
 
-@router.get("/jobs/history/{job_id}/rerun-config")
+@router.get("/jobs/history/{job_id}/rerun-config", response_model=dict[str, Any])
 async def get_rerun_config(job_id: str):
-    """Extract config from a past job for re-submission."""
+    """Extract config from a past job for re-submission.
+
+    The training config is a plugin-schema-driven blob whose fields vary per
+    model family (mirrors ``TrainingConfig`` in job.ts) — ``dict[str, Any]``
+    is an intentional open passthrough, not a stand-in for an unwritten model.
+    """
     from app.core.db.repositories.job_repo import JobHistoryRepository
     repo = JobHistoryRepository()
     config = await asyncio.to_thread(repo.get_config_for_rerun, job_id)
@@ -376,15 +324,10 @@ async def get_rerun_config(job_id: str):
     return config
 
 
-@router.get("/datasets/{name}/jobs")
-async def get_dataset_jobs(name: str):
+@router.get("/datasets/{name}/jobs", response_model=list[JobHistoryRow])
+async def get_dataset_jobs(ds=Depends(get_dataset_or_404)):
     """All jobs that used a specific dataset."""
     from app.core.db.repositories.job_repo import JobHistoryRepository
-    from app.core.dataset_manager import dataset_manager
-
-    ds = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    if not ds:
-        raise HTTPException(status_code=404, detail="Dataset not found")
 
     repo = JobHistoryRepository()
     return await asyncio.to_thread(repo.get_by_dataset, ds.id)

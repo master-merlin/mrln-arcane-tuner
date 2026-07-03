@@ -89,6 +89,14 @@ class TestDefinitionCRUD:
         ids = ModelRegistry.list_models()
         assert set(ids) == {"a", "b"}
 
+    def test_count(self, tmp_path):
+        """Public accessor for len(_definitions) — B-ARCH-6, replaces the
+        system_routes.py private reach-through `len(registry._definitions)`."""
+        assert ModelRegistry.count() == 0
+        self._add_definition(tmp_path, "a")
+        self._add_definition(tmp_path, "b")
+        assert ModelRegistry.count() == 2
+
     def test_update_definition(self, tmp_path):
         self._add_definition(tmp_path)
         ModelRegistry.update_definition("crud/test", {"version": "2.0"})

@@ -9,10 +9,16 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
+from app.api.training.template_routes import (
+    ImportCreatedEntry,
+    ImportSkippedEntry,
+    TemplatePlanEntry,
+)
 from app.core.db.repositories.project_repo import ProjectRepository
 from app.core.db.repositories.preference_repo import PreferenceRepository
+from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -71,66 +77,205 @@ class ExportProjectRequest(BaseModel):
     datasets: list[ExportDatasetChoice] = []
 
 
+# ── Response schemas ─────────────────────────────────────────────────────
+
+
+class ProjectRow(BaseModel):
+    """A bare ``projects`` table row (``SELECT *``). No ``stats`` key —
+    that's only injected by the list/get-one routes (see ProjectWithStats)."""
+
+    id: str
+    name: str
+    description: str
+    color: str
+    created_at: float
+    updated_at: float
+
+
+class ProjectStats(BaseModel):
+    """Template/dataset/job counts for a project (``ProjectRepository.get_stats``)."""
+
+    captioning_templates: int
+    masking_templates: int
+    training_templates: int
+    datasets: int
+    jobs: int
+
+
+class ProjectWithStats(ProjectRow):
+    """A project row plus its stats — the shape ``list``/``get-one`` return."""
+
+    stats: ProjectStats
+
+
+class ProjectDatasetRow(BaseModel):
+    """A dataset row scoped to a project (raw ``SELECT d.*`` from
+    ``datasets``, bypassing the ``Dataset`` domain model). Open model: the
+    frontend already treats this as a dynamic bag (``project.service.ts``'s
+    ``Dataset`` and ``project-detail.ts``'s ``ProjectDatasetRow`` both declare
+    ``[key: string]: unknown``) and the ``datasets`` table has grown via
+    several ``ALTER TABLE`` migrations — only the two fields every consumer
+    relies on are declared; the rest pass through via ``extra=\"allow\"``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    name: str
+
+
+class ProjectPreferencesRow(BaseModel):
+    """A ``project_preferences`` row (``training_selections`` JSON-decoded
+    by the repo)."""
+
+    id: str
+    project_id: str | None = None
+    selected_caption_model: str | None = None
+    active_caption_template: str | None = None
+    qwen3_variant: str | None = None
+    selected_mask_model: str | None = None
+    active_mask_template: str | None = None
+    training_selections: dict[str, Any] = {}
+
+
+class ProjectImportPlanProjectInfo(BaseModel):
+    name: str | None = None
+    conflict: bool
+
+
+class ProjectDatasetPlanItem(BaseModel):
+    """One dataset's import-plan entry — mirrors the frontend's
+    ``ProjectDatasetPlan`` (project.service.ts) exactly."""
+
+    name: str
+    mode: str
+    reference_present: bool | None = None
+    embed_conflict: bool | None = None
+
+
+class ProjectImportApplyTemplatesResult(BaseModel):
+    created: list[ImportCreatedEntry]
+    skipped: list[ImportSkippedEntry]
+
+
+class ProjectImportApplyResponse(BaseModel):
+    project_id: str
+    project_name: str
+    imported_datasets: list[str]
+    linked_references: list[str]
+    missing_references: list[str]
+    templates: ProjectImportApplyTemplatesResult
+    installed_definitions: list[str]
+
+
+class ProjectImportRollbackResponse(BaseModel):
+    status: str
+    project_id: str
+
+
+class ProjectImportPlanResponse(BaseModel):
+    project: ProjectImportPlanProjectInfo
+    templates: list[TemplatePlanEntry]
+    datasets: list[ProjectDatasetPlanItem]
+
+
 # ── Project CRUD ─────────────────────────────────────────────────────────
 
 
-@router.get("")
+@router.get("", response_model=list[ProjectWithStats])
 async def list_projects() -> list[dict[str, Any]]:
     """List all projects with stats."""
-    projects = _projects.list_all()
-    for p in projects:
-        p["stats"] = _projects.get_stats(p["id"])
-    return projects
+
+    def _work() -> list[dict[str, Any]]:
+        projects = _projects.list_all()
+        for p in projects:
+            p["stats"] = _projects.get_stats(p["id"])
+        return projects
+
+    return await asyncio.to_thread(_work)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=ProjectRow)
 async def create_project(req: CreateProjectRequest) -> dict[str, Any]:
     """Create a new project."""
-    if _projects.get_by_name(req.name):
-        raise HTTPException(409, f"Project '{req.name}' already exists")
-    return _projects.create(req.model_dump())
 
+    def _work() -> dict[str, Any]:
+        if _projects.get_by_name(req.name):
+            raise HTTPException(409, f"Project '{req.name}' already exists")
+        return _projects.create(req.model_dump())
 
-@router.get("/{project_id}")
-async def get_project(project_id: str) -> dict[str, Any]:
-    """Get a single project with stats."""
-    project = _projects.get_by_id(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    project["stats"] = _projects.get_stats(project_id)
+    project = await asyncio.to_thread(_work)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="project", op="created", id=project["id"], payload=project,
+    )
     return project
 
 
-@router.patch("/{project_id}")
+@router.get("/{project_id}", response_model=ProjectWithStats)
+async def get_project(project_id: str) -> dict[str, Any]:
+    """Get a single project with stats."""
+
+    def _work() -> dict[str, Any]:
+        project = _projects.get_by_id(project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        project["stats"] = _projects.get_stats(project_id)
+        return project
+
+    return await asyncio.to_thread(_work)
+
+
+@router.patch("/{project_id}", response_model=ProjectRow)
 async def update_project(
     project_id: str, req: UpdateProjectRequest
 ) -> dict[str, Any]:
     """Update project metadata."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    updates = req.model_dump(exclude_none=True)
-    if not updates:
-        raise HTTPException(400, "No updates provided")
-    return _projects.update(project_id, updates)
+
+    def _work() -> dict[str, Any]:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        updates = req.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(400, "No updates provided")
+        return _projects.update(project_id, updates)
+
+    project = await asyncio.to_thread(_work)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="project", op="updated", id=project_id, payload=project,
+    )
+    return project
 
 
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(project_id: str) -> None:
     """Delete a project (cascades templates, preferences)."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    _projects.delete(project_id)
+
+    def _work() -> None:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        _projects.delete(project_id)
+
+    await asyncio.to_thread(_work)
+    await emit_entity_change(
+        event_manager.broadcast,
+        entity="project", op="deleted", id=project_id, payload=None,
+    )
 
 
 # ── Dataset associations ─────────────────────────────────────────────────
 
 
-@router.get("/{project_id}/datasets")
+@router.get("/{project_id}/datasets", response_model=list[ProjectDatasetRow])
 async def get_project_datasets(project_id: str) -> list[dict[str, Any]]:
     """Get datasets associated with a project."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    return _projects.get_datasets(project_id)
+
+    def _work() -> list[dict[str, Any]]:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        return _projects.get_datasets(project_id)
+
+    return await asyncio.to_thread(_work)
 
 
 @router.post("/{project_id}/datasets", status_code=201, response_model=DatasetAssociationResponse)
@@ -138,35 +283,58 @@ async def add_project_dataset(
     project_id: str, req: DatasetAssociationRequest
 ) -> dict[str, str]:
     """Associate a dataset with a project."""
-    if not _projects.get_by_id(project_id):
-        raise HTTPException(404, "Project not found")
-    _projects.add_dataset(project_id, req.dataset_id)
-    return {"status": "added"}
+
+    def _work() -> dict[str, str]:
+        if not _projects.get_by_id(project_id):
+            raise HTTPException(404, "Project not found")
+        _projects.add_dataset(project_id, req.dataset_id)
+        return {"status": "added"}
+
+    result = await asyncio.to_thread(_work)
+    await _emit_project_membership_updated(project_id)
+    return result
 
 
 @router.delete("/{project_id}/datasets/{dataset_id}", status_code=204)
 async def remove_project_dataset(project_id: str, dataset_id: str) -> None:
     """Remove a dataset association from a project."""
-    _projects.remove_dataset(project_id, dataset_id)
+    await asyncio.to_thread(_projects.remove_dataset, project_id, dataset_id)
+    await _emit_project_membership_updated(project_id)
+
+
+async def _emit_project_membership_updated(project_id: str) -> None:
+    """Broadcast a project `updated` event after a dataset-association change.
+
+    Membership changes (add/remove a dataset) count as project updates —
+    the project row itself (name/description/color) is unchanged, but its
+    dataset associations are part of its externally-visible state.
+    """
+    project = await asyncio.to_thread(_projects.get_by_id, project_id)
+    if project is not None:
+        await emit_entity_change(
+            event_manager.broadcast,
+            entity="project", op="updated", id=project_id, payload=project,
+        )
 
 
 # ── Preferences ──────────────────────────────────────────────────────────
 
 
-@router.get("/{project_id}/preferences")
+@router.get("/{project_id}/preferences", response_model=ProjectPreferencesRow)
 async def get_preferences(project_id: str) -> dict[str, Any]:
     """Get preferences for a project."""
-    return _prefs.get(project_id if project_id != "general" else None)
+    pid = project_id if project_id != "general" else None
+    return await asyncio.to_thread(_prefs.get, pid)
 
 
-@router.put("/{project_id}/preferences")
+@router.put("/{project_id}/preferences", response_model=ProjectPreferencesRow)
 async def update_preferences(
     project_id: str, req: UpdatePreferencesRequest
 ) -> dict[str, Any]:
     """Update preferences for a project."""
     pid = project_id if project_id != "general" else None
     updates = req.model_dump(exclude_none=True)
-    return _prefs.upsert(pid, updates)
+    return await asyncio.to_thread(_prefs.upsert, pid, updates)
 
 
 # ── Export ───────────────────────────────────────────────────────────────
@@ -235,7 +403,7 @@ async def export_project(project_id: str, req: ExportProjectRequest) -> Streamin
 # ── Import: plan ─────────────────────────────────────────────────────────
 
 
-@router.post("/import/plan")
+@router.post("/import/plan", response_model=ProjectImportPlanResponse)
 async def plan_project_import(file: UploadFile = File(...)) -> dict[str, Any]:
     """Read a project archive and return a dry-run plan (read-only)."""
     from app.api.training.template_routes import plan_template_entries
@@ -316,7 +484,7 @@ def _uninstall_definition(definition_id: str) -> None:
     registry._paths.pop(definition_id, None)
 
 
-@router.post("/import/apply")
+@router.post("/import/apply", response_model=ProjectImportApplyResponse)
 async def apply_project_import(
     file: UploadFile = File(...),
     resolutions: str = Form(default="{}"),
@@ -474,7 +642,7 @@ class RollbackImportRequest(BaseModel):
     installed_definitions: list[str] = []
 
 
-@router.post("/import/rollback")
+@router.post("/import/rollback", response_model=ProjectImportRollbackResponse)
 async def rollback_project_import(req: RollbackImportRequest) -> dict[str, str]:
     """User-triggered undo of a *successful* import the user decided not to keep
     (e.g. after reviewing soft skips). Reverses defs → datasets → project."""

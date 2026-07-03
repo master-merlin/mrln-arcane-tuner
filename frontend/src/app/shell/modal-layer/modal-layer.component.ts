@@ -32,6 +32,10 @@ import { PairOrderModalComponent } from '../../modals/pair-order/pair-order.comp
 import { PairHealthModalComponent } from '../../modals/pair-health/pair-health.component';
 import { PairRoleChooserModalComponent } from '../../modals/pair-role-chooser/pair-role-chooser.component';
 import { ResumeJobModalComponent } from '../../modals/resume-job/resume-job.component';
+import { ConfigHelpModalComponent } from '../../modals/config-help/config-help.component';
+import { ModelSourceConfigComponent } from '../../modals/model-source-config/model-source-config';
+import { SceneDetectModalComponent } from '../../modals/scene-detect/scene-detect-modal';
+import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist-import-modal';
 
 /**
  * Modal stack renderer.
@@ -75,6 +79,10 @@ import { ResumeJobModalComponent } from '../../modals/resume-job/resume-job.comp
         PairHealthModalComponent,
         PairRoleChooserModalComponent,
         ResumeJobModalComponent,
+        ConfigHelpModalComponent,
+        ModelSourceConfigComponent,
+        SceneDetectModalComponent,
+        CutlistImportModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -88,7 +96,7 @@ import { ResumeJobModalComponent } from '../../modals/resume-job/resume-job.comp
                          [class.modal-wide]="m.kind === 'analyze'"
                          [class.modal-xl]="m.kind === 'crop-preview'"
                          [class.modal-compact]="m.kind === 'template-edit'"
-                         [class.modal-md]="m.kind === 'template-json' || m.kind === 'job-config'"
+                         [class.modal-md]="m.kind === 'template-json' || m.kind === 'job-config' || m.kind === 'config-help' || m.kind === 'model-source-config'"
                          (click)="$event.stopPropagation()">
                         @switch (m.kind) {
                             @case ('dataset-form') {
@@ -182,6 +190,18 @@ import { ResumeJobModalComponent } from '../../modals/resume-job/resume-job.comp
                             }
                             @case ('resume-job') {
                                 @defer (on immediate) { <app-modal-resume-job/> }
+                            }
+                            @case ('config-help') {
+                                @defer (on immediate) { <app-modal-config-help/> }
+                            }
+                            @case ('model-source-config') {
+                                @defer (on immediate) { <app-model-source-config/> }
+                            }
+                            @case ('scene-detect') {
+                                @defer (on immediate) { <app-scene-detect-modal/> }
+                            }
+                            @case ('cutlist-import') {
+                                @defer (on immediate) { <app-cutlist-import-modal/> }
                             }
                             @default {
                                 <div class="modal-head">

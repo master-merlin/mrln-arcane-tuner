@@ -27,7 +27,8 @@ export type ModalKind =
     | 'confirm' | 'version-edit' | 'pair-order' | 'pair-health'
     | 'pair-role-chooser'
     | 'templates-library' | 'template-edit' | 'template-json' | 'job-config'
-    | 'import-dataset' | 'export-options' | 'import-archive' | 'resume-job';
+    | 'import-dataset' | 'export-options' | 'import-archive' | 'resume-job'
+    | 'config-help' | 'model-source-config' | 'scene-detect' | 'cutlist-import';
 
 export interface ModalEntry {
     kind: ModalKind;

@@ -1,15 +1,24 @@
 import {
-    ChangeDetectionStrategy, Component, computed, inject, input, output, signal,
+    ChangeDetectionStrategy, Component, computed, inject, signal,
 } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { IcoComponent } from '../../../icons/ico.component';
+import { IcoComponent } from '../../icons/ico.component';
 import {
     DatasetService, type DatasetPair, type VideoSegment, type VideoSplitMode,
-} from '../../../services/dataset';
-import { ToastService } from '../../../services/toast';
-import { SegmentPreviewTableComponent } from './segment-preview-table';
+} from '../../services/dataset';
+import { ToastService } from '../../services/toast';
+import { OverlayStore } from '../../state/overlay.store';
+import { SegmentPreviewTableComponent } from '../../components/dataset/video/segment-preview-table';
 
 type Step = 'pick' | 'review';
+
+/** Payload passed via `overlay.openModal('cutlist-import', …)`. */
+export interface CutlistImportData {
+    /** HTTP name of the dataset being split. */
+    datasetName: string;
+    /** All pairs in the workspace — filtered to videos for the source picker. */
+    videoPairs?: DatasetPair[];
+}
 
 /**
  * Cut-list import modal — turns a Final-Cut / CSV / TSV cut list into a clip
@@ -23,8 +32,9 @@ type Step = 'pick' | 'review';
  * the backend `dataset.invalidated` broadcast drive the grid refresh, so
  * this modal is fire-and-forget.
  *
- * Rendered standalone (its own backdrop + `.modal` shell) so it doesn't need
- * the global modal-layer registry; the host opens it via `@if`.
+ * Registered in modal-layer and opened via `OverlayStore.openModal('cutlist-import', …)`;
+ * modal-layer owns the backdrop / `.modal` chrome, so this component renders only
+ * the dialog body. Inputs arrive through the overlay payload ({@link CutlistImportData}).
  */
 @Component({
     selector: 'app-cutlist-import-modal',
@@ -32,11 +42,7 @@ type Step = 'pick' | 'review';
     imports: [IcoComponent, SegmentPreviewTableComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
-        <div class="modal-backdrop" (click)="close()">
-            <div class="modal" role="dialog" aria-modal="true"
-                 data-testid="cutlist-import-modal"
-                 (click)="$event.stopPropagation()">
-                <div class="modal-head">
+        <div class="modal-head" data-testid="cutlist-import-modal">
                     <div>
                         <div class="eyebrow">CUT LIST IMPORT</div>
                         <div class="modal-title">Split a video into clips from a cut list</div>
@@ -154,10 +160,9 @@ type Step = 'pick' | 'review';
                         </button>
                     }
                 </div>
-            </div>
-        </div>
     `,
     styles: [`
+        :host { display: contents; }
         .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
         .cl-body { display: flex; flex-direction: column; gap: 18px; }
         .cl-section { display: flex; flex-direction: column; gap: 8px; }
@@ -205,16 +210,15 @@ type Step = 'pick' | 'review';
     `],
 })
 export class CutlistImportModalComponent {
-    /** HTTP name of the dataset being split. */
-    datasetName = input.required<string>();
-    /** All pairs in the workspace — filtered to videos for the source picker. */
-    videoPairs = input<DatasetPair[]>([]);
-
-    /** Modal-close intent — the host clears its `@if` flag. */
-    closed = output<void>();
-
+    private overlay = inject(OverlayStore);
     private api = inject(DatasetService);
     private toast = inject(ToastService);
+
+    private data = (this.overlay.topModal()?.data ?? {}) as CutlistImportData;
+    /** HTTP name of the dataset being split. */
+    protected datasetName = signal<string>(this.data.datasetName ?? '');
+    /** All pairs in the workspace — filtered to videos for the source picker. */
+    protected videoPairs = signal<DatasetPair[]>(this.data.videoPairs ?? []);
 
     protected readonly modes: ReadonlyArray<{ id: VideoSplitMode; label: string; hint: string }> = [
         { id: 'auto',     label: 'Auto',     hint: 'Copy where keyframes align, re-encode the rest.' },
@@ -302,7 +306,7 @@ export class CutlistImportModalComponent {
     }
 
     protected close(): void {
-        this.closed.emit();
+        this.overlay.closeModal();
     }
 
     private errMsg(err: unknown, fallback: string): string {

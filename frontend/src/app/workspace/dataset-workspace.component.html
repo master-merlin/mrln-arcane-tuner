@@ -337,19 +337,7 @@
             }
         </footer>
 
-        <!-- Video-curation modals — rendered via @if (project opens some modals
-             this way; these aren't in the global modal-layer registry). -->
-        @if (showCutlistModal()) {
-            <app-cutlist-import-modal
-                [datasetName]="dataset()?.name ?? w.datasetId"
-                [videoPairs]="videoPairs()"
-                (closed)="showCutlistModal.set(false)"/>
-        }
-        @if (showSceneDetectModal()) {
-            <app-scene-detect-modal
-                [datasetName]="dataset()?.name ?? w.datasetId"
-                [videoPairs]="videoPairs()"
-                (closed)="showSceneDetectModal.set(false)"/>
-        }
+        <!-- Video-curation modals (cut-list import + scene detect) are opened via
+             the modal-layer registry — see openCutlist() / openSceneDetect(). -->
     </div>
 }

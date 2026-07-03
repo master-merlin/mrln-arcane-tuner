@@ -1,15 +1,24 @@
 import {
-    ChangeDetectionStrategy, Component, OnDestroy, computed, inject, input, output, signal,
+    ChangeDetectionStrategy, Component, OnDestroy, computed, inject, signal,
 } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { IcoComponent } from '../../../icons/ico.component';
+import { IcoComponent } from '../../icons/ico.component';
 import {
     DatasetService, type DatasetPair, type VideoSegment,
-} from '../../../services/dataset';
-import { ToastService } from '../../../services/toast';
-import { SegmentPreviewTableComponent } from './segment-preview-table';
+} from '../../services/dataset';
+import { ToastService } from '../../services/toast';
+import { OverlayStore } from '../../state/overlay.store';
+import { SegmentPreviewTableComponent } from '../../components/dataset/video/segment-preview-table';
 
 type Step = 'config' | 'detecting' | 'review';
+
+/** Payload passed via `overlay.openModal('scene-detect', …)`. */
+export interface SceneDetectData {
+    /** HTTP name of the dataset. */
+    datasetName: string;
+    /** Workspace pairs — filtered to videos for the source picker. */
+    videoPairs?: DatasetPair[];
+}
 
 /**
  * Scene-detect modal — detects scene cuts in a source video and splits on them.
@@ -21,6 +30,10 @@ type Step = 'config' | 'detecting' | 'review';
  * Step 3 (review): curate the proposed segments (delete / merge via the
  * editable preview table) then confirm → `splitVideo` (mode `auto`) enqueues
  * a `video_split` task and the modal closes — the Task Center takes over.
+ *
+ * Registered in modal-layer and opened via `OverlayStore.openModal('scene-detect', …)`;
+ * modal-layer owns the backdrop / `.modal` chrome, so this component renders only
+ * the dialog body. Inputs arrive through the overlay payload ({@link SceneDetectData}).
  */
 @Component({
     selector: 'app-scene-detect-modal',
@@ -28,11 +41,7 @@ type Step = 'config' | 'detecting' | 'review';
     imports: [IcoComponent, SegmentPreviewTableComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
-        <div class="modal-backdrop" (click)="close()">
-            <div class="modal" role="dialog" aria-modal="true"
-                 data-testid="scene-detect-modal"
-                 (click)="$event.stopPropagation()">
-                <div class="modal-head">
+        <div class="modal-head" data-testid="scene-detect-modal">
                     <div>
                         <div class="eyebrow">SCENE DETECT</div>
                         <div class="modal-title">Auto-detect scene cuts and split into clips</div>
@@ -130,10 +139,9 @@ type Step = 'config' | 'detecting' | 'review';
                         </button>
                     }
                 </div>
-            </div>
-        </div>
     `,
     styles: [`
+        :host { display: contents; }
         .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
         .sd-body { display: flex; flex-direction: column; gap: 18px; }
         .sd-section { display: flex; flex-direction: column; gap: 8px; }
@@ -164,16 +172,15 @@ type Step = 'config' | 'detecting' | 'review';
     `],
 })
 export class SceneDetectModalComponent implements OnDestroy {
-    /** HTTP name of the dataset. */
-    datasetName = input.required<string>();
-    /** Workspace pairs — filtered to videos for the source picker. */
-    videoPairs = input<DatasetPair[]>([]);
-
-    /** Modal-close intent — the host clears its `@if` flag. */
-    closed = output<void>();
-
+    private overlay = inject(OverlayStore);
     private api = inject(DatasetService);
     private toast = inject(ToastService);
+
+    private data = (this.overlay.topModal()?.data ?? {}) as SceneDetectData;
+    /** HTTP name of the dataset. */
+    protected datasetName = signal<string>(this.data.datasetName ?? '');
+    /** Workspace pairs — filtered to videos for the source picker. */
+    protected videoPairs = signal<DatasetPair[]>(this.data.videoPairs ?? []);
 
     protected step = signal<Step>('config');
     protected sourceRel = signal<string | null>(null);
@@ -277,7 +284,7 @@ export class SceneDetectModalComponent implements OnDestroy {
 
     protected close(): void {
         this.stopPolling();
-        this.closed.emit();
+        this.overlay.closeModal();
     }
 
     private errMsg(err: unknown, fallback: string): string {

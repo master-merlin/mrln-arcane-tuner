@@ -7,7 +7,6 @@ import { TrainingTemplateSelectorComponent } from '../training-template-selector
 import { VramBudgetCardComponent } from '../vram-budget-card/vram-budget-card';
 import { AdvancedVramCardComponent } from '../advanced-vram-card/advanced-vram-card';
 import { TargetLayersCardComponent } from '../target-layers-card/target-layers-card';
-import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
 import { DynamicFormGroupComponent } from '../dynamic-form-group/dynamic-form-group';
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
@@ -138,7 +137,7 @@ function build() {
       // real arrays so its filteredTemplates computed doesn't choke on `{}`.
       { provide: TemplateService, useValue: { listTrainingTemplates: () => of([]) } },
       { provide: ProjectService, useValue: { getPreferences: () => of(null) } },
-      { provide: OverlayStore, useValue: {} },
+      { provide: OverlayStore, useValue: { openModal: () => {}, closeModal: () => {}, topModal: () => null } },
     ],
   });
   // Keep the REAL component template + the REAL DynamicFormFieldComponent (it
@@ -149,7 +148,6 @@ function build() {
   TestBed.overrideComponent(VramBudgetCardComponent, { set: stub });
   TestBed.overrideComponent(AdvancedVramCardComponent, { set: stub });
   TestBed.overrideComponent(TargetLayersCardComponent, { set: stub });
-  TestBed.overrideComponent(ModelSourceConfigComponent, { set: stub });
   TestBed.overrideComponent(DynamicFormGroupComponent, { set: stub });
 
   const fixture = TestBed.createComponent(TrainingDynamicConfigComponent);

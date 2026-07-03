@@ -21,7 +21,7 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
 import { DynamicFormGroupComponent } from '../dynamic-form-group/dynamic-form-group';
 import { AdvancedVramCardComponent } from '../advanced-vram-card/advanced-vram-card';
 import { TargetLayersCardComponent } from '../target-layers-card/target-layers-card';
-import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
+import { OverlayStore } from '../../../state/overlay.store';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
 import { SchemaNode, SchemaProp, collapseNullableUnion, coerceConfigNumbers } from '../schema-node';
@@ -51,7 +51,7 @@ export interface TrainingSegment {
   selector: 'app-training-dynamic-config',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent, ModelSourceConfigComponent],
+  imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent],
   template: `
     @if (schema()) {
       <form [formGroup]="form" (ngSubmit)="onSubmit()" class="flex flex-col gap-3.5 isolate">
@@ -122,7 +122,7 @@ export interface TrainingSegment {
                   <div class="text-[10px] font-mono text-text-disabled bg-surface-mid/20 px-3 py-1 rounded-theme-md">
                      ID: <span class="text-brand-light">{{ model.id }}</span>
                   </div>
-                  <button type="button" (click)="showSourceConfigModal.set(true); $event.preventDefault()"
+                  <button type="button" (click)="openSourceConfigModal(); $event.preventDefault()"
                           data-testid="model-source-config-btn"
                           title="Configure model source"
                           class="p-1.5 bg-surface-mid/40 hover:bg-surface-high text-text-subtle hover:text-brand rounded-theme-md border border-surface-mid/50 transition-all">
@@ -445,84 +445,6 @@ export interface TrainingSegment {
         </button>
 
       </form>
-
-      @if (activeHelpKey()) {
-        <div class="fixed inset-0 bg-overlay backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-in fade-in duration-300"
-             (click)="closeHelpModal()">
-          <div class="bg-surface-low border border-surface-mid rounded-theme-xl w-full max-w-lg shadow-2xl p-8 transform animate-in slide-in-from-bottom-4 duration-300"
-               (click)="$event.stopPropagation()">
-            
-            <div class="flex items-center gap-4 mb-6">
-              <div class="p-3 bg-brand/10 rounded-theme-md border border-brand/20 text-brand">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                </svg>
-              </div>
-              <div>
-                <h3 class="text-xl font-bold text-white">{{ getHelpTitle(activeHelpKey()!) }}</h3>
-                <p class="text-xs text-text-subtle mt-0.5">{{ getHelpTip(activeHelpKey()!) }}</p>
-              </div>
-            </div>
-
-            <div class="help-detail-content text-sm text-text-secondary leading-relaxed max-h-[60vh] overflow-y-auto pr-2"
-                 [innerHTML]="renderHelpDetail(activeHelpKey()!)">
-            </div>
-
-            <div class="flex justify-end mt-8">
-              <button (click)="closeHelpModal()"
-                      class="text-text-subtle hover:text-white text-sm font-bold px-6 py-3 transition-colors uppercase tracking-widest">
-                Got it
-              </button>
-            </div>
-          </div>
-        </div>
-      }
-
-      @if (showModelChangeModal()) {
-        <div class="fixed inset-0 bg-overlay backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-in fade-in duration-300">
-          <div class="bg-surface-low border border-surface-mid rounded-theme-xl w-full max-w-md shadow-2xl p-8 transform animate-in slide-in-from-bottom-4 duration-300"
-               (click)="$event.stopPropagation()">
-            <div class="flex items-center gap-4 mb-6">
-              <div class="p-3 bg-amber-500/10 rounded-theme-md border border-amber-500/20 text-amber-400">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                  <line x1="12" y1="9" x2="12" y2="13"></line>
-                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                </svg>
-              </div>
-              <div>
-                <h3 class="text-lg font-bold text-white">Model Changed</h3>
-                <p class="text-xs text-text-subtle mt-0.5">You have targeted layers selected for the previous model</p>
-              </div>
-            </div>
-            <p class="text-sm text-text-secondary mb-6">
-              The targeted layer selection is not compatible with the new model. Would you like to <strong class="text-white">keep your current model and layers</strong>, or <strong class="text-white">switch models and reset</strong> the layer selection?
-            </p>
-            <div class="flex justify-end gap-3">
-              <button (click)="onModelChangeKeep()"
-                      class="text-text-subtle hover:text-white text-sm font-bold px-5 py-2.5 transition-colors uppercase tracking-widest border border-surface-mid rounded-theme-md hover:border-surface-high">
-                Keep Model & Layers
-              </button>
-              <button (click)="onModelChangeReset()"
-                      class="bg-brand hover:bg-brand/80 text-white text-sm font-bold px-5 py-2.5 rounded-theme-md transition-colors uppercase tracking-widest">
-                Switch & Reset
-              </button>
-            </div>
-          </div>
-        </div>
-      }
-
-      @if (showSourceConfigModal() && currentDefinitionId()) {
-        <app-model-source-config
-          [definitionId]="currentDefinitionId()"
-          [definitionName]="selectedDefinition()?.name || ''"
-          [initialBrowsePath]="defaultModelPath()"
-          (close)="showSourceConfigModal.set(false)"
-          (saved)="onSourceOverrideSaved($event)">
-        </app-model-source-config>
-      }
     }
   `,
   styleUrl: 'training-dynamic-config.css'
@@ -541,6 +463,7 @@ export class TrainingDynamicConfigComponent {
   private modelService = inject(ModelService);
   private registryStore = inject(RegistryStore);
   private modelCapabilitiesService = inject(ModelCapabilitiesService);
+  private overlay = inject(OverlayStore);
 
   /**
    * Capability descriptor for the currently-selected model definition.
@@ -562,7 +485,6 @@ export class TrainingDynamicConfigComponent {
   Math = Math; // expose to template
 
   // Model source override
-  showSourceConfigModal = signal(false);
   modelSourceOverride = signal<ModelSourceOverride | null>(null);
   defaultModelPath = signal('');
 
@@ -692,7 +614,6 @@ export class TrainingDynamicConfigComponent {
 
   // Config Help System
   configHelp = signal<Record<string, { tip: string; detail: string }>>({});
-  activeHelpKey = signal<string | null>(null);
 
   // Model selection state
   families = computed(() => [...new Set(this.availableModels().map(m => m.family))]);
@@ -703,7 +624,6 @@ export class TrainingDynamicConfigComponent {
   currentDefinitionId = signal<string>('');
 
   // Model change → target layers modal
-  showModelChangeModal = signal(false);
   private _isTemplateApplying = false;
   // Set once a Jobs-screen handoff (Reload / Save template) has been applied,
   // so the selector's one-time `auto` template apply yields to it.
@@ -969,12 +889,25 @@ export class TrainingDynamicConfigComponent {
     return key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
   }
 
+  /** Resolve the help data for `key` and open the registered config-help modal. */
   openHelpModal(key: string): void {
-    this.activeHelpKey.set(key);
+    this.overlay.openModal('config-help', {
+      title: this.getHelpTitle(key),
+      tip: this.getHelpTip(key),
+      detailHtml: this.renderHelpDetail(key),
+    });
   }
 
-  closeHelpModal(): void {
-    this.activeHelpKey.set(null);
+  /** Open the registered model-source config modal for the current definition. */
+  openSourceConfigModal(): void {
+    const defId = this.currentDefinitionId();
+    if (!defId) return;
+    this.overlay.openModal('model-source-config', {
+      definitionId: defId,
+      definitionName: this.selectedDefinition()?.name || '',
+      initialBrowsePath: this.defaultModelPath(),
+      onSaved: (override: ModelSourceOverride | null) => this.onSourceOverrideSaved(override),
+    });
   }
 
   // --- Model Change → Target Layers Modal ---
@@ -992,7 +925,6 @@ export class TrainingDynamicConfigComponent {
       this.currentDefinitionId.set(this._previousDefinitionId);
       this._lastKnownDefinitionId = this._previousDefinitionId;
     }
-    this.showModelChangeModal.set(false);
     this._pendingDefinitionId = null;
     this._previousModelFamily = null;
     this._previousDefinitionId = null;
@@ -1017,7 +949,6 @@ export class TrainingDynamicConfigComponent {
     }
     // Refresh field-visibility descriptor for the newly-applied model
     this._loadFieldCapabilities(newDefId);
-    this.showModelChangeModal.set(false);
     this._pendingDefinitionId = null;
     this._previousModelFamily = null;
     this._previousDefinitionId = null;
@@ -1029,7 +960,19 @@ export class TrainingDynamicConfigComponent {
       // Snapshot the previous model so "Keep" can revert
       this._previousModelFamily = prevFamily;
       this._previousDefinitionId = prevDefId;
-      this.showModelChangeModal.set(true);
+      // Ask via the generic confirm modal: confirm = switch & reset layers,
+      // cancel = keep the previous model + layers.
+      this.overlay.openModal('confirm', {
+        title: 'Model Changed',
+        message:
+          'You have targeted layers selected for the previous model. The targeted ' +
+          'layer selection is not compatible with the new model. Keep your current ' +
+          'model and layers, or switch models and reset the layer selection?',
+        cancelLabel: 'Keep Model & Layers',
+        confirmLabel: 'Switch & Reset',
+        onConfirm: () => this.onModelChangeReset(),
+        onCancel: () => this.onModelChangeKeep(),
+      });
     }
   }
 

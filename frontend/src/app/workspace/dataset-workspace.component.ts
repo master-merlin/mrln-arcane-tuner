@@ -29,8 +29,6 @@ import { FilmstripScrubberComponent } from './filmstrip-scrubber/filmstrip-scrub
 import { BrowseMode } from './modes/browse-mode';
 import { DetailsMode } from './modes/details-mode';
 import { EditMode } from './modes/edit-mode';
-import { CutlistImportModalComponent } from '../components/dataset/video/cutlist-import-modal';
-import { SceneDetectModalComponent } from '../components/dataset/video/scene-detect-modal';
 
 /**
  * Fullscreen dataset workspace overlay.
@@ -73,8 +71,6 @@ import { SceneDetectModalComponent } from '../components/dataset/video/scene-det
         BrowseMode,
         DetailsMode,
         EditMode,
-        CutlistImportModalComponent,
-        SceneDetectModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './dataset-workspace.component.html',
@@ -291,9 +287,9 @@ export class DatasetWorkspaceComponent {
             return n + (hasWarn ? 1 : 0);
         }, 0),
     );
-    /** Open/close state for the two video-curation modals + the health popover. */
-    protected showCutlistModal = signal<boolean>(false);
-    protected showSceneDetectModal = signal<boolean>(false);
+    /** Open/close state for the health popover. The two video-curation modals
+     *  (cut-list import + scene detect) are now opened through the modal-layer
+     *  registry via {@link openCutlist} / {@link openSceneDetect}. */
     protected showHealthPopover = signal<boolean>(false);
 
     /** Media file of the pair at the active cursor — null when no
@@ -449,9 +445,19 @@ export class DatasetWorkspaceComponent {
         return [...out];
     }
 
-    /** Open one of the two video-curation modals (rendered via `@if`). */
-    protected openCutlist(): void { this.showCutlistModal.set(true); }
-    protected openSceneDetect(): void { this.showSceneDetectModal.set(true); }
+    /** Open one of the two video-curation modals via the modal-layer registry. */
+    protected openCutlist(): void {
+        this.overlay.openModal('cutlist-import', {
+            datasetName: this.dataset()?.name ?? this.ws()?.datasetId ?? '',
+            videoPairs: this.videoPairs(),
+        });
+    }
+    protected openSceneDetect(): void {
+        this.overlay.openModal('scene-detect', {
+            datasetName: this.dataset()?.name ?? this.ws()?.datasetId ?? '',
+            videoPairs: this.videoPairs(),
+        });
+    }
     protected toggleHealthPopover(): void { this.showHealthPopover.update(v => !v); }
 
     /**

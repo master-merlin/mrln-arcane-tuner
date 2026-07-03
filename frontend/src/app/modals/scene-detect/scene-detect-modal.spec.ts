@@ -5,11 +5,12 @@
  */
 import { TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
-import { settle } from '../../../../testing/async';
+import { settle } from '../../../testing/async';
 import { SceneDetectModalComponent } from './scene-detect-modal';
-import { DatasetService } from '../../../services/dataset';
-import { ToastService } from '../../../services/toast';
-import type { DatasetPair } from '../../../services/dataset';
+import { DatasetService } from '../../services/dataset';
+import { ToastService } from '../../services/toast';
+import { OverlayStore } from '../../state/overlay.store';
+import type { DatasetPair } from '../../services/dataset';
 
 function videoPair(media: string, fps = 24): DatasetPair {
     return {
@@ -51,12 +52,12 @@ describe('SceneDetectModalComponent', () => {
     });
 
     function make(videoPairs: DatasetPair[] = [videoPair('src.mp4')]) {
+        const overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('scene-detect', { datasetName: 'ds1', videoPairs });
         fixture = TestBed.createComponent(SceneDetectModalComponent);
         const comp = fixture.componentInstance as any;
-        fixture.componentRef.setInput('datasetName', 'ds1');
-        fixture.componentRef.setInput('videoPairs', videoPairs);
         fixture.detectChanges();
-        return { fixture: fixture!, comp };
+        return { fixture: fixture!, comp, overlay };
     }
 
     it('detect() enqueues scene_detect with threshold + min len and enters detecting', () => {
@@ -105,11 +106,9 @@ describe('SceneDetectModalComponent', () => {
     });
 
     it('split() posts splitVideo(mode=auto) with the curated segments, toasts + closes', async () => {
-        const { comp } = make();
+        const { comp, overlay } = make();
         comp.sourceRel.set('src.mp4');
         comp.segments.set([{ start_s: 0, end_s: 2, label: null }]);
-        const closedSpy = vi.fn();
-        comp.closed.subscribe(closedSpy);
         comp.split();
         await settle();
         expect(api.splitVideo).toHaveBeenCalledWith('ds1', {
@@ -120,7 +119,8 @@ describe('SceneDetectModalComponent', () => {
             archive_source: false,
         });
         expect(toast.success).toHaveBeenCalled();
-        expect(closedSpy).toHaveBeenCalledTimes(1);
+        // Closing the modal pops it off the overlay stack.
+        expect(overlay.modalStack().length).toBe(0);
     });
 
     it('detect() error surfaces a message and stays on config', () => {

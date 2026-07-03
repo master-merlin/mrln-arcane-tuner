@@ -17,6 +17,22 @@
  *
  * The working signal is internal — seeded from value() on creation.
  * Save emits working(); Cancel emits cancel() without touching value().
+ *
+ * ── P4a modal-consolidation note ────────────────────────────────────────────
+ * This modal is DELIBERATELY host-rendered (its own `.scm-backdrop`) rather than
+ * registered in modal-layer / OverlayStore, and it is DELIBERATELY kept in this
+ * feature dir (co-located with the ideogram-* caption editor family it wraps).
+ * Reasons (per audit task P4a's keep-inline escape hatch):
+ *   1. It needs a definite-height 92vh two-pane dialog (`.scm-dialog`) so the
+ *      embedded editor's `overflow-y:auto` sections pane resolves — the generic
+ *      `.modal` chrome (auto-height, max-height-only) would break that layout.
+ *   2. Two distinct hosts (browse-mode grid + detail-caption-sidebar) each seed
+ *      `value()` and route Save differently; the two-way `model()` shell keeps
+ *      that coupling local. Moving only this shell into `modals/` while its 3
+ *      tightly-coupled siblings (ideogram-caption-editor / ideogram-format /
+ *      wide-bbox-overlay) stay here would fracture a cohesive module.
+ * It owns its own focus/Esc handling (HostListener below) since it opts out of
+ * modal-layer's chrome.
  */
 import {
     ChangeDetectionStrategy,

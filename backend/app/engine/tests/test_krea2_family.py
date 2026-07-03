@@ -16,6 +16,35 @@ from unittest.mock import MagicMock
 from app.engine.core.definitions import ModelDefinition
 
 
+@pytest.fixture(autouse=True)
+def _restore_model_registry():
+    """Snapshot + restore ``ModelRegistry`` class state around every test.
+
+    ``test_krea2_family_registered`` and ``test_krea2_definitions_loaded``
+    mutate the registry's class-level discovery caches inline (resetting
+    ``_discovered`` / ``_families`` / ``_definitions`` to force a re-scan). Left
+    unrestored those mutations leak into later tests in the session (mirrors the
+    autouse reset/restore fixture the ltx2 definition tests already use — see
+    backend/tests/engine/families/ltx2/test_ltx2_definitions.py)."""
+    from app.engine.models.registry import ModelRegistry
+
+    saved = {
+        "_families": dict(ModelRegistry._families),
+        "_definitions": dict(ModelRegistry._definitions),
+        "_paths": dict(ModelRegistry._paths),
+        "_discovered": ModelRegistry._discovered,
+        "_definitions_loaded": ModelRegistry._definitions_loaded,
+    }
+    try:
+        yield
+    finally:
+        ModelRegistry._families = saved["_families"]
+        ModelRegistry._definitions = saved["_definitions"]
+        ModelRegistry._paths = saved["_paths"]
+        ModelRegistry._discovered = saved["_discovered"]
+        ModelRegistry._definitions_loaded = saved["_definitions_loaded"]
+
+
 def _make_krea2_definition(**kwargs) -> MagicMock:
     """Build a mock Krea2 ModelDefinition for loader tests."""
     definition = MagicMock(spec=ModelDefinition)

@@ -154,6 +154,14 @@ class Ltx2Trainer(GenericTrainingPipeline):
             _add(str(self.config.get("sample_negative_prompt", "") or ""), "")
 
         # ── Phase 1: load the triple from disk (te1 presence gates the hit) ──
+        #
+        # te1 is written LAST during the save (see Phase 2 below) so its
+        # presence acts as a commit marker for the whole triple. If te1 hits
+        # but te2/te3 (when their dirs are configured) are missing, an earlier
+        # run crashed mid-write and left a PARTIAL triple on disk (a pre-fix
+        # build wrote te1 first, so this also self-heals caches poisoned
+        # before this fix). Treat that as a MISS — re-encode + re-save all
+        # three — instead of silently caching (emb, None, None) forever.
         disk_loaded = 0
         need_encode: list[tuple[str, str]] = []
         for cap, hint in work:
@@ -166,9 +174,13 @@ class Ltx2Trainer(GenericTrainingPipeline):
                     mask = (
                         TextEmbeddingCache.load(cap, te3_dir, hint) if te3_dir else None
                     )
-                    self.text_cache[cap] = (emb, pooled, mask)
-                    disk_loaded += 1
-                    continue
+                    partial = (te2_dir and pooled is None) or (
+                        te3_dir and mask is None
+                    )
+                    if not partial:
+                        self.text_cache[cap] = (emb, pooled, mask)
+                        disk_loaded += 1
+                        continue
             need_encode.append((cap, hint))
 
         if not need_encode:
@@ -196,12 +208,18 @@ class Ltx2Trainer(GenericTrainingPipeline):
                 for j, (cap, hint) in enumerate(batch_items):
                     emb, pooled, mask = self._slice_te_output(out, j)
                     self.text_cache[cap] = (emb, pooled, mask)
-                    if te1_dir:
-                        TextEmbeddingCache.save(cap, emb, te1_dir, hint)
-                    if te2_dir and pooled is not None:
-                        TextEmbeddingCache.save(cap, pooled, te2_dir, hint)
+                    # Save order matters: te3/te2 first, te1 LAST. te1's
+                    # presence is the Phase-1 disk-hit gate, so writing it
+                    # last makes it the commit marker for the triple — a
+                    # crash mid-write leaves te1 absent (a clean miss on the
+                    # next run) instead of poisoning the cache with a
+                    # partial (emb, None, None) hit.
                     if te3_dir and mask is not None:
                         TextEmbeddingCache.save(cap, mask, te3_dir, hint)
+                    if te2_dir and pooled is not None:
+                        TextEmbeddingCache.save(cap, pooled, te2_dir, hint)
+                    if te1_dir:
+                        TextEmbeddingCache.save(cap, emb, te1_dir, hint)
                 if getattr(self, "_log_writer", None):
                     pct = round(min(i + batch_size, total) / total * 100)
                     self._log_writer.status(f"Caching Text Embeddings ({pct}%)")

@@ -248,6 +248,62 @@ def test_changed_caption_re_encodes_only_the_delta(tmp_path):
     assert "" in warm.text_cache  # unchanged → from disk
 
 
+def test_poisoned_cache_self_heals_missing_te2_te3(tmp_path):
+    """A crash between the te1 write and the te2/te3 writes must not
+    permanently poison the cache: te1-present-but-te2/te3-missing is a MISS,
+    not a partial hit that silently nulls pooled/mask forever."""
+    import os
+
+    from app.engine.components.text_embeddings import TextEmbeddingCache
+
+    base = os.path.join(str(tmp_path), "embeddings", "none")
+    te1_dir = os.path.join(base, "te1")
+    # Simulate the poisoned state an older/crashed build would leave behind:
+    # only te1 written, te2/te3 never written.
+    TextEmbeddingCache.save("a cat", torch.ones(1, 5, 8), te1_dir, "h")
+
+    t = _disk_trainer(str(tmp_path))
+    t._build_caption_hints = lambda: {"a cat": "h"}
+    t._pre_cache_text_embeddings()
+
+    assert t.driver.calls > 0  # re-encoded instead of accepting the partial triple
+    emb, pooled, mask = t.text_cache["a cat"]
+    assert pooled is not None and mask is not None  # healed, not silently nulled
+
+    for slot in ("te1", "te2", "te3"):
+        files = [
+            f
+            for f in os.listdir(os.path.join(base, slot))
+            if f.endswith(".safetensors")
+        ]
+        assert len(files) == 1, f"{slot} should now hold the healed caption file"
+
+
+def test_te1_saved_last_as_commit_marker(tmp_path, monkeypatch):
+    """te1 gates the disk-hit check (Phase 1 loads on te1 presence alone), so
+    it must be written LAST — after te2/te3 — so it acts as a commit marker:
+    a crash mid-triple-write leaves te1 absent (a clean miss on retry) rather
+    than a partial/poisoned hit."""
+    import os
+
+    from app.engine.components import text_embeddings as te_mod
+
+    calls: list[str] = []
+    orig_save = te_mod.TextEmbeddingCache.save
+
+    def spy_save(caption, tensor, cache_dir, source_hint=""):
+        calls.append(os.path.basename(cache_dir.rstrip(os.sep)))
+        return orig_save(caption, tensor, cache_dir, source_hint)
+
+    monkeypatch.setattr(te_mod.TextEmbeddingCache, "save", staticmethod(spy_save))
+
+    t = _disk_trainer(str(tmp_path))
+    t._build_caption_hints = lambda: {"a cat": "h"}
+    t._pre_cache_text_embeddings()
+
+    assert calls == ["te3", "te2", "te1"]
+
+
 def test_disk_cache_persists_negative_prompt(tmp_path):
     """The P1a negative prompt round-trips through disk like sample prompts."""
     cfg = {

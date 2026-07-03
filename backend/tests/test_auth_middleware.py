@@ -3,7 +3,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.core.auth import COOKIE_NAME, LOGIN_HTML, TokenAuthMiddleware
 
@@ -80,7 +80,9 @@ def test_login_sets_cookie_then_grants_access():
 
 def test_websocket_rejected_without_token():
     client = TestClient(_make_app("s3cret"))
-    with pytest.raises(Exception):
+    # The gate rejects the handshake before accept → the TestClient surfaces it
+    # as a WebSocketDisconnect (not merely "some Exception").
+    with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("/api/ws"):
             pass
 

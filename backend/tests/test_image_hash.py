@@ -86,8 +86,8 @@ class TestSolideHashRobust:
         assert len(h_small) < len(h_large)
 
     def test_invalid_path_raises(self):
-        """Non-existent image should raise."""
-        with pytest.raises(Exception):
+        """Non-existent image should raise FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
             solide_hash_robust("/nonexistent/image.png")
 
 

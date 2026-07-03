@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 import av
 
@@ -120,7 +121,8 @@ def test_probe_webm_estimated_frame_count(tmp_path):
 def test_probe_is_immutable(tmp_path):
     """VideoProbe is frozen — fields can't be reassigned after construction."""
     probe = probe_video(_write_clip(tmp_path / "frozen.mp4"))
-    with pytest.raises(Exception):
+    # VideoProbe is a frozen Pydantic model → assignment raises ValidationError.
+    with pytest.raises(ValidationError):
         probe.fps = 99.0  # type: ignore[misc]
 
 

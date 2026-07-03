@@ -26,6 +26,11 @@ import {
     llmRefineModels,
     systemUpdateStatus,
     apiCaptionProviders,
+    jobHistory,
+    jobAutoQueue,
+    jobAutoResume,
+    jobSamplesEmpty,
+    jobCheckpointsEmpty,
 } from './api-data';
 
 /**
@@ -126,6 +131,48 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'GET',
         test: (p) => p.endsWith('/api/tasks'),
         handler: (route) => json(route, tasks),
+    },
+
+    // ── Jobs screen (Flow F) ───────────────────────────────────────────────
+    // `/history` and `/settings/*` don't match the bare `/api/jobs` endsWith
+    // check above (they have trailing path segments), so order relative to it
+    // doesn't matter — grouped here for readability.
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/jobs/history'),
+        handler: (route) => json(route, jobHistory),
+    },
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/jobs/settings/auto-queue'),
+        handler: (route) => json(route, jobAutoQueue),
+    },
+    {
+        method: 'PUT',
+        test: (p) => p.endsWith('/api/jobs/settings/auto-queue'),
+        handler: (route, request) =>
+            json(route, { auto_queue: !!(request.postDataJSON() as { enabled?: boolean } | null)?.enabled }),
+    },
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/jobs/settings/auto-resume'),
+        handler: (route) => json(route, jobAutoResume),
+    },
+    {
+        method: 'PUT',
+        test: (p) => p.endsWith('/api/jobs/settings/auto-resume'),
+        handler: (route, request) =>
+            json(route, { auto_resume: !!(request.postDataJSON() as { enabled?: boolean } | null)?.enabled }),
+    },
+    {
+        method: 'GET',
+        test: (p) => /\/api\/jobs\/[^/]+\/samples$/.test(p),
+        handler: (route) => json(route, jobSamplesEmpty),
+    },
+    {
+        method: 'GET',
+        test: (p) => /\/api\/jobs\/[^/]+\/checkpoints$/.test(p),
+        handler: (route) => json(route, jobCheckpointsEmpty),
     },
     // Topbar app-init probe (every page, TopbarComponent ctor → LlmAvailabilityStore.refresh()).
     {

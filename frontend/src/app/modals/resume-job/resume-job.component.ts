@@ -32,13 +32,15 @@ type ResumeMode = 'restart' | 'continue';
                 <div class="eyebrow">RESUME</div>
                 <div class="rj-title">Resume training</div>
             </div>
-            <button class="icon-btn" type="button" (click)="close()" aria-label="Close">×</button>
+            <button class="icon-btn" type="button" (click)="close()"
+                    data-testid="resume-job-close" aria-label="Close">×</button>
         </div>
 
         <div class="modal-body">
             <label class="rj-opt">
                 <input type="radio" name="rj-mode" [checked]="mode() === 'continue'"
-                       (change)="mode.set('continue')"/>
+                       (change)="mode.set('continue')"
+                       data-testid="resume-job-mode-continue"/>
                 <span>
                     <span class="rj-opt-title">Continue from checkpoint</span>
                     <span class="rj-opt-desc">Resume optimizer, scheduler and step count from a saved checkpoint.</span>
@@ -47,7 +49,8 @@ type ResumeMode = 'restart' | 'continue';
 
             @if (mode() === 'continue') {
                 <select class="input rj-select" [value]="selectedDir() ?? ''"
-                        (change)="selectedDir.set($any($event.target).value)">
+                        (change)="selectedDir.set($any($event.target).value)"
+                        data-testid="resume-job-checkpoint-select">
                     @for (c of checkpoints(); track c.checkpoint_dir) {
                         <option [value]="c.checkpoint_dir">{{ label(c) }}</option>
                     }
@@ -56,7 +59,8 @@ type ResumeMode = 'restart' | 'continue';
 
             <label class="rj-opt rj-mt">
                 <input type="radio" name="rj-mode" [checked]="mode() === 'restart'"
-                       (change)="mode.set('restart')"/>
+                       (change)="mode.set('restart')"
+                       data-testid="resume-job-mode-restart"/>
                 <span>
                     <span class="rj-opt-title">Restart from 0</span>
                     <span class="rj-opt-desc">Begin a fresh run from step 0.</span>
@@ -66,17 +70,20 @@ type ResumeMode = 'restart' | 'continue';
             @if (mode() === 'restart') {
                 <label class="rj-check">
                     <input type="checkbox" [checked]="wipe()"
-                           (change)="wipe.set($any($event.target).checked)"/>
+                           (change)="wipe.set($any($event.target).checked)"
+                           data-testid="resume-job-wipe-checkbox"/>
                     Wipe previous output (checkpoints, samples, logs)
                 </label>
             }
         </div>
 
         <div class="modal-foot">
-            <button class="btn ghost" type="button" (click)="close()">Cancel</button>
+            <button class="btn ghost" type="button" (click)="close()"
+                    data-testid="resume-job-cancel">Cancel</button>
             <button class="btn primary" type="button"
                     [disabled]="mode() === 'continue' && !selectedDir()"
-                    (click)="confirm()">
+                    (click)="confirm()"
+                    data-testid="resume-job-confirm">
                 {{ mode() === 'continue' ? 'Continue' : 'Restart' }}
             </button>
         </div>

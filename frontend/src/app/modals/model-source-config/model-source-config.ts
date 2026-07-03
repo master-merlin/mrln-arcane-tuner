@@ -184,6 +184,7 @@ export interface ModelSourceConfigData {
       }
       <div class="flex gap-3">
         <button type="button" (click)="close()"
+                data-testid="model-source-cancel-btn"
                 class="text-text-subtle hover:text-white text-sm font-bold px-5 py-2.5 transition-colors uppercase tracking-widest">
           Cancel
         </button>

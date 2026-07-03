@@ -1360,6 +1360,89 @@ class TestAutoResumeOnGpuFault:
         adv.assert_called_once()
 
 
+class _SyncTimer:
+    """Drop-in for ``threading.Timer`` that runs the callback inline on
+    ``start()`` (no real thread, no cooldown wall-clock) so the REAL ``_fire``
+    body executes deterministically under test."""
+
+    def __init__(self, interval, function, *args, **kwargs):
+        self.function = function
+        self.daemon = False
+
+    def start(self):
+        self.function()
+
+
+class TestAutoResumeFire:
+    """Exercise the ``_fire`` callback scheduled by ``_schedule_auto_resume``
+    itself (the existing TestAutoResumeOnGpuFault suite mocks
+    ``_schedule_auto_resume`` wholesale, so ``_fire``'s user-intervention cancel
+    guard and its resume-failure → queue-advance fallback never run).
+
+    ``threading.Timer`` is replaced with a synchronous stand-in so the real
+    ``_fire`` runs inline; ``resume_from_checkpoint`` / ``schedule_advance_queue``
+    are patched only to OBSERVE the seam (and to inject a failure), never to
+    stub ``_fire`` internals."""
+
+    def _failed_job(self, mgr):
+        job = mgr.create_job("krea2/raw", _make_config())
+        job.status = JobStatus.FAILED  # terminal → auto-resume eligible
+        return job
+
+    def test_fire_cancels_when_user_intervened(self):
+        """If the job left the auto-resume-eligible (terminal) state during the
+        cooldown — user stop/relaunch — ``_fire`` stands down: no resume."""
+        mgr = JobManager()
+        job = self._failed_job(mgr)
+        job.status = JobStatus.STOPPED  # user intervened while cooling down
+        with patch("app.core.job_manager.threading.Timer", _SyncTimer), \
+                patch.object(mgr, "resume_from_checkpoint") as resume, \
+                patch.object(mgr, "schedule_advance_queue") as adv:
+            mgr._schedule_auto_resume(job.id, "checkpoint-002750")
+        resume.assert_not_called()
+        adv.assert_not_called()  # the intervening path owns the queue now
+
+    def test_fire_happy_path_attempts_resume(self):
+        """Still terminal at fire time → ``_fire`` relaunches from checkpoint."""
+        mgr = JobManager()
+        job = self._failed_job(mgr)
+        with patch("app.core.job_manager.threading.Timer", _SyncTimer), \
+                patch.object(mgr, "resume_from_checkpoint") as resume, \
+                patch.object(mgr, "schedule_advance_queue") as adv:
+            mgr._schedule_auto_resume(job.id, "checkpoint-002750")
+        resume.assert_called_once_with(job.id, "checkpoint-002750")
+        adv.assert_not_called()  # the resumed run reclaims the GPU
+
+    def test_fire_resume_failure_falls_back_to_advance(self):
+        """If the resume itself blows up, ``_fire`` must not strand the queue —
+        it falls back to ``schedule_advance_queue``."""
+        mgr = JobManager()
+        job = self._failed_job(mgr)
+        with patch("app.core.job_manager.threading.Timer", _SyncTimer), \
+                patch.object(
+                    mgr, "resume_from_checkpoint",
+                    side_effect=RuntimeError("relaunch exploded"),
+                ) as resume, \
+                patch.object(mgr, "schedule_advance_queue") as adv:
+            mgr._schedule_auto_resume(job.id, "checkpoint-002750")
+        resume.assert_called_once()
+        adv.assert_called_once()
+
+    def test_fire_noop_when_job_deleted_during_cooldown(self):
+        """Job removed during the cooldown → ``_fire`` finds nothing and exits
+        without resuming or advancing."""
+        mgr = JobManager()
+        job = self._failed_job(mgr)
+        job_id = job.id
+        mgr.delete_job(job_id)
+        with patch("app.core.job_manager.threading.Timer", _SyncTimer), \
+                patch.object(mgr, "resume_from_checkpoint") as resume, \
+                patch.object(mgr, "schedule_advance_queue") as adv:
+            mgr._schedule_auto_resume(job_id, "checkpoint-002750")
+        resume.assert_not_called()
+        adv.assert_not_called()
+
+
 class TestPriorityPersistence:
     """Manual pending-queue order (priority) must survive a backend restart.
 

@@ -153,34 +153,3 @@ class CaptionModelSettings(BaseModel):
                 warnings.append(f"Template '{tpl.name}' ({tpl.id}): {exc}")
         return warnings
 
-
-# ── Module Root ─────────────────────────────────────────────────────────
-
-
-class CaptioningSettings(BaseModel):
-    """Root schema for the 'captioning' module in settings.json."""
-    models: dict[str, CaptionModelSettings] = Field(default_factory=dict)
-    selected_model: str = "florence-2"
-    qwen3_variant: str = "4B-Instruct"
-
-    def migrate_defaults(self) -> None:
-        """Refresh readonly default templates from code-defined param defaults."""
-        for model_id, param_cls in CAPTION_PARAM_MODELS.items():
-            model_settings = self.models.get(model_id)
-            if model_settings is None:
-                continue
-            code_defaults = param_cls().model_dump()
-            for tpl in model_settings.templates:
-                if tpl.id == "default" and tpl.readonly:
-                    tpl.params = code_defaults
-
-    def validate_all_params(self) -> list[str]:
-        """
-        Validate params for all models.  Returns a flat list of warning strings.
-        """
-        warnings: list[str] = []
-        for model_id, model_settings in self.models.items():
-            model_warnings = model_settings.validate_params(model_id)
-            for w in model_warnings:
-                warnings.append(f"[{model_id}] {w}")
-        return warnings

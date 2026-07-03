@@ -217,144 +217,6 @@ class TestModuleSettings:
         assert on_disk["application"]["backend_port"] == 8000
 
 
-# ── Captioning Settings (via Module Settings API) ────────────────────────
-
-
-class TestCaptioningSettings:
-    """Tests for captioning schema validation via the generic module API.
-
-    As of V4, SettingsManager no longer has typed captioning accessors.
-    These tests validate schema parsing/roundtrips through
-    ``get_module_settings`` / ``update_module_settings``.
-    """
-
-    def test_get_captioning_settings_empty(self, settings_file):
-        """When no captioning module exists, schema defaults apply."""
-        from app.core.schemas.captioning_settings import CaptioningSettings
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("captioning")
-        caps = CaptioningSettings.model_validate(raw) if raw else CaptioningSettings()
-        assert caps.selected_model == "florence-2"
-        assert caps.qwen3_variant == "4B-Instruct"
-        assert caps.models == {}
-
-    def test_get_captioning_settings_valid(self, settings_file):
-        """Existing captioning data should be parsed into typed models."""
-        from app.core.schemas.captioning_settings import CaptioningSettings
-
-        data = {
-            "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
-            "captioning": {
-                "models": {
-                    "florence-2": {
-                        "active_template_id": "default",
-                        "templates": [
-                            {
-                                "id": "default",
-                                "name": "Default",
-                                "is_default": True,
-                                "readonly": True,
-                                "system_prompt": "Describe this image.",
-                                "params": {"task_type": "Detailed Caption", "max_tokens": 512}
-                            }
-                        ]
-                    }
-                },
-                "selected_model": "florence-2",
-                "qwen3_variant": "8B-Instruct"
-            }
-        }
-        with open(settings_file, "w") as f:
-            json.dump(data, f)
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("captioning")
-        caps = CaptioningSettings.model_validate(raw)
-
-        assert caps.selected_model == "florence-2"
-        assert caps.qwen3_variant == "8B-Instruct"
-        assert "florence-2" in caps.models
-        model = caps.models["florence-2"]
-        assert model.active_template_id == "default"
-        assert len(model.templates) == 1
-        tpl = model.templates[0]
-        assert tpl.id == "default"
-        assert tpl.name == "Default"
-        assert tpl.is_default is True
-        assert tpl.readonly is True
-        assert tpl.params["task_type"] == "Detailed Caption"
-
-    def test_update_captioning_settings_roundtrip(self, settings_file):
-        """Write captioning settings then read them back."""
-        from app.core.schemas.captioning_settings import (
-            CaptioningSettings, CaptionModelSettings, CaptionTemplate,
-        )
-        mgr = _make_manager(settings_file)
-        settings = CaptioningSettings(
-            selected_model="qwen3-vl",
-            qwen3_variant="32B-Thinking",
-            models={
-                "qwen3-vl": CaptionModelSettings(
-                    active_template_id="tpl_123",
-                    templates=[
-                        CaptionTemplate(
-                            id="default", name="Default",
-                            is_default=True, readonly=True,
-                            params={"temperature": 0.7}
-                        ),
-                        CaptionTemplate(
-                            id="tpl_123", name="Custom",
-                            system_prompt="Be concise.",
-                            params={"temperature": 0.3, "max_tokens": 256}
-                        ),
-                    ]
-                )
-            }
-        )
-        mgr.update_module_settings("captioning", settings.model_dump())
-
-        # Re-read from disk
-        mgr2 = _make_manager(settings_file)
-        raw = mgr2.get_module_settings("captioning")
-        caps = CaptioningSettings.model_validate(raw)
-        assert caps.selected_model == "qwen3-vl"
-        assert caps.qwen3_variant == "32B-Thinking"
-        assert len(caps.models["qwen3-vl"].templates) == 2
-        custom = caps.models["qwen3-vl"].templates[1]
-        assert custom.system_prompt == "Be concise."
-        assert custom.params["max_tokens"] == 256
-
-    def test_captioning_settings_rejects_invalid_template(self, settings_file):
-        """Templates with missing required 'id' should raise ValidationError."""
-        from pydantic import ValidationError
-        from app.core.schemas.captioning_settings import CaptionTemplate
-
-        with pytest.raises(ValidationError):
-            CaptionTemplate(name="No ID")  # type: ignore[call-arg]
-
-    def test_captioning_partial_data_uses_defaults(self, settings_file):
-        """Partial captioning data should fill in defaults for missing fields."""
-        from app.core.schemas.captioning_settings import CaptioningSettings
-
-        data = {
-            "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
-            "captioning": {
-                "selected_model": "youtu-vl"
-                # no 'models', no 'qwen3_variant'
-            }
-        }
-        with open(settings_file, "w") as f:
-            json.dump(data, f)
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("captioning")
-        caps = CaptioningSettings.model_validate(raw)
-        assert caps.selected_model == "youtu-vl"
-        assert caps.qwen3_variant == "4B-Instruct"  # default
-        assert caps.models == {}  # default
-
-
 # ── Per-Model Param Validation ───────────────────────────────────────────
 
 
@@ -388,125 +250,39 @@ class TestCaptionParamModels:
         with pytest.raises(ValidationError):
             Florence2Params(task_type="Detailed Caption", max_tokens=2, num_beams=5)  # max_tokens < 64
 
-    def test_validate_all_params_detects_issues(self):
-        from app.core.schemas.captioning_settings import (
-            CaptioningSettings, CaptionModelSettings, CaptionTemplate,
-        )
-        settings = CaptioningSettings(
-            models={
-                "florence-2": CaptionModelSettings(
-                    templates=[
-                        CaptionTemplate(
-                            id="bad", name="Bad",
-                            params={"task_type": "INVALID_TYPE", "max_tokens": 512, "num_beams": 5}
-                        )
-                    ]
-                ),
-                "unknown-model": CaptionModelSettings(
-                    templates=[
-                        CaptionTemplate(id="x", name="X", params={"anything": True})
-                    ]
+    def test_validate_params_detects_issues(self):
+        """CaptionModelSettings.validate_params flags templates with bad params."""
+        from app.core.schemas.captioning_settings import CaptionModelSettings, CaptionTemplate
+
+        model_settings = CaptionModelSettings(
+            templates=[
+                CaptionTemplate(
+                    id="bad", name="Bad",
+                    params={"task_type": "INVALID_TYPE", "max_tokens": 512, "num_beams": 5}
                 )
-            }
+            ]
         )
-        warnings = settings.validate_all_params()
-        # florence-2 template has invalid task_type → 1 warning
+        warnings = model_settings.validate_params("florence-2")
         assert len(warnings) == 1
-        assert "[florence-2]" in warnings[0]
-        # unknown-model is skipped silently
+        assert "Bad" in warnings[0]
 
+    def test_validate_params_skips_unknown_model(self):
+        """Unknown model ids are skipped silently (no schema to validate against)."""
+        from app.core.schemas.captioning_settings import CaptionModelSettings, CaptionTemplate
 
-# ── Masking Settings (via Module Settings API) ───────────────────────────
-
-
-class TestMaskingSettings:
-    """Tests for masking schema validation via the generic module API."""
-
-    def test_get_masking_settings_empty(self, settings_file):
-        """When no masking module exists, schema defaults apply."""
-        from app.core.schemas.masking_settings import MaskingSettings
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("masking")
-        ms = MaskingSettings.model_validate(raw) if raw else MaskingSettings()
-        assert ms.selected_model == "sam3"
-        assert ms.models == {}
-        assert ms.saved_concepts == []
-
-    def test_get_masking_settings_valid(self, settings_file):
-        """Existing masking data should be parsed into typed models."""
-        from app.core.schemas.masking_settings import MaskingSettings
-
-        data = {
-            "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
-            "masking": {
-                "models": {
-                    "sam3": {
-                        "active_template_id": "default",
-                        "templates": [
-                            {
-                                "id": "default",
-                                "name": "Default",
-                                "is_default": True,
-                                "readonly": True,
-                                "params": {"text_prompt": "subject", "multimask_output": True, "max_hole_area": 100}
-                            }
-                        ]
-                    }
-                },
-                "selected_model": "sam3",
-                "saved_concepts": ["hat", "shoes"]
-            }
-        }
-        with open(settings_file, "w") as f:
-            json.dump(data, f)
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("masking")
-        ms = MaskingSettings.model_validate(raw)
-        assert ms.selected_model == "sam3"
-        assert ms.saved_concepts == ["hat", "shoes"]
-        assert "sam3" in ms.models
-        assert len(ms.models["sam3"].templates) == 1
-        assert ms.models["sam3"].templates[0].params["text_prompt"] == "subject"
-
-    def test_update_masking_settings_roundtrip(self, settings_file):
-        """Write masking settings then read them back."""
-        from app.core.schemas.masking_settings import (
-            MaskingSettings, MaskingModelSettings, MaskingTemplate,
+        model_settings = CaptionModelSettings(
+            templates=[CaptionTemplate(id="x", name="X", params={"anything": True})]
         )
-        mgr = _make_manager(settings_file)
-        settings = MaskingSettings(
-            selected_model="rembg",
-            saved_concepts=["helmet"],
-            models={
-                "rembg": MaskingModelSettings(
-                    active_template_id="tpl_42",
-                    templates=[
-                        MaskingTemplate(
-                            id="default", name="Default",
-                            is_default=True, readonly=True,
-                            params={"model_name": "u2net", "alpha_matting": False}
-                        ),
-                        MaskingTemplate(
-                            id="tpl_42", name="Alpha",
-                            params={"model_name": "u2net", "alpha_matting": True,
-                                    "alpha_matting_foreground_threshold": 200}
-                        ),
-                    ]
-                )
-            }
-        )
-        mgr.update_module_settings("masking", settings.model_dump())
+        warnings = model_settings.validate_params("unknown-model")
+        assert warnings == []
 
-        mgr2 = _make_manager(settings_file)
-        raw = mgr2.get_module_settings("masking")
-        ms = MaskingSettings.model_validate(raw)
-        assert ms.selected_model == "rembg"
-        assert ms.saved_concepts == ["helmet"]
-        assert len(ms.models["rembg"].templates) == 2
-        alpha_tpl = ms.models["rembg"].templates[1]
-        assert alpha_tpl.params["alpha_matting"] is True
+    def test_caption_template_rejects_missing_id(self):
+        """Templates with missing required 'id' should raise ValidationError."""
+        from pydantic import ValidationError
+        from app.core.schemas.captioning_settings import CaptionTemplate
+
+        with pytest.raises(ValidationError):
+            CaptionTemplate(name="No ID")  # type: ignore[call-arg]
 
 
 # ── Per-Model Masking Param Validation ───────────────────────────────────
@@ -533,137 +309,32 @@ class TestMaskingParamModels:
         with pytest.raises(ValidationError):
             RembgParams(model_name="invalid_model")  # not in Literal
 
-    def test_validate_all_masking_params_detects_issues(self):
-        from app.core.schemas.masking_settings import (
-            MaskingSettings, MaskingModelSettings, MaskingTemplate,
-        )
-        settings = MaskingSettings(
-            models={
-                "rembg": MaskingModelSettings(
-                    templates=[
-                        MaskingTemplate(
-                            id="bad", name="Bad",
-                            params={"model_name": "nonexistent_model", "alpha_matting": False}
-                        )
-                    ]
-                ),
-            }
-        )
-        warnings = settings.validate_all_params()
-        assert len(warnings) == 1
-        assert "[rembg]" in warnings[0]
+    def test_validate_params_detects_issues(self):
+        """MaskingModelSettings.validate_params flags templates with bad params."""
+        from app.core.schemas.masking_settings import MaskingModelSettings, MaskingTemplate
 
-
-# ── Training Settings (via Module Settings API) ──────────────────────────
-
-
-class TestTrainingSettings:
-    """Tests for training schema validation via the generic module API."""
-
-    def test_get_training_settings_empty(self, settings_file):
-        """When no training module exists, schema defaults apply."""
-        from app.core.schemas.training_settings import TrainingSettings
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("training")
-        ts = TrainingSettings.model_validate(raw) if raw else TrainingSettings()
-        assert ts.templates == []
-
-    def test_get_training_settings_valid(self, settings_file):
-        """Existing training data should be parsed into typed models."""
-        from app.core.schemas.training_settings import TrainingSettings
-
-        data = {
-            "application": {"backend_port": 8000, "frontend_port": 4200, "log_level": "INFO"},
-            "training": {
-                "templates": [
-                    {
-                        "id": "tpl_1",
-                        "name": "My Training",
-                        "definition_id": "flux2-dev",
-                        "is_default": False,
-                        "config": {
-                            "lora_name": "test_lora",
-                            "global_triggerword": "TestTrigger",
-                            "mixed_precision": "bf16",
-                            "save_precision": "bf16",
-                            "quantization": "none",
-                            "te_quantization": "none",
-                            "output_dir": "./outputs",
-                            "datasets": [{"dataset_name": "TestDS", "caption_prefix": "", "caption_dropout_rate": 0.1, "num_repeats": 1}],
-                            "cache_latents": True,
-                            "max_train_steps": 1000,
-                            "train_batch_size": 1,
-                            "gradient_accumulation_steps": 1,
-                            "gradient_checkpointing": True,
-                            "save_every_n_steps": 250,
-                            "optimizer_type": "AdamW8bit",
-                            "learning_rate": 0.0001,
-                            "weight_decay": 0.01,
-                            "network_rank": 16,
-                            "network_alpha": 8.0,
-                        }
-                    }
-                ]
-            }
-        }
-        with open(settings_file, "w") as f:
-            json.dump(data, f)
-
-        mgr = _make_manager(settings_file)
-        raw = mgr.get_module_settings("training")
-        ts = TrainingSettings.model_validate(raw)
-        assert len(ts.templates) == 1
-        tpl = ts.templates[0]
-        assert tpl.name == "My Training"
-        assert tpl.definition_id == "flux2-dev"
-        assert tpl.config["optimizer_type"] == "AdamW8bit"
-
-        # Deep validation should pass
-        warnings = tpl.validate_config()
-        assert len(warnings) == 0
-
-    def test_update_training_settings_roundtrip(self, settings_file):
-        """Write training settings then read them back."""
-        from app.core.schemas.training_settings import TrainingSettings, TrainingTemplate
-
-        mgr = _make_manager(settings_file)
-        settings = TrainingSettings(
+        model_settings = MaskingModelSettings(
             templates=[
-                TrainingTemplate(
-                    id="tpl_a", name="LoRA A", definition_id="sdxl_base_1.0",
-                    config={"lora_name": "lora_a", "optimizer_type": "Prodigy",
-                            "learning_rate": 1.0, "d_coef": 0.8}
+                MaskingTemplate(
+                    id="bad", name="Bad",
+                    params={"model_name": "nonexistent_model", "alpha_matting": False}
                 )
             ]
         )
-        mgr.update_module_settings("training", settings.model_dump())
-
-        mgr2 = _make_manager(settings_file)
-        raw = mgr2.get_module_settings("training")
-        ts = TrainingSettings.model_validate(raw)
-        assert len(ts.templates) == 1
-        assert ts.templates[0].config["optimizer_type"] == "Prodigy"
-        assert ts.templates[0].config["d_coef"] == 0.8
-
-    def test_validate_all_configs_detects_issues(self):
-        """Invalid config fields should produce warnings."""
-        from app.core.schemas.training_settings import TrainingSettings, TrainingTemplate
-        settings = TrainingSettings(
-            templates=[
-                TrainingTemplate(
-                    id="bad", name="Bad Config", definition_id="flux2-dev",
-                    config={
-                        "lora_name": "test",
-                        "mixed_precision": "invalid_precision",
-                        "datasets": [{"dataset_name": "DS"}],
-                    }
-                )
-            ]
-        )
-        warnings = settings.validate_all_configs()
+        warnings = model_settings.validate_params("rembg")
         assert len(warnings) == 1
-        assert "[flux2-dev]" in warnings[0]
+        assert "Bad" in warnings[0]
+
+
+# ── Training Config Coercion (live functionality) ─────────────────────────
+
+
+class TestTrainingConfigCoercion:
+    """Tests for BaseTrainingConfig's tolerant coercion of frontend-supplied values.
+
+    The legacy training-settings template schema (TrainingSettings/TrainingTemplate)
+    was removed as dead code; this test targets the still-live BaseTrainingConfig.
+    """
 
     def test_training_string_numbers_coerced(self, settings_file):
         """Numeric values stored as strings (from frontend sliders) should coerce correctly."""

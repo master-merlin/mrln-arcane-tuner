@@ -123,7 +123,7 @@ Routers are mounted under `/api` (settings under `/api/settings`, system under `
 | `filesystem_routes.py`       | `/api`              | Directory browsing for the file-picker UI                       |
 | `websocket.py`               | `/api`              | WebSocket `/ws` for real-time log/metric/entity/task/update streaming |
 
-Shared route infra: `api/_deps.py` (the `get_dataset_or_404` dependency + `dataset_or_404` helper), `api/_path_guard.py`, and `api/schemas/` (per-domain Pydantic `response_model` schemas + `common_schemas.ErrorResponse`).
+Shared route infra: `api/_deps.py` (the raise-404 helper `dataset_or_404`; each dataset-domain route module declares its own one-line `get_dataset_or_404(name)` dependency on top of it **by design** — the per-module wrapper resolves that module's own `dataset_manager`, which is what lets tests patch the manager per route module; don't "deduplicate" it), `api/_path_guard.py`, and `api/schemas/` (per-domain Pydantic `response_model` schemas + `common_schemas.ErrorResponse`).
 
 ### Core Services (`app/core/`)
 
@@ -146,7 +146,7 @@ Top-level singletons, managers, and helpers:
 | `compat.py`            | diffusers / transformers compat shims                        |
 | `container_config.py`   | Container/runtime environment config                         |
 | `bucket_preview.py`     | Aspect-bucket preview computation                            |
-| `gpu_unload.py`         | Shared GPU model-unload helper (`del` + `empty_cache` + `synchronize`) |
+| `gpu_unload.py`         | Shared GPU-plugin unload helper (`plugin.unload()` + `gc.collect()` + `synchronize` + `empty_cache`) for caption/masking/scoring services |
 | `image_adjustments.py`  | Color-space conversions and adjustment primitives            |
 | `image_hash.py`         | Perceptual hashing for duplicate detection                   |
 | `model_registry.py`     | Curated restore/upscale model registry + download URLs       |
@@ -197,7 +197,7 @@ engine/
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```
 
-**Model families** (`models/families/`) — 13 shipped families plus the `wan_shared` support package (shared WAN text-cache mixin, sampler/trainer/saver/loader bases). Every family declares an `archetype` (`latent_diffusion` or `unified_transformer`); video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`.
+**Model families** (`models/families/`) — 13 shipped families plus the `wan_shared` support package (shared WAN text-encoding/cache mixin, driver/sampler/saver/trainer bases; WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`). Every family declares an `archetype` (`latent_diffusion` or `unified_transformer`); video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`.
 
 | Family            | Model                                                        | Archetype           | Video caps                       |
 | ----------------- | ----------------------------------------------------------- | ------------------- | -------------------------------- |

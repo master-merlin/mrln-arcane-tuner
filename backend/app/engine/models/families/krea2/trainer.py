@@ -11,7 +11,6 @@ missing Phase 3+ module.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 import structlog
 import torch

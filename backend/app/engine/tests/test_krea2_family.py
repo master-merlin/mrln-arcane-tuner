@@ -524,7 +524,6 @@ def _build_real_trainer_shell() -> "Krea2Trainer":
     # produce correct (B, seq_len, D) hidden states for whatever seq_len
     # the TE receives — so we generate fake_hs per-call based on input shape.
     D = 128  # matches _TINY_CFG text_hidden_dim
-    PREFIX_IDX = 34  # tokens to drop (krea2_conditioning._PROMPT_TEMPLATE_ENCODE_START_IDX)
 
     stub_tok = MagicMock()
     def _fake_tokenize(texts, **kwargs):
@@ -587,7 +586,6 @@ def test_krea2_trainer_encode_to_forward_real_seam():
     whole encode→forward round trip must produce a finite 4-D prediction.
     """
     import torch
-    from app.engine.models.families.krea2.trainer import Krea2Trainer
 
     trainer = _build_real_trainer_shell()
 

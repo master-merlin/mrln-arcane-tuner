@@ -7,7 +7,6 @@ volume; these tests pin that the env override is honoured (and that local dev,
 with no env var, is unchanged).
 """
 import json
-import os
 
 from app.core.settings_manager import SettingsManager
 

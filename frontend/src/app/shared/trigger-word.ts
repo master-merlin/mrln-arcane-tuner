@@ -54,9 +54,6 @@ export const TRIGGER_STRATEGIES: ReadonlyArray<(raw: string) => string> = [
   },
 ];
 
-/** Number of distinct strategies — exposed so callers can size their cycle. */
-export const TRIGGER_STRATEGY_COUNT = TRIGGER_STRATEGIES.length;
-
 /**
  * Produce the next trigger-word candidate from `raw`, starting at strategy
  * `startIndex` and cycling forward, skipping empty results and duplicates of

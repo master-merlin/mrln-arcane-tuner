@@ -1,6 +1,6 @@
 import { Component, ChangeDetectionStrategy, output, input, inject, signal, computed, effect, untracked, DestroyRef, ViewChild } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
-import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, FormsModule, type AbstractControl, type ValidationErrors } from '@angular/forms';
+import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, type AbstractControl, type ValidationErrors } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
@@ -28,14 +28,6 @@ import type { ModelDefinition } from '../../../screens/training-screen/training-
 import { VramEstimationService } from './vram-estimation.service';
 import { TemplateAutosaveService } from './template-autosave.service';
 
-export interface TrainingTemplate {
-  id: string;
-  name: string;
-  definition_id: string; // Scoped to model definition
-  is_default?: boolean;
-  config: TrainingConfig;
-}
-
 /**
  * Flat descriptor for one config segment, surfaced to the training-screen
  * shell (B3) so it can render a scroll-spy table of contents. Built in DOM
@@ -53,7 +45,7 @@ export interface TrainingSegment {
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   providers: [VramEstimationService, TemplateAutosaveService],
-  imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent],
+  imports: [TitleCasePipe, ReactiveFormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent],
   template: `
     @if (schema()) {
       <form [formGroup]="form" (ngSubmit)="onSubmit()" class="flex flex-col gap-3.5 isolate">

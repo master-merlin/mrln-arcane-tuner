@@ -114,16 +114,6 @@ export function normalizeColor(c: unknown): string | null {
   return null;
 }
 
-/**
- * Swap [x1,y1,x2,y2] ↔ [y1,x1,y2,x2].
- * Call BEFORE normalize() when source bboxes are x-first.
- */
-export function swapBboxXy(b: number[]): number[] {
-  if (!b || b.length !== 4) return b;
-  const [a, bv, c, d] = b;
-  return [bv, a, d, c];
-}
-
 /** Build a deduplicated, capped, normalised palette. */
 function buildPalette(colors: unknown[], cap: number): string[] {
   const out: string[] = [];

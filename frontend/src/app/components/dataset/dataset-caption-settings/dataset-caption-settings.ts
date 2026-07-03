@@ -9,8 +9,6 @@ import { ModelContextStore } from '../../../state/model-context.store';
 import { Subject } from 'rxjs';
 import { debounceTime, switchMap } from 'rxjs/operators';
 
-export interface CaptionTemplate extends Template {}
-
 /** A single tunable parameter on a caption model (see {@link DatasetCaptionSettingsComponent.captionModels}). */
 export interface CaptionParam {
     key: string;

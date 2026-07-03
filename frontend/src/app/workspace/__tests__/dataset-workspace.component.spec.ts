@@ -51,7 +51,6 @@ class StubDatasetStore {
  */
 class StubMediaItems {
     byDataset = (_: string) => signal<any[]>([]);
-    loadForDataset = vi.fn().mockReturnValue(Promise.resolve());
     mediaRev = signal(0);
     bumpMedia = vi.fn();
     saveCaption = vi.fn().mockReturnValue(Promise.resolve({ ok: true, value: {} }));

@@ -83,10 +83,11 @@ export function overlayKey(datasetName: string, mediaFile: string): string {
  *
  * The backend has no "list all overlays for a dataset" endpoint, only a
  * per-file recipe endpoint. That makes a global ``loadAll`` impossible
- * (and a bulk ``loadForDataset`` impractical — components only ever
- * care about the overlay for the image currently open in the editor).
- * The store's entry point is therefore ``loadFor(datasetName, mediaFile)``
- * which fetches a single overlay recipe and upserts it.
+ * (and a bulk per-dataset sync, à la ``DatasetSyncService.refreshDataset``,
+ * impractical — components only ever care about the overlay for the
+ * image currently open in the editor). The store's entry point is
+ * therefore ``loadFor(datasetName, mediaFile)`` which fetches a single
+ * overlay recipe and upserts it.
  *
  * Components are not yet migrated to use the store — Task 16 of the
  * optimistic-ui-mutations plan covers that.

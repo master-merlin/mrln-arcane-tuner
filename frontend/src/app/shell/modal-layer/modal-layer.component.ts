@@ -20,6 +20,7 @@ import { MaskPreviewModalComponent } from '../../modals/mask-preview/mask-previe
 import { CropPreviewModalComponent } from '../../modals/crop-preview/crop-preview.component';
 import { ProjectDialogComponent } from '../../modals/project-dialog/project-dialog.component';
 import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
+import { InputModalComponent } from '../../modals/input/input.component';
 import { VersionEditModalComponent } from '../../modals/version-edit/version-edit.component';
 import { TemplatesLibraryModalComponent } from '../../modals/templates-library/templates-library.component';
 import { TemplateEditModalComponent } from '../../modals/template-edit/template-edit.component';
@@ -67,6 +68,7 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
         CropPreviewModalComponent,
         ProjectDialogComponent,
         ConfirmModalComponent,
+        InputModalComponent,
         VersionEditModalComponent,
         TemplatesLibraryModalComponent,
         TemplateEditModalComponent,
@@ -154,6 +156,9 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
                             }
                             @case ('confirm') {
                                 @defer { <app-modal-confirm/> }
+                            }
+                            @case ('input') {
+                                @defer (on immediate) { <app-modal-input/> }
                             }
                             @case ('version-edit') {
                                 @defer { <app-modal-version-edit/> }

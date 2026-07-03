@@ -25,6 +25,7 @@ import { TemplateService } from '../../services/template.service';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { ResumeJobService } from '../../services/resume-job.service';
+import { OverlayStore } from '../../state/overlay.store';
 import {
     TrainingChartComponent,
     type SmoothingMode,
@@ -97,6 +98,7 @@ export class JobsScreen {
     private viewState = inject(JobsViewState);
     private handoff = inject(TrainingHandoffService);
     private resumeJobs = inject(ResumeJobService);
+    private overlay = inject(OverlayStore);
     private scope = inject(ScopeStore);
     private templateService = inject(TemplateService);
     private toast = inject(ToastService);
@@ -780,16 +782,19 @@ export class JobsScreen {
         if (!j) return;
         // Hard stop terminates the process immediately — warn first, since
         // progress since the last checkpoint is lost. "Checkpoint" is the
-        // save-first (soft stop) alternative.
-        if (
-            !confirm(
-                'Hard-stop this run?\n\nThe training process is terminated immediately and any progress since the last checkpoint is lost. Use “Checkpoint” instead to save first.',
-            )
-        ) {
-            return;
-        }
-        this.jobService.stopJob(j.id).subscribe({
-            next: () => void this.jobStore.loadAll(),
+        // save-first (soft stop) alternative. The stop only fires from the
+        // modal's confirm callback (async — nothing runs before the choice).
+        this.overlay.openModal('confirm', {
+            title: 'Hard-stop this run?',
+            message:
+                'The training process is terminated immediately and any progress since the last checkpoint is lost. Use “Checkpoint” instead to save first.',
+            confirmLabel: 'Hard Stop',
+            destructive: true,
+            onConfirm: () => {
+                this.jobService.stopJob(j.id).subscribe({
+                    next: () => void this.jobStore.loadAll(),
+                });
+            },
         });
     }
 
@@ -878,28 +883,29 @@ export class JobsScreen {
 
     /** Restart fresh — delete the run's output folder first (after confirm). */
     protected restartFresh(): void {
-        if (!confirm('Delete this run’s output folder (checkpoints, samples, logs) and restart from scratch?')) {
-            return;
-        }
-        this.doRestart(true);
+        this.overlay.openModal('confirm', {
+            title: 'Restart from scratch?',
+            message: 'Delete this run’s output folder (checkpoints, samples, logs) and restart from scratch?',
+            confirmLabel: 'Delete & Restart',
+            destructive: true,
+            onConfirm: () => this.doRestart(true),
+        });
     }
 
     private doRestart(fresh: boolean): void {
         const j = this.selectedJob();
         if (!j) return;
-        this.jobService.restartJob(j.id, fresh).subscribe({
-            next: () => {
-                this.toast.success(fresh ? 'Job restarted (fresh).' : 'Job restarted.');
-                // Drop any cached replay so the relaunched run shows live data.
-                this.replayByJob.update((m) => {
-                    const next = new Map(m);
-                    next.delete(j.id);
-                    return next;
-                });
-                void this.jobStore.loadAll();
-            },
-            error: (e: { error?: { detail?: string } }) =>
-                this.toast.error('Restart failed: ' + (e?.error?.detail ?? 'unknown error')),
+        // Delegate to ResumeJobService.restart — the single restart wrapper the
+        // resume modal also uses (F-ARCH-6 dedupe). onDone runs jobs-screen's
+        // own post-restart cleanup.
+        this.resumeJobs.restart(j.id, fresh, () => {
+            // Drop any cached replay so the relaunched run shows live data.
+            this.replayByJob.update((m) => {
+                const next = new Map(m);
+                next.delete(j.id);
+                return next;
+            });
+            void this.jobStore.loadAll();
         });
     }
 
@@ -924,16 +930,24 @@ export class JobsScreen {
     protected saveAsTemplate(): void {
         const j = this.selectedJob();
         if (!j) return;
-        const name = prompt('Template name:');
-        if (!name?.trim()) return;
-        const definitionId = String(j.config?.['definition_id'] ?? j.plugin_id);
-        this.templateService
-            .createTrainingTemplate({ name: name.trim(), config: j.config, definition_id: definitionId })
-            .subscribe({
-                next: () => this.toast.success(`Template "${name.trim()}" saved.`),
-                error: (e: { error?: { detail?: string } }) =>
-                    this.toast.error('Save failed: ' + (e?.error?.detail ?? 'unknown error')),
-            });
+        // The save only fires from the input modal's confirm callback with the
+        // trimmed, non-empty name (the modal disables confirm on blank input).
+        this.overlay.openModal('input', {
+            title: 'Save as Template',
+            label: 'Template name',
+            placeholder: 'e.g. Flux portrait v1',
+            confirmLabel: 'Save',
+            onConfirm: (name: string) => {
+                const definitionId = String(j.config?.['definition_id'] ?? j.plugin_id);
+                this.templateService
+                    .createTrainingTemplate({ name, config: j.config, definition_id: definitionId })
+                    .subscribe({
+                        next: () => this.toast.success(`Template "${name}" saved.`),
+                        error: (e: { error?: { detail?: string } }) =>
+                            this.toast.error('Save failed: ' + (e?.error?.detail ?? 'unknown error')),
+                    });
+            },
+        });
     }
 
     /**

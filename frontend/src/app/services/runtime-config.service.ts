@@ -54,7 +54,6 @@ export class RuntimeConfigService {
             })
             .then((data: RuntimeConfig) => {
                 this.config = { ...DEFAULT_CONFIG, ...data };
-                console.log('[RuntimeConfig] loaded', this.config);
             })
             .catch(err => {
                 console.warn('[RuntimeConfig] failed to load, using defaults', err);

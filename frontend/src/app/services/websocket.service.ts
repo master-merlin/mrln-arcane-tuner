@@ -1,5 +1,5 @@
 
-import { Injectable, inject, OnDestroy, signal, WritableSignal } from '@angular/core';
+import { Injectable, inject, OnDestroy, signal, WritableSignal, isDevMode } from '@angular/core';
 import { Subject, Observable, Subscription, timer } from 'rxjs';
 import { takeUntil, filter, map } from 'rxjs/operators';
 import { RuntimeConfigService } from './runtime-config.service';
@@ -50,6 +50,14 @@ export class WebSocketService implements OnDestroy {
     private rtc = inject(RuntimeConfigService);
 
     /**
+     * Gate WS connect/disconnect/reconnect diagnostics behind dev mode —
+     * useful while debugging connectivity, but noisy for a production build.
+     */
+    private dlog(...args: unknown[]): void {
+        if (isDevMode()) console.log(...args);
+    }
+
+    /**
      * Force an immediate reconnect attempt, pre-empting the scheduled
      * 1s auto-retry. Used by the global connection banner's Retry button.
      * No-op if a socket is already open or mid-connect.
@@ -72,12 +80,12 @@ export class WebSocketService implements OnDestroy {
     public connect() {
         const wsUrl = this.rtc.wsUrl;
 
-        console.log('[WebSocket] Connecting to', wsUrl);
+        this.dlog('[WebSocket] Connecting to', wsUrl);
 
         this.socket = new WebSocket(wsUrl);
 
         this.socket.onopen = () => {
-            console.log('[WebSocket] Connected');
+            this.dlog('[WebSocket] Connected');
             this.isConnected.set(true);
         };
 
@@ -92,12 +100,12 @@ export class WebSocketService implements OnDestroy {
                     this.serverInstanceId = newId;
 
                     if (this.hasConnectedBefore) {
-                        console.log('[WebSocket] Reconnected');
+                        this.dlog('[WebSocket] Reconnected');
                         this.reconnectedSubject.next();
                         this.reconnected.update(n => n + 1);
 
                         if (previousId && previousId !== newId) {
-                            console.log('[WebSocket] Server restarted (new instance)');
+                            this.dlog('[WebSocket] Server restarted (new instance)');
                             this.serverRestartedSubject.next();
                         }
                     }
@@ -116,7 +124,7 @@ export class WebSocketService implements OnDestroy {
         };
 
         this.socket.onclose = () => {
-            console.log('[WebSocket] Disconnected');
+            this.dlog('[WebSocket] Disconnected');
             this.isConnected.set(false);
             this.scheduleReconnect();
         };
@@ -132,7 +140,7 @@ export class WebSocketService implements OnDestroy {
 
         // Fast reconnect — 1s delay (server restarts are typically quick)
         this.reconnectSub = timer(1000).pipe(takeUntil(this.destroy$)).subscribe(() => {
-            console.log('[WebSocket] Attempting reconnect...');
+            this.dlog('[WebSocket] Attempting reconnect...');
             this.connect();
         });
     }

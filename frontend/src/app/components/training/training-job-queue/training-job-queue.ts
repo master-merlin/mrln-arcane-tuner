@@ -283,7 +283,6 @@ export class TrainingJobQueueComponent implements OnInit {
 
     // Refresh jobs immediately when server restarts (clears stale data)
     this.wsService.serverRestarted$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
-      console.log('[JobQueue] Server restarted â€” refreshing jobs');
       this.loadJobs();
     });
   }

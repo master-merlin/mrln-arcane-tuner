@@ -151,7 +151,6 @@ export class SystemService implements OnDestroy {
         if (!this.reconnectSub) {
             this.reconnectSub = this.ws.reconnected$.subscribe(() => {
                 if (this.metricsActive) {
-                    console.log('[SystemService] Re-subscribing metrics after reconnect');
                     this.ws.send({ action: 'subscribe_metrics', interval_s: this.metricsInterval });
                 }
             });

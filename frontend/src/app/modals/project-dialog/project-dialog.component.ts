@@ -272,7 +272,6 @@ export class ProjectDialogComponent implements OnInit {
                 this.toast.success(`Deleted project "${name}".`);
                 // Scope fallback: if the deleted project is the active one, drop to Global.
                 if (this.scope.projectId() === id) {
-                    console.log('[scope] active project deleted; falling back to Global');
                     this.scope.setGlobal();
                     void this.router.navigate(['/projects']);
                 }

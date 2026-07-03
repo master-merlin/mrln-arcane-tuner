@@ -10,12 +10,10 @@ Tests cover:
 from __future__ import annotations
 
 import inspect
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 import torch
 
-from app.engine.core.definitions import ModelDefinition
 
 # ── Shared tiny transformer config (2-block, minimal dims) ──────────────────
 
@@ -270,7 +268,7 @@ class TestDenoise:
 
     def test_distilled_mu_is_fixed_115(self):
         """When is_distilled=True, mu must be exactly 1.15 (not resolution-derived)."""
-        from app.engine.models.families.krea2.sampler import Krea2Sampler, _DISTILLED_MU
+        from app.engine.models.families.krea2.sampler import _DISTILLED_MU
 
         assert abs(_DISTILLED_MU - 1.15) < 1e-9, f"_DISTILLED_MU must be 1.15, got {_DISTILLED_MU}"
 

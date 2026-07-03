@@ -1,5 +1,8 @@
 """
-Latent Creation Validation — Diagnostic tests for Flux VAE encoding pipeline.
+Latent Creation Validation — ad-hoc, run-by-hand diagnostic for the Flux VAE
+encoding pipeline. NOT part of the pytest suite (lives in backend/scripts/,
+outside test collection) — machine-specific paths below require a local
+Flux VAE checkpoint that isn't available in CI.
 
 Tests the full encode → decode cycle at every stage using native diffusers VAEs:
   1. Image preprocessing (normalization to [-1, 1])
@@ -10,7 +13,8 @@ Tests the full encode → decode cycle at every stage using native diffusers VAE
   6. Latent distribution validation
 
 Requires: FLUX_VAE_PATH env var pointing to a local Flux VAE directory.
-Run: python -m pytest tests/adhoc_test_latent_validation.py -v -s
+Run (from repo root, with the backend venv active):
+    & .\backend\venv\Scripts\python.exe -m pytest backend/scripts/adhoc_latent_validation.py -v -s
 """
 
 import os

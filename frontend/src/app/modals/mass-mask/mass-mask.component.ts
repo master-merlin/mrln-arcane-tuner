@@ -7,7 +7,6 @@ import {
     inject,
     signal,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { Observable, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { OverlayStore } from '../../state/overlay.store';
@@ -64,7 +63,6 @@ function tabForTask(t: Task): Tab | null {
     selector: 'app-modal-mass-mask',
     standalone: true,
     imports: [
-        FormsModule,
         IcoComponent,
         TaskQueueHintComponent,
         DatasetMaskingSettingsComponent,

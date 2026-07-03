@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { FormArray, FormBuilder, FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { FormArray, FormBuilder, FormControl, FormGroup } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ProjectService, type Project } from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -54,7 +54,7 @@ interface TemplateSection {
 @Component({
     selector: 'app-project-detail',
     standalone: true,
-    imports: [RouterLink, ReactiveFormsModule, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent, TemplateInfoCardComponent, EstimateWallComponent],
+    imports: [RouterLink, IcoComponent, TabsComponent, DynamicFormGroupComponent, RunSummaryComponent, TemplateInfoCardComponent, EstimateWallComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './project-detail.html',
     styleUrl: './project-detail.css',
@@ -964,7 +964,6 @@ export class ProjectDetail implements OnInit {
                 this.toast.success(`Deleted project "${p.name}".`);
                 // Scope fallback: if the deleted project was active, drop to Global.
                 if (this.scope.projectId() === id) {
-                    console.log('[scope] active project deleted; falling back to Global');
                     this.scope.setGlobal();
                 }
                 this.projects.loadProjects();

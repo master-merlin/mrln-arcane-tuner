@@ -30,7 +30,6 @@
     "@angular/core": "22.0.0",
     "@angular/forms": "22.0.0",
     "@angular/platform-browser": "22.0.0",
-    "@angular/platform-browser-dynamic": "22.0.0",
     "@angular/router": "22.0.0",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-json": "^6.0.2",
@@ -51,10 +50,8 @@
     "@angular/compiler-cli": "22.0.0",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4.2.0",
-    "browser-sync": "^3.0.4",
     "jsdom": "^29.1.1",
     "postcss": "^8.4.35",
-    "source-map-support": "^0.5.21",
     "tailwindcss": "^4.2.0",
     "typescript": "~6.0.3",
     "vitest": "^4.1.8"

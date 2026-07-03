@@ -16,7 +16,6 @@ import {
   BBOX_MAX,
   canonMedium,
   normalizeColor,
-  swapBboxXy,
   detect,
   parse,
   normalize,
@@ -190,26 +189,6 @@ describe('normalizeColor', () => {
     expect(normalizeColor('#gg0000')).toBeNull();
     expect(normalizeColor(123 as any)).toBeNull();
     expect(normalizeColor(null as any)).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// swapBboxXy
-// ---------------------------------------------------------------------------
-
-describe('swapBboxXy', () => {
-  it('swaps [x1,y1,x2,y2] to [y1,x1,y2,x2]', () => {
-    expect(swapBboxXy([10, 20, 30, 40])).toEqual([20, 10, 40, 30]);
-  });
-
-  it('is its own inverse', () => {
-    const b = [5, 10, 50, 100];
-    expect(swapBboxXy(swapBboxXy(b))).toEqual(b);
-  });
-
-  it('returns input unchanged if not length 4', () => {
-    expect(swapBboxXy([1, 2, 3])).toEqual([1, 2, 3]);
-    expect(swapBboxXy([])).toEqual([]);
   });
 });
 

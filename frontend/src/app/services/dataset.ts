@@ -73,38 +73,6 @@ export interface CurvesConfig {
   b: CurvePoint[];
 }
 
-export interface SharpeningConfig {
-  method: string;
-  params: Record<string, number>;
-}
-
-export interface WhiteBalanceConfig {
-  temperature: number;
-  tint: number;
-}
-
-export interface VignetteConfig {
-  amount: number;
-  midpoint: number;
-  feather: number;
-}
-
-export interface LensCorrectionConfig {
-  barrel: number;
-  vertical_keystone: number;
-  horizontal_keystone: number;
-}
-
-export interface HSLRangeConfig {
-  hue_shift: number;
-  saturation: number;
-  luminance: number;
-}
-
-export interface HSLSelectiveConfig {
-  [range: string]: HSLRangeConfig;
-}
-
 export interface HistogramData {
   r: number[];
   g: number[];

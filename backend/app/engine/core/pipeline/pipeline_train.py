@@ -705,12 +705,12 @@ class PipelineTrainMixin:
                 extra["vram_reserved_mb"] = round(
                     torch.cuda.memory_reserved() / 1024**2
                 )
-                # Diagnostic: cumulative PEAK *allocated* (live tensors) vs the
-                # reserved pool. Distinguishes a genuine large working set from
-                # caching-allocator fragmentation: if peak_alloc plateaus far
-                # below reserved, the gap is fragmentation; if it tracks reserved,
-                # the workload truly needs that much. Monotonic (no reset) so it
-                # doesn't disturb the end-of-run peak telemetry.
+                # Intentional lightweight telemetry (one CUDA call/step): cumulative
+                # PEAK *allocated* (live tensors) vs the reserved pool. Distinguishes
+                # a genuine large working set from caching-allocator fragmentation:
+                # if peak_alloc plateaus far below reserved, the gap is fragmentation;
+                # if it tracks reserved, the workload truly needs that much. Monotonic
+                # (no reset) so it doesn't disturb the end-of-run peak telemetry.
                 extra["vram_peak_alloc_mb"] = round(
                     torch.cuda.max_memory_allocated() / 1024**2
                 )

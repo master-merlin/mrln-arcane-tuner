@@ -1,5 +1,3 @@
-export type EntityOp = 'created' | 'updated' | 'deleted' | 'bulk_deleted';
-
 export type EntityChangedMessage =
     | { entity: string; op: 'created' | 'updated' | 'deleted'; id: string; payload: unknown }
     | { entity: string; op: 'bulk_deleted'; payload: { ids: string[] } };

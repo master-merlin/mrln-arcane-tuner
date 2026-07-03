@@ -1,9 +1,8 @@
 ﻿import { Component, input, inject, OnInit, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
-import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import { FormControl, FormsModule } from '@angular/forms';
 import { ModelService } from '../../../services/model.service';
 import { ModelCapabilities, BlockTopologyGroup } from '../../../services/model-capabilities.service';
 import { ToastService } from '../../../services/toast';
-import { FormsModule } from '@angular/forms';
 
 export interface LayerNode {
   name: string;        // e.g. "to_q"
@@ -33,7 +32,7 @@ export interface BlockGroupNode {
   selector: 'app-target-layers-card',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ReactiveFormsModule, FormsModule],
+  imports: [FormsModule],
   template: `
     <div class="bg-surface-mid/30 border border-surface-mid rounded-theme-xl overflow-hidden mt-4">
       <!-- Header -->

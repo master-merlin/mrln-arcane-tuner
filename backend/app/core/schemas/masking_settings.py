@@ -83,39 +83,3 @@ class MaskingModelSettings(BaseModel):
                 warnings.append(f"Template '{tpl.name}' ({tpl.id}): {exc}")
         return warnings
 
-
-# ── Module Root ─────────────────────────────────────────────────────────
-
-
-class MaskingSettings(BaseModel):
-    """Root schema for the 'masking' module in settings.json."""
-    models: dict[str, MaskingModelSettings] = Field(default_factory=dict)
-    selected_model: str = "sam3"
-    saved_concepts: list[str] = Field(default_factory=list)
-
-    def migrate_defaults(self) -> None:
-        """Refresh readonly default templates from code-defined param defaults.
-
-        Called on load to ensure persisted default templates stay in sync
-        with the latest code defaults (e.g. new default model variant,
-        new params, removed params).
-        """
-        for model_id, param_cls in MASKING_PARAM_MODELS.items():
-            model_settings = self.models.get(model_id)
-            if model_settings is None:
-                continue
-            code_defaults = param_cls().model_dump()
-            for tpl in model_settings.templates:
-                if tpl.id == "default" and tpl.readonly:
-                    tpl.params = code_defaults
-
-    def validate_all_params(self) -> list[str]:
-        """
-        Validate params for all models.  Returns a flat list of warning strings.
-        """
-        warnings: list[str] = []
-        for model_id, model_settings in self.models.items():
-            model_warnings = model_settings.validate_params(model_id)
-            for w in model_warnings:
-                warnings.append(f"[{model_id}] {w}")
-        return warnings

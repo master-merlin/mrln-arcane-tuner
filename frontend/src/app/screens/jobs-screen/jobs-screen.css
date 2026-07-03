@@ -167,11 +167,7 @@
     user-select: none;
 }
 
-.collapse-card .card-head.static {
-    cursor: default;
-}
-
-.collapse-card .card-head:hover:not(.static) {
+.collapse-card .card-head:hover {
     background: var(--color-surface-mid);
 }
 

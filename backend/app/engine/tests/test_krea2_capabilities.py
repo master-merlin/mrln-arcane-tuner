@@ -10,7 +10,7 @@ Tests:
 from __future__ import annotations
 
 from app.engine.models.registry import ModelRegistry
-from app.engine.core.archetypes import resolve_capabilities, build_field_visibility
+from app.engine.core.archetypes import resolve_capabilities
 from app.engine.models.base import BaseTrainingConfig
 from app.engine.models.training_plugin import StandardPlugin
 

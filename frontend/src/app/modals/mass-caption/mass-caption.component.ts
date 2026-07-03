@@ -7,7 +7,6 @@ import {
     inject,
     signal,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { Observable, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
@@ -32,9 +31,10 @@ interface MassCaptionModalData {
     /** Optional initial target — 'masked' captions go to masked_captions/. */
     initialTarget?: 'original' | 'masked';
     /** Workspace-provided callback fired exactly once when the queue
-     *  drains successfully (after the authoritative `loadForDataset`
-     *  reconcile). Wired to `ensurePatchBump` so mass runs count as
-     *  session-meaningful edits for the per-session version bump. */
+     *  drains successfully (after the authoritative
+     *  `DatasetSyncService.refreshDataset` reconcile). Wired to
+     *  `ensurePatchBump` so mass runs count as session-meaningful edits
+     *  for the per-session version bump. */
     onCompleted?: () => void;
 }
 
@@ -49,7 +49,7 @@ type Tab = 'generate' | 'refine';
 @Component({
     selector: 'app-modal-mass-caption',
     standalone: true,
-    imports: [FormsModule, IcoComponent, TaskQueueHintComponent, DatasetCaptionSettingsComponent, DatasetRefineSettingsComponent],
+    imports: [IcoComponent, TaskQueueHintComponent, DatasetCaptionSettingsComponent, DatasetRefineSettingsComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">

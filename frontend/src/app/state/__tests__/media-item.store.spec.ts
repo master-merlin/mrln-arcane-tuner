@@ -23,7 +23,6 @@ function makePair(mediaFile: string, enabled: boolean = true): DatasetPair {
 describe('MediaItemStore', () => {
     let store: MediaItemStore;
     let api: {
-        getDatasetPairs: Mock;
         toggleImageEnabled: Mock;
     };
     let wsMock: {
@@ -34,9 +33,20 @@ describe('MediaItemStore', () => {
         error: Mock;
     };
 
+    /**
+     * Seed a dataset's rows directly via `reconcileDataset` — the
+     * store-level primitive `DatasetSyncService.refreshDataset` uses to
+     * sync from `/pairs`. Production code has no merge-style bulk loader
+     * anymore (the former `loadForDataset` was production-dead and was
+     * removed — see reconcileDataset's own describe block below for its
+     * behavioral coverage).
+     */
+    function seed(datasetName: string, pairs: DatasetPair[]): void {
+        store.reconcileDataset(datasetName, pairs);
+    }
+
     beforeEach(() => {
         api = {
-            getDatasetPairs: vi.fn().mockReturnValue(of([makePair('a.png'), makePair('subdir/b.png', false)])),
             toggleImageEnabled: vi.fn().mockReturnValue(of({ media_file: 'a.png', enabled: false })),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
@@ -54,35 +64,13 @@ describe('MediaItemStore', () => {
         TestBed.tick();
     });
 
-    it('loadForDataset populates entities with composite keys', async () => {
-        await store.loadForDataset('ds1');
-        const ids = store.entities().map(m => m.id).sort();
-        expect(ids).toEqual([mediaKey('ds1', 'a.png'), mediaKey('ds1', 'subdir/b.png')]);
-        const a = store.byId(mediaKey('ds1', 'a.png'))();
-        expect(a?.enabled).toBe(true);
-        expect(a?.dataset_name).toBe('ds1');
-        expect(a?.media_file).toBe('a.png');
-    });
-
-    it('loadForDataset preserves entries from other datasets', async () => {
-        await store.loadForDataset('ds1');
-        api.getDatasetPairs.mockReturnValue(of([makePair('c.png')]));
-        await store.loadForDataset('ds2');
-        const ids = store.entities().map(m => m.id).sort();
-        expect(ids).toEqual([
-            mediaKey('ds1', 'a.png'),
-            mediaKey('ds1', 'subdir/b.png'),
-            mediaKey('ds2', 'c.png'),
-        ]);
-    });
-
     describe('reconcileDataset (replace-not-merge)', () => {
         // Regression: after Harmonize renames `a.png` → `dataset_00001.jpg`,
         // a plain re-fetch upserts the new key but leaves the old `a.png` row
         // as a ghost (stale filename + 404 on its renamed-away caption). The
         // reconcile must set the dataset's slice to EXACTLY the server list.
-        it('evicts rows the server no longer reports', async () => {
-            await store.loadForDataset('ds1'); // a.png + subdir/b.png
+        it('evicts rows the server no longer reports', () => {
+            seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
             store.reconcileDataset('ds1', [makePair('dataset_00001.jpg')]);
             const ids = store.entities().map(m => m.id).sort();
             expect(ids).toEqual([mediaKey('ds1', 'dataset_00001.jpg')]);
@@ -90,16 +78,31 @@ describe('MediaItemStore', () => {
             expect(store.byId(mediaKey('ds1', 'subdir/b.png'))()).toBeUndefined();
         });
 
-        it('upserts the freshly-reported rows', () => {
+        // Carries forward the composite-key + field-mapping assertions that
+        // used to live in a dedicated `loadForDataset` spec. loadForDataset
+        // was deleted as production-dead (F-CLEAN-1) — the only real sync
+        // path is DatasetSyncService.refreshDataset, which reconciles
+        // through this method, not a merge-style load — so the coverage
+        // moved here rather than being dropped.
+        it('upserts the freshly-reported rows with composite keys and mapped fields', () => {
             store.reconcileDataset('ds1', [makePair('x.png'), makePair('y.png', false)]);
-            expect(store.byId(mediaKey('ds1', 'x.png'))()?.enabled).toBe(true);
+            const ids = store.entities().map(m => m.id).sort();
+            expect(ids).toEqual([mediaKey('ds1', 'x.png'), mediaKey('ds1', 'y.png')]);
+            const x = store.byId(mediaKey('ds1', 'x.png'))();
+            expect(x?.enabled).toBe(true);
+            expect(x?.dataset_name).toBe('ds1');
+            expect(x?.media_file).toBe('x.png');
             expect(store.byId(mediaKey('ds1', 'y.png'))()?.enabled).toBe(false);
         });
 
-        it('leaves OTHER datasets untouched', async () => {
-            await store.loadForDataset('ds1');
-            api.getDatasetPairs.mockReturnValue(of([makePair('c.png')]));
-            await store.loadForDataset('ds2');
+        // Also covers the cross-dataset-preservation guarantee formerly
+        // asserted by a second dedicated `loadForDataset` spec
+        // ("preserves entries from other datasets") — reconcileDataset's
+        // per-dataset scoping gives the same guarantee, so that spec was
+        // deduped against this one rather than duplicated.
+        it('leaves OTHER datasets untouched', () => {
+            seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
+            seed('ds2', [makePair('c.png')]);
             store.reconcileDataset('ds1', [makePair('dataset_00001.jpg')]);
             const ids = store.entities().map(m => m.id).sort();
             expect(ids).toEqual([
@@ -108,15 +111,15 @@ describe('MediaItemStore', () => {
             ]);
         });
 
-        it('reconciling to an empty list clears the dataset slice', async () => {
-            await store.loadForDataset('ds1');
+        it('reconciling to an empty list clears the dataset slice', () => {
+            seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
             store.reconcileDataset('ds1', []);
             expect(store.entities().filter(m => m.dataset_name === 'ds1')).toEqual([]);
         });
     });
 
     it('toggleEnabled applies optimistically and calls the API', async () => {
-        await store.loadForDataset('ds1');
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         const p = store.toggleEnabled('ds1', 'a.png', false);
         // Optimistic apply runs synchronously before the request resolves.
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.enabled).toBe(false);
@@ -126,14 +129,14 @@ describe('MediaItemStore', () => {
 
     it('toggleEnabled rolls back on API failure', async () => {
         api.toggleImageEnabled.mockReturnValue(throwError(() => new Error('boom')));
-        await store.loadForDataset('ds1');
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         await store.toggleEnabled('ds1', 'a.png', false);
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.enabled).toBe(true);
         expect(toastMock.error).toHaveBeenCalledWith(`Couldn't update — reverted.`);
     });
 
-    it('server-pushed entity.changed:deleted removes the row', async () => {
-        await store.loadForDataset('ds1');
+    it('server-pushed entity.changed:deleted removes the row', () => {
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         wsMock.entityChanged.set({
             entity: 'media_item',
             op: 'deleted',
@@ -145,7 +148,7 @@ describe('MediaItemStore', () => {
         expect(store.byId(mediaKey('ds1', 'subdir/b.png'))()).toBeDefined();
     });
 
-    it('server-pushed entity.changed:updated upserts the row', async () => {
+    it('server-pushed entity.changed:updated upserts the row', () => {
         wsMock.entityChanged.set({
             entity: 'media_item',
             op: 'updated',
@@ -161,8 +164,8 @@ describe('MediaItemStore', () => {
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.enabled).toBe(false);
     });
 
-    it('stampCaption flips has_caption + caption_file for a loaded item', async () => {
-        await store.loadForDataset('ds1');
+    it('stampCaption flips has_caption + caption_file for a loaded item', () => {
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         store.stampCaption('ds1', 'a.png', 'a.txt');
         const item = store.byId(mediaKey('ds1', 'a.png'))();
         expect(item?.has_caption).toBe(true);
@@ -174,14 +177,14 @@ describe('MediaItemStore', () => {
         expect(store.byId(mediaKey('ds1', 'ghost.png'))()).toBeUndefined();
     });
 
-    it('markMaskGenerated flips has_mask for a loaded item', async () => {
-        await store.loadForDataset('ds1');
+    it('markMaskGenerated flips has_mask for a loaded item', () => {
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         store.markMaskGenerated('ds1', 'a.png');
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.has_mask).toBe(true);
     });
 
-    it('markMaskGenerated is a no-op when has_mask is already true', async () => {
-        await store.loadForDataset('ds1');
+    it('markMaskGenerated is a no-op when has_mask is already true', () => {
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         store.markMaskGenerated('ds1', 'a.png');
         const ref = store.byId(mediaKey('ds1', 'a.png'))();
         store.markMaskGenerated('ds1', 'a.png');
@@ -190,8 +193,8 @@ describe('MediaItemStore', () => {
         expect(ref?.has_mask).toBe(true);
     });
 
-    it('markMaskedCaptioned flips has_masked_caption for a loaded item', async () => {
-        await store.loadForDataset('ds1');
+    it('markMaskedCaptioned flips has_masked_caption for a loaded item', () => {
+        seed('ds1', [makePair('a.png'), makePair('subdir/b.png', false)]);
         store.markMaskedCaptioned('ds1', 'a.png');
         expect(store.byId(mediaKey('ds1', 'a.png'))()?.has_masked_caption).toBe(true);
     });

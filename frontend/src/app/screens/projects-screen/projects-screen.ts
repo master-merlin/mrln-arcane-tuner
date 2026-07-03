@@ -313,7 +313,6 @@ export class ProjectsScreen implements OnInit {
      */
     private afterDeleteProject(deletedId: string): void {
         if (this.scope.projectId() === deletedId) {
-            console.log('[scope] active project deleted; falling back to Global');
             this.scope.setGlobal();
             void this.router.navigate(['/projects']);
         }

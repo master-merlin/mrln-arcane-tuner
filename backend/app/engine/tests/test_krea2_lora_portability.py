@@ -24,7 +24,6 @@ so the keys match PEFT's ``base_model.model.{path}`` expectation.
 from __future__ import annotations
 
 import torch
-import pytest
 
 
 # ── Shared tiny config (same as test_krea2_family.py) ─────────────────────────

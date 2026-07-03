@@ -74,11 +74,12 @@ export function mediaKey(datasetName: string, mediaFile: string): string {
  * Per-domain store for MediaItem entities.
  *
  * Media items aren't loaded globally — they belong to a dataset — so the
- * default ``loadAll`` is a no-op. Callers use ``loadForDataset(name)``
- * which fetches the pairs endpoint and upserts each row keyed by the
- * composite id. The workspace prefers ``upsertFromPair`` so it can do
- * one `/pairs` fetch and route the result through both the store and
- * its local caption-text cache.
+ * default ``loadAll`` is a no-op. Callers sync a dataset's rows via
+ * ``DatasetSyncService.refreshDataset(name)``, which fetches the pairs
+ * endpoint and reconciles this store's slice via ``reconcileDataset``.
+ * The workspace prefers ``upsertFromPair`` so it can do one `/pairs`
+ * fetch and route the result through both the store and its local
+ * caption-text cache.
  */
 @Injectable({ providedIn: 'root' })
 export class MediaItemStore extends EntityStore<MediaItem> {
@@ -138,9 +139,10 @@ export class MediaItemStore extends EntityStore<MediaItem> {
 
     public override async loadAll(): Promise<void> {
         // Media items aren't globally listable; callers must use
-        // loadForDataset(name). The WS reconnect handler still calls this
-        // (per EntityStore contract) — making it a no-op means a reconnect
-        // doesn't wipe per-dataset state that components have loaded.
+        // DatasetSyncService.refreshDataset(name). The WS reconnect handler
+        // still calls this (per EntityStore contract) — making it a no-op
+        // means a reconnect doesn't wipe per-dataset state that components
+        // have loaded.
     }
 
     /**
@@ -160,26 +162,6 @@ export class MediaItemStore extends EntityStore<MediaItem> {
     };
 
     /**
-     * Fetches all media items for a dataset and upserts them into the
-     * store. Items belonging to OTHER datasets are preserved, so multiple
-     * datasets can coexist in the store concurrently.
-     *
-     * Note: items previously held for THIS dataset that the server no
-     * longer reports are NOT removed (a stale-on-reload caveat). The
-     * server emits ``entity.changed:deleted`` for actual deletions, so
-     * in practice the only stale rows are ones that vanished while the
-     * client was disconnected — acceptable for the MVP.
-     */
-    async loadForDataset(datasetName: string): Promise<void> {
-        const pairs = await firstValueFrom(
-            this.api.getDatasetPairs(datasetName),
-        );
-        for (const p of pairs) {
-            this.upsertFromPair(datasetName, p);
-        }
-    }
-
-    /**
      * Upserts a single pair-shaped row from the `/pairs` endpoint.
      * Exposed so the workspace can do one fetch, route the metadata
      * through the store, and still pull caption text into its local
@@ -195,9 +177,9 @@ export class MediaItemStore extends EntityStore<MediaItem> {
      * server reports — upserting each pair AND evicting any existing row for
      * the dataset that the server no longer lists. This is the authoritative
      * "the file set changed on disk" path (harmonize rename, rescan, mass
-     * caption); unlike {@link loadForDataset}'s additive merge it drops ghost
-     * rows whose underlying file was renamed away, so the grid stops showing
-     * stale filenames + 404ing on their renamed-away captions.
+     * caption), invoked via {@link DatasetSyncService.refreshDataset}; it
+     * drops ghost rows whose underlying file was renamed away, so the grid
+     * stops showing stale filenames + 404ing on their renamed-away captions.
      *
      * Other datasets' rows are untouched.
      */
@@ -235,9 +217,9 @@ export class MediaItemStore extends EntityStore<MediaItem> {
     /**
      * Optimistically toggles the ``enabled`` flag for a single media item.
      * Rolls back + toasts on HTTP failure. If the item isn't in the store
-     * (e.g. caller toggling before loadForDataset), falls through to a
-     * plain HTTP call and lets the server-emitted entity.changed event
-     * reconcile.
+     * (e.g. caller toggling before the dataset has been synced via
+     * DatasetSyncService.refreshDataset), falls through to a plain HTTP
+     * call and lets the server-emitted entity.changed event reconcile.
      *
      * Returns an {@link OptimisticResult} so callers maintaining their own
      * optimistic projections (e.g. `dataset-viewer.ts` keeps a richer
@@ -436,8 +418,9 @@ export class MediaItemStore extends EntityStore<MediaItem> {
 
     /**
      * Flag that a mask now exists for an image (mass-mask Generate). No HTTP —
-     * optimistic; the authoritative reconcile is a follow-up loadForDataset.
-     * No-op if the item isn't loaded or already flagged.
+     * optimistic; the authoritative reconcile is a follow-up
+     * DatasetSyncService.refreshDataset. No-op if the item isn't loaded or
+     * already flagged.
      */
     markMaskGenerated(datasetName: string, mediaFile: string): void {
         const key = mediaKey(datasetName, mediaFile);
@@ -449,8 +432,8 @@ export class MediaItemStore extends EntityStore<MediaItem> {
     /**
      * Flag that a masked-target caption now exists for an image (mass-caption
      * masked target / mass-mask Caption tab). No HTTP — optimistic; the
-     * authoritative reconcile is a follow-up loadForDataset. No-op if the item
-     * isn't loaded or already flagged.
+     * authoritative reconcile is a follow-up DatasetSyncService.refreshDataset.
+     * No-op if the item isn't loaded or already flagged.
      */
     markMaskedCaptioned(datasetName: string, mediaFile: string): void {
         const key = mediaKey(datasetName, mediaFile);

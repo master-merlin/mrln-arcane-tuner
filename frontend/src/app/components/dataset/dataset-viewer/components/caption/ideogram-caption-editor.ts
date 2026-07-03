@@ -8,8 +8,8 @@
  *
  * Binding strategy: use [value] property binding (not [ngModel]) for inputs/textareas
  * so DOM values are updated synchronously during change detection without NgModel overhead.
- * Events are captured via (input)/(change) to avoid FormsModule in zoneless test environments.
- * FormsModule is kept in imports only for the raw-JSON textarea's [(ngModel)] (two-way sync).
+ * Events are captured via (input)/(change), including the raw-JSON textarea
+ * (`onRawJsonInput`) — no FormsModule import needed anywhere in this component.
  */
 import {
     ChangeDetectionStrategy,
@@ -19,7 +19,6 @@ import {
     model,
     signal,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import {
     CANONICAL_MEDIUMS,
     MAX_ELEMENT_PALETTE,
@@ -80,7 +79,7 @@ const DEFAULT_DOC: WorkingDoc = toWorking(normalize({}));
     selector: 'app-ideogram-caption-editor',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
-    imports: [FormsModule, BboxOverlayComponent],
+    imports: [BboxOverlayComponent],
     // In wide (modal) mode the host must fill its parent's height so the
     // two-pane layout's height:100% resolves — otherwise the panes grow with
     // content, the right pane stops scrolling, and the left pane's button bar

@@ -1,7 +1,6 @@
 import { Component, ChangeDetectionStrategy, output, input, inject, signal, computed, effect, untracked, DestroyRef, ViewChild } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
 import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Validators, FormsModule, type AbstractControl, type ValidationErrors } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
@@ -456,7 +455,6 @@ export class TrainingDynamicConfigComponent {
   configSubmitted = output<TrainingConfig>();
 
   private fb = inject(FormBuilder);
-  private http = inject(HttpClient);
   private toast = inject(ToastService);
   private systemService = inject(SystemService);
   private jobService = inject(JobService);
@@ -655,7 +653,7 @@ export class TrainingDynamicConfigComponent {
   });
 
   constructor() {
-    this.http.get<Record<string, { tip: string; detail: string }>>('/config_help.json')
+    this.jobService.getConfigHelp()
       .subscribe(data => this.configHelp.set(data));
 
     // Load global default model path for browse dialog

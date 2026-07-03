@@ -20,9 +20,9 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { TemplateService } from '../../../services/template.service';
 import { ProjectService } from '../../../services/project.service';
 import { OverlayStore } from '../../../state/overlay.store';
+import { FilesystemService } from '../../../services/filesystem.service';
 import { ConfirmModalComponent, type ConfirmModalData } from '../../../modals/confirm/confirm.component';
 import type { ConfigHelpData } from '../../../modals/config-help/config-help.component';
-import { HttpClient } from '@angular/common/http';
 import type { SchemaNode } from '../schema-node';
 
 /**
@@ -49,13 +49,13 @@ function build() {
   TestBed.configureTestingModule({
     imports: [TrainingDynamicConfigComponent, ConfirmModalComponent],
     providers: [
-      { provide: HttpClient, useValue: { get: () => of({}) } },
       { provide: DatasetService, useValue: { listDatasets: () => of([]) } },
       { provide: DatasetStore, useValue: { entities: () => [] } },
       { provide: ToastService, useValue: { error: () => {}, success: () => {}, warning: () => {} } },
       { provide: SystemService, useValue: {} },
-      { provide: JobService, useValue: { estimate: () => of(null) } },
+      { provide: JobService, useValue: { estimate: () => of(null), getConfigHelp: () => of({}) } },
       { provide: ModelService, useValue: { getGlobalSettings: () => of({ default_model_path: 'D:\\Models' }) } },
+      { provide: FilesystemService, useValue: {} },
       { provide: RegistryStore, useValue: {} },
       { provide: ModelCapabilitiesService, useValue: { getCapabilities: () => of(null) } },
       { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: '/media' } },

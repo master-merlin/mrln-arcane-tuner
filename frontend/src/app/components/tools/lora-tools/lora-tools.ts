@@ -1,76 +1,18 @@
 import { Component, ChangeDetectionStrategy, inject, input, signal, OnDestroy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
-import { RuntimeConfigService } from '../../../services/runtime-config.service';
+import {
+  JobService,
+  type LoraInspectResult,
+  type LoraLayerDetail,
+  type LoraResizeResult,
+} from '../../../services/job';
 import uPlot from 'uplot';
 
 export type ToolTab = 'inspect' | 'resize';
 
-/** One LoRA layer's weight-delta stats (`inspect_lora().layer_details[]`). */
-export interface LoraLayerDetail {
-  module: string;
-  component: string;
-  norm_delta: number;
-  strength: number;
-  /** Bar width %, computed client-side in sortedLayerDetails(). */
-  _barPct?: number;
-}
-
-/** Aggregate norm stats across all layers. */
-export interface LoraNormSummary {
-  mean_norm: number;
-  std_norm: number;
-  max_norm: number;
-  max_norm_layer: string;
-  min_norm: number;
-  min_norm_layer: string;
-}
-
-/** Layer-relevance / speed-training analysis. Fields are required because the
- *  template reads them via non-null assertion inside an `@if` that gates the
- *  whole section on its presence (Angular evaluates that guard at runtime). */
-export interface LoraLayerRelevance {
-  essential_count: number;
-  total_layers: number;
-  essential_params_pct: number;
-  speed_gain_pct: number;
-  target_module_patterns: string[];
-  essential_modules: string[];
-  tier_map: Record<string, string>;
-}
-
-/**
- * `GET /tools/lora/inspect` result. The backend returns a free-form dict; these
- * are the fields this component actually reads (all optional — older/partial
- * inspections may omit sections).
- */
-export interface LoraInspectResult {
-  format?: string;
-  rank?: number;
-  alpha?: number;
-  lora_modules?: number;
-  dtype?: string;
-  file_size_mb?: number;
-  path?: string;
-  layer_details?: LoraLayerDetail[];
-  // Required (not optional): the template reads `.norm_summary.x` /
-  // `.layer_relevance.y` via `!` inside `@if`-guarded sections — Angular still
-  // evaluates the guard on the real (possibly-absent) runtime value.
-  norm_summary: LoraNormSummary;
-  layer_relevance: LoraLayerRelevance;
-  module_list?: string[];
-  training_params?: Record<string, unknown>;
-  tag_frequency?: Record<string, Record<string, number>>;
-  weight_stats?: Record<string, { avg_magnitude?: number; avg_strength?: number }>;
-}
-
-/** `POST /tools/lora/resize` result. */
-export interface LoraResizeResult {
-  old_rank?: number;
-  new_rank?: number;
-  modules_resized?: number;
-  output_size_mb?: number;
-}
+export type {
+  LoraInspectResult, LoraLayerDetail, LoraNormSummary, LoraLayerRelevance, LoraResizeResult,
+} from '../../../services/job';
 
 @Component({
     selector: 'app-lora-tools',
@@ -417,8 +359,7 @@ export interface LoraResizeResult {
   `
 })
 export class LoraToolsComponent implements OnDestroy {
-    private http = inject(HttpClient);
-    private rtc = inject(RuntimeConfigService);
+    private jobs = inject(JobService);
 
     /** Which flow to show — driven by the Tools screen's outer tabs. */
     readonly tab = input<ToolTab>('inspect');
@@ -459,9 +400,7 @@ export class LoraToolsComponent implements OnDestroy {
         this.inspectError.set(null);
         this.inspectResult.set(null);
 
-        this.http.get<LoraInspectResult>(`${this.rtc.apiUrl}/tools/lora/inspect`, {
-            params: { path: this.inspectPath }
-        }).subscribe({
+        this.jobs.inspectLora(this.inspectPath).subscribe({
             next: (result) => {
                 this.inspectResult.set(result);
                 this.isInspecting.set(false);
@@ -501,7 +440,7 @@ export class LoraToolsComponent implements OnDestroy {
         if (this.resizeNewAlpha != null) body['new_alpha'] = this.resizeNewAlpha;
         if (this.resizeDtype) body['save_dtype'] = this.resizeDtype;
 
-        this.http.post<LoraResizeResult>(`${this.rtc.apiUrl}/tools/lora/resize`, body).subscribe({
+        this.jobs.resizeLora(body).subscribe({
             next: (result) => {
                 this.resizeResult.set(result);
                 this.isResizing.set(false);

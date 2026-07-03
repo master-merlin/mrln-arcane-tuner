@@ -1,4 +1,4 @@
-import { Injectable, computed, effect, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { WebSocketService } from '../services/websocket.service';
 import { DatasetService } from '../services/dataset';
 
@@ -47,7 +47,10 @@ export class TaskStore {
             ?? this._recent().find(r => r.id === id));
     }
 
-    constructor(private ws: WebSocketService, private api: DatasetService) {
+    private ws = inject(WebSocketService);
+    private api = inject(DatasetService);
+
+    constructor() {
         this.ws.on<Task>('task_update').subscribe(t => this.apply(t));
         // Re-sync on first load and on every reconnect (server-side tasks
         // survive client reload).

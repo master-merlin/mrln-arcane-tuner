@@ -1,4 +1,4 @@
-import { ApplicationConfig, provideZonelessChangeDetection, APP_INITIALIZER } from '@angular/core';
+import { ApplicationConfig, inject, provideZonelessChangeDetection, provideAppInitializer } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
 import { routes } from './app.routes';
@@ -11,14 +11,12 @@ export const appConfig: ApplicationConfig = {
     provideZonelessChangeDetection(),
     provideRouter(routes),
     provideHttpClient(withFetch(), withInterceptors([transientErrorInterceptor])),
-    {
-      // Load runtime config first, THEN open the WebSocket — connect() needs
-      // rtc.wsUrl, which is only populated after config.load() resolves.
-      provide: APP_INITIALIZER,
-      useFactory: (config: RuntimeConfigService, ws: WebSocketService) => () =>
-        config.load().then(() => ws.connect()),
-      deps: [RuntimeConfigService, WebSocketService],
-      multi: true,
-    },
+    // Load runtime config first, THEN open the WebSocket — connect() needs
+    // rtc.wsUrl, which is only populated after config.load() resolves.
+    provideAppInitializer(() => {
+      const config = inject(RuntimeConfigService);
+      const ws = inject(WebSocketService);
+      return config.load().then(() => ws.connect());
+    }),
   ]
 };

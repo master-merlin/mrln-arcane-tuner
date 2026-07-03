@@ -1,8 +1,8 @@
 import { Component, inject, signal, OnInit, effect, ChangeDetectionStrategy } from '@angular/core';
 import { ToastService } from '../../../services/toast';
-import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
-import { RuntimeConfigService } from '../../../services/runtime-config.service';
+import { ModelService, type ModelGlobalSettings } from '../../../services/model.service';
+import { FilesystemService } from '../../../services/filesystem.service';
 import { SettingsStore } from '../../../state/settings.store';
 import { IcoComponent } from '../../../icons/ico.component';
 
@@ -11,12 +11,6 @@ interface ApplicationSettings {
     frontend_port: number;
     log_level: string;
     start_frontend: boolean;
-}
-
-interface ModelGlobalSettings {
-    global_offline_mode: boolean;
-    default_model_path: string;
-    hf_token_set: boolean;
 }
 
 /**
@@ -165,9 +159,9 @@ interface ModelGlobalSettings {
     `],
 })
 export class ServerControlComponent implements OnInit {
-    private http = inject(HttpClient);
     private toast = inject(ToastService);
-    private rtc = inject(RuntimeConfigService);
+    private modelService = inject(ModelService);
+    private filesystem = inject(FilesystemService);
     private settingsStore = inject(SettingsStore);
 
     constructor() {
@@ -264,7 +258,7 @@ export class ServerControlComponent implements OnInit {
     // ── Model Settings ──────────────────────────────────────────────────
 
     loadModelSettings() {
-        this.http.get<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`).subscribe({
+        this.modelService.getModelSettings().subscribe({
             next: (s) => {
                 this.modelSettings.set(s);
                 this.pendingModelPath.set(s.default_model_path);
@@ -275,7 +269,7 @@ export class ServerControlComponent implements OnInit {
     }
 
     onModelSettingToggle(key: string, value: boolean) {
-        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, { [key]: value }).subscribe({
+        this.modelService.updateModelSettings({ [key]: value }).subscribe({
             next: (s) => {
                 this.modelSettings.set(s);
                 this.toast.success(`${key === 'global_offline_mode' ? 'Offline mode' : key} ${value ? 'enabled' : 'disabled'}`);
@@ -286,10 +280,7 @@ export class ServerControlComponent implements OnInit {
 
     browseModelPath() {
         this.browsingModelPath.set(true);
-        this.http.post<{ path: string }>(`${this.rtc.apiUrl}/filesystem/pick-folder`, {
-            initial_dir: this.pendingModelPath() || '',
-            title: 'Select Default Model Directory',
-        }).subscribe({
+        this.filesystem.pickFolder(this.pendingModelPath() || '', 'Select Default Model Directory').subscribe({
             next: (res) => {
                 this.browsingModelPath.set(false);
                 if (res.path) {
@@ -305,7 +296,7 @@ export class ServerControlComponent implements OnInit {
     }
 
     saveModelPath() {
-        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, {
+        this.modelService.updateModelSettings({
             default_model_path: this.pendingModelPath(),
         }).subscribe({
             next: (s) => {
@@ -322,7 +313,7 @@ export class ServerControlComponent implements OnInit {
     saveHfToken() {
         const token = this.pendingHfToken().trim();
         if (!token) return;
-        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, {
+        this.modelService.updateModelSettings({
             hf_token: token,
         }).subscribe({
             next: (s) => {
@@ -335,7 +326,7 @@ export class ServerControlComponent implements OnInit {
     }
 
     clearHfToken() {
-        this.http.put<ModelGlobalSettings>(`${this.rtc.apiUrl}/models/settings`, {
+        this.modelService.updateModelSettings({
             hf_token: '',
         }).subscribe({
             next: (s) => {

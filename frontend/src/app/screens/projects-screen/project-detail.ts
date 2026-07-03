@@ -2,7 +2,6 @@ import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effec
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormArray, FormBuilder, FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ProjectService, type Project } from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -73,7 +72,6 @@ export class ProjectDetail implements OnInit {
     private handoff = inject(TrainingHandoffService);
     private rtc = inject(RuntimeConfigService);
     private datasetStore = inject(DatasetStore);
-    private http = inject(HttpClient);
     private fb = inject(FormBuilder);
     private destroyRef = inject(DestroyRef);
     protected projects = inject(ProjectService);
@@ -641,9 +639,7 @@ export class ProjectDetail implements OnInit {
             return;
         }
         try {
-            const schema = await firstValueFrom(
-                this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/standard/schema?t=${Date.now()}`),
-            );
+            const schema = await firstValueFrom(this.jobs.getPluginSchema('standard'));
             this.trainingSchema.set(schema);
 
             const datasetsBlock = schema.properties?.['datasets'];

@@ -69,6 +69,28 @@ def _seed_teo_triple(caps: list[str]) -> dict[str, Any]:
     }
 
 
+def _seed_tensor_no_batch(caps: list[str]) -> dict[str, Any]:
+    """[L,D] raw tensor (no leading batch dim) — sdxl (its cache stacks, not cats)."""
+    return {c: torch.randn(_L, _D) for c in caps}
+
+
+def _seed_variable_tensor(caps: list[str]) -> dict[str, Any]:
+    """[Li,D] raw tensor — zimage (variable-length, non-padded per-sample)."""
+    return {c: torch.randn(_L, _D) for c in caps}
+
+
+# ── encode_extra seeders (secondary per-caption caches some families keep
+# alongside ``text_cache`` — e.g. a split-out CLIP-pooled cache) ───────────
+def _seed_pooled_1d_batch(caps: list[str]) -> dict[str, Any]:
+    """[1,P] pooled — flux1's ``_clip_pooled_cache`` (cat-assembled)."""
+    return {c: torch.randn(1, _P) for c in caps}
+
+
+def _seed_pooled_no_batch(caps: list[str]) -> dict[str, Any]:
+    """[P] pooled — sdxl's ``_pooled_cache`` (stack-assembled)."""
+    return {c: torch.randn(_P) for c in caps}
+
+
 # ── encode_text return-contract checks ────────────────────────────────────
 def _check_tuple2_3d(out: Any) -> None:
     assert isinstance(out, tuple) and len(out) == 2, f"expected 2-tuple, got {type(out)}"
@@ -95,18 +117,34 @@ def _check_teo(out: Any) -> None:
     assert out.attention_mask is not None and out.pooled is not None
 
 
+def _check_list_tensor(out: Any) -> None:
+    assert isinstance(out, list) and len(out) == 2, f"expected list[Tensor] len 2, got {type(out)}"
+    for t in out:
+        assert isinstance(t, torch.Tensor) and t.ndim == 2 and t.shape[-1] == _D, (
+            f"expected per-sample [Li,D], got {tuple(t.shape)}"
+        )
+
+
 @dataclass
 class FamilySpec:
     id: str
     trainer_path: str          # "module:ClassName"
     driver_path: str
     driver_primary_attr: str   # attr get_primary_model reads / _update writes on driver
-    trainer_alias: str         # trainer-side alias attr
+    trainer_alias: str         # trainer-side alias attr (settable — never a property)
     expert_slots: bool = False  # wan22: also mirrors onto the active-expert slot
+    # Read-only property (e.g. qwen_image's ``transformer`` delegating to
+    # ``self.model``) that must ALSO resolve to the new model post-update —
+    # a stale property is exactly the historical krea2 bug class.
+    property_alias: str | None = None
     encode_kind: str | None = None
     encode_seed: Callable[[list[str]], dict[str, Any]] | None = None
     encode_check: Callable[[Any], None] | None = None
-    encode_extra: dict[str, Any] = field(default_factory=dict)
+    # Secondary per-caption caches some families keep alongside ``text_cache``
+    # (e.g. a split-out CLIP-pooled cache) — {attr_name: seeder_fn}.
+    encode_extra: dict[str, Callable[[list[str]], dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
 
 FAMILIES: list[FamilySpec] = [
@@ -167,6 +205,39 @@ FAMILIES: list[FamilySpec] = [
         "transformer", "transformer", expert_slots=True,
         encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
     ),
+    # ── P2a-delegated families (each overrides _update_primary_model itself
+    # instead of inheriting the base no-op driver-sync — the exact bug class
+    # this contract exists to pin) ─────────────────────────────────────────
+    FamilySpec(
+        "flux1",
+        "app.engine.models.families.flux1.trainer:Flux1Trainer",
+        "app.engine.models.families.flux1.driver:Flux1Driver",
+        "transformer", "transformer",
+        encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
+        encode_extra={"_clip_pooled_cache": _seed_pooled_1d_batch},
+    ),
+    FamilySpec(
+        "qwen_image",
+        "app.engine.models.families.qwen_image.trainer:QwenImageTrainer",
+        "app.engine.models.families.qwen_image.driver:QwenImageDriver",
+        "model", "model", property_alias="transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
+    FamilySpec(
+        "sdxl",
+        "app.engine.models.families.sdxl.trainer:SDXLTrainer",
+        "app.engine.models.families.sdxl.driver:SDXLDriver",
+        "unet", "unet",
+        encode_kind="tensor", encode_seed=_seed_tensor_no_batch, encode_check=_check_tensor_3d,
+        encode_extra={"_pooled_cache": _seed_pooled_no_batch},
+    ),
+    FamilySpec(
+        "zimage",
+        "app.engine.models.families.zimage.trainer:ZImageTrainer",
+        "app.engine.models.families.zimage.driver:ZImageDriver",
+        "model", "model",
+        encode_kind="list", encode_seed=_seed_variable_tensor, encode_check=_check_list_tensor,
+    ),
 ]
 
 _IDS = [f.id for f in FAMILIES]
@@ -225,6 +296,11 @@ def test_update_primary_model_syncs_driver_and_alias(spec: FamilySpec):
     assert t.components["unet"] is wrapped
     if spec.expert_slots:  # wan22: active-expert slot must also flip
         assert drv.transformer_high is wrapped
+    if spec.property_alias:  # e.g. qwen_image's read-only `transformer` property
+        assert getattr(t, spec.property_alias) is wrapped, (
+            f"{spec.id}: {spec.property_alias} property stale after "
+            "_update_primary_model"
+        )
 
 
 # ── Aspect 2: encode_text returns the family's documented contract shape ───
@@ -239,15 +315,19 @@ def test_encode_returns_documented_contract(spec: FamilySpec):
     t.text_cache = spec.encode_seed(_CAPS)
     t.text_encoder = None                       # untouched: every caption pre-cached
     t.driver = SimpleNamespace(text_encoder=None)
+    for attr, seeder in spec.encode_extra.items():
+        setattr(t, attr, seeder(_CAPS))          # secondary per-caption caches
 
     out = TrainerCls.encode_text(t, list(_CAPS), _DT)
     spec.encode_check(out)
 
 
 def test_all_override_families_covered():
-    """Guard: the six families the brief names plus wan21/wan22 are all here."""
+    """Guard: the six families the brief names plus wan21/wan22, PLUS the four
+    P2a-delegated families (flux1/qwen_image/sdxl/zimage) are all here."""
     required = {
         "ernie_image", "hidream_o1", "ideogram4", "flux2", "ltx2",
         "microsoft_lens", "wan21", "wan22",
+        "flux1", "qwen_image", "sdxl", "zimage",
     }
     assert required <= set(_IDS)

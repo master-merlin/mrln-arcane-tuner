@@ -10,7 +10,7 @@ import { JobService, type TrainingEstimate, type TrainingConfig } from '../../..
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
-import { Subject, Subscription } from 'rxjs';
+import { Subscription } from 'rxjs';
 import { debounceTime } from 'rxjs/operators';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
@@ -25,6 +25,8 @@ import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
 import { SchemaNode, SchemaProp, collapseNullableUnion, coerceConfigNumbers } from '../schema-node';
 import type { ModelDefinition } from '../../../screens/training-screen/training-screen';
+import { VramEstimationService } from './vram-estimation.service';
+import { TemplateAutosaveService } from './template-autosave.service';
 
 export interface TrainingTemplate {
   id: string;
@@ -50,6 +52,7 @@ export interface TrainingSegment {
   selector: 'app-training-dynamic-config',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  providers: [VramEstimationService, TemplateAutosaveService],
   imports: [TitleCasePipe, ReactiveFormsModule, FormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent],
   template: `
     @if (schema()) {
@@ -462,6 +465,11 @@ export class TrainingDynamicConfigComponent {
   private registryStore = inject(RegistryStore);
   private modelCapabilitiesService = inject(ModelCapabilitiesService);
   private overlay = inject(OverlayStore);
+  /** Debounced VRAM/training-estimate pipeline (F-ARCH-11 extraction). Public
+   *  so the shell + specs can reach the estimate signals / refresh handler. */
+  readonly vramEstimation = inject(VramEstimationService);
+  /** Debounced template-autosave dispatch (F-ARCH-11 extraction). */
+  private templateAutosave = inject(TemplateAutosaveService);
 
   /**
    * Capability descriptor for the currently-selected model definition.
@@ -475,11 +483,11 @@ export class TrainingDynamicConfigComponent {
    *  fields in the dataset config. Fail-open (no descriptor → visible). */
   protected isVideoModel = computed(() => !isFieldHidden(this.capabilities(), 'num_frames'));
 
-  // VRAM estimation
-  vramReport = signal<VRAMReport | null>(null);
-  // Full data-calibrated estimate (wall time, throughput, output, disk + VRAM).
-  estimate = signal<TrainingEstimate | null>(null);
-  private vramEstimate$ = new Subject<void>();
+  // VRAM estimation — owned by VramEstimationService (F-ARCH-11). Exposed as
+  // getters so template + component call sites keep using `vramReport()` /
+  // `estimate()` unchanged; writes happen inside the service.
+  get vramReport() { return this.vramEstimation.vramReport; }
+  get estimate() { return this.vramEstimation.estimate; }
   Math = Math; // expose to template
 
   // Model source override
@@ -672,11 +680,25 @@ export class TrainingDynamicConfigComponent {
       error: () => {},
     });
 
-    // Debounced VRAM estimation trigger
-    this.vramEstimate$.pipe(
-      debounceTime(800),
-      takeUntilDestroyed(this.destroyRef),
-    ).subscribe(() => this.refreshVRAMEstimate());
+    // Wire the extracted services to this component's form (F-ARCH-11). The
+    // services own the debounced pipelines; the component supplies the form
+    // snapshot (estimate) and the persistence dispatch + suppression latch
+    // mirror (autosave). Kept form-agnostic so the services hold no form ref.
+    this.vramEstimation.configure(() => {
+      const defId = this.form.get('definition_id')?.value;
+      if (!defId) return null;
+      return { defId, config: this.form.getRawValue() };
+    });
+    this.templateAutosave.configure({
+      dispatch: (value, defId) => {
+        if (this.templateSelector) {
+          this.templateSelector.triggerAutoSave(value, defId);
+        }
+      },
+      // Mirror the selector's authoritative suppressAutoSave latch so a save
+      // scheduled while suppression is latched is dropped at dispatch time.
+      suppressed: () => this.templateSelector?.suppressAutoSave() ?? false,
+    });
 
     effect(() => {
       const schema = this.schema();
@@ -706,7 +728,7 @@ export class TrainingDynamicConfigComponent {
         }
 
         // Trigger initial VRAM estimate
-        this.vramEstimate$.next();
+        this.vramEstimation.schedule();
 
         // Dispose the previous rebuild's form subscriptions before wiring up
         // new ones — see the `_formValueSubs` field comment. `takeUntilDestroyed`
@@ -715,23 +737,25 @@ export class TrainingDynamicConfigComponent {
         this._formValueSubs?.unsubscribe();
         this._formValueSubs = new Subscription();
 
-        // Re-estimate on any config field change (definition, quantization, LoRA rank, etc.)
+        // Re-estimate on any config field change (definition, quantization,
+        // LoRA rank, etc.). The 800ms debounce here + the service's own 800ms
+        // trigger debounce reproduce the original two-stage pipeline.
         this._formValueSubs.add(
           this.form.valueChanges.pipe(
             debounceTime(800),
             takeUntilDestroyed(this.destroyRef),
-          ).subscribe(() => this.vramEstimate$.next())
+          ).subscribe(() => this.vramEstimation.schedule())
         );
 
-        // Auto-save: persist changes to the active template on every form change
+        // Auto-save: persist changes to the active template on every form
+        // change (debounced + suppression-gated inside TemplateAutosaveService).
         this._formValueSubs.add(
           this.form.valueChanges.pipe(
-            debounceTime(1200),
             takeUntilDestroyed(this.destroyRef),
           ).subscribe((newVal) => {
             const defId = this.form.get('definition_id')?.value;
-            if (this.templateSelector && defId) {
-              this.templateSelector.triggerAutoSave(newVal, defId);
+            if (defId) {
+              this.templateAutosave.schedule(newVal, defId);
             }
           })
         );
@@ -844,10 +868,10 @@ export class TrainingDynamicConfigComponent {
     }
 
     // Refresh the VRAM estimate / preview once, without re-enabling auto-save
-    // (the debounced subject only triggers refreshVRAMEstimate, never a save).
+    // (the estimate pipeline only refreshes the estimate, never saves).
     if (patchedAny) {
       this._updateLoraNamePreview();
-      this.vramEstimate$.next();
+      this.vramEstimation.schedule();
     }
   }
 
@@ -859,35 +883,16 @@ export class TrainingDynamicConfigComponent {
     if (defs.length > 0) {
       this.form.get('definition_id')?.setValue(defs[0].id);
     }
-    this.vramEstimate$.next();
+    this.vramEstimation.schedule();
   }
 
   // --- VRAM Estimation ---
-
-  refreshVRAMEstimate(): void {
-    const defId = this.form.get('definition_id')?.value;
-    if (!defId) return;
-
-    const config = this.form.getRawValue();
-    // One call to the full estimator: it returns the calibrated VRAM report
-    // (feeding the in-form budget card + the shell's VRAM detail rail) PLUS
-    // wall time / throughput / output / disk for the shared estimate wall.
-    this.jobService.estimate(defId, config).subscribe({
-      next: (est) => {
-        this.estimate.set(est);
-        this.vramReport.set(est?.vram ?? null);
-      },
-      error: (err) => {
-        console.warn('[Estimate] Estimation failed', err);
-        this.estimate.set(null);
-        this.vramReport.set(null);
-      }
-    });
-  }
+  // The debounced estimate pipeline + request building + signals now live in
+  // VramEstimationService (F-ARCH-11). The component only schedules refreshes.
 
   /** Force a re-estimate (e.g. after the shell backfills calibration stats). */
   refreshEstimate(): void {
-    this.vramEstimate$.next();
+    this.vramEstimation.schedule();
   }
 
   // --- Config Help System ---

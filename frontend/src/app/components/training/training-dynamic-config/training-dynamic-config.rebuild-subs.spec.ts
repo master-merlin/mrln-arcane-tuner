@@ -26,6 +26,13 @@ import type { SchemaNode } from '../schema-node';
  * Fix requirement: exactly ONE live subscription pair regardless of rebuild
  * count — a stale write to an abandoned form generation must NOT fire the
  * handler; only the current generation's edits may.
+ *
+ * P4d note: the VRAM-estimate side effect moved into VramEstimationService
+ * (F-ARCH-11). The single-subscription-pair invariant is unchanged — the
+ * `form.valueChanges` subscription still lives in the component's
+ * `_formValueSubs` and is disposed per rebuild — so this spec now spies the
+ * service's `refresh` (the exact second-stage handler the old
+ * `refreshVRAMEstimate` was), keeping the assertions identical.
  */
 function makeSchema(seed: number): SchemaNode {
     return {
@@ -63,7 +70,7 @@ describe('TrainingDynamicConfig — form rebuild does not stack valueChanges sub
         vi.useFakeTimers();
         try {
             const { fixture, component: c } = build();
-            const vramSpy = vi.spyOn(c, 'refreshVRAMEstimate');
+            const vramSpy = vi.spyOn(c.vramEstimation, 'refresh');
 
             const formGen1 = c.form;
 
@@ -106,7 +113,7 @@ describe('TrainingDynamicConfig — form rebuild does not stack valueChanges sub
         vi.useFakeTimers();
         try {
             const { fixture, component: c } = build();
-            const vramSpy = vi.spyOn(c, 'refreshVRAMEstimate');
+            const vramSpy = vi.spyOn(c.vramEstimation, 'refresh');
 
             fixture.componentRef.setInput('schema', makeSchema(1));
             fixture.detectChanges();

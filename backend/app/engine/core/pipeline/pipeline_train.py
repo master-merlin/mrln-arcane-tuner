@@ -162,52 +162,29 @@ class PipelineTrainMixin:
         if lw:
             lw.log("Step profile:\n" + body)
 
-    async def train(self):
-        """Execute the main training loop with gradient accumulation."""
-        self.logger.info("starting_training_loop", family=self.__class__.__name__)
-        # Surface the active allocator config + VRAM safety valve so a job log
-        # makes it obvious whether the anti-fragmentation settings are in effect
-        # (they only take effect when the trainer process was launched with them
-        # — e.g. after a backend restart for the plugin-injected path).
-        if torch.cuda.is_available():
-            try:
-                self.logger.info(
-                    "vram_config",
-                    alloc_conf=os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "<unset>"),
-                    allocator_backend=torch.cuda.get_allocator_backend(),
-                )
-            except Exception:  # noqa: BLE001
-                pass
-        self._get_primary_model().train()
+    def _iter_training_batches(self, batch_size: int):
+        """Infinite bucket-aware batch iterator for the training loop.
 
-        max_steps = int(self.config.get("max_train_steps", 1000))
-        self.max_train_steps = max_steps
-        batch_size = int(self.config.get("train_batch_size", 1))
+        Extracted verbatim from ``train()`` (behaviour-neutral) so the VRAM-safe
+        warmup ordering can be unit-tested against a stub ``inventory`` /
+        ``config`` — see tests/engine/test_bucket_warmup_order.py.
 
-        # Sigma distribution tracker — accumulates timestep histogram for diagnostics.
-        try:
-            from app.engine.strategies.sigma_tracker import SigmaTracker
-            self._sigma_tracker = SigmaTracker()
-        except Exception:  # noqa: BLE001
-            self._sigma_tracker = None
-        grad_accum = int(self.config.get("gradient_accumulation_steps", 1))
-        noise_offset_strength = float(self.config.get("noise_offset", 0.0))
+        Bucket-aware infinite iterator: groups items by target resolution so
+        ``torch.stack`` works when ``batch_size > 1``.
 
-        # Bucket-aware infinite iterator: groups items by target resolution
-        # so torch.stack works when batch_size > 1.
-        #
-        # VRAM-safe warmup (default on): training order stays FULLY RANDOM, but
-        # the FIRST batch of each epoch — and the first batch after each sample —
-        # is forced to the largest bucket. Rationale: the CUDA caching allocator
-        # grows its reserved pool in allocation-arrival order; with pure random
-        # order, small buckets grow it incrementally and a later large bucket
-        # strands those blocks → ~20-30 GB of order-dependent fragmentation that
-        # varies run-to-run and can spill past the card (a "freeze"). Reserving
-        # the largest bucket's peak segment FIRST means every later (smaller)
-        # step just reuses it, no stranding — so only one warmup step per epoch
-        # is needed and the rest of the order is untouched. The sampler calls
-        # empty_cache (to fit the TE/denoise), which releases the pool, so we
-        # re-warm on the first step after each sample via ``_vram_rewarm_pending``.
+        VRAM-safe warmup (default on): training order stays FULLY RANDOM, but
+        the FIRST batch of each epoch — and the first batch after each sample —
+        is forced to the largest bucket. Rationale: the CUDA caching allocator
+        grows its reserved pool in allocation-arrival order; with pure random
+        order, small buckets grow it incrementally and a later large bucket
+        strands those blocks → ~20-30 GB of order-dependent fragmentation that
+        varies run-to-run and can spill past the card (a "freeze"). Reserving
+        the largest bucket's peak segment FIRST means every later (smaller)
+        step just reuses it, no stranding — so only one warmup step per epoch
+        is needed and the rest of the order is untouched. The sampler calls
+        empty_cache (to fit the TE/denoise), which releases the pool, so we
+        re-warm on the first step after each sample via ``_vram_rewarm_pending``.
+        """
         from collections import defaultdict
 
         vram_safe_order = bool(self.config.get("vram_safe_bucket_order", True))
@@ -252,24 +229,56 @@ class PipelineTrainMixin:
             random.shuffle(batches)
             return batches
 
-        def get_iterator():
-            if not vram_safe_order:
-                while True:
-                    yield from _random_batches()
-                return
-            self._vram_rewarm_pending = True  # warm once at the very start
+        if not vram_safe_order:
             while True:
-                for batch in _random_batches():
-                    # Warm the largest bucket first at epoch start / after a
-                    # sample's empty_cache, so the peak segment is reserved
-                    # before any smaller batch can fragment the pool.
-                    if getattr(self, "_vram_rewarm_pending", False) and _largest_items:
-                        self._vram_rewarm_pending = False
-                        yield _warm_batch()
-                    yield batch
-                self._vram_rewarm_pending = True  # re-warm at the next epoch
+                yield from _random_batches()
+        self._vram_rewarm_pending = True  # warm once at the very start
+        while True:
+            for batch in _random_batches():
+                # Warm the largest bucket first at epoch start / after a
+                # sample's empty_cache, so the peak segment is reserved
+                # before any smaller batch can fragment the pool.
+                if getattr(self, "_vram_rewarm_pending", False) and _largest_items:
+                    self._vram_rewarm_pending = False
+                    yield _warm_batch()
+                yield batch
+            self._vram_rewarm_pending = True  # re-warm at the next epoch
 
-        data_iter = get_iterator()
+    async def train(self):
+        """Execute the main training loop with gradient accumulation."""
+        self.logger.info("starting_training_loop", family=self.__class__.__name__)
+        # Surface the active allocator config + VRAM safety valve so a job log
+        # makes it obvious whether the anti-fragmentation settings are in effect
+        # (they only take effect when the trainer process was launched with them
+        # — e.g. after a backend restart for the plugin-injected path).
+        if torch.cuda.is_available():
+            try:
+                self.logger.info(
+                    "vram_config",
+                    alloc_conf=os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "<unset>"),
+                    allocator_backend=torch.cuda.get_allocator_backend(),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        self._get_primary_model().train()
+
+        max_steps = int(self.config.get("max_train_steps", 1000))
+        self.max_train_steps = max_steps
+        batch_size = int(self.config.get("train_batch_size", 1))
+
+        # Sigma distribution tracker — accumulates timestep histogram for diagnostics.
+        try:
+            from app.engine.strategies.sigma_tracker import SigmaTracker
+            self._sigma_tracker = SigmaTracker()
+        except Exception:  # noqa: BLE001
+            self._sigma_tracker = None
+        grad_accum = int(self.config.get("gradient_accumulation_steps", 1))
+        noise_offset_strength = float(self.config.get("noise_offset", 0.0))
+
+        # Bucket-aware infinite iterator with VRAM-safe warmup ordering.
+        # Extracted to ``_iter_training_batches`` (behaviour-neutral) so the
+        # ordering is unit-testable — see tests/engine/test_bucket_warmup_order.py.
+        data_iter = self._iter_training_batches(batch_size)
 
         # Virtual epoch tracking
         steps_per_epoch = max(1, len(self.inventory) // batch_size)

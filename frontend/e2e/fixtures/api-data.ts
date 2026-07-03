@@ -27,9 +27,37 @@ export const version = { version: 'e2e' };
  *  switcher in Global, which is what the boot smoke exercises. */
 export const projects: unknown[] = [];
 
-/** GET /api/jobs — not fetched on the datasets boot path, but returned as a
- *  benign empty list if anything probes it. */
-export const jobs: unknown[] = [];
+/**
+ * GET /api/jobs — not fetched on the datasets boot path, but the Jobs screen
+ * (Flow F) renders these directly into the queue's RUNNING/PENDING groups.
+ * Two rows so `training-job-queue` renders both groups; see the Flow F
+ * fixtures block near the bottom of this file for the rest of the jobs-screen
+ * mocks (history / auto-queue / auto-resume / samples / checkpoints).
+ */
+export const jobs = [
+    {
+        id: 'job-e2e-running',
+        plugin_id: 'standard',
+        config: { definition_id: 'flux-dev', lora_name: 'nightfall-run' },
+        status: 'running',
+        status_label: '',
+        created_at: Math.floor(Date.now() / 1000) - 600,
+        started_at: Math.floor(Date.now() / 1000) - 600,
+        pid: 4242,
+        logs: [] as string[],
+        warnings: [] as string[],
+    },
+    {
+        id: 'job-e2e-pending',
+        plugin_id: 'standard',
+        config: { definition_id: 'flux-dev', lora_name: 'queued-lora' },
+        status: 'pending',
+        created_at: Math.floor(Date.now() / 1000) - 60,
+        priority: 0,
+        logs: [] as string[],
+        warnings: [] as string[],
+    },
+];
 
 /** GET /api/tasks — the Task Center / TaskStore hydrates the queued-task list
  *  on boot. Empty = no active background tasks. */
@@ -585,3 +613,54 @@ export const systemUpdateStatus = {
     active: 0,
     error: null,
 };
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Jobs screen (Flow F) fixtures.
+ *
+ * `/jobs` mounts `training-job-queue` (left pane) + `JobsScreen`'s own detail
+ * pane (center) + `app-system-monitor` (right pane, WS-only — no HTTP). On
+ * boot, `training-job-queue.ngOnInit()` fires:
+ *   GET /api/jobs/settings/auto-queue   → jobAutoQueue
+ *   GET /api/jobs/settings/auto-resume  → jobAutoResume
+ *   GET /api/jobs                       → `jobs` (declared above; 1 RUNNING
+ *                                          + 1 PENDING row)
+ *   GET /api/jobs/history               → jobHistory (empty — no archived
+ *                                          rows, so the archive's lazy
+ *                                          resumable-checkpoint fetch never
+ *                                          fires; out of scope for this smoke
+ *                                          flow)
+ * `JobsScreen`'s constructor also calls `jobStore.loadAll()` (same GET
+ * /api/jobs) and `app-system-monitor.ngOnInit()` calls `jobStore.loadHistory()`
+ * (same GET /api/jobs/history) — both hit routes already listed above.
+ *
+ * Selecting ANY row (`job-item-{id}` click → `viewState.select(id)`) then
+ * triggers JobsScreen's per-selection effects, which always fetch (regardless
+ * of job status):
+ *   GET /api/jobs/{id}/samples          → [] (jobSamplesEmpty)
+ *   GET /api/jobs/{id}/checkpoints      → [] (jobCheckpointsEmpty)
+ * The fixture jobs are deliberately non-archived/non-sampling (no
+ * `sample_every_n_steps`) so the archived-only (getJobReplay/getJobLogs) and
+ * sampling-only (getSamplingStatus/getSamplingCadence) effects never fire —
+ * kept out of scope for this smoke-level flow.
+ *
+ * The auto-resume toggle (`auto-resume-toggle` checkbox) PUTs
+ * /api/jobs/settings/auto-resume on flip; the handler echoes the posted
+ * `enabled` flag back as `auto_resume` so the optimistic UI flip is confirmed
+ * (not rolled back).
+ */
+
+/** GET /api/jobs/history — no archived rows; keeps the RECENT/ARCHIVE queue
+ *  section and its lazy checkpoint-fetch effect out of scope for this flow. */
+export const jobHistory: unknown[] = [];
+
+/** GET /api/jobs/settings/auto-queue — off by default (matches component default). */
+export const jobAutoQueue = { auto_queue: false };
+
+/** GET /api/jobs/settings/auto-resume — on by default; the e2e flow flips it off. */
+export const jobAutoResume = { auto_resume: true };
+
+/** GET /api/jobs/{id}/samples — no samples for either seeded job. */
+export const jobSamplesEmpty: unknown[] = [];
+
+/** GET /api/jobs/{id}/checkpoints — no checkpoints for either seeded job. */
+export const jobCheckpointsEmpty: unknown[] = [];

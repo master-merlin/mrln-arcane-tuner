@@ -8,7 +8,7 @@ import { DatasetService } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 import { serialize, normalize } from './caption/ideogram-format';
-import { StructuredCaptionModalComponent } from './caption/structured-caption-modal';
+import { StructuredCaptionModalComponent } from '../../../../modals/structured-caption/structured-caption-modal';
 
 function mount() {
     localStorage.clear();

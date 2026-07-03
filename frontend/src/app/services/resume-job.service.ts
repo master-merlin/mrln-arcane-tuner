@@ -28,7 +28,14 @@ export class ResumeJobService {
     });
   }
 
-  private restart(jobId: string, wipe: boolean, onDone?: () => void): void {
+  /**
+   * Restart an archived job (`wipe` = delete the run's output folder first).
+   * Single source of truth for the restart wrapper: the resume modal's
+   * onRestart AND the jobs-screen detail-pane restart buttons both route here,
+   * so the toasts + error handling live in one place (F-ARCH-6). `onDone` runs
+   * after success for caller-specific cleanup (e.g. dropping cached replay).
+   */
+  restart(jobId: string, wipe: boolean, onDone?: () => void): void {
     this.jobService.restartJob(jobId, wipe).subscribe({
       next: () => {
         this.toast.success(wipe ? 'Job restarted (fresh).' : 'Job restarted.');

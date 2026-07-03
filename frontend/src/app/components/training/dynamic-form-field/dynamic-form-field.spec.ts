@@ -1,10 +1,10 @@
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient, withXhr } from '@angular/common/http';
 import { FormControl } from '@angular/forms';
 
 import { DynamicFormFieldComponent } from './dynamic-form-field';
 import { ToastService } from '../../../services/toast';
-import { RuntimeConfigService } from '../../../services/runtime-config.service';
+import { JobService } from '../../../services/job';
+import { FilesystemService } from '../../../services/filesystem.service';
 
 describe('DynamicFormFieldComponent — sciHint() scientific-notation overlay', () => {
   let component: DynamicFormFieldComponent;
@@ -13,9 +13,9 @@ describe('DynamicFormFieldComponent — sciHint() scientific-notation overlay', 
     TestBed.configureTestingModule({
       imports: [DynamicFormFieldComponent],
       providers: [
-        provideHttpClient(withXhr()),
         { provide: ToastService, useValue: {} },
-        { provide: RuntimeConfigService, useValue: { apiUrl: '', mediaBaseUrl: '' } },
+        { provide: JobService, useValue: {} },
+        { provide: FilesystemService, useValue: {} },
       ],
     });
     const fixture = TestBed.createComponent(DynamicFormFieldComponent);
@@ -58,9 +58,9 @@ describe('DynamicFormFieldComponent — stepMin() spinner grid alignment', () =>
     TestBed.configureTestingModule({
       imports: [DynamicFormFieldComponent],
       providers: [
-        provideHttpClient(withXhr()),
         { provide: ToastService, useValue: {} },
-        { provide: RuntimeConfigService, useValue: { apiUrl: '', mediaBaseUrl: '' } },
+        { provide: JobService, useValue: {} },
+        { provide: FilesystemService, useValue: {} },
       ],
     });
     const fixture = TestBed.createComponent(DynamicFormFieldComponent);
@@ -98,9 +98,9 @@ describe('DynamicFormFieldComponent — string[] field (control_images)', () => 
     TestBed.configureTestingModule({
       imports: [DynamicFormFieldComponent],
       providers: [
-        provideHttpClient(withXhr()),
         { provide: ToastService, useValue: {} },
-        { provide: RuntimeConfigService, useValue: { apiUrl: '', mediaBaseUrl: '' } },
+        { provide: JobService, useValue: {} },
+        { provide: FilesystemService, useValue: {} },
       ],
     });
     const fixture = TestBed.createComponent(DynamicFormFieldComponent);

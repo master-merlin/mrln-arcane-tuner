@@ -7,7 +7,6 @@ import { TrainingTemplateSelectorComponent } from '../training-template-selector
 import { VramBudgetCardComponent } from '../vram-budget-card/vram-budget-card';
 import { AdvancedVramCardComponent } from '../advanced-vram-card/advanced-vram-card';
 import { TargetLayersCardComponent } from '../target-layers-card/target-layers-card';
-import { ModelSourceConfigComponent } from '../model-source-config/model-source-config';
 import { DynamicFormGroupComponent } from '../dynamic-form-group/dynamic-form-group';
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
@@ -21,7 +20,7 @@ import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { TemplateService } from '../../../services/template.service';
 import { ProjectService } from '../../../services/project.service';
 import { OverlayStore } from '../../../state/overlay.store';
-import { HttpClient } from '@angular/common/http';
+import { FilesystemService } from '../../../services/filesystem.service';
 import type { SchemaNode } from '../schema-node';
 import type {
   ModelCapabilities,
@@ -124,13 +123,13 @@ function build() {
   TestBed.configureTestingModule({
     imports: [TrainingDynamicConfigComponent],
     providers: [
-      { provide: HttpClient, useValue: { get: () => of({}) } },
       { provide: DatasetService, useValue: { listDatasets: () => of([]) } },
       { provide: DatasetStore, useValue: { entities: () => [] } },
       { provide: ToastService, useValue: { error: () => {}, success: () => {}, warning: () => {} } },
       { provide: SystemService, useValue: {} },
-      { provide: JobService, useValue: { estimate: () => of(null) } },
+      { provide: JobService, useValue: { estimate: () => of(null), getConfigHelp: () => of({}) } },
       { provide: ModelService, useValue: { getGlobalSettings: () => of({ default_model_path: '' }) } },
+      { provide: FilesystemService, useValue: {} },
       { provide: RegistryStore, useValue: {} },
       { provide: ModelCapabilitiesService, useValue: { getCapabilities: () => of(null) } },
       { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: '/media' } },
@@ -138,7 +137,7 @@ function build() {
       // real arrays so its filteredTemplates computed doesn't choke on `{}`.
       { provide: TemplateService, useValue: { listTrainingTemplates: () => of([]) } },
       { provide: ProjectService, useValue: { getPreferences: () => of(null) } },
-      { provide: OverlayStore, useValue: {} },
+      { provide: OverlayStore, useValue: { openModal: () => {}, closeModal: () => {}, topModal: () => null } },
     ],
   });
   // Keep the REAL component template + the REAL DynamicFormFieldComponent (it
@@ -149,7 +148,6 @@ function build() {
   TestBed.overrideComponent(VramBudgetCardComponent, { set: stub });
   TestBed.overrideComponent(AdvancedVramCardComponent, { set: stub });
   TestBed.overrideComponent(TargetLayersCardComponent, { set: stub });
-  TestBed.overrideComponent(ModelSourceConfigComponent, { set: stub });
   TestBed.overrideComponent(DynamicFormGroupComponent, { set: stub });
 
   const fixture = TestBed.createComponent(TrainingDynamicConfigComponent);

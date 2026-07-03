@@ -1,5 +1,4 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { IcoComponent } from '../../icons/ico.component';
 import { ScopeStore } from '../../state/scope.store';
@@ -8,7 +7,7 @@ import { DatasetStore } from '../../state/dataset.store';
 import { JobStore } from '../../state/job.store';
 import { ProjectService } from '../../services/project.service';
 import { JobStatus } from '../../services/job';
-import { RuntimeConfigService } from '../../services/runtime-config.service';
+import { SystemService } from '../../services/system.service';
 
 /**
  * Sidebar — brand, jump-to placeholder, screen nav, active-scope card,
@@ -46,15 +45,14 @@ export class SidebarComponent implements OnInit {
     protected projects = inject(ProjectService);
     private datasetStore = inject(DatasetStore);
     private jobStore = inject(JobStore);
-    private http = inject(HttpClient);
-    private rtc = inject(RuntimeConfigService);
+    private systemService = inject(SystemService);
 
     protected nav = NAV;
 
     protected appVersion = signal<string>('…');
 
     ngOnInit() {
-        this.http.get<{ version: string }>(`${this.rtc.apiUrl}/system/version`).subscribe({
+        this.systemService.getVersion().subscribe({
             next: (r) => this.appVersion.set(r.version),
             error: () => this.appVersion.set('?.?.?'),
         });

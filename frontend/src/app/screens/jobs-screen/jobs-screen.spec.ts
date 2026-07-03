@@ -68,6 +68,7 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
         getSamplingCadence: vi.fn().mockReturnValue(of({ job_id: JOB_ID, interval: 100, default_interval: 100 })),
         restartJob: vi.fn().mockReturnValue(of({ status: 'restarted', job_id: JOB_ID, fresh: false })),
         resumeFromCheckpoint: vi.fn().mockReturnValue(of(makeJob({ status: JobStatus.PENDING }))),
+        stopJob: vi.fn().mockReturnValue(of({})),
         checkpointDownloadUrl: vi.fn().mockReturnValue('http://test/download'),
         checkpointZipDownloadUrl: vi.fn().mockReturnValue('http://test/zip'),
     };
@@ -85,7 +86,7 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
             { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn() } },
             { provide: RuntimeConfigService, useValue: { apiUrl: 'http://test' } },
             { provide: Router, useValue: { navigate: vi.fn() } },
-            { provide: ResumeJobService, useValue: { open: vi.fn() } },
+            { provide: ResumeJobService, useValue: { open: vi.fn(), restart: vi.fn() } },
         ],
     });
 
@@ -315,5 +316,76 @@ describe('JobsScreen resume/restart buttons', () => {
         // Only the resumable checkpoint is passed.
         expect(checkpoints).toHaveLength(1);
         expect(checkpoints[0].checkpoint_dir).toBe('checkpoint-000500');
+    });
+});
+
+/**
+ * P4d — restart wrapper dedupe (F-ARCH-6) + prompt()/confirm() → typed modals.
+ * Both restart entry points route through ResumeJobService.restart; the
+ * destructive/save actions fire ONLY from the modal's confirm callback (the
+ * old synchronous confirm()/prompt() guards are now async).
+ */
+describe('JobsScreen — restart delegation + typed dialogs (P4d)', () => {
+    function selectJob(view: JobsViewState, fixture: ComponentFixture<JobsScreen>, over: Partial<Job> = {}) {
+        view.archivedJobs.set([makeJob({ status: JobStatus.STOPPED, ...over })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+    }
+    type Comp = Record<string, (...a: unknown[]) => void> & {
+        resumeJobs: { restart: ReturnType<typeof vi.fn> };
+    };
+
+    it('restartJob() delegates to the single ResumeJobService.restart wrapper (wipe=false)', () => {
+        const { fixture, view, comp } = setup();
+        selectJob(view, fixture);
+        const c = comp as unknown as Comp;
+        c['restartJob']();
+        expect(c.resumeJobs.restart).toHaveBeenCalledTimes(1);
+        expect(c.resumeJobs.restart.mock.calls[0][0]).toBe(JOB_ID);
+        expect(c.resumeJobs.restart.mock.calls[0][1]).toBe(false);
+    });
+
+    it('restartFresh() restarts (wipe=true) only after the confirm modal is confirmed', () => {
+        const { fixture, view, comp } = setup();
+        selectJob(view, fixture);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: ReturnType<typeof vi.fn> };
+        const c = comp as unknown as Comp;
+        c['restartFresh']();
+        // Nothing happens until the user confirms.
+        expect(c.resumeJobs.restart).not.toHaveBeenCalled();
+        const [kind, data] = overlay.openModal.mock.calls.at(-1) as [string, { onConfirm: () => void }];
+        expect(kind).toBe('confirm');
+        data.onConfirm();
+        expect(c.resumeJobs.restart).toHaveBeenCalledWith(JOB_ID, true, expect.any(Function));
+    });
+
+    it('stopJob() hard-stops only from the confirm modal callback', () => {
+        const { fixture, view, comp } = setup();
+        selectJob(view, fixture, { status: JobStatus.RUNNING });
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: ReturnType<typeof vi.fn> };
+        const jobService = TestBed.inject(JobService) as unknown as { stopJob: ReturnType<typeof vi.fn> };
+        const c = comp as unknown as Comp;
+        c['stopJob']();
+        expect(jobService.stopJob).not.toHaveBeenCalled();
+        const [kind, data] = overlay.openModal.mock.calls.at(-1) as [string, { onConfirm: () => void }];
+        expect(kind).toBe('confirm');
+        data.onConfirm();
+        expect(jobService.stopJob).toHaveBeenCalledWith(JOB_ID);
+    });
+
+    it('saveAsTemplate() saves only from the input modal callback, with the entered name', () => {
+        const { fixture, view, comp } = setup();
+        selectJob(view, fixture);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: ReturnType<typeof vi.fn> };
+        const templates = TestBed.inject(TemplateService) as unknown as { createTrainingTemplate: ReturnType<typeof vi.fn> };
+        const c = comp as unknown as Comp;
+        c['saveAsTemplate']();
+        expect(templates.createTrainingTemplate).not.toHaveBeenCalled();
+        const [kind, data] = overlay.openModal.mock.calls.at(-1) as [string, { onConfirm: (v: string) => void }];
+        expect(kind).toBe('input');
+        data.onConfirm('My Template');
+        expect(templates.createTrainingTemplate).toHaveBeenCalledWith(
+            expect.objectContaining({ name: 'My Template' }),
+        );
     });
 });

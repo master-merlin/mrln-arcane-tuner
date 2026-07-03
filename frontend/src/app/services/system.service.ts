@@ -116,6 +116,21 @@ export class SystemService implements OnDestroy {
         return this.http.get<HealthSnapshot>(`${this.apiUrl}/system/health`);
     }
 
+    /** App version shown in the sidebar footer. */
+    getVersion(): Observable<{ version: string }> {
+        return this.http.get<{ version: string }>(`${this.apiUrl}/system/version`);
+    }
+
+    /** Persisted server log tail (structlog lines), newest-last. */
+    getLogs(lines: number = 200): Observable<string[]> {
+        return this.http.get<string[]>(`${this.apiUrl}/system/logs?lines=${lines}`);
+    }
+
+    /** Clear the server-side log buffer. */
+    clearLogs(): Observable<{ message?: string; error?: string }> {
+        return this.http.post<{ message?: string; error?: string }>(`${this.apiUrl}/system/logs/clear`, {});
+    }
+
     /** Start receiving live system metrics via WebSocket. Reference-counted. */
     subscribeMetrics(intervalS: number = 2.0): void {
         this.subscriberCount++;

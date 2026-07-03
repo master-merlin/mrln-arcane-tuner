@@ -10,7 +10,6 @@ import {
     signal,
     viewChild,
 } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
 import { TrainingDynamicConfigComponent } from '../../components/training/training-dynamic-config/training-dynamic-config';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
 import type { TrainingSegment } from '../../components/training/training-dynamic-config/training-dynamic-config';
@@ -19,20 +18,12 @@ import { TrainingEstimateRail } from '../../components/training/training-estimat
 import { EstimateWallComponent } from '../../components/training/estimate-wall/estimate-wall';
 import { DatasetStore } from '../../state/dataset.store';
 import { ScopeStore } from '../../state/scope.store';
-import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { JobService, type TrainingEstimate, type TrainingConfig } from '../../services/job';
+import { ModelService, type ModelDefinition } from '../../services/model.service';
 import type { SchemaNode } from '../../components/training/schema-node';
 import { ToastService } from '../../services/toast';
 
-export interface ModelDefinition {
-    id: string;
-    name?: string;
-    family?: string;
-    /** Plugin-declared architecture descriptor (e.g. `transformer.type`); read
-     *  by the config form to branch on the model's transformer kind. */
-    architecture_params?: Record<string, unknown>;
-    [key: string]: unknown;
-}
+export type { ModelDefinition } from '../../services/model.service';
 
 /**
  * Training screen — IDE 3-pane layout that wraps the existing
@@ -64,9 +55,8 @@ export interface ModelDefinition {
     styleUrl: './training-screen.css',
 })
 export class TrainingScreen {
-    private http = inject(HttpClient);
-    private rtc = inject(RuntimeConfigService);
     private jobs = inject(JobService);
+    private models = inject(ModelService);
     private toast = inject(ToastService);
     private datasetStore = inject(DatasetStore);
     private handoff = inject(TrainingHandoffService);
@@ -212,7 +202,7 @@ export class TrainingScreen {
     }
 
     protected fetchModels(): void {
-        this.http.get<ModelDefinition[]>(`${this.rtc.apiUrl}/models/definitions`).subscribe({
+        this.models.getDefinitions().subscribe({
             next: defs => {
                 this.availableModels.set(defs); // the scope effect loads the schema once this lands
             },
@@ -229,8 +219,7 @@ export class TrainingScreen {
     protected loadSchema(projectId: string | null = this.scope.projectId()): void {
         // Scope the dataset dropdown to the project's datasets when in a project
         // (the backend filters dataset_name's enum by project_id); global omits it.
-        const scopeParam = projectId ? `&project_id=${encodeURIComponent(projectId)}` : '';
-        this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${this.pluginId}/schema?t=${Date.now()}${scopeParam}`).subscribe({
+        this.jobs.getPluginSchema(this.pluginId, projectId).subscribe({
             next: (s) => this.currentSchema.set(s),
             error: (err: { message?: string }) =>
                 this.toast.error('Failed to load training schema: ' + (err?.message ?? 'unknown error')),

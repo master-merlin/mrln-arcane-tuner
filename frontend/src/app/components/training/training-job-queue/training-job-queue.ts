@@ -20,6 +20,7 @@ import { JobsViewState } from '../../../state/jobs-view.state';
 import { OverlayStore } from '../../../state/overlay.store';
 import type { JobConfigData } from '../../../modals/job-config/job-config.component';
 import { ResumeJobService } from '../../../services/resume-job.service';
+import { ToastService } from '../../../services/toast';
 
 @Component({
   selector: 'app-training-job-queue',
@@ -106,6 +107,7 @@ export class TrainingJobQueueComponent implements OnInit {
   private viewState = inject(JobsViewState);
   private overlay = inject(OverlayStore);
   private resumeJobs = inject(ResumeJobService);
+  private toast = inject(ToastService);
 
   /** States whose config may be edited — pending (changes what runs) or any
    *  terminal state (edits the record). Running/paused stay locked, matching
@@ -630,21 +632,37 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   toggleAutoQueue() {
-    const enabled = !this.autoQueue();
+    const previous = this.autoQueue();
+    const enabled = !previous;
     this.autoQueue.set(enabled);
     // Persist server-side. The BACKEND owns queue advancement now (and drains
     // any backlog immediately when this is switched on), so there is no
     // client-side start here — that's what made unattended queues stall when
     // no browser was open.
-    this.jobService.setAutoQueue(enabled).subscribe({ error: () => {} });
+    this.jobService.setAutoQueue(enabled).subscribe({
+      error: () => {
+        // Roll the optimistic flip back — otherwise the UI silently diverges
+        // from the server's actual (unsaved) setting.
+        this.autoQueue.set(previous);
+        this.toast.error('Failed to save auto-queue setting — reverted.');
+      },
+    });
   }
 
   toggleAutoResume() {
-    const enabled = !this.autoResume();
+    const previous = this.autoResume();
+    const enabled = !previous;
     this.autoResume.set(enabled);
     // Server-side setting: when on, a run that dies on a transient GPU fault
     // (TDR/RC-reset → cudaErrorUnknown) auto-relaunches from its last checkpoint.
-    this.jobService.setAutoResume(enabled).subscribe({ error: () => {} });
+    this.jobService.setAutoResume(enabled).subscribe({
+      error: () => {
+        // Roll the optimistic flip back — otherwise the UI silently diverges
+        // from the server's actual (unsaved) setting.
+        this.autoResume.set(previous);
+        this.toast.error('Failed to save auto-resume setting — reverted.');
+      },
+    });
   }
 
   /** Latest `status:'training'` metrics — delegates to the shared parser

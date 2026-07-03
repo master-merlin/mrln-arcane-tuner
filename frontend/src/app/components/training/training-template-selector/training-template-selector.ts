@@ -353,49 +353,71 @@ export class TrainingTemplateSelectorComponent implements OnInit {
       return;
     }
 
-    const name = prompt("Template Name:");
-    if (!name) return;
-
-    this.templateService.createTrainingTemplate({
-        definition_id: defId,
-        name: name,
-        project_id: this.projectId(),
-        config: this.currentFormConfig()
-    }).subscribe(newTpl => {
-        this.allTemplates.update(current => [...current, newTpl]);
-        this.activeTemplateId.set(newTpl.id);
-        this.toast.success('Template cloned!');
+    // Create only fires from the input modal's confirm callback (async — the
+    // POST no longer runs before the user commits a name).
+    this.overlay.openModal('input', {
+      title: 'Clone as New Template',
+      label: 'Template name',
+      placeholder: 'My template',
+      confirmLabel: 'Create',
+      onConfirm: (name: string) => {
+        this.templateService.createTrainingTemplate({
+            definition_id: defId,
+            name: name,
+            project_id: this.projectId(),
+            config: this.currentFormConfig()
+        }).subscribe(newTpl => {
+            this.allTemplates.update(current => [...current, newTpl]);
+            this.activeTemplateId.set(newTpl.id);
+            this.toast.success('Template cloned!');
+        });
+      },
     });
   }
 
   renameTemplate() {
     const id = this.activeTemplateId();
     if (this.isDefaultTemplate()) return;
-    
+
     const tpl = this.allTemplates().find(t => t.id === id);
     if (!tpl) return;
 
-    const newName = prompt('Rename Template:', tpl.name);
-    if (!newName || newName === tpl.name) return;
-
-    this.templateService.updateTemplate('training', id, { name: newName }).subscribe(updatedTpl => {
-        this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
-        this.toast.success('Template renamed!');
+    this.overlay.openModal('input', {
+      title: 'Rename Template',
+      label: 'New name',
+      initial: tpl.name,
+      confirmLabel: 'Rename',
+      onConfirm: (newName: string) => {
+        // No-op when the name is unchanged (parity with the old prompt guard).
+        if (newName === tpl.name) return;
+        this.templateService.updateTemplate('training', id, { name: newName }).subscribe(updatedTpl => {
+            this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
+            this.toast.success('Template renamed!');
+        });
+      },
     });
   }
 
   deleteTemplate() {
     const id = this.activeTemplateId();
     if (this.isDefaultTemplate()) return;
-    if (!confirm("Delete current template?")) return;
 
-    this.templateService.deleteTemplate('training', id).subscribe(() => {
-        this.allTemplates.update(current => current.filter(t => t.id !== id));
-        const remaining = this.filteredTemplates();
-        if (remaining.length > 0) {
-            this.activeTemplateId.set(remaining[0].id);
-        }
-        this.toast.success('Template deleted!');
+    // Delete only fires from the confirm modal's onConfirm callback.
+    this.overlay.openModal('confirm', {
+      title: 'Delete Template',
+      message: 'Delete current template?',
+      confirmLabel: 'Delete',
+      destructive: true,
+      onConfirm: () => {
+        this.templateService.deleteTemplate('training', id).subscribe(() => {
+            this.allTemplates.update(current => current.filter(t => t.id !== id));
+            const remaining = this.filteredTemplates();
+            if (remaining.length > 0) {
+                this.activeTemplateId.set(remaining[0].id);
+            }
+            this.toast.success('Template deleted!');
+        });
+      },
     });
   }
 

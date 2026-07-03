@@ -5,7 +5,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { DatasetUploadService } from '../../services/dataset-upload.service';
-import { StructuredCaptionModalComponent } from '../../components/dataset/dataset-viewer/components/caption/structured-caption-modal';
+import { StructuredCaptionModalComponent } from '../../modals/structured-caption/structured-caption-modal';
 
 type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: string };
 

@@ -2,26 +2,10 @@ import { Component, ChangeDetectionStrategy, input, output, inject, signal, OnIn
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { TitleCasePipe } from '@angular/common';
-import { HttpClient } from '@angular/common/http';
-import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ToastService } from '../../../services/toast';
-import type { TrainingConfig } from '../../../services/job';
+import { JobService, type TrainingConfig } from '../../../services/job';
+import { FilesystemService } from '../../../services/filesystem.service';
 import { SchemaNode } from '../schema-node';
-
-/** `GET /filesystem/browse` — directory listing for the path-picker dialog. */
-interface BrowseResponse {
-  path: string;
-  parent: string;
-  entries: { name: string; path: string; type: string }[];
-}
-
-/** `GET /checkpoints/inspect` — checkpoint validity + its embedded training config. */
-interface CheckpointInspectResponse {
-  valid: boolean;
-  error?: string;
-  config?: TrainingConfig;
-  global_step?: number;
-}
 
 @Component({
   selector: 'app-dynamic-form-field',
@@ -228,9 +212,9 @@ export class DynamicFormFieldComponent implements OnInit {
   checkpointConfigLoaded = output<TrainingConfig>();
   autofillRequested = output<void>();
 
-  private http = inject(HttpClient);
   private toast = inject(ToastService);
-  private rtc = inject(RuntimeConfigService);
+  private jobs = inject(JobService);
+  private filesystem = inject(FilesystemService);
   private destroyRef = inject(DestroyRef);
 
   /**
@@ -399,7 +383,7 @@ export class DynamicFormFieldComponent implements OnInit {
   }
 
   browseNavigate(path: string) {
-    this.http.get<BrowseResponse>(`${this.rtc.apiUrl}/filesystem/browse`, { params: { path } }).subscribe({
+    this.filesystem.browse(path).subscribe({
       next: (result) => {
         this.browsePath.set(result.path);
         this.browseParent.set(result.parent);
@@ -424,9 +408,7 @@ export class DynamicFormFieldComponent implements OnInit {
     const checkpointPath = this.control().value;
     if (!checkpointPath) return;
 
-    this.http.get<CheckpointInspectResponse>(`${this.rtc.apiUrl}/checkpoints/inspect`, {
-      params: { path: checkpointPath }
-    }).subscribe({
+    this.jobs.inspectCheckpoint(checkpointPath).subscribe({
       next: (result) => {
         if (!result.valid) {
           this.toast.error('Invalid checkpoint: ' + (result.error || 'unknown error'));

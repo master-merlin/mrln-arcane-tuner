@@ -4,11 +4,12 @@
  */
 import { TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
-import { settle } from '../../../../testing/async';
+import { settle } from '../../../testing/async';
 import { CutlistImportModalComponent } from './cutlist-import-modal';
-import { DatasetService } from '../../../services/dataset';
-import { ToastService } from '../../../services/toast';
-import type { DatasetPair } from '../../../services/dataset';
+import { DatasetService } from '../../services/dataset';
+import { ToastService } from '../../services/toast';
+import { OverlayStore } from '../../state/overlay.store';
+import type { DatasetPair } from '../../services/dataset';
 
 function videoPair(media: string, fps = 24): DatasetPair {
     return {
@@ -52,12 +53,12 @@ describe('CutlistImportModalComponent', () => {
     });
 
     function make(videoPairs: DatasetPair[] = [videoPair('src.mp4')]) {
+        const overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('cutlist-import', { datasetName: 'ds1', videoPairs });
         fixture = TestBed.createComponent(CutlistImportModalComponent);
         const comp = fixture.componentInstance as any;
-        fixture.componentRef.setInput('datasetName', 'ds1');
-        fixture.componentRef.setInput('videoPairs', videoPairs);
         fixture.detectChanges();
-        return { fixture: fixture!, comp };
+        return { fixture: fixture!, comp, overlay };
     }
 
     it('parse() calls parseCutlist with the chosen source + advances to review', async () => {
@@ -82,14 +83,12 @@ describe('CutlistImportModalComponent', () => {
     });
 
     it('split() calls splitVideo with the body shape, toasts, and closes', async () => {
-        const { comp } = make();
+        const { comp, overlay } = make();
         comp.sourceRel.set('src.mp4');
         comp.segments.set([{ start_s: 0, end_s: 2, label: null }]);
         comp.mode.set('reencode');
         comp.outputPrefix.set('clip');
         comp.archiveSource.set(true);
-        const closedSpy = vi.fn();
-        comp.closed.subscribe(closedSpy);
         comp.split();
         await settle();
         expect(api.splitVideo).toHaveBeenCalledWith('ds1', {
@@ -100,7 +99,8 @@ describe('CutlistImportModalComponent', () => {
             archive_source: true,
         });
         expect(toast.success).toHaveBeenCalled();
-        expect(closedSpy).toHaveBeenCalledTimes(1);
+        // Closing the modal pops it off the overlay stack.
+        expect(overlay.modalStack().length).toBe(0);
     });
 
     it('empty output prefix is sent as null', () => {
@@ -114,15 +114,14 @@ describe('CutlistImportModalComponent', () => {
 
     it('split() error toasts and does NOT close', async () => {
         api.splitVideo.mockReturnValue(throwError(() => ({ error: { detail: 'boom' } })));
-        const { comp } = make();
+        const { comp, overlay } = make();
         comp.sourceRel.set('src.mp4');
         comp.segments.set([{ start_s: 0, end_s: 2, label: null }]);
-        const closedSpy = vi.fn();
-        comp.closed.subscribe(closedSpy);
         comp.split();
         await settle();
         expect(toast.error).toHaveBeenCalled();
-        expect(closedSpy).not.toHaveBeenCalled();
+        // Modal stays open on error.
+        expect(overlay.modalStack().length).toBe(1);
         expect(comp.splitting()).toBe(false);
     });
 

@@ -10,7 +10,6 @@ import { JobService } from '../../../services/job';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 import { ModelCapabilitiesService } from '../../../services/model-capabilities.service';
-import { HttpClient } from '@angular/common/http';
 import type { SchemaNode } from '../schema-node';
 
 /**
@@ -57,12 +56,11 @@ function build() {
     TestBed.configureTestingModule({
         imports: [TrainingDynamicConfigComponent],
         providers: [
-            { provide: HttpClient, useValue: { get: () => of({}) } },
             { provide: DatasetService, useValue: { listDatasets: () => of([]) } },
             { provide: DatasetStore, useValue: {} },
             { provide: ToastService, useValue: { error: () => {}, success: () => {} } },
             { provide: SystemService, useValue: {} },
-            { provide: JobService, useValue: { estimate: () => of(null) } },
+            { provide: JobService, useValue: { estimate: () => of(null), getConfigHelp: () => of({}) } },
             { provide: ModelService, useValue: { getGlobalSettings: () => of({ default_model_path: '' }) } },
             { provide: RegistryStore, useValue: {} },
             { provide: ModelCapabilitiesService, useValue: { getCapabilities: () => of(null) } },

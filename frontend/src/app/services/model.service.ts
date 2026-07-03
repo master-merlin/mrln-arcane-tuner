@@ -27,6 +27,33 @@ export interface PathValidationResult {
     warnings: string[];
 }
 
+/** One entry from `GET /models/definitions` — a trainable model family/checkpoint. */
+export interface ModelDefinition {
+    id: string;
+    name?: string;
+    family?: string;
+    /** Plugin-declared architecture descriptor (e.g. `transformer.type`); read
+     *  by the config form to branch on the model's transformer kind. */
+    architecture_params?: Record<string, unknown>;
+    [key: string]: unknown;
+}
+
+/** Global model settings — `GET`/`PUT /models/settings`. */
+export interface ModelGlobalSettings {
+    global_offline_mode: boolean;
+    default_model_path: string;
+    hf_token_set: boolean;
+}
+
+/**
+ * Partial update body for `PUT /models/settings` (the backend merges into the
+ * persisted blob). Callers patch one or more of `global_offline_mode` /
+ * `default_model_path` / `hf_token` — kept as an open record rather than a
+ * fixed shape since call sites build the patch dynamically (e.g. a generic
+ * toggle handler keyed by settings name).
+ */
+export type ModelGlobalSettingsPatch = Record<string, unknown>;
+
 @Injectable({
     providedIn: 'root'
 })
@@ -90,5 +117,20 @@ export class ModelService {
         return this.http.get<{ global_offline_mode: boolean; default_model_path: string }>(
             `${this.apiUrl}/settings`,
         );
+    }
+
+    /** Every trainable model definition (family/checkpoint) the backend knows about. */
+    getDefinitions(): Observable<ModelDefinition[]> {
+        return this.http.get<ModelDefinition[]>(`${this.apiUrl}/definitions`);
+    }
+
+    /** Full global model settings, including whether an HF token is set (write-only field). */
+    getModelSettings(): Observable<ModelGlobalSettings> {
+        return this.http.get<ModelGlobalSettings>(`${this.apiUrl}/settings`);
+    }
+
+    /** Patch global model settings (default path / offline mode / HF token). */
+    updateModelSettings(patch: ModelGlobalSettingsPatch): Observable<ModelGlobalSettings> {
+        return this.http.put<ModelGlobalSettings>(`${this.apiUrl}/settings`, patch);
     }
 }

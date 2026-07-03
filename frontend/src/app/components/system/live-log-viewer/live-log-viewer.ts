@@ -1,10 +1,9 @@
 import { Component, OnInit, ElementRef, viewChild, signal, inject, effect, input, computed, DestroyRef, ChangeDetectionStrategy } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ToastService } from '../../../services/toast';
 import { of, catchError } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { WebSocketService } from '../../../services/websocket.service';
+import { SystemService } from '../../../services/system.service';
 import { IcoComponent } from '../../../icons/ico.component';
 
 type LogLevel = 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL' | 'UNKNOWN';
@@ -200,9 +199,8 @@ export class LiveLogViewerComponent implements OnInit {
         });
     });
 
-    private http = inject(HttpClient);
     private wsService = inject(WebSocketService);
-    private rtc = inject(RuntimeConfigService);
+    private systemService = inject(SystemService);
     private toast = inject(ToastService);
     private destroyRef = inject(DestroyRef);
 
@@ -235,7 +233,7 @@ export class LiveLogViewerComponent implements OnInit {
     }
 
     fetchLogs() {
-        return this.http.get<string[]>(`${this.rtc.apiUrl}/system/logs?lines=200`).pipe(
+        return this.systemService.getLogs(200).pipe(
             catchError(err => {
                 console.error(err);
                 return of([]);
@@ -280,7 +278,7 @@ export class LiveLogViewerComponent implements OnInit {
     clearLogs() {
         if (!confirm('Are you sure you want to clear the server logs?')) return;
         this.clearing.set(true);
-        this.http.post<{ message?: string; error?: string }>(`${this.rtc.apiUrl}/system/logs/clear`, {}).subscribe({
+        this.systemService.clearLogs().subscribe({
             next: (res) => {
                 this.clearing.set(false);
                 if (res.error) {

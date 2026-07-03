@@ -152,55 +152,6 @@
         -webkit-appearance: none;
     }
 
-    /* Field-selector pill inside the topbar search bar. Inherits the
-       .chip.solid base; this just shrinks padding and tightens spacing
-       so it fits inside the search row. */
-    .chip.search-filter-btn {
-        padding: 2px 7px;
-        gap: 4px;
-        font-size: 11px;
-        cursor: pointer;
-        color: var(--color-text-secondary);
-    }
-    .chip.search-filter-btn:hover { color: var(--color-text-primary); }
-    .chip.search-filter-btn.active {
-        border-color: var(--color-brand);
-        color: var(--color-text-primary);
-    }
-    .chip.search-filter-btn .mono { font-family: var(--font-mono); }
-
-    /* Quick-clear (X) inside the search input — only rendered when the
-       query has content. Matches the legacy dataset toolbar's pattern. */
-    .search-clear-btn {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 18px; height: 18px;
-        padding: 0;
-        background: transparent;
-        border: 0;
-        border-radius: 999px;
-        color: var(--color-text-subtle);
-        cursor: pointer;
-        flex-shrink: 0;
-    }
-    .search-clear-btn:hover {
-        background: var(--color-surface-high);
-        color: var(--color-text-primary);
-    }
-
-    /* Anchor for the field-filter popover. Mirrors the
-       context-switcher's `position: relative` wrapper pattern. */
-    .search-filter-anchor { position: relative; display: inline-flex; }
-
-    /* Reuses .popover; only positioning + width are local. */
-    .popover.search-filter-popover {
-        top: calc(100% + 6px);
-        right: 0;
-        min-width: 220px;
-    }
-    .search-filter-head {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 4px 8px 2px;
-    }
     .search-filter-reset {
         background: none; border: 0; padding: 0;
         color: var(--color-brand);
@@ -208,18 +159,6 @@
         cursor: pointer;
     }
     .search-filter-reset:hover { text-decoration: underline; }
-
-    /* Each row reuses .popover-item; adjustments for checkbox alignment. */
-    .popover-item.search-filter-row {
-        padding: 5px 8px;
-        font-size: 12.5px;
-        gap: 8px;
-    }
-    .search-filter-check {
-        margin: 0;
-        accent-color: var(--color-brand);
-        cursor: pointer;
-    }
 
     .icon-btn {
         width: 32px; height: 32px;
@@ -496,36 +435,6 @@
         text-overflow: ellipsis;
     }
 
-    /* placeholder image */
-    .ph-img {
-        background:
-            linear-gradient(135deg, oklch(0.20 0.04 35) 0%, oklch(0.30 0.06 50) 50%, oklch(0.18 0.03 25) 100%),
-            var(--color-surface-mid);
-        border-radius: var(--radius-theme-md);
-        position: relative;
-        overflow: hidden;
-    }
-    .ph-img::before {
-        content: "";
-        position: absolute; inset: 0;
-        background:
-            repeating-linear-gradient(45deg, oklch(0.10 0.01 265 / 0.0) 0 6px, oklch(0.10 0.01 265 / 0.10) 6px 12px);
-    }
-    .ph-img.car::before { background:
-        radial-gradient(ellipse at 30% 70%, oklch(0.40 0.10 35 / 0.4), transparent 60%),
-        radial-gradient(ellipse at 70% 60%, oklch(0.30 0.05 25 / 0.5), transparent 60%);
-    }
-    .ph-img .pi-label {
-        position: absolute; left: 6px; bottom: 6px;
-        font-family: var(--font-mono);
-        font-size: 10px;
-        background: oklch(0.10 0.01 265 / 0.7);
-        color: var(--color-text-secondary);
-        padding: 1px 6px;
-        border-radius: 3px;
-        backdrop-filter: blur(4px);
-    }
-
     /* hover lift */
     .lift { transition: 160ms; }
     .lift:hover { transform: translateY(-1px); border-color: var(--color-border-default); box-shadow: var(--shadow-md); }
@@ -534,25 +443,6 @@
     .hover-host .hover-show { opacity: 0; transition: opacity 160ms ease; pointer-events: none; }
     .hover-host:hover .hover-show { opacity: 1; pointer-events: auto; }
     .hover-host .hover-show.always-on { opacity: 1; pointer-events: auto; }
-
-    /* image-overlay action buttons (grid tile hover, detail toolbar) */
-    .img-action {
-        width: 28px; height: 28px;
-        display: inline-flex; align-items: center; justify-content: center;
-        background: oklch(0.13 0.01 265 / 0.72);
-        color: oklch(0.85 0.005 265 / 0.85);
-        border: 1px solid oklch(0.95 0 0 / 0.08);
-        border-radius: var(--radius-theme-sm);
-        backdrop-filter: blur(6px);
-        box-shadow: 0 2px 8px oklch(0 0 0 / 0.35);
-        cursor: pointer;
-        transition: all 120ms ease;
-    }
-    .img-action:hover { background: oklch(0.20 0.01 265 / 0.92); color: white; }
-    .img-action.violet:hover { background: oklch(0.55 0.18 295 / 0.85); border-color: oklch(0.65 0.18 295); color: white; }
-    .img-action.brand:hover  { background: oklch(0.62 0.15 55 / 0.85);  border-color: var(--color-brand); color: white; }
-    .img-action.danger:hover { background: oklch(0.60 0.20 25 / 0.85);  border-color: var(--color-danger); color: white; }
-    .img-action.danger.active { background: oklch(0.60 0.20 25 / 0.55); border-color: var(--color-danger); color: white; }
 
     /* footer action btn (centered metadata bar, soft tinted) */
     .footer-action {

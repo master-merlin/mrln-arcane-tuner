@@ -261,8 +261,6 @@
 }
 .ds-version-edit:hover { opacity: 1; color: var(--color-text-primary); }
 
-.ds-card-sep { opacity: 0.4; }
-
 .ds-card-counts {
     display: flex;
     gap: 10px;

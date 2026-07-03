@@ -14,7 +14,7 @@ import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
 import { WebSocketService } from '../../../../services/websocket.service';
 import { detect } from './caption/ideogram-format';
 import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-editor';
-import { StructuredCaptionModalComponent } from './caption/structured-caption-modal';
+import { StructuredCaptionModalComponent } from '../../../../modals/structured-caption/structured-caption-modal';
 
 @Component({
     selector: 'app-detail-caption-sidebar',

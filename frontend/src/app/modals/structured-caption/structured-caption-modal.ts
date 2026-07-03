@@ -19,20 +19,20 @@
  * Save emits working(); Cancel emits cancel() without touching value().
  *
  * ── P4a modal-consolidation note ────────────────────────────────────────────
- * This modal is DELIBERATELY host-rendered (its own `.scm-backdrop`) rather than
- * registered in modal-layer / OverlayStore, and it is DELIBERATELY kept in this
- * feature dir (co-located with the ideogram-* caption editor family it wraps).
- * Reasons (per audit task P4a's keep-inline escape hatch):
+ * This modal lives under `modals/` per house convention, but is DELIBERATELY
+ * host-rendered (its own `.scm-backdrop`, `@if`-mounted by its hosts) rather
+ * than registered as a ModalKind in modal-layer / OverlayStore. Reasons (per
+ * audit task P4a's keep-inline escape hatch):
  *   1. It needs a definite-height 92vh two-pane dialog (`.scm-dialog`) so the
  *      embedded editor's `overflow-y:auto` sections pane resolves — the generic
  *      `.modal` chrome (auto-height, max-height-only) would break that layout.
  *   2. Two distinct hosts (browse-mode grid + detail-caption-sidebar) each seed
  *      `value()` and route Save differently; the two-way `model()` shell keeps
- *      that coupling local. Moving only this shell into `modals/` while its 3
- *      tightly-coupled siblings (ideogram-caption-editor / ideogram-format /
- *      wide-bbox-overlay) stay here would fracture a cohesive module.
- * It owns its own focus/Esc handling (HostListener below) since it opts out of
- * modal-layer's chrome.
+ *      that coupling local rather than forcing it through an overlay payload.
+ * The ideogram-* editor family it wraps (ideogram-caption-editor /
+ * ideogram-format / wide-bbox-overlay) stays in the caption feature dir —
+ * only this dialog shell moved. It owns its own focus/Esc handling
+ * (HostListener below) since it opts out of modal-layer's chrome.
  */
 import {
     ChangeDetectionStrategy,
@@ -44,7 +44,7 @@ import {
     output,
     signal,
 } from '@angular/core';
-import { IdeogramCaptionEditorComponent } from './ideogram-caption-editor';
+import { IdeogramCaptionEditorComponent } from '../../components/dataset/dataset-viewer/components/caption/ideogram-caption-editor';
 
 @Component({
     selector: 'app-structured-caption-modal',

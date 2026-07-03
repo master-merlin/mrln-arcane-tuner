@@ -5,7 +5,7 @@
  */
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { StructuredCaptionModalComponent } from './structured-caption-modal';
-import { serialize, normalize, parse } from './ideogram-format';
+import { serialize, normalize, parse } from '../../components/dataset/dataset-viewer/components/caption/ideogram-format';
 
 const FIXTURE_JSON = serialize(normalize({
     high_level_description: 'A test scene',

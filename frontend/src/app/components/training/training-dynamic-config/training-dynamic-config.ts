@@ -10,7 +10,7 @@ import { JobService, type TrainingEstimate, type TrainingConfig } from '../../..
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
-import { Subject } from 'rxjs';
+import { Subject, Subscription } from 'rxjs';
 import { debounceTime } from 'rxjs/operators';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
@@ -642,6 +642,16 @@ export class TrainingDynamicConfigComponent {
   private datasetStore = inject(DatasetStore);
   private destroyRef = inject(DestroyRef);
 
+  // F-ARCH-8: `buildForm()` swaps `this.form` for a brand-new FormGroup on
+  // every rebuild (schema change, scope switch, model-list change). The two
+  // `valueChanges` subscriptions wired up right after each rebuild (see the
+  // constructor effect) must be disposed before re-subscribing on the next
+  // rebuild — otherwise each generation's subscription pair only clears on
+  // component destroy (`takeUntilDestroyed`), leaking one pair per rebuild
+  // and leaving a stale-closure hazard if anything still writes to an
+  // abandoned form generation.
+  private _formValueSubs: Subscription | null = null;
+
   // Load source override whenever definition changes
   private _sourceOverrideEffect = effect(() => {
     const defId = this.currentDefinitionId();
@@ -698,22 +708,33 @@ export class TrainingDynamicConfigComponent {
         // Trigger initial VRAM estimate
         this.vramEstimate$.next();
 
+        // Dispose the previous rebuild's form subscriptions before wiring up
+        // new ones — see the `_formValueSubs` field comment. `takeUntilDestroyed`
+        // still backstops component destroy; this explicit unsubscribe is what
+        // stops each rebuild from stacking another live pair.
+        this._formValueSubs?.unsubscribe();
+        this._formValueSubs = new Subscription();
+
         // Re-estimate on any config field change (definition, quantization, LoRA rank, etc.)
-        this.form.valueChanges.pipe(
-          debounceTime(800),
-          takeUntilDestroyed(this.destroyRef),
-        ).subscribe(() => this.vramEstimate$.next());
+        this._formValueSubs.add(
+          this.form.valueChanges.pipe(
+            debounceTime(800),
+            takeUntilDestroyed(this.destroyRef),
+          ).subscribe(() => this.vramEstimate$.next())
+        );
 
         // Auto-save: persist changes to the active template on every form change
-        this.form.valueChanges.pipe(
-          debounceTime(1200),
-          takeUntilDestroyed(this.destroyRef),
-        ).subscribe((newVal) => {
-          const defId = this.form.get('definition_id')?.value;
-          if (this.templateSelector && defId) {
-            this.templateSelector.triggerAutoSave(newVal, defId);
-          }
-        });
+        this._formValueSubs.add(
+          this.form.valueChanges.pipe(
+            debounceTime(1200),
+            takeUntilDestroyed(this.destroyRef),
+          ).subscribe((newVal) => {
+            const defId = this.form.get('definition_id')?.value;
+            if (this.templateSelector && defId) {
+              this.templateSelector.triggerAutoSave(newVal, defId);
+            }
+          })
+        );
       });
     });
   }

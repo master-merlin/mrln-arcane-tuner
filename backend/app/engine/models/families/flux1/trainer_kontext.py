@@ -28,6 +28,12 @@ logger = structlog.get_logger(__name__)
 class Flux1KontextTrainer(Flux1Trainer):
     """FLUX.1 Kontext (image-edit) trainer — clean control tokens concat."""
 
+    # Kontext's own forward_pass (below) defaults ``guidance_scale`` to 1.0.
+    # Override the base's 3.5 so the driver-synced fallback used on a
+    # no-control batch (which falls through to ``super().forward_pass``)
+    # agrees with Kontext's own default instead of training at 3.5.
+    _GUIDANCE_DEFAULT = 1.0
+
     def _create_sampler(self):
         """Use the image-conditioned sampler when sampling is configured."""
         interval = int(self.config.get("sample_every_n_steps", 0))
@@ -113,7 +119,9 @@ class Flux1KontextTrainer(Flux1Trainer):
 
         guidance = None
         if self.use_guidance_embed:
-            guidance_scale = float(self.config.get("guidance_scale", 1.0))
+            guidance_scale = float(
+                self.config.get("guidance_scale", self._GUIDANCE_DEFAULT)
+            )
             guidance = torch.full(
                 (hidden_states.shape[0],), guidance_scale,
                 device=self.device, dtype=self.autocast_dtype,

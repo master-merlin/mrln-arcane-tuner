@@ -29,6 +29,15 @@ logger = structlog.get_logger(__name__)
 # the estimator prefers it; this table is the fallback-only path. (Several
 # families currently ship an empty/zero ``model_size_mb``, so for those the
 # fallback is what actually drives the estimate.)
+#
+# Provenance (audit FAM-7, 2026-07): the six entries added for ideogram4,
+# krea2, ltx2, microsoft_lens, wan21, and wan22 were derived by instantiating
+# each family's vendored transformer/text-encoder config on the meta device
+# (no weights loaded) and counting parameters — microsoft_lens is the
+# exception, calibrated instead from its definition's real on-disk
+# ``model_size_mb`` (size_mb / 2 bytes-per-param for bf16), since that
+# definition ships concrete sizes rather than an empty/zero table. All six
+# are pinned by ``backend/tests/test_vram_estimator_families.py``.
 _FAMILY_PARAMS: dict[str, dict[str, float]] = {
     "sdxl": {
         "unet": 2.6,

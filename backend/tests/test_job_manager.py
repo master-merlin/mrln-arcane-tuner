@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from app.core.job import Job, JobStatus
 from app.core.job_manager import JobManager
+from app.engine.core.definitions import ModelDefinition
 from app.engine.models.registry import registry
 
 
@@ -1032,14 +1033,17 @@ class TestStartJobPreflightDownload:
         return plugin
 
     def _fake_definition(self):
-        """Bare mock with a real registered family so
+        """spec=ModelDefinition mock with a real registered family so
         _apply_video_contract -> resolve_capabilities(definition.family)
         doesn't blow up on a MagicMock family name. discover_families() is
         idempotent (guarded by ModelRegistry._discovered) so this is safe to
         call regardless of what ran before this test in the session."""
         registry.discover_families()
-        fake_def = MagicMock()
+        fake_def = MagicMock(spec=ModelDefinition)
         fake_def.family = "sdxl"
+        fake_def.architecture_params = {}
+        fake_def.control_inputs = 0
+        fake_def.defaults = {}
         return fake_def
 
     @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")

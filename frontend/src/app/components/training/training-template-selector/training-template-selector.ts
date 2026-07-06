@@ -389,7 +389,9 @@ export class TrainingTemplateSelectorComponent implements OnInit {
       confirmLabel: 'Rename',
       onConfirm: (newName: string) => {
         // No-op when the name is unchanged (parity with the old prompt guard).
-        if (newName === tpl.name) return;
+        // Compare trimmed-to-trimmed: `newName` is already trimmed by the input
+        // modal, but a stored name with stray whitespace shouldn't defeat this.
+        if (newName === tpl.name.trim()) return;
         this.templateService.updateTemplate('training', id, { name: newName }).subscribe(updatedTpl => {
             this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
             this.toast.success('Template renamed!');

@@ -13,6 +13,7 @@ import { ProjectService } from '../../../services/project.service';
 import { ModelService } from '../../../services/model.service';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ResumeJobService } from '../../../services/resume-job.service';
+import { OverlayStore } from '../../../state/overlay.store';
 
 const STOPPED_ID = 'stopped-job-1';
 
@@ -76,6 +77,7 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
                     useValue: { apiUrl: 'http://test', wsUrl: 'ws://test' },
                 },
                 { provide: ResumeJobService, useValue: { open: vi.fn() } },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
         });
     });
@@ -137,6 +139,8 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         // Optimistic flip must be rolled back to its pre-toggle value on failure.
         expect(component.autoResume()).toBe(true);
         expect(toast.error).toHaveBeenCalledTimes(1);
+        // Toast includes the error detail (jobs-screen house pattern).
+        expect(toast.error).toHaveBeenCalledWith('Failed to save auto-resume setting — reverted: boom');
     });
 
     it('toggleAutoQueue() flips the signal and persists server-side (success path unchanged)', () => {
@@ -159,6 +163,29 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         // Optimistic flip must be rolled back to its pre-toggle value on failure.
         expect(component.autoQueue()).toBe(false);
         expect(toast.error).toHaveBeenCalledTimes(1);
+        // Toast includes the error detail (jobs-screen house pattern).
+        expect(toast.error).toHaveBeenCalledWith('Failed to save auto-queue setting — reverted: boom');
+    });
+
+    it('onSaveAsTemplate() emits saveAsTemplate only from the input modal confirm callback (window.prompt migration)', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+        const emitted: Array<{ name: string; config: unknown; definition_id: string }> = [];
+        component.saveAsTemplate.subscribe((e) => emitted.push(e));
+
+        const job = { ...makeJob('j1'), config: { definition_id: 'flux-dev' } };
+        component.onSaveAsTemplate(job);
+
+        // Nothing happens until the modal's onConfirm runs.
+        expect(emitted.length).toBe(0);
+        expect(overlay.openModal).toHaveBeenCalledTimes(1);
+        const [kind, data] = overlay.openModal.mock.calls[0] as [string, { onConfirm: (name: string) => void }];
+        expect(kind).toBe('input');
+
+        data.onConfirm('My Template');
+        expect(emitted).toEqual([
+            { name: 'My Template', config: { definition_id: 'flux-dev' }, definition_id: 'flux-dev' },
+        ]);
     });
 
     it('hasResumable() returns true for a STOPPED job once a resumable checkpoint is fetched', async () => {

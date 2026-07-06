@@ -270,6 +270,9 @@ export class OverlayStore extends EntityStore<Overlay> {
     }
 
     closeAllModals(): void {
+        // Clears the whole stack directly rather than popping one at a time, so
+        // any occluded confirm/input modal's onCancel never fires (no production
+        // caller does this today — revisit if one appears).
         this.modalStack.set([]);
     }
 
@@ -282,6 +285,9 @@ export class OverlayStore extends EntityStore<Overlay> {
      * stack stable.
      */
     patchModalData(patch: Record<string, unknown>, depth = 0): void {
+        // Replaces the data object wholesale (new reference), which breaks the
+        // confirm/input modal's ngOnDestroy identity check — don't patch an
+        // open confirm/input modal's data.
         this.modalStack.update(s => {
             if (!s.length) return s;
             const idx = s.length - 1 - depth;

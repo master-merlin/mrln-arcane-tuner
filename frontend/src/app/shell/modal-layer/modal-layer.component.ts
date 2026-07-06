@@ -158,6 +158,10 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
                                 @defer { <app-modal-confirm/> }
                             }
                             @case ('input') {
+                                <!-- Kept "on immediate" (unlike most bare @defer siblings): the
+                                     constructor effect below moves focus via queueMicrotask,
+                                     which races the default "on idle" trigger — the deferred
+                                     input may not be in the DOM yet when autofocus should land. -->
                                 @defer (on immediate) { <app-modal-input/> }
                             }
                             @case ('version-edit') {

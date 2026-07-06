@@ -16,6 +16,13 @@ logger = structlog.get_logger(__name__)
 class Flux1Trainer(GenericTrainingPipeline):
     """FLUX.1 (Dev / Schnell) LoRA trainer."""
 
+    # Fallback used when config omits ``guidance_scale``. Kontext overrides
+    # this to 1.0 (see ``Flux1KontextTrainer``) to match its own forward's
+    # no-control fallback (``trainer_kontext.py``'s ``forward_pass``) — a
+    # no-control batch there falls through to ``super().forward_pass``,
+    # which reads this default off the driver via ``_sync_driver_forward_state``.
+    _GUIDANCE_DEFAULT = 3.5
+
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:
@@ -299,16 +306,24 @@ class Flux1Trainer(GenericTrainingPipeline):
         packed, img_ids = pack_latents(latents)
         self._current_img_ids = img_ids.to(self.device)
 
-        # forward_pass is delegated to driver.forward_pass; sync the per-step
-        # state it reads (img_ids + pooled) plus the trainer-resolved dtype and
-        # config-driven guidance scale onto the driver.  This runs after
-        # encode_text (which set self._clip_pooled) and before the forward.
+        self._sync_driver_forward_state()
+
+        return packed.to(self.device, dtype=self.autocast_dtype)
+
+    def _sync_driver_forward_state(self) -> None:
+        """Sync the per-step state ``driver.forward_pass`` reads (img_ids +
+        pooled) plus the trainer-resolved dtype and config-driven guidance
+        scale onto the driver.  Must run after ``encode_text`` (which sets
+        ``self._clip_pooled``) and before the forward — same spot, same
+        order, same values as before this was extracted out of
+        ``prepare_latents_for_training``. Kontext inherits this unchanged.
+        """
         self.driver._current_img_ids = self._current_img_ids
         self.driver._clip_pooled = getattr(self, "_clip_pooled", None)
         self.driver.autocast_dtype = self.autocast_dtype
-        self.driver.guidance_scale = float(self.config.get("guidance_scale", 3.5))
-
-        return packed.to(self.device, dtype=self.autocast_dtype)
+        self.driver.guidance_scale = float(
+            self.config.get("guidance_scale", self._GUIDANCE_DEFAULT)
+        )
 
     # ── Forward Pass ─────────────────────────────────────────────────────
     # Delegated to ``Flux1Driver.forward_pass`` via the base

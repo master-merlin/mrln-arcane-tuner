@@ -297,9 +297,15 @@ async def add_project_dataset(
 
 @router.delete("/{project_id}/datasets/{dataset_id}", status_code=204)
 async def remove_project_dataset(project_id: str, dataset_id: str) -> None:
-    """Remove a dataset association from a project."""
-    await asyncio.to_thread(_projects.remove_dataset, project_id, dataset_id)
-    await _emit_project_membership_updated(project_id)
+    """Remove a dataset association from a project.
+
+    Always responds 204 (idempotent contract, unchanged) but only broadcasts
+    the project-updated event when the association actually existed and was
+    removed — a nonexistent association is a no-op, so nothing changed.
+    """
+    removed = await asyncio.to_thread(_projects.remove_dataset, project_id, dataset_id)
+    if removed:
+        await _emit_project_membership_updated(project_id)
 
 
 async def _emit_project_membership_updated(project_id: str) -> None:

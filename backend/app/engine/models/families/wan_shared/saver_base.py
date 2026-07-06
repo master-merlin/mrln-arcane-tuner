@@ -79,7 +79,7 @@ def _convert_diffusers_to_comfy(
         out[out_key] = value
 
     if unconverted:
-        logger.warning("wan21_saver_unconverted_keys", keys=unconverted)
+        logger.warning("wan_saver_unconverted_keys", keys=unconverted)
 
     return out
 

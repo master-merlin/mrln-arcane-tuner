@@ -55,7 +55,7 @@ import {
     type LossStatus,
     type StepMetrics,
 } from '../../shared/job-metrics';
-import { formatBytes } from '../../shared/format-bytes';
+import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 
 type SectionKey = 'curves' | 'samples' | 'checkpoints' | 'config' | 'log';
 
@@ -87,6 +87,7 @@ interface ConfigRow {
         SparklineComponent,
         SampleVideoPreviewComponent,
         UpperCasePipe,
+        FormatBytesPipe,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './jobs-screen.html',
@@ -857,11 +858,6 @@ export class JobsScreen {
         return this.jobService.checkpointZipDownloadUrl(jobId, folder);
     }
 
-    /** Human-readable file size — "1.5 GB", "149.6 MB", "0 B". See
-     *  `shared/format-bytes.ts`. */
-    protected formatBytes(n: number): string {
-        return formatBytes(n);
-    }
 
     /** Compact local date-time for a checkpoint's mtime (unix seconds). */
     protected checkpointDate(unixSeconds: number): string {
@@ -883,17 +879,22 @@ export class JobsScreen {
 
     /** Restart fresh — delete the run's output folder first (after confirm). */
     protected restartFresh(): void {
+        // Capture the target job BEFORE opening the confirm (like stopJob()) —
+        // the modal's confirm callback is async, so re-reading selectedJob()
+        // there could target whatever the user has since clicked to instead.
+        const j = this.selectedJob();
+        if (!j) return;
         this.overlay.openModal('confirm', {
             title: 'Restart from scratch?',
             message: 'Delete this run’s output folder (checkpoints, samples, logs) and restart from scratch?',
             confirmLabel: 'Delete & Restart',
             destructive: true,
-            onConfirm: () => this.doRestart(true),
+            onConfirm: () => this.doRestart(true, j),
         });
     }
 
-    private doRestart(fresh: boolean): void {
-        const j = this.selectedJob();
+    private doRestart(fresh: boolean, jobOverride?: Job): void {
+        const j = jobOverride ?? this.selectedJob();
         if (!j) return;
         // Delegate to ResumeJobService.restart — the single restart wrapper the
         // resume modal also uses (F-ARCH-6 dedupe). onDone runs jobs-screen's

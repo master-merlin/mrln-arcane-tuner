@@ -131,3 +131,20 @@ async def test_dataset_association_change_broadcasts_project_updated(tmp_path):
             rm_updates = _entity_calls(mock_broadcast2, op="updated")
             assert len(rm_updates) == 1, rm_updates
             assert rm_updates[0].args[1]["id"] == pid
+
+
+@pytest.mark.asyncio
+async def test_remove_nonexistent_dataset_association_emits_nothing(tmp_path):
+    """Removing an association that never existed is a 204 no-op — it must
+    not broadcast a spurious project-updated event (BL1-8)."""
+    with _isolated_db(tmp_path):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            created = (await ac.post("/api/projects", json={"name": "Emits Epsilon"})).json()
+            pid = created["id"]
+
+            mock_broadcast = AsyncMock()
+            with patch("app.api.project_routes.event_manager.broadcast", mock_broadcast):
+                rm_resp = await ac.delete(f"/api/projects/{pid}/datasets/never-existed")
+            assert rm_resp.status_code == 204, rm_resp.text
+            assert _entity_calls(mock_broadcast) == []

@@ -1,18 +1,19 @@
 import { Component, ChangeDetectionStrategy, inject, input, signal, OnDestroy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import {
-  JobService,
+  LoraToolsService,
   type LoraInspectResult,
   type LoraLayerDetail,
+  type LoraResizeRequest,
   type LoraResizeResult,
-} from '../../../services/job';
+} from '../../../services/lora-tools.service';
 import uPlot from 'uplot';
 
 export type ToolTab = 'inspect' | 'resize';
 
 export type {
   LoraInspectResult, LoraLayerDetail, LoraNormSummary, LoraLayerRelevance, LoraResizeResult,
-} from '../../../services/job';
+} from '../../../services/lora-tools.service';
 
 @Component({
     selector: 'app-lora-tools',
@@ -359,7 +360,7 @@ export type {
   `
 })
 export class LoraToolsComponent implements OnDestroy {
-    private jobs = inject(JobService);
+    private loraTools = inject(LoraToolsService);
 
     /** Which flow to show — driven by the Tools screen's outer tabs. */
     readonly tab = input<ToolTab>('inspect');
@@ -400,7 +401,7 @@ export class LoraToolsComponent implements OnDestroy {
         this.inspectError.set(null);
         this.inspectResult.set(null);
 
-        this.jobs.inspectLora(this.inspectPath).subscribe({
+        this.loraTools.inspectLora(this.inspectPath).subscribe({
             next: (result) => {
                 this.inspectResult.set(result);
                 this.isInspecting.set(false);
@@ -432,15 +433,15 @@ export class LoraToolsComponent implements OnDestroy {
         this.resizeError.set(null);
         this.resizeResult.set(null);
 
-        const body: Record<string, unknown> = {
+        const body: LoraResizeRequest = {
             input_path: this.resizeInputPath,
             output_path: this.resizeOutputPath,
             new_rank: this.resizeNewRank,
         };
-        if (this.resizeNewAlpha != null) body['new_alpha'] = this.resizeNewAlpha;
-        if (this.resizeDtype) body['save_dtype'] = this.resizeDtype;
+        if (this.resizeNewAlpha != null) body.new_alpha = this.resizeNewAlpha;
+        if (this.resizeDtype) body.save_dtype = this.resizeDtype;
 
-        this.jobs.resizeLora(body).subscribe({
+        this.loraTools.resizeLora(body).subscribe({
             next: (result) => {
                 this.resizeResult.set(result);
                 this.isResizing.set(false);

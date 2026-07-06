@@ -3,7 +3,8 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { TitleCasePipe } from '@angular/common';
 import { ToastService } from '../../../services/toast';
-import { JobService, type TrainingConfig } from '../../../services/job';
+import type { TrainingConfig } from '../../../services/job';
+import { LoraToolsService } from '../../../services/lora-tools.service';
 import { FilesystemService } from '../../../services/filesystem.service';
 import { SchemaNode } from '../schema-node';
 
@@ -213,7 +214,7 @@ export class DynamicFormFieldComponent implements OnInit {
   autofillRequested = output<void>();
 
   private toast = inject(ToastService);
-  private jobs = inject(JobService);
+  private loraTools = inject(LoraToolsService);
   private filesystem = inject(FilesystemService);
   private destroyRef = inject(DestroyRef);
 
@@ -408,7 +409,7 @@ export class DynamicFormFieldComponent implements OnInit {
     const checkpointPath = this.control().value;
     if (!checkpointPath) return;
 
-    this.jobs.inspectCheckpoint(checkpointPath).subscribe({
+    this.loraTools.inspectCheckpoint(checkpointPath).subscribe({
       next: (result) => {
         if (!result.valid) {
           this.toast.error('Invalid checkpoint: ' + (result.error || 'unknown error'));

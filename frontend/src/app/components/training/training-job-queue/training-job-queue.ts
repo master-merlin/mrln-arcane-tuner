@@ -639,11 +639,11 @@ export class TrainingJobQueueComponent implements OnInit {
     // client-side start here — that's what made unattended queues stall when
     // no browser was open.
     this.jobService.setAutoQueue(enabled).subscribe({
-      error: () => {
+      error: (err) => {
         // Roll the optimistic flip back — otherwise the UI silently diverges
         // from the server's actual (unsaved) setting.
         this.autoQueue.set(previous);
-        this.toast.error('Failed to save auto-queue setting — reverted.');
+        this.toast.error('Failed to save auto-queue setting — reverted: ' + (err?.error?.detail || err?.message));
       },
     });
   }
@@ -655,11 +655,11 @@ export class TrainingJobQueueComponent implements OnInit {
     // Server-side setting: when on, a run that dies on a transient GPU fault
     // (TDR/RC-reset → cudaErrorUnknown) auto-relaunches from its last checkpoint.
     this.jobService.setAutoResume(enabled).subscribe({
-      error: () => {
+      error: (err) => {
         // Roll the optimistic flip back — otherwise the UI silently diverges
         // from the server's actual (unsaved) setting.
         this.autoResume.set(previous);
-        this.toast.error('Failed to save auto-resume setting — reverted.');
+        this.toast.error('Failed to save auto-resume setting — reverted: ' + (err?.error?.detail || err?.message));
       },
     });
   }
@@ -928,9 +928,18 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   onSaveAsTemplate(job: Job) {
-    const name = prompt('Template name:');
-    if (!name?.trim()) return;
-    this.saveAsTemplate.emit({ name: name.trim(), config: job.config, definition_id: (job.config['definition_id'] as string) || job.plugin_id });
+    // The emit only fires from the input modal's confirm callback with the
+    // trimmed, non-empty name (the modal disables confirm on blank input) —
+    // mirrors the P4d jobs-screen migration off window.prompt().
+    this.overlay.openModal('input', {
+      title: 'Save as Template',
+      label: 'Template name',
+      placeholder: 'Template name',
+      confirmLabel: 'Save',
+      onConfirm: (name: string) => {
+        this.saveAsTemplate.emit({ name, config: job.config, definition_id: (job.config['definition_id'] as string) || job.plugin_id });
+      },
+    });
   }
 
   onReloadConfig(job: Job) {

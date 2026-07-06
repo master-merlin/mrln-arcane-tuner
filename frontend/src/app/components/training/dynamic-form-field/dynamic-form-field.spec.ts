@@ -3,7 +3,7 @@ import { FormControl } from '@angular/forms';
 
 import { DynamicFormFieldComponent } from './dynamic-form-field';
 import { ToastService } from '../../../services/toast';
-import { JobService } from '../../../services/job';
+import { LoraToolsService } from '../../../services/lora-tools.service';
 import { FilesystemService } from '../../../services/filesystem.service';
 
 describe('DynamicFormFieldComponent — sciHint() scientific-notation overlay', () => {
@@ -14,7 +14,7 @@ describe('DynamicFormFieldComponent — sciHint() scientific-notation overlay', 
       imports: [DynamicFormFieldComponent],
       providers: [
         { provide: ToastService, useValue: {} },
-        { provide: JobService, useValue: {} },
+        { provide: LoraToolsService, useValue: {} },
         { provide: FilesystemService, useValue: {} },
       ],
     });
@@ -59,7 +59,7 @@ describe('DynamicFormFieldComponent — stepMin() spinner grid alignment', () =>
       imports: [DynamicFormFieldComponent],
       providers: [
         { provide: ToastService, useValue: {} },
-        { provide: JobService, useValue: {} },
+        { provide: LoraToolsService, useValue: {} },
         { provide: FilesystemService, useValue: {} },
       ],
     });
@@ -99,7 +99,7 @@ describe('DynamicFormFieldComponent — string[] field (control_images)', () => 
       imports: [DynamicFormFieldComponent],
       providers: [
         { provide: ToastService, useValue: {} },
-        { provide: JobService, useValue: {} },
+        { provide: LoraToolsService, useValue: {} },
         { provide: FilesystemService, useValue: {} },
       ],
     });

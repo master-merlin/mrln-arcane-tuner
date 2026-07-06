@@ -248,6 +248,21 @@ def test_changed_caption_re_encodes_only_the_delta(tmp_path):
     assert "" in warm.text_cache  # unchanged → from disk
 
 
+class _DistinctiveDriver(_FakeDriver):
+    """Like _FakeDriver, but embeddings are a DISTINCTIVE marker (all 7.0)
+    instead of the shared fixture's all-ones — so a healed te1 can be told
+    apart from a poisoned-with-ones te1 by content, not just presence."""
+
+    def encode_text(self, captions, dtype):
+        self.calls += 1
+        b = len(captions)
+        return TextEncoderOutput(
+            embeddings=torch.full((b, 5, 8), 7.0),
+            attention_mask=torch.ones(b, 5),
+            pooled=torch.full((b, 5, 8), 2.0),
+        )
+
+
 def test_poisoned_cache_self_heals_missing_te2_te3(tmp_path):
     """A crash between the te1 write and the te2/te3 writes must not
     permanently poison the cache: te1-present-but-te2/te3-missing is a MISS,
@@ -259,10 +274,12 @@ def test_poisoned_cache_self_heals_missing_te2_te3(tmp_path):
     base = os.path.join(str(tmp_path), "embeddings", "none")
     te1_dir = os.path.join(base, "te1")
     # Simulate the poisoned state an older/crashed build would leave behind:
-    # only te1 written, te2/te3 never written.
-    TextEmbeddingCache.save("a cat", torch.ones(1, 5, 8), te1_dir, "h")
+    # only te1 written (a distinctive all-ones marker), te2/te3 never written.
+    poisoned_te1 = torch.ones(1, 5, 8)
+    TextEmbeddingCache.save("a cat", poisoned_te1, te1_dir, "h")
 
     t = _disk_trainer(str(tmp_path))
+    t.driver = _DistinctiveDriver()
     t._build_caption_hints = lambda: {"a cat": "h"}
     t._pre_cache_text_embeddings()
 
@@ -277,6 +294,18 @@ def test_poisoned_cache_self_heals_missing_te2_te3(tmp_path):
             if f.endswith(".safetensors")
         ]
         assert len(files) == 1, f"{slot} should now hold the healed caption file"
+
+    # The on-disk te1 content itself must have been REPLACED, not just
+    # left in place with te2/te3 added alongside it: it must now match the
+    # re-encoded stub's distinctive marker (7.0), not the poisoned ones.
+    healed_te1 = TextEmbeddingCache.load("a cat", te1_dir, "h")
+    assert healed_te1 is not None
+    assert torch.equal(healed_te1, torch.full((1, 5, 8), 7.0)), (
+        "healed te1 on disk must match the re-encoded stub output"
+    )
+    assert not torch.equal(healed_te1, poisoned_te1), (
+        "healed te1 on disk must no longer be the poisoned content"
+    )
 
 
 def test_te1_saved_last_as_commit_marker(tmp_path, monkeypatch):

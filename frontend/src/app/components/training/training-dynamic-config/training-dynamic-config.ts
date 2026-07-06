@@ -6,7 +6,8 @@ import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
-import { JobService, type TrainingEstimate, type TrainingConfig } from '../../../services/job';
+import type { TrainingEstimate, TrainingConfig } from '../../../services/job';
+import { ConfigHelpService } from '../../../services/config-help.service';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 
@@ -452,7 +453,7 @@ export class TrainingDynamicConfigComponent {
   private fb = inject(FormBuilder);
   private toast = inject(ToastService);
   private systemService = inject(SystemService);
-  private jobService = inject(JobService);
+  private configHelpService = inject(ConfigHelpService);
   private modelService = inject(ModelService);
   private registryStore = inject(RegistryStore);
   private modelCapabilitiesService = inject(ModelCapabilitiesService);
@@ -663,7 +664,7 @@ export class TrainingDynamicConfigComponent {
   });
 
   constructor() {
-    this.jobService.getConfigHelp()
+    this.configHelpService.getConfigHelp()
       .subscribe(data => this.configHelp.set(data));
 
     // Load global default model path for browse dialog

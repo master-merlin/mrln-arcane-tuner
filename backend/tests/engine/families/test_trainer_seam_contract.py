@@ -238,6 +238,17 @@ FAMILIES: list[FamilySpec] = [
         "model", "model",
         encode_kind="list", encode_seed=_seed_variable_tensor, encode_check=_check_list_tensor,
     ),
+    # ── krea2: the ORIGINAL bug class this whole contract exists to pin (see
+    # module docstring + ``test_krea2_family.py``'s C3/C4). Its encode_text
+    # return-contract is already pinned in that dedicated test file, so only
+    # the _update_primary_model / alias / property-alias aspects run here.
+    FamilySpec(
+        "krea2",
+        "app.engine.models.families.krea2.trainer:Krea2Trainer",
+        "app.engine.models.families.krea2.driver:Krea2Driver",
+        "model", "model", property_alias="transformer",
+        encode_kind=None,
+    ),
 ]
 
 _IDS = [f.id for f in FAMILIES]
@@ -322,12 +333,62 @@ def test_encode_returns_documented_contract(spec: FamilySpec):
     spec.encode_check(out)
 
 
+def _discover_override_families() -> set[str]:
+    """Walk every ``app.engine.models.families.<family>.trainer*`` module and
+    collect the family ids of trainer classes that override
+    ``_update_primary_model`` (i.e. define it in their own ``__dict__``,
+    not merely inherit ``PipelineBaseMixin``'s no-op-on-the-driver base).
+
+    This is the DYNAMIC replacement for a hardcoded required-set: it fails
+    the moment a new family adds an override without a matching
+    :class:`FamilySpec`, instead of relying on someone remembering to update
+    a literal set by hand (the exact miss that let flux1/qwen_image/sdxl/
+    zimage go uncovered after P2a).
+    """
+    import glob
+    import importlib
+    import inspect
+    import os
+
+    from app.engine.core.pipeline import GenericTrainingPipeline
+    from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
+
+    base_method = PipelineBaseMixin._update_primary_model
+
+    families_dir = os.path.dirname(
+        importlib.import_module("app.engine.models.families").__file__
+    )
+    found: set[str] = set()
+    for family_name in sorted(os.listdir(families_dir)):
+        family_path = os.path.join(families_dir, family_name)
+        if not os.path.isdir(family_path) or family_name == "__pycache__":
+            continue
+        for trainer_file in glob.glob(os.path.join(family_path, "trainer*.py")):
+            mod_name = (
+                f"app.engine.models.families.{family_name}."
+                f"{os.path.splitext(os.path.basename(trainer_file))[0]}"
+            )
+            module = importlib.import_module(mod_name)
+            for _, cls in inspect.getmembers(module, inspect.isclass):
+                if cls.__module__ != mod_name:
+                    continue  # only classes DEFINED in this module, not re-exports
+                if not issubclass(cls, GenericTrainingPipeline):
+                    continue
+                override = cls.__dict__.get("_update_primary_model")
+                if override is not None and override is not base_method:
+                    found.add(family_name)
+    return found
+
+
 def test_all_override_families_covered():
-    """Guard: the six families the brief names plus wan21/wan22, PLUS the four
-    P2a-delegated families (flux1/qwen_image/sdxl/zimage) are all here."""
-    required = {
-        "ernie_image", "hidream_o1", "ideogram4", "flux2", "ltx2",
-        "microsoft_lens", "wan21", "wan22",
-        "flux1", "qwen_image", "sdxl", "zimage",
-    }
-    assert required <= set(_IDS)
+    """Guard: every family whose trainer overrides ``_update_primary_model``
+    (the historical krea2 bug class — see module docstring) must have a
+    :class:`FamilySpec` exercising the real seam, discovered by introspection
+    rather than a hand-maintained literal set."""
+    discovered = _discover_override_families()
+    assert discovered, "introspection found zero override families — probably broken"
+    missing = discovered - set(_IDS)
+    assert not missing, (
+        f"family/families {missing} override _update_primary_model but have "
+        "no FamilySpec in FAMILIES above — add one"
+    )

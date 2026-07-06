@@ -158,6 +158,11 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
                                 @defer { <app-modal-confirm/> }
                             }
                             @case ('input') {
+                                <!-- Kept "on immediate" (unlike most bare @defer siblings) as a
+                                     precaution: the shared focus effect below moves focus via
+                                     queueMicrotask, which could race a lazier trigger before the
+                                     text field exists. Assumed, not test-verified — a focused
+                                     text field matters more here than in button-only modals. -->
                                 @defer (on immediate) { <app-modal-input/> }
                             }
                             @case ('version-edit') {

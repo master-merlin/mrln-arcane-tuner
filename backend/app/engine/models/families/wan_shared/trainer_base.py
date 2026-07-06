@@ -118,6 +118,12 @@ class WanTextCacheMixin:
             seen.add(cap)
             work.append((cap, hint))
 
+        # NOTE: _build_caption_hints() already expands DETERMINISTIC sample
+        # prompts (no wildcards) into its captions; the explicit
+        # _sample_prompt_texts() loop below exists to additionally catch
+        # RANDOM-wildcard expansions, which are re-rolled independently and
+        # can differ from what _build_caption_hints saw. Any overlap between
+        # the two is a no-op: _add's `seen`/text_cache guard dedupes it.
         for cap, hint in self._build_caption_hints().items():
             _add(cap, hint)
         sample_texts = self._sample_prompt_texts()

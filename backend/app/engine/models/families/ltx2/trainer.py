@@ -13,6 +13,7 @@ plain video flow-match MSE — identical to the audio-free pipeline path.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any
 
@@ -145,6 +146,12 @@ class Ltx2Trainer(GenericTrainingPipeline):
             seen.add(cap)
             work.append((cap, hint))
 
+        # NOTE: _build_caption_hints() already expands DETERMINISTIC sample
+        # prompts (no wildcards) into its captions; the explicit
+        # _sample_prompt_texts() loop below exists to additionally catch
+        # RANDOM-wildcard expansions, which are re-rolled independently and
+        # can differ from what _build_caption_hints saw. Any overlap between
+        # the two is a no-op: _add's `seen`/text_cache guard dedupes it.
         for cap, hint in self._build_caption_hints().items():
             _add(cap, hint)
         sample_texts = self._sample_prompt_texts()
@@ -181,6 +188,11 @@ class Ltx2Trainer(GenericTrainingPipeline):
                         self.text_cache[cap] = (emb, pooled, mask)
                         disk_loaded += 1
                         continue
+                    self.logger.warning(
+                        "ltx2_partial_triple_treated_as_miss",
+                        caption_hash=hashlib.sha256(cap.encode("utf-8")).hexdigest()[:16],
+                        hint=hint,
+                    )
             need_encode.append((cap, hint))
 
         if not need_encode:

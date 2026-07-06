@@ -36,7 +36,7 @@
                 <span class="kpi-corner" title="Total size on disk (full dataset folders)">
                     Total size on disk:
                     @if (cacheStats(); as s) {
-                        <span class="mono">{{ formatBytes(s.dataset_root_bytes) }}</span>
+                        <span class="mono">{{ s.dataset_root_bytes | formatBytes }}</span>
                     } @else {
                         <!-- Avoid showing the image-bytes sum (totalSizeBytes()) as
                              a stand-in: it's ~3× smaller than the real folder size
@@ -271,7 +271,7 @@
                     }
                     @if (d.total_size_bytes && d.total_size_bytes > 0) {
                         <span class="ds-card-size" title="Total size on disk">
-                            {{ formatBytes(d.total_size_bytes) }}
+                            {{ d.total_size_bytes | formatBytes }}
                         </span>
                     }
                     <span class="ds-card-pills state-pills-pad">

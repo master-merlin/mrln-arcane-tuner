@@ -13,6 +13,7 @@ import { DatasetStore } from '../../../state/dataset.store';
 import { ToastService } from '../../../services/toast';
 import { SystemService } from '../../../services/system.service';
 import { JobService } from '../../../services/job';
+import { ConfigHelpService } from '../../../services/config-help.service';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 import { ModelCapabilitiesService } from '../../../services/model-capabilities.service';
@@ -53,10 +54,28 @@ function build() {
       { provide: DatasetStore, useValue: { entities: () => [] } },
       { provide: ToastService, useValue: { error: () => {}, success: () => {}, warning: () => {} } },
       { provide: SystemService, useValue: {} },
-      { provide: JobService, useValue: { estimate: () => of(null), getConfigHelp: () => of({}) } },
-      { provide: ModelService, useValue: { getGlobalSettings: () => of({ default_model_path: 'D:\\Models' }) } },
+      { provide: JobService, useValue: { estimate: () => of(null) } },
+      { provide: ConfigHelpService, useValue: { getConfigHelp: () => of({}) } },
+      {
+        provide: ModelService,
+        useValue: {
+          getGlobalSettings: () => of({ default_model_path: 'D:\\Models' }),
+          // Exercised by the definition_id valueChanges path (real setValue,
+          // not the direct guard call) → AdvancedVramCardComponent.loadCapabilities().
+          getCapabilities: () => of({ enriched: false, block_topology: [] }),
+        },
+      },
       { provide: FilesystemService, useValue: {} },
-      { provide: RegistryStore, useValue: {} },
+      {
+        provide: RegistryStore,
+        useValue: {
+          // Exercised by the definition_id valueChanges path (real setValue,
+          // not the direct guard call) → the _sourceOverrideEffect's
+          // loadSourceOverride().
+          loadFor: () => Promise.resolve(),
+          byId: () => () => undefined,
+        },
+      },
       { provide: ModelCapabilitiesService, useValue: { getCapabilities: () => of(null) } },
       { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: '/media' } },
       { provide: TemplateService, useValue: { listTrainingTemplates: () => of([]) } },
@@ -141,6 +160,45 @@ describe('TrainingDynamicConfig — modal-registry triggers (P4a)', () => {
     comp.form.get('model_family')!.setValue('newFam', { emitEvent: false });
     comp.form.get('definition_id')!.setValue('new-def', { emitEvent: false });
     comp._checkTargetLayersOnModelChange('oldFam', 'old-def');
+    expect(overlay.topModal()?.kind).toBe('confirm');
+
+    // Mount the real confirm modal (as modal-layer would), then dismiss it the
+    // way the backdrop click / global Esc shortcut do: closeModal() directly,
+    // followed by component destruction — NO explicit choice.
+    const confirmFixture = TestBed.createComponent(ConfirmModalComponent);
+    confirmFixture.detectChanges();
+    overlay.closeModal();
+    confirmFixture.destroy();
+
+    // Keep-path ran: model reverted to the previous selection…
+    expect(comp.form.get('model_family')!.value).toBe('oldFam');
+    expect(comp.form.get('definition_id')!.value).toBe('old-def');
+    expect(comp.currentDefinitionId()).toBe('old-def');
+    expect(comp.selectedFamily()).toBe('oldFam');
+    // …and the targeted layers were NOT wiped.
+    expect(comp.form.get('targeted_layers')!.value).toEqual(['blocks.0.attn']);
+    expect(overlay.modalStack().length).toBe(0);
+  });
+
+  it('DISMISSING the model-change confirm is equivalent to Keep when triggered via the REAL definition_id valueChanges path (not the guard method directly)', () => {
+    const { comp, overlay } = build();
+    comp.form.addControl('targeted_layers', new FormControl<string[]>(['blocks.0.attn']));
+
+    // Seed the "previously known" model state the component tracks internally
+    // (normally populated the first time the rebuild effect runs against a
+    // real definition_id) — this is setup, not the trigger under test.
+    comp._lastKnownModelFamily = 'oldFam';
+    comp._lastKnownDefinitionId = 'old-def';
+    // The stubbed TrainingTemplateSelectorComponent still runs its REAL
+    // ngOnInit (only its template is overridden), which auto-applies on load
+    // and latches `_isTemplateApplying` true for 1500ms (onTemplateApplied's
+    // setTimeout release) — clear it so it doesn't mask the guard below.
+    comp._isTemplateApplying = false;
+
+    // Trigger via the PRODUCTION path: a real `setValue` on the `definition_id`
+    // control fires its `valueChanges` subscription, which itself calls
+    // `_checkTargetLayersOnModelChange` — the guard is never invoked directly.
+    comp.form.get('definition_id')!.setValue('new-def');
     expect(overlay.topModal()?.kind).toBe('confirm');
 
     // Mount the real confirm modal (as modal-layer would), then dismiss it the

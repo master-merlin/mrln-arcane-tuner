@@ -1,7 +1,7 @@
 import { Component, inject, signal, OnInit, effect, ChangeDetectionStrategy } from '@angular/core';
 import { ToastService } from '../../../services/toast';
 import { FormsModule } from '@angular/forms';
-import { ModelService, type ModelGlobalSettings } from '../../../services/model.service';
+import { ModelService, type ModelGlobalSettings, type ModelGlobalSettingsPatch } from '../../../services/model.service';
 import { FilesystemService } from '../../../services/filesystem.service';
 import { SettingsStore } from '../../../state/settings.store';
 import { IcoComponent } from '../../../icons/ico.component';
@@ -269,7 +269,7 @@ export class ServerControlComponent implements OnInit {
     }
 
     onModelSettingToggle(key: string, value: boolean) {
-        this.modelService.updateModelSettings({ [key]: value }).subscribe({
+        this.modelService.updateModelSettings({ [key]: value } as ModelGlobalSettingsPatch).subscribe({
             next: (s) => {
                 this.modelSettings.set(s);
                 this.toast.success(`${key === 'global_offline_mode' ? 'Offline mode' : key} ${value ? 'enabled' : 'disabled'}`);

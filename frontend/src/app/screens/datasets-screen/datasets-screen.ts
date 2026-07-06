@@ -10,6 +10,7 @@ import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
 import { datasetPreviewUrl } from '../../shared/media-preview';
 import { formatBytes } from '../../shared/format-bytes';
+import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import {
     SearchStore,
     type DatasetSearchField,
@@ -95,7 +96,7 @@ interface CacheStats {
 @Component({
     selector: 'app-datasets-screen',
     standalone: true,
-    imports: [IcoComponent, KpiTileComponent, ChipTagComponent, StatePillsComponent],
+    imports: [IcoComponent, KpiTileComponent, ChipTagComponent, StatePillsComponent, FormatBytesPipe],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './datasets-screen.html',
     styleUrl: './datasets-screen.css',
@@ -574,11 +575,11 @@ export class DatasetsScreen {
         const totalImageBytes = this.totalSizeBytes();
         if (!m || m.total_images === 0) {
             // No MPx data yet — show just the total if we have it, else fallback.
-            return totalImageBytes > 0 ? this.formatBytes(totalImageBytes) : 'across datasets';
+            return totalImageBytes > 0 ? formatBytes(totalImageBytes) : 'across datasets';
         }
         const mp = m.avg_megapixels.toFixed(1);
-        const avgBytes = this.formatBytes(m.avg_size_bytes);
-        const totalStr = this.formatBytes(totalImageBytes);
+        const avgBytes = formatBytes(m.avg_size_bytes);
+        const totalStr = formatBytes(totalImageBytes);
         return `${totalStr} · ${mp} MP avg · ${avgBytes} avg`;
     });
 
@@ -613,17 +614,10 @@ export class DatasetsScreen {
         const frac = total === 0 ? '' : `${this.kpis().cached} / ${total} datasets`;
         const s = this.cacheStats();
         if (!s) return frac || 'latents on disk';
-        const latents = this.formatBytes(s.latent_bytes || 0);
-        const embeds  = this.formatBytes(s.embedding_bytes || 0);
+        const latents = formatBytes(s.latent_bytes || 0);
+        const embeds  = formatBytes(s.embedding_bytes || 0);
         return `${frac} · ${latents} latents · ${embeds} embeds`;
     });
-
-    /** Human-readable byte formatter — "1.5 GB", "149.6 MB", "0 B". Used by
-     *  the DATASETS + CACHED sub-lines, the per-card size pill, and the
-     *  DATASETS tile's corner indicator. See `shared/format-bytes.ts`. */
-    protected formatBytes(n: number): string {
-        return formatBytes(n);
-    }
 
     /** Project badge lookup for cards (only shown in Global scope). */
     protected projectBadge = computed<ProjectBadge | null>(() => {

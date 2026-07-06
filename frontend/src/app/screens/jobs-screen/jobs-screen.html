@@ -280,7 +280,7 @@
                                         </span>
                                         <div class="ckpt-info">
                                             <span class="ckpt-name mono" [title]="c.filename">{{ c.filename }}</span>
-                                            <span class="ckpt-meta mono">{{ formatBytes(c.size_bytes) }} · {{ checkpointDate(c.created_at) }}</span>
+                                            <span class="ckpt-meta mono">{{ c.size_bytes | formatBytes }} · {{ checkpointDate(c.created_at) }}</span>
                                         </div>
                                         <a class="btn sm ckpt-dl"
                                            [href]="checkpointDownloadUrl(j.id, c.filename)"

@@ -107,80 +107,6 @@ export interface JobSample {
   created_at: number;
 }
 
-/** `GET /checkpoints/inspect` — checkpoint validity + its embedded training config. */
-export interface CheckpointInspectResponse {
-  valid: boolean;
-  error?: string;
-  config?: TrainingConfig;
-  global_step?: number;
-}
-
-/** One LoRA layer's weight-delta stats (`inspect_lora().layer_details[]`). */
-export interface LoraLayerDetail {
-  module: string;
-  component: string;
-  norm_delta: number;
-  strength: number;
-  /** Bar width %, computed client-side in sortedLayerDetails(). */
-  _barPct?: number;
-}
-
-/** Aggregate norm stats across all layers. */
-export interface LoraNormSummary {
-  mean_norm: number;
-  std_norm: number;
-  max_norm: number;
-  max_norm_layer: string;
-  min_norm: number;
-  min_norm_layer: string;
-}
-
-/** Layer-relevance / speed-training analysis. Fields are required because the
- *  template reads them via non-null assertion inside an `@if` that gates the
- *  whole section on its presence (Angular evaluates that guard at runtime). */
-export interface LoraLayerRelevance {
-  essential_count: number;
-  total_layers: number;
-  essential_params_pct: number;
-  speed_gain_pct: number;
-  target_module_patterns: string[];
-  essential_modules: string[];
-  tier_map: Record<string, string>;
-}
-
-/**
- * `GET /tools/lora/inspect` result. The backend returns a free-form dict; these
- * are the fields this component actually reads (all optional — older/partial
- * inspections may omit sections).
- */
-export interface LoraInspectResult {
-  format?: string;
-  rank?: number;
-  alpha?: number;
-  lora_modules?: number;
-  dtype?: string;
-  file_size_mb?: number;
-  path?: string;
-  layer_details?: LoraLayerDetail[];
-  // Required (not optional): the template reads `.norm_summary.x` /
-  // `.layer_relevance.y` via `!` inside `@if`-guarded sections — Angular still
-  // evaluates the guard on the real (possibly-absent) runtime value.
-  norm_summary: LoraNormSummary;
-  layer_relevance: LoraLayerRelevance;
-  module_list?: string[];
-  training_params?: Record<string, unknown>;
-  tag_frequency?: Record<string, Record<string, number>>;
-  weight_stats?: Record<string, { avg_magnitude?: number; avg_strength?: number }>;
-}
-
-/** `POST /tools/lora/resize` result. */
-export interface LoraResizeResult {
-  old_rank?: number;
-  new_rank?: number;
-  modules_resized?: number;
-  output_size_mb?: number;
-}
-
 @Injectable({
   providedIn: 'root'
 })
@@ -360,36 +286,5 @@ export class JobService {
   getPluginSchema(pluginId: string, projectId?: string | null): Observable<SchemaNode> {
     const scopeParam = projectId ? `&project_id=${encodeURIComponent(projectId)}` : '';
     return this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${pluginId}/schema?t=${Date.now()}${scopeParam}`);
-  }
-
-  /** Per-field help copy (tip + markdown-lite detail) for the config-help modal.
-   *  Served as a static asset (`/config_help.json`, by ng — NOT under `/api`). */
-  getConfigHelp(): Observable<Record<string, { tip: string; detail: string }>> {
-    return this.http.get<Record<string, { tip: string; detail: string }>>('/config_help.json');
-  }
-
-  /** Validate a checkpoint path and read back its embedded training config
-   *  (powers "Load config" for `resume_from_checkpoint`). */
-  inspectCheckpoint(path: string): Observable<CheckpointInspectResponse> {
-    return this.http.get<CheckpointInspectResponse>(`${this.rtc.apiUrl}/checkpoints/inspect`, {
-      params: { path },
-    });
-  }
-
-  /** Inspect a LoRA `.safetensors` file: metadata, rank, alpha, layer stats. */
-  inspectLora(path: string): Observable<LoraInspectResult> {
-    return this.http.get<LoraInspectResult>(`${this.rtc.apiUrl}/tools/lora/inspect`, {
-      params: { path },
-    });
-  }
-
-  /**
-   * Resize a LoRA via SVD to a new rank. `body` carries `input_path` /
-   * `output_path` / `new_rank` plus the optional `new_alpha` / `save_dtype` —
-   * left as an open record since the call site only sets the optional keys
-   * when the user filled them in.
-   */
-  resizeLora(body: Record<string, unknown>): Observable<LoraResizeResult> {
-    return this.http.post<LoraResizeResult>(`${this.rtc.apiUrl}/tools/lora/resize`, body);
   }
 }

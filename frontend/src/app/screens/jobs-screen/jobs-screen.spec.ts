@@ -359,6 +359,27 @@ describe('JobsScreen — restart delegation + typed dialogs (P4d)', () => {
         expect(c.resumeJobs.restart).toHaveBeenCalledWith(JOB_ID, true, expect.any(Function));
     });
 
+    it('restartFresh() captures the target job BEFORE opening the confirm — a selection change while the modal is open does not redirect the restart', () => {
+        const OTHER_JOB_ID = 'job-2';
+        const { fixture, view, comp } = setup();
+        selectJob(view, fixture);
+        view.archivedJobs.set([
+            ...view.archivedJobs(),
+            makeJob({ id: OTHER_JOB_ID, status: JobStatus.STOPPED }),
+        ]);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: ReturnType<typeof vi.fn> };
+        const c = comp as unknown as Comp;
+        c['restartFresh']();
+        // Simulate the user clicking a different job row while the confirm modal is still open.
+        view.selectedId.set(OTHER_JOB_ID);
+        fixture.detectChanges();
+
+        const [, data] = overlay.openModal.mock.calls.at(-1) as [string, { onConfirm: () => void }];
+        data.onConfirm();
+        // The ORIGINALLY-selected job restarts, not whatever is selected now.
+        expect(c.resumeJobs.restart).toHaveBeenCalledWith(JOB_ID, true, expect.any(Function));
+    });
+
     it('stopJob() hard-stops only from the confirm modal callback', () => {
         const { fixture, view, comp } = setup();
         selectJob(view, fixture, { status: JobStatus.RUNNING });

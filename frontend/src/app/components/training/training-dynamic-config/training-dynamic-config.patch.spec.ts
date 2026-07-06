@@ -7,6 +7,7 @@ import { DatasetStore } from '../../../state/dataset.store';
 import { ToastService } from '../../../services/toast';
 import { SystemService } from '../../../services/system.service';
 import { JobService } from '../../../services/job';
+import { ConfigHelpService } from '../../../services/config-help.service';
 import { ModelService } from '../../../services/model.service';
 import { RegistryStore } from '../../../state/registry.store';
 import { ModelCapabilitiesService } from '../../../services/model-capabilities.service';
@@ -60,7 +61,8 @@ function build() {
             { provide: DatasetStore, useValue: {} },
             { provide: ToastService, useValue: { error: () => {}, success: () => {} } },
             { provide: SystemService, useValue: {} },
-            { provide: JobService, useValue: { estimate: () => of(null), getConfigHelp: () => of({}) } },
+            { provide: JobService, useValue: { estimate: () => of(null) } },
+            { provide: ConfigHelpService, useValue: { getConfigHelp: () => of({}) } },
             { provide: ModelService, useValue: { getGlobalSettings: () => of({ default_model_path: '' }) } },
             { provide: RegistryStore, useValue: {} },
             { provide: ModelCapabilitiesService, useValue: { getCapabilities: () => of(null) } },

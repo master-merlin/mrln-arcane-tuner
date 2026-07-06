@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { RuntimeConfigService } from './runtime-config.service';
 import { Observable } from 'rxjs';
 import { BlockTopologyGroup, ModelCapabilities } from './model-capabilities.service';
+import { FilesystemService } from './filesystem.service';
 
 export interface EnrichmentResult {
     status: string;
@@ -47,18 +48,20 @@ export interface ModelGlobalSettings {
 
 /**
  * Partial update body for `PUT /models/settings` (the backend merges into the
- * persisted blob). Callers patch one or more of `global_offline_mode` /
- * `default_model_path` / `hf_token` — kept as an open record rather than a
- * fixed shape since call sites build the patch dynamically (e.g. a generic
- * toggle handler keyed by settings name).
+ * persisted blob). Every field is optional — callers patch one or more of
+ * `global_offline_mode` / `default_model_path` / `hf_token`. `hf_token` is
+ * write-only (never echoed back — see `hf_token_set` on {@link ModelGlobalSettings}),
+ * so it's layered on top of `Partial<ModelGlobalSettings>` rather than living
+ * on the response type itself.
  */
-export type ModelGlobalSettingsPatch = Record<string, unknown>;
+export type ModelGlobalSettingsPatch = Partial<ModelGlobalSettings> & { hf_token?: string };
 
 @Injectable({
     providedIn: 'root'
 })
 export class ModelService {
     private http = inject(HttpClient);
+    private filesystem = inject(FilesystemService);
     private apiUrl = `${inject(RuntimeConfigService).apiUrl}/models`;
 
     getCapabilities(definitionId: string): Observable<ModelCapabilities> {
@@ -103,13 +106,10 @@ export class ModelService {
         );
     }
 
-    /** Open a native OS folder picker dialog via the backend. */
+    /** Open a native OS folder picker dialog via the backend (delegates to
+     *  the shared {@link FilesystemService} with this domain's own title). */
     pickFolder(initialDir?: string): Observable<{ path: string }> {
-        const baseUrl = this.apiUrl.replace('/models', '');
-        return this.http.post<{ path: string }>(
-            `${baseUrl}/filesystem/pick-folder`,
-            { initial_dir: initialDir || '', title: 'Select Model Directory' },
-        );
+        return this.filesystem.pickFolder(initialDir || '', 'Select Model Directory');
     }
 
     /** Fetch global model settings (offline mode, default model path). */

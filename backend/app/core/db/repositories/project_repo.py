@@ -110,14 +110,18 @@ class ProjectRepository:
                 (project_id, dataset_id, time.time()),
             )
 
-    def remove_dataset(self, project_id: str, dataset_id: str) -> None:
-        """Remove a dataset association from a project."""
+    def remove_dataset(self, project_id: str, dataset_id: str) -> bool:
+        """Remove a dataset association from a project.
+
+        Returns whether the association actually existed (and was removed).
+        """
         with get_db().write() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "DELETE FROM project_datasets "
                 "WHERE project_id = ? AND dataset_id = ?",
                 (project_id, dataset_id),
             )
+            return cursor.rowcount > 0
 
     # ── Stats ────────────────────────────────────────────────────────
 

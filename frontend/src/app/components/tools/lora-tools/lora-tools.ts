@@ -360,7 +360,7 @@ export type {
   `
 })
 export class LoraToolsComponent implements OnDestroy {
-    private jobs = inject(LoraToolsService);
+    private loraTools = inject(LoraToolsService);
 
     /** Which flow to show — driven by the Tools screen's outer tabs. */
     readonly tab = input<ToolTab>('inspect');
@@ -401,7 +401,7 @@ export class LoraToolsComponent implements OnDestroy {
         this.inspectError.set(null);
         this.inspectResult.set(null);
 
-        this.jobs.inspectLora(this.inspectPath).subscribe({
+        this.loraTools.inspectLora(this.inspectPath).subscribe({
             next: (result) => {
                 this.inspectResult.set(result);
                 this.isInspecting.set(false);
@@ -441,7 +441,7 @@ export class LoraToolsComponent implements OnDestroy {
         if (this.resizeNewAlpha != null) body.new_alpha = this.resizeNewAlpha;
         if (this.resizeDtype) body.save_dtype = this.resizeDtype;
 
-        this.jobs.resizeLora(body).subscribe({
+        this.loraTools.resizeLora(body).subscribe({
             next: (result) => {
                 this.resizeResult.set(result);
                 this.isResizing.set(false);

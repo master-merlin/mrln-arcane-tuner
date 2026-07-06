@@ -83,7 +83,8 @@ class Wan22Sampler(WanVideoSamplerBase):
         # SAME sigma → the SAME boundary-based expert selection, so the uncond
         # forward always routes through the expert the cond forward used.
         # guidance_scale <= 1 keeps the single conditional forward.
-        cfg_on = guidance_scale is not None and float(guidance_scale) > 1.0
+        gs = float(guidance_scale) if guidance_scale is not None else None
+        cfg_on = gs is not None and gs > 1.0
         text_uncond = None
         if cfg_on:
             neg_text = str(self.config.get("sample_negative_prompt", "") or "")
@@ -117,7 +118,7 @@ class Wan22Sampler(WanVideoSamplerBase):
             # (same sigma) the same expert.
             v_c = v_c.to(torch.float32)
             v_u = _forward(x, sigma, text_uncond).to(torch.float32)
-            return v_u + guidance_scale * (v_c - v_u)
+            return v_u + gs * (v_c - v_u)
 
         # euler_integrate forces the trajectory to fp32 (no autocast wrapper).
         return self.euler_integrate(noise, sigmas, _velocity)

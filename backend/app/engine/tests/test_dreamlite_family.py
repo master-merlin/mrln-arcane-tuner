@@ -231,6 +231,360 @@ def test_loader_dtype_policy_is_generic():
         )
 
 
+# ── Task 4: Driver ───────────────────────────────────────────────────────────
+
+# Tiny UNet config for CPU tests. Structurally faithful to the checkpoint:
+# per-level attention_head_dim (== NUM HEADS per the UNet naming bug),
+# MQA (num_kv_heads=1) + rms_norm qk_norm, text_proj_rms encoder projection
+# (TE width 12 → cross-attn 16), "time" addition embedding consuming
+# time_ids, ff_mult 3, sep-convs, linear projections, and the checkpoint's
+# per-level transformer_layers_per_block (1, 2, 4).
+_TINY_UNET_CFG = dict(
+    in_channels=4,
+    out_channels=4,
+    block_out_channels=(8, 16, 32),
+    layers_per_block=1,
+    transformer_layers_per_block=(1, 2, 4),
+    attention_head_dim=4,
+    cross_attention_dim=16,
+    norm_num_groups=8,
+    use_linear_projection=True,
+    encoder_hid_dim=12,
+    encoder_hid_dim_type="text_proj_rms",
+    addition_embed_type="time",
+    addition_time_embed_dim=8,
+    projection_class_embeddings_input_dim=16,
+    num_kv_heads=1,
+    qk_norm="rms_norm",
+    ff_mult=3,
+    use_sep_conv=True,
+)
+
+_TINY_TEXT_DIM = 12  # == encoder_hid_dim of the tiny model
+
+
+def _build_tiny_unet():
+    import torch  # noqa: PLC0415
+
+    from diffusers.models.unets.unet_dreamlite import DreamLiteUNetModel
+
+    torch.manual_seed(0)
+    return DreamLiteUNetModel(**_TINY_UNET_CFG).eval()
+
+
+def _make_driver(model=None, arch=None):
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.dreamlite.driver import DreamLiteDriver
+
+    definition = _make_dreamlite_definition(architecture_params=arch or {})
+    drv = DreamLiteDriver(definition, torch.device("cpu"))
+    drv.assign_components(
+        {"unet": model, "vae": None, "text_encoder": None, "tokenizer": None},
+    )
+    return drv
+
+
+def test_driver_lora_targets_match_unet_module_tree():
+    """Every default LoRA target pattern matches ≥1 Linear in the tiny UNet;
+    self-attention (attn1) exists ONLY where the checkpoint has it."""
+    import torch  # noqa: PLC0415
+
+    model = _build_tiny_unet()
+    drv = _make_driver(model)
+    targets = drv.get_lora_targets()
+
+    linear_names = {
+        n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)
+    }
+    for t in targets:
+        assert any(n == t or n.endswith("." + t) for n in linear_names), (
+            f"LoRA target {t!r} matches no Linear module"
+        )
+
+    # attn1 topology: NO self-attention in down_blocks.0/1 and up_blocks.1
+    # (the "NoSelfAttn" blocks); attn1 lives in down_blocks.2, mid_block,
+    # and up_blocks.0. up_blocks.2 has no attention at all.
+    assert not any(
+        n.startswith("down_blocks.0") and ".attn1." in n for n in linear_names
+    ), "down_blocks.0 must NOT have self-attention"
+    assert not any(
+        n.startswith("down_blocks.1") and ".attn1." in n for n in linear_names
+    )
+    assert not any(
+        n.startswith("up_blocks.1") and ".attn1." in n for n in linear_names
+    )
+    assert any(
+        n.startswith("down_blocks.2") and ".attn1." in n for n in linear_names
+    ), "down_blocks.2 must have self-attention"
+    assert any(
+        n.startswith("mid_block") and ".attn1." in n for n in linear_names
+    ), "mid_block must have self-attention"
+    assert any(
+        n.startswith("up_blocks.0") and ".attn1." in n for n in linear_names
+    )
+    assert not any(n.startswith("up_blocks.2") for n in linear_names if ".attn" in n)
+
+    # Cross-attention everywhere there IS attention
+    for prefix in ("down_blocks.0", "down_blocks.1", "down_blocks.2",
+                   "mid_block", "up_blocks.0", "up_blocks.1"):
+        assert any(
+            n.startswith(prefix) and ".attn2." in n for n in linear_names
+        ), f"{prefix} must have cross-attention"
+
+
+def test_driver_lora_targets_pin_real_checkpoint_module_count():
+    """Meta-instantiate the REAL checkpoint unet config and pin the LoRA
+    surface: 312 target modules → 624 keys; MQA to_k/to_v out_features = 64
+    at EVERY level (head_dim 64, num_kv_heads 1)."""
+    import torch  # noqa: PLC0415
+
+    from diffusers.models.unets.unet_dreamlite import DreamLiteUNetModel
+
+    real_cfg = dict(
+        sample_size=128,
+        in_channels=4,
+        out_channels=4,
+        block_out_channels=(256, 512, 896),
+        attention_head_dim=(4, 8, 14),
+        cross_attention_dim=2304,
+        layers_per_block=2,
+        transformer_layers_per_block=(1, 2, 4),
+        use_linear_projection=True,
+        encoder_hid_dim=2048,
+        encoder_hid_dim_type="text_proj_rms",
+        addition_embed_type="time",
+        addition_time_embed_dim=256,
+        projection_class_embeddings_input_dim=512,
+        num_kv_heads=1,
+        qk_norm="rms_norm",
+        ff_mult=3,
+        use_sep_conv=True,
+        norm_num_groups=32,
+    )
+    with torch.device("meta"):
+        model = DreamLiteUNetModel(**real_cfg)
+
+    drv = _make_driver(None)
+    targets = drv.get_lora_targets()
+
+    linear = {
+        n: m for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)
+    }
+    matched = {
+        n for n in linear
+        if any(n == t or n.endswith("." + t) for t in targets)
+    }
+    assert len(matched) == 312, (
+        f"expected 312 LoRA target modules on the real config, got {len(matched)}"
+    )
+
+    # MQA pin: every to_k / to_v projection is 64-wide (head_dim * kv_heads).
+    for n in matched:
+        if n.endswith(("to_k", "to_v")):
+            assert linear[n].out_features == 64, (
+                f"{n}: expected MQA width 64, got {linear[n].out_features}"
+            )
+
+    # Param count sanity — 0.39 B (the vram_estimator entry's provenance).
+    n_params = sum(p.numel() for p in model.parameters())
+    assert 380e6 < n_params < 400e6, f"unexpected param count {n_params:,}"
+
+
+def test_driver_forward_matches_pipeline_unet_call():
+    """forward_pass mirrors DreamLitePipeline's UNet invocation EXACTLY:
+
+    1. model input = cat([latents, zeros_like(latents)], dim=3) — the
+       generate-mode width concat (zero image-conditioning half);
+    2. timestep passed RAW on the [0, 1000] scale (``t.expand(B).to(dtype)``
+       — the UNet's sinusoidal time_proj consumes raw timesteps; NO /1000);
+    3. encoder_attention_mask forwarded;
+    4. added_cond_kwargs = {"time_ids": [[w_px, h_px]] * B} (pixel dims =
+       latent dims × vae_scale_factor);
+    5. prediction sliced back to the latent width (``[..., :W]``).
+    """
+    import torch  # noqa: PLC0415
+
+    model = _build_tiny_unet()
+    drv = _make_driver(model, arch={"vae.vae_scale_factor": 8})
+
+    captured: dict = {}
+    original_forward = model.forward
+
+    def _spy(sample, *args, **kwargs):
+        captured["sample"] = sample
+        captured.update(kwargs)
+        return original_forward(sample, *args, **kwargs)
+
+    model.forward = _spy
+
+    B, C, H, W = 2, 4, 8, 8
+    noisy = torch.randn(B, C, H, W)
+    emb = torch.randn(B, 7, _TINY_TEXT_DIM)
+    mask = torch.ones(B, 7, dtype=torch.long)
+    mask[:, -2:] = 0
+
+    with torch.no_grad():
+        pred = drv.forward_pass(
+            noisy_input=noisy,
+            timesteps=torch.tensor([500.0, 250.0]),
+            text_embeddings=(emb, mask),
+            batch={},
+        )
+
+    # 1. Width-doubled input, right half zeros
+    sample = captured["sample"]
+    assert sample.shape == (B, C, H, 2 * W), f"bad model input: {sample.shape}"
+    assert torch.equal(sample[..., :W], noisy)
+    assert sample[..., W:].abs().sum() == 0, "conditioning half must be zeros"
+
+    # 2. RAW timesteps — identical values, latent dtype (NO /1000!)
+    ts = captured["timestep"]
+    assert torch.allclose(ts.float(), torch.tensor([500.0, 250.0])), (
+        f"UNet must receive RAW [0,1000] timesteps, got {ts}"
+    )
+    assert ts.dtype == noisy.dtype
+
+    # 3. Mask forwarded as-is
+    assert torch.equal(captured["encoder_attention_mask"], mask)
+
+    # 4. time_ids = pixel (w, h) per batch row
+    time_ids = captured["added_cond_kwargs"]["time_ids"]
+    assert time_ids.shape == (B, 2)
+    assert torch.allclose(
+        time_ids.float(),
+        torch.tensor([[64.0, 64.0], [64.0, 64.0]]),
+    ), f"time_ids must carry pixel (w, h) = latent*8, got {time_ids}"
+
+    # 5. Output sliced back to latent width
+    assert pred.shape == (B, C, H, W), f"unexpected pred shape: {pred.shape}"
+    assert pred.isfinite().all(), "output contains NaN or inf"
+    assert pred.float().std() > 0, "output is degenerate (zero std)"
+
+
+def test_driver_compute_target_is_flow_match():
+    """compute_target = noise - latents (standard flow-match velocity)."""
+    import torch  # noqa: PLC0415
+
+    drv = _make_driver(None)
+    latents = torch.randn(2, 4, 8, 8)
+    noise = torch.randn(2, 4, 8, 8)
+    target = drv.compute_target(latents, noise, torch.tensor([500.0, 250.0]))
+    assert torch.equal(target, noise - latents)
+
+
+def test_driver_basic_contracts():
+    """Scheduler None (flow match), bf16 loading, no TE LoRA, no excludes."""
+    import torch  # noqa: PLC0415
+
+    drv = _make_driver(None)
+    assert drv.init_scheduler() is None
+    assert drv.resolve_loading_dtype() == torch.bfloat16
+    assert drv.get_te_lora_targets() == []
+
+
+def test_driver_encode_text_replicates_pipeline_encode_prompt():
+    """encode_text mirrors DreamLitePipeline.encode_prompt (generate mode):
+
+    1. the caption is inserted into the pinned chat template;
+    2. tokenized with max_length = max_sequence_length + drop_idx,
+       padding + truncation;
+    3. TE forward WITH output_hidden_states → hidden_states[-1];
+    4. per-sequence mask-select, drop the first drop_idx (34) template
+       tokens, re-pad with zeros; fresh 0/1 mask.
+
+    Deviation for cacheability (mask-equivalent): embeddings/mask are
+    right-padded to the FIXED te.max_sequence_length instead of the batch
+    max — padded positions carry mask 0 and zero embeddings, exactly the
+    pipeline's padding convention.
+    """
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.dreamlite.driver import (
+        DREAMLITE_PROMPT_TEMPLATE,
+        DreamLiteDriver,
+    )
+
+    # The pinned upstream template (pipeline_dreamlite.py:219-224)
+    assert DREAMLITE_PROMPT_TEMPLATE.startswith("<|im_start|>system\n")
+    assert "{}" in DREAMLITE_PROMPT_TEMPLATE
+    assert DREAMLITE_PROMPT_TEMPLATE.endswith("<|im_start|>assistant\n")
+
+    max_seq, drop_idx = 20, 34
+    definition = _make_dreamlite_definition(
+        architecture_params={
+            "te.max_sequence_length": max_seq,
+            "te.drop_idx": drop_idx,
+        },
+    )
+    drv = DreamLiteDriver(definition, torch.device("cpu"))
+
+    D = 12
+    full_len = max_seq + drop_idx  # 54
+    valid = {0: full_len, 1: drop_idx + 5}  # cap 1: only 5 user tokens
+    tokenize_calls: list[dict] = []
+
+    tok = MagicMock()
+
+    def _fake_tokenize(text=None, **kwargs):
+        tokenize_calls.append({"texts": text, **kwargs})
+        n = len(text)
+        out = MagicMock()
+        out.input_ids = torch.zeros(n, full_len, dtype=torch.long)
+        mask = torch.zeros(n, full_len, dtype=torch.long)
+        for i in range(n):
+            mask[i, : valid[i]] = 1
+        out.attention_mask = mask
+        out.to = lambda *_a, **_k: out
+        return out
+
+    tok.side_effect = _fake_tokenize
+
+    te = MagicMock()
+    torch.manual_seed(3)
+    hidden = torch.randn(2, full_len, D)
+
+    def _fake_te(**kwargs):
+        assert kwargs.get("output_hidden_states") is True, (
+            "TE must be called with output_hidden_states=True"
+        )
+        out = MagicMock()
+        out.hidden_states = [torch.zeros_like(hidden), hidden]
+        return out
+
+    te.side_effect = _fake_te
+    te.parameters = lambda: iter([torch.zeros(1)])
+
+    drv.tokenizer = tok
+    drv.text_encoder = te
+
+    out = drv.encode_text(["a fox", "cat"], torch.float32)
+
+    # 1+2. Template + tokenizer semantics
+    tk = tokenize_calls[0]
+    assert tk["texts"] == [
+        DREAMLITE_PROMPT_TEMPLATE.format("a fox"),
+        DREAMLITE_PROMPT_TEMPLATE.format("cat"),
+    ]
+    assert tk["max_length"] == full_len
+    assert tk["truncation"] is True
+    assert tk["padding"] is True
+
+    # 3+4. hidden_states[-1], mask-select, drop 34, re-pad to max_seq
+    assert out.embeddings.shape == (2, max_seq, D)
+    # cap 0: full-length valid → 20 user tokens survive the drop
+    assert torch.allclose(out.embeddings[0], hidden[0, drop_idx:, :])
+    # cap 1: 5 valid user tokens, rest zero-padded
+    assert torch.allclose(out.embeddings[1, :5], hidden[1, drop_idx:drop_idx + 5, :])
+    assert out.embeddings[1, 5:].abs().sum() == 0
+
+    mask = out.attention_mask
+    assert mask.shape == (2, max_seq)
+    assert mask[0].sum() == max_seq
+    assert mask[1].sum() == 5
+    assert mask[1, :5].sum() == 5
+
+
 def test_base_and_mobile_architecture_params_identical():
     """Portability requirement: base and mobile share ONE architecture.
 

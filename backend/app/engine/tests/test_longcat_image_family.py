@@ -102,3 +102,42 @@ def test_definition_loaded():
     assert arch.get("transformer.joint_attention_dim") == 3584
     assert arch.get("transformer.in_channels") == 64
     assert arch.get("te.max_length") == 512
+
+
+# ── Task 2: Loader manifest ──────────────────────────────────────────────────
+
+
+def test_loader_manifest_components():
+    """Manifest declares transformer/TE/tokenizer/text_processor/vae specs.
+
+    LongCat has the EXTRA ``text_processor`` component (Qwen2VLProcessor)
+    vs zimage — it is part of the pipeline's component contract.
+    """
+    import torch
+    from app.engine.models.families.longcat_image.loader import LongCatImageLoader
+
+    loader = LongCatImageLoader(torch.device("cpu"))
+    specs = loader.get_component_manifest(_make_definition())
+    spec_map = {s.key: s for s in specs}
+
+    assert {"tokenizer", "text_encoder", "text_processor", "vae", "unet"} <= set(
+        spec_map
+    ), f"missing manifest keys; got {set(spec_map)}"
+
+    # Transformer: native diffusers 0.39 class, mapped to "unet"
+    assert "LongCatImageTransformer2DModel" in spec_map["unet"].hf_class
+    assert spec_map["unet"].subfolder == "transformer"
+
+    # Text encoder: SAME class as qwen_image (Qwen2.5-VL)
+    assert "Qwen2_5_VLForConditionalGeneration" in spec_map["text_encoder"].hf_class
+    assert spec_map["text_encoder"].subfolder == "text_encoder"
+
+    # Tokenizer + processor are not torch modules
+    assert spec_map["tokenizer"].is_torch_model is False
+    assert spec_map["text_processor"].is_torch_model is False
+    assert "Processor" in spec_map["text_processor"].hf_class
+    assert spec_map["text_processor"].subfolder == "text_processor"
+
+    # VAE: standard 16-channel AutoencoderKL
+    assert "AutoencoderKL" in spec_map["vae"].hf_class
+    assert spec_map["vae"].subfolder == "vae"

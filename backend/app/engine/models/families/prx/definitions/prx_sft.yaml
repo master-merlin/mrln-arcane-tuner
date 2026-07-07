@@ -1,0 +1,97 @@
+# PRX 512 T2I SFT (Photoroom/prx-512-t2i-sft) — latent-space text-to-image.
+#
+# Architecture facts verified against the checkpoint's HF configs
+# (transformer/config.json, text_encoder/config.json, vae/config.json,
+# scheduler/scheduler_config.json) and the installed diffusers 0.39
+# PRXTransformer2DModel / PRXPipeline sources
+# (see docs/superpowers/plans/2026-07-07-f4-prx-family.md).
+# The pixel-space PRX-7B variant is a SEPARATE future family (prx_pixel).
+id: prx-sft
+family: prx
+name: PRX 512 T2I (SFT)
+version: '1.0'
+defaults:
+  resolution: 512
+  scheduler: flow_match
+  learning_rate: 1e-4
+  is_distilled: false
+  # Pipeline __call__ defaults (num_inference_steps=28, guidance_scale=4.0)
+  guidance_scale: 4.0
+  num_inference_steps: 28
+components:
+  repo:
+    path: huggingface:Photoroom/prx-512-t2i-sft
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+# model_size_mb intentionally empty — the VRAM estimator falls back to the
+# meta-instantiated param counts in _FAMILY_PARAMS["prx"].
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json == diffusers 0.39
+  #    PRXTransformer2DModel defaults) --
+  transformer._class_name: PRXTransformer2DModel
+  transformer.in_channels: 16
+  transformer.patch_size: 2
+  transformer.context_in_dim: 2304
+  transformer.hidden_size: 1792
+  transformer.mlp_ratio: 3.5
+  transformer.num_heads: 28
+  transformer.depth: 16
+  transformer.axes_dim:
+  - 32
+  - 32
+  transformer.theta: 10000
+  # time_factor 1000 re-scales the NORMALIZED [0,1] timestep the driver
+  # feeds the model (PRX convention: ÷1000 happens BEFORE the forward).
+  transformer.time_factor: 1000.0
+  transformer.time_max_period: 10000
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  # Generic activation-estimate hints (single 16-block stack)
+  hidden_size: 1792
+  depth: 16
+  in_channels: 16
+  context_dim: 2304
+  # -- Text encoder (checkpoint text_encoder/config.json: flat
+  #    t5_gemma_module config, architectures: [T5GemmaEncoder], ~2.6B) --
+  te.type: t5gemma
+  te.architectures:
+  - T5GemmaEncoder
+  te.hidden_size: 2304
+  te.intermediate_size: 9216
+  te.num_hidden_layers: 26
+  te.num_attention_heads: 8
+  te.num_key_value_heads: 4
+  te.head_dim: 256
+  te.vocab_size: 256000
+  # tokenizer.model_max_length of the checkpoint's GemmaTokenizerFast —
+  # PRXPipeline tokenizes to this length (padding="max_length").
+  te.max_length: 256
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json): static
+  #    shift 3.0, NO dynamic shifting / mu (plain set_timesteps) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: false
+  # -- VAE (checkpoint vae/config.json — Flux-style AutoencoderKL, 8x) --
+  vae._class_name: AutoencoderKL
+  vae.latent_channels: 16
+  vae.vae_scale_factor: 8
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+block_topology:
+- name: blocks
+  attr_path: blocks
+  count: 16
+  approx_vram_mb: 150

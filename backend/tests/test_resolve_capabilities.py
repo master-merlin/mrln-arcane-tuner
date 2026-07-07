@@ -53,6 +53,7 @@ ALL_DEFINITION_IDS = [
     "zimage-de-turbo",
     "ernie-image-base-8b",
     "hidream_o1_image",
+    "longcat-image-base",
 ]
 
 # Hardcoded ground-truth for flags that are NOT weight-free introspectable.
@@ -71,6 +72,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "wan22": True,  # latent_diffusion dual-expert DiT (Wan-VAE) + UMT5-XXL external TE
     "ltx2": True,  # latent_diffusion DiT (LTX2 VAE) + Gemma3 external TE
     "krea2": True,  # latent_diffusion DiT + Qwen VAE + external stacked Qwen3-VL TE
+    "longcat_image": True,  # latent_diffusion DiT (16ch AutoencoderKL) + Qwen2.5-VL TE
     "hidream_o1": False,
 }
 

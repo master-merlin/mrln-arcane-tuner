@@ -49,6 +49,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from app.engine.components.pixel_latents import PixelPassthroughLatentManager
 from app.engine.core.pipeline import GenericTrainingPipeline
 
 from .driver import HiDreamO1Driver
@@ -102,69 +103,10 @@ class _LoraOnlyComponentProxy:
 
 
 # ── Pixel-passthrough LatentManager (Concern 1) ───────────────────────────
-
-class _PixelPassthroughLatentManager:
-    """Drop-in LatentManager replacement for pixel-space families.
-
-    HiDream-O1 is pixel-space — it has no VAE.  The base training loop
-    calls ``latent_manager.encode_and_cache_batch()`` unconditionally on
-    cache miss; injecting this passthrough avoids the VAE-required raise.
-
-    Behaviour:
-    - ``load_cached_latents``: always returns ``None`` (cache miss path).
-      HiDream-O1 does not cache latents — the model processes pixels live.
-    - ``encode_and_cache_batch``: returns the pixel tensor as-is.  The
-      base loop will store this as ``latents``; ``forward_pass`` ignores
-      it and pulls ``batch["images"]`` directly.
-    - ``check_cache_coverage``: reports all items as cached so
-      ``_pre_cache_latents`` is a no-op.
-    - ``latent_filename`` / ``_validate_shape``: delegated to a stub so
-      ``_build_cache_manifest`` and similar helpers don't crash.
-    """
-
-    def load_cached_latents(
-        self,
-        ids: list[str],
-        cache_dirs: list[str] | None = None,
-        source_paths: list[str] | None = None,
-        extra_keys: list[str] | None = None,
-    ) -> torch.Tensor | None:
-        """Always report a cache miss — pixel-space has no latent cache.
-
-        Must return None so the base loop falls into ``encode_and_cache_batch``,
-        which returns the actual 4D ``batch["images"]`` tensor. The base loop
-        later does ``latents.shape[1]`` for noise-offset shaping — that only
-        works on the 4D image tensor, not on a length-N sentinel.
-        """
-        return None
-
-    def encode_and_cache_batch(
-        self,
-        image_batch: torch.Tensor,
-        ids: list[str],
-        cache_dirs: list[str] | None = None,
-        mirror_dir: str | None = None,
-        source_paths: list[str] | None = None,
-        extra_keys: list[str] | None = None,
-    ) -> torch.Tensor:
-        """Return pixel values unchanged — no VAE encoding needed."""
-        return image_batch
-
-    def check_cache_coverage(
-        self,
-        ids: list[str],
-        cache_dirs: list[str],
-        source_paths: list[str] | None = None,
-        extra_keys: list[str] | None = None,
-    ) -> tuple[int, int, list[str]]:
-        """Report all items as cached so pre-cache step is skipped."""
-        n = len(ids)
-        return n, 0, []
-
-    @staticmethod
-    def latent_filename(img_id: str, source_path: str) -> str:
-        """Stub — pixel-space families don't write latent files."""
-        return f"{img_id}.safetensors"
+# Extracted to ``app.engine.components.pixel_latents`` (shared with the
+# prx_pixel family). Re-bound under the historical private name so existing
+# imports/tests keep working — this is the SAME class, not a fork.
+_PixelPassthroughLatentManager = PixelPassthroughLatentManager
 
 
 def _sample_sigma(

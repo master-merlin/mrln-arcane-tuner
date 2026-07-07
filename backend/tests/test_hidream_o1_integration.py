@@ -131,6 +131,16 @@ def _make_trainer(definition: ModelDefinition | None = None) -> HiDreamO1Trainer
 class TestPixelPassthroughLatentManager:
     """_PixelPassthroughLatentManager never raises even without a VAE."""
 
+    def test_is_the_shared_components_class_not_a_fork(self):
+        """The trainer's historical private name must BE the shared
+        components.pixel_latents class (extraction refactor) — a re-forked
+        local copy would silently drift from prx_pixel's."""
+        from app.engine.components.pixel_latents import (
+            PixelPassthroughLatentManager,
+        )
+
+        assert _PixelPassthroughLatentManager is PixelPassthroughLatentManager
+
     def test_load_cached_latents_returns_none(self):
         """Must return None so the base loop falls into encode_and_cache_batch
         which returns the 4D image tensor. A non-None sentinel would short

@@ -249,6 +249,13 @@ FAMILIES: list[FamilySpec] = [
         "model", "model", property_alias="transformer",
         encode_kind=None,
     ),
+    FamilySpec(
+        "longcat_image",
+        "app.engine.models.families.longcat_image.trainer:LongCatImageTrainer",
+        "app.engine.models.families.longcat_image.driver:LongCatImageDriver",
+        "model", "model", property_alias="transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
 ]
 
 _IDS = [f.id for f in FAMILIES]

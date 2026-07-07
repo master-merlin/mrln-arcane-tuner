@@ -426,3 +426,155 @@ def test_driver_split_quotation_tokenizes_quoted_text_per_char():
     # word-internal apostrophes are NOT quote pairs
     parts2 = split_quotation("it's fine")
     assert parts2 == [("it's fine", False)]
+
+
+# ── Task 4: Trainer (override trio + TE cache) ───────────────────────────────
+
+
+def test_trainer_setup_family_wires_driver_and_loader():
+    """_setup_family must instantiate LongCatImageDriver + Loader + Saver."""
+    import torch
+    from app.engine.models.families.longcat_image.trainer import LongCatImageTrainer
+    from app.engine.models.families.longcat_image.driver import LongCatImageDriver
+    from app.engine.models.families.longcat_image.loader import LongCatImageLoader
+
+    trainer = MagicMock(spec=LongCatImageTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = _make_definition()
+
+    LongCatImageTrainer._setup_family(trainer)
+
+    assert isinstance(trainer.driver, LongCatImageDriver)
+    assert isinstance(trainer.loader, LongCatImageLoader)
+    assert trainer.saver is not None
+
+
+def test_trainer_encode_text_returns_tuple_real_seam():
+    """C1/C2 contract: trainer.encode_text returns (embeddings, mask) tuple
+    consumable by driver.forward_pass — real trainer methods, real driver."""
+    import torch
+    from app.engine.models.families.longcat_image.trainer import LongCatImageTrainer
+    from app.engine.models.families.longcat_image.driver import LongCatImageDriver
+
+    max_len = 16
+    definition = _make_definition(architecture_params={"te.max_length": max_len})
+    drv = LongCatImageDriver(definition, torch.device("cpu"))
+
+    model = _build_tiny_transformer()
+    drv.assign_components({
+        "unet": model,
+        "vae": None,
+        "text_encoder": _stub_longcat_te(16),
+        "tokenizer": _stub_longcat_tokenizer(max_len),
+    })
+
+    trainer = MagicMock(spec=LongCatImageTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+    trainer.config = {"cache_text_embeddings": False}
+    trainer.text_cache = {}
+    trainer.driver = drv
+
+    # Bind the real methods under test
+    trainer.encode_text = lambda caps, dtype, batch=None: (
+        LongCatImageTrainer.encode_text(trainer, caps, dtype, batch)
+    )
+    trainer._encode_text_direct = lambda caps, dtype: (
+        LongCatImageTrainer._encode_text_direct(trainer, caps, dtype)
+    )
+
+    out = trainer.encode_text(["a longcat caption"], torch.float32)
+
+    assert isinstance(out, tuple) and len(out) == 2, (
+        f"encode_text must return a 2-tuple, got {type(out)}"
+    )
+    emb, mask = out
+    assert emb.ndim == 3, f"embeddings must be [B, L, D], got {emb.ndim}-D"
+    assert emb.shape == (1, max_len, 16)
+    assert mask.shape == (1, max_len)
+
+    # Round-trip through the real driver forward
+    with torch.no_grad():
+        pred = drv.forward_pass(
+            noisy_input=torch.randn(1, 1, 4, 4),
+            timesteps=torch.tensor([500.0]),
+            text_embeddings=out,
+            batch={},
+        )
+    assert pred.shape == (1, 1, 4, 4)
+    assert pred.isfinite().all()
+
+
+def test_trainer_peft_model_sync():
+    """C3/C4 contract: _update_primary_model syncs driver.model, components,
+    and the read-only ``transformer`` property (the historical krea2 bug)."""
+    import torch
+    import torch.nn as nn
+    from app.engine.models.families.longcat_image.trainer import LongCatImageTrainer
+    from app.engine.models.families.longcat_image.driver import LongCatImageDriver
+
+    definition = _make_definition()
+    trainer = MagicMock(spec=LongCatImageTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+
+    drv = LongCatImageDriver(definition, torch.device("cpu"))
+    tiny = _build_tiny_transformer()
+    drv.assign_components({
+        "unet": tiny, "vae": None, "text_encoder": None, "tokenizer": None,
+    })
+    trainer.driver = drv
+    trainer.components = {"unet": tiny}
+    trainer.model = tiny
+
+    class _FakePEFT(nn.Module):
+        pass
+
+    wrapped = _FakePEFT()
+    LongCatImageTrainer._update_primary_model(trainer, wrapped)
+
+    assert trainer.driver.model is wrapped, "driver.model not synced"
+    assert trainer.components["unet"] is wrapped, "components['unet'] not synced"
+    transformer_val = LongCatImageTrainer.transformer.fget(trainer)
+    assert transformer_val is wrapped, "transformer property stale"
+
+
+def test_trainer_te_disk_cache_layout(tmp_path):
+    """TE disk cache must be keyed under embeddings/{te_quant}/te1|te2
+    (te1 = embeddings, te2 = attention masks) — qwen_image layout."""
+    import os
+    import torch
+    from app.engine.models.families.longcat_image.trainer import LongCatImageTrainer
+
+    trainer = MagicMock(spec=LongCatImageTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.config = {
+        "cache_text_embeddings": True,
+        "te_quantization": "fp8",
+    }
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+    trainer._log_writer = None
+    trainer.text_encoder = MagicMock()
+    trainer._build_caption_hints.return_value = {"a caption": "hint0"}
+    trainer._resolve_te_cache_dirs.return_value = [str(tmp_path)]
+    trainer._resolve_loading_dtype.return_value = torch.float32
+
+    def _fake_encode(captions, dtype):
+        B = len(captions)
+        return torch.zeros(B, 4, 8), torch.ones(B, 4, dtype=torch.long)
+
+    trainer._encode_text_direct = _fake_encode
+
+    LongCatImageTrainer._pre_cache_text_embeddings(trainer)
+
+    te1 = os.path.join(str(tmp_path), "embeddings", "fp8", "te1")
+    te2 = os.path.join(str(tmp_path), "embeddings", "fp8", "te2")
+    assert os.path.isdir(te1) and os.listdir(te1), "te1 embedding cache missing"
+    assert os.path.isdir(te2) and os.listdir(te2), "te2 mask cache missing"
+
+    # In-memory cache stores the (emb, mask) tuple
+    assert "a caption" in trainer.text_cache
+    emb, mask = trainer.text_cache["a caption"]
+    assert emb.shape == (4, 8)
+    assert mask.shape == (4,)

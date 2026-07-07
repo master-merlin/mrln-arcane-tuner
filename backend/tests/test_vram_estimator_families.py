@@ -80,6 +80,7 @@ def test_ernie_estimate_is_reasonable():
 # Without entries they all fell to the generic 2.0 B default.
 
 _P1B_FAMILIES = (
+    "hunyuan_video15",
     "ideogram4",
     "krea2",
     "longcat_image",
@@ -95,6 +96,7 @@ _P1B_FAMILIES = (
 # are far above the generic 2.0 B fallback (~3.8 GB bf16), so the lower bound
 # also proves the entry (not the default) produced the estimate.
 _P1B_DEFINITIONS = {
+    "hunyuan_video15": ("hv15-480p-t2v", 14_000),  # 8.3 B bf16 ≈ 15.8 GB
     "ideogram4": ("ideogram4-fp8", 15_000),  # 9.3 B bf16 ≈ 17.7 GB
     "krea2": ("krea2-raw", 20_000),  # 12.8 B bf16 ≈ 24.4 GB
     "longcat_image": ("longcat-image-base", 20_000),  # 11.9 B bf16 ≈ 22.7 GB
@@ -163,3 +165,12 @@ def test_wan21_te_is_umt5_xxl_not_generic_default():
     UMT5-XXL is ~5.7 B, a 16× underestimate of the caching peak."""
     assert _get_te_params("wan21") == pytest.approx(5.7)
     assert _get_te_params("wan22") == pytest.approx(5.7)
+
+
+def test_hunyuan_video15_dual_te_sums_and_vae_is_measured():
+    """hv15's DUAL text encoder (Qwen2.5-VL 7B + ByT5) must SUM in
+    _get_te_params (7.1 + 0.22), and the 1.26 B video VAE must be the
+    meta-measured value rather than the 0.08 image-VAE default."""
+    assert _get_te_params("hunyuan_video15") == pytest.approx(7.32)
+    assert _get_vae_params("hunyuan_video15") == pytest.approx(1.26)
+    assert _get_primary_params("hunyuan_video15", {}) == pytest.approx(8.3)

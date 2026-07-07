@@ -79,11 +79,25 @@ python -m venv venv
 # 2. Install PyTorch with CUDA 13.0 (local dev; needs an R580+ driver).
 #    The published container ships CUDA 12.8 (cu128, Blackwell-capable) with a
 #    cu126 fallback for older host drivers — see "Run as a container" below.
-pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
+pip install torch==2.12.1 torchvision==0.27.1 \
     --index-url https://download.pytorch.org/whl/cu130
 
-# 3. Install remaining Python dependencies
-pip install -r requirements.txt
+# torchaudio has no 2.12-series wheel yet (maintenance mode) and its own
+# metadata pins torch==2.11.0, so it must be installed --no-deps or pip would
+# downgrade torch back to 2.11.0.
+pip install torchaudio==2.11.0 --no-deps \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# 3. Install remaining Python dependencies. torch/torchvision/torchaudio
+#    (installed above) and scenedetect (needs --no-deps — its GUI opencv-python
+#    dep would clobber the pinned opencv-python-headless) must be excluded from
+#    this bulk install; grep -v filters them out the same way install.sh does.
+#    Windows users: skip this bash step and run backend\install.ps1 or
+#    backend\install.bat instead, which do the equivalent filtering natively.
+grep -ivE '^[[:space:]]*(scenedetect|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' \
+    requirements.txt > /tmp/requirements.filtered.txt
+pip install -r /tmp/requirements.filtered.txt
+pip install --no-deps "$(grep -iE '^[[:space:]]*scenedetect[[:space:]]*==' requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]')"
 
 # 4. Install frontend dependencies
 cd ../frontend

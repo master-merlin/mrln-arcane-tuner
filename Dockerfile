@@ -72,9 +72,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # default; cu126 for the fallback tag). The app's own deps are installed from the
 # cloned requirements.txt after the git checkout below — keeping /app empty until
 # then so the clone (which requires an empty target) succeeds.
+#
+# Split-stack: the image pins torch 2.11.0 here (cu128/R570+ and cu126/R560+
+# both publish it, preserving today's exact host-driver floors for both
+# variants), while the LOCAL dev venv runs torch 2.12.1+cu130 instead (newer
+# CUDA, no matching Linux wheel index parity yet). requirements.txt's torch/
+# torchvision/torchaudio/triton pins document the LOCAL 2.12.1 stack only —
+# install-deps.sh filters those lines out of its requirements install so
+# neither this image build nor the runtime self-update ever clobbers the
+# trio baked into this layer.
 ARG TORCH_CUDA=cu128
 RUN python -m pip install --break-system-packages \
-        torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
+        torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
         --index-url https://download.pytorch.org/whl/${TORCH_CUDA} \
     # setuptools/wheel ship via apt in the base image (no pip RECORD), so pip
     # can't uninstall them to honor the pinned versions. Install pip-managed
@@ -133,9 +142,11 @@ RUN --mount=type=secret,id=git_token \
             git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
             cd /app && git remote set-url origin "$REPO_URL"'
 WORKDIR /app/backend
-# Install the app's Python deps from the cloned checkout (torch is already in
-# place from the cached layer above; pip sees it satisfied and skips it).
-# install-deps.sh installs requirements.txt EXCEPT scenedetect, then scenedetect
+# Install the app's Python deps from the cloned checkout. install-deps.sh
+# filters the torch/torchvision/torchaudio/triton/triton-windows lines out of
+# requirements.txt before installing, so this step never touches (or clobbers)
+# the trio already baked into the cached layer above.
+# It also installs requirements.txt EXCEPT scenedetect, then scenedetect
 # with --no-deps — its declared GUI `opencv-python` dep would otherwise clobber
 # the pinned `opencv-python-headless`. The runtime self-update reuses the same
 # script, so the build and self-update installs never diverge.

@@ -1,4 +1,4 @@
-# ──────────────────────────────────────────────────────────────────────────
+﻿# ──────────────────────────────────────────────────────────────────────────
 # MRLN Arcane Tuner — Windows install script
 #
 # Optionally creates a virtual environment, installs PyTorch with CUDA 13.0
@@ -34,17 +34,45 @@ if (Test-Path $VenvDir) {
     }
 }
 
-# ── PyTorch (CUDA 13.0) ─────────────────────────────────────────────────
+# ── PyTorch (CUDA 13.0, split stack) ─────────────────────────────────────
 
 Write-Host ""
-Write-Host "🔧 Installing PyTorch 2.10.0 + CUDA 13.0 ..." -ForegroundColor Cyan
-pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
+Write-Host "🔧 Installing PyTorch 2.12.1 + torchvision 0.27.1 (CUDA 13.0) ..." -ForegroundColor Cyan
+pip install torch==2.12.1 torchvision==0.27.1 --index-url https://download.pytorch.org/whl/cu130
+
+# torchaudio has no 2.12-series wheel yet (maintenance mode) and its own
+# metadata pins torch==2.11.0, so it MUST be installed --no-deps or pip would
+# downgrade torch back to 2.11.0.
+Write-Host "🔧 Installing torchaudio 2.11.0 (--no-deps; declares torch==2.11.0) ..." -ForegroundColor Cyan
+pip install torchaudio==2.11.0 --no-deps --index-url https://download.pytorch.org/whl/cu130
 
 # ── Remaining dependencies ───────────────────────────────────────────────
+# torch/torchvision/torchaudio (installed above) and scenedetect (needs
+# --no-deps below) are excluded from this bulk install — see install-deps.sh
+# for the full rationale (this mirrors its filter minus triton/triton-windows
+# — local venvs need those from requirements; only the container filters them
+# to protect its baked 2.11-matched copy).
 
 Write-Host ""
 Write-Host "📦 Installing remaining dependencies ..." -ForegroundColor Cyan
-pip install -r requirements.txt
+$TmpReq = [System.IO.Path]::GetTempFileName()
+Get-Content requirements.txt |
+    Where-Object { $_ -notmatch '^\s*(scenedetect|torch|torchvision|torchaudio)([\s=<>!~#]|$)' } |
+    Set-Content $TmpReq
+pip install -r $TmpReq
+Remove-Item $TmpReq -Force
+
+# scenedetect's declared dependency is the GUI build `opencv-python`, which
+# collides with the pinned `opencv-python-headless` (both ship the `cv2`
+# module) — install it separately, without its deps.
+$SD = Get-Content requirements.txt |
+    Where-Object { $_ -match '^\s*scenedetect\s*==' } |
+    ForEach-Object { ($_ -replace '#.*$', '') -replace '\s', '' } |
+    Select-Object -First 1
+if ($SD) {
+    Write-Host "📦 Installing $SD (--no-deps) ..." -ForegroundColor Cyan
+    pip install --no-deps $SD
+}
 
 Write-Host ""
 Write-Host "✅ Done — all dependencies installed." -ForegroundColor Green

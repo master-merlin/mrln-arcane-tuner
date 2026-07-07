@@ -17,7 +17,6 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from app.engine.models.families.hunyuan_video15.driver import Hv15Driver
 from app.engine.models.families.hunyuan_video15.trainer import Hv15Trainer
 
 _L1, _D1 = 10, 16  # tiny Qwen-side dims

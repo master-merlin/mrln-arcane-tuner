@@ -58,9 +58,7 @@ _LORA_TARGETS = [
 def _build_peft_model():
     """Build a tiny Krea2Transformer2DModel wrapped with PEFT LoRA."""
     from peft import LoraConfig, get_peft_model
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import (
-        Krea2Transformer2DModel,
-    )
+    from diffusers import Krea2Transformer2DModel
 
     base = Krea2Transformer2DModel.from_config(_TINY_CFG)
     lora_cfg = LoraConfig(r=4, lora_alpha=4, target_modules=_LORA_TARGETS)

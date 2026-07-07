@@ -1,7 +1,7 @@
-"""Tests for krea2 family: vendored transformer + conditioning helpers.
+"""Tests for krea2 family: diffusers transformer + vendored conditioning helpers.
 
 TDD order:
-  1. test_krea2_vendor_imports_and_instantiates  — module exists + builds on CPU
+  1. test_krea2_vendor_imports_and_instantiates  — class importable + builds on CPU
   2. test_krea2_vendor_forward_shape             — forward pass produces correct shape
   3. test_krea2_conditioning_helpers             — pack/unpack/prepare_position_ids
   4. test_krea2_family_registered               — family in ModelRegistry
@@ -77,7 +77,7 @@ _TINY_CFG = dict(
 
 
 def test_krea2_vendor_imports_and_instantiates():
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import Krea2Transformer2DModel
+    from diffusers import Krea2Transformer2DModel
 
     m = Krea2Transformer2DModel.from_config(_TINY_CFG)
     names = {n for n, mod in m.named_modules() if isinstance(mod, torch.nn.Linear)}
@@ -86,7 +86,7 @@ def test_krea2_vendor_imports_and_instantiates():
 
 
 def test_krea2_vendor_forward_shape():
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import Krea2Transformer2DModel
+    from diffusers import Krea2Transformer2DModel
     from app.engine.models.families.krea2.vendor.krea2_conditioning import prepare_position_ids
 
     m = Krea2Transformer2DModel.from_config(_TINY_CFG).eval()
@@ -400,7 +400,7 @@ def test_krea2_encode_text_stacks_12_layers():
 def test_krea2_forward_pass_shape():
     """forward_pass must return [B, C, H, W] finite non-degenerate velocity."""
     import torch
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import Krea2Transformer2DModel
+    from diffusers import Krea2Transformer2DModel
     from app.engine.models.families.krea2.driver import Krea2Driver
     from unittest.mock import MagicMock
 
@@ -489,9 +489,7 @@ def _build_real_trainer_shell() -> "Krea2Trainer":
     from unittest.mock import MagicMock
     from app.engine.models.families.krea2.trainer import Krea2Trainer
     from app.engine.models.families.krea2.driver import Krea2Driver
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import (
-        Krea2Transformer2DModel,
-    )
+    from diffusers import Krea2Transformer2DModel
 
     definition = MagicMock()
     definition.family = "krea2"
@@ -632,9 +630,7 @@ def test_krea2_trainer_peft_model_sync():
     from unittest.mock import MagicMock
     from app.engine.models.families.krea2.trainer import Krea2Trainer
     from app.engine.models.families.krea2.driver import Krea2Driver
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import (
-        Krea2Transformer2DModel,
-    )
+    from diffusers import Krea2Transformer2DModel
 
     definition = MagicMock()
     definition.family = "krea2"

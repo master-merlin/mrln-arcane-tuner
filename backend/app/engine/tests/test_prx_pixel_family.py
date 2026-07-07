@@ -140,3 +140,79 @@ def test_definition_loaded():
     # prompt_max_tokens drives tokenization, NOT tokenizer.model_max_length
     # (the Qwen tokenizer's own model_max_length is far larger than 256).
     assert arch.get("te.max_length") == 256
+
+
+# ── Task 4: Loader Manifest ──────────────────────────────────────────────────
+
+
+def test_manifest_components_no_vae():
+    """PRXPixelLoader manifest declares tokenizer + TE + transformer and
+    NOTHING else — a vae spec would make GenericComponentLoader try to
+    download/load a VAE that does not exist in the checkpoint."""
+    import torch
+
+    from app.engine.models.families.prx_pixel.loader import PRXPixelLoader
+
+    loader = PRXPixelLoader(torch.device("cpu"))
+    definition = _make_pixel_definition()
+    specs = loader.get_component_manifest(definition)
+
+    keys = {s.key for s in specs}
+    assert keys == {"tokenizer", "text_encoder", "unet"}, (
+        f"manifest must be exactly tokenizer/text_encoder/unet, got {keys}"
+    )
+
+    spec_map = {s.key: s for s in specs}
+
+    # Tokenizer: AutoTokenizer (Qwen2TokenizerFast resolves via tokenizer.json
+    # — mirrors what PRXPixelPipeline.from_pretrained materializes).
+    assert "AutoTokenizer" in spec_map["tokenizer"].hf_class, (
+        f"tokenizer hf_class wrong: {spec_map['tokenizer'].hf_class}"
+    )
+    assert spec_map["tokenizer"].is_torch_model is False
+
+    # Text encoder: the checkpoint's model_index.json declares
+    # ["transformers", "Qwen3VLTextModel"] — top-level transformers export.
+    assert spec_map["text_encoder"].hf_class == "transformers.Qwen3VLTextModel", (
+        f"text_encoder hf_class wrong: {spec_map['text_encoder'].hf_class}"
+    )
+    assert spec_map["text_encoder"].subfolder == "text_encoder"
+
+    # Transformer mapped to "unet" (repo convention), diffusers-native class
+    assert "PRXTransformer2DModel" in spec_map["unet"].hf_class, (
+        f"unet hf_class wrong: {spec_map['unet'].hf_class}"
+    )
+    assert spec_map["unet"].subfolder == "transformer"
+
+
+def test_manifest_classes_are_importable():
+    """Every hf_class in the manifest resolves through the generic loader's
+    importlib seam (Qwen3VLTextModel must be a real top-level export)."""
+    import torch
+
+    from app.engine.core.pipeline.loader_base import GenericComponentLoader
+    from app.engine.models.families.prx_pixel.loader import PRXPixelLoader
+
+    loader = PRXPixelLoader(torch.device("cpu"))
+    for spec in loader.get_component_manifest(_make_pixel_definition()):
+        cls = GenericComponentLoader._import_class(spec.hf_class)
+        assert cls is not None, f"{spec.hf_class} not importable"
+
+
+def test_loader_dtype_policy_is_generic():
+    """Dtype policy inherits the generic path (bf16 via driver), no per-spec
+    overrides — identical policy to the latent prx sibling."""
+    import torch
+
+    from app.engine.core.pipeline.loader_base import GenericComponentLoader
+    from app.engine.models.families.prx_pixel.loader import PRXPixelLoader
+
+    assert PRXPixelLoader._resolve_dtype is GenericComponentLoader._resolve_dtype, (
+        "PRXPixelLoader must inherit the generic dtype policy"
+    )
+
+    loader = PRXPixelLoader(torch.device("cpu"))
+    for spec in loader.get_component_manifest(_make_pixel_definition()):
+        assert spec.dtype_override is None, (
+            f"{spec.key} must not force a dtype override"
+        )

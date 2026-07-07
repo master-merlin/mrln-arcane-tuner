@@ -127,6 +127,18 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 2.6,  # T5Gemma encoder (fp32 on disk, bf16 loaded)
         "vae": 0.08,  # Flux-style AutoencoderKL (84M params)
     },
+    "prx_pixel": {
+        # Meta-instantiated from the diffusers-0.39 PRXTransformer2DModel with
+        # the prxpixel-t2i checkpoint config (PIXEL variant: 24 blocks, hidden
+        # 3584, bottleneck img_in, resolution embeds) → 7.00B. TE
+        # meta-instantiated from the checkpoint's text_encoder/config.json
+        # (Qwen3VLTextModel, hidden 2048, 28 layers) → 1.72B. PIXEL-SPACE:
+        # the explicit vae 0.0 overrides the generic ~0.08B fallback in
+        # _get_vae_params (there is no VAE — the model denoises raw RGB).
+        "transformer": 7.0,
+        "text_encoder": 1.7,  # Qwen3-VL text backbone (no vision tower)
+        "vae": 0.0,  # none — operates directly in pixel space
+    },
     "ltx2": {
         # Meta-instantiated diffusers LTX2VideoTransformer3DModel with the
         # ltx2_3.yaml arch (48 layers, hidden 4096, joint audio+video streams).

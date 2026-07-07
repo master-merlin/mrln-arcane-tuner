@@ -136,6 +136,17 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 2.6,  # T5Gemma encoder (fp32 on disk, bf16 loaded)
         "vae": 0.08,  # Flux-style AutoencoderKL (84M params)
     },
+    "kandinsky5": {
+        # LITE (T2V) sizes — meta-instantiated from the checkpoint's
+        # transformer/config.json (model_dim 1792, ff 7168, 32 visual blocks)
+        # → 2.008 B. The I2V PRO definition (19.3 B) ships a concrete
+        # ``model_size_mb`` (36833) which the estimator prefers, so the family
+        # fallback deliberately carries the Lite numbers.
+        "transformer": 2.0,
+        "text_encoder": 8.3,  # Qwen2.5-VL-7B (same class/config as qwen_image)
+        "text_encoder_2": 0.12,  # CLIP ViT-L text tower
+        "vae": 0.25,  # AutoencoderKLHunyuanVideo (246M params)
+    },
     "ltx2": {
         # Meta-instantiated diffusers LTX2VideoTransformer3DModel with the
         # ltx2_3.yaml arch (48 layers, hidden 4096, joint audio+video streams).

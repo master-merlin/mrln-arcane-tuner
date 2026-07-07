@@ -677,6 +677,25 @@ def test_driver_layer_manifest_single_block_stack():
     assert topo[0]["count"] == _TINY_CFG["depth"]
 
 
+def test_default_buckets_at_1024_satisfy_patch_divisibility():
+    """Bucketing sanity for the pixel checkpoint: the transformer requires
+    H/W divisible by patch_size 16 (check_inputs: vae_scale_factor 1 ×
+    patch 16). The default BucketManager (divisibility 32, a multiple of
+    16) at the native 1024 base therefore needs no family override."""
+    from app.engine.components.bucketing import BucketManager
+
+    mgr = BucketManager(base_resolutions=1024)
+    assert mgr.buckets, "no buckets generated at 1024"
+    for bucket in mgr.buckets:
+        assert bucket["width"] % 16 == 0 and bucket["height"] % 16 == 0, (
+            f"bucket {bucket} violates the patch-16 divisibility"
+        )
+    # The native square bucket exists.
+    assert any(
+        b["width"] == 1024 and b["height"] == 1024 for b in mgr.buckets
+    )
+
+
 # ── Task 6: Trainer override trio + pixel passthrough + TE cache ─────────────
 
 

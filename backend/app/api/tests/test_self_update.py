@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 
@@ -208,7 +209,7 @@ async def test_check_once_safe_runs_check(svc, monkeypatch):
 async def test_install_backend_deps_uses_script_when_present(svc, monkeypatch, tmp_path):
     backend = tmp_path / "backend"
     backend.mkdir()
-    (backend / "install-deps.sh").write_text("#!/usr/bin/env bash\n")
+    await asyncio.to_thread((backend / "install-deps.sh").write_text, "#!/usr/bin/env bash\n")
     svc.app_dir = str(tmp_path)
 
     captured = {}
@@ -233,14 +234,15 @@ async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatc
     # image's cached Dockerfile layer.
     backend = tmp_path / "backend"
     backend.mkdir()
-    (backend / "requirements.txt").write_text(
+    await asyncio.to_thread(
+        (backend / "requirements.txt").write_text,
         "fastapi==1.0\n"
         "torch==2.12.1\n"
         "torchvision==0.27.1\n"
         "torchaudio==2.11.0  # installed --no-deps (declares torch==2.11.0)\n"
         "triton-windows==3.7.1.post27; sys_platform == 'win32'\n"
         "triton==3.7.1; sys_platform == 'linux'\n"
-        "pydantic==2.0\n"
+        "pydantic==2.0\n",
     )
     svc.app_dir = str(tmp_path)
 
@@ -273,7 +275,7 @@ async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatc
 async def test_install_backend_deps_raises_on_failure(svc, monkeypatch, tmp_path):
     backend = tmp_path / "backend"
     backend.mkdir()
-    (backend / "requirements.txt").write_text("fastapi==1.0\n")
+    await asyncio.to_thread((backend / "requirements.txt").write_text, "fastapi==1.0\n")
     svc.app_dir = str(tmp_path)
 
     def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):

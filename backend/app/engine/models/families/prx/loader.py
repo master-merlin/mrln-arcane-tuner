@@ -27,7 +27,8 @@ class PRXLoader(GenericComponentLoader):
     """Load PRX components — tokenizer, TE, VAE, transformer."""
 
     def get_component_manifest(
-        self, definition: ModelDefinition,
+        self,
+        definition: ModelDefinition,
     ) -> list[ComponentSpec]:
         return [
             # -- Tokenizer --

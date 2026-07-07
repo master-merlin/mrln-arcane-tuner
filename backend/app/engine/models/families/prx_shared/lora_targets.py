@@ -58,12 +58,12 @@ def matching_linear_modules(
     """
     patterns = list(targets) if targets is not None else list(PRX_BLOCK_LORA_TARGETS)
     linear_names = [
-        name for name, module in model.named_modules()
-        if isinstance(module, nn.Linear)
+        name for name, module in model.named_modules() if isinstance(module, nn.Linear)
     ]
     return {
         pattern: [
-            name for name in linear_names
+            name
+            for name in linear_names
             if name == pattern or name.endswith("." + pattern)
         ]
         for pattern in patterns

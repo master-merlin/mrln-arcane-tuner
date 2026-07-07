@@ -88,9 +88,7 @@ class PRXSampler(GenericSamplingPipeline):
 
     # ── Native-resolution defaults (invariant 5) ─────────────────────────
 
-    def _sample_single(
-        self, prompt_cfg: dict[str, Any], step: int
-    ) -> Image.Image:
+    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Image.Image:
         """Fill PRX-native defaults before the generic sampling flow.
 
         The generic base defaults unset width/height to 1024 and steps to
@@ -204,7 +202,8 @@ class PRXSampler(GenericSamplingPipeline):
             neg_text = str(self.config.get("sample_negative_prompt", "") or "")
             neg_embedding = self.encode_prompt(neg_text)
             uncond_embeds = neg_embedding["embeds"].to(
-                device=device, dtype=dtype,
+                device=device,
+                dtype=dtype,
             )
             uncond_mask = neg_embedding["mask"].to(device=device)
 

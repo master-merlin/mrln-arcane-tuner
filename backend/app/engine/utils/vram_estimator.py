@@ -98,6 +98,15 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 4.4,  # Qwen3-VL-4B (12-layer-stacked features)
         "vae": 0.13,  # AutoencoderKLQwenImage (127M params)
     },
+    "ovis_image": {
+        # Meta-instantiated from the diffusers-0.39 OvisImageTransformer2DModel
+        # checkpoint config (== class defaults: 6 double + 27 single blocks,
+        # inner dim 3072) → 7.37B. TE meta-instantiated from the checkpoint's
+        # text_encoder/config.json (Qwen3, hidden 2048, 28 layers) → 1.72B.
+        "transformer": 7.4,
+        "text_encoder": 1.7,  # Qwen3-1.7B (text-only)
+        "vae": 0.04,  # Flux-style AutoencoderKL (16ch, 38M params)
+    },
     "ltx2": {
         # Meta-instantiated diffusers LTX2VideoTransformer3DModel with the
         # ltx2_3.yaml arch (48 layers, hidden 4096, joint audio+video streams).

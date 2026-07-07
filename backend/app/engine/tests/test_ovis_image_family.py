@@ -493,3 +493,263 @@ def test_driver_encode_text_replicates_pipeline_encode_prompt():
     assert out.attention_mask[:, -10:].sum() == 0
     # Zero-masked tail must actually be zero in the embeddings
     assert out.embeddings[:, -10:, :].abs().sum() == 0
+
+
+# ── Task 4: Trainer override trio + TE cache ─────────────────────────────────
+
+
+def _stub_tokenizer_and_te(D: int = 16):
+    """Stub tokenizer + TE satisfying the Ovis prompt-embed contract."""
+    import torch  # noqa: PLC0415
+
+    tok = MagicMock()
+    tok.apply_chat_template.side_effect = (
+        lambda message, **kwargs: message[0]["content"]
+    )
+
+    def _fake_tokenize(texts, **kwargs):
+        n = len(texts)
+        max_len = kwargs.get("max_length", 284)
+        out = MagicMock()
+        out.input_ids = torch.zeros(n, max_len, dtype=torch.long)
+        out.attention_mask = torch.ones(n, max_len, dtype=torch.long)
+        return out
+
+    tok.side_effect = _fake_tokenize
+
+    te = MagicMock()
+
+    def _fake_te(**kwargs):
+        inp = kwargs.get("input_ids")
+        b, seq = inp.shape
+        out = MagicMock()
+        out.last_hidden_state = torch.randn(b, seq, D)
+        return out
+
+    te.side_effect = _fake_te
+    te.parameters = lambda: iter([torch.zeros(1)])
+    return tok, te
+
+
+def _build_real_trainer_shell():
+    """Minimal OvisImageTrainer shell with a REAL driver + tiny transformer.
+
+    Binds the real trainer methods (encode seam) without calling setup().
+    """
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.ovis_image.driver import OvisImageDriver
+    from app.engine.models.families.ovis_image.trainer import OvisImageTrainer
+
+    definition = _make_ovis_definition(
+        architecture_params={
+            "te.max_sequence_length": 256,
+            "te.user_prompt_begin_id": 28,
+        },
+    )
+
+    trainer = MagicMock(spec=OvisImageTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+    trainer.config = {"cache_text_embeddings": False}
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+
+    drv = OvisImageDriver(definition, torch.device("cpu"))
+    tiny_model = _build_tiny_model()
+    tok, te = _stub_tokenizer_and_te(D=16)
+    drv.assign_components({
+        "unet": tiny_model,
+        "vae": None,
+        "text_encoder": te,
+        "tokenizer": tok,
+    })
+    trainer.driver = drv
+
+    trainer.encode_text = lambda captions, dtype, batch=None: (
+        OvisImageTrainer.encode_text(trainer, captions, dtype, batch)
+    )
+    trainer._encode_text_direct = lambda captions, dtype: (
+        OvisImageTrainer._encode_text_direct(trainer, captions, dtype)
+    )
+    trainer._get_cached_text_embeddings = lambda captions, dtype: (
+        OvisImageTrainer._get_cached_text_embeddings(trainer, captions, dtype)
+    )
+    return trainer
+
+
+def test_trainer_encode_to_forward_real_seam():
+    """C1/C2: trainer.encode_text returns a (emb, mask) TUPLE consumable by
+    driver.forward_pass — the whole encode→forward round trip produces a
+    finite [B, C, H, W] prediction."""
+    import torch  # noqa: PLC0415
+
+    trainer = _build_real_trainer_shell()
+
+    text_emb = trainer.encode_text(["an ovis test caption"], torch.float32)
+    assert isinstance(text_emb, tuple) and len(text_emb) == 2, (
+        f"encode_text must return a 2-tuple, got {type(text_emb)}"
+    )
+    emb, mask = text_emb
+    assert emb.ndim == 3, f"embeddings must be 3-D [B,L,D], got {emb.ndim}-D"
+    assert emb.shape[1] == 256, f"sliced seq len must be 256, got {emb.shape[1]}"
+    assert mask.ndim == 2 and mask.shape[1] == 256
+
+    B, C, H, W = 1, 16, 4, 4
+    with torch.no_grad():
+        pred = trainer.driver.forward_pass(
+            noisy_input=torch.randn(B, C, H, W),
+            timesteps=torch.tensor([500.0]),
+            text_embeddings=text_emb,
+            batch={},
+        )
+    assert pred.shape == (B, C, H, W), f"unexpected pred shape: {pred.shape}"
+    assert pred.isfinite().all(), "forward_pass output contains NaN/inf"
+
+
+def test_trainer_cached_encode_returns_batched_tuple():
+    """Cached path stacks per-caption entries back to ([B,L,D], [B,L])."""
+    import torch  # noqa: PLC0415
+
+    trainer = _build_real_trainer_shell()
+    trainer.config = {"cache_text_embeddings": True}
+    trainer.text_encoder = trainer.driver.text_encoder
+
+    out = trainer.encode_text(["cap one", "cap two"], torch.float32)
+    assert isinstance(out, tuple) and len(out) == 2
+    emb, mask = out
+    assert emb.shape[0] == 2 and emb.ndim == 3
+    assert mask.shape[0] == 2 and mask.ndim == 2
+    assert set(trainer.text_cache) == {"cap one", "cap two"}
+    # Cache entries are (emb [L,D], mask [L]) CPU tuples
+    cached_emb, cached_mask = trainer.text_cache["cap one"]
+    assert cached_emb.ndim == 2 and cached_mask.ndim == 1
+
+
+def test_trainer_peft_model_sync():
+    """C3/C4: _update_primary_model syncs driver.model, components, and the
+    read-only ``transformer`` property resolves to the wrapped model."""
+    import torch  # noqa: PLC0415
+    import torch.nn as nn  # noqa: PLC0415
+
+    from app.engine.models.families.ovis_image.driver import OvisImageDriver
+    from app.engine.models.families.ovis_image.trainer import OvisImageTrainer
+
+    definition = _make_ovis_definition()
+    trainer = MagicMock(spec=OvisImageTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+
+    drv = OvisImageDriver(definition, torch.device("cpu"))
+    tiny_model = _build_tiny_model()
+    drv.assign_components({
+        "unet": tiny_model, "vae": None,
+        "text_encoder": None, "tokenizer": None,
+    })
+    trainer.driver = drv
+    trainer.components = {"unet": tiny_model}
+    trainer.model = tiny_model
+
+    class _FakePEFT(nn.Module):
+        pass
+
+    peft_wrapped = _FakePEFT()
+    OvisImageTrainer._update_primary_model(trainer, peft_wrapped)
+
+    assert trainer.driver.model is peft_wrapped, (
+        "C3: driver.model was NOT updated after _update_primary_model"
+    )
+    assert trainer.components.get("unet") is peft_wrapped
+    assert trainer.model is peft_wrapped
+
+    transformer_val = OvisImageTrainer.transformer.fget(trainer)
+    assert transformer_val is peft_wrapped, (
+        "C4: trainer.transformer property must resolve to the wrapped model"
+    )
+
+
+def test_trainer_te_disk_cache_layout(tmp_path):
+    """TE disk cache lands in embeddings/{te_quant}/te1|te2 (emb + mask)."""
+    import torch  # noqa: PLC0415
+
+    from app.engine.components.text_embeddings import TextEmbeddingCache
+    from app.engine.models.families.ovis_image.trainer import OvisImageTrainer
+
+    trainer = MagicMock(spec=OvisImageTrainer)
+    trainer.config = {
+        "cache_text_embeddings": True,
+        "te_quantization": "none",
+        "sample_prompts": [],
+    }
+    trainer.device = torch.device("cpu")
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+    trainer._log_writer = None
+    trainer.text_encoder = MagicMock()
+    trainer._build_caption_hints.return_value = {"an ovis caption": "hint0"}
+    trainer._resolve_te_cache_dirs.return_value = [str(tmp_path)]
+    trainer._resolve_loading_dtype.return_value = torch.float32
+    trainer._sample_prompt_texts.side_effect = lambda: (
+        OvisImageTrainer._sample_prompt_texts(trainer)
+    )
+
+    def _fake_encode(captions, dtype):
+        b = len(captions)
+        return torch.zeros(b, 256, 16), torch.ones(b, 256, dtype=torch.long)
+
+    trainer._encode_text_direct = _fake_encode
+
+    OvisImageTrainer._pre_cache_text_embeddings(trainer)
+
+    te1 = tmp_path / "embeddings" / "none" / "te1"
+    te2 = tmp_path / "embeddings" / "none" / "te2"
+    assert te1.is_dir(), "te1 (embeddings) cache dir missing"
+    assert te2.is_dir(), "te2 (attention mask) cache dir missing"
+
+    emb = TextEmbeddingCache.load("an ovis caption", str(te1), "hint0")
+    mask = TextEmbeddingCache.load("an ovis caption", str(te2), "hint0")
+    assert emb is not None and emb.shape == (256, 16)
+    assert mask is not None and mask.shape == (256,)
+    # In-memory cache holds the (emb, mask) tuple
+    assert "an ovis caption" in trainer.text_cache
+    cached_emb, cached_mask = trainer.text_cache["an ovis caption"]
+    assert cached_emb.shape == (256, 16)
+    assert cached_mask.shape == (256,)
+
+
+def test_trainer_warms_sample_and_negative_prompts():
+    """Pre-cache also warms expanded sample + negative prompts so the TE can
+    stay offloaded during sampling (krea2 VRAM-spike lesson)."""
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.ovis_image.trainer import OvisImageTrainer
+
+    trainer = MagicMock(spec=OvisImageTrainer)
+    trainer.config = {
+        "cache_text_embeddings": True,
+        "te_quantization": "none",
+        "sample_prompts": [{"prompt": "a red car"}],
+        "sample_negative_prompt": "blurry",
+    }
+    trainer.device = torch.device("cpu")
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+    trainer._log_writer = None
+    trainer.text_encoder = MagicMock()
+    trainer._build_caption_hints.return_value = {"a dataset caption": "hint0"}
+    trainer._resolve_te_cache_dirs.return_value = []
+    trainer._resolve_loading_dtype.return_value = torch.float32
+    trainer._sample_prompt_texts.side_effect = lambda: (
+        OvisImageTrainer._sample_prompt_texts(trainer)
+    )
+
+    def _fake_encode(captions, dtype):
+        b = len(captions)
+        return torch.zeros(b, 256, 16), torch.ones(b, 256, dtype=torch.long)
+
+    trainer._encode_text_direct = _fake_encode
+
+    OvisImageTrainer._pre_cache_text_embeddings(trainer)
+
+    assert "a red car" in trainer.text_cache
+    assert "blurry" in trainer.text_cache

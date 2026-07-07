@@ -1,3 +1,6 @@
+import os
+import subprocess
+
 import pytest
 
 from app.core.self_update import SelfUpdateService, UpdateState
@@ -199,3 +202,84 @@ async def test_check_once_safe_runs_check(svc, monkeypatch):
     monkeypatch.setattr(svc, "check", ok)
     await svc.check_once_safe()
     assert called["v"] is True
+
+
+@pytest.mark.asyncio
+async def test_install_backend_deps_uses_script_when_present(svc, monkeypatch, tmp_path):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "install-deps.sh").write_text("#!/usr/bin/env bash\n")
+    svc.app_dir = str(tmp_path)
+
+    captured = {}
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    await svc._install_backend_deps()
+
+    assert captured["cmd"] == ["bash", str(backend / "install-deps.sh")]
+
+
+@pytest.mark.asyncio
+async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatch, tmp_path):
+    # install-deps.sh absent → the fallback must still exclude the
+    # torch-stack lines (torch/torchvision/torchaudio/triton/triton-windows),
+    # matching install-deps.sh's own exclusion — otherwise a plain
+    # `pip install -r requirements.txt` would clobber the trio baked into the
+    # image's cached Dockerfile layer.
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "requirements.txt").write_text(
+        "fastapi==1.0\n"
+        "torch==2.12.1\n"
+        "torchvision==0.27.1\n"
+        "torchaudio==2.11.0  # installed --no-deps (declares torch==2.11.0)\n"
+        "triton-windows==3.7.1.post27; sys_platform == 'win32'\n"
+        "triton==3.7.1; sys_platform == 'linux'\n"
+        "pydantic==2.0\n"
+    )
+    svc.app_dir = str(tmp_path)
+
+    captured = {}
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        captured["cmd"] = cmd
+        with open(cmd[-1], encoding="utf-8") as f:
+            captured["filtered"] = f.read()
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    await svc._install_backend_deps()
+
+    assert captured["cmd"][:4] == [
+        "python", "-m", "pip", "install",
+    ]
+    assert "--break-system-packages" in captured["cmd"]
+    filtered = captured["filtered"]
+    assert "fastapi==1.0" in filtered
+    assert "pydantic==2.0" in filtered
+    for pkg_line in ("torch==", "torchvision==", "torchaudio==", "triton-windows==", "triton=="):
+        assert pkg_line not in filtered
+    # the filtered temp file must not survive the call
+    assert not os.path.exists(captured["cmd"][-1])
+
+
+@pytest.mark.asyncio
+async def test_install_backend_deps_raises_on_failure(svc, monkeypatch, tmp_path):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "requirements.txt").write_text("fastapi==1.0\n")
+    svc.app_dir = str(tmp_path)
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await svc._install_backend_deps()

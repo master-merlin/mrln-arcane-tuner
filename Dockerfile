@@ -142,9 +142,11 @@ RUN --mount=type=secret,id=git_token \
             git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
             cd /app && git remote set-url origin "$REPO_URL"'
 WORKDIR /app/backend
-# Install the app's Python deps from the cloned checkout (torch is already in
-# place from the cached layer above; pip sees it satisfied and skips it).
-# install-deps.sh installs requirements.txt EXCEPT scenedetect, then scenedetect
+# Install the app's Python deps from the cloned checkout. install-deps.sh
+# filters the torch/torchvision/torchaudio/triton/triton-windows lines out of
+# requirements.txt before installing, so this step never touches (or clobbers)
+# the trio already baked into the cached layer above.
+# It also installs requirements.txt EXCEPT scenedetect, then scenedetect
 # with --no-deps — its declared GUI `opencv-python` dep would otherwise clobber
 # the pinned `opencv-python-headless`. The runtime self-update reuses the same
 # script, so the build and self-update installs never diverge.

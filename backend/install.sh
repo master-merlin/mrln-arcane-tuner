@@ -36,18 +36,40 @@ else
     fi
 fi
 
-# ── PyTorch (CUDA 13.0) ─────────────────────────────────────────────────
+# ── PyTorch (CUDA 13.0, split stack) ─────────────────────────────────────
 
 echo ""
-echo "🔧 Installing PyTorch 2.10.0 + CUDA 13.0 ..."
-pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
+echo "🔧 Installing PyTorch 2.12.1 + torchvision 0.27.1 (CUDA 13.0) ..."
+pip install torch==2.12.1 torchvision==0.27.1 \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# torchaudio has no 2.12-series wheel yet (maintenance mode) and its own
+# metadata pins torch==2.11.0, so it MUST be installed --no-deps or pip would
+# downgrade torch back to 2.11.0.
+echo "🔧 Installing torchaudio 2.11.0 (--no-deps; declares torch==2.11.0) ..."
+pip install torchaudio==2.11.0 --no-deps \
     --index-url https://download.pytorch.org/whl/cu130
 
 # ── Remaining dependencies ───────────────────────────────────────────────
+# torch/torchvision/torchaudio (installed above) and scenedetect (needs
+# --no-deps below) are excluded from this bulk install — see install-deps.sh
+# for the full rationale (this mirrors its filter).
 
 echo ""
 echo "📦 Installing remaining dependencies ..."
-pip install -r requirements.txt
+TMP_REQ="$(mktemp)"
+grep -ivE '^[[:space:]]*(scenedetect|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' requirements.txt > "$TMP_REQ"
+pip install -r "$TMP_REQ"
+rm -f "$TMP_REQ"
+
+# scenedetect's declared dependency is the GUI build `opencv-python`, which
+# collides with the pinned `opencv-python-headless` (both ship the `cv2`
+# module) — install it separately, without its deps.
+SD="$(grep -iE '^[[:space:]]*scenedetect[[:space:]]*==' requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]' || true)"
+if [ -n "$SD" ]; then
+    echo "📦 Installing $SD (--no-deps) ..."
+    pip install --no-deps "$SD"
+fi
 
 echo ""
 echo "✅ Done — all dependencies installed."

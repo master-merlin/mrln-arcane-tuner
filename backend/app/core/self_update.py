@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
+import tempfile
 from enum import Enum
 
 from app.core.drain import set_draining
@@ -24,6 +26,15 @@ _IDLE_POLL_S = 3.0
 _GIT_TIMEOUT_S = 120.0
 _BUILD_TIMEOUT_S = 1800.0
 _CHECK_INTERVAL_S = 1800.0  # periodic availability check (30 min)
+
+# Same package set install-deps.sh excludes from its requirements install
+# (split-stack: torch/torchvision/torchaudio/triton/triton-windows are baked
+# into the image or installed manually in the local venv — never from
+# requirements.txt). Used only by the install-deps.sh-missing fallback below.
+_TORCH_STACK_RE = re.compile(
+    r"^\s*(torch|torchvision|torchaudio|triton|triton-windows)(?=[\s=<>!~#]|$)",
+    re.IGNORECASE,
+)
 
 
 class UpdateState(str, Enum):
@@ -233,17 +244,33 @@ class SelfUpdateService:
         script = os.path.join(backend, "install-deps.sh")
 
         def _run():
+            tmp_path: str | None = None
             if os.path.exists(script):
                 cmd = ["bash", script]
             else:
+                # install-deps.sh is missing (unexpected repo state) — fall
+                # back to pip directly, but still filter out the torch-stack
+                # lines: requirements.txt documents the LOCAL 2.12.1 trio, and
+                # a plain `-r requirements.txt` here would clobber the 2.11.0
+                # trio baked into this image's cached Dockerfile layer.
+                req_path = os.path.join(backend, "requirements.txt")
+                with open(req_path, encoding="utf-8") as f:
+                    kept = [ln for ln in f if not _TORCH_STACK_RE.match(ln)]
+                fd, tmp_path = tempfile.mkstemp(suffix=".txt", dir=backend)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
                 cmd = [
                     "python", "-m", "pip", "install",
-                    "--break-system-packages", "-r", "requirements.txt",
+                    "--break-system-packages", "-r", tmp_path,
                 ]
-            proc = subprocess.run(
-                cmd, cwd=backend, capture_output=True, text=True,
-                timeout=_BUILD_TIMEOUT_S,
-            )
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=backend, capture_output=True, text=True,
+                    timeout=_BUILD_TIMEOUT_S,
+                )
+            finally:
+                if tmp_path is not None:
+                    os.remove(tmp_path)
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"backend dep install failed: {proc.stderr.strip()[:300]}"

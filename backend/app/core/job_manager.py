@@ -101,6 +101,12 @@ class JobManager:
     _AUTO_RESUME_ERROR_MARKERS = (
         "cuda error: unknown error",        # cudaErrorUnknown (post-TDR context death)
         "cudaerrorunknown",
+        # cudaErrorIllegalAddress — the other way post-TDR context death
+        # surfaces (which one you get depends on how the RC reset lands).
+        # A deterministic in-kernel OOB would also match, but the stall
+        # guard below stops that after 2 no-progress resumes.
+        "an illegal memory access",
+        "cudaerrorillegaladdress",
         "the launch timed out",             # cudaErrorLaunchTimeout (classic TDR)
         "unspecified launch failure",       # cudaErrorLaunchFailure
         "gpurcreset",                       # NVIDIA Robust-Channel reset

@@ -1278,6 +1278,26 @@ class TestAutoResumeOnGpuFault:
         adv.assert_not_called()  # GPU reserved for the imminent resume
         assert job.status == JobStatus.FAILED
 
+    def test_illegal_memory_access_schedules_auto_resume(self, tmp_path):
+        """``cudaErrorIllegalAddress`` is the other face of post-TDR context
+        death (seen 2026-07-07: 1033 nvlddmkm GpuRcReset events, then the
+        trainer died in ``loss.backward()`` with this string)."""
+        mgr = JobManager()
+        job, run = self._job_with_checkpoint(mgr, tmp_path)
+        p_dir, p_sched, p_adv, p_ps, p_st = self._patches(mgr, run)
+        with p_dir, p_sched as sched, p_adv as adv, p_ps, p_st:
+            mgr._handle_exit_message(
+                job.id,
+                {
+                    "code": 1,
+                    "error": "CUDA error: an illegal memory access was "
+                    "encountered\nSearch for `cudaErrorIllegalAddress' in ...",
+                },
+            )
+        sched.assert_called_once_with(job.id, "checkpoint-002750")
+        adv.assert_not_called()
+        assert job.status == JobStatus.FAILED
+
     def test_non_gpu_error_does_not_auto_resume(self, tmp_path):
         mgr = JobManager()
         job, run = self._job_with_checkpoint(mgr, tmp_path)

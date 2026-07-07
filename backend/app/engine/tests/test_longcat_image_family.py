@@ -141,3 +141,288 @@ def test_loader_manifest_components():
     # VAE: standard 16-channel AutoencoderKL
     assert "AutoencoderKL" in spec_map["vae"].hf_class
     assert spec_map["vae"].subfolder == "vae"
+
+
+# ── Task 3: Driver ───────────────────────────────────────────────────────────
+
+# Tiny LongCatImageTransformer2DModel config (CPU-friendly).
+# axes_dims_rope entries must each be EVEN and sum to attention_head_dim.
+_TINY_CFG = dict(
+    patch_size=1,
+    in_channels=4,  # packed dim → 1 latent channel × 2×2 packing
+    num_layers=1,
+    num_single_layers=1,
+    attention_head_dim=8,
+    num_attention_heads=2,
+    joint_attention_dim=16,
+    pooled_projection_dim=16,
+    axes_dims_rope=[4, 2, 2],
+)
+
+
+def _build_tiny_transformer():
+    from diffusers.models.transformers.transformer_longcat_image import (
+        LongCatImageTransformer2DModel,
+    )
+
+    return LongCatImageTransformer2DModel(**_TINY_CFG).eval()
+
+
+def _make_driver(model=None, tokenizer=None, text_encoder=None, arch=None):
+    import torch
+    from app.engine.models.families.longcat_image.driver import LongCatImageDriver
+
+    definition = _make_definition(architecture_params=arch or {})
+    drv = LongCatImageDriver(definition, torch.device("cpu"))
+    drv.assign_components({
+        "unet": model,
+        "vae": None,
+        "text_encoder": text_encoder,
+        "tokenizer": tokenizer,
+    })
+    return drv
+
+
+def test_driver_wiring_and_dtype():
+    """Driver wires components; bf16 loading; no external scheduler."""
+    import torch
+
+    drv = _make_driver(model=None)
+    assert drv.get_primary_model() is None
+    assert drv.init_scheduler() is None
+    assert drv.resolve_loading_dtype() == torch.bfloat16
+    assert drv.get_te_lora_targets() == []
+
+
+def test_driver_lora_targets_cover_double_and_single_blocks():
+    """Every LoRA target pattern matches >=1 named module of a tiny transformer,
+    covering BOTH the double (transformer_blocks) and single
+    (single_transformer_blocks) streams."""
+    import torch
+
+    model = _build_tiny_transformer()
+    drv = _make_driver(model=model)
+    targets = drv.get_lora_targets()
+
+    linear_names = {
+        n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)
+    }
+
+    for target in targets:
+        matched = [
+            n for n in linear_names if n == target or n.endswith("." + target)
+        ]
+        assert matched, f"LoRA target {target!r} matches no Linear module"
+
+    # Both streams must be covered by the union of matched modules
+    all_matched = {
+        n
+        for n in linear_names
+        for t in targets
+        if n == t or n.endswith("." + t)
+    }
+    assert any(n.startswith("transformer_blocks.") for n in all_matched), (
+        "no double-block (transformer_blocks) modules matched"
+    )
+    assert any(n.startswith("single_transformer_blocks.") for n in all_matched), (
+        "no single-block (single_transformer_blocks) modules matched"
+    )
+
+
+def test_driver_forward_divides_timesteps_by_1000_once():
+    """forward_pass must pass timestep = raw/1000 to the transformer (the
+    model itself multiplies ×1000 internally for the time embedding —
+    an extra ×1000 or ÷1000 silently yields pure-noise LoRAs)."""
+    import torch
+
+    model = _build_tiny_transformer()
+    seen = {}
+    original_forward = model.forward
+
+    def _spy(*args, **kwargs):
+        seen["timestep"] = kwargs["timestep"].clone()
+        return original_forward(*args, **kwargs)
+
+    model.forward = _spy
+    drv = _make_driver(model=model)
+
+    B, C, H, W = 1, 1, 4, 4
+    emb = torch.randn(B, 7, 16)
+    mask = torch.ones(B, 7, dtype=torch.long)
+    with torch.no_grad():
+        drv.forward_pass(
+            noisy_input=torch.randn(B, C, H, W),
+            timesteps=torch.tensor([500.0]),
+            text_embeddings=(emb, mask),
+            batch={},
+        )
+
+    assert torch.allclose(seen["timestep"], torch.tensor([0.5])), (
+        f"expected timestep 0.5 (raw 500 ÷ 1000), got {seen['timestep']}"
+    )
+
+
+def test_driver_forward_pass_shape():
+    """forward_pass: [B,C,H,W] in → [B,C,H,W] finite non-degenerate out
+    (patchify 2×2 → packed transformer → unpatchify)."""
+    import torch
+
+    model = _build_tiny_transformer()
+    drv = _make_driver(model=model)
+
+    B, C, H, W = 2, 1, 4, 6
+    emb = torch.randn(B, 7, 16)
+    mask = torch.ones(B, 7, dtype=torch.long)
+    with torch.no_grad():
+        pred = drv.forward_pass(
+            noisy_input=torch.randn(B, C, H, W),
+            timesteps=torch.tensor([500.0, 250.0]),
+            text_embeddings=(emb, mask),
+            batch={},
+        )
+
+    assert pred.shape == (B, C, H, W), f"unexpected shape: {pred.shape}"
+    assert pred.isfinite().all(), "output contains NaN or inf"
+    assert pred.float().std() > 0, "output is degenerate (zero std)"
+
+
+def test_driver_compute_target_is_flow_match():
+    """Flow-match target: noise - latents (standard convention, NOT inverted)."""
+    import torch
+
+    drv = _make_driver(model=None)
+    latents = torch.randn(2, 4, 8, 8)
+    noise = torch.randn(2, 4, 8, 8)
+    target = drv.compute_target(latents, noise, torch.tensor([500.0, 100.0]))
+    assert torch.equal(target, noise - latents)
+
+
+def _stub_longcat_tokenizer(max_length):
+    """Char-level stub tokenizer replicating the HF surface the driver uses.
+
+    - ``tokenizer(text, add_special_tokens=False)["input_ids"]`` → one token
+      per character.
+    - ``tokenizer.pad({"input_ids": ...}, ...)`` → padded tensors + mask.
+    """
+    import torch
+
+    class _Batch:
+        def __init__(self, ids, mask):
+            self.input_ids = ids
+            self.attention_mask = mask
+
+    class _Tok:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(c) % 100 + 1 for c in text]}
+
+        def pad(self, encoded, max_length, padding, return_attention_mask,
+                return_tensors):
+            assert padding == "max_length"
+            rows, masks = [], []
+            for ids in encoded["input_ids"]:
+                pad_n = max_length - len(ids)
+                rows.append(list(ids) + [0] * pad_n)
+                masks.append([1] * len(ids) + [0] * pad_n)
+            return _Batch(
+                torch.tensor(rows, dtype=torch.long),
+                torch.tensor(masks, dtype=torch.long),
+            )
+
+    return _Tok()
+
+
+def _stub_longcat_te(hidden_dim):
+    """Stub Qwen2.5-VL TE: returns .hidden_states tuple keyed to input shape."""
+    import torch
+
+    class _TE:
+        def __init__(self):
+            self.captured = {}
+
+        def __call__(self, input_ids=None, attention_mask=None,
+                     output_hidden_states=False):
+            assert output_hidden_states is True
+            self.captured["input_ids"] = input_ids
+            self.captured["attention_mask"] = attention_mask
+            B, S = input_ids.shape
+
+            class _Out:
+                hidden_states = tuple(
+                    torch.randn(B, S, hidden_dim) for _ in range(3)
+                )
+
+            return _Out()
+
+        def parameters(self):
+            return iter([torch.zeros(1)])
+
+    return _TE()
+
+
+def test_driver_encode_text_replicates_pipeline_encode_prompt():
+    """encode_text mirrors LongCatImagePipeline._encode_prompt:
+
+    - middle segment padded to EXACTLY te.max_length,
+    - wrapped in the captioning-expert prefix/suffix template,
+    - hidden_states[-1] with the prefix/suffix rows sliced off,
+    - returns (B, max_length, D) embeddings + (B, max_length) mask.
+    """
+    import torch
+    from app.engine.models.families.longcat_image import driver as drv_mod
+
+    max_len = 16
+    D = 16
+    tok = _stub_longcat_tokenizer(max_len)
+    te = _stub_longcat_te(D)
+    drv = _make_driver(
+        model=None, tokenizer=tok, text_encoder=te,
+        arch={"te.max_length": max_len},
+    )
+
+    out = drv.encode_text(["a fox", "a 'quoted' cat"], torch.float32)
+
+    prefix_len = len(drv_mod.PROMPT_TEMPLATE_PREFIX)
+    suffix_len = len(drv_mod.PROMPT_TEMPLATE_SUFFIX)
+
+    # TE consumed prefix + padded middle + suffix
+    ids = te.captured["input_ids"]
+    assert ids.shape == (2, prefix_len + max_len + suffix_len), (
+        f"TE input shape {tuple(ids.shape)} != prefix+{max_len}+suffix"
+    )
+    # prefix/suffix positions are always attended
+    attn = te.captured["attention_mask"]
+    assert attn[:, :prefix_len].all() and attn[:, -suffix_len:].all()
+
+    # Output: prefix/suffix sliced off → exactly max_length rows
+    assert out.embeddings.shape == (2, max_len, D), (
+        f"embeddings shape {tuple(out.embeddings.shape)} != (2, {max_len}, {D})"
+    )
+    assert out.embeddings.dtype == torch.float32
+    assert out.attention_mask is not None
+    assert out.attention_mask.shape == (2, max_len)
+    # "a fox" → 5 char-tokens valid, rest padding
+    assert out.attention_mask[0].sum().item() == len("a fox")
+
+
+def test_driver_prompt_template_matches_pipeline_literal():
+    """The prefix/suffix template strings must equal the pipeline literals."""
+    from app.engine.models.families.longcat_image import driver as drv_mod
+
+    assert drv_mod.PROMPT_TEMPLATE_PREFIX == (
+        "<|im_start|>system\nAs an image captioning expert, generate a "
+        "descriptive text prompt based on an image content, suitable for "
+        "input to a text-to-image model.<|im_end|>\n<|im_start|>user\n"
+    )
+    assert drv_mod.PROMPT_TEMPLATE_SUFFIX == "<|im_end|>\n<|im_start|>assistant\n"
+
+
+def test_driver_split_quotation_tokenizes_quoted_text_per_char():
+    """split_quotation splits quoted segments (pipeline glyph-rendering path)."""
+    from app.engine.models.families.longcat_image.driver import split_quotation
+
+    parts = split_quotation("Please write 'Hello' on the blackboard.")
+    assert ("'Hello'", True) in parts
+    assert parts[0] == ("Please write ", False)
+    # word-internal apostrophes are NOT quote pairs
+    parts2 = split_quotation("it's fine")
+    assert parts2 == [("it's fine", False)]

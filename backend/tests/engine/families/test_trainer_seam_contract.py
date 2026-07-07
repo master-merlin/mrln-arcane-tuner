@@ -257,6 +257,13 @@ FAMILIES: list[FamilySpec] = [
         encode_kind=None,
     ),
     FamilySpec(
+        "prx",
+        "app.engine.models.families.prx.trainer:PRXTrainer",
+        "app.engine.models.families.prx.driver:PRXDriver",
+        "model", "model", property_alias="transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
+    FamilySpec(
         "longcat_image",
         "app.engine.models.families.longcat_image.trainer:LongCatImageTrainer",
         "app.engine.models.families.longcat_image.driver:LongCatImageDriver",

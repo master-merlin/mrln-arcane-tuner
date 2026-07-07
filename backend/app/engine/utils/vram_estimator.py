@@ -115,6 +115,18 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 8.3,  # Qwen2.5-VL-7B — same class/config as qwen_image
         "vae": 0.08,  # standard 16-channel AutoencoderKL (~84M params)
     },
+    "prx": {
+        # Meta-instantiated from the diffusers-0.39 PRXTransformer2DModel
+        # checkpoint config (== class defaults: 16 blocks, hidden 1792)
+        # → 1.17B. TE meta-instantiated from the checkpoint's
+        # text_encoder/config.json (T5GemmaEncoder, hidden 2304, 26 layers)
+        # → 2.61B. NOTE: the transformer is SMALLER than the generic 2.0B
+        # fallback — the dedicated estimate test pins an upper bound to
+        # prove this entry (not the default) drives the estimate.
+        "transformer": 1.2,
+        "text_encoder": 2.6,  # T5Gemma encoder (fp32 on disk, bf16 loaded)
+        "vae": 0.08,  # Flux-style AutoencoderKL (84M params)
+    },
     "ltx2": {
         # Meta-instantiated diffusers LTX2VideoTransformer3DModel with the
         # ltx2_3.yaml arch (48 layers, hidden 4096, joint audio+video streams).

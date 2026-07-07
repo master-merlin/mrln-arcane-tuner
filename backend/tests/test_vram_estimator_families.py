@@ -86,6 +86,7 @@ _P1B_FAMILIES = (
     "ltx2",
     "microsoft_lens",
     "ovis_image",
+    "prx",
     "wan21",
     "wan22",
 )
@@ -99,6 +100,7 @@ _P1B_DEFINITIONS = {
     "longcat_image": ("longcat-image-base", 20_000),  # 11.9 B bf16 ≈ 22.7 GB
     "ltx2": ("ltx2-3-base", 30_000),  # 18.9 B bf16 ≈ 36.0 GB
     "ovis_image": ("ovis-image-base", 12_000),  # 7.4 B bf16 ≈ 14.1 GB
+    "prx": ("prx-sft", 2_000),  # 1.2 B bf16 ≈ 2.3 GB (upper bound pinned below)
     "wan21": ("wan2.1-t2v-14b", 20_000),  # 14.3 B bf16 ≈ 27.3 GB
     "wan22": ("wan2.2-t2v-a14b", 20_000),  # ≥ one 14.3 B expert (MoE may double)
 }
@@ -139,6 +141,21 @@ def test_microsoft_lens_fallback_matches_on_disk_sizes():
     assert _get_primary_params("microsoft_lens", {}) == pytest.approx(3.8)
     assert _get_te_params("microsoft_lens") == pytest.approx(20.0)
     assert _get_vae_params("microsoft_lens") == pytest.approx(0.17)
+
+
+def test_prx_entry_beats_generic_default_from_above():
+    """PRX's 1.2 B transformer is SMALLER than the generic 2.0 B fallback, so
+    the usual lower bound can't prove the entry is live — pin exact table
+    values AND an upper bound below the 2.0 B default's ~3.8 GB estimate."""
+    assert _get_primary_params("prx", {}) == pytest.approx(1.2)
+    assert _get_te_params("prx") == pytest.approx(2.6)
+    assert _get_vae_params("prx") == pytest.approx(0.08)
+
+    defn = registry.get_definition("prx-sft")
+    assert defn is not None
+    d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+    # 1.2 B bf16 ≈ 2.3 GB — a 2.0 B generic fallback would exceed 3.5 GB.
+    assert d["model_weights_mb"] < 3_500, d["model_weights_mb"]
 
 
 def test_wan21_te_is_umt5_xxl_not_generic_default():

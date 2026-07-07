@@ -1,0 +1,93 @@
+id: ovis-image-base
+family: ovis_image
+name: Ovis-Image 7B
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-4
+  is_distilled: false
+components:
+  repo:
+    path: huggingface:AIDC-AI/Ovis-Image-7B
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+# model_size_mb intentionally empty — the VRAM estimator falls back to the
+# meta-instantiated param counts in _FAMILY_PARAMS["ovis_image"].
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json == diffusers 0.39
+  #    OvisImageTransformer2DModel defaults) --
+  transformer._class_name: OvisImageTransformer2DModel
+  transformer.patch_size: 1
+  transformer.in_channels: 64
+  transformer.out_channels: 64
+  transformer.num_layers: 6
+  transformer.num_single_layers: 27
+  transformer.attention_head_dim: 128
+  transformer.num_attention_heads: 24
+  transformer.joint_attention_dim: 2048
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  # Generic activation-estimate hints (inner dim = 24 * 128, 6 + 27 blocks)
+  hidden_size: 3072
+  depth: 33
+  in_channels: 64
+  # -- Text encoder (checkpoint text_encoder/config.json: Qwen3, ~1.7B) --
+  te.type: qwen3
+  te.architectures:
+  - Qwen3Model
+  te.hidden_size: 2048
+  te.intermediate_size: 6144
+  te.num_hidden_layers: 28
+  te.num_attention_heads: 16
+  te.num_key_value_heads: 8
+  te.head_dim: 128
+  te.max_position_embeddings: 40960
+  te.rope_theta: 1000000
+  te.rms_norm_eps: 1.0e-06
+  te.tie_word_embeddings: true
+  te.vocab_size: 151936
+  # OvisImagePipeline prompt-template contract:
+  # max_length passed to the tokenizer = max_sequence_length + user_prompt_begin_id
+  te.max_sequence_length: 256
+  te.user_prompt_begin_id: 28
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: true
+  scheduler.base_shift: 0.5
+  scheduler.max_shift: 1.15
+  scheduler.base_image_seq_len: 256
+  scheduler.max_image_seq_len: 4096
+  # -- VAE (checkpoint vae/config.json — Flux-style AutoencoderKL) --
+  vae._class_name: AutoencoderKL
+  vae.latent_channels: 16
+  vae.vae_scale_factor: 8
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 6
+  approx_vram_mb: 800
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 27
+  approx_vram_mb: 350

@@ -109,6 +109,19 @@ K5_LORA_TARGET_SUFFIXES: list[str] = [
 # ── Module-level helpers (unit-tested; shared with the sampler) ─────────────
 
 
+def resolve_negative_prompt(config: dict[str, Any]) -> str:
+    """The CFG negative prompt for previews — pipeline-default injection.
+
+    Both upstream pipelines inject :data:`KANDINSKY5_DEFAULT_NEGATIVE_PROMPT`
+    when guidance is on and no negative prompt is given. Our config default is
+    ``""`` (unset), so an empty ``sample_negative_prompt`` resolves to the
+    pipeline default. Shared by the trainer's TE pre-cache and the sampler so
+    the cache key can't drift.
+    """
+    neg = str(config.get("sample_negative_prompt", "") or "")
+    return neg or KANDINSKY5_DEFAULT_NEGATIVE_PROMPT
+
+
 def prompt_clean(text: str) -> str:
     """Whitespace + HTML-entity normalization (pipeline ``prompt_clean``).
 

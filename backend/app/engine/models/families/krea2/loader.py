@@ -1,16 +1,18 @@
 """Krea2 model loader — manifest-driven via GenericComponentLoader.
 
 Stock components (tokenizer, text_encoder, vae) load through the generic
-manifest path.  The transformer is NOT in the manifest because
-``Krea2Transformer2DModel`` is a vendored class absent from the
-``diffusers 0.38`` namespace; the generic ``from_pretrained`` string
-resolver cannot build it.
+manifest path.  The transformer is NOT in the manifest because the generic
+``from_pretrained`` string resolver expects a plain repo/subfolder load,
+while the Krea-2 transformer needs the hand-rolled steps below.
 
 Instead, :meth:`Krea2Loader.load` overrides the base ``load()`` and loads
-the vendored transformer by calling
+the transformer by calling
 ``Krea2Transformer2DModel.from_pretrained(transformer_dir, ...)`` directly
-(it is a clean ``ModelMixin`` with ``register_to_config`` — no fp8 dequant
-or manual shard stitching required, unlike Ideogram 4).
+(``Krea2Transformer2DModel`` is the upstream ``diffusers 0.39`` class; the
+vendored copy was retired when the class landed upstream — it is
+byte-identical, so LoRA keys are unchanged. It is a clean ``ModelMixin``
+with ``register_to_config`` — no fp8 dequant or manual shard stitching
+required, unlike Ideogram 4).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from app.engine.core.pipeline.loader_base import ComponentSpec, GenericComponent
 
 
 class Krea2Loader(GenericComponentLoader):
-    """Load Krea2 components; transformer via vendored from_pretrained override."""
+    """Load Krea2 components; transformer via from_pretrained override."""
 
     def get_component_manifest(
         self, definition: ModelDefinition,
@@ -33,8 +35,8 @@ class Krea2Loader(GenericComponentLoader):
         """Return component manifest for tokenizer, text_encoder, and vae.
 
         The transformer is loaded by the overridden :meth:`load` (not in the
-        manifest), because ``Krea2Transformer2DModel`` is vendored and is not
-        registered in the ``diffusers 0.38`` namespace.
+        manifest), because it needs the hand-rolled steps in :meth:`load`
+        rather than the generic ``from_pretrained`` string resolver.
         """
         vae_class = self._detect_vae_class()
 
@@ -113,10 +115,10 @@ class Krea2Loader(GenericComponentLoader):
         torch_dtype: torch.dtype | None = None,
         initial_device: str | None = None,
     ) -> dict[str, Any]:
-        """Load Krea2 components: stock via manifest, transformer via vendored class.
+        """Load Krea2 components: stock via manifest, transformer by hand.
 
         Loads tokenizer / text_encoder / vae through the generic manifest path,
-        then loads the vendored ``Krea2Transformer2DModel`` directly via its own
+        then loads ``Krea2Transformer2DModel`` directly via its own
         ``from_pretrained(transformer_dir, torch_dtype=...)`` call (clean ModelMixin,
         no fp8 dequant required).
 
@@ -160,7 +162,7 @@ class Krea2Loader(GenericComponentLoader):
             text_encoder.eval()
             components["text_encoder"] = text_encoder
 
-        # 3. Load the vendored transformer by hand.
+        # 3. Load the transformer by hand.
         transformer_dir = root / "transformer"
         if not transformer_dir.is_dir():
             if not (root / "config.json").is_file():
@@ -175,9 +177,7 @@ class Krea2Loader(GenericComponentLoader):
             )
             transformer_dir = root
 
-        from app.engine.models.families.krea2.vendor.transformer_krea2 import (
-            Krea2Transformer2DModel,
-        )
+        from diffusers import Krea2Transformer2DModel
 
         self.logger.info(
             "krea2.loading_transformer",

@@ -92,7 +92,7 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "vae": 0.08,  # AutoencoderKLFlux2 (84M params)
     },
     "krea2": {
-        # Meta-instantiated from the vendored Krea2Transformer2DModel defaults
+        # Meta-instantiated from the diffusers Krea2Transformer2DModel defaults
         # (28 SwiGLU blocks, hidden 6144 — mirrors krea2_raw.yaml).
         "transformer": 12.8,
         "text_encoder": 4.4,  # Qwen3-VL-4B (12-layer-stacked features)

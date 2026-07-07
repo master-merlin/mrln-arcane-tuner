@@ -60,7 +60,7 @@ _TEXT_DIM = 128   # tiny
 
 
 def _build_tiny_model():
-    from app.engine.models.families.krea2.vendor.transformer_krea2 import Krea2Transformer2DModel
+    from diffusers import Krea2Transformer2DModel
     return Krea2Transformer2DModel.from_config(_TINY_CFG).eval()
 
 

@@ -224,6 +224,13 @@ FAMILIES: list[FamilySpec] = [
         encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
     ),
     FamilySpec(
+        "ovis_image",
+        "app.engine.models.families.ovis_image.trainer:OvisImageTrainer",
+        "app.engine.models.families.ovis_image.driver:OvisImageDriver",
+        "model", "model", property_alias="transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
+    FamilySpec(
         "sdxl",
         "app.engine.models.families.sdxl.trainer:SDXLTrainer",
         "app.engine.models.families.sdxl.driver:SDXLDriver",

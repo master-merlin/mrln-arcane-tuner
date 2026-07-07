@@ -51,6 +51,7 @@ ALL_DEFINITION_IDS = [
     "qwen-image-edit-2509",
     "zimage-base",
     "zimage-de-turbo",
+    "ovis-image-base",
     "ernie-image-base-8b",
     "hidream_o1_image",
 ]
@@ -71,6 +72,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "wan22": True,  # latent_diffusion dual-expert DiT (Wan-VAE) + UMT5-XXL external TE
     "ltx2": True,  # latent_diffusion DiT (LTX2 VAE) + Gemma3 external TE
     "krea2": True,  # latent_diffusion DiT + Qwen VAE + external stacked Qwen3-VL TE
+    "ovis_image": True,  # latent_diffusion MMDiT (Flux VAE) + external Qwen3 TE (no TE training)
     "hidream_o1": False,
 }
 

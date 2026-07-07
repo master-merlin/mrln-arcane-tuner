@@ -79,7 +79,15 @@ def test_ernie_estimate_is_reasonable():
 # estimation path today (no definition carries ``total_params`` either).
 # Without entries they all fell to the generic 2.0 B default.
 
-_P1B_FAMILIES = ("ideogram4", "krea2", "ltx2", "microsoft_lens", "wan21", "wan22")
+_P1B_FAMILIES = (
+    "ideogram4",
+    "krea2",
+    "ltx2",
+    "microsoft_lens",
+    "ovis_image",
+    "wan21",
+    "wan22",
+)
 
 # family → (definition id, min expected primary-weights MB). All six primaries
 # are far above the generic 2.0 B fallback (~3.8 GB bf16), so the lower bound
@@ -88,6 +96,7 @@ _P1B_DEFINITIONS = {
     "ideogram4": ("ideogram4-fp8", 15_000),  # 9.3 B bf16 ≈ 17.7 GB
     "krea2": ("krea2-raw", 20_000),  # 12.8 B bf16 ≈ 24.4 GB
     "ltx2": ("ltx2-3-base", 30_000),  # 18.9 B bf16 ≈ 36.0 GB
+    "ovis_image": ("ovis-image-base", 12_000),  # 7.4 B bf16 ≈ 14.1 GB
     "wan21": ("wan2.1-t2v-14b", 20_000),  # 14.3 B bf16 ≈ 27.3 GB
     "wan22": ("wan2.2-t2v-a14b", 20_000),  # ≥ one 14.3 B expert (MoE may double)
 }

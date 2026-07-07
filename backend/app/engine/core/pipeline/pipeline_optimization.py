@@ -419,7 +419,7 @@ class PipelineOptimizationMixin:
 
         self.autocast_dtype = prec.autocast_dtype
         self.use_amp = prec.use_amp
-        self.scaler = torch.cuda.amp.GradScaler(enabled=prec.grad_scaler_enabled)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=prec.grad_scaler_enabled)
 
         self.logger.info(
             "precision_configured",

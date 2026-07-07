@@ -256,6 +256,19 @@ FAMILIES: list[FamilySpec] = [
         "model", "model", property_alias="transformer",
         encode_kind=None,
     ),
+    # ── dreamlite: encode_kind=None like krea2 — its encode_text transforms
+    # cache keys (the pipeline's "[Generate]: " positive-prompt prefix), so
+    # the generic raw-caption cache seeding here would only miss; the
+    # (emb, mask) tuple contract + prefix semantics are pinned in
+    # ``test_dreamlite_family.py``. The _update_primary_model / alias /
+    # property-alias aspects run here.
+    FamilySpec(
+        "dreamlite",
+        "app.engine.models.families.dreamlite.trainer:DreamLiteTrainer",
+        "app.engine.models.families.dreamlite.driver:DreamLiteDriver",
+        "model", "model", property_alias="transformer",
+        encode_kind=None,
+    ),
     FamilySpec(
         "longcat_image",
         "app.engine.models.families.longcat_image.trainer:LongCatImageTrainer",

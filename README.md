@@ -92,6 +92,8 @@ pip install torchaudio==2.11.0 --no-deps \
 #    (installed above) and scenedetect (needs --no-deps — its GUI opencv-python
 #    dep would clobber the pinned opencv-python-headless) must be excluded from
 #    this bulk install; grep -v filters them out the same way install.sh does.
+#    Windows users: skip this bash step and run backend\install.ps1 or
+#    backend\install.bat instead, which do the equivalent filtering natively.
 grep -ivE '^[[:space:]]*(scenedetect|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' \
     requirements.txt > /tmp/requirements.filtered.txt
 pip install -r /tmp/requirements.filtered.txt

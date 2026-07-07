@@ -50,7 +50,9 @@ pip install torchaudio==2.11.0 --no-deps --index-url https://download.pytorch.or
 REM ── Remaining dependencies ─────────────────────────────────────────────
 REM torch/torchvision/torchaudio (installed above) and scenedetect (needs
 REM --no-deps below) are excluded from this bulk install — see
-REM install-deps.sh for the full rationale (this mirrors its filter).
+REM install-deps.sh for the full rationale (this mirrors its filter minus
+REM triton/triton-windows — local venvs need those from requirements; only
+REM the container filters them to protect its baked 2.11-matched copy).
 
 echo.
 echo Installing remaining dependencies ...
@@ -66,7 +68,7 @@ for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^scenedetect==" req
     if not defined SD set "SD=%%A"
 )
 if defined SD (
-    echo Installing %SD% (--no-deps) ...
+    echo Installing %SD% ^(--no-deps^) ...
     pip install --no-deps %SD%
 )
 

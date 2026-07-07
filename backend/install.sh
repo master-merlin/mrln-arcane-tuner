@@ -53,7 +53,9 @@ pip install torchaudio==2.11.0 --no-deps \
 # ── Remaining dependencies ───────────────────────────────────────────────
 # torch/torchvision/torchaudio (installed above) and scenedetect (needs
 # --no-deps below) are excluded from this bulk install — see install-deps.sh
-# for the full rationale (this mirrors its filter).
+# for the full rationale (this mirrors its filter minus triton/triton-windows
+# — local venvs need those from requirements; only the container filters them
+# to protect its baked 2.11-matched copy).
 
 echo ""
 echo "📦 Installing remaining dependencies ..."

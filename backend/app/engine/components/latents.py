@@ -364,6 +364,15 @@ class LatentManager:
                     latents = encoded.latent_dist.sample()
                     shift = getattr(self.vae.config, "shift_factor", None) or 0.0
                     latents = self.scaling_factor * (latents - shift)
+            elif hasattr(encoded, "latents"):
+                # AutoencoderTiny (dreamlite) has NO latent_dist — encode
+                # returns AutoencoderTinyOutput(.latents). Mirrors diffusers'
+                # ``retrieve_latents`` helper; the scalar scaling formula is
+                # shared with the AutoencoderKL branch above so the sampler's
+                # decode (z / scale + shift) stays its exact inverse.
+                # (Tiny ships scale 1.0 / shift 0.0 → identity in practice.)
+                shift = getattr(self.vae.config, "shift_factor", None) or 0.0
+                latents = self.scaling_factor * (encoded.latents - shift)
             else:
                 latents = encoded
 

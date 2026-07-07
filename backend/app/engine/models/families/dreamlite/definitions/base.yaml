@@ -1,0 +1,116 @@
+id: dreamlite-base
+family: dreamlite
+name: DreamLite Base
+version: '1.0'
+control_inputs: 0
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-4
+  # Base = the CFG checkpoint: 30 steps, true cond+uncond guidance.
+  is_distilled: false
+  guidance_scale: 3.5
+  num_inference_steps: 30
+components:
+  repo:
+    # BOTH DreamLite repos carry the diffusers layout on the "diffusers"
+    # branch (the pipeline docs' canonical revision) — the @revision suffix
+    # is resolved by ModelPathResolver.
+    path: huggingface:carlofkl/DreamLite-base@diffusers
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+# model_size_mb intentionally empty — the VRAM estimator falls back to the
+# meta-instantiated param counts in _FAMILY_PARAMS["dreamlite"].
+architecture_params:
+  # -- UNet (checkpoint unet/config.json, revision="diffusers") --
+  # NOTE: this is a U-Net (DreamLiteUNetModel extends UNet2DConditionModel),
+  # NOT a DiT. attention_head_dim is per-level and — per the historical
+  # UNet2DConditionModel naming bug — actually means NUM HEADS, giving
+  # head_dim = block_out // heads = 64 at every level. With num_kv_heads=1
+  # (MQA) every to_k/to_v projection is 64-wide.
+  unet._class_name: DreamLiteUNetModel
+  unet.sample_size: 128
+  unet.in_channels: 4
+  unet.out_channels: 4
+  unet.block_out_channels:
+  - 256
+  - 512
+  - 896
+  unet.attention_head_dim:
+  - 4
+  - 8
+  - 14
+  unet.cross_attention_dim: 2304
+  unet.layers_per_block: 2
+  unet.transformer_layers_per_block:
+  - 1
+  - 2
+  - 4
+  unet.use_linear_projection: true
+  unet.encoder_hid_dim: 2048
+  unet.encoder_hid_dim_type: text_proj_rms
+  unet.addition_embed_type: time
+  unet.addition_time_embed_dim: 256
+  unet.projection_class_embeddings_input_dim: 512
+  unet.num_kv_heads: 1
+  unet.qk_norm: rms_norm
+  unet.ff_mult: 3
+  unet.use_sep_conv: true
+  unet.norm_num_groups: 32
+  unet.supports_cfg: true
+  unet.supports_negative_prompt: true
+  # Generic activation-estimate hints (widest level 896, 36 transformer blocks)
+  hidden_size: 896
+  depth: 36
+  in_channels: 4
+  # -- Text encoder (checkpoint text_encoder/config.json: Qwen3-VL, ~2.1B) --
+  te.type: qwen3_vl
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.hidden_size: 2048
+  te.intermediate_size: 6144
+  te.num_hidden_layers: 28
+  te.num_attention_heads: 16
+  te.num_key_value_heads: 8
+  te.head_dim: 128
+  te.rope_theta: 5000000
+  te.rms_norm_eps: 1.0e-06
+  te.tie_word_embeddings: true
+  te.vocab_size: 151936
+  # DreamLitePipeline prompt-template contract: tokenizer max_length =
+  # max_sequence_length + drop_idx; the first drop_idx hidden states
+  # (chat-template prefix) are dropped from the encoder output.
+  te.max_sequence_length: 200
+  te.drop_idx: 34
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: true
+  scheduler.base_shift: 0.5
+  scheduler.max_shift: 1.15
+  scheduler.base_image_seq_len: 256
+  scheduler.max_image_seq_len: 4096
+  # -- VAE (checkpoint vae/config.json — AutoencoderTiny / taesdxl) --
+  vae._class_name: AutoencoderTiny
+  vae.latent_channels: 4
+  vae.vae_scale_factor: 8
+  vae.scaling_factor: 1.0
+  vae.shift_factor: 0.0
+block_topology:
+- name: down_blocks
+  attr_path: down_blocks
+  count: 3
+  approx_vram_mb: 100
+- name: mid_block
+  attr_path: mid_block
+  count: 1
+  approx_vram_mb: 100
+- name: up_blocks
+  attr_path: up_blocks
+  count: 3
+  approx_vram_mb: 100

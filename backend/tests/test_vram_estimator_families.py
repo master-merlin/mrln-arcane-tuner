@@ -135,6 +135,36 @@ def test_p1b_fallback_estimates_are_realistic():
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, family
 
 
+def test_dreamlite_estimator_entry():
+    """dreamlite is first-class in the estimator (NOT the generic 2.0 B).
+
+    The DreamLite U-Net is deliberately SMALL — 0.39 B params meta-counted
+    from the real checkpoint unet/config.json (block_out 256/512/896,
+    tlpb 1/2/4, ff_mult 3, sep-convs) — so unlike the P1b families the
+    proof here is an UPPER bound well below the generic 2.0 B default
+    (~3.8 GB bf16), plus a sane lower bound. TE is Qwen3-VL-2B-class
+    (~2.1 B); VAE is AutoencoderTiny (~2.4 M).
+    """
+    assert "dreamlite" in _FAMILY_PARAMS, "dreamlite missing from _FAMILY_PARAMS"
+    entry = _FAMILY_PARAMS["dreamlite"]
+    assert any("text_encoder" in k for k in entry)
+    assert "vae" in entry
+
+    assert _get_primary_params("dreamlite", {}) == pytest.approx(0.39)
+    assert _get_te_params("dreamlite") == pytest.approx(2.1)
+    # AutoencoderTiny — three orders of magnitude below a standard VAE.
+    assert _get_vae_params("dreamlite") < 0.01
+
+    for def_id in ("dreamlite-base", "dreamlite-mobile"):
+        defn = registry.get_definition(def_id)
+        assert defn is not None, f"definition {def_id} not found"
+        d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+        # 0.39 B bf16 ≈ 0.74 GB — far below the 2.0 B generic default,
+        # proving the entry (not the fallback constant) drove the estimate.
+        assert 400 < d["model_weights_mb"] < 2_000, (def_id, d["model_weights_mb"])
+        assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
+
+
 def test_microsoft_lens_fallback_matches_on_disk_sizes():
     """lens ships real model_size_mb (7600/40000/335) — its table entry is a
     true fallback, calibrated to those on-disk bf16 sizes (size_mb / 2)."""

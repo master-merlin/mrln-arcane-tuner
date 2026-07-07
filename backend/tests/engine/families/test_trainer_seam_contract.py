@@ -69,6 +69,20 @@ def _seed_teo_triple(caps: list[str]) -> dict[str, Any]:
     }
 
 
+def _seed_tuple4(caps: list[str]) -> dict[str, Any]:
+    """(emb[1,L,D], mask[1,L], emb2[1,L,D], mask2[1,L]) — hunyuan_video15
+    (dual TE: Qwen2.5-VL + ByT5 glyph channel, batched by cat)."""
+    return {
+        c: (
+            torch.randn(1, _L, _D),
+            torch.ones(1, _L, dtype=torch.long),
+            torch.randn(1, _L, _D),
+            torch.zeros(1, _L, dtype=torch.long),
+        )
+        for c in caps
+    }
+
+
 def _seed_tensor_no_batch(caps: list[str]) -> dict[str, Any]:
     """[L,D] raw tensor (no leading batch dim) — sdxl (its cache stacks, not cats)."""
     return {c: torch.randn(_L, _D) for c in caps}
@@ -115,6 +129,15 @@ def _check_teo(out: Any) -> None:
     assert isinstance(out, TextEncoderOutput), f"expected TextEncoderOutput, got {type(out)}"
     assert out.embeddings.shape[0] == 2
     assert out.attention_mask is not None and out.pooled is not None
+
+
+def _check_tuple4(out: Any) -> None:
+    assert isinstance(out, tuple) and len(out) == 4, f"expected 4-tuple, got {type(out)}"
+    emb, mask, emb2, mask2 = out
+    assert emb.ndim == 3 and emb.shape[0] == 2, f"emb must be [B,L,D], got {tuple(emb.shape)}"
+    assert mask.ndim == 2 and mask.shape[0] == 2
+    assert emb2.ndim == 3 and emb2.shape[0] == 2, f"emb2 must be [B,L,D], got {tuple(emb2.shape)}"
+    assert mask2.ndim == 2 and mask2.shape[0] == 2
 
 
 def _check_list_tensor(out: Any) -> None:
@@ -190,6 +213,13 @@ FAMILIES: list[FamilySpec] = [
         "model", "model",
         # No encode_text override — uses the base encode path (nothing to pin here).
         encode_kind=None,
+    ),
+    FamilySpec(
+        "hunyuan_video15",
+        "app.engine.models.families.hunyuan_video15.trainer:Hv15Trainer",
+        "app.engine.models.families.hunyuan_video15.driver:Hv15Driver",
+        "transformer", "transformer",
+        encode_kind="tuple4", encode_seed=_seed_tuple4, encode_check=_check_tuple4,
     ),
     FamilySpec(
         "wan21",

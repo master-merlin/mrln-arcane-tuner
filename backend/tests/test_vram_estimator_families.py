@@ -82,6 +82,7 @@ def test_ernie_estimate_is_reasonable():
 _P1B_FAMILIES = (
     "ideogram4",
     "krea2",
+    "longcat_image",
     "ltx2",
     "microsoft_lens",
     "ovis_image",
@@ -95,6 +96,7 @@ _P1B_FAMILIES = (
 _P1B_DEFINITIONS = {
     "ideogram4": ("ideogram4-fp8", 15_000),  # 9.3 B bf16 ≈ 17.7 GB
     "krea2": ("krea2-raw", 20_000),  # 12.8 B bf16 ≈ 24.4 GB
+    "longcat_image": ("longcat-image-base", 20_000),  # 11.9 B bf16 ≈ 22.7 GB
     "ltx2": ("ltx2-3-base", 30_000),  # 18.9 B bf16 ≈ 36.0 GB
     "ovis_image": ("ovis-image-base", 12_000),  # 7.4 B bf16 ≈ 14.1 GB
     "wan21": ("wan2.1-t2v-14b", 20_000),  # 14.3 B bf16 ≈ 27.3 GB

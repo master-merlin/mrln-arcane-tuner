@@ -107,6 +107,14 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 1.7,  # Qwen3-1.7B (text-only)
         "vae": 0.04,  # Flux-style AutoencoderKL (16ch, 38M params)
     },
+    "longcat_image": {
+        # Meta-instantiated diffusers LongCatImageTransformer2DModel with its
+        # 0.39 config defaults (19 double + 38 single blocks, inner dim 3072)
+        # → 11.878 B params.
+        "transformer": 11.9,
+        "text_encoder": 8.3,  # Qwen2.5-VL-7B — same class/config as qwen_image
+        "vae": 0.08,  # standard 16-channel AutoencoderKL (~84M params)
+    },
     "ltx2": {
         # Meta-instantiated diffusers LTX2VideoTransformer3DModel with the
         # ltx2_3.yaml arch (48 layers, hidden 4096, joint audio+video streams).

@@ -1,0 +1,79 @@
+# LongCat-Image (meituan-longcat/LongCat-Image) — text-to-image base.
+#
+# Architecture facts verified against the installed diffusers 0.39.0
+# LongCatImageTransformer2DModel config defaults + LongCatImagePipeline
+# (see docs/superpowers/plans/2026-07-07-f2-longcat-image-family.md).
+# The Edit pipeline (LongCatImageEditPipeline) is OUT of scope.
+id: longcat-image-base
+family: longcat_image
+name: LongCat-Image
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 5e-6
+components:
+  repo:
+    path: huggingface:meituan-longcat/LongCat-Image
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer._class_name: LongCatImageTransformer2DModel
+  transformer.patch_size: 1
+  transformer.in_channels: 64
+  transformer.num_layers: 19
+  transformer.num_single_layers: 38
+  transformer.attention_head_dim: 128
+  transformer.num_attention_heads: 24
+  transformer.joint_attention_dim: 3584
+  transformer.pooled_projection_dim: 3584
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.guidance_embeds: false
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  # Generic aliases (VRAM estimator activation heuristics)
+  hidden_size: 3072
+  depth: 19
+  depth_single_blocks: 38
+  in_channels: 16  # unpacked latent channels (packed 2x2 -> 64)
+  context_dim: 3584
+  te.type: qwen2_5_vl
+  te.max_length: 512
+  te.architectures:
+  - Qwen2_5_VLForConditionalGeneration
+  te.hidden_size: 3584
+  te.num_hidden_layers: 28
+  # Scheduler: FlowMatchEulerDiscreteScheduler with the LongCat pipeline's
+  # calculate_shift defaults (base 0.5 -> max 1.15 over seq-len 256 -> 4096).
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.use_dynamic_shifting: true
+  scheduler.base_shift: 0.5
+  scheduler.max_shift: 1.15
+  scheduler.base_image_seq_len: 256
+  scheduler.max_image_seq_len: 4096
+  vae._class_name: AutoencoderKL
+  vae.latent_channels: 16
+# Left empty on purpose: the VRAM estimator's _FAMILY_PARAMS entry
+# (meta-device-derived 11.9 B transformer) drives the estimate.
+model_size_mb: {}
+# Left empty on purpose: LongCatImageDriver.get_lora_targets() pattern
+# defaults (double + single block projections) drive PEFT wrapping.
+lora_targetable_modules: []
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 19
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 38
+  approx_vram_mb: 320

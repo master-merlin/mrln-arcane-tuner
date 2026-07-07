@@ -98,6 +98,15 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 4.4,  # Qwen3-VL-4B (12-layer-stacked features)
         "vae": 0.13,  # AutoencoderKLQwenImage (127M params)
     },
+    "dreamlite": {
+        # Meta-instantiated DreamLiteUNetModel with the REAL checkpoint
+        # unet/config.json (block_out 256/512/896, tlpb 1/2/4, ff_mult 3,
+        # sep-convs, MQA) → 0.390 B. Deliberately small — a mobile-class
+        # U-Net, NOT a DiT.
+        "unet": 0.39,
+        "text_encoder": 2.1,  # Qwen3-VL-2B-class (text 2048/28L + vision 24L)
+        "vae": 0.002,  # AutoencoderTiny / taesdxl (~2.4 M params)
+    },
     "ovis_image": {
         # Meta-instantiated from the diffusers-0.39 OvisImageTransformer2DModel
         # checkpoint config (== class defaults: 6 double + 27 single blocks,

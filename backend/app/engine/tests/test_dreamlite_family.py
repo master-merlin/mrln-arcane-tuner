@@ -166,6 +166,71 @@ def test_both_definitions_loaded():
         assert arch.get("te.drop_idx") == 34
 
 
+# ── Task 2: Loader Manifest ──────────────────────────────────────────────────
+
+
+def test_manifest_components():
+    """DreamLiteLoader manifest declares all four diffusers-native components.
+
+    The checkpoint stores its primary model under ``unet/`` (it IS a U-Net —
+    ``model_index.json`` names the component "unet"), unlike the DiT
+    families' ``transformer/`` subfolder. All four components are
+    diffusers-0.39 / transformers-4.57-native: the TE config is saved by
+    transformers 4.57.3 (verified), so no krea2-style rope translation is
+    needed and the plain manifest path suffices.
+    """
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.dreamlite.loader import DreamLiteLoader
+
+    loader = DreamLiteLoader(torch.device("cpu"))
+    definition = _make_dreamlite_definition()
+    specs = loader.get_component_manifest(definition)
+
+    keys = {s.key for s in specs}
+    assert {"tokenizer", "text_encoder", "vae", "unet"} <= keys, (
+        f"missing required manifest keys; got {keys}"
+    )
+
+    spec_map = {s.key: s for s in specs}
+
+    # Tokenizer: AutoTokenizer (fast Qwen2TokenizerFast via tokenizer.json)
+    assert "AutoTokenizer" in spec_map["tokenizer"].hf_class
+    assert spec_map["tokenizer"].is_torch_model is False
+
+    # Text encoder: Qwen3-VL base model (no LM head; hidden_states[-1] is
+    # identical to the pipeline's Qwen3VLForConditionalGeneration tap).
+    assert spec_map["text_encoder"].hf_class == "transformers.Qwen3VLModel"
+    assert spec_map["text_encoder"].subfolder == "text_encoder"
+
+    # VAE: AutoencoderTiny (taesdxl — NO latent_dist, encode returns .latents)
+    assert spec_map["vae"].hf_class == "diffusers.AutoencoderTiny"
+    assert spec_map["vae"].subfolder == "vae"
+
+    # Primary model: DreamLiteUNetModel under the checkpoint's unet/ subfolder
+    assert spec_map["unet"].hf_class == "diffusers.DreamLiteUNetModel"
+    assert spec_map["unet"].subfolder == "unet"
+
+
+def test_loader_dtype_policy_is_generic():
+    """No dtype overrides — bf16 comes from driver.resolve_loading_dtype."""
+    import torch  # noqa: PLC0415
+
+    from app.engine.core.pipeline.loader_base import GenericComponentLoader
+    from app.engine.models.families.dreamlite.loader import DreamLiteLoader
+
+    assert (
+        DreamLiteLoader._resolve_dtype is GenericComponentLoader._resolve_dtype
+    ), "DreamLiteLoader must inherit the generic dtype policy"
+
+    loader = DreamLiteLoader(torch.device("cpu"))
+    definition = _make_dreamlite_definition()
+    for spec in loader.get_component_manifest(definition):
+        assert spec.dtype_override is None, (
+            f"{spec.key} must not force a dtype override"
+        )
+
+
 def test_base_and_mobile_architecture_params_identical():
     """Portability requirement: base and mobile share ONE architecture.
 

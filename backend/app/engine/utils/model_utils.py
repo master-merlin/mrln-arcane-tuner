@@ -19,7 +19,7 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 logger = structlog.get_logger(__name__)
 
 
-def _snapshot_fully_cached(repo_id: str) -> bool:
+def _snapshot_fully_cached(repo_id: str, revision: str | None = None) -> bool:
     """True iff EVERY file in *repo_id* is already in the local HF cache.
 
     A bare ``snapshot_download(repo_id, local_files_only=True)`` is NOT a
@@ -42,11 +42,13 @@ def _snapshot_fully_cached(repo_id: str) -> bool:
     try:
         from huggingface_hub import HfApi, try_to_load_from_cache
 
-        files = HfApi().list_repo_files(repo_id)
+        rev_kwargs = {"revision": revision} if revision else {}
+        files = HfApi().list_repo_files(repo_id, **rev_kwargs)
         if not files:
             return False
         return all(
-            isinstance(try_to_load_from_cache(repo_id, f), str) for f in files
+            isinstance(try_to_load_from_cache(repo_id, f, **rev_kwargs), str)
+            for f in files
         )
     except Exception as e:
         logger.debug("snapshot_cache_probe_failed", repo=repo_id, error=str(e))
@@ -68,6 +70,8 @@ class ModelPathResolver:
         Supports:
         - ``huggingface:<repo_id>`` — downloads full snapshot
         - ``huggingface:<repo_id>:<filename>`` — downloads single file
+        - ``huggingface:<repo_id>@<revision>[:<filename>]`` — pins a branch /
+          tag / commit (e.g. the DreamLite checkpoints' ``diffusers`` branch)
         - Absolute local paths — returned as-is
         - Relative local paths — joined with *base_dir* or cwd
 
@@ -120,6 +124,13 @@ class ModelPathResolver:
         parts = clean.split(":")
         repo_id = parts[0]
         filename = parts[1] if len(parts) > 1 else None
+        # Optional "@revision" suffix on the repo id (branch / tag / commit).
+        revision = None
+        if "@" in repo_id:
+            repo_id, revision = repo_id.split("@", 1)
+        # Passed conditionally so revision-less calls keep their legacy
+        # kwargs shape (no ``revision=None`` noise).
+        rev_kwargs = {"revision": revision} if revision else {}
         # model_id for the WS payload — disambiguate single-file vs snapshot
         progress_id = f"{repo_id}/{filename}" if filename else repo_id
 
@@ -137,9 +148,12 @@ class ModelPathResolver:
             try:
                 if filename:
                     return hf_hub_download(
-                        repo_id=repo_id, filename=filename, local_files_only=True,
+                        repo_id=repo_id, filename=filename,
+                        local_files_only=True, **rev_kwargs,
                     )
-                return snapshot_download(repo_id=repo_id, local_files_only=True)
+                return snapshot_download(
+                    repo_id=repo_id, local_files_only=True, **rev_kwargs,
+                )
             except Exception:
                 raise FileNotFoundError(
                     f"Model '{repo_id}' not found in local HF cache. "
@@ -155,7 +169,9 @@ class ModelPathResolver:
                 # custom tqdm to per-file byte transfers anyway. with_progress
                 # emits a coarse start/complete pair for the indicator.
                 with with_progress(model_id=progress_id, category="training"):
-                    return hf_hub_download(repo_id=repo_id, filename=filename)
+                    return hf_hub_download(
+                        repo_id=repo_id, filename=filename, **rev_kwargs,
+                    )
 
             # Snapshot (full repo). Only surface the download indicator on a
             # REAL transfer: a snapshot fully on disk is loaded, not downloaded.
@@ -164,9 +180,9 @@ class ModelPathResolver:
             # would resume SILENTLY (dark indicator, job stuck looking idle).
             # _snapshot_fully_cached cross-checks the Hub's file list against the
             # cache, so only a genuinely complete snapshot skips the bar.
-            if _snapshot_fully_cached(repo_id):
+            if _snapshot_fully_cached(repo_id, revision):
                 logger.info("snapshot_cache_hit", repo=repo_id)
-                return snapshot_download(repo_id=repo_id)
+                return snapshot_download(repo_id=repo_id, **rev_kwargs)
 
             # A real (or partial-resume) transfer. We can't attach an emitting
             # tqdm for BYTE progress — HF only routes tqdm_class to the coarse
@@ -180,7 +196,7 @@ class ModelPathResolver:
             with snapshot_byte_progress(
                 repo_id=repo_id, model_id=progress_id, category="training",
             ):
-                return snapshot_download(repo_id=repo_id)
+                return snapshot_download(repo_id=repo_id, **rev_kwargs)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("hf_download_failed", repo=repo_id, file=filename, error=str(e))
             raise

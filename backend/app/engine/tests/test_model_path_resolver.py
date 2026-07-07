@@ -102,6 +102,67 @@ class TestResolve:
             )
 
 
+class TestRevision:
+    """``huggingface:<repo>[@<revision>][:<filename>]`` — revision plumbing.
+
+    Added for the dreamlite family: the DreamLite checkpoints carry the
+    diffusers layout on the ``diffusers`` branch (the pipeline docs'
+    canonical revision), so the resolver must be able to pin a revision.
+    """
+
+    @patch("app.engine.utils.model_utils.snapshot_download")
+    def test_snapshot_uri_with_revision(self, mock_download):
+        mock_download.return_value = "/cache/models/repo-rev"
+        result = ModelPathResolver.resolve(
+            "huggingface:carlofkl/DreamLite-base@diffusers",
+        )
+        assert result == "/cache/models/repo-rev"
+        # The @revision must be split OFF the repo_id and passed as revision=
+        for call in mock_download.call_args_list:
+            assert call.kwargs.get("repo_id") == "carlofkl/DreamLite-base"
+        online_calls = [
+            c for c in mock_download.call_args_list
+            if not c.kwargs.get("local_files_only")
+        ]
+        assert online_calls, "no online snapshot_download run"
+        assert online_calls[-1].kwargs.get("revision") == "diffusers"
+
+    @patch("app.engine.utils.model_utils.snapshot_download")
+    def test_offline_snapshot_uri_with_revision(self, mock_download):
+        mock_download.return_value = "/cache/local-rev"
+        result = ModelPathResolver.resolve(
+            "huggingface:org/repo@mybranch", local_files_only=True,
+        )
+        mock_download.assert_called_once_with(
+            repo_id="org/repo", local_files_only=True, revision="mybranch",
+        )
+        assert result == "/cache/local-rev"
+
+    @patch("app.engine.utils.model_utils.hf_hub_download")
+    def test_single_file_uri_with_revision(self, mock_download):
+        mock_download.return_value = "/cache/file.safetensors"
+        result = ModelPathResolver.resolve(
+            "huggingface:org/repo@rev1:file.safetensors",
+        )
+        assert result == "/cache/file.safetensors"
+        call = mock_download.call_args
+        assert call.kwargs.get("repo_id") == "org/repo"
+        assert call.kwargs.get("filename") == "file.safetensors"
+        assert call.kwargs.get("revision") == "rev1"
+
+    @patch("app.engine.utils.model_utils.snapshot_download")
+    def test_no_revision_keeps_legacy_call_shape(self, mock_download):
+        """Without @revision the kwargs stay exactly as before (no
+        ``revision=None`` noise — keeps older call-shape assertions valid)."""
+        mock_download.return_value = "/cache/local"
+        ModelPathResolver.resolve(
+            "huggingface:org/repo", local_files_only=True,
+        )
+        mock_download.assert_called_once_with(
+            repo_id="org/repo", local_files_only=True,
+        )
+
+
 class TestFindComponent:
     """Test ModelPathResolver.find_component() static method."""
 

@@ -675,3 +675,280 @@ def test_driver_layer_manifest_single_block_stack():
     assert len(topo) == 1
     assert topo[0]["attr_path"] == "blocks"
     assert topo[0]["count"] == _TINY_CFG["depth"]
+
+
+# ── Task 6: Trainer override trio + pixel passthrough + TE cache ─────────────
+
+
+def _build_real_trainer_shell():
+    """Minimal PRXPixelTrainer shell with a REAL driver + tiny transformer.
+
+    Binds the real trainer methods (encode seam) without calling setup().
+    """
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.prx_pixel.driver import PRXPixelDriver
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    definition = _make_pixel_definition(architecture_params=dict(_ARCH))
+
+    trainer = MagicMock(spec=PRXPixelTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+    trainer.config = {"cache_text_embeddings": False}
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+
+    drv = PRXPixelDriver(definition, torch.device("cpu"))
+    tiny_model = _build_tiny_model()
+    torch.manual_seed(5)
+    hidden = torch.randn(1, 256, 8)  # D == tiny context_in_dim
+    drv.assign_components({
+        "unet": tiny_model,
+        "text_encoder": _stub_te(hidden),
+        "tokenizer": _stub_tokenizer(256),
+    })
+    trainer.driver = drv
+
+    trainer.encode_text = lambda captions, dtype, batch=None: (
+        PRXPixelTrainer.encode_text(trainer, captions, dtype, batch)
+    )
+    trainer._encode_text_direct = lambda captions, dtype: (
+        PRXPixelTrainer._encode_text_direct(trainer, captions, dtype)
+    )
+    trainer._get_cached_text_embeddings = lambda captions, dtype: (
+        PRXPixelTrainer._get_cached_text_embeddings(trainer, captions, dtype)
+    )
+    return trainer
+
+
+def test_trainer_encode_to_forward_real_seam():
+    """C1/C2: trainer.encode_text returns a (emb, mask) TUPLE consumable by
+    driver.forward_pass — the whole encode→forward round trip produces a
+    finite [B, 3, H, W] x0 prediction."""
+    import torch  # noqa: PLC0415
+
+    trainer = _build_real_trainer_shell()
+
+    text_emb = trainer.encode_text(["a prx pixel test caption"], torch.float32)
+    assert isinstance(text_emb, tuple) and len(text_emb) == 2, (
+        f"encode_text must return a 2-tuple, got {type(text_emb)}"
+    )
+    emb, mask = text_emb
+    assert emb.ndim == 3, f"embeddings must be 3-D [B,L,D], got {emb.ndim}-D"
+    assert emb.shape[1] == 256, f"seq len must be 256, got {emb.shape[1]}"
+    assert mask.ndim == 2 and mask.shape[1] == 256
+    assert mask.dtype == torch.bool
+
+    B, C, H, W = 1, 3, 8, 8
+    with torch.no_grad():
+        pred = trainer.driver.forward_pass(
+            noisy_input=torch.randn(B, C, H, W),
+            timesteps=torch.tensor([500.0]),
+            text_embeddings=text_emb,
+            batch={},
+        )
+    assert pred.shape == (B, C, H, W), f"unexpected pred shape: {pred.shape}"
+    assert pred.isfinite().all(), "forward_pass output contains NaN/inf"
+
+
+def test_trainer_cached_encode_returns_batched_tuple():
+    """Cached path stacks per-caption entries back to ([B,L,D], [B,L])."""
+    import torch  # noqa: PLC0415
+
+    trainer = _build_real_trainer_shell()
+    trainer.config = {"cache_text_embeddings": True}
+    trainer.text_encoder = trainer.driver.text_encoder
+
+    out = trainer.encode_text(["cap one", "cap two"], torch.float32)
+    assert isinstance(out, tuple) and len(out) == 2
+    emb, mask = out
+    assert emb.shape[0] == 2 and emb.ndim == 3
+    assert mask.shape[0] == 2 and mask.ndim == 2
+    assert set(trainer.text_cache) == {"cap one", "cap two"}
+    # Cache entries are (emb [L,D], mask [L]) CPU tuples
+    cached_emb, cached_mask = trainer.text_cache["cap one"]
+    assert cached_emb.ndim == 2 and cached_mask.ndim == 1
+
+
+def test_trainer_peft_model_sync():
+    """C3/C4: _update_primary_model syncs driver.model, components, and the
+    read-only ``transformer`` property resolves to the wrapped model."""
+    import torch  # noqa: PLC0415
+    import torch.nn as nn  # noqa: PLC0415
+
+    from app.engine.models.families.prx_pixel.driver import PRXPixelDriver
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    definition = _make_pixel_definition()
+    trainer = MagicMock(spec=PRXPixelTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = definition
+
+    drv = PRXPixelDriver(definition, torch.device("cpu"))
+    tiny_model = _build_tiny_model()
+    drv.assign_components({
+        "unet": tiny_model,
+        "text_encoder": None,
+        "tokenizer": None,
+    })
+    trainer.driver = drv
+    trainer.components = {"unet": tiny_model}
+    trainer.model = tiny_model
+
+    class _FakePEFT(nn.Module):
+        pass
+
+    peft_wrapped = _FakePEFT()
+    PRXPixelTrainer._update_primary_model(trainer, peft_wrapped)
+
+    assert trainer.driver.model is peft_wrapped, (
+        "C3: driver.model was NOT updated after _update_primary_model"
+    )
+    assert trainer.components.get("unet") is peft_wrapped
+    assert trainer.model is peft_wrapped
+
+    transformer_val = PRXPixelTrainer.transformer.fget(trainer)
+    assert transformer_val is peft_wrapped, (
+        "C4: trainer.transformer property must resolve to the wrapped model"
+    )
+
+
+def test_trainer_configure_managers_installs_pixel_passthrough():
+    """Pixel-space wiring: after _configure_managers the latent manager must
+    be the shared PixelPassthroughLatentManager (the default LatentManager
+    would raise on encode_and_cache_batch with vae=None)."""
+    from unittest.mock import patch  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    from app.engine.components.pixel_latents import (
+        PixelPassthroughLatentManager,
+    )
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    trainer = MagicMock(spec=PRXPixelTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.definition = _make_pixel_definition()
+    trainer.config = {"output_dir": "outputs", "lora_name": "t"}
+    trainer.components = {}
+    trainer.logger = MagicMock()
+    trainer.driver = MagicMock()
+    trainer.latent_manager = None
+
+    with patch(
+        "app.engine.core.pipeline.pipeline_optimization.CheckpointManager",
+        return_value=MagicMock(),
+    ):
+        PRXPixelTrainer._configure_managers(trainer, max_train_steps=10)
+
+    assert isinstance(trainer.latent_manager, PixelPassthroughLatentManager), (
+        "_configure_managers must install the shared pixel passthrough"
+    )
+
+
+def test_trainer_latent_cache_hooks_are_noops():
+    """No latent cache in pixel space: _validate_latent_cache just zeroes the
+    missing counter and the async _pre_cache_latents does nothing."""
+    import asyncio  # noqa: PLC0415
+
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    trainer = MagicMock(spec=PRXPixelTrainer)
+    PRXPixelTrainer._validate_latent_cache(trainer)
+    assert trainer._latent_cache_missing == 0
+
+    asyncio.run(PRXPixelTrainer._pre_cache_latents(trainer))
+
+
+def test_trainer_te_disk_cache_layout(tmp_path):
+    """TE disk cache lands in embeddings/{te_quant}/te1|te2 (emb + mask)."""
+    import torch  # noqa: PLC0415
+
+    from app.engine.components.text_embeddings import TextEmbeddingCache
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    trainer = MagicMock(spec=PRXPixelTrainer)
+    trainer.config = {
+        "cache_text_embeddings": True,
+        "te_quantization": "none",
+        "sample_prompts": [],
+    }
+    trainer.device = torch.device("cpu")
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+    trainer._log_writer = None
+    trainer.text_encoder = MagicMock()
+    trainer._build_caption_hints.return_value = {"a prx pixel caption": "hint0"}
+    trainer._resolve_te_cache_dirs.return_value = [str(tmp_path)]
+    trainer._resolve_loading_dtype.return_value = torch.float32
+    trainer._sample_prompt_texts.side_effect = lambda: (
+        PRXPixelTrainer._sample_prompt_texts(trainer)
+    )
+
+    def _fake_encode(captions, dtype):
+        b = len(captions)
+        return (
+            torch.zeros(b, 256, 16),
+            torch.ones(b, 256, dtype=torch.bool),
+        )
+
+    trainer._encode_text_direct = _fake_encode
+
+    PRXPixelTrainer._pre_cache_text_embeddings(trainer)
+
+    te1 = tmp_path / "embeddings" / "none" / "te1"
+    te2 = tmp_path / "embeddings" / "none" / "te2"
+    assert te1.is_dir(), "te1 (embeddings) cache dir missing"
+    assert te2.is_dir(), "te2 (attention mask) cache dir missing"
+
+    emb = TextEmbeddingCache.load("a prx pixel caption", str(te1), "hint0")
+    mask = TextEmbeddingCache.load("a prx pixel caption", str(te2), "hint0")
+    assert emb is not None and emb.shape == (256, 16)
+    assert mask is not None and mask.shape == (256,)
+    # In-memory cache holds the (emb, mask) tuple
+    assert "a prx pixel caption" in trainer.text_cache
+    cached_emb, cached_mask = trainer.text_cache["a prx pixel caption"]
+    assert cached_emb.shape == (256, 16)
+    assert cached_mask.shape == (256,)
+
+
+def test_trainer_warms_sample_and_negative_prompts():
+    """Pre-cache also warms expanded sample + negative prompts so the TE can
+    stay offloaded during sampling (krea2 VRAM-spike lesson)."""
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    trainer = MagicMock(spec=PRXPixelTrainer)
+    trainer.config = {
+        "cache_text_embeddings": True,
+        "te_quantization": "none",
+        "sample_prompts": [{"prompt": "a red car"}],
+        "sample_negative_prompt": "blurry",
+    }
+    trainer.device = torch.device("cpu")
+    trainer.text_cache = {}
+    trainer.logger = MagicMock()
+    trainer._log_writer = None
+    trainer.text_encoder = MagicMock()
+    trainer._build_caption_hints.return_value = {"a dataset caption": "hint0"}
+    trainer._resolve_te_cache_dirs.return_value = []
+    trainer._resolve_loading_dtype.return_value = torch.float32
+    trainer._sample_prompt_texts.side_effect = lambda: (
+        PRXPixelTrainer._sample_prompt_texts(trainer)
+    )
+
+    def _fake_encode(captions, dtype):
+        b = len(captions)
+        return (
+            torch.zeros(b, 256, 16),
+            torch.ones(b, 256, dtype=torch.bool),
+        )
+
+    trainer._encode_text_direct = _fake_encode
+
+    PRXPixelTrainer._pre_cache_text_embeddings(trainer)
+
+    assert "a red car" in trainer.text_cache
+    assert "blurry" in trainer.text_cache

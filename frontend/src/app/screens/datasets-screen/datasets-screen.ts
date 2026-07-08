@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, HostListener, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, HostListener, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Dataset, DatasetService, type MpxDistribution } from '../../services/dataset';
 import { DatasetUploadService } from '../../services/dataset-upload.service';
@@ -111,6 +111,10 @@ export class DatasetsScreen {
     protected scope = inject(ScopeStore);
     protected overlay = inject(OverlayStore);
     protected search = inject(SearchStore);
+    // Optional: the sibling specs construct this component directly (outside a
+    // component fixture), where no ElementRef node injector exists. Only the
+    // render path needs it (menu focus management), so a null host is fine.
+    private host = inject(ElementRef, { optional: true }) as ElementRef<HTMLElement> | null;
 
     /** Dataset ids that belong to the active project, when one is scoped. */
     private projectDatasetIds = signal<Set<string>>(new Set());
@@ -170,6 +174,20 @@ export class DatasetsScreen {
             const pid = this.scope.projectId();
             if (this.workspaceOpen()) return;
             void this.refreshProjectMembership(pid);
+        });
+
+        // D10 — when a keyboard-navigable popup opens (or the filter picker
+        // switches tiers), move focus onto its first menu item. Reads the open
+        // signals so it re-fires on every open/tier-change; the DOM query runs
+        // on a microtask so Angular has rendered the panel first.
+        effect(() => {
+            const filterOpen = this.filterPickerOpen();
+            this.filterPickerTier();               // re-focus first item on tier change
+            const projectOpen = this.projectPickerOpenFor();
+            const bulkOpen = this.bulkProjectPickerOpen();
+            if (filterOpen || projectOpen || bulkOpen) {
+                queueMicrotask(() => this.focusFirstMenuItem());
+            }
         });
     }
 
@@ -797,6 +815,255 @@ export class DatasetsScreen {
         this.activeFilters.set(new Set());
     }
 
+    // ── D5 · multi-select + contextual bulk bar ───────────────────────────
+    //
+    // Selection is keyed by dataset id (falling back to name) so it survives
+    // grid re-renders. The bulk bar reads `selectionCount` for its visibility
+    // gate and runs the SAME per-dataset services across `selectedDatasets`.
+
+    /** Selected dataset ids (id ?? name). */
+    protected selected = signal<Set<string>>(new Set<string>());
+
+    /** Canonical selection key for a dataset — mirrors the id used everywhere
+     *  else on the screen (openCard / addDatasetToProject / trackById). */
+    private idOf(d: Dataset): string {
+        return d.id ?? d.name;
+    }
+
+    protected isSelected(d: Dataset): boolean {
+        return this.selected().has(this.idOf(d));
+    }
+
+    /** Toggle a card's selection. `stopPropagation` keeps the checkbox click
+     *  off {@link openCard} so selecting never navigates. */
+    protected toggleSelection(d: Dataset, event?: Event): void {
+        event?.stopPropagation();
+        const id = this.idOf(d);
+        this.selected.update(s => {
+            const next = new Set(s);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    }
+
+    protected clearSelection(): void {
+        if (this.selected().size > 0) this.selected.set(new Set());
+    }
+
+    /** Number of currently-selected datasets. */
+    protected selectionCount = computed(() => this.selected().size);
+
+    /** The selected rows, resolved against the full entity list. Selection
+     *  persists by id across scope/filter changes, so a bulk op acts on every
+     *  dataset the user explicitly selected — not just the currently-visible
+     *  subset (which, in a project scope, may exclude a still-selected row). */
+    protected selectedDatasets = computed<Dataset[]>(() => {
+        const sel = this.selected();
+        return (this.allDatasets() ?? []).filter(d => sel.has(this.idOf(d)));
+    });
+
+    /** True when every visible dataset is selected (drives the Select-all toggle). */
+    protected allVisibleSelected = computed<boolean>(() => {
+        const vis = this.visibleDatasets();
+        if (vis.length === 0) return false;
+        const sel = this.selected();
+        return vis.every(d => sel.has(this.idOf(d)));
+    });
+
+    /** Select-all / clear toggle: when everything visible is already selected,
+     *  clear; otherwise select all visible rows. */
+    protected toggleSelectAll(): void {
+        if (this.allVisibleSelected()) {
+            this.clearSelection();
+            return;
+        }
+        this.selected.set(new Set(this.visibleDatasets().map(d => this.idOf(d))));
+    }
+
+    /** Whether the bulk-bar "Add to project" dropdown is open. */
+    protected bulkProjectPickerOpen = signal(false);
+
+    protected toggleBulkProjectPicker(event: MouseEvent): void {
+        event.stopPropagation();
+        this.bulkProjectPickerOpen.update(v => !v);
+    }
+
+    /**
+     * Bulk delete — themed destructive confirm, acting only on `onConfirm`.
+     * Scope-aware, mirroring {@link deleteDataset}: global scope removes each
+     * dataset from the library (files kept — the safe default; per-file wipe
+     * stays a single-card action), project scope detaches each from the
+     * active project. Selection is cleared once the action fires.
+     */
+    protected bulkDelete(): void {
+        const targets = this.selectedDatasets();
+        if (targets.length === 0) return;
+        const n = targets.length;
+        const projectId = this.scope.projectId();
+
+        if (projectId) {
+            this.overlay.openModal('confirm', {
+                title: `Remove ${n} dataset${n === 1 ? '' : 's'} from project?`,
+                message: `${n} dataset${n === 1 ? '' : 's'} will be removed from this project. `
+                    + `They stay in the library.`,
+                confirmLabel: 'Remove',
+                destructive: true,
+                onConfirm: () => {
+                    for (const d of targets) {
+                        this.projects.removeProjectDataset(projectId, this.idOf(d)).subscribe({
+                            next: () => undefined,
+                            error: (err: { error?: { detail?: string }; message?: string }) =>
+                                this.toast.error(`Failed to remove "${d.name}": ` + (err?.error?.detail || err?.message)),
+                        });
+                    }
+                    this.toast.success(`Removed ${n} dataset${n === 1 ? '' : 's'} from project.`);
+                    this.projects.bumpDatasetStat(projectId, -n);
+                    this.projects.loadProjects();
+                    void this.refreshAfterDelete(projectId);
+                    this.clearSelection();
+                },
+            });
+            return;
+        }
+
+        this.overlay.openModal('confirm', {
+            title: `Delete ${n} dataset${n === 1 ? '' : 's'}?`,
+            message: `Delete ${n} dataset${n === 1 ? '' : 's'} — removes them from the library. `
+                + `Files on disk are kept. This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                for (const d of targets) {
+                    this.datasetsApi.deleteDataset(d.name, false).subscribe({
+                        next: () => undefined,
+                        error: (err: { error?: { detail?: string }; message?: string }) =>
+                            this.toast.error(`Failed to delete "${d.name}": ` + (err?.error?.detail || err?.message)),
+                    });
+                }
+                this.toast.success(`Removed ${n} dataset${n === 1 ? '' : 's'} from library.`);
+                void this.datasets.loadAll().catch(() => undefined);
+                this.clearSelection();
+            },
+        });
+    }
+
+    /**
+     * Bulk rescan — launches a backend-owned incremental ("safe") rescan task
+     * per selected dataset via {@link DatasetService.rescanDataset}. The
+     * per-card action opens a mode-picker modal, which doesn't compose across a
+     * set; bulk defaults to the non-destructive incremental scan and tracks
+     * each task in the Task Center. Selection is preserved.
+     */
+    protected bulkRescan(): void {
+        const targets = this.selectedDatasets();
+        if (targets.length === 0) return;
+        for (const d of targets) {
+            this.datasetsApi.rescanDataset(d.name, 'safe').subscribe({
+                next: () => undefined,
+                error: () => this.toast.error(`Could not start rescan for "${d.name}".`),
+            });
+        }
+        this.toast.success(`Started rescan for ${targets.length} dataset${targets.length === 1 ? '' : 's'}.`);
+    }
+
+    /**
+     * Bulk add-to-project — adds every selected dataset to the chosen project
+     * via {@link ProjectService.addProjectDataset} (a backend no-op for any
+     * already a member). Global-scope only (in a project scope the grid already
+     * shows just that project's datasets). Closes the picker + clears selection.
+     */
+    protected bulkAddToProject(projectId: string, projectName: string): void {
+        this.bulkProjectPickerOpen.set(false);
+        const targets = this.selectedDatasets();
+        if (targets.length === 0) return;
+        for (const d of targets) {
+            this.projects.addProjectDataset(projectId, this.idOf(d)).subscribe({
+                next: () => undefined,
+                error: (err: { error?: { detail?: string }; message?: string }) =>
+                    this.toast.error(`Failed to add "${d.name}": ` + (err?.error?.detail || err?.message)),
+            });
+        }
+        this.toast.success(`Added ${targets.length} dataset${targets.length === 1 ? '' : 's'} to '${projectName}'.`);
+        this.projects.bumpDatasetStat(projectId, targets.length);
+        this.projects.loadProjects();
+        this.clearSelection();
+    }
+
+    // ── D10 · keyboard operability ─────────────────────────────────────────
+
+    /**
+     * Keyboard activation for a card (role="button"). Opens the workspace on
+     * Enter/Space, but only when the key event originates on the card itself —
+     * NOT when it bubbles up from an inner action button/input (which have their
+     * own handlers). Space is prevent-defaulted to stop the page from scrolling.
+     */
+    protected activateCard(d: Dataset, event: Event): void {
+        if (event.target !== event.currentTarget) return;
+        event.preventDefault();
+        this.openCard(d);
+    }
+
+    /**
+     * Shared keyboard model for the role="menu" popups (filter picker + the
+     * per-card / bulk project pickers). Arrow keys rove focus between the
+     * role="menuitem" entries (roving tabindex); Home/End jump to the ends;
+     * Escape closes the popup and restores focus to its trigger.
+     */
+    protected onMenuKeydown(event: KeyboardEvent, which: 'filter' | 'project' | 'bulk', trigger: HTMLElement): void {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            this.closeMenu(which);
+            trigger?.focus();
+            return;
+        }
+        const panel = event.currentTarget as HTMLElement;
+        const items = Array.from(panel.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+        if (items.length === 0) return;
+        const current = items.findIndex(el => el === document.activeElement);
+        let next = current;
+        switch (event.key) {
+            case 'ArrowDown': next = current < 0 ? 0 : (current + 1) % items.length; break;
+            case 'ArrowUp': next = current <= 0 ? items.length - 1 : current - 1; break;
+            case 'Home': next = 0; break;
+            case 'End': next = items.length - 1; break;
+            default: return;
+        }
+        event.preventDefault();
+        this.applyRovingFocus(items, next);
+    }
+
+    private closeMenu(which: 'filter' | 'project' | 'bulk'): void {
+        if (which === 'filter') this.filterPickerOpen.set(false);
+        else if (which === 'project') this.closeProjectPicker();
+        else this.bulkProjectPickerOpen.set(false);
+    }
+
+    /** Move focus to the first menu item of the currently-open popup. Called on
+     *  a microtask after open so the panel is rendered. Sets a roving tabindex
+     *  so only the focused item is tab-reachable. */
+    private focusFirstMenuItem(): void {
+        const el = this.host?.nativeElement;
+        if (!el) return;
+        const selector = this.bulkProjectPickerOpen()
+            ? '[data-testid="bulk-project-picker-panel"]'
+            : this.filterPickerOpen()
+                ? '[data-testid="filter-picker-panel"]'
+                : '[data-testid="project-picker-panel"]';
+        const panel = el.querySelector<HTMLElement>(selector);
+        if (!panel) return;
+        const items = Array.from(panel.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+        if (items.length === 0) return;
+        this.applyRovingFocus(items, 0);
+    }
+
+    /** Apply roving tabindex: the target item becomes tab-reachable + focused,
+     *  every other item is removed from the tab order. */
+    private applyRovingFocus(items: HTMLElement[], index: number): void {
+        items.forEach((el, i) => el.setAttribute('tabindex', i === index ? '0' : '-1'));
+        items[index]?.focus();
+    }
+
     protected openCard(d: Dataset): void {
         this.overlay.openWorkspace(d.id ?? d.name, 'browse');
     }
@@ -1110,6 +1377,7 @@ export class DatasetsScreen {
     onDocumentClick(): void {
         this.closeProjectPicker();
         if (this.filterPickerOpen()) this.filterPickerOpen.set(false);
+        if (this.bulkProjectPickerOpen()) this.bulkProjectPickerOpen.set(false);
     }
 
     private async refreshAfterDelete(projectId: string): Promise<void> {

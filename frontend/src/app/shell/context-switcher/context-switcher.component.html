@@ -32,9 +32,14 @@
     </button>
 
     @if (open()) {
-        <div class="popover" style="top: calc(100% + 6px); left: 0; min-width: 320px;">
+        <div class="popover" role="menu" aria-orientation="vertical"
+            (keydown)="onMenuKeydown($event)"
+            style="top: calc(100% + 6px); left: 0; min-width: 320px;">
             <div class="popover-section">WORKSPACE SCOPE</div>
-            <div
+            <button
+                type="button"
+                role="menuitem"
+                [attr.tabindex]="activeIndex() === 0 ? 0 : -1"
                 class="popover-item"
                 [class.active]="scope.scope().kind === 'global'"
                 (click)="pickGlobal()">
@@ -65,12 +70,15 @@
                         [size]="13"
                         class="text-brand" />
                 }
-            </div>
+            </button>
 
             @if (projects.allProjects().length > 0) {
                 <div class="popover-section">PROJECTS</div>
-                @for (p of projects.allProjects(); track p.id) {
-                    <div
+                @for (p of projects.allProjects(); track p.id; let i = $index) {
+                    <button
+                        type="button"
+                        role="menuitem"
+                        [attr.tabindex]="activeIndex() === i + 1 ? 0 : -1"
                         class="popover-item"
                         [class.active]="scope.projectId() === p.id"
                         (click)="pickProject(p.id)">
@@ -88,15 +96,20 @@
                                 [size]="13"
                                 class="text-brand" />
                         }
-                    </div>
+                    </button>
                 }
             }
 
             <div class="popover-divider"></div>
-            <div class="popover-item text-text-secondary">
+            <button
+                type="button"
+                role="menuitem"
+                [attr.tabindex]="activeIndex() === newProjectIndex() ? 0 : -1"
+                class="popover-item text-text-secondary"
+                (click)="newProject()">
                 <app-ico name="Plus" [size]="13" />
                 <span>New project…</span>
-            </div>
+            </button>
         </div>
     }
 </div>

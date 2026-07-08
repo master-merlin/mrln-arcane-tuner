@@ -34,6 +34,13 @@
     box-shadow: inset 0 0 0 1px var(--color-brand-light);
 }
 
+/* Keyboard focus ring on the (now role="button") queue rows. */
+.q-card:focus-visible,
+.q-recent:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+}
+
 /* Small status chip on running cards. */
 .head-chip-sm {
     padding: 1px 6px;

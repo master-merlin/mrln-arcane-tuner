@@ -1,0 +1,19 @@
+/*
+ * The popover options are now <button> elements (T18 keyboard/AT support).
+ * Reset the native button chrome so they keep the shared `.popover-item` look
+ * (this rule is view-encapsulated, so it only affects this component), and add
+ * a visible keyboard focus ring.
+ */
+.popover-item {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+}
+
+.popover-item:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+}

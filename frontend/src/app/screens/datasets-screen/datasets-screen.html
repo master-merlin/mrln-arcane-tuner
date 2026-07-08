@@ -109,6 +109,7 @@
 
             <div class="ds-filter-add-wrap">
                 <button class="chip ds-filter-add-btn" type="button"
+                        #addFilterBtn
                         data-testid="btn-add-filter"
                         (click)="toggleFilterPicker($event)"
                         aria-haspopup="menu"
@@ -119,10 +120,12 @@
                     <div class="ds-filter-picker"
                          role="menu"
                          data-testid="filter-picker-panel"
+                         (keydown)="onMenuKeydown($event, 'filter', addFilterBtn)"
                          (click)="$event.stopPropagation()">
                         @if (filterPickerTier() === 'dimensions') {
                             @if (categories().length > 0) {
                                 <button class="ds-filter-picker-item" type="button"
+                                        role="menuitem"
                                         (click)="filterPickerTier.set('category')">
                                     <span>Category</span>
                                     <span class="ds-filter-picker-count mono">{{ categories().length }}</span>
@@ -130,6 +133,7 @@
                             }
                             @if (availableTags().length > 0) {
                                 <button class="ds-filter-picker-item" type="button"
+                                        role="menuitem"
                                         (click)="filterPickerTier.set('tags')">
                                     <span>Tags</span>
                                     <span class="ds-filter-picker-count mono">{{ availableTags().length }}</span>
@@ -140,11 +144,13 @@
                             }
                         } @else if (filterPickerTier() === 'category') {
                             <button class="ds-filter-picker-back" type="button"
+                                    role="menuitem"
                                     (click)="filterPickerTier.set('dimensions')">
                                 <app-ico name="ChevronLeft" [size]="11"/> Back
                             </button>
                             @for (cat of categories(); track cat) {
                                 <button class="ds-filter-picker-item" type="button"
+                                        role="menuitem"
                                         [class.is-active]="isFilterActive(catKey(cat))"
                                         (click)="addFilter(catKey(cat))">
                                     <span>{{ cat }}</span>
@@ -155,11 +161,13 @@
                             }
                         } @else {
                             <button class="ds-filter-picker-back" type="button"
+                                    role="menuitem"
                                     (click)="filterPickerTier.set('dimensions')">
                                 <app-ico name="ChevronLeft" [size]="11"/> Back
                             </button>
                             @for (tag of availableTags(); track tag) {
                                 <button class="ds-filter-picker-item" type="button"
+                                        role="menuitem"
                                         [class.is-active]="isFilterActive(tagKey(tag))"
                                         (click)="addFilter(tagKey(tag))">
                                     <span>{{ tag }}</span>
@@ -236,6 +244,68 @@
         </div>
     </div>
 
+    @if (selectionCount() > 0) {
+        <div class="ds-bulk-bar" role="toolbar" aria-label="Bulk dataset actions" data-testid="ds-bulk-bar">
+            <div class="ds-bulk-info">
+                <span class="ds-bulk-count mono">{{ selectionCount() }}</span>
+                <span class="ds-bulk-label">selected</span>
+            </div>
+            <div class="ds-bulk-controls">
+                <button class="btn ghost" type="button"
+                        data-testid="btn-bulk-select-all"
+                        (click)="toggleSelectAll()">
+                    {{ allVisibleSelected() ? 'Deselect all' : 'Select all' }}
+                </button>
+                <button class="btn ghost" type="button"
+                        data-testid="btn-bulk-clear"
+                        (click)="clearSelection()">
+                    <app-ico name="X" [size]="13"/> Clear
+                </button>
+                <span class="ds-bulk-sep" aria-hidden="true"></span>
+                @if (scopeIsGlobal && availableProjects().length > 0) {
+                    <div class="ds-bulk-add-wrap">
+                        <button class="btn" type="button"
+                                #bulkProjBtn
+                                data-testid="btn-bulk-add-project"
+                                aria-haspopup="menu"
+                                [attr.aria-expanded]="bulkProjectPickerOpen()"
+                                (click)="toggleBulkProjectPicker($event)">
+                            <app-ico name="FolderPlus" [size]="14"/> Add to project
+                        </button>
+                        @if (bulkProjectPickerOpen()) {
+                            <div class="ds-project-picker ds-bulk-project-picker"
+                                 role="menu"
+                                 data-testid="bulk-project-picker-panel"
+                                 (keydown)="onMenuKeydown($event, 'bulk', bulkProjBtn)"
+                                 (click)="$event.stopPropagation()">
+                                @for (p of availableProjects(); track p.id) {
+                                    <button class="ds-project-picker-item" type="button"
+                                            role="menuitem"
+                                            (click)="bulkAddToProject(p.id, p.name)">
+                                        {{ p.name }}
+                                    </button>
+                                } @empty {
+                                    <div class="ds-project-picker-empty">No projects available.</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+                <button class="btn" type="button"
+                        data-testid="btn-bulk-rescan"
+                        (click)="bulkRescan()">
+                    <app-ico name="RefreshCw" [size]="14"/> Rescan
+                </button>
+                <button class="btn ds-bulk-danger" type="button"
+                        data-testid="btn-bulk-delete"
+                        (click)="bulkDelete()">
+                    <app-ico [name]="scope.projectId() ? 'FolderMinus' : 'Trash2'" [size]="14"/>
+                    {{ scope.projectId() ? 'Remove from project' : 'Delete' }}
+                </button>
+            </div>
+        </div>
+    }
+
     <div class="ds-grid">
       @switch (gridState()) {
         @case ('loading') {
@@ -282,12 +352,32 @@
         @default {
         @for (d of visibleDatasets(); track trackById($index, d)) {
             <div class="card lift hover-host ds-card"
+                 role="button"
+                 tabindex="0"
                  [attr.data-testid]="'dataset-card-' + d.name"
+                 [attr.aria-label]="'Open dataset ' + d.name"
+                 [attr.aria-pressed]="isSelected(d)"
                  [class.ds-card-dragover]="isDragOver(d.name)"
+                 [class.is-selected]="isSelected(d)"
+                 [class.selection-active]="selectionCount() > 0"
                  (click)="openCard(d)"
+                 (keydown.enter)="activateCard(d, $event)"
+                 (keydown.space)="activateCard(d, $event)"
                  (dragover)="onCardDragOver(d.name, $event)"
                  (dragleave)="onCardDragLeave(d.name, $event)"
                  (drop)="onCardDrop(d.name, $event)">
+                <button type="button"
+                        class="ds-card-select"
+                        role="checkbox"
+                        [class.on]="isSelected(d)"
+                        [attr.aria-checked]="isSelected(d)"
+                        [attr.data-testid]="'dataset-select-' + d.name"
+                        [attr.aria-label]="(isSelected(d) ? 'Deselect ' : 'Select ') + d.name"
+                        (click)="toggleSelection(d, $event)">
+                    @if (isSelected(d)) {
+                        <app-ico name="Check" [size]="12"/>
+                    }
+                </button>
                 <div class="ds-card-img" [class.ds-card-img-missing]="!previewUrl(d)">
                     @if (previewUrl(d); as src) {
                         <img class="ds-card-img-el"
@@ -386,6 +476,7 @@
                     @if (scopeIsGlobal && availableProjects().length > 0) {
                         <div class="ds-add-project-wrap">
                             <button class="icon-btn ds-action ds-action-accent" type="button"
+                                    #projPickerBtn
                                     data-testid="btn-open-project-picker"
                                     (click)="toggleProjectPicker(d.name, $event)"
                                     title="Add to a project">
@@ -396,6 +487,7 @@
                                      [class.align-left]="pickerAlignFor(d.name) === 'left'"
                                      role="menu"
                                      data-testid="project-picker-panel"
+                                     (keydown)="onMenuKeydown($event, 'project', projPickerBtn)"
                                      (click)="$event.stopPropagation()">
                                     @for (p of availableProjects(); track p.id) {
                                         <button class="ds-project-picker-item" type="button"

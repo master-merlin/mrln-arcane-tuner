@@ -822,13 +822,44 @@ export class TrainingJobQueueComponent implements OnInit {
     this.viewState.select(id);
   }
 
+  /** Enter/Space activates a keyboard-focused queue row (mirrors the click). */
+  onRowSelectKey(event: KeyboardEvent, id: string): void {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault(); // Space would otherwise scroll the panel.
+      this.select(id);
+    }
+  }
+
   isSelected(id: string): boolean {
     return this.viewState.selectedId() === id;
   }
 
-  /** Move a pending job up/down in the run queue. */
+  /**
+   * Move a pending job up/down in the run queue.
+   *
+   * Applies the new order OPTIMISTICALLY to the local list first (by
+   * reassigning each pending job's `priority` to its new position, which the
+   * `pendingJobs` computed sorts on) so the row moves this tick, then persists
+   * once. This avoids the full `loadJobs()` reload per single-position nudge;
+   * we only reconcile from the server if the persist call actually fails.
+   */
   reorder(id: string, direction: 'up' | 'down') {
-    this.jobService.reorderJob(id, direction).subscribe({ next: () => this.loadJobs() });
+    const pending = this.pendingJobs();
+    const idx = pending.findIndex(j => j.id === id);
+    if (idx === -1) return;
+    const target = direction === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= pending.length) return;
+
+    const order = [...pending];
+    [order[idx], order[target]] = [order[target], order[idx]];
+    const priorityById = new Map(order.map((j, i) => [j.id, i]));
+    this.jobs.update(rows =>
+      rows.map(j => (priorityById.has(j.id) ? { ...j, priority: priorityById.get(j.id)! } : j)),
+    );
+
+    this.jobService.reorderJob(id, direction).subscribe({
+      error: () => this.loadJobs(), // reconcile the authoritative order on failure
+    });
   }
 
   getStatusClass(status: JobStatus): string {

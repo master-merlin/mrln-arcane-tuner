@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { of } from 'rxjs';
 import { TemplatesScreen } from './templates-screen';
 
 const T = (over: Partial<{ id: string; name: string; project_id: string|null; is_default: boolean; readonly: boolean; definition_id: string; model_id: string }>) => ({
@@ -28,5 +29,30 @@ describe('TemplatesScreen.filterRows', () => {
   it('filters by default/system flag', () => {
     expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: '', flag: 'default' })).toHaveLength(1);
     expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: '', flag: 'system' })).toHaveLength(1);
+  });
+});
+
+describe('TemplatesScreen.remove — themed confirm', () => {
+  it('opens the destructive confirm modal and only deletes on confirm', () => {
+    const deleteTemplate = vi.fn().mockReturnValue(of({}));
+    const openModal = vi.fn();
+    const ctx = {
+      overlay: { openModal },
+      templates: { deleteTemplate },
+      toast: { success: vi.fn(), error: vi.fn() },
+      load: vi.fn().mockResolvedValue(undefined),
+      msg: () => 'err',
+    };
+    const r = { domain: 'training', tpl: { id: 't1', name: 'Tpl', readonly: false } };
+
+    (TemplatesScreen.prototype as unknown as Record<string, (...a: unknown[]) => unknown>)['remove']
+      .call(ctx, r);
+
+    expect(openModal).toHaveBeenCalledWith('confirm', expect.objectContaining({ destructive: true }));
+    expect(deleteTemplate).not.toHaveBeenCalled();
+
+    const data = openModal.mock.calls.at(-1)![1] as { onConfirm?: () => void };
+    data.onConfirm!();
+    expect(deleteTemplate).toHaveBeenCalledWith('training', 't1');
   });
 });

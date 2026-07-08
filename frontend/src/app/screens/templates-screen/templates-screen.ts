@@ -461,11 +461,17 @@ export class TemplatesScreen implements OnInit {
 
     remove(r: TemplateRow): void {
         if (r.tpl.readonly) return;
-        // eslint-disable-next-line no-alert
-        if (!confirm(`Delete template "${r.tpl.name}"? This cannot be undone.`)) return;
-        this.templates.deleteTemplate(r.domain, r.tpl.id).subscribe({
-            next: () => { this.toast.success(`Deleted "${r.tpl.name}".`); void this.load(); },
-            error: err => this.toast.error('Delete failed: ' + this.msg(err)),
+        this.overlay.openModal('confirm', {
+            title: 'Delete template?',
+            message: `Delete template "${r.tpl.name}"? This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.templates.deleteTemplate(r.domain, r.tpl.id).subscribe({
+                    next: () => { this.toast.success(`Deleted "${r.tpl.name}".`); void this.load(); },
+                    error: err => this.toast.error('Delete failed: ' + this.msg(err)),
+                });
+            },
         });
     }
 

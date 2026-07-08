@@ -277,25 +277,31 @@ export class TemplatesLibraryModalComponent implements OnInit {
         }
     }
 
-    protected async deleteTemplate(t: Template): Promise<void> {
+    protected deleteTemplate(t: Template): void {
         if (t.readonly) return;
-        // eslint-disable-next-line no-alert
-        if (!confirm(`Delete global template "${t.name}"? This cannot be undone.`)) return;
-        this.busy.set(t.id);
-        try {
-            await firstValueFrom(
-                this.templateApi.deleteTemplate(this.activeDomain(), t.id),
-            );
-            this.toast.success(`Deleted template "${t.name}".`);
-            await this.load();
-        } catch (err: unknown) {
-            const msg = (err as { error?: { detail?: string }; message?: string })?.error?.detail
-                ?? (err as { message?: string })?.message
-                ?? 'unknown error';
-            this.toast.error('Delete failed: ' + msg);
-        } finally {
-            this.busy.set(null);
-        }
+        this.overlay.openModal('confirm', {
+            title: 'Delete template?',
+            message: `Delete global template "${t.name}"? This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: async () => {
+                this.busy.set(t.id);
+                try {
+                    await firstValueFrom(
+                        this.templateApi.deleteTemplate(this.activeDomain(), t.id),
+                    );
+                    this.toast.success(`Deleted template "${t.name}".`);
+                    await this.load();
+                } catch (err: unknown) {
+                    const msg = (err as { error?: { detail?: string }; message?: string })?.error?.detail
+                        ?? (err as { message?: string })?.message
+                        ?? 'unknown error';
+                    this.toast.error('Delete failed: ' + msg);
+                } finally {
+                    this.busy.set(null);
+                }
+            },
+        });
     }
 
     protected dotClass(domain: Domain): string {

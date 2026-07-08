@@ -309,24 +309,30 @@ export class CacheModalComponent implements OnInit {
     ): void {
         const name = this.data.datasetName;
         if (!name) return;
-        // eslint-disable-next-line no-alert
-        if (!confirm(`Purge ${label}? This cannot be undone.`)) return;
-        this.purging.set(token);
-        this.datasetsApi.purgeCache(name, options).subscribe({
-            next: (res: { deleted?: number; freed_bytes?: number }) => {
-                const freed = res?.freed_bytes ?? 0;
-                const n = res?.deleted ?? 0;
-                this.toast.success(
-                    freed > 0
-                        ? `Purged ${n} item${n === 1 ? '' : 's'} — freed ${this.formatMB(freed)} MB.`
-                        : 'Cache purged.',
-                );
-                this.purging.set(null);
-                this.load();
-            },
-            error: (err: { error?: { detail?: string }; message?: string }) => {
-                this.toast.error('Purge failed: ' + (err.error?.detail ?? err.message ?? 'unknown error'));
-                this.purging.set(null);
+        this.overlay.openModal('confirm', {
+            title: 'Purge cache?',
+            message: `${label} will be purged. This cannot be undone.`,
+            confirmLabel: 'Purge',
+            destructive: true,
+            onConfirm: () => {
+                this.purging.set(token);
+                this.datasetsApi.purgeCache(name, options).subscribe({
+                    next: (res: { deleted?: number; freed_bytes?: number }) => {
+                        const freed = res?.freed_bytes ?? 0;
+                        const n = res?.deleted ?? 0;
+                        this.toast.success(
+                            freed > 0
+                                ? `Purged ${n} item${n === 1 ? '' : 's'} — freed ${this.formatMB(freed)} MB.`
+                                : 'Cache purged.',
+                        );
+                        this.purging.set(null);
+                        this.load();
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) => {
+                        this.toast.error('Purge failed: ' + (err.error?.detail ?? err.message ?? 'unknown error'));
+                        this.purging.set(null);
+                    },
+                });
             },
         });
     }

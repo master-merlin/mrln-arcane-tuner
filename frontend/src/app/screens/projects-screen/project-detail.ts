@@ -442,43 +442,57 @@ export class ProjectDetail implements OnInit {
         }
     }
 
-    protected async removeAllDatasets(): Promise<void> {
+    protected removeAllDatasets(): void {
         const projectId = this.projectId();
         const list = this.projectDatasets();
         if (!projectId || list.length === 0 || this.removingAll()) return;
-        if (!confirm(`Remove all ${list.length} dataset${list.length === 1 ? '' : 's'} from this project? The datasets themselves are kept in the library.`)) return;
-        this.removingAll.set(true);
-        let ok = 0, failed = 0;
-        for (const d of list) {
-            try {
-                await firstValueFrom(this.projects.removeProjectDataset(projectId, d.id));
-                ok++;
-            } catch {
-                failed++;
-            }
-        }
-        this.removingAll.set(false);
-        if (failed) this.toast.warning(`Removed ${ok} dataset${ok === 1 ? '' : 's'} · ${failed} failed`);
-        else this.toast.success(`Removed ${ok} dataset${ok === 1 ? '' : 's'} from project`);
-        await this.loadDatasets(projectId);
-        this.projects.loadProjects();
+        this.overlay.openModal('confirm', {
+            title: 'Remove all datasets?',
+            message: `Remove all ${list.length} dataset${list.length === 1 ? '' : 's'} from this project? The datasets themselves are kept in the library.`,
+            confirmLabel: 'Remove All',
+            destructive: true,
+            onConfirm: async () => {
+                this.removingAll.set(true);
+                let ok = 0, failed = 0;
+                for (const d of list) {
+                    try {
+                        await firstValueFrom(this.projects.removeProjectDataset(projectId, d.id));
+                        ok++;
+                    } catch {
+                        failed++;
+                    }
+                }
+                this.removingAll.set(false);
+                if (failed) this.toast.warning(`Removed ${ok} dataset${ok === 1 ? '' : 's'} · ${failed} failed`);
+                else this.toast.success(`Removed ${ok} dataset${ok === 1 ? '' : 's'} from project`);
+                await this.loadDatasets(projectId);
+                this.projects.loadProjects();
+            },
+        });
     }
 
-    protected async removeDatasetFromProject(d: ProjectDatasetRow, event: Event): Promise<void> {
+    protected removeDatasetFromProject(d: ProjectDatasetRow, event: Event): void {
         event.stopPropagation();
         const projectId = this.projectId();
         if (!projectId) return;
-        if (!confirm(`Remove '${d.name}' from this project? The dataset itself is kept in the library.`)) return;
-        try {
-            await firstValueFrom(this.projects.removeProjectDataset(projectId, d.id));
-            this.toast.success(`Removed '${d.name}' from project.`);
-            await this.loadDatasets(projectId);
-            this.projects.loadProjects();
-        } catch (err) {
-            const msg = (err as { error?: { detail?: string }; message?: string })?.error?.detail
-                ?? (err as { message?: string })?.message ?? 'unknown error';
-            this.toast.error(`Failed to remove dataset: ${msg}`);
-        }
+        this.overlay.openModal('confirm', {
+            title: 'Remove dataset?',
+            message: `Remove '${d.name}' from this project? The dataset itself is kept in the library.`,
+            confirmLabel: 'Remove',
+            destructive: true,
+            onConfirm: async () => {
+                try {
+                    await firstValueFrom(this.projects.removeProjectDataset(projectId, d.id));
+                    this.toast.success(`Removed '${d.name}' from project.`);
+                    await this.loadDatasets(projectId);
+                    this.projects.loadProjects();
+                } catch (err) {
+                    const msg = (err as { error?: { detail?: string }; message?: string })?.error?.detail
+                        ?? (err as { message?: string })?.message ?? 'unknown error';
+                    this.toast.error(`Failed to remove dataset: ${msg}`);
+                }
+            },
+        });
     }
 
     protected newDatasetInProject(): void {
@@ -518,20 +532,27 @@ export class ProjectDetail implements OnInit {
         }
     }
 
-    protected async deleteProjectTemplate(domain: TemplateDomain, tpl: Template): Promise<void> {
-        if (!confirm(`Delete project template '${tpl.name}'? This cannot be undone.`)) return;
-        const projectId = this.projectId();
-        if (!projectId) return;
-        try {
-            await firstValueFrom(this.templates.deleteTemplate(domain, tpl.id));
-            this.toast.success(`Deleted template '${tpl.name}'.`);
-            await this.loadTemplates(projectId);
-            this.projects.loadProjects();
-        } catch (err) {
-            const msg = (err as { error?: { detail?: string }; message?: string })?.error?.detail
-                ?? (err as { message?: string })?.message ?? 'unknown error';
-            this.toast.error(`Failed to delete template: ${msg}`);
-        }
+    protected deleteProjectTemplate(domain: TemplateDomain, tpl: Template): void {
+        this.overlay.openModal('confirm', {
+            title: 'Delete template?',
+            message: `Delete project template '${tpl.name}'? This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: async () => {
+                const projectId = this.projectId();
+                if (!projectId) return;
+                try {
+                    await firstValueFrom(this.templates.deleteTemplate(domain, tpl.id));
+                    this.toast.success(`Deleted template '${tpl.name}'.`);
+                    await this.loadTemplates(projectId);
+                    this.projects.loadProjects();
+                } catch (err) {
+                    const msg = (err as { error?: { detail?: string }; message?: string })?.error?.detail
+                        ?? (err as { message?: string })?.message ?? 'unknown error';
+                    this.toast.error(`Failed to delete template: ${msg}`);
+                }
+            },
+        });
     }
 
     // ── Quick Train ───────────────────────────────────────────────────
@@ -956,21 +977,27 @@ export class ProjectDetail implements OnInit {
     protected deleteProject(): void {
         const p = this.project();
         if (!p) return;
-        // TODO(frontend): replace with overlay.openModal('confirm', ...) when Phase 8 lands.
-        if (!confirm(`Delete project "${p.name}"? Datasets and images are kept; project-specific settings are removed.`)) return;
         const id = p.id;
-        this.projects.deleteProject(id).subscribe({
-            next: () => {
-                this.toast.success(`Deleted project "${p.name}".`);
-                // Scope fallback: if the deleted project was active, drop to Global.
-                if (this.scope.projectId() === id) {
-                    this.scope.setGlobal();
-                }
-                this.projects.loadProjects();
-                void this.router.navigate(['/projects']);
+        this.overlay.openModal('confirm', {
+            title: 'Delete project?',
+            message: `Delete project "${p.name}"? Datasets and images are kept; project-specific settings are removed.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.projects.deleteProject(id).subscribe({
+                    next: () => {
+                        this.toast.success(`Deleted project "${p.name}".`);
+                        // Scope fallback: if the deleted project was active, drop to Global.
+                        if (this.scope.projectId() === id) {
+                            this.scope.setGlobal();
+                        }
+                        this.projects.loadProjects();
+                        void this.router.navigate(['/projects']);
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) =>
+                        this.toast.error('Failed to delete project: ' + (err?.error?.detail || err?.message)),
+                });
             },
-            error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Failed to delete project: ' + (err?.error?.detail || err?.message)),
         });
     }
 

@@ -1564,15 +1564,23 @@ export class AnalyzeModalComponent implements OnInit {
 
     /** Inline duplicate-row Delete — drops the `b` image of the pair. */
     protected deleteDuplicate(path: string): void {
-        if (!this.data.datasetName) return;
-        if (!confirm(`Delete ${path}? This permanently removes the image, caption and any masks.`)) return;
-        this.datasetsApi.deletePair(this.data.datasetName, path).subscribe({
-            next: () => {
-                this.toast.success(`Deleted ${path}`);
-                this.fetch();
+        const name = this.data.datasetName;
+        if (!name) return;
+        this.overlay.openModal('confirm', {
+            title: 'Delete this image?',
+            message: `${path} will be permanently removed, along with its caption and any masks. This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.datasetsApi.deletePair(name, path).subscribe({
+                    next: () => {
+                        this.toast.success(`Deleted ${path}`);
+                        this.fetch();
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) =>
+                        this.toast.error('Delete failed: ' + (err?.error?.detail || err?.message)),
+                });
             },
-            error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Delete failed: ' + (err?.error?.detail || err?.message)),
         });
     }
 
@@ -1583,15 +1591,23 @@ export class AnalyzeModalComponent implements OnInit {
     }
 
     protected deleteFile(r: FileRow): void {
-        if (!this.data.datasetName) return;
-        if (!confirm(`Delete ${r.path}? This permanently removes the image, caption and any masks.`)) return;
-        this.datasetsApi.deletePair(this.data.datasetName, r.path).subscribe({
-            next: () => {
-                this.toast.success(`Deleted ${r.path}`);
-                this.fetch();
+        const name = this.data.datasetName;
+        if (!name) return;
+        this.overlay.openModal('confirm', {
+            title: 'Delete this image?',
+            message: `${r.path} will be permanently removed, along with its caption and any masks. This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.datasetsApi.deletePair(name, r.path).subscribe({
+                    next: () => {
+                        this.toast.success(`Deleted ${r.path}`);
+                        this.fetch();
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) =>
+                        this.toast.error('Delete failed: ' + (err?.error?.detail || err?.message)),
+                });
             },
-            error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Delete failed: ' + (err?.error?.detail || err?.message)),
         });
     }
 
@@ -1630,21 +1646,27 @@ export class AnalyzeModalComponent implements OnInit {
         const name = this.data.datasetName;
         const candidates = this.cropAllCandidates();
         if (!name || candidates.length === 0 || this.cropAllRunning()) return;
-        if (!confirm(
-            `Crop ${candidates.length} image${candidates.length === 1 ? '' : 's'} to target resolution ` +
-            `from the "${this.cropAllOrigin()}" anchor?\n\nThis rewrites files on disk and cannot be undone.`,
-        )) return;
-
-        const items = candidates.map(c => ({
-            path: c.path, target_width: c.targetWidth, target_height: c.targetHeight,
-        }));
-        this._cropFinalized = false;
-        this.cropAllRunning.set(true);
-        this.datasetsApi.batchCrop(name, items, this.cropAllOrigin()).subscribe({
-            next: ({ task_id }) => { this._cropTaskView = this.taskStore.byId(task_id); this.cropTaskId.set(task_id); },
-            error: (err) => {
-                this.cropAllRunning.set(false);
-                this.toast.error('Crop-all failed to start: ' + (err?.error?.detail || err?.message));
+        const count = candidates.length;
+        this.overlay.openModal('confirm', {
+            title: `Crop ${count} image${count === 1 ? '' : 's'}?`,
+            message:
+                `${count} image${count === 1 ? '' : 's'} will be cropped to target resolution ` +
+                `from the "${this.cropAllOrigin()}" anchor. This rewrites files on disk and cannot be undone.`,
+            confirmLabel: 'Crop',
+            destructive: true,
+            onConfirm: () => {
+                const items = candidates.map(c => ({
+                    path: c.path, target_width: c.targetWidth, target_height: c.targetHeight,
+                }));
+                this._cropFinalized = false;
+                this.cropAllRunning.set(true);
+                this.datasetsApi.batchCrop(name, items, this.cropAllOrigin()).subscribe({
+                    next: ({ task_id }) => { this._cropTaskView = this.taskStore.byId(task_id); this.cropTaskId.set(task_id); },
+                    error: (err) => {
+                        this.cropAllRunning.set(false);
+                        this.toast.error('Crop-all failed to start: ' + (err?.error?.detail || err?.message));
+                    },
+                });
             },
         });
     }
@@ -1679,17 +1701,23 @@ export class AnalyzeModalComponent implements OnInit {
     protected harmonize(): void {
         const name = this.data.datasetName;
         if (!name || this.harmonizing()) return;
-        if (!confirm(
-            `Harmonize "${name}"?\n\nThis converts non-JPG images to JPG and renames ` +
-            `files to a canonical sequence. It rewrites files on disk and cannot be undone.`,
-        )) return;
-        this._harmonizeFinalized = false;
-        this.harmonizing.set(true);
-        this.datasetsApi.taskHarmonize(name).subscribe({
-            next: ({ task_id }) => { this._harmonizeTaskView = this.taskStore.byId(task_id); this.harmonizeTaskId.set(task_id); },
-            error: (err: { error?: { detail?: string }; message?: string }) => {
-                this.harmonizing.set(false);
-                this.toast.error('Harmonize failed to start: ' + (err?.error?.detail || err?.message));
+        this.overlay.openModal('confirm', {
+            title: `Harmonize "${name}"?`,
+            message:
+                `This converts non-JPG images to JPG, renames files to a canonical sequence, ` +
+                `and crops them to the majority aspect ratio. It rewrites files on disk and cannot be undone.`,
+            confirmLabel: 'Harmonize',
+            destructive: true,
+            onConfirm: () => {
+                this._harmonizeFinalized = false;
+                this.harmonizing.set(true);
+                this.datasetsApi.taskHarmonize(name).subscribe({
+                    next: ({ task_id }) => { this._harmonizeTaskView = this.taskStore.byId(task_id); this.harmonizeTaskId.set(task_id); },
+                    error: (err: { error?: { detail?: string }; message?: string }) => {
+                        this.harmonizing.set(false);
+                        this.toast.error('Harmonize failed to start: ' + (err?.error?.detail || err?.message));
+                    },
+                });
             },
         });
     }

@@ -264,24 +264,30 @@ export class ProjectDialogComponent implements OnInit {
         if (!this.isEdit() || !this.data.projectId) return;
         const id = this.data.projectId;
         const name = this.form.get('name')?.value || 'this project';
-        // TODO(frontend): replace with overlay.openModal('confirm', ...) when Phase 8 lands.
-        if (!confirm(`Delete project "${name}"? Datasets and images are kept; project-specific settings are removed.`)) return;
-        this.submitting.set(true);
-        this.projects.deleteProject(id).subscribe({
-            next: () => {
-                this.toast.success(`Deleted project "${name}".`);
-                // Scope fallback: if the deleted project is the active one, drop to Global.
-                if (this.scope.projectId() === id) {
-                    this.scope.setGlobal();
-                    void this.router.navigate(['/projects']);
-                }
-                this.projects.loadProjects();
-                this.submitting.set(false);
-                this.close();
-            },
-            error: (err: { error?: { detail?: string }; message?: string }) => {
-                this.toast.error('Failed to delete project: ' + (err?.error?.detail || err?.message));
-                this.submitting.set(false);
+        this.overlay.openModal('confirm', {
+            title: 'Delete project?',
+            message: `Delete project "${name}"? Datasets and images are kept; project-specific settings are removed.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.submitting.set(true);
+                this.projects.deleteProject(id).subscribe({
+                    next: () => {
+                        this.toast.success(`Deleted project "${name}".`);
+                        // Scope fallback: if the deleted project is the active one, drop to Global.
+                        if (this.scope.projectId() === id) {
+                            this.scope.setGlobal();
+                            void this.router.navigate(['/projects']);
+                        }
+                        this.projects.loadProjects();
+                        this.submitting.set(false);
+                        this.close();
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) => {
+                        this.toast.error('Failed to delete project: ' + (err?.error?.detail || err?.message));
+                        this.submitting.set(false);
+                    },
+                });
             },
         });
     }

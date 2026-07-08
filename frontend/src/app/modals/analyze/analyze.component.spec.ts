@@ -152,11 +152,28 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         return { fixture, comp };
     }
 
-    it('startCropAll fires batchCrop and stores task id', () => {
+    /** Run a launcher method that opens a themed confirm, then fire its
+     *  onConfirm callback — mirrors a user clicking the confirm button. */
+    function confirmAction(run: () => void): ReturnType<typeof vi.spyOn> {
+        const overlay = TestBed.inject(OverlayStore);
+        const openSpy = vi.spyOn(overlay, 'openModal');
+        run();
+        const data = openSpy.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+        return openSpy;
+    }
+
+    it('startCropAll opens a destructive confirm and only crops on confirm', () => {
         const { comp } = make();
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const overlay = TestBed.inject(OverlayStore);
+        const openSpy = vi.spyOn(overlay, 'openModal');
         comp.cropAllOrigin.set('top');
         comp.startCropAll();
+        // A themed destructive confirm opens; nothing is cropped yet.
+        expect(openSpy).toHaveBeenCalledWith('confirm', expect.objectContaining({ destructive: true }));
+        expect(api.batchCrop).not.toHaveBeenCalled();
+        // The crop only fires from the modal's confirm callback.
+        (openSpy.mock.calls.at(-1)![1] as { onConfirm: () => void }).onConfirm();
         expect(api.batchCrop).toHaveBeenCalled();
         const [, items, origin] = vi.mocked(api.batchCrop).mock.lastCall!;
         expect(origin).toBe('top');
@@ -167,8 +184,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
 
     it('cancelCropAll delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
-        comp.startCropAll();
+        confirmAction(() => comp.startCropAll());
         comp.cancelCropAll();
         expect(taskStoreSpy.cancel).toHaveBeenCalledWith('t1');
         expect(comp.cropAllRunning()).toBe(false);
@@ -178,8 +194,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         const taskSignal = signal<any>({ current: 1, total: 4, current_item: 'a.png', status: 'running' });
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { comp } = make();
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
-        comp.startCropAll();
+        confirmAction(() => comp.startCropAll());
         expect(comp.cropAllPercent()).toBe(25);
     });
 
@@ -187,10 +202,9 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const { fixture: f, comp } = make();
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
         const fetchSpy = vi.spyOn(comp as any, 'fetch').mockImplementation(() => {
         });
-        comp.startCropAll();
+        confirmAction(() => comp.startCropAll());
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         f.detectChanges();
         await settle();
@@ -198,10 +212,17 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         expect(fetchSpy).toHaveBeenCalled();
     });
 
-    it('harmonize() fires taskHarmonize and stores task id', () => {
+    it('harmonize opens a destructive confirm and only runs on confirm', () => {
         const { comp } = make();
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        const overlay = TestBed.inject(OverlayStore);
+        const openSpy = vi.spyOn(overlay, 'openModal');
         comp.harmonize();
+        expect(openSpy).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true, confirmLabel: 'Harmonize' }),
+        );
+        expect(api.taskHarmonize).not.toHaveBeenCalled();
+        (openSpy.mock.calls.at(-1)![1] as { onConfirm: () => void }).onConfirm();
         expect(api.taskHarmonize).toHaveBeenCalled();
         expect(comp.harmonizeTaskId()).toBe('h1');
         expect(comp.harmonizing()).toBe(true);
@@ -210,15 +231,38 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
     it('harmonize completion clears harmonizing and refetches', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
         const { fixture: f, comp } = make();
         const fetchSpy = vi.spyOn(comp as any, 'fetch').mockImplementation(() => {
         });
-        comp.harmonize();
+        confirmAction(() => comp.harmonize());
         taskSignal.set({ status: 'completed', current: 1, total: 1, ok: 1, failed: 0, current_item: null, error: null });
         f.detectChanges();
         await settle();
         expect(comp.harmonizing()).toBe(false);
         expect(fetchSpy).toHaveBeenCalled();
+    });
+
+    it('deleteDuplicate opens a destructive confirm and deletes only on confirm', () => {
+        const { comp } = make();
+        const overlay = TestBed.inject(OverlayStore);
+        const openSpy = vi.spyOn(overlay, 'openModal');
+        api.deletePair = vi.fn().mockReturnValue(of({}));
+        comp.deleteDuplicate('dup.png');
+        expect(openSpy).toHaveBeenCalledWith('confirm', expect.objectContaining({ destructive: true }));
+        expect(api.deletePair).not.toHaveBeenCalled();
+        (openSpy.mock.calls.at(-1)![1] as { onConfirm: () => void }).onConfirm();
+        expect(api.deletePair).toHaveBeenCalledWith('ds1', 'dup.png');
+    });
+
+    it('deleteFile opens a destructive confirm and deletes only on confirm', () => {
+        const { comp } = make();
+        const overlay = TestBed.inject(OverlayStore);
+        const openSpy = vi.spyOn(overlay, 'openModal');
+        api.deletePair = vi.fn().mockReturnValue(of({}));
+        comp.deleteFile({ path: 'row.png' } as any);
+        expect(openSpy).toHaveBeenCalledWith('confirm', expect.objectContaining({ destructive: true }));
+        expect(api.deletePair).not.toHaveBeenCalled();
+        (openSpy.mock.calls.at(-1)![1] as { onConfirm: () => void }).onConfirm();
+        expect(api.deletePair).toHaveBeenCalledWith('ds1', 'row.png');
     });
 });

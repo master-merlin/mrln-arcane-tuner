@@ -234,13 +234,23 @@ export class EditRightPanelComponent {
         'Delete the saved overlay PNG + recipe and restore the original';
 
     protected onResetAll(): void {
-        if (!confirm('Reset every panel to defaults? Save afterwards to commit the empty overlay, or Revert to delete it entirely.')) return;
-        this.state.resetAllForUser();
+        this.overlayStore.openModal('confirm', {
+            title: 'Reset every panel to defaults?',
+            message: 'Save afterwards to commit the empty overlay, or Revert to delete it entirely.',
+            confirmLabel: 'Reset',
+            destructive: true,
+            onConfirm: () => this.state.resetAllForUser(),
+        });
     }
 
     protected onRevert(): void {
-        if (!confirm('Revert all edits and delete the saved overlay?')) return;
-        void this.state.revert();
+        this.overlayStore.openModal('confirm', {
+            title: 'Revert all edits?',
+            message: 'This deletes the saved overlay and restores the original image.',
+            confirmLabel: 'Revert',
+            destructive: true,
+            onConfirm: () => void this.state.revert(),
+        });
     }
 
     protected onCopy(): void {
@@ -253,8 +263,13 @@ export class EditRightPanelComponent {
     }
 
     protected onBake(): void {
-        if (!confirm('Bake overlay into original? This replaces the source file and clears the recipe.')) return;
-        void this.state.bake();
+        this.overlayStore.openModal('confirm', {
+            title: 'Bake overlay into original?',
+            message: 'This replaces the source file and clears the recipe. This cannot be undone.',
+            confirmLabel: 'Bake',
+            destructive: true,
+            onConfirm: () => void this.state.bake(),
+        });
     }
 
     protected slotLabel(slot: ControlSlot): string {

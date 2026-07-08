@@ -6,6 +6,7 @@ import { DatasetMaskingSettingsComponent } from './dataset-masking-settings';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
+import { OverlayStore } from '../../../state/overlay.store';
 
 function tpl(over: Partial<Template>): Template {
     return {
@@ -50,6 +51,7 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
                     },
                 },
                 { provide: TemplateService, useValue: svc },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
         });
         TestBed.overrideComponent(DatasetMaskingSettingsComponent, { set: { template: '' } });
@@ -171,5 +173,63 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
         const c = build([]);
         // sam3 code defaults — not leftovers from a previous model.
         expect(c.maskingParams()).toMatchObject({ text_prompt: 'subject', multimask_output: true });
+    });
+});
+
+/**
+ * deleteTemplate() migrated off the native window.confirm() to the themed
+ * Confirm modal (OverlayStore). The destructive delete must only fire from
+ * the modal's onConfirm callback — never synchronously on the click.
+ */
+describe('DatasetMaskingSettings — delete template via confirm modal', () => {
+    function build() {
+        const svc = {
+            listMaskingTemplates: vi.fn().mockReturnValue(of([
+                tpl({ id: 'mine', name: 'Mine', is_default: false, readonly: false }),
+                tpl({ id: 'other', name: 'Other', is_default: false, readonly: false }),
+            ])),
+            createMaskingTemplate: vi.fn(),
+            updateTemplate: vi.fn(),
+            deleteTemplate: vi.fn().mockReturnValue(of({ status: 'ok' })),
+        };
+        const overlay = { openModal: vi.fn() };
+        TestBed.configureTestingModule({
+            imports: [DatasetMaskingSettingsComponent],
+            providers: [
+                { provide: DatasetService, useValue: {} },
+                {
+                    provide: ProjectService, useValue: {
+                        activeDatasetProject: () => 'p1',
+                        getPreferences: vi.fn().mockReturnValue(of({ active_mask_template: 'mine' })),
+                        updatePreferences: vi.fn().mockReturnValue(of({})),
+                    },
+                },
+                { provide: TemplateService, useValue: svc },
+                { provide: OverlayStore, useValue: overlay },
+            ],
+        });
+        TestBed.overrideComponent(DatasetMaskingSettingsComponent, { set: { template: '' } });
+        const fixture = TestBed.createComponent(DatasetMaskingSettingsComponent);
+        fixture.detectChanges();
+        return { c: fixture.componentInstance, svc, overlay };
+    }
+
+    it('opens a destructive confirm; deleteTemplate fires only from onConfirm', () => {
+        const { c, svc, overlay } = build();
+        expect(c.activeTemplateId()).toBe('mine');
+
+        c.deleteTemplate();
+
+        // A themed destructive confirm opens; nothing is deleted yet.
+        expect(overlay.openModal).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true }),
+        );
+        expect(svc.deleteTemplate).not.toHaveBeenCalled();
+
+        // The delete only fires from the modal's confirm callback.
+        const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+        expect(svc.deleteTemplate).toHaveBeenCalledWith('masking', 'mine');
     });
 });

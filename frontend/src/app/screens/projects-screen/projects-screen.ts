@@ -294,16 +294,22 @@ export class ProjectsScreen implements OnInit {
 
     protected deleteProject(p: Project, event: Event): void {
         event.stopPropagation();
-        // TODO(frontend): replace native confirm with overlay.openModal('confirm', ...) once Phase 8 lands.
-        if (!confirm(`Delete project "${p.name}"? Datasets and images are kept; project-specific settings are removed.`)) return;
-        this.projects.deleteProject(p.id).subscribe({
-            next: () => {
-                this.toast.success(`Deleted project "${p.name}".`);
-                this.afterDeleteProject(p.id);
-                this.projects.loadProjects();
+        this.overlay.openModal('confirm', {
+            title: 'Delete project?',
+            message: `Delete project "${p.name}"? Datasets and images are kept; project-specific settings are removed.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.projects.deleteProject(p.id).subscribe({
+                    next: () => {
+                        this.toast.success(`Deleted project "${p.name}".`);
+                        this.afterDeleteProject(p.id);
+                        this.projects.loadProjects();
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) =>
+                        this.toast.error('Failed to delete project: ' + (err?.error?.detail || err?.message)),
+                });
             },
-            error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Failed to delete project: ' + (err?.error?.detail || err?.message)),
         });
     }
 

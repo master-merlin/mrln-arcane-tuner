@@ -22,7 +22,6 @@ import { ProjectDialogComponent } from '../../modals/project-dialog/project-dial
 import { ConfirmModalComponent } from '../../modals/confirm/confirm.component';
 import { InputModalComponent } from '../../modals/input/input.component';
 import { VersionEditModalComponent } from '../../modals/version-edit/version-edit.component';
-import { TemplatesLibraryModalComponent } from '../../modals/templates-library/templates-library.component';
 import { TemplateEditModalComponent } from '../../modals/template-edit/template-edit.component';
 import { TemplateJsonEditModalComponent } from '../../modals/template-json/template-json.component';
 import { JobConfigModalComponent } from '../../modals/job-config/job-config.component';
@@ -70,7 +69,6 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
         ConfirmModalComponent,
         InputModalComponent,
         VersionEditModalComponent,
-        TemplatesLibraryModalComponent,
         TemplateEditModalComponent,
         TemplateJsonEditModalComponent,
         JobConfigModalComponent,
@@ -176,9 +174,6 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
                             }
                             @case ('pair-role-chooser') {
                                 @defer { <app-modal-pair-role-chooser/> }
-                            }
-                            @case ('templates-library') {
-                                @defer { <app-modal-templates-library/> }
                             }
                             @case ('template-edit') {
                                 @defer (on immediate) { <app-modal-template-edit/> }

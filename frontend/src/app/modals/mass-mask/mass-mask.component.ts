@@ -15,6 +15,8 @@ import { ToastService } from '../../services/toast';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { Task, TaskStore } from '../../state/task.store';
 import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
+import { ModalEmptyComponent } from '../../ui/modal-empty/modal-empty.component';
+import { BatchProgressComponent } from '../../ui/batch-progress/batch-progress.component';
 import {
     DatasetMaskingSettingsComponent,
     MaskingSettingsState,
@@ -65,6 +67,8 @@ function tabForTask(t: Task): Tab | null {
     imports: [
         IcoComponent,
         TaskQueueHintComponent,
+        ModalEmptyComponent,
+        BatchProgressComponent,
         DatasetMaskingSettingsComponent,
         DatasetCaptionSettingsComponent,
     ],
@@ -80,10 +84,7 @@ function tabForTask(t: Task): Tab | null {
 
         @if (!data.datasetName) {
             <div class="modal-body">
-                <div class="mm-empty">
-                    <app-ico name="Info" [size]="18"/>
-                    Open a dataset workspace first — mass masking is per-dataset.
-                </div>
+                <app-modal-empty message="Open a dataset workspace first — mass masking is per-dataset."/>
             </div>
         } @else {
             @if (!running()) {
@@ -102,23 +103,13 @@ function tabForTask(t: Task): Tab | null {
             <div class="modal-body mm-body">
                 @if (running()) {
                     <app-task-queue-hint [task]="task()"/>
-                    <div class="mm-progress">
-                        <div class="mm-progress-head">
-                            <div>
-                                <div class="eyebrow success">{{ runningLabel() }}</div>
-                                <div class="mm-progress-pct">{{ pct() }}%</div>
-                            </div>
-                            <div class="mm-progress-queue">
-                                <div class="eyebrow">QUEUE STATUS</div>
-                                <span class="mono">{{ task()?.current ?? 0 }} / {{ task()?.total ?? 0 }}</span>
-                            </div>
-                        </div>
-                        <div class="mm-progress-bar"><div class="mm-progress-bar-fill" [style.width.%]="pct()"></div></div>
-                        <div class="mm-progress-cur">
-                            <span class="eyebrow">CURRENT FRAME</span>
-                            <span class="mono">{{ task()?.current_item ?? '' }}</span>
-                        </div>
-                    </div>
+                    <app-batch-progress
+                        accent="var(--color-success)"
+                        [label]="runningLabel()"
+                        [percent]="pct()"
+                        [current]="task()?.current ?? 0"
+                        [total]="task()?.total ?? 0"
+                        [currentItem]="task()?.current_item ?? ''"/>
                     <button class="btn danger-out mm-stop" type="button" (click)="cancel()">
                         <app-ico name="X" [size]="12"/> Stop Process
                     </button>
@@ -257,11 +248,6 @@ function tabForTask(t: Task): Tab | null {
     styles: [`
         .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
         .success-accent .eyebrow { color: var(--color-text-subtle); }
-        .mm-empty {
-            display: flex; align-items: center; gap: 10px;
-            padding: 24px; justify-content: center;
-            color: var(--color-text-muted); font-size: 13px;
-        }
 
         .mm-tabs {
             display: flex;
@@ -295,8 +281,6 @@ function tabForTask(t: Task): Tab | null {
             font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
             text-transform: uppercase; color: var(--color-text-subtle);
         }
-        .eyebrow.success { color: var(--color-success); }
-
         .mm-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .mm-choice {
             position: relative;
@@ -353,35 +337,6 @@ function tabForTask(t: Task): Tab | null {
         }
         .mm-info app-ico { color: var(--color-chart-lr); margin-top: 1px; flex-shrink: 0; }
 
-        .mm-progress {
-            padding: 20px 22px;
-            background: var(--color-surface-mid);
-            border: 1px solid var(--color-border-default);
-            border-radius: var(--radius-theme-2xl);
-        }
-        .mm-progress-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-        .mm-progress-pct {
-            font-size: 28px; font-weight: 900; font-style: italic;
-            margin-top: 4px; color: var(--color-text-primary);
-            font-variant-numeric: tabular-nums;
-        }
-        .mm-progress-queue { text-align: right; }
-        .mm-progress-bar {
-            height: 10px;
-            background: var(--color-base);
-            border: 1px solid var(--color-border-subtle);
-            border-radius: 999px;
-            overflow: hidden;
-            padding: 2px;
-        }
-        .mm-progress-bar-fill {
-            height: 100%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, var(--color-success), color-mix(in oklab, var(--color-success) 60%, white));
-            transition: width 300ms;
-        }
-        .mm-progress-cur { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-        .mm-progress-cur .mono { font-size: 11.5px; color: var(--color-text-secondary); }
         .mm-stop { width: 100%; justify-content: center; }
 
         .mm-foot { display: flex; justify-content: flex-end; gap: 8px; }

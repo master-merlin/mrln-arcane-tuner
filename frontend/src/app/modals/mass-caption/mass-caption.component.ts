@@ -10,6 +10,8 @@ import {
 import { Observable, firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
+import { ModalEmptyComponent } from '../../ui/modal-empty/modal-empty.component';
+import { BatchProgressComponent } from '../../ui/batch-progress/batch-progress.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { DatasetService, type DatasetPair } from '../../services/dataset';
@@ -49,7 +51,7 @@ type Tab = 'generate' | 'refine';
 @Component({
     selector: 'app-modal-mass-caption',
     standalone: true,
-    imports: [IcoComponent, TaskQueueHintComponent, DatasetCaptionSettingsComponent, DatasetRefineSettingsComponent],
+    imports: [IcoComponent, TaskQueueHintComponent, ModalEmptyComponent, BatchProgressComponent, DatasetCaptionSettingsComponent, DatasetRefineSettingsComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -75,30 +77,17 @@ type Tab = 'generate' | 'refine';
 
         <div class="modal-body mc-body">
             @if (!data.datasetName) {
-                <div class="mc-empty">
-                    <app-ico name="Info" [size]="18"/>
-                    Open a dataset workspace first — mass captioning is per-dataset.
-                </div>
+                <app-modal-empty message="Open a dataset workspace first — mass captioning is per-dataset."/>
             } @else if (running()) {
                 <app-task-queue-hint [task]="task()"/>
-                <div class="mc-progress">
-                    <div class="mc-progress-head">
-                        <div>
-                            <div class="eyebrow brand">{{ task()?.current === 0 ? 'LOADING MODEL…' : 'NEURAL PROCESSING' }}</div>
-                            <div class="mc-progress-pct">{{ pct() }}%</div>
-                        </div>
-                        <div class="mc-progress-queue">
-                            <div class="eyebrow">QUEUE STATUS</div>
-                            <span class="mono">{{ task()?.current ?? 0 }} / {{ task()?.total ?? 0 }}</span>
-                        </div>
-                    </div>
-                    <div class="mc-progress-bar"><div class="mc-progress-bar-fill" [style.width.%]="pct()"></div></div>
-                    <div class="mc-progress-cur">
-                        <span class="eyebrow">CURRENT FRAME</span>
-                        <span class="mono">{{ task()?.current_item ?? '' }}</span>
-                    </div>
-                    <div class="mc-progress-hint">Runs in the background — track it in Activity.</div>
-                </div>
+                <app-batch-progress
+                    accent="var(--color-brand)"
+                    [label]="runningLabel()"
+                    [percent]="pct()"
+                    [current]="task()?.current ?? 0"
+                    [total]="task()?.total ?? 0"
+                    [currentItem]="task()?.current_item ?? ''"
+                    hint="Runs in the background — track it in Activity."/>
 
                 <button class="btn danger-out mc-stop" type="button" (click)="cancel()">
                     <app-ico name="X" [size]="12"/> Stop Process
@@ -268,11 +257,6 @@ type Tab = 'generate' | 'refine';
     styles: [`
         .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
         .mc-body { display: flex; flex-direction: column; gap: 20px; }
-        .mc-empty {
-            display: flex; align-items: center; gap: 10px;
-            padding: 24px; justify-content: center;
-            color: var(--color-text-muted); font-size: 13px;
-        }
 
         .mc-tabs {
             display: flex;
@@ -304,8 +288,6 @@ type Tab = 'generate' | 'refine';
             font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
             text-transform: uppercase; color: var(--color-text-subtle);
         }
-        .eyebrow.brand { color: var(--color-brand); }
-
         .mc-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .mc-choice {
             position: relative;
@@ -352,37 +334,6 @@ type Tab = 'generate' | 'refine';
             padding: 16px;
         }
 
-        .mc-progress {
-            padding: 20px 22px;
-            background: var(--color-surface-mid);
-            border: 1px solid var(--color-border-default);
-            border-radius: var(--radius-theme-2xl);
-        }
-        .mc-progress-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-        .mc-progress-pct {
-            font-size: 28px; font-weight: 900; font-style: italic;
-            margin-top: 4px; color: var(--color-text-primary);
-            font-variant-numeric: tabular-nums;
-        }
-        .mc-progress-queue { text-align: right; }
-        .mc-progress-bar {
-            height: 10px;
-            background: var(--color-base);
-            border: 1px solid var(--color-border-subtle);
-            border-radius: 999px;
-            overflow: hidden;
-            padding: 2px;
-        }
-        .mc-progress-bar-fill {
-            height: 100%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, var(--color-brand), var(--color-brand-light));
-            transition: width 300ms;
-            box-shadow: 0 0 10px color-mix(in oklab, var(--color-brand) 50%, transparent);
-        }
-        .mc-progress-cur { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-        .mc-progress-cur .mono { font-size: 11.5px; color: var(--color-text-secondary); }
-        .mc-progress-hint { font-size: 11px; color: var(--color-text-muted); margin-top: 8px; font-style: italic; }
         .mc-stop { width: 100%; justify-content: center; }
 
         .mc-foot { display: flex; justify-content: flex-end; gap: 8px; }
@@ -457,6 +408,11 @@ export class MassCaptionModalComponent implements OnInit {
         const t = this.task();
         return t && t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     });
+
+    /** Accent eyebrow shown above the progress readout — "LOADING MODEL…" until
+     *  the first item is processed, then "NEURAL PROCESSING". */
+    protected runningLabel = computed(() =>
+        this.task()?.current === 0 ? 'LOADING MODEL…' : 'NEURAL PROCESSING');
 
     /** Reactive candidate list for the Generate tab — the single source of
      *  truth for both `startGenerate()` and the count-on-CTA label. Mirrors the

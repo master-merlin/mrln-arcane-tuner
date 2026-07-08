@@ -237,6 +237,49 @@
     </div>
 
     <div class="ds-grid">
+      @switch (gridState()) {
+        @case ('loading') {
+            @for (i of skeletonSlots; track i) {
+                <div class="card ds-card ds-card-skeleton" aria-hidden="true">
+                    <div class="ds-card-img ds-skel ds-skel-img"></div>
+                    <div class="ds-card-body">
+                        <div class="ds-skel ds-skel-line ds-skel-line-title"></div>
+                        <div class="ds-skel ds-skel-line ds-skel-line-sub"></div>
+                        <div class="ds-skel ds-skel-line ds-skel-line-counts"></div>
+                    </div>
+                </div>
+            }
+        }
+        @case ('search-empty') {
+            <p class="muted ds-empty">
+                No datasets match "{{ search.query() }}".
+                <button type="button" class="search-filter-reset" (click)="clearSearch()">Clear search</button>
+            </p>
+        }
+        @case ('filter-empty') {
+            <p class="muted ds-empty">
+                No datasets match the active filters.
+                <button type="button" class="search-filter-reset" (click)="clearFilters()">Clear filters</button>
+            </p>
+        }
+        @case ('empty') {
+            <div class="ds-empty ds-empty-cta">
+                <div class="ds-empty-icon" aria-hidden="true">
+                    <app-ico name="Database" [size]="28"/>
+                </div>
+                <p class="ds-empty-title">No datasets in this scope yet.</p>
+                <p class="muted ds-empty-sub">Create one from scratch, or import a portable export.</p>
+                <div class="ds-empty-actions">
+                    <button class="btn primary" type="button" (click)="openNewDataset()">
+                        <app-ico name="Plus" [size]="14"/> New Dataset
+                    </button>
+                    <button class="btn" type="button" (click)="openImportDataset()">
+                        <app-ico name="Upload" [size]="14"/> Import Dataset
+                    </button>
+                </div>
+            </div>
+        }
+        @default {
         @for (d of visibleDatasets(); track trackById($index, d)) {
             <div class="card lift hover-host ds-card"
                  [attr.data-testid]="'dataset-card-' + d.name"
@@ -412,20 +455,8 @@
                     </button>
                 </div>
             </div>
-        } @empty {
-            @if (search.query().trim()) {
-                <p class="muted ds-empty">
-                    No datasets match "{{ search.query() }}".
-                    <button type="button" class="search-filter-reset" (click)="clearSearch()">Clear search</button>
-                </p>
-            } @else if (activeFilters().size > 0) {
-                <p class="muted ds-empty">
-                    No datasets match the active filters.
-                    <button type="button" class="search-filter-reset" (click)="clearFilters()">Clear filters</button>
-                </p>
-            } @else {
-                <p class="muted ds-empty">No datasets in this scope yet.</p>
-            }
         }
+        }
+      }
     </div>
 </div>

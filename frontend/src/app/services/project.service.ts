@@ -88,6 +88,22 @@ export class ProjectService {
   activeJobsProject = signal<string | null>(null);
 
   /**
+   * Loading tri-state for {@link loadProjects}. Lets screens distinguish
+   * "still fetching" from "genuinely empty" / "failed" instead of flashing an
+   * empty/not-found state while the first request is in flight (P1/P4):
+   *
+   *  - `loading`   — true while a `listProjects()` request is in flight.
+   *  - `loaded`    — false until the FIRST successful load resolves, then
+   *                  sticky (subsequent refreshes keep it true so cached cards
+   *                  stay visible instead of snapping back to a skeleton).
+   *  - `loadError` — true only when the most recent load errored; cleared on
+   *                  the next successful load.
+   */
+  readonly loading = signal(false);
+  readonly loaded = signal(false);
+  readonly loadError = signal(false);
+
+  /**
    * Compat shim — `activeDatasetProject` used to be an independent writable
    * signal scattered around the old captioning / masking screens. In the Hi-Fi
    * overhaul (Phase 8) the user's current project scope ({@link ScopeStore})
@@ -117,7 +133,22 @@ export class ProjectService {
   readonly activeDatasetProject = this.scopeProjectShim();
 
   loadProjects() {
-    this.listProjects().subscribe(projects => this.allProjects.set(projects));
+    this.loading.set(true);
+    this.loadError.set(false);
+    this.listProjects().subscribe({
+      next: projects => {
+        this.allProjects.set(projects);
+        this.loaded.set(true);
+        this.loadError.set(false);
+      },
+      error: () => {
+        // Keep `loaded` sticky: a failed refresh must not blank cards we
+        // already have. Flag the error so screens can surface a retry.
+        this.loadError.set(true);
+        this.loading.set(false);
+      },
+      complete: () => this.loading.set(false),
+    });
   }
 
   /**

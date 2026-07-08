@@ -363,20 +363,36 @@ export class TemplatesScreen implements OnInit {
             add('masking', null, 'Global', (maskG ?? []).filter(t => !t.project_id));
             add('training', null, 'Global', (trainG ?? []).filter(t => !t.project_id));
 
-            for (const p of projects) {
-                // Per-project resilience: one project's failed list call must not
-                // blank the whole library — skip it and keep the rest.
-                try {
-                    const [cap, mask, train] = await Promise.all([
-                        firstValueFrom(this.templates.listCaptioningTemplates(null, p.id)),
-                        firstValueFrom(this.templates.listMaskingTemplates(null, p.id)),
-                        firstValueFrom(this.templates.listTrainingTemplates(undefined, p.id)),
-                    ]);
+            // P11: fetch every project's three domains CONCURRENTLY instead of
+            // awaiting each project in series (the old N+1 loop stalled the whole
+            // library behind the slowest project). `allSettled` keeps partial
+            // results — one project's failed list call skips only that project.
+            // The rejection carries the project so the warning can still name it,
+            // and rows are added in the original project order so the library is
+            // deterministic regardless of which request finished first.
+            const settled = await Promise.allSettled(
+                projects.map(async p => {
+                    try {
+                        const [cap, mask, train] = await Promise.all([
+                            firstValueFrom(this.templates.listCaptioningTemplates(null, p.id)),
+                            firstValueFrom(this.templates.listMaskingTemplates(null, p.id)),
+                            firstValueFrom(this.templates.listTrainingTemplates(undefined, p.id)),
+                        ]);
+                        return { p, cap, mask, train };
+                    } catch {
+                        throw { p };
+                    }
+                }),
+            );
+            for (const res of settled) {
+                if (res.status === 'fulfilled') {
+                    const { p, cap, mask, train } = res.value;
                     add('captioning', p.id, p.name, (cap ?? []).filter(t => t.project_id === p.id));
                     add('masking', p.id, p.name, (mask ?? []).filter(t => t.project_id === p.id));
                     add('training', p.id, p.name, (train ?? []).filter(t => t.project_id === p.id));
-                } catch {
-                    this.toast.warning(`Could not load templates for project "${p.name}".`);
+                } else {
+                    const p = (res.reason as { p?: Project })?.p;
+                    if (p) this.toast.warning(`Could not load templates for project "${p.name}".`);
                 }
             }
             this.rows.set(rows);

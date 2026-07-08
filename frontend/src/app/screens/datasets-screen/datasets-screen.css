@@ -296,6 +296,87 @@
     grid-column: 1 / -1;
 }
 
+/* ── Actionable empty state (D3) ─────────────────────────────────────────
+   Replaces the bare "No datasets…" line with an icon + copy + primary CTAs
+   (New / Import), reusing the header button handlers. */
+.ds-empty-cta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 48px 24px;
+}
+.ds-empty-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    margin-bottom: 6px;
+    border-radius: var(--radius-theme-xl);
+    color: var(--color-text-muted);
+    background: var(--color-surface-2, oklch(0.20 0.01 265));
+}
+.ds-empty-title {
+    margin: 0;
+    font-weight: 600;
+    color: var(--color-text);
+}
+.ds-empty-sub {
+    margin: 0 0 10px;
+}
+.ds-empty-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+/* ── Loading skeletons (D2) ──────────────────────────────────────────────
+   Placeholder cards shown while the first dataset fetch is in flight, so the
+   grid never flashes the empty-state message before data arrives. */
+.ds-card-skeleton {
+    pointer-events: none;
+    cursor: default;
+}
+.ds-skel {
+    position: relative;
+    overflow: hidden;
+    background: var(--color-surface-2, oklch(0.20 0.01 265));
+}
+.ds-skel::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        oklch(1 0 0 / 0.06) 50%,
+        transparent 100%
+    );
+    animation: ds-skel-shimmer 1.4s ease-in-out infinite;
+}
+.ds-skel-img {
+    /* .ds-card-img already sets aspect-ratio + top rounded corners. */
+    border: none;
+}
+.ds-skel-line {
+    height: 12px;
+    border-radius: var(--radius-theme-sm, 6px);
+    margin: 10px 12px 0;
+}
+.ds-skel-line-title { width: 55%; height: 16px; margin-top: 12px; }
+.ds-skel-line-sub { width: 80%; }
+.ds-skel-line-counts { width: 40%; margin-bottom: 14px; }
+
+@keyframes ds-skel-shimmer {
+    100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .ds-skel::after { animation: none; }
+}
+
 .ds-card-actions {
     display: flex;
     align-items: center;

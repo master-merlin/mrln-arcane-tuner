@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject } from '@angular/core';
 import { Router } from '@angular/router';
-import { ProjectService, type Project } from '../../services/project.service';
+import { ProjectService, type Project, type ProjectStats } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
 import { IcoComponent } from '../../icons/ico.component';
@@ -8,12 +8,17 @@ import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { ToastService } from '../../services/toast';
 import { ProjectExportService } from '../../services/project-export.service';
 
+/** Which stat a card / KPI cell is showing. */
+type StatKey = 'datasets' | 'templates' | 'jobs';
+
 interface ProjectCard {
     project: Project;
     initials: string;
-    datasets: number;
-    templates: number;
-    jobs: number;
+    // null = the list endpoint didn't populate stats for this project, so we
+    // render "—" rather than a misleading 0 (P2).
+    datasets: number | null;
+    templates: number | null;
+    jobs: number | null;
     updatedLabel: string;
 }
 
@@ -202,6 +207,34 @@ interface ProjectCard {
             line-height: 1.5;
             margin-bottom: 4px;
         }
+        /* Absent-stat marker — muted so "—" doesn't read as a live value. */
+        .ps-stat-value.ps-stat-absent { color: var(--color-text-subtle); }
+        /* ── Skeleton loading grid (P1) ──────────────────────────────── */
+        .ps-skel-card { min-height: 200px; }
+        .ps-skel {
+            background: var(--color-surface-mid);
+            border-radius: 6px;
+        }
+        .ps-skel-badge { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; }
+        .ps-skel-line { height: 11px; margin: 6px 0; }
+        .ps-skel-line.sm { height: 9px; }
+        /* Shimmer — disabled under reduced-motion (falls back to a static tint). */
+        @media (prefers-reduced-motion: no-preference) {
+            .ps-skel {
+                background: linear-gradient(
+                    90deg,
+                    var(--color-surface-mid) 25%,
+                    var(--color-surface-low, var(--color-surface-high)) 37%,
+                    var(--color-surface-mid) 63%
+                );
+                background-size: 400% 100%;
+                animation: ps-skel-shimmer 1.4s ease infinite;
+            }
+        }
+        @keyframes ps-skel-shimmer {
+            0% { background-position: 100% 50%; }
+            100% { background-position: 0 50%; }
+        }
     `],
 })
 export class ProjectsScreen implements OnInit {
@@ -212,50 +245,73 @@ export class ProjectsScreen implements OnInit {
     private toast = inject(ToastService);
     private projectExport = inject(ProjectExportService);
 
-    /** Total datasets that are members of at least one project. */
-    private datasetsInProjects = computed(() => {
-        // Sum of per-project datasets from project.stats. May double-count if a
-        // dataset belongs to multiple projects, but matches the design's KPI
-        // semantic ("linked across projects").
-        const list = this.projects.allProjects();
-        return list.reduce((acc, p) => acc + (p.stats?.datasets ?? 0), 0);
-    });
+    /**
+     * A single card stat, or `null` when the project carries no `stats` block
+     * (the list endpoint may omit it). `null` renders as "—" so a real project
+     * never shows a misleading `0` (P2). Pure/static so it's unit-testable
+     * without instantiating the component.
+     */
+    static cardStat(stats: ProjectStats | undefined, key: StatKey): number | null {
+        if (!stats) return null;
+        if (key === 'templates') {
+            return (stats.captioning_templates ?? 0)
+                + (stats.masking_templates ?? 0)
+                + (stats.training_templates ?? 0);
+        }
+        if (key === 'datasets') return stats.datasets ?? 0;
+        return stats.jobs ?? 0;
+    }
 
-    /** Total templates (caption + mask + training) across all projects. */
-    private templatesInProjects = computed(() => {
-        const list = this.projects.allProjects();
-        return list.reduce((acc, p) => {
-            const s = p.stats;
-            if (!s) return acc;
-            return acc + (s.captioning_templates ?? 0) + (s.masking_templates ?? 0) + (s.training_templates ?? 0);
-        }, 0);
-    });
-
-    /** Total active jobs across all projects. */
-    private jobsInProjects = computed(() => {
-        return this.projects.allProjects().reduce((acc, p) => acc + (p.stats?.jobs ?? 0), 0);
-    });
+    /**
+     * KPI-rail aggregate across all projects. Returns `null` (→ "—") when there
+     * ARE projects but NONE of them carry stats — so the rail doesn't claim a
+     * confident `0` for data the endpoint simply didn't send. Projects that lack
+     * stats contribute 0 to a sum that other projects DO populate. An empty list
+     * aggregates to a genuine 0. Pure/static for unit testing (P2).
+     */
+    static aggregate(list: Project[], key: StatKey): number | null {
+        if (list.length > 0 && list.every(p => !p.stats)) return null;
+        return list.reduce((acc, p) => acc + (ProjectsScreen.cardStat(p.stats, key) ?? 0), 0);
+    }
 
     /** KPI rail aggregates. */
-    protected kpis = computed(() => ({
-        projects: this.projects.allProjects().length,
-        jobs: this.jobsInProjects(),
-        templates: this.templatesInProjects(),
-        datasets: this.datasetsInProjects(),
-    }));
+    protected kpis = computed(() => {
+        const list = this.projects.allProjects();
+        return {
+            projects: list.length,
+            jobs: ProjectsScreen.aggregate(list, 'jobs'),
+            templates: ProjectsScreen.aggregate(list, 'templates'),
+            datasets: ProjectsScreen.aggregate(list, 'datasets'),
+        };
+    });
 
     /** Pre-decorated project cards. */
     protected cards = computed<ProjectCard[]>(() =>
         this.projects.allProjects().map(p => ({
             project: p,
             initials: this.initialsOf(p.name),
-            datasets: p.stats?.datasets ?? 0,
-            templates: (p.stats?.captioning_templates ?? 0)
-                + (p.stats?.masking_templates ?? 0)
-                + (p.stats?.training_templates ?? 0),
-            jobs: p.stats?.jobs ?? 0,
+            datasets: ProjectsScreen.cardStat(p.stats, 'datasets'),
+            templates: ProjectsScreen.cardStat(p.stats, 'templates'),
+            jobs: ProjectsScreen.cardStat(p.stats, 'jobs'),
             updatedLabel: this.formatUpdated(p.updated_at),
         })),
+    );
+
+    /**
+     * First-load gate for the skeleton grid (P1): show skeletons only while the
+     * very first fetch is in flight. Subsequent refreshes keep the existing
+     * cards on screen (loaded stays sticky) instead of snapping to a skeleton.
+     */
+    protected showSkeleton = computed(() => this.projects.loading() && !this.projects.loaded());
+
+    /** True when the first load has resolved but the workspace is genuinely empty. */
+    protected showEmpty = computed(() =>
+        this.projects.loaded() && this.cards().length === 0,
+    );
+
+    /** True when the first load failed and we have nothing to show. */
+    protected showError = computed(() =>
+        this.projects.loadError() && this.cards().length === 0,
     );
 
     ngOnInit(): void {
@@ -344,6 +400,9 @@ export class ProjectsScreen implements OnInit {
         if (wk < 5) return `${wk}w ago`;
         return new Date(ms).toLocaleDateString();
     }
+
+    /** Fixed set of skeleton placeholders rendered during the first load (P1). */
+    protected readonly skeletonSlots = [0, 1, 2, 3];
 
     /** Track function for the card grid. */
     protected trackById = (_: number, c: ProjectCard) => c.project.id;

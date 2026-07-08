@@ -23,13 +23,50 @@
 
     <div class="ps-kpi-rail">
         <app-kpi-tile label="PROJECTS" [value]="kpis().projects" accent="brand" sub="in this workspace"/>
-        <app-kpi-tile label="ACTIVE JOBS" [value]="kpis().jobs" accent="success" sub="across projects"/>
-        <app-kpi-tile label="TEMPLATES" [value]="kpis().templates" accent="teal" sub="caption · mask · training"/>
-        <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="violet" sub="linked in projects"/>
+        <app-kpi-tile label="ACTIVE JOBS" [value]="kpis().jobs ?? '—'" accent="success" sub="across projects"/>
+        <app-kpi-tile label="TEMPLATES" [value]="kpis().templates ?? '—'" accent="teal" sub="caption · mask · training"/>
+        <app-kpi-tile label="DATASETS" [value]="kpis().datasets ?? '—'" accent="violet" sub="linked in projects"/>
     </div>
 
-    @if (cards().length === 0) {
-        <!-- Empty state: shown when there are no projects yet -->
+    @if (showSkeleton()) {
+        <!-- P1: skeleton grid while the FIRST load is in flight — never a
+             premature "No projects yet". -->
+        <div class="ps-grid" role="status" aria-label="Loading projects" aria-busy="true">
+            @for (i of skeletonSlots; track i) {
+                <div class="card ps-card ps-skel-card">
+                    <div class="ps-card-head">
+                        <div class="ps-card-head-left">
+                            <div class="ps-skel ps-skel-badge"></div>
+                            <div class="ps-card-titles" style="flex: 1;">
+                                <div class="ps-skel ps-skel-line" style="width: 70%;"></div>
+                                <div class="ps-skel ps-skel-line sm" style="width: 40%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="ps-skel ps-skel-line" style="width: 92%; margin: 12px 0 4px;"></div>
+                    <div class="ps-skel ps-skel-line" style="width: 60%; margin-bottom: 16px;"></div>
+                    <div class="ps-card-stats">
+                        <div class="ps-skel ps-skel-line" style="width: 80%;"></div>
+                        <div class="ps-skel ps-skel-line" style="width: 80%;"></div>
+                        <div class="ps-skel ps-skel-line" style="width: 80%;"></div>
+                    </div>
+                </div>
+            }
+        </div>
+    } @else if (showError()) {
+        <!-- Error state: first load failed and there's nothing cached to show. -->
+        <div class="ps-empty" role="alert" aria-label="Failed to load projects">
+            <div class="ps-empty-icon">
+                <app-ico name="AlertTriangle" [size]="32"/>
+            </div>
+            <div class="ps-empty-headline">Couldn't load projects</div>
+            <div class="ps-empty-sub">Something went wrong reaching the server. Check the backend and try again.</div>
+            <button class="btn" type="button" (click)="projects.loadProjects()">
+                <app-ico name="RefreshCw" [size]="14"/> Retry
+            </button>
+        </div>
+    } @else if (showEmpty()) {
+        <!-- Empty state: shown only AFTER the first successful load resolves. -->
         <div class="ps-empty" role="status" aria-label="No projects">
             <div class="ps-empty-icon">
                 <app-ico name="FolderOpen" [size]="32"/>
@@ -78,16 +115,19 @@
                     <div class="ps-card-stats">
                         <div>
                             <div class="ps-stat-label">Datasets</div>
-                            <div class="ps-stat-value mono">{{ c.datasets }}</div>
+                            <div class="ps-stat-value mono" [class.ps-stat-absent]="c.datasets === null">{{ c.datasets ?? '—' }}</div>
                         </div>
                         <div>
                             <div class="ps-stat-label">Templates</div>
-                            <div class="ps-stat-value mono">{{ c.templates }}</div>
+                            <div class="ps-stat-value mono" [class.ps-stat-absent]="c.templates === null">{{ c.templates ?? '—' }}</div>
                         </div>
                         <div>
                             <div class="ps-stat-label">Jobs</div>
-                            <div class="ps-stat-value mono" [class.jobs-active]="c.jobs > 0" [class.jobs-idle]="c.jobs === 0">
-                                {{ c.jobs }}
+                            <div class="ps-stat-value mono"
+                                 [class.ps-stat-absent]="c.jobs === null"
+                                 [class.jobs-active]="(c.jobs ?? 0) > 0"
+                                 [class.jobs-idle]="c.jobs === 0">
+                                {{ c.jobs ?? '—' }}
                             </div>
                         </div>
                     </div>

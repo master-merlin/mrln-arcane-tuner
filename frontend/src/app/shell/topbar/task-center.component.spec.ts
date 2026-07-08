@@ -96,6 +96,20 @@ describe('TaskCenterComponent done-row summary', () => {
         expect(txt).toContain('3 failed');
     });
 
+    it('surfaces a failed task\'s error text in the panel', () => {
+        const txt = mount([
+            {
+                id: 'r4',
+                title: 'Captioning · ds',
+                status: 'failed',
+                ok: 0,
+                failed: 2,
+                error: 'CUDA out of memory',
+            },
+        ]);
+        expect(txt).toContain('CUDA out of memory');
+    });
+
     it('maps type → kind label + accent and uses dataset_name as subject', () => {
         TestBed.resetTestingModule();
         TestBed.configureTestingModule({
@@ -134,5 +148,59 @@ describe('TaskCenterComponent done-row summary', () => {
         expect(byTestId(f, 'task-center-row')!.nativeElement.getAttribute('style')).toContain(
             '--color-brand',
         );
+    });
+});
+
+describe('TaskCenterComponent persistent trigger + clear', () => {
+    function mount(active: any[], recent: any[]) {
+        const clearRecent = vi.fn();
+        TestBed.resetTestingModule();
+        TestBed.configureTestingModule({
+            imports: [TaskCenterComponent],
+            providers: [
+                {
+                    provide: TaskStore,
+                    useValue: {
+                        active: signal(active),
+                        activeCount: signal(active.length),
+                        recent: signal(recent),
+                        cancel: () => undefined,
+                        clearRecent,
+                    },
+                },
+            ],
+        });
+        const f = TestBed.createComponent(TaskCenterComponent);
+        return { f, clearRecent };
+    }
+
+    it('renders the Activity trigger even when idle (no active, no recent)', () => {
+        const { f } = mount([], []);
+        f.detectChanges();
+        const trigger = byTestId(f, 'task-center-trigger');
+        expect(trigger).not.toBeNull();
+        // It is a real button with an accessible label.
+        expect(trigger!.nativeElement.tagName).toBe('BUTTON');
+        expect(trigger!.nativeElement.getAttribute('aria-label')).toBeTruthy();
+    });
+
+    it('shows an empty state when opened while idle', () => {
+        const { f } = mount([], []);
+        (f.componentInstance as any).toggle();
+        f.detectChanges();
+        expect(byTestId(f, 'task-center-empty')).not.toBeNull();
+    });
+
+    it('Clear empties the recent list without cancelling active tasks', () => {
+        const { f, clearRecent } = mount(
+            [{ id: 'a1', title: 'Captioning · ds', status: 'running', total: 4, current: 1, ok: 1, failed: 0 }],
+            [{ id: 'r1', title: 'Captioning · ds', status: 'completed', ok: 3, failed: 0 }],
+        );
+        (f.componentInstance as any).toggle();
+        f.detectChanges();
+        const clear = byTestId(f, 'task-center-clear');
+        expect(clear).not.toBeNull();
+        clear!.nativeElement.click();
+        expect(clearRecent).toHaveBeenCalledTimes(1);
     });
 });

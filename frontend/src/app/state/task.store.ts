@@ -79,4 +79,13 @@ export class TaskStore {
     cancel(id: string): void {
         this.api.cancelTask(id).subscribe({ error: () => undefined });
     }
+
+    /**
+     * Dismiss the recent/completed list. Only clears finished entries — active
+     * (pending/running) tasks live in a separate map and are left untouched, so
+     * this never cancels in-flight work.
+     */
+    clearRecent(): void {
+        this._recent.set([]);
+    }
 }

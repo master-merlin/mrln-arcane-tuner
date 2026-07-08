@@ -56,4 +56,14 @@ describe('TaskStore', () => {
         store.cancel('t1');
         expect(api.cancelTask).toHaveBeenCalledWith('t1');
     });
+
+    it('clearRecent() empties recent() without touching active()', () => {
+        updates$.next(mkTask({ id: 'a1' }));                                  // stays active
+        updates$.next(mkTask({ id: 'r1', status: 'completed', finished_at: 2 }));
+        expect(store.recent().length).toBe(1);
+        expect(store.activeCount()).toBe(1);
+        store.clearRecent();
+        expect(store.recent().length).toBe(0);
+        expect(store.activeCount()).toBe(1);      // active task untouched
+    });
 });

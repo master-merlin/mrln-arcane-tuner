@@ -1,5 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { filter } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { ScopeStore } from '../../state/scope.store';
 import { SystemStore } from '../../state/system.store';
@@ -46,8 +48,27 @@ export class SidebarComponent implements OnInit {
     private datasetStore = inject(DatasetStore);
     private jobStore = inject(JobStore);
     private systemService = inject(SystemService);
+    private router = inject(Router);
 
     protected nav = NAV;
+
+    // Re-read `router.url` on every completed navigation (NavigationEnd carries
+    // no value we need; the signal just re-fires the computeds that read it).
+    private url = toSignal(
+        this.router.events.pipe(filter(e => e instanceof NavigationEnd)),
+        { initialValue: null },
+    );
+
+    /**
+     * Whether to render the sidebar mini-monitor (`.side-system`). The Jobs
+     * screen's right rail already shows the same five metrics PLUS
+     * VRAM-by-process and a temp trend, so on `/jobs` the sidebar panel is pure
+     * duplication (T7). Everywhere else it stays as the global at-a-glance.
+     */
+    protected showSystem = computed(() => {
+        void this.url();
+        return !this.router.url.split('?')[0].startsWith('/jobs');
+    });
 
     protected appVersion = signal<string>('…');
 

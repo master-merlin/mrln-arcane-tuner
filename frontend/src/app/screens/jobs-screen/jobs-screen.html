@@ -68,6 +68,16 @@
                     <div class="error-head">
                         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
                         <span>Run failed</span>
+                        <div class="error-actions">
+                            <button class="btn sm" type="button" (click)="copyError()" title="Copy the error message" data-testid="copy-error">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                                Copy error
+                            </button>
+                            <button class="btn sm" type="button" (click)="viewLogs()" title="Expand and jump to the full log" data-testid="view-full-log">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>
+                                View full log
+                            </button>
+                        </div>
                     </div>
                     <p class="error-text mono">{{ errorMessage() }}</p>
                 </div>
@@ -375,29 +385,14 @@
                 }
             </section>
 
-            <!-- ── LOG TAIL ──────────────────────────────────────────── -->
-            <section class="card collapse-card">
+            <!-- ── LOG ───────────────────────────────────────────────── -->
+            <section class="card collapse-card" #logSection>
                 <button class="card-head" type="button" (click)="toggle('log')">
-                    <span class="card-title">Log Tail</span>
+                    <span class="card-title">Log</span>
                     <span class="caret">{{ expanded().log ? '−' : '+' }}</span>
                 </button>
                 @if (expanded().log) {
-                    <div class="card-body">
-                        @if (logLines().length > 0) {
-                            <div class="log-tail mono">
-                                @for (line of logLines(); track $index) {
-                                    <div class="log-tail-line">
-                                        <span class="tag" [class.teal]="line.tone === 'teal'"
-                                              [class.warning]="line.tone === 'warning'"
-                                              [class.danger]="line.tone === 'danger'">{{ line.level }}</span>
-                                        <span class="log-text">{{ line.text }}</span>
-                                    </div>
-                                }
-                            </div>
-                        } @else {
-                            <p class="muted">No log output yet.</p>
-                        }
-                    </div>
+                    <app-job-log-viewer [lines]="logLines()" [downloadName]="logDownloadName()"/>
                 }
             </section>
         } @else {

@@ -453,6 +453,32 @@ export class MassMaskModalComponent implements OnInit {
 
     protected maskedCount = computed(() => this.pairs().filter(p => p.metadata?.has_mask).length);
 
+    /** Reactive Generate-tab candidates — the single source of truth for both
+     *  `startGenerate()` and the count-on-CTA label. */
+    protected generateCandidates = computed<DatasetPair[]>(() =>
+        this.strategy() === 'keep'
+            ? this.pairs().filter(p => !p.metadata?.has_mask)
+            : [...this.pairs()]);
+    protected generateCount = computed(() => this.generateCandidates().length);
+
+    /** Reactive Caption-tab candidates — masked images (optionally only those
+     *  without a masked caption). Drives `startCaption()` and the CTA count. */
+    protected captionCandidates = computed<DatasetPair[]>(() =>
+        this.captionStrategy() === 'keep'
+            ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
+            : this.pairs().filter(p => p.metadata?.has_mask));
+    protected captionCount = computed(() => this.captionCandidates().length);
+
+    /** Candidate count for the active tab's primary CTA. Apply reuses
+     *  `maskedCount` (every masked image is re-applied). */
+    protected ctaCount = computed(() => {
+        switch (this.tab()) {
+            case 'generate': return this.generateCount();
+            case 'apply':    return this.maskedCount();
+            case 'caption':  return this.captionCount();
+        }
+    });
+
     protected runningLabel = computed(() => {
         switch (this.tab()) {
             case 'generate': return 'SEGMENTATION ENGINE';
@@ -462,21 +488,23 @@ export class MassMaskModalComponent implements OnInit {
     });
 
     protected ctaLabel = computed(() => {
+        const n = this.ctaCount();
         switch (this.tab()) {
-            case 'generate': return 'Generate Masks';
-            case 'apply':    return 'Apply Masks';
-            case 'caption':  return 'Caption Masked Images';
+            case 'generate': return n === 0 ? 'No images to mask' : `Mask ${n} image${n === 1 ? '' : 's'}`;
+            case 'apply':    return n === 0 ? 'No images to apply' : `Apply to ${n} image${n === 1 ? '' : 's'}`;
+            case 'caption':  return n === 0 ? 'No masked images to caption' : `Caption ${n} masked image${n === 1 ? '' : 's'}`;
         }
     });
 
     protected canStart = computed<boolean>(() => {
         switch (this.tab()) {
-            case 'generate': return !!this.maskingSettings();
+            case 'generate': return !!this.maskingSettings() && this.generateCount() > 0;
             case 'apply':    return this.maskedCount() > 0;
             // apiConfigured === false → the selected api-* provider has no
             // usable key; keep the CTA disabled (same gate as mass-caption).
             case 'caption':  return !!this.captionSettings()
-                && this.captionSettings()!.apiConfigured !== false;
+                && this.captionSettings()!.apiConfigured !== false
+                && this.captionCount() > 0;
         }
     });
 
@@ -572,11 +600,10 @@ export class MassMaskModalComponent implements OnInit {
         const name = this.data.datasetName;
         const settings = this.maskingSettings();
         if (!name || !settings) return;
-        const candidates = this.strategy() === 'keep'
-            ? this.pairs().filter(p => !p.metadata?.has_mask)
-            : [...this.pairs()];
+        // Candidate count is reactive (`generateCount`) and gates the CTA —
+        // clicking an enabled button starts directly, no confirm().
+        const candidates = this.generateCandidates();
         if (candidates.length === 0) { this.toast.info('No images need masking.'); return; }
-        if (!confirm(`Start masking ${candidates.length} images?`)) return;
         this.launch(this.datasetsApi.batchGenerateMasks({
             dataset_name: name,
             image_rel_paths: candidates.map(p => p.media_file),
@@ -590,7 +617,7 @@ export class MassMaskModalComponent implements OnInit {
         if (!name) return;
         const maskCount = this.maskedCount();
         if (maskCount === 0) { this.toast.warning('No masks found. Generate masks first.'); return; }
-        if (!confirm(`Apply masks to ${maskCount} images with ${(this.applyOpacity() * 100).toFixed(0)}% background opacity?`)) return;
+        // Count-on-CTA gates the button; clicking starts directly (no confirm()).
         this.launch(
             this.datasetsApi.batchApplyMasks(name, this.applyOpacity(), this.applyOverwrite()),
             'Could not start mask apply.');
@@ -600,11 +627,10 @@ export class MassMaskModalComponent implements OnInit {
         const name = this.data.datasetName;
         const settings = this.captionSettings();
         if (!name || !settings || settings.apiConfigured === false) return;
-        const candidates = this.captionStrategy() === 'keep'
-            ? this.pairs().filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
-            : this.pairs().filter(p => p.metadata?.has_mask);
+        // Candidate count is reactive (`captionCount`) and gates the CTA —
+        // clicking an enabled button starts directly, no confirm().
+        const candidates = this.captionCandidates();
         if (candidates.length === 0) { this.toast.info('No masked images need captioning. Generate and apply masks first.'); return; }
-        if (!confirm(`Start captioning ${candidates.length} masked images?`)) return;
         this.launch(this.datasetsApi.batchCaption({
             dataset_name: name,
             image_rel_paths: candidates.map(p => p.media_file),

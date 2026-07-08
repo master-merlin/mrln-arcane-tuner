@@ -82,6 +82,7 @@ class LatentManager:
         "AutoencoderKLWan",
         "AutoencoderKLLTX2Video",
         "AutoencoderKLLTXVideo",
+        "AutoencoderKLHunyuanVideo15",
     )
 
     def _is_video_vae(self) -> bool:
@@ -109,6 +110,7 @@ class LatentManager:
         when present, else inferred from the VAE class:
 
         - WAN: ``4``  (latent_f = (F-1)/4 + 1)
+        - HunyuanVideo 1.5: ``4``  (latent_f = (F-1)/4 + 1)
         - LTX: ``8``  (latent_f = (F-1)/8 + 1)
         - QwenImage / anything else: ``1`` (no temporal compression; the
           frame dim is preserved 1:1, matching the still-image unsqueeze path).
@@ -118,7 +120,7 @@ class LatentManager:
         name = type(self.vae).__name__
         # Walk the MRO so subclasses still match.
         names = {c.__name__ for c in type(self.vae).__mro__}
-        if "AutoencoderKLWan" in names:
+        if "AutoencoderKLWan" in names or "AutoencoderKLHunyuanVideo15" in names:
             return 4
         if "AutoencoderKLLTX2Video" in names or "AutoencoderKLLTXVideo" in names:
             return 8

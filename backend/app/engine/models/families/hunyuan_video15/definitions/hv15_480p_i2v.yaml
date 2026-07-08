@@ -1,0 +1,93 @@
+id: hv15-480p-i2v
+family: hunyuan_video15
+name: HunyuanVideo 1.5 480p I2V
+version: '1.0'
+defaults:
+  resolution: 480
+  scheduler: flow_match_euler
+  learning_rate: 0.0001
+  timestep_sampling: model_shift
+components:
+  repo:
+    path: huggingface:hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+  image_encoder: torch.bfloat16
+architecture_params:
+  mode: i2v
+  # ── Transformer (verified hub transformer/config.json; identical to the
+  # t2v checkpoint except task_type — LoRA portability across modes) ──
+  transformer._class_name: HunyuanVideo15Transformer3DModel
+  transformer.in_channels: 65
+  transformer.out_channels: 32
+  transformer.num_layers: 54
+  transformer.num_refiner_layers: 2
+  transformer.num_attention_heads: 16
+  transformer.attention_head_dim: 128
+  transformer.mlp_ratio: 4.0
+  transformer.patch_size: 1
+  transformer.patch_size_t: 1
+  transformer.qk_norm: rms_norm
+  transformer.rope_theta: 256.0
+  transformer.rope_axes_dim:
+  - 16
+  - 56
+  - 56
+  transformer.target_size: 640
+  transformer.task_type: i2v
+  transformer.text_embed_dim: 3584
+  transformer.text_embed_2_dim: 1472
+  transformer.image_embed_dim: 1152
+  transformer.use_meanflow: false
+  transformer.hidden_size: 2048
+  # ── Text encoder 1 (Qwen2.5-VL 7B text tower) ──
+  te._class_name: Qwen2_5_VLTextModel
+  te.model_type: qwen2_5_vl_text
+  te.hidden_size: 3584
+  te.num_hidden_layers: 28
+  te.max_length: 1000
+  te.crop_start: 108
+  te.hidden_layer_index: -3
+  # ── Text encoder 2 (ByT5 glyph channel) ──
+  te2._class_name: T5EncoderModel
+  te2.model_type: byt5
+  te2.d_model: 1472
+  te2.num_layers: 12
+  te2.max_length: 256
+  # ── Image encoder (I2V only; verified hub image_encoder/config.json) ──
+  image_encoder._class_name: SiglipVisionModel
+  image_encoder.hidden_size: 1152
+  image_encoder.image_size: 384
+  image_encoder.patch_size: 14
+  image_encoder.num_semantic_tokens: 729
+  # ── VAE (verified hub vae/config.json; scalar scaling factor) ──
+  vae._class_name: AutoencoderKLHunyuanVideo15
+  vae.latent_channels: 32
+  vae.scaling_factor: 1.03682
+  vae.spatial_compression_ratio: 16
+  vae.temporal_compression_ratio: 4
+  # ── Video contract ──
+  video.frame_rule: 4n+1
+  video.native_fps: 24
+  video.vae_spatial: 16
+  video.vae_temporal: 4
+  video.divisibility: 16
+  # ── Scheduler (verified hub scheduler_config.json: static shift 5.0) ──
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 5.0
+  scheduler.flow_shift: 5.0
+  scheduler.use_dynamic_shifting: false
+  # ── Guider (component EXCLUDED from loading; scale documented) ──
+  guider.guidance_scale: 6.0
+  num_heads: 16
+  depth: 54
+  in_channels: 65
+model_size_mb: {}
+lora_targetable_modules: []
+block_topology: []

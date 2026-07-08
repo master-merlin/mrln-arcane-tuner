@@ -82,6 +82,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "longcat_image": (True, True),  # latent_diffusion DiT (16ch AutoencoderKL) + Qwen2.5-VL TE
     "prx": (True, True),  # latent_diffusion DiT (Flux 16ch AutoencoderKL) + T5Gemma TE (no TE training)
     "dreamlite": (True, True),  # latent_diffusion U-NET (AutoencoderTiny) + Qwen3-VL TE (no TE training)
+    "hunyuan_video15": (True, True),  # latent_diffusion video MMDiT (HV15 16x/4x VAE) + dual external TE (Qwen2.5-VL + ByT5)
     "hidream_o1": (False, False),  # unified transformer: pixel-space, TE inside the model
     "prx_pixel": (False, True),  # pixel_transformer: NO VAE, external Qwen3-VL text TE
 }

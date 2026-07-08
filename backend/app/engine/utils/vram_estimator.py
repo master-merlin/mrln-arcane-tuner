@@ -171,6 +171,18 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 5.7,  # UMT5-XXL encoder
         "vae": 0.13,  # AutoencoderKLWan (127M params)
     },
+    "hunyuan_video15": {
+        # Meta-instantiated diffusers-0.39 HunyuanVideo15Transformer3DModel
+        # with the verified 480p checkpoint config (54 dual-stream blocks,
+        # inner dim 2048, 2 refiner layers) → 8.33 B params.
+        "transformer": 8.3,
+        # Dual TE (summed by _get_te_params): Qwen2.5-VL-7B TEXT tower
+        # (hidden 3584, 28 layers → 7.07 B meta-measured) + ByT5 glyph
+        # encoder (d_model 1472, 12 layers → 0.22 B).
+        "text_encoder_qwen": 7.1,
+        "text_encoder_byt5": 0.22,
+        "vae": 1.26,  # AutoencoderKLHunyuanVideo15 (1.26 B, meta-measured)
+    },
     "wan22": {
         # PER-EXPERT size (same arch as wan21 14B). The MoE second expert is
         # added by the dual_expert branch in VRAMEstimator.estimate, not here.

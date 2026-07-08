@@ -1,0 +1,89 @@
+id: k5-i2v-pro-sft-5s
+family: kandinsky5
+name: Kandinsky 5.0 I2V Pro SFT 5s
+version: '1.0'
+control_inputs: 0
+defaults:
+  resolution: 768
+  scheduler: flow_match_euler
+  learning_rate: 0.0001
+  timestep_sampling: model_shift
+  guidance_scale: 5.0
+  num_inference_steps: 50
+components:
+  repo:
+    path: huggingface:kandinskylab/Kandinsky-5.0-I2V-Pro-sft-5s-Diffusers
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  text_encoder_2: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  mode: i2v
+  # -- Video contract (HunyuanVideo VAE: temporal 4x, spatial 8x; H/W % 16) --
+  video.frame_rule: 4n+1
+  video.native_fps: 24
+  video.vae_spatial: 8
+  video.vae_temporal: 4
+  video.divisibility: 16
+  # -- Transformer (checkpoint transformer/config.json, verified on the hub) --
+  transformer._class_name: Kandinsky5Transformer3DModel
+  transformer.in_visual_dim: 16
+  transformer.out_visual_dim: 16
+  transformer.time_dim: 1024
+  transformer.model_dim: 4096
+  transformer.ff_dim: 16384
+  transformer.num_text_blocks: 4
+  transformer.num_visual_blocks: 60
+  transformer.axes_dims:
+  - 32
+  - 48
+  - 48
+  transformer.visual_cond: true
+  transformer.in_text_dim: 3584
+  transformer.in_text_dim2: 768
+  # Pro ships sparse "nabla" attention config for inference efficiency; our
+  # training/sampling forwards pass sparse_params=None (dense attention — a
+  # mathematically exact superset of the sparse approximation).
+  transformer.attention_type: nabla
+  transformer.patch_size:
+  - 1
+  - 2
+  - 2
+  # Generic activation-estimate hints
+  hidden_size: 4096
+  depth: 60
+  in_channels: 16
+  # -- Text encoders (Qwen2.5-VL-7B sequence + CLIP ViT-L pooled) --
+  te.type: qwen2_5_vl
+  te.hidden_size: 3584
+  te.num_hidden_layers: 28
+  te.max_sequence_length: 512
+  te.crop_start: 129
+  te2.type: clip_text
+  te2.hidden_size: 768
+  te2.max_length: 77
+  # -- VAE (HunyuanVideo community VAE) --
+  vae._class_name: AutoencoderKLHunyuanVideo
+  vae.latent_channels: 16
+  vae.scaling_factor: 0.476986
+  vae.spatial_compression_ratio: 8
+  vae.temporal_compression_ratio: 4
+  # -- Scheduler (checkpoint scheduler_config.json: plain flow-match, shift 5) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 5.0
+  scheduler.flow_shift: 5.0
+# Pro transformer measured via meta-instantiation of the checkpoint config:
+# 19.311B params -> 36833 MB bf16 on disk. Explicit here (authoritative for
+# the VRAM estimator) because _FAMILY_PARAMS["kandinsky5"] carries the LITE
+# fallback sizes.
+model_size_mb:
+  transformer: 36833.0
+block_topology:
+- name: visual_transformer_blocks
+  attr_path: visual_transformer_blocks
+  count: 60
+  approx_vram_mb: 614

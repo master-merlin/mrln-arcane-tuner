@@ -83,6 +83,19 @@ def _seed_tuple4(caps: list[str]) -> dict[str, Any]:
     }
 
 
+def _seed_teo_k5_triple(caps: list[str]) -> dict[str, Any]:
+    """(emb[1,L,D], pooled[1,P], cu_seqlens[2] int32) — kandinsky5's dual-TE
+    triple (te3 is cu_seqlens, the family's padding-mask replacement)."""
+    return {
+        c: (
+            torch.randn(1, _L, _D),
+            torch.randn(1, _P),
+            torch.tensor([0, _L], dtype=torch.int32),
+        )
+        for c in caps
+    }
+
+
 def _seed_tensor_no_batch(caps: list[str]) -> dict[str, Any]:
     """[L,D] raw tensor (no leading batch dim) — sdxl (its cache stacks, not cats)."""
     return {c: torch.randn(_L, _D) for c in caps}
@@ -138,6 +151,16 @@ def _check_tuple4(out: Any) -> None:
     assert mask.ndim == 2 and mask.shape[0] == 2
     assert emb2.ndim == 3 and emb2.shape[0] == 2, f"emb2 must be [B,L,D], got {tuple(emb2.shape)}"
     assert mask2.ndim == 2 and mask2.shape[0] == 2
+
+
+def _check_teo_k5(out: Any) -> None:
+    assert isinstance(out, TextEncoderOutput), f"expected TextEncoderOutput, got {type(out)}"
+    assert out.embeddings.ndim == 3 and out.embeddings.shape[0] == 2
+    assert out.pooled is not None and out.pooled.shape == (2, _P)
+    # attention_mask carries cu_seqlens: int32 [B+1], left-padded with 0.
+    cu = out.attention_mask
+    assert cu is not None and cu.dtype == torch.int32
+    assert cu.shape == (3,) and int(cu[0]) == 0
 
 
 def _check_list_tensor(out: Any) -> None:
@@ -298,6 +321,15 @@ FAMILIES: list[FamilySpec] = [
         "app.engine.models.families.dreamlite.driver:DreamLiteDriver",
         "model", "model", property_alias="transformer",
         encode_kind=None,
+    ),
+    # ── kandinsky5: dual-TE (Qwen2.5-VL + CLIP pooled) with cu_seqlens in the
+    # attention_mask slot; cache entries are (emb, pooled, cu) triples ────────
+    FamilySpec(
+        "kandinsky5",
+        "app.engine.models.families.kandinsky5.trainer:Kandinsky5Trainer",
+        "app.engine.models.families.kandinsky5.driver:Kandinsky5Driver",
+        "transformer", "transformer",
+        encode_kind="teo_k5", encode_seed=_seed_teo_k5_triple, encode_check=_check_teo_k5,
     ),
     FamilySpec(
         "prx",

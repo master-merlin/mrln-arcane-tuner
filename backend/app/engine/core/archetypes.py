@@ -69,8 +69,29 @@ UNIFIED_TRANSFORMER = Archetype(
     config_defaults={"resolution": 1024, "scheduler": "euler_a", "learning_rate": 5e-6},
 )
 
+# Pixel-space DiT with a STANDALONE text encoder (prx_pixel): differs from
+# unified_transformer (hidream_o1) exactly on the TE axis — there IS an
+# external TE, so its embeddings are disk-cacheable and it can be offloaded,
+# while VAE/latent-cache/low_vram remain meaningless (no VAE at all).
+PIXEL_TRANSFORMER = Archetype(
+    id="pixel_transformer",
+    has_vae=False,
+    has_external_te=True,
+    latent_cache=False,
+    te_cache=True,
+    supports_train_te=False,
+    supports_te_quantization=False,
+    supports_block_swap=False,
+    # Video flags default False — no pixel-transformer video family exists.
+    is_video=False,
+    has_audio=False,
+    dual_expert=False,
+    has_image_encoder=False,
+    config_defaults={"resolution": 1024, "scheduler": "euler_a", "learning_rate": 1e-4},
+)
+
 ARCHETYPES: dict[str, Archetype] = {
-    a.id: a for a in (LATENT_DIFFUSION, UNIFIED_TRANSFORMER)
+    a.id: a for a in (LATENT_DIFFUSION, UNIFIED_TRANSFORMER, PIXEL_TRANSFORMER)
 }
 
 # Maps a config field -> the capability flag that gates it + a human reason.

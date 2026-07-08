@@ -20,12 +20,16 @@ def test_every_family_declares_known_archetype():
         )
 
 
-def test_hidream_is_unified_and_others_latent():
+def test_hidream_is_unified_prx_pixel_is_pixel_and_others_latent():
     by_name = {getattr(f, "family_name", f.__name__): f for f in _family_classes()}
     for name, fam in by_name.items():
-        expected = (
-            "unified_transformer" if "hidream" in name.lower() else "latent_diffusion"
-        )
+        lowered = name.lower()
+        if "hidream" in lowered:
+            expected = "unified_transformer"
+        elif lowered == "prx_pixel":
+            expected = "pixel_transformer"
+        else:
+            expected = "latent_diffusion"
         assert fam.archetype == expected, (name, fam.archetype)
 
 

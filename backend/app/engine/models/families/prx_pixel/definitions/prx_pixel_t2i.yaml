@@ -1,0 +1,94 @@
+# PRX Pixel T2I (Photoroom/prxpixel-t2i) — PIXEL-SPACE text-to-image, NO VAE.
+#
+# Architecture facts verified against the checkpoint's HF configs
+# (model_index.json, transformer/config.json, text_encoder/config.json,
+# scheduler/scheduler_config.json — fetched 2026-07-08) and the installed
+# diffusers 0.39 PRXTransformer2DModel / PRXPixelPipeline sources
+# (see docs/superpowers/plans/2026-07-07-f5-prx-pixel-family.md).
+# The latent 512px variant is the SEPARATE prx family.
+id: prx-pixel-t2i
+family: prx_pixel
+name: PRX Pixel T2I
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-4
+  is_distilled: false
+  # Pipeline __call__ defaults (num_inference_steps=28, guidance_scale=4.0)
+  guidance_scale: 4.0
+  num_inference_steps: 28
+components:
+  repo:
+    path: huggingface:Photoroom/prxpixel-t2i
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  unet: torch.bfloat16
+# model_size_mb intentionally empty — the VRAM estimator falls back to the
+# meta-instantiated param counts in _FAMILY_PARAMS["prx_pixel"].
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json — the PIXEL variant:
+  #    RGB in/out, two-layer bottleneck img_in, resolution embeds) --
+  transformer._class_name: PRXTransformer2DModel
+  transformer.in_channels: 3
+  transformer.patch_size: 16
+  transformer.context_in_dim: 2048
+  transformer.hidden_size: 3584
+  transformer.mlp_ratio: 3.5
+  transformer.num_heads: 28
+  transformer.depth: 24
+  transformer.axes_dim:
+  - 64
+  - 64
+  transformer.theta: 10000
+  transformer.bottleneck_size: 768
+  transformer.resolution_embeds: true
+  # time_factor 1000 re-scales the NORMALIZED [0,1] timestep the driver
+  # feeds the model (PRX convention: ÷1000 happens BEFORE the forward).
+  transformer.time_factor: 1000.0
+  transformer.time_max_period: 10000
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  # Generic activation-estimate hints (single 24-block stack)
+  hidden_size: 3584
+  depth: 24
+  in_channels: 3
+  context_dim: 2048
+  # -- Pipeline registered config (model_index.json / PRXPixelPipeline):
+  #    x0-prediction training + non-unit initial-noise scale --
+  pipeline.noise_scale: 2.0
+  pipeline.prompt_max_tokens: 256
+  # Sampling converts x0 → velocity per step with this timestep floor
+  # (pipeline_prx_pixel.py: t_x = clamp(t/1000, min=0.05)).
+  pipeline.velocity_t_floor: 0.05
+  # -- Text encoder (checkpoint text_encoder/config.json:
+  #    architectures: [Qwen3VLTextModel], text backbone only, ~1.7B) --
+  te.type: qwen3_vl_text
+  te.architectures:
+  - Qwen3VLTextModel
+  te.hidden_size: 2048
+  te.intermediate_size: 6144
+  te.num_hidden_layers: 28
+  te.num_attention_heads: 16
+  te.num_key_value_heads: 8
+  te.head_dim: 128
+  te.vocab_size: 151936
+  # Tokenization budget = pipeline prompt_max_tokens (256) — NOT the Qwen
+  # tokenizer's own model_max_length (far larger). padding="max_length".
+  te.max_length: 256
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json): static
+  #    shift 3.0, NO dynamic shifting / mu (plain set_timesteps) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 3.0
+  scheduler.use_dynamic_shifting: false
+  # NO vae.* section: PRXPixel is pixel-space (vae_scale_factor hardcoded 1
+  # in the pipeline; the denoised output IS the image in [-1, 1]).
+block_topology:
+- name: blocks
+  attr_path: blocks
+  count: 24
+  approx_vram_mb: 560

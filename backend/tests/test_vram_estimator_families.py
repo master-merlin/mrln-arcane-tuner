@@ -188,6 +188,36 @@ def test_prx_entry_beats_generic_default_from_above():
     assert d["model_weights_mb"] < 3_500, d["model_weights_mb"]
 
 
+def test_prx_pixel_has_te_but_no_vae_contribution():
+    """prx_pixel is pixel-space (NO VAE) but keeps an EXTERNAL ~1.7B TE —
+    unlike hidream_o1 the caching peak must contain a real TE term while
+    the VAE term stays exactly zero (the generic 0.08 fallback would
+    invent a VAE that does not exist)."""
+    # Table values pinned from meta-instantiation of the checkpoint configs
+    # (PRXTransformer2DModel pixel variant 7.0B; Qwen3VLTextModel 1.72B).
+    assert _get_primary_params("prx_pixel", {}) == pytest.approx(7.0)
+    assert _get_te_params("prx_pixel") == pytest.approx(1.7)
+    assert _get_vae_params("prx_pixel") == 0.0
+
+    defn = registry.get_definition("prx-pixel-t2i")
+    assert defn is not None
+    report = VRAMEstimator.estimate(defn, {"quantization": "none"})
+    d = report.to_dict()
+
+    # caching_peak = te_mb + vae_mb + overhead. The TE contributes ~3.3 GB
+    # (1.7B bf16); the VAE contributes 0.
+    te_plus_vae_mb = d["caching_peak_mb"] - d["overhead_mb"]
+    assert 2_000 < te_plus_vae_mb < 5_000, (
+        f"expected ~3.3 GB TE and zero VAE, got {te_plus_vae_mb} MB"
+    )
+
+    # 7.0 B bf16 ≈ 13.4 GB of primary weights — clearly not the 2.0 B
+    # generic fallback (~3.8 GB).
+    assert d["model_weights_mb"] > 10_000, d["model_weights_mb"]
+    assert d["model_weights_mb"] < 40_000, d["model_weights_mb"]
+    assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
+
+
 def test_wan21_te_is_umt5_xxl_not_generic_default():
     """Without a wan21 entry _get_te_params returned the generic 0.35 —
     UMT5-XXL is ~5.7 B, a 16× underestimate of the caching peak."""

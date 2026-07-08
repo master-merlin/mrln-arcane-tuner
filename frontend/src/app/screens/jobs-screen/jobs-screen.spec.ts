@@ -410,3 +410,104 @@ describe('JobsScreen — restart delegation + typed dialogs (P4d)', () => {
         );
     });
 });
+
+/**
+ * T4 — auto-select the running (or most recently active) job.
+ *
+ * The center detail pane must be useful on load: when nothing is explicitly
+ * selected it auto-selects the running job (else the most recently active job)
+ * so it never shows the empty state while the queue actually has jobs. An
+ * explicit user selection is never overridden; the true empty state survives
+ * only for a genuinely empty queue.
+ */
+describe('JobsScreen auto-select (T4)', () => {
+    it('auto-selects the running job when nothing is explicitly selected', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([
+            makeJob({ id: 'pending-1', status: JobStatus.PENDING }),
+            makeJob({ id: 'running-1', status: JobStatus.RUNNING }),
+        ]);
+        fixture.detectChanges();
+        expect(view.selectedId()).toBe('running-1');
+        expect(view.selectedJob()?.id).toBe('running-1');
+    });
+
+    it('does not override an explicit user selection', () => {
+        const { fixture, view } = setup();
+        view.selectedId.set('pending-1'); // explicit choice made first
+        view.activeJobs.set([
+            makeJob({ id: 'pending-1', status: JobStatus.PENDING }),
+            makeJob({ id: 'running-1', status: JobStatus.RUNNING }),
+        ]);
+        fixture.detectChanges();
+        expect(view.selectedId()).toBe('pending-1');
+    });
+
+    it('falls back to the most recently active job when none is running', () => {
+        const { fixture, view } = setup();
+        view.archivedJobs.set([
+            makeJob({ id: 'old', status: JobStatus.COMPLETED, created_at: 100, finished_at: 100 }),
+            makeJob({ id: 'new', status: JobStatus.COMPLETED, created_at: 200, finished_at: 200 }),
+        ]);
+        fixture.detectChanges();
+        expect(view.selectedId()).toBe('new');
+    });
+
+    it('keeps the empty state ONLY when there are zero jobs', () => {
+        const { fixture, view } = setup();
+        fixture.detectChanges();
+        expect(view.selectedId()).toBeNull();
+        const el = fixture.nativeElement as HTMLElement;
+        expect(el.querySelector('[data-testid="job-detail-empty"]')).toBeTruthy();
+    });
+});
+
+/**
+ * T6 — failed-job affordances.
+ *
+ * On opening a FAILED job the Log section auto-expands (default is collapsed),
+ * and the failure banner exposes a "Copy error" action and a "View full log"
+ * jump. Copy error must not fire until wired to the clipboard.
+ */
+describe('JobsScreen failed-job affordances (T6)', () => {
+    afterEach(() => {
+        delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+    });
+
+    it('auto-expands the Log section when a FAILED job is opened', () => {
+        const { fixture, view, comp } = setup();
+        view.archivedJobs.set([makeJob({ status: JobStatus.FAILED, error: 'boom' })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        expect((comp as unknown as { expanded: () => { log: boolean } }).expanded().log).toBe(true);
+    });
+
+    it('does not auto-expand the Log for a non-failed job', () => {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([makeJob({ status: JobStatus.RUNNING })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        expect((comp as unknown as { expanded: () => { log: boolean } }).expanded().log).toBe(false);
+    });
+
+    it('renders Copy error + View full log affordances in the failure banner', () => {
+        const { fixture, view } = setup();
+        view.archivedJobs.set([makeJob({ status: JobStatus.FAILED, error: 'kaboom' })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        const el = fixture.nativeElement as HTMLElement;
+        expect(el.querySelector('[data-testid="copy-error"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="view-full-log"]')).toBeTruthy();
+    });
+
+    it('copyError copies the failure message to the clipboard', () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+        const { fixture, view, comp } = setup();
+        view.archivedJobs.set([makeJob({ status: JobStatus.FAILED, error: 'kaboom' })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        (comp as unknown as { copyError: () => void }).copyError();
+        expect(writeText).toHaveBeenCalledWith('kaboom');
+    });
+});

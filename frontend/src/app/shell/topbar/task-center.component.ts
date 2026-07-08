@@ -36,16 +36,32 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
     imports: [IcoComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
-        @if (count() > 0 || recent().length > 0) {
             <div class="tc">
                 <button class="tc-pill" type="button" (click)="toggle()"
-                        [class.busy]="count() > 0" title="Background tasks">
+                        data-testid="task-center-trigger"
+                        [class.busy]="count() > 0" [class.idle]="count() === 0"
+                        [attr.aria-label]="count() > 0
+                            ? count() + ' background tasks running'
+                            : 'Activity — background tasks'"
+                        [attr.aria-expanded]="open()" title="Background tasks">
                     <app-ico [name]="count() > 0 ? 'Loader2' : 'Activity'" [size]="14"/>
                     @if (count() > 0) { <span class="tc-count mono">{{ count() }}</span> }
                 </button>
                 @if (open()) {
                     <div class="tc-pop">
-                        <div class="tc-head">Activity</div>
+                        <div class="tc-head">
+                            <span>Activity</span>
+                            @if (recent().length > 0) {
+                                <button class="tc-clear" type="button" (click)="clearRecent()"
+                                        data-testid="task-center-clear"
+                                        aria-label="Clear recent activity">Clear</button>
+                            }
+                        </div>
+                        @if (active().length === 0 && recent().length === 0) {
+                            <div class="tc-empty" data-testid="task-center-empty">
+                                All clear · no recent activity
+                            </div>
+                        }
                         @for (t of active(); track t.id) {
                             @let v = view(t);
                             <div class="tc-row" [style.--accent]="v.accent">
@@ -80,12 +96,15 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
                                     }
                                     @if (t.status === 'cancelled') { <span class="cancelled">· cancelled</span> }
                                 </div>
+                                @if (t.status === 'failed' && t.error) {
+                                    <div class="tc-error" data-testid="task-center-error"
+                                         [title]="t.error">{{ t.error }}</div>
+                                }
                             </div>
                         }
                     </div>
                 }
             </div>
-        }
     `,
     styles: [`
         .tc { position: relative; }
@@ -93,12 +112,23 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
             border: 1px solid var(--color-border-subtle); border-radius: var(--radius-theme-md);
             background: var(--color-surface-mid); color: var(--color-text-secondary); cursor: pointer; }
         .tc-pill.busy { color: var(--color-brand-light); }
+        /* Idle: dimmed but always present — the stable entry point to activity. */
+        .tc-pill.idle { color: var(--color-text-subtle); opacity: 0.65; }
+        .tc-pill.idle:hover { opacity: 1; color: var(--color-text-secondary); }
+        .tc-pill:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
         .tc-count { font-size: 11px; font-weight: 700; }
         .tc-pop { position: absolute; right: 0; top: calc(100% + 6px); width: 320px; z-index: 50;
             background: var(--color-surface-low); border: 1px solid var(--color-border-default);
             border-radius: var(--radius-theme-lg); box-shadow: var(--shadow-lg); padding: 10px; }
-        .tc-head { font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
+        .tc-head { display: flex; align-items: center; justify-content: space-between;
+            font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
             color: var(--color-text-subtle); margin-bottom: 8px; }
+        .tc-clear { background: none; border: none; cursor: pointer; font: inherit;
+            font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+            color: var(--color-text-muted); padding: 2px 4px; border-radius: var(--radius-theme-sm); }
+        .tc-clear:hover { color: var(--color-text-secondary); }
+        .tc-clear:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 1px; }
+        .tc-empty { font-size: 12px; color: var(--color-text-muted); padding: 6px 2px; }
         /* Each row is a 3-tier card — kind / subject / detail — with a left
            accent rail colored per task type (--accent, set inline). Mirrors
            the KPI-tile accent rails. */
@@ -127,6 +157,9 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
         .tc-detail .cancelled { color: var(--color-text-disabled); }
         .tc-cancel { background: none; border: none; color: var(--color-danger); cursor: pointer; font: inherit; }
         .tc-item { font-size: 10px; color: var(--color-text-disabled); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Failed-task error — surfaced so a failure is inspectable in the panel. */
+        .tc-error { font-size: 10.5px; color: var(--color-danger); margin-top: 3px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tc-sep { height: 1px; background: var(--color-border-subtle); margin: 8px 0; }
     `],
 })
@@ -161,6 +194,8 @@ export class TaskCenterComponent {
         return t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     }
     protected cancel(id: string): void { this.store.cancel(id); }
+    /** Dismiss the recent list; leaves active tasks running. */
+    protected clearRecent(): void { this.store.clearRecent(); }
 
     @HostListener('document:mousedown', ['$event'])
     protected onOutsidePointer(event: MouseEvent): void {

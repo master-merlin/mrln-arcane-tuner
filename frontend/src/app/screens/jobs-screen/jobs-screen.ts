@@ -4,10 +4,12 @@ import {
     computed,
     DestroyRef,
     effect,
+    ElementRef,
     HostListener,
     inject,
     signal,
     untracked,
+    viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { UpperCasePipe } from '@angular/common';
@@ -35,6 +37,7 @@ import { JsonEditorComponent } from '../../ui/json-editor/json-editor.component'
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { SparklineComponent } from '../../ui/sparkline/sparkline.component';
 import { SampleVideoPreviewComponent } from './sample-video-preview';
+import { JobLogViewerComponent } from './job-log-viewer';
 import {
     bestLoss,
     bestLossSpark,
@@ -87,6 +90,7 @@ interface ConfigRow {
         KpiTileComponent,
         SparklineComponent,
         SampleVideoPreviewComponent,
+        JobLogViewerComponent,
         UpperCasePipe,
         FormatBytesPipe,
     ],
@@ -177,6 +181,11 @@ export class JobsScreen {
     private readonly _lastSampleCycle = new Map<string, number>();
     /** Last status seen per job, to refresh checkpoints on status transitions. */
     private readonly _lastJobStatus = new Map<string, JobStatus>();
+    /** Job ids whose Log section we've already auto-expanded on FAILED (T6). */
+    private readonly _failedLogExpandedFor = new Set<string>();
+
+    /** Anchor to the Log section for the "View full log" jump (T6). */
+    private readonly logSection = viewChild<ElementRef<HTMLElement>>('logSection');
 
     protected readonly showSamplingControls = computed<boolean>(() => {
         const j = this.selectedJob();
@@ -424,21 +433,39 @@ export class JobsScreen {
         if (!started) this.savingJobConfig.set(false);
     }
 
-    /** Classified, human-readable log tail — live logs, else replayed steps. */
+    /**
+     * How many log lines to retain for the viewer. Far larger than the old
+     * 14-line tail so the T5 viewer has real scrollback; the live WS buffer is
+     * itself capped (~1000), so this is effectively "all we have".
+     */
+    private static readonly LOG_RETAIN = 2000;
+
+    /** Classified, human-readable log lines — live logs, else replayed steps. */
     protected readonly logLines = computed<LogLine[]>(() => {
+        const n = JobsScreen.LOG_RETAIN;
         const j = this.selectedJob();
-        const live = logTail(j?.logs, 14);
+        const live = logTail(j?.logs, n);
         if (live.length) return live;
         // Persisted tail (from disk) — survives a finished job whose live WS
         // buffer is gone, including crashes before the first training step.
         const persisted = (j && this.persistedLogsByJob().get(j.id)) || [];
-        if (persisted.length) return logTail(persisted, 14);
+        if (persisted.length) return logTail(persisted, n);
         const points = (j && this.replayByJob().get(j.id)?.points) || [];
         if (!points.length) return [];
         const synth = points
-            .slice(-14)
+            .slice(-n)
             .map((p) => `step ${p.step} · loss=${p.loss.toFixed(4)}${p.lr ? ` · lr=${p.lr}` : ''}`);
-        return logTail(synth, 14);
+        return logTail(synth, n);
+    });
+
+    /** Filesystem-safe basename for a downloaded log: `<lora>-<id8>`. */
+    protected readonly logDownloadName = computed<string>(() => {
+        const j = this.selectedJob();
+        if (!j) return 'job';
+        const lora = String(j.config?.['lora_name'] ?? j.lora_name ?? j.plugin_id ?? 'job')
+            .replace(/[^\w.-]+/g, '_')
+            .slice(0, 48);
+        return `${lora || 'job'}-${j.id.slice(0, 8)}`;
     });
 
     /** Sample images discovered via the JobService samples endpoint. */
@@ -640,6 +667,54 @@ export class JobsScreen {
                 next: (r) => this.samplingCadence.set(r.interval),
             });
         });
+
+        // T4 — auto-select the running (or most recently active) job so the
+        // detail pane is useful on load. Fires ONLY while no job is explicitly
+        // selected; an explicit user selection is never overridden. The true
+        // empty state survives for a genuinely empty queue (no jobs at all).
+        effect(() => {
+            if (this.viewState.selectedId()) return; // explicit selection wins
+            const active = this.viewState.activeJobs();
+            const archived = this.viewState.archivedJobs();
+            if (!active.length && !archived.length) return; // genuinely empty
+            const candidate = this.pickAutoSelect(active, archived);
+            if (candidate) this.viewState.select(candidate.id);
+        });
+
+        // T6 — a FAILED run's Log section auto-expands on open (default is
+        // collapsed). Guarded per job id so a live log update (which produces a
+        // new job object) can't keep re-expanding a section the user collapsed.
+        effect(() => {
+            const j = this.selectedJob();
+            if (!j) return;
+            const { id, status } = j;
+            untracked(() => {
+                if (status === JobStatus.FAILED && !this._failedLogExpandedFor.has(id)) {
+                    this._failedLogExpandedFor.add(id);
+                    this.expanded.update((s) => ({ ...s, log: true }));
+                }
+            });
+        });
+    }
+
+    /**
+     * Pick the job to auto-select: the running job first, else the most
+     * recently active job (paused/pending), else the most recent archived job.
+     */
+    private pickAutoSelect(active: Job[], archived: Job[]): Job | null {
+        const running = active.find((j) => j.status === JobStatus.RUNNING);
+        if (running) return running;
+        if (active.length) return this.mostRecent(active);
+        if (archived.length) return this.mostRecent(archived);
+        return null;
+    }
+
+    private mostRecent(jobs: Job[]): Job {
+        return jobs.reduce((a, b) => (this.recency(b) > this.recency(a) ? b : a));
+    }
+
+    private recency(j: Job): number {
+        return j.finished_at ?? j.started_at ?? j.created_at ?? 0;
     }
 
     protected toggle(key: SectionKey): void {
@@ -751,11 +826,33 @@ export class JobsScreen {
         });
     }
 
+    /** Expand the Log section and jump to it ("View full log" / header Logs). */
     protected viewLogs(): void {
-        // TODO(frontend): open a dedicated logs modal/viewer.
         const j = this.selectedJob();
         if (!j) return;
         this.expanded.update((s) => ({ ...s, log: true }));
+        // Let the section render (it's behind an @if) before scrolling to it.
+        setTimeout(() => {
+            const el = this.logSection()?.nativeElement;
+            if (!el) return;
+            const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+            el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
+        });
+    }
+
+    /** Copy a FAILED run's error message to the clipboard (T6). */
+    protected copyError(): void {
+        const msg = this.errorMessage();
+        if (!msg) return;
+        const clip = navigator.clipboard;
+        if (clip?.writeText) {
+            clip.writeText(msg).then(
+                () => this.toast.success('Error copied to clipboard'),
+                () => this.toast.error('Copy failed'),
+            );
+        } else {
+            this.toast.error('Clipboard unavailable');
+        }
     }
 
     protected saveCheckpoint(): void {

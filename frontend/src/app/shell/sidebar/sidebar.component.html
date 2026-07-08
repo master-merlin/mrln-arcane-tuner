@@ -112,6 +112,7 @@
     }
 
     <div class="side-foot">
+        @if (showSystem()) {
         <div class="side-system">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <span
@@ -187,6 +188,7 @@
                 </div>
             </div>
         </div>
+        }
         <div class="side-version">v{{ appVersion() }}</div>
     </div>
 </aside>

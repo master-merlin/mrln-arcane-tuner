@@ -111,7 +111,8 @@ export class ResumeJobModalComponent {
     );
 
     mode = signal<ResumeMode>('continue');
-    wipe = signal<boolean>(true);
+    // Data loss is opt-in: the user must explicitly tick "Wipe previous output".
+    wipe = signal<boolean>(false);
     selectedDir = signal<string | null>(
         this.checkpoints()[0]?.checkpoint_dir ?? null,
     );

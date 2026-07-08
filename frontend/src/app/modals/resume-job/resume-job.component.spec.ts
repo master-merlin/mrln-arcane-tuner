@@ -49,9 +49,9 @@ describe('ResumeJobModalComponent', () => {
         expect(comp.selectedDir()).toBe('checkpoint-000500');
     });
 
-    it('defaults the wipe checkbox to on', () => {
+    it('defaults the wipe checkbox to off so data loss is opt-in', () => {
         const { comp } = setup();
-        expect(comp.wipe()).toBe(true);
+        expect(comp.wipe()).toBe(false);
     });
 
     it('confirm in continue mode calls onContinue with the selected dir and closes', () => {

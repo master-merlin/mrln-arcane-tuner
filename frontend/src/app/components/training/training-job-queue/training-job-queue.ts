@@ -780,11 +780,32 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   deleteJob(id: string) {
-    // Optimistic delete via JobStore: the store updates synchronously
-    // (row disappears from store.entities() this tick), the effect above
-    // prunes our local jobs/historicalJobs signals so the template
-    // re-renders immediately. JobStore handles rollback + toast on failure.
-    void this.jobStore.deleteJob(id);
+    // Delete removes the run's output, checkpoints and logs from disk and
+    // cannot be undone — gate it behind the themed confirm modal (mirrors
+    // stopJob / onSaveAsTemplate). The delete only fires from onConfirm.
+    const job = this.jobs().find(j => j.id === id)
+      ?? this.historicalJobs().find(j => j.id === id);
+    const name = (job?.config?.['lora_name'] as string) || id;
+    const active = !!job
+      && (job.status === JobStatus.RUNNING
+        || job.status === JobStatus.PENDING
+        || job.status === JobStatus.PAUSED);
+    const message = active
+      ? `"${name}" is still queued or running. Deleting it stops the run and permanently removes its output, checkpoints and logs from disk. This cannot be undone.`
+      : `"${name}" and its output, checkpoints and logs will be permanently removed from disk. This cannot be undone.`;
+    this.overlay.openModal('confirm', {
+      title: 'Delete this job?',
+      message,
+      confirmLabel: 'Delete',
+      destructive: true,
+      onConfirm: () => {
+        // Optimistic delete via JobStore: the store updates synchronously
+        // (row disappears from store.entities() this tick), the effect above
+        // prunes our local jobs/historicalJobs signals so the template
+        // re-renders immediately. JobStore handles rollback + toast on failure.
+        void this.jobStore.deleteJob(id);
+      },
+    });
   }
 
   /** Case-insensitive match against lora name / model / id for the filter box. */

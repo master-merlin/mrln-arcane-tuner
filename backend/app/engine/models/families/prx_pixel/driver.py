@@ -86,7 +86,8 @@ def x0_to_velocity(
         Velocity tensor, same shape as ``latents``.
     """
     t_x = torch.clamp(
-        timestep.float() / float(num_train_timesteps), min=t_floor,
+        timestep.float() / float(num_train_timesteps),
+        min=t_floor,
     ).to(latents.device)
     while t_x.ndim < latents.ndim:
         t_x = t_x.unsqueeze(-1)

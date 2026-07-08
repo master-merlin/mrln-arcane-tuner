@@ -281,9 +281,9 @@ class PRXPixelSampler(GenericSamplingPipeline):
                 )
 
                 # Scheduler step advances the fp32 trajectory (raw t)
-                latents = scheduler.step(velocity, t, latents, return_dict=False)[
-                    0
-                ].to(torch.float32)
+                latents = scheduler.step(velocity, t, latents, return_dict=False)[0].to(
+                    torch.float32
+                )
 
         return latents
 

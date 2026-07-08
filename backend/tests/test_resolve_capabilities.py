@@ -76,6 +76,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "krea2": True,  # latent_diffusion DiT + Qwen VAE + external stacked Qwen3-VL TE
     "ovis_image": True,  # latent_diffusion MMDiT (Flux VAE) + external Qwen3 TE (no TE training)
     "longcat_image": True,  # latent_diffusion DiT (16ch AutoencoderKL) + Qwen2.5-VL TE
+    "hunyuan_video15": True,  # latent_diffusion video MMDiT (HV15 16x/4x VAE) + dual external TE (Qwen2.5-VL + ByT5)
     "prx": True,  # latent_diffusion DiT (Flux 16ch AutoencoderKL) + T5Gemma TE (no TE training)
     "hidream_o1": False,
 }

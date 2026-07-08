@@ -209,9 +209,9 @@ describe('DatasetWorkspaceComponent.filterCounts (Enabled / Excluded)', () => {
 });
 
 describe('DatasetWorkspaceComponent.bumpMajor', () => {
-    it('confirms, calls bumpVersion(major), stamps version, toasts success', async () => {
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
+    it('opens a destructive "Bump" confirm; bumpVersion(major) fires only from onConfirm', async () => {
         const cmp = bed();
+        const overlay = TestBed.inject(OverlayStore) as any;
         const api = TestBed.inject(DatasetService) as any;
         const datasets = TestBed.inject(DatasetStore) as any;
         const toast = TestBed.inject(ToastService) as any;
@@ -219,24 +219,69 @@ describe('DatasetWorkspaceComponent.bumpMajor', () => {
         api.bumpVersion = vi.fn().mockReturnValue(of({ version: '2.0.0' }));
         datasets.upsertLocal = vi.fn();
 
-        await (cmp as any).bumpMajor();
+        (cmp as any).bumpMajor();
 
-        expect(window.confirm).toHaveBeenCalled();
+        // A themed destructive confirm opens; nothing is bumped yet.
+        expect(overlay.openModal).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true, confirmLabel: 'Bump' }),
+        );
+        expect(api.bumpVersion).not.toHaveBeenCalled();
+
+        // The bump only fires from the modal's confirm callback.
+        const [, data] = vi.mocked(overlay.openModal).mock.lastCall!;
+        await data.onConfirm();
+
         expect(api.bumpVersion).toHaveBeenCalledWith('alpha', 'major');
         expect(datasets.upsertLocal).toHaveBeenCalledWith(expect.objectContaining({ name: 'alpha', version: '2.0.0' }));
         expect(toast.success).toHaveBeenCalled();
     });
+});
 
-    it('does NOT call bumpVersion when confirm returns false', async () => {
-        vi.spyOn(window, 'confirm').mockReturnValue(false);
+describe('DatasetWorkspaceComponent.onDeletePairRequested', () => {
+    it('opens a destructive confirm; deletePair fires only from onConfirm', async () => {
         const cmp = bed();
-        const api = TestBed.inject(DatasetService) as any;
+        const overlay = TestBed.inject(OverlayStore) as any;
+        const mediaItems = TestBed.inject(MediaItemStore) as any;
+        mediaItems.deletePair = vi.fn().mockReturnValue(Promise.resolve({ ok: true }));
 
-        api.bumpVersion = vi.fn().mockReturnValue(of({ version: '2.0.0' }));
+        (cmp as any).onDeletePairRequested({ media_file: 'a.jpg', metadata: {} });
 
-        await (cmp as any).bumpMajor();
+        expect(overlay.openModal).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true }),
+        );
+        expect(mediaItems.deletePair).not.toHaveBeenCalled();
 
-        expect(api.bumpVersion).not.toHaveBeenCalled();
+        const [, data] = vi.mocked(overlay.openModal).mock.lastCall!;
+        data.onConfirm();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mediaItems.deletePair).toHaveBeenCalledWith('alpha', 'a.jpg');
+    });
+});
+
+describe('DatasetWorkspaceComponent.onDeleteMaskRequested', () => {
+    it('opens a destructive confirm; deleteMask fires only from onConfirm', async () => {
+        const cmp = bed();
+        const overlay = TestBed.inject(OverlayStore) as any;
+        const mediaItems = TestBed.inject(MediaItemStore) as any;
+        mediaItems.deleteMask = vi.fn().mockReturnValue(Promise.resolve({ ok: true }));
+
+        (cmp as any).onDeleteMaskRequested({ media_file: 'a.jpg', metadata: { has_mask: true } });
+
+        expect(overlay.openModal).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true }),
+        );
+        expect(mediaItems.deleteMask).not.toHaveBeenCalled();
+
+        const [, data] = vi.mocked(overlay.openModal).mock.lastCall!;
+        data.onConfirm();
+        await Promise.resolve();
+
+        expect(mediaItems.deleteMask).toHaveBeenCalledWith('alpha', 'a.jpg');
     });
 });
 

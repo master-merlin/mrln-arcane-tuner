@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, computed, inject, signal } from '@angular/core';
 import { OverlayStore } from '../../state/overlay.store';
 
 /**
@@ -36,7 +36,14 @@ export interface ConfirmModalData {
     confirmLabel?: string;
     /** When true the confirm button uses the destructive (danger-out) style. */
     destructive?: boolean;
-    onConfirm?: () => void;
+    /** When set, renders an optional checkbox in the body; its checked state
+     *  is passed to `onConfirm`. Lets one dialog carry a secondary choice
+     *  (e.g. "also delete files on disk") instead of a chained double-confirm. */
+    checkboxLabel?: string;
+    /** Initial state of the optional checkbox (default false). */
+    checkboxInitial?: boolean;
+    /** Receives the optional checkbox state (false/undefined when no checkbox). */
+    onConfirm?: (checked?: boolean) => void;
     onCancel?: () => void;
 }
 
@@ -51,6 +58,13 @@ export interface ConfirmModalData {
         </div>
         <div class="modal-body">
             <p class="cf-message">{{ data().message }}</p>
+            @if (data().checkboxLabel; as cbLabel) {
+                <label class="cf-check">
+                    <input type="checkbox" [checked]="checked()"
+                           (change)="checked.set($any($event.target).checked)"/>
+                    <span>{{ cbLabel }}</span>
+                </label>
+            }
         </div>
         <div class="modal-foot">
             <button class="btn ghost" type="button" (click)="cancel()">
@@ -73,6 +87,16 @@ export interface ConfirmModalData {
             line-height: 1.6;
             margin: 0;
         }
+        .cf-check {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 14px;
+            font-size: 13px;
+            color: var(--color-text-primary);
+            cursor: pointer;
+        }
+        .cf-check input { cursor: pointer; }
     `],
 })
 export class ConfirmModalComponent implements OnDestroy {
@@ -89,9 +113,12 @@ export class ConfirmModalComponent implements OnDestroy {
         () => (this.overlay.topModal()?.data ?? {}) as ConfirmModalData,
     );
 
+    /** Optional-checkbox state, seeded from `checkboxInitial`. */
+    protected checked = signal<boolean>(this.entryData?.checkboxInitial ?? false);
+
     protected confirm(): void {
         this.resolved = true;
-        this.data().onConfirm?.();
+        this.data().onConfirm?.(this.checked());
         this.overlay.closeModal();
     }
 

@@ -62,6 +62,32 @@ describe('ConfirmModalComponent', () => {
         expect(onConfirm).not.toHaveBeenCalled();
     });
 
+    it('renders a checkbox when checkboxLabel is set and passes its state to onConfirm', () => {
+        const { fixture, onConfirm } = setup({
+            checkboxLabel: 'Also delete files on disk',
+            confirmLabel: 'Delete',
+            destructive: true,
+        });
+        const cb = (fixture.nativeElement as HTMLElement)
+            .querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+        expect(cb).not.toBeNull();
+
+        cb!.click();                 // tick the box
+        fixture.detectChanges();
+        const buttons = (fixture.nativeElement as HTMLElement).querySelectorAll('.modal-foot button');
+        (buttons[1] as HTMLButtonElement).click();
+        fixture.destroy();
+        expect(onConfirm).toHaveBeenCalledWith(true);
+    });
+
+    it('passes false to onConfirm when a checkbox is present but left unticked', () => {
+        const { fixture, onConfirm } = setup({ checkboxLabel: 'Also delete files on disk' });
+        const buttons = (fixture.nativeElement as HTMLElement).querySelectorAll('.modal-foot button');
+        (buttons[1] as HTMLButtonElement).click();
+        fixture.destroy();
+        expect(onConfirm).toHaveBeenCalledWith(false);
+    });
+
     it('being occluded by a child modal (entry still stacked) is NOT a dismissal', () => {
         const { fixture, onConfirm, onCancel } = setup();
         // A modal pushed on top destroys the confirm component (modal-layer

@@ -3,6 +3,7 @@ import { DecimalPipe } from '@angular/common';
 import { DatasetMaskingSettingsComponent, MaskingSettingsState } from '../../dataset-masking-settings/dataset-masking-settings';
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { ToastService } from '../../../../services/toast';
+import { OverlayStore } from '../../../../state/overlay.store';
 
 @Component({
     selector: 'app-detail-masking-sidebar',
@@ -138,6 +139,7 @@ import { ToastService } from '../../../../services/toast';
 export class DetailMaskingSidebarComponent {
     private datasetService = inject(DatasetService);
     private toast = inject(ToastService);
+    private overlay = inject(OverlayStore);
 
     currentPair = input.required<DatasetPair>();
     datasetName = input.required<string>();
@@ -207,16 +209,22 @@ export class DetailMaskingSidebarComponent {
         const pair = this.currentPair();
         if (!pair?.metadata?.has_mask) return;
 
-        if (!confirm('Are you sure you want to delete this mask?')) return;
-
-        this.datasetService.deleteMask(this.datasetName(), pair.media_file).subscribe({
-            next: () => {
-                this.maskGenerated.emit(); // Parent should reload pairs
+        this.overlay.openModal('confirm', {
+            title: 'Delete this mask?',
+            message: 'The mask for this image will be permanently deleted.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.datasetService.deleteMask(this.datasetName(), pair.media_file).subscribe({
+                    next: () => {
+                        this.maskGenerated.emit(); // Parent should reload pairs
+                    },
+                    error: (err: unknown) => {
+                        const e = err as { error?: { detail?: string }; message?: string };
+                        this.toast.error('Delete failed: ' + (e.error?.detail || e.message));
+                    }
+                });
             },
-            error: (err: unknown) => {
-                const e = err as { error?: { detail?: string }; message?: string };
-                this.toast.error('Delete failed: ' + (e.error?.detail || e.message));
-            }
         });
     }
 

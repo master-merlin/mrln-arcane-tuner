@@ -458,18 +458,60 @@ export class MassCaptionModalComponent implements OnInit {
         return t && t.total > 0 ? Math.round((t.current / t.total) * 100) : 0;
     });
 
-    protected ctaLabel = computed(() => this.tab() === 'refine'
-        ? 'Refine Captions'
-        : (this.target() === 'masked' ? 'Caption Masked Images' : 'Execute Mass Captioning'));
+    /** Reactive candidate list for the Generate tab — the single source of
+     *  truth for both `startGenerate()` and the count-on-CTA label. Mirrors the
+     *  target/strategy/model-aware branching the launcher used to compute inline
+     *  inside the click handler. */
+    protected generateCandidates = computed<DatasetPair[]>(() => {
+        const all = this.pairs();
+        const target = this.target();
+        const mode = this.strategy();
+        const defId = this.modelContext.activeDefinitionId();
+        const vmap = this.variantMap();
+        return target === 'masked'
+            ? (mode === 'keep'
+                ? all.filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
+                : all.filter(p => p.metadata?.has_mask))
+            : (mode === 'keep'
+                ? (defId
+                    ? all.filter(p => !vmap[this.stemOf(p.media_file)]?.trim())
+                    : all.filter(p => !p.caption_content?.trim()))
+                : [...all]);
+    });
+    protected generateCount = computed(() => this.generateCandidates().length);
+
+    /** Synchronous refine candidates (captioned images matching the target).
+     *  The 'skip pending' strategy narrows this further via an async
+     *  suggestion-list fetch at launch time, so this is the CTA's upper-bound
+     *  count — the same base list the old confirm message counted. */
+    protected refineCandidates = computed<DatasetPair[]>(() =>
+        this.refineTarget() === 'masked'
+            ? this.pairs().filter(p => p.metadata?.has_masked_caption)
+            : this.pairs().filter(p => p.caption_content?.trim()));
+    protected refineCount = computed(() => this.refineCandidates().length);
+
+    /** Count shown on the primary CTA for the active tab. */
+    protected ctaCount = computed(() => this.tab() === 'refine' ? this.refineCount() : this.generateCount());
+
+    protected ctaLabel = computed(() => {
+        const n = this.ctaCount();
+        if (this.tab() === 'refine') {
+            return n === 0 ? 'No captions to refine' : `Refine ${n} caption${n === 1 ? '' : 's'}`;
+        }
+        if (this.target() === 'masked') {
+            return n === 0 ? 'No masked images to caption' : `Caption ${n} masked image${n === 1 ? '' : 's'}`;
+        }
+        return n === 0 ? 'No images to caption' : `Caption ${n} image${n === 1 ? '' : 's'}`;
+    });
     /** Mirrors `currentSettings` as a signal so `canStart` (a computed) reacts
      *  when the embedded caption-settings child emits its first state. */
     protected settingsReady = signal<boolean>(false);
     /** Mirrors `currentSettings.apiConfigured === false` as a signal — when the
      *  selected api-* provider has no usable key, the CTA stays disabled. */
     protected apiBlocked = signal<boolean>(false);
-    protected canStart = computed(() => this.tab() === 'refine'
+    protected canStart = computed(() => this.ctaCount() > 0 && (this.tab() === 'refine'
         ? !!this.refineSettings()
-        : (this.settingsReady() && !this.apiBlocked()));
+        : (this.settingsReady() && !this.apiBlocked())));
 
     /** Variant caption map (stem → text) for the active definition, fetched
      *  whenever model-aware mode is on. Empty when not model-aware. */
@@ -572,23 +614,12 @@ export class MassCaptionModalComponent implements OnInit {
     private startGenerate(): void {
         const name = this.data.datasetName;
         if (!name || !this.currentSettings || this.currentSettings.apiConfigured === false) return;
-        const all = this.pairs();
         const target = this.target();
-        const mode = this.strategy();
 
         const defId = this.modelContext.activeDefinitionId();
-        const vmap  = this.variantMap();
-        const candidates = target === 'masked'
-            ? (mode === 'keep'
-                ? all.filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
-                : all.filter(p => p.metadata?.has_mask))
-            : (mode === 'keep'
-                ? (defId
-                    // Model-aware: keep images missing the per-definition variant
-                    ? all.filter(p => !vmap[this.stemOf(p.media_file)]?.trim())
-                    // Generic: keep images missing the generic caption
-                    : all.filter(p => !p.caption_content?.trim()))
-                : [...all]);
+        // Candidate count is reactive (see `generateCandidates`) and gates the
+        // CTA — clicking an enabled button starts directly, no confirm().
+        const candidates = this.generateCandidates();
 
         if (candidates.length === 0) {
             this.toast.info(target === 'masked'
@@ -596,7 +627,6 @@ export class MassCaptionModalComponent implements OnInit {
                 : 'No images need captioning.');
             return;
         }
-        if (!confirm(`Start captioning ${candidates.length} ${target} images?`)) return;
 
         const isStructured = this.modelContext.activeCaptionFormat() !== 'plain';
         const captionInstructions = this.currentSettings.captionInstructions ?? '';
@@ -627,9 +657,7 @@ export class MassCaptionModalComponent implements OnInit {
         const settings = this.refineSettings();
         if (!name || !settings) return;
         const masked = this.refineTarget() === 'masked';
-        let cands = masked
-            ? this.pairs().filter(p => p.metadata?.has_masked_caption)
-            : this.pairs().filter(p => p.caption_content?.trim());
+        let cands = this.refineCandidates();
         if (this.refineStrategy() === 'skip') {
             try {
                 const r = await firstValueFrom(this.datasetsApi.listCaptionSuggestions(name, settings.definitionId, masked));
@@ -640,7 +668,7 @@ export class MassCaptionModalComponent implements OnInit {
             }
         }
         if (cands.length === 0) { this.toast.info('No images need refinement.'); return; }
-        if (!confirm(`Refine ${cands.length} ${masked ? 'masked' : 'original'} captions with ${settings.model}?`)) return;
+        // Count-on-CTA gates the button; clicking starts directly (no confirm()).
         this._finalized = false;
         this.launch(
             this.datasetsApi.refineCaptions(name, cands.map(p => p.media_file), settings.definitionId, settings.preset, settings.model, this.refineTarget(), settings.style, this.autoAccept()),

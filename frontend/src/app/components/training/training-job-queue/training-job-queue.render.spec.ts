@@ -22,6 +22,7 @@ import { ResumeJobService } from '../../../services/resume-job.service';
  */
 
 const ARCHIVED_ID = 'archived-job-1';
+const RUNNING_ID = 'running-job-1';
 
 function makeJob(id: string, status: JobStatus = JobStatus.STOPPED): Job {
     return { id, plugin_id: 'p', config: { lora_name: 'x' }, status, created_at: 0 };
@@ -134,5 +135,19 @@ describe('TrainingJobQueueComponent — rendered DOM', () => {
         const el = fixture.nativeElement as HTMLElement;
         expect(el.querySelector(`[data-testid="resume-job-${ARCHIVED_ID}"]`)).toBeNull();
         expect(el.querySelector(`[data-testid="restart-job-${ARCHIVED_ID}"]`)).not.toBeNull();
+    });
+
+    it('labels the running-job soft-stop control so the stop is explicit, not a bare "checkpoint"', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        fixture.componentInstance.jobs.set([makeJob(RUNNING_ID, JobStatus.RUNNING)]);
+        fixture.detectChanges();
+
+        const el = fixture.nativeElement as HTMLElement;
+        const btn = el.querySelector<HTMLButtonElement>(`[data-testid="soft-stop-${RUNNING_ID}"]`);
+        expect(btn).not.toBeNull();
+        // The control soft-stops the run (saves a checkpoint, then ends it) —
+        // the label must make the stop explicit rather than implying a snapshot.
+        expect(btn!.title.toLowerCase()).toContain('stop');
     });
 });

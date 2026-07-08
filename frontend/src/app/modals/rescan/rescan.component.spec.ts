@@ -109,12 +109,12 @@ describe('RescanModalComponent — launcher contract', () => {
         expect(comp.pct()).toBe(30);
     });
 
-    it('on completion: reconciles, prunes missing (library), and auto-closes', async () => {
-        vi.spyOn(window, 'confirm').mockReturnValue(true);
+    it('on completion: reconciles, prompts a destructive confirm, prunes on confirm (library), and auto-closes', async () => {
         const taskSignal = signal<any>(undefined);
         taskStoreSpy.byId.mockReturnValue(taskSignal);
         const overlay = TestBed.inject(OverlayStore);
         overlay.openModal('rescan'); // library
+        const openSpy = vi.spyOn(overlay, 'openModal');
         const closeSpy = vi.spyOn(overlay, 'closeModal');
         const fixture = TestBed.createComponent(RescanModalComponent);
         const comp = fixture.componentInstance as any;
@@ -122,8 +122,14 @@ describe('RescanModalComponent — launcher contract', () => {
         comp.start();
         taskSignal.set({ id: 't1', status: 'completed', total: 4, current: 4 });
         fixture.detectChanges(); // flush completion effect
-        await settle(); // loadAll().then(...) → deleteDataset microtask chain
+        await settle(); // loadAll().then(...) → openModal('confirm') microtask chain
         expect(datasets.loadAll).toHaveBeenCalled();
+        // Prune is gated behind a themed destructive confirm — nothing deleted yet.
+        expect(openSpy).toHaveBeenCalledWith('confirm', expect.objectContaining({ destructive: true }));
+        expect(datasets.deleteDataset).not.toHaveBeenCalled();
+        // Pruning only happens from the confirm callback.
+        const confirmCall = openSpy.mock.calls.find(c => c[0] === 'confirm')!;
+        (confirmCall[1] as { onConfirm: () => void }).onConfirm();
         expect(datasets.deleteDataset).toHaveBeenCalledWith('b', false);
         expect(closeSpy).toHaveBeenCalled();
     });

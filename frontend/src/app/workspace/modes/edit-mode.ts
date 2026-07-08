@@ -113,18 +113,31 @@ export class EditMode {
             }
 
             if (this.state.dirty()) {
-                if (!confirm('Discard unsaved adjustments?')) {
-                    pendingIdentity = lastIdentity;
-                    queueMicrotask(() => {
-                        const prev = pendingIdentity.split('/').pop();
-                        if (prev) {
-                            const list = this.pairs();
-                            const idx = list.findIndex(x => x?.media_file === prev);
-                            if (idx >= 0) this.overlay.setWorkspaceImage(idx);
-                        }
-                    });
-                    return;
-                }
+                // Gate the discard behind the themed confirm modal. Confirm =
+                // hydrate the newly-selected image; cancel = snap the workspace
+                // back to the previous image (leaving its unsaved edits intact).
+                this.overlay.openModal('confirm', {
+                    title: 'Discard unsaved adjustments?',
+                    message: 'Switching images will discard the adjustments you haven\'t saved on the current image.',
+                    confirmLabel: 'Discard',
+                    destructive: true,
+                    onConfirm: () => {
+                        lastIdentity = id;
+                        void this.state.hydrate(this.datasetName(), p.media_file, !!p?.metadata?.has_overlay);
+                    },
+                    onCancel: () => {
+                        pendingIdentity = lastIdentity;
+                        queueMicrotask(() => {
+                            const prev = pendingIdentity.split('/').pop();
+                            if (prev) {
+                                const list = this.pairs();
+                                const idx = list.findIndex(x => x?.media_file === prev);
+                                if (idx >= 0) this.overlay.setWorkspaceImage(idx);
+                            }
+                        });
+                    },
+                });
+                return;
             }
 
             lastIdentity = id;

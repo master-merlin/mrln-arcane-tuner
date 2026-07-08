@@ -113,6 +113,27 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         expect(component.historicalJobs().map(j => j.id).sort()).toEqual(['archived-1', 'archived-2']);
     });
 
+    it('deleteJob() deletes only from the confirm modal onConfirm callback, not immediately', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+        const store = TestBed.inject(JobStore);
+        const del = vi.spyOn(store, 'deleteJob').mockResolvedValue(undefined);
+
+        component.deleteJob('archived-1');
+
+        // A themed destructive confirm opens; nothing is deleted yet.
+        expect(overlay.openModal).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true }),
+        );
+        expect(del).not.toHaveBeenCalled();
+
+        // The delete only fires from the modal's confirm callback.
+        const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+        expect(del).toHaveBeenCalledWith('archived-1');
+    });
+
     it('toggleAutoResume() flips the signal and persists server-side', () => {
         const component = TestBed.inject(TrainingJobQueueComponent);
         expect(component.autoResume()).toBe(true);  // on by default

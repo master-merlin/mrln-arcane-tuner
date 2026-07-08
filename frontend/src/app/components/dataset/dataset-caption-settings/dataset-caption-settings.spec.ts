@@ -8,6 +8,7 @@ import { ProjectService } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
 import { ApiCaptionService } from '../../../services/api-caption.service';
 import { ModelContextStore } from '../../../state/model-context.store';
+import { OverlayStore } from '../../../state/overlay.store';
 
 function makeTemplate(modelId: string, id = `tpl-${modelId}`) {
     return {
@@ -53,6 +54,7 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
                     updateProvider: vi.fn().mockReturnValue(of({})),
                     listModels: vi.fn().mockReturnValue(of([])),
                 } },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
         });
     });
@@ -245,6 +247,7 @@ describe('DatasetCaptionSettings — Additional instructions (structured caption
                     listModels: vi.fn().mockReturnValue(of([])),
                 } },
                 { provide: ModelContextStore, useValue: mockModelContext },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
         });
         const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
@@ -326,6 +329,7 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
                 },
                 { provide: TemplateService, useValue: svc },
                 { provide: ApiCaptionService, useValue: { listProviders: () => of([]) } },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
         });
         const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
@@ -436,5 +440,62 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
         expect(svc.createCaptioningTemplate).not.toHaveBeenCalled();
         expect(svc.updateTemplate).toHaveBeenCalledWith('captioning', 'mine',
             expect.objectContaining({ config: expect.objectContaining({ temperature: 0.7 }) }));
+    });
+});
+
+/**
+ * deleteTemplate() migrated off the native window.confirm() to the themed
+ * Confirm modal (OverlayStore). The destructive delete must only fire from
+ * the modal's onConfirm callback — never synchronously on the click.
+ */
+describe('DatasetCaptionSettings — delete template via confirm modal', () => {
+    function build() {
+        const svc = {
+            listCaptioningTemplates: vi.fn().mockReturnValue(of([
+                tplOf({ id: 'mine', name: 'Mine' }),
+                tplOf({ id: 'other', name: 'Other' }),
+            ])),
+            createCaptioningTemplate: vi.fn(),
+            updateTemplate: vi.fn(),
+            deleteTemplate: vi.fn().mockReturnValue(of({ status: 'ok' })),
+        };
+        const overlay = { openModal: vi.fn() };
+        TestBed.configureTestingModule({
+            providers: [
+                { provide: DatasetService, useValue: { unloadModels: () => of(null) } },
+                {
+                    provide: ProjectService, useValue: {
+                        activeDatasetProject: () => 'p1',
+                        getPreferences: vi.fn().mockReturnValue(of({ active_caption_template: 'mine' })),
+                        updatePreferences: vi.fn().mockReturnValue(of({})),
+                    },
+                },
+                { provide: TemplateService, useValue: svc },
+                { provide: ApiCaptionService, useValue: { listProviders: () => of([]) } },
+                { provide: OverlayStore, useValue: overlay },
+            ],
+        });
+        const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
+        fixture.detectChanges();
+        return { c: fixture.componentInstance as any, svc, overlay };
+    }
+
+    it('opens a destructive confirm; deleteTemplate fires only from onConfirm', () => {
+        const { c, svc, overlay } = build();
+        expect(c.activeTemplateId()).toBe('mine');
+
+        c.deleteTemplate();
+
+        // A themed destructive confirm opens; nothing is deleted yet.
+        expect(overlay.openModal).toHaveBeenCalledWith(
+            'confirm',
+            expect.objectContaining({ destructive: true }),
+        );
+        expect(svc.deleteTemplate).not.toHaveBeenCalled();
+
+        // The delete only fires from the modal's confirm callback.
+        const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+        expect(svc.deleteTemplate).toHaveBeenCalledWith('captioning', 'mine');
     });
 });

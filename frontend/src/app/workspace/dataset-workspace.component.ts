@@ -605,34 +605,41 @@ export class DatasetWorkspaceComponent {
     protected onDeletePairRequested(pair: DatasetPair): void {
         const d = this.dataset();
         if (!d || !pair?.media_file) return;
-        if (!confirm('Delete this entry?')) return;
         const mediaFile: string = pair.media_file;
 
-        // Snapshot caption + cursor before the optimistic apply.
-        const w = this.ws();
-        const prevIdx = w?.imageIndex ?? 0;
-        // Non-reactive snapshot for optimistic-rollback restore.
-        const prevRow = this.captions.get(d.name).get(mediaFile);
+        this.overlay.openModal('confirm', {
+            title: 'Delete this entry?',
+            message: 'This image and its caption are permanently removed from the dataset. This cannot be undone.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                // Snapshot caption + cursor before the optimistic apply.
+                const w = this.ws();
+                const prevIdx = w?.imageIndex ?? 0;
+                // Non-reactive snapshot for optimistic-rollback restore.
+                const prevRow = this.captions.get(d.name).get(mediaFile);
 
-        // Drop the caption row locally; MediaItemStore.deletePair will
-        // remove the metadata row optimistically and roll back on error.
-        this.captions.remove(d.name, mediaFile);
+                // Drop the caption row locally; MediaItemStore.deletePair will
+                // remove the metadata row optimistically and roll back on error.
+                this.captions.remove(d.name, mediaFile);
 
-        void this.mediaItems.deletePair(d.name, mediaFile).then(result => {
-            if (result.ok) {
-                // After-removal: clamp cursor / close if empty.
-                const remaining = this.mediaItems.byDataset(d.name)().length;
-                if (remaining === 0) {
-                    this.overlay.closeWorkspace();
-                } else if (w && w.imageIndex >= remaining) {
-                    this.overlay.setWorkspaceImage(remaining - 1);
-                }
-                this.toast.success('Entry deleted.');
-            } else {
-                // Restore caption row + cursor; store rolled itself back.
-                if (prevRow) this.captions.setRow(d.name, mediaFile, prevRow);
-                if (w) this.overlay.setWorkspaceImage(prevIdx);
-            }
+                void this.mediaItems.deletePair(d.name, mediaFile).then(result => {
+                    if (result.ok) {
+                        // After-removal: clamp cursor / close if empty.
+                        const remaining = this.mediaItems.byDataset(d.name)().length;
+                        if (remaining === 0) {
+                            this.overlay.closeWorkspace();
+                        } else if (w && w.imageIndex >= remaining) {
+                            this.overlay.setWorkspaceImage(remaining - 1);
+                        }
+                        this.toast.success('Entry deleted.');
+                    } else {
+                        // Restore caption row + cursor; store rolled itself back.
+                        if (prevRow) this.captions.setRow(d.name, mediaFile, prevRow);
+                        if (w) this.overlay.setWorkspaceImage(prevIdx);
+                    }
+                });
+            },
         });
     }
 
@@ -640,12 +647,19 @@ export class DatasetWorkspaceComponent {
     protected onDeleteMaskRequested(pair: DatasetPair): void {
         const d = this.dataset();
         if (!d || !pair?.metadata?.has_mask) return;
-        if (!confirm('Delete the mask for this image?')) return;
-        void this.mediaItems
-            .deleteMask(d.name, pair.media_file)
-            .then(result => {
-                if (result.ok) this.toast.success('Mask deleted.');
-            });
+        this.overlay.openModal('confirm', {
+            title: 'Delete the mask for this image?',
+            message: 'The mask for this image will be permanently deleted.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                void this.mediaItems
+                    .deleteMask(d.name, pair.media_file)
+                    .then(result => {
+                        if (result.ok) this.toast.success('Mask deleted.');
+                    });
+            },
+        });
     }
 
     /**
@@ -702,20 +716,27 @@ export class DatasetWorkspaceComponent {
      * two bumps. Mirrors {@link ../components/dataset/dataset-viewer/dataset-viewer.ts}
      * ``manualBump`` which likewise leaves the flag untouched.
      */
-    protected async bumpMajor(): Promise<void> {
+    protected bumpMajor(): void {
         const d = this.dataset();
         if (!d) return;
-        if (!confirm(`Bump "${d.name}" to the next MAJOR version?`)) return;
-        try {
-            const res = await firstValueFrom(
-                this.datasetsApi.bumpVersion(d.name, 'major'),
-            );
-            const newVersion = res.version;
-            this.datasets.upsertLocal({ ...d, version: newVersion });
-            this.toast.success(`Version bumped to ${newVersion}`);
-        } catch (err: unknown) {
-            this.toast.error(this.errMsg(err, 'Failed to bump version'));
-        }
+        this.overlay.openModal('confirm', {
+            title: `Bump "${d.name}" to the next MAJOR version?`,
+            message: 'A MAJOR bump is a deliberate escalation beyond the automatic patch bumps for ordinary edits.',
+            confirmLabel: 'Bump',
+            destructive: true,
+            onConfirm: async () => {
+                try {
+                    const res = await firstValueFrom(
+                        this.datasetsApi.bumpVersion(d.name, 'major'),
+                    );
+                    const newVersion = res.version;
+                    this.datasets.upsertLocal({ ...d, version: newVersion });
+                    this.toast.success(`Version bumped to ${newVersion}`);
+                } catch (err: unknown) {
+                    this.toast.error(this.errMsg(err, 'Failed to bump version'));
+                }
+            },
+        });
     }
 
     /**

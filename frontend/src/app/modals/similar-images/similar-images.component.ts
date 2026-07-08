@@ -265,19 +265,27 @@ export class SimilarImagesModalComponent implements OnInit {
     }
 
     protected deleteOne(it: SimilarItem): void {
-        if (!this.data.datasetName) return;
-        if (!confirm(`Delete ${it.path}? This permanently removes the image, caption, and any masks.`)) return;
-        this.deleting.set(it.path);
-        this.datasetsApi.deletePair(this.data.datasetName, it.path).subscribe({
-            next: () => {
-                this.toast.success(`Deleted ${it.path}`);
-                this.deleting.set(null);
-                this.overlay.closeModal();
-            },
-            error: (err: unknown) => {
-                const e = err as { error?: { detail?: string }; message?: string };
-                this.toast.error(`Delete failed: ${e.error?.detail || e.message}`);
-                this.deleting.set(null);
+        const name = this.data.datasetName;
+        if (!name) return;
+        this.overlay.openModal('confirm', {
+            title: 'Delete this image?',
+            message: `${it.path} will be permanently removed, along with its caption and any masks. This cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.deleting.set(it.path);
+                this.datasetsApi.deletePair(name, it.path).subscribe({
+                    next: () => {
+                        this.toast.success(`Deleted ${it.path}`);
+                        this.deleting.set(null);
+                        this.overlay.closeModal();
+                    },
+                    error: (err: unknown) => {
+                        const e = err as { error?: { detail?: string }; message?: string };
+                        this.toast.error(`Delete failed: ${e.error?.detail || e.message}`);
+                        this.deleting.set(null);
+                    },
+                });
             },
         });
     }

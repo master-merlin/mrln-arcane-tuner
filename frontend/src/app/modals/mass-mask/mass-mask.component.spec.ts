@@ -81,6 +81,9 @@ describe('MassMaskModalComponent — launcher contract', () => {
 
     it('canStart() flips true when the settings child emits, without a tab switch', () => {
         const { comp } = make();
+        // Count-on-CTA also gates on candidates: seed one un-masked image so the
+        // Generate count is > 0 and settings-readiness is the deciding factor.
+        comp.pairs.set([makePair('a.png')]);
         expect(comp.tab()).toBe('generate');
         expect(comp.canStart()).toBe(false); // no settings yet
         comp.onMaskingSettingsChange({ modelId: 'rembg', params: {} });
@@ -212,6 +215,151 @@ describe('MassMaskModalComponent — launcher contract', () => {
         fixture.detectChanges();
         expect(comp.running()).toBe(false);
         expect(comp.taskId()).toBe(null);
+    });
+});
+
+// ─── Count-on-CTA (M4) ────────────────────────────────────────────────────────
+
+describe('MassMaskModalComponent — count-on-CTA (M4)', () => {
+    let api: any;
+    let taskStoreSpy: { byId: Mock; active: ReturnType<typeof signal>; cancel: Mock };
+    let fixture: ReturnType<typeof TestBed.createComponent<MassMaskModalComponent>> | null = null;
+
+    beforeEach(() => {
+        fixture = null;
+        api = {
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchGenerateMasks: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            batchApplyMasks: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+        };
+        taskStoreSpy = { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() };
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                OverlayStore,
+                { provide: DatasetService, useValue: api },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                { provide: TaskStore, useValue: taskStoreSpy },
+            ],
+        });
+        TestBed.inject(OverlayStore).openModal('mass-mask', { datasetName: 'ds1' });
+    });
+
+    afterEach(() => { fixture?.destroy(); fixture = null; });
+
+    function make() {
+        fixture = TestBed.createComponent(MassMaskModalComponent);
+        const comp = fixture.componentInstance as any;
+        return { fixture, comp };
+    }
+
+    it('generate: count reflects un-masked images (keep) and label shows it', () => {
+        const { comp } = make();
+        comp.tab.set('generate');
+        comp.strategy.set('keep');
+        comp.pairs.set([
+            makePair('a.png', { has_mask: true }),
+            makePair('b.png', { has_mask: false }),
+            makePair('c.png', { has_mask: false }),
+        ]);
+        expect(comp.generateCount()).toBe(2);
+        expect(comp.ctaCount()).toBe(2);
+        expect(comp.ctaLabel()).toBe('Mask 2 images');
+    });
+
+    it('generate: count 0 → "No images to mask" and canStart false even with settings', () => {
+        const { comp } = make();
+        comp.tab.set('generate');
+        comp.strategy.set('keep');
+        comp.maskingSettings.set({ modelId: 'rembg', params: {} });
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        expect(comp.generateCount()).toBe(0);
+        expect(comp.ctaLabel()).toBe('No images to mask');
+        expect(comp.canStart()).toBe(false);
+    });
+
+    it('apply: count mirrors maskedCount and label reads "Apply to N images"', () => {
+        const { comp } = make();
+        comp.tab.set('apply');
+        comp.pairs.set([
+            makePair('a.png', { has_mask: true }),
+            makePair('b.png', { has_mask: true }),
+            makePair('c.png', { has_mask: false }),
+        ]);
+        expect(comp.ctaCount()).toBe(2);
+        expect(comp.ctaLabel()).toBe('Apply to 2 images');
+        expect(comp.canStart()).toBe(true);
+    });
+
+    it('apply: count 0 → "No images to apply" and canStart false', () => {
+        const { comp } = make();
+        comp.tab.set('apply');
+        comp.pairs.set([makePair('a.png', { has_mask: false })]);
+        expect(comp.ctaCount()).toBe(0);
+        expect(comp.ctaLabel()).toBe('No images to apply');
+        expect(comp.canStart()).toBe(false);
+    });
+
+    it('caption: count reflects masked-but-uncaptioned (keep) and label + gate', () => {
+        const { comp } = make();
+        comp.tab.set('caption');
+        comp.captionStrategy.set('keep');
+        comp.captionSettings.set({ resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' });
+        comp.pairs.set([
+            makePair('a.png', { has_mask: true, has_masked_caption: false }),
+            makePair('b.png', { has_mask: true, has_masked_caption: true }),
+            makePair('c.png', { has_mask: false }),
+        ]);
+        expect(comp.captionCount()).toBe(1);
+        expect(comp.ctaLabel()).toBe('Caption 1 masked image');
+        expect(comp.canStart()).toBe(true);
+    });
+
+    it('caption: count 0 → "No masked images to caption" and canStart false', () => {
+        const { comp } = make();
+        comp.tab.set('caption');
+        comp.captionStrategy.set('keep');
+        comp.captionSettings.set({ resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' });
+        comp.pairs.set([makePair('a.png', { has_mask: false })]);
+        expect(comp.captionCount()).toBe(0);
+        expect(comp.ctaLabel()).toBe('No masked images to caption');
+        expect(comp.canStart()).toBe(false);
+    });
+
+    it('generate performs the action with NO confirm() gate', () => {
+        const { comp } = make();
+        comp.tab.set('generate');
+        comp.strategy.set('overwrite');
+        comp.maskingSettings.set({ modelId: 'rembg', params: {} });
+        comp.pairs.set([makePair('a.png')]);
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        comp.start();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.batchGenerateMasks).toHaveBeenCalled();
+    });
+
+    it('apply performs the action with NO confirm() gate', () => {
+        const { comp } = make();
+        comp.tab.set('apply');
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        comp.start();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.batchApplyMasks).toHaveBeenCalled();
+    });
+
+    it('caption performs the action with NO confirm() gate', () => {
+        const { comp } = make();
+        comp.tab.set('caption');
+        comp.captionStrategy.set('overwrite');
+        comp.captionSettings.set({ resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' });
+        comp.pairs.set([makePair('a.png', { has_mask: true })]);
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        comp.start();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.batchCaption).toHaveBeenCalled();
     });
 });
 

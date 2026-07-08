@@ -108,15 +108,18 @@ describe('MassCaptionComponent launcher', () => {
         expect(api.batchCaption).not.toHaveBeenCalled();
     });
 
-    it('does not call batchCaption when user cancels the confirm dialog', () => {
+    it('performs captioning directly with NO confirm() gate (count-on-CTA)', () => {
         const fixture = TestBed.createComponent(MassCaptionModalComponent);
         const comp = fixture.componentInstance as any;
         comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
         comp.target.set('original');
         comp.pairs.set([makePair('c.png')]);
-        vi.spyOn(window, 'confirm').mockReturnValue(false);
+        // jsdom window.confirm returns false — a lingering guard would block the
+        // call. Assert it is never consulted and the action runs regardless.
+        const confirmSpy = vi.spyOn(window, 'confirm');
         comp.start();
-        expect(api.batchCaption).not.toHaveBeenCalled();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.batchCaption).toHaveBeenCalled();
     });
 
     it('cancel() calls TaskStore.cancel with the task id and resets running', () => {
@@ -415,5 +418,141 @@ describe('MassCaptionComponent — incremental (keep) candidate selection', () =
         expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
             image_rel_paths: ['a.png', 'b.png'],
         }));
+    });
+});
+
+describe('MassCaptionComponent — count-on-CTA (M4)', () => {
+    let api: any;
+    let overlay: OverlayStore;
+
+    beforeEach(() => {
+        api = {
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            getCaptionVariantMap: vi.fn().mockReturnValue(of({ variants: {} })),
+            refineCaptions: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            listCaptionSuggestions: vi.fn().mockReturnValue(of({ items: [] })),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                OverlayStore, MediaItemStore, CaptionCacheStore,
+                { provide: DatasetService, useValue: api },
+                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: vi.fn() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+            ],
+        });
+        overlay = TestBed.inject(OverlayStore);
+        overlay.openModal('mass-caption', { datasetName: 'ds1' });
+        // ModelContextStore persists to localStorage — clear any model-aware
+        // definition a prior describe block left behind so generic
+        // caption-absence filtering (not variant-map) drives the count here.
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(false);
+        modelContext.setDefinition(null);
+    });
+
+    it('generateCount reflects images missing a caption (keep) and the CTA label shows it', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'done' },
+            { media_file: 'b.png', caption_content: '' },
+            { media_file: 'c.png', caption_content: '   ' },
+        ]);
+        expect(comp.generateCount()).toBe(2);
+        expect(comp.ctaLabel()).toBe('Caption 2 images');
+    });
+
+    it('generateCount 0 → label reads "No images to caption" and canStart is false', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.settingsReady.set(true);
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        comp.pairs.set([{ media_file: 'a.png', caption_content: 'done' }]);
+        expect(comp.generateCount()).toBe(0);
+        expect(comp.ctaLabel()).toBe('No images to caption');
+        expect(comp.canStart()).toBe(false);
+    });
+
+    it('canStart is true when count>0 and settings are ready', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.settingsReady.set(true);
+        comp.target.set('original');
+        comp.pairs.set([{ media_file: 'a.png', caption_content: '' }]);
+        expect(comp.generateCount()).toBe(1);
+        expect(comp.canStart()).toBe(true);
+    });
+
+    it('masked target: label reads "Caption N masked images"', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.target.set('masked');
+        comp.strategy.set('overwrite');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: '', metadata: { has_mask: true } },
+            { media_file: 'b.png', caption_content: '', metadata: { has_mask: false } },
+        ]);
+        expect(comp.generateCount()).toBe(1);
+        expect(comp.ctaLabel()).toBe('Caption 1 masked image');
+    });
+
+    it('refineCount reflects captioned images and the CTA label shows it', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.tab.set('refine');
+        comp.refineTarget.set('original');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'cap' },
+            { media_file: 'b.png', caption_content: '' },
+        ]);
+        expect(comp.refineCount()).toBe(1);
+        expect(comp.ctaLabel()).toBe('Refine 1 caption');
+    });
+
+    it('refine count 0 → label reads "No captions to refine" and canStart is false', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.tab.set('refine');
+        comp.refineTarget.set('original');
+        comp.refineSettings.set({ definitionId: 'd', preset: 'p', model: 'm', style: 'auto' });
+        comp.pairs.set([{ media_file: 'a.png', caption_content: '' }]);
+        expect(comp.refineCount()).toBe(0);
+        expect(comp.ctaLabel()).toBe('No captions to refine');
+        expect(comp.canStart()).toBe(false);
+    });
+
+    it('generate performs the action with NO confirm() gate', () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.pairs.set([{ media_file: 'a.png', caption_content: '' }]);
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        comp.start();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.batchCaption).toHaveBeenCalled();
+    });
+
+    it('refine performs the action with NO confirm() gate', async () => {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.tab.set('refine');
+        comp.refineTarget.set('original');
+        comp.refineStrategy.set('all');
+        comp.refineSettings.set({ definitionId: 'd', preset: 'p', model: 'm', style: 'auto' });
+        comp.pairs.set([{ media_file: 'a.png', caption_content: 'cap' }]);
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        await comp.startRefine();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.refineCaptions).toHaveBeenCalled();
     });
 });

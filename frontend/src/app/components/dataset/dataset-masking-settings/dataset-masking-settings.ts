@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
+import { OverlayStore } from '../../../state/overlay.store';
 import { Subject } from 'rxjs';
 import { debounceTime, switchMap } from 'rxjs/operators';
 
@@ -186,6 +187,7 @@ export class DatasetMaskingSettingsComponent implements OnInit {
     private datasetService = inject(DatasetService);
     private projectService = inject(ProjectService);
     private templateService = inject(TemplateService);
+    private overlay = inject(OverlayStore);
 
     projectId = input<string | null>(null);
 
@@ -510,14 +512,20 @@ export class DatasetMaskingSettingsComponent implements OnInit {
         const activeId = this.activeTemplateId();
         if (!activeId || this.isDefaultTemplate()) return;
 
-        if (!confirm('Delete this template?')) return;
-
-        this.templateService.deleteTemplate('masking', activeId).subscribe(() => {
-            this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
-            const remaining = this.currentTemplates();
-            if (remaining.length > 0) {
-                this.onTemplateChange(remaining[0].id);
-            }
+        this.overlay.openModal('confirm', {
+            title: 'Delete this template?',
+            message: 'This masking settings template will be permanently deleted.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.templateService.deleteTemplate('masking', activeId).subscribe(() => {
+                    this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
+                    const remaining = this.currentTemplates();
+                    if (remaining.length > 0) {
+                        this.onTemplateChange(remaining[0].id);
+                    }
+                });
+            },
         });
     }
 

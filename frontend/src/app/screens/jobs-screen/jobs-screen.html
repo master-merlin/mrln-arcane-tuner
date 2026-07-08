@@ -34,7 +34,7 @@
                         } @else {
                             <button class="btn" (click)="pauseJob()">Pause</button>
                         }
-                        <button class="btn" (click)="saveCheckpoint()">Checkpoint</button>
+                        <button class="btn" (click)="saveCheckpoint()" title="Save a checkpoint, then stop the run gracefully">Save &amp; stop</button>
                         <button class="btn danger-out" (click)="stopJob()">Stop</button>
                     }
                     @if (isArchived()) {

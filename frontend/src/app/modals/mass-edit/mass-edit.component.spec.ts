@@ -67,6 +67,17 @@ describe('MassEditModalComponent — launcher contract', () => {
         expect(comp.running()).toBe(true);
     });
 
+    it('start() performs the action with NO confirm() gate (count-on-CTA)', () => {
+        const { comp } = make();
+        comp.recipe.set({ operations: [{ type: 'contrast', enabled: true, params: {} }] });
+        comp.selectedTargets.set(new Set(['a.png']));
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        comp.start();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(api.batchRenderPipeline).toHaveBeenCalled();
+        expect(comp.running()).toBe(true);
+    });
+
     it('cancel() delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
         comp.recipe.set({ operations: [{ type: 'contrast', enabled: true, params: {} }] });

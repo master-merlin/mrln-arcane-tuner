@@ -508,8 +508,8 @@ export class MassEditModalComponent implements OnInit {
         const r = this.recipe();
         const targets = Array.from(this.selectedTargets());
         if (!r || targets.length === 0) return;
-        if (!confirm(`Apply pipeline to ${targets.length} image${targets.length === 1 ? '' : 's'}?`)) return;
-
+        // Count-on-CTA: the button shows the target count and is disabled at 0,
+        // so an enabled click applies directly — no confirm() round-trip.
         const blocks: PipelineBlock[] = r.operations.map(op => ({
             type: op.type,
             enabled: op.enabled ?? true,

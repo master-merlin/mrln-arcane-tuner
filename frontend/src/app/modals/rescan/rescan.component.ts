@@ -251,15 +251,21 @@ export class RescanModalComponent {
                 const missing = this.datasets.entities().filter(d => d.missing);
                 if (missing.length === 0) return;
                 const names = missing.map(d => d.name).join(', ');
-                if (!confirm(
-                    `The following dataset${missing.length === 1 ? ' is' : 's are'} ` +
-                    `missing on disk: ${names}.\n\n` +
-                    `Remove ${missing.length === 1 ? 'it' : 'them'} from your library? ` +
-                    `(Files were not on disk anyway.)`
-                )) return;
-                for (const d of missing) {
-                    void this.datasets.deleteDataset(d.id, false).catch(() => undefined);
-                }
+                this.overlay.openModal('confirm', {
+                    title: `Remove missing dataset${missing.length === 1 ? '' : 's'}?`,
+                    message:
+                        `The following dataset${missing.length === 1 ? ' is' : 's are'} ` +
+                        `missing on disk: ${names}. ` +
+                        `Remove ${missing.length === 1 ? 'it' : 'them'} from your library? ` +
+                        `(Files were not on disk anyway.)`,
+                    confirmLabel: 'Remove',
+                    destructive: true,
+                    onConfirm: () => {
+                        for (const d of missing) {
+                            void this.datasets.deleteDataset(d.id, false).catch(() => undefined);
+                        }
+                    },
+                });
             })
             .catch(() => undefined);
     }

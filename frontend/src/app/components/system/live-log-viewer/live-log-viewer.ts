@@ -4,6 +4,7 @@ import { of, catchError } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { WebSocketService } from '../../../services/websocket.service';
 import { SystemService } from '../../../services/system.service';
+import { OverlayStore } from '../../../state/overlay.store';
 import { IcoComponent } from '../../../icons/ico.component';
 
 type LogLevel = 'INFO' | 'ERROR' | 'WARNING' | 'DEBUG' | 'CRITICAL' | 'UNKNOWN';
@@ -202,6 +203,7 @@ export class LiveLogViewerComponent implements OnInit {
     private wsService = inject(WebSocketService);
     private systemService = inject(SystemService);
     private toast = inject(ToastService);
+    private overlay = inject(OverlayStore);
     private destroyRef = inject(DestroyRef);
 
     terminalContainer = viewChild<ElementRef>('terminalContainer');
@@ -276,22 +278,29 @@ export class LiveLogViewerComponent implements OnInit {
     }
 
     clearLogs() {
-        if (!confirm('Are you sure you want to clear the server logs?')) return;
-        this.clearing.set(true);
-        this.systemService.clearLogs().subscribe({
-            next: (res) => {
-                this.clearing.set(false);
-                if (res.error) {
-                    this.toast.error(`Error: ${res.error}`);
-                } else {
-                    this.logs.set([]);
-                    this.toast.success(res.message || 'Logs cleared successfully');
-                }
-            },
-            error: (err) => {
-                this.clearing.set(false);
-                this.toast.error('Failed to clear logs');
-                console.error(err);
+        this.overlay.openModal('confirm', {
+            title: 'Clear the server logs?',
+            message: 'This permanently clears all server log entries. This cannot be undone.',
+            confirmLabel: 'Clear',
+            destructive: true,
+            onConfirm: () => {
+                this.clearing.set(true);
+                this.systemService.clearLogs().subscribe({
+                    next: (res) => {
+                        this.clearing.set(false);
+                        if (res.error) {
+                            this.toast.error(`Error: ${res.error}`);
+                        } else {
+                            this.logs.set([]);
+                            this.toast.success(res.message || 'Logs cleared successfully');
+                        }
+                    },
+                    error: (err) => {
+                        this.clearing.set(false);
+                        this.toast.error('Failed to clear logs');
+                        console.error(err);
+                    },
+                });
             },
         });
     }

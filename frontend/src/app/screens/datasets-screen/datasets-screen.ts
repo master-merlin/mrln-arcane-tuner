@@ -928,55 +928,62 @@ export class DatasetsScreen {
      *   {@link ProjectService.removeProjectDataset}. The dataset remains in
      *   the library.
      *
-     * A native `confirm()` gates both paths for now; the dedicated `confirm`
-     * modal ships in Phase 8 and this call site will switch to
-     * `overlay.openModal('confirm', ...)` then.
+     * Both paths use the themed `confirm` modal. Global-scope delete carries
+     * an opt-in "also delete files on disk" checkbox (replacing the legacy
+     * chained double-confirm); project-scope is a plain destructive confirm.
+     * The action fires only from the modal's `onConfirm`.
      */
     protected deleteDataset(d: Dataset, event: Event): void {
         event.stopPropagation();
         const projectId = this.scope.projectId();
 
         if (projectId) {
-            if (!confirm(`Remove "${d.name}" from this project? It will stay in the library.`)) return;
-            // TODO(frontend): replace native confirm with overlay.openModal('confirm', ...) when Phase 8 lands.
-            this.projects.removeProjectDataset(projectId, d.id ?? d.name).subscribe({
-                next: () => {
-                    this.toast.success(`Removed "${d.name}" from project.`);
-                    // Refresh the scope filter and the global library list.
-                    void this.refreshAfterDelete(projectId);
-                    // Keep the scope-switcher / sidebar count in sync.
-                    this.projects.bumpDatasetStat(projectId, -1);
-                    this.projects.loadProjects();
+            this.overlay.openModal('confirm', {
+                title: 'Remove from project?',
+                message: `"${d.name}" will be removed from this project. It stays in the library.`,
+                confirmLabel: 'Remove',
+                destructive: true,
+                onConfirm: () => {
+                    this.projects.removeProjectDataset(projectId, d.id ?? d.name).subscribe({
+                        next: () => {
+                            this.toast.success(`Removed "${d.name}" from project.`);
+                            // Refresh the scope filter and the global library list.
+                            void this.refreshAfterDelete(projectId);
+                            // Keep the scope-switcher / sidebar count in sync.
+                            this.projects.bumpDatasetStat(projectId, -1);
+                            this.projects.loadProjects();
+                        },
+                        error: (err: { error?: { detail?: string }; message?: string }) =>
+                            this.toast.error('Failed to remove from project: ' + (err?.error?.detail || err?.message)),
+                    });
                 },
-                error: (err: { error?: { detail?: string }; message?: string }) =>
-                    this.toast.error('Failed to remove from project: ' + (err?.error?.detail || err?.message)),
             });
             return;
         }
 
-        // Global scope: actual library delete.
-        // Two-option flow (legacy parity):
-        //   OK on the first prompt  ⇒ delete files on disk (PERMANENT)
-        //   Cancel on the first prompt ⇒ remove from library, keep files
-        const deleteFiles = confirm(
-            `Delete dataset '${d.name}' — also delete files on disk?\n\n` +
-            `OK    = PERMANENTLY DELETE the folder and all files.\n` +
-            `Cancel = Remove from library only (files kept on disk).`
-        );
-        const finalConfirm = deleteFiles
-            ? confirm(`Last chance — PERMANENTLY delete folder and files for '${d.name}'?`)
-            : confirm(`Remove '${d.name}' from library (files kept on disk)?`);
-        if (!finalConfirm) return;
-
-        this.datasetsApi.deleteDataset(d.name, deleteFiles).subscribe({
-            next: () => {
-                this.toast.success(deleteFiles
-                    ? `Dataset '${d.name}' and its files deleted.`
-                    : `Dataset '${d.name}' removed from library.`);
-                void this.datasets.loadAll().catch(() => undefined);
+        // Global scope: one dialog with an opt-in "delete files" checkbox
+        // (replaces the legacy chained double-confirm). Unticked = remove from
+        // library only (files kept); ticked = permanently delete folder + files.
+        this.overlay.openModal('confirm', {
+            title: `Delete dataset "${d.name}"?`,
+            message: `Removes "${d.name}" from the library. Tick below to also permanently `
+                + `delete its folder and all files on disk — this cannot be undone.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            checkboxLabel: 'Also delete files on disk (permanent)',
+            onConfirm: (deleteFiles?: boolean) => {
+                const wipe = !!deleteFiles;
+                this.datasetsApi.deleteDataset(d.name, wipe).subscribe({
+                    next: () => {
+                        this.toast.success(wipe
+                            ? `Dataset '${d.name}' and its files deleted.`
+                            : `Dataset '${d.name}' removed from library.`);
+                        void this.datasets.loadAll().catch(() => undefined);
+                    },
+                    error: (err: { error?: { detail?: string }; message?: string }) =>
+                        this.toast.error('Failed to delete dataset: ' + (err?.error?.detail || err?.message)),
+                });
             },
-            error: (err: { error?: { detail?: string }; message?: string }) =>
-                this.toast.error('Failed to delete dataset: ' + (err?.error?.detail || err?.message)),
         });
     }
 

@@ -6,6 +6,7 @@ import { ProjectService, ProjectPreferences } from '../../../services/project.se
 import { TemplateService, Template } from '../../../services/template.service';
 import { ApiCaptionService, ApiProviderStatus } from '../../../services/api-caption.service';
 import { ModelContextStore } from '../../../state/model-context.store';
+import { OverlayStore } from '../../../state/overlay.store';
 import { Subject } from 'rxjs';
 import { debounceTime, switchMap } from 'rxjs/operators';
 
@@ -399,6 +400,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     private apiCaptionService = inject(ApiCaptionService);
     /** Exposes activeCaptionFormat() and activeDefinitionId() for the template. */
     protected modelContext = inject(ModelContextStore);
+    private overlay = inject(OverlayStore);
 
     projectId = input<string | null>(null);
     effectiveProjectId = computed(() => this.projectId() ?? this.projectService.activeDatasetProject());
@@ -960,14 +962,20 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         const activeId = this.activeTemplateId();
         if (!activeId || this.isDefaultTemplate()) return;
 
-        if (!confirm('Delete this template?')) return;
-
-        this.templateService.deleteTemplate('captioning', activeId).subscribe(() => {
-            this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
-            const remaining = this.currentTemplates();
-            if (remaining.length > 0) {
-                this.onTemplateChange(remaining[0].id);
-            }
+        this.overlay.openModal('confirm', {
+            title: 'Delete this template?',
+            message: 'This caption settings template will be permanently deleted.',
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: () => {
+                this.templateService.deleteTemplate('captioning', activeId).subscribe(() => {
+                    this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
+                    const remaining = this.currentTemplates();
+                    if (remaining.length > 0) {
+                        this.onTemplateChange(remaining[0].id);
+                    }
+                });
+            },
         });
     }
 

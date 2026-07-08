@@ -47,6 +47,35 @@ describe('ModelSourceConfigComponent (registered modal)', () => {
         expect(el.textContent).toContain('Flux Dev');
     });
 
+    it('renders on the shared modal chrome (head/body/foot + house buttons)', () => {
+        const { fixture } = setup();
+        const el = fixture.nativeElement as HTMLElement;
+        // Shared structure
+        expect(el.querySelector('.modal-head')).toBeTruthy();
+        expect(el.querySelector('.modal-body')).toBeTruthy();
+        expect(el.querySelector('.modal-foot')).toBeTruthy();
+        // Close control is the shared .icon-btn in the head
+        expect(el.querySelector('.modal-head .icon-btn[data-testid="model-source-close-btn"]')).toBeTruthy();
+        // House buttons in the footer: Save = .btn.primary, Cancel = .btn.ghost
+        const save = el.querySelector('[data-testid="model-source-save-btn"]');
+        const cancel = el.querySelector('[data-testid="model-source-cancel-btn"]');
+        expect(save?.classList.contains('btn')).toBe(true);
+        expect(save?.classList.contains('primary')).toBe(true);
+        expect(cancel?.classList.contains('btn')).toBe(true);
+        expect(cancel?.classList.contains('ghost')).toBe(true);
+        expect(el.querySelector('.modal-foot .btn.primary')).toBeTruthy();
+    });
+
+    it('renders Reset as a house danger button when an override exists', () => {
+        const { fixture, comp } = setup();
+        comp.hasExistingOverride.set(true);
+        fixture.detectChanges();
+        const reset = fixture.nativeElement.querySelector('[data-testid="model-source-reset-btn"]') as HTMLElement;
+        expect(reset).toBeTruthy();
+        expect(reset.classList.contains('btn')).toBe(true);
+        expect(reset.classList.contains('danger-out')).toBe(true);
+    });
+
     it('save() calls onSaved with the override, persists, and closes', () => {
         const { comp, onSaved, overlay, registry } = setup();
         comp.sourceType.set('local_diffusers');

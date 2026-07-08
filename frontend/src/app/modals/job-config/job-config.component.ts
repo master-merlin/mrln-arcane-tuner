@@ -4,6 +4,7 @@ import { ToastService } from '../../services/toast';
 import { JobService, Job } from '../../services/job';
 import { IcoComponent } from '../../icons/ico.component';
 import { JsonEditorComponent } from '../../ui/json-editor/json-editor.component';
+import { persistJobConfig } from '../../shared/job-config-save';
 
 /** Modal payload — set via `overlay.openModal('job-config', JobConfigData)`. */
 export interface JobConfigData {
@@ -79,25 +80,14 @@ export class JobConfigModalComponent {
     protected save(): void {
         const d = this.data();
         if (!d) return;
-        let parsed: Record<string, unknown>;
-        try {
-            parsed = JSON.parse(this.text() || this.initial());
-        } catch {
-            this.toast.error('Invalid JSON — cannot save.');
-            return;
-        }
         this.saving.set(true);
-        this.jobs.updateJobConfig(d.job.id, parsed).subscribe({
-            next: () => {
-                this.saving.set(false);
-                this.toast.success('Job config saved.');
+        const started = persistJobConfig(this.jobs, this.toast, d.job.id, this.text() || this.initial(), {
+            onSuccess: () => {
                 d.onSaved?.();
                 this.overlay.closeModal();
             },
-            error: (err: { error?: { detail?: string }; message?: string }) => {
-                this.saving.set(false);
-                this.toast.error('Save failed: ' + (err?.error?.detail || err?.message));
-            },
+            onSettled: () => this.saving.set(false),
         });
+        if (!started) this.saving.set(false);
     }
 }

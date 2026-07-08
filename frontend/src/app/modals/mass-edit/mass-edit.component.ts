@@ -10,6 +10,8 @@ import {
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
+import { ModalEmptyComponent } from '../../ui/modal-empty/modal-empty.component';
+import { BatchProgressComponent } from '../../ui/batch-progress/batch-progress.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { DatasetService, type PipelineBlock, type DatasetPair } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
@@ -47,7 +49,7 @@ interface RecipeOperation {
 @Component({
     selector: 'app-modal-mass-edit',
     standalone: true,
-    imports: [IcoComponent, TaskQueueHintComponent],
+    imports: [IcoComponent, TaskQueueHintComponent, ModalEmptyComponent, BatchProgressComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -60,32 +62,22 @@ interface RecipeOperation {
 
         <div class="modal-body me-body" data-testid="mass-edit-modal">
             @if (!data.datasetName) {
-                <div class="me-empty">
-                    <app-ico name="Info" [size]="18"/>
-                    Open a dataset workspace first — mass edit is per-dataset.
-                </div>
+                <app-modal-empty message="Open a dataset workspace first — mass edit is per-dataset."/>
             } @else if (running()) {
                 <app-task-queue-hint [task]="task()"/>
-                <div class="me-progress">
-                    <div class="me-progress-head">
-                        <div>
-                            <div class="eyebrow violet">PIPELINE RENDERING</div>
-                            <div class="me-progress-pct">{{ pct() }}%</div>
-                        </div>
-                        <div class="me-progress-queue">
-                            <div class="eyebrow">QUEUE</div>
-                            <span class="mono">{{ queueCurrent() }} / {{ queueTotal() }}</span>
-                        </div>
-                    </div>
-                    <div class="me-progress-bar"><div class="me-progress-bar-fill" [style.width.%]="pct()"></div></div>
-                    <div class="me-progress-cur">
-                        <span class="eyebrow">CURRENT</span>
-                        <span class="mono">{{ currentFile() }}</span>
-                    </div>
+                <app-batch-progress
+                    accent="var(--color-violet)"
+                    label="PIPELINE RENDERING"
+                    queueLabel="QUEUE"
+                    currentLabel="CURRENT"
+                    [percent]="pct()"
+                    [current]="queueCurrent()"
+                    [total]="queueTotal()"
+                    [currentItem]="currentFile()">
                     <div class="me-progress-actions">
                         <button class="btn ghost" type="button" (click)="cancel()">Stop</button>
                     </div>
-                </div>
+                </app-batch-progress>
             } @else {
                 <section class="me-section">
                     <div class="me-section-head">
@@ -308,30 +300,6 @@ interface RecipeOperation {
             color: var(--color-text-secondary);
         }
 
-        .me-progress {
-            padding: 20px 22px;
-            background: oklch(0.65 0.18 295 / 0.06);
-            border: 1px solid oklch(0.65 0.18 295 / 0.30);
-            border-radius: var(--radius-theme-2xl);
-        }
-        .me-progress-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-        .me-progress-pct {
-            font-size: 28px; font-weight: 900; font-style: italic;
-            margin-top: 4px; color: var(--color-text-primary);
-            font-variant-numeric: tabular-nums;
-        }
-        .me-progress-queue { text-align: right; }
-        .me-progress-bar {
-            height: 8px; background: var(--color-surface-mid);
-            border: 1px solid var(--color-border-subtle);
-            border-radius: 999px; overflow: hidden;
-        }
-        .me-progress-bar-fill {
-            height: 100%; border-radius: 999px;
-            background: linear-gradient(90deg, var(--color-violet), oklch(0.75 0.18 320));
-            transition: width 200ms;
-        }
-        .me-progress-cur { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
         .me-progress-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 
         .me-foot { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }

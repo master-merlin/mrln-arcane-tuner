@@ -1,6 +1,7 @@
 import { Component, ChangeDetectionStrategy, inject, signal, computed, OnInit } from '@angular/core';
 import { UpperCasePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { IcoComponent } from '../../icons/ico.component';
 import { ToastService } from '../../services/toast';
 import {
   ModelService,
@@ -37,166 +38,205 @@ export interface ModelSourceConfigData {
   selector: 'app-model-source-config',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, UpperCasePipe],
+  imports: [FormsModule, UpperCasePipe, IcoComponent],
   template: `
     <div class="modal-head">
-      <div class="flex items-center gap-4">
-        <div class="p-3 bg-brand/10 rounded-theme-md border border-brand/20 text-brand">
-          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-            <line x1="12" y1="22.08" x2="12" y2="12"/>
-          </svg>
-        </div>
-        <div>
-          <h3 class="text-lg font-bold text-white">Model Source</h3>
-          <p class="text-xs text-text-subtle mt-0.5 truncate max-w-[350px]"
-             [title]="definitionId">{{ definitionName || definitionId }}</p>
+      <div class="msc-head-main">
+        <span class="msc-badge"><app-ico name="Box" [size]="18"/></span>
+        <div class="msc-head-text">
+          <div class="eyebrow">MODEL SOURCE</div>
+          <div class="msc-title" [title]="definitionId">{{ definitionName || definitionId }}</div>
         </div>
       </div>
       <button type="button" class="icon-btn" (click)="close()"
               data-testid="model-source-close-btn" aria-label="Close">×</button>
     </div>
 
-    <div class="modal-body">
+    <div class="modal-body msc-body">
       <!-- Source Type Selector -->
-      <div class="space-y-4">
-        <div class="flex flex-col gap-1.5">
-          <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold">Source Type</label>
-          <select [ngModel]="sourceType()" (ngModelChange)="onSourceTypeChange($event)"
-                  data-testid="model-source-type-select"
-                  class="w-full bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors">
-            <option value="hf_hub">HuggingFace Hub (Default)</option>
-            <option value="local_diffusers">Local Diffusers Copy</option>
-            <option value="local_safetensors">Local Safetensors (Advanced)</option>
-          </select>
+      <div class="msc-field">
+        <label class="field-label" for="msc-source-type">Source Type</label>
+        <select id="msc-source-type" class="input" [ngModel]="sourceType()"
+                (ngModelChange)="onSourceTypeChange($event)"
+                data-testid="model-source-type-select">
+          <option value="hf_hub">HuggingFace Hub (Default)</option>
+          <option value="local_diffusers">Local Diffusers Copy</option>
+          <option value="local_safetensors">Local Safetensors (Advanced)</option>
+        </select>
+      </div>
+
+      <!-- HF Hub: Skip Update Toggle -->
+      @if (sourceType() === 'hf_hub') {
+        <div class="msc-toggle-row">
+          <button type="button" class="toggle" [class.on]="skipUpdate()"
+                  (click)="skipUpdate.set(!skipUpdate())"
+                  role="switch" [attr.aria-checked]="skipUpdate()"
+                  data-testid="model-source-skip-update"></button>
+          <div class="msc-toggle-text">
+            <span class="msc-toggle-title">Skip HF Updates</span>
+            <span class="msc-toggle-desc">Only use locally cached files — never contact HuggingFace</span>
+          </div>
+        </div>
+      }
+
+      <!-- Local Path Input -->
+      @if (sourceType() !== 'hf_hub') {
+        <div class="msc-field">
+          <label class="field-label" for="msc-local-path">Local Path</label>
+          <div class="msc-path-row">
+            <input id="msc-local-path" type="text" class="input mono"
+                   [ngModel]="localPath()" (ngModelChange)="localPath.set($event)"
+                   data-testid="model-source-local-path"
+                   placeholder="D:\\Models\\sdxl-base">
+            <button type="button" class="btn sm" (click)="browseFolder()"
+                    data-testid="model-source-browse-btn"
+                    [disabled]="browsing()"
+                    title="Browse for folder">
+              @if (browsing()) {
+                <app-ico name="LoaderCircle" [size]="14" class="msc-spin"/>
+              } @else {
+                <app-ico name="FolderOpen" [size]="14"/>
+              }
+            </button>
+            <button type="button" class="btn sm" (click)="validateCurrentPath()"
+                    data-testid="model-source-validate-btn"
+                    [disabled]="!localPath() || validating()">
+              @if (validating()) {
+                <app-ico name="LoaderCircle" [size]="14" class="msc-spin"/>
+              }
+              Validate
+            </button>
+          </div>
         </div>
 
-        <!-- HF Hub: Skip Update Toggle -->
-        @if (sourceType() === 'hf_hub') {
-          <label class="flex items-center gap-3 cursor-pointer group p-3 bg-surface-high/30 rounded-theme-md border border-surface-mid/50">
-            <input type="checkbox" [ngModel]="skipUpdate()" (ngModelChange)="skipUpdate.set($event)"
-                   data-testid="model-source-skip-update"
-                   class="sr-only peer">
-            <div class="w-10 h-5 bg-surface-high peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border-subtle after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand group-hover:bg-surface-mid transition-all relative flex-shrink-0"></div>
-            <div>
-              <span class="text-sm font-medium text-text-secondary block">Skip HF Updates</span>
-              <span class="text-[11px] text-text-subtle">Only use locally cached files — never contact HuggingFace</span>
-            </div>
-          </label>
-        }
-
-        <!-- Local Path Input -->
-        @if (sourceType() !== 'hf_hub') {
-          <div class="flex flex-col gap-1.5">
-            <label class="text-[10px] uppercase tracking-wider text-text-subtle font-bold">Local Path</label>
-            <div class="flex gap-2">
-              <input type="text" [ngModel]="localPath()" (ngModelChange)="localPath.set($event)"
-                     data-testid="model-source-local-path"
-                     placeholder="D:\\Models\\sdxl-base"
-                     class="flex-1 bg-surface-mid border border-surface-high text-white text-sm rounded-theme-md px-3 py-2 outline-none focus:border-brand transition-colors font-mono">
-              <button type="button" (click)="browseFolder()"
-                      data-testid="model-source-browse-btn"
-                      [disabled]="browsing()"
-                      title="Browse for folder"
-                      class="px-2.5 py-2 bg-surface-high hover:bg-surface-mid text-text-secondary hover:text-white text-sm rounded-theme-md border border-surface-high transition-colors disabled:opacity-40 font-bold">
-                @if (browsing()) {
-                  <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                } @else {
-                  ···
-                }
-              </button>
-              <button type="button" (click)="validateCurrentPath()"
-                      data-testid="model-source-validate-btn"
-                      [disabled]="!localPath() || validating()"
-                      class="px-3 py-2 bg-surface-high hover:bg-surface-mid text-brand text-sm rounded-theme-md border border-surface-high transition-colors disabled:opacity-40 flex items-center gap-1.5 whitespace-nowrap">
-                @if (validating()) {
-                  <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                }
-                Validate
-              </button>
-            </div>
-          </div>
-
-          <!-- Validation Result -->
-          @if (validationResult(); as v) {
-            <div class="rounded-theme-md border p-3 text-sm"
-                 [class]="v.valid
-                   ? 'bg-emerald-500/5 border-emerald-500/30 text-emerald-400'
-                   : 'bg-danger/5 border-danger/30 text-danger'">
-              @if (v.valid) {
-                <div class="font-bold mb-1">✓ Valid — {{ v.type | uppercase }}</div>
-                @if (v.components_found.length) {
-                  <div class="text-xs text-text-subtle">
-                    Components: {{ v.components_found.join(', ') }}
-                  </div>
-                }
-              } @else {
-                <div class="font-bold">✗ Path not found or not a valid model directory</div>
+        <!-- Validation Result -->
+        @if (validationResult(); as v) {
+          <div class="msc-note" [class.ok]="v.valid" [class.err]="!v.valid">
+            @if (v.valid) {
+              <div class="msc-note-title">✓ Valid — {{ v.type | uppercase }}</div>
+              @if (v.components_found.length) {
+                <div class="msc-note-sub">Components: {{ v.components_found.join(', ') }}</div>
               }
-              @for (w of v.warnings; track w) {
-                <div class="mt-1.5 text-xs text-amber-400 flex items-start gap-1.5">
-                  <span class="mt-0.5">⚠</span>
-                  <span>{{ w }}</span>
-                </div>
-              }
-            </div>
-          }
-        }
-
-        <!-- Safetensors Warning -->
-        @if (sourceType() === 'local_safetensors') {
-          <div class="rounded-theme-md bg-amber-500/5 border border-amber-500/30 p-3 text-sm text-amber-400 flex items-start gap-2">
-            <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-            </svg>
-            <div>
-              <span class="font-bold block mb-0.5">Advanced Mode</span>
-              <span class="text-xs text-text-subtle">
-                Requires a fully enriched model definition with architecture_params.
-                Each component (VAE, Tokenizer, TE, etc.) must be present as
-                named .safetensors files or Diffusers sub-directories.
-              </span>
-            </div>
+            } @else {
+              <div class="msc-note-title">✗ Path not found or not a valid model directory</div>
+            }
+            @for (w of v.warnings; track w) {
+              <div class="msc-note-warn">
+                <span>⚠</span>
+                <span>{{ w }}</span>
+              </div>
+            }
           </div>
         }
-      </div>
+      }
+
+      <!-- Safetensors Warning -->
+      @if (sourceType() === 'local_safetensors') {
+        <div class="msc-note warn msc-note-flex">
+          <app-ico name="TriangleAlert" [size]="18"/>
+          <div>
+            <span class="msc-note-title">Advanced Mode</span>
+            <span class="msc-note-sub">
+              Requires a fully enriched model definition with architecture_params.
+              Each component (VAE, Tokenizer, TE, etc.) must be present as
+              named .safetensors files or Diffusers sub-directories.
+            </span>
+          </div>
+        </div>
+      }
     </div>
 
     <!-- Actions -->
-    <div class="modal-foot" style="justify-content: space-between;">
+    <div class="modal-foot msc-foot">
       @if (hasExistingOverride()) {
-        <button type="button" (click)="resetToDefault()"
-                data-testid="model-source-reset-btn"
-                class="text-xs text-danger hover:text-danger/80 font-bold uppercase tracking-widest transition-colors">
+        <button type="button" class="btn danger-out" (click)="resetToDefault()"
+                data-testid="model-source-reset-btn">
           Reset to Default
         </button>
       } @else {
-        <div></div>
+        <span></span>
       }
-      <div class="flex gap-3">
-        <button type="button" (click)="close()"
-                data-testid="model-source-cancel-btn"
-                class="text-text-subtle hover:text-white text-sm font-bold px-5 py-2.5 transition-colors uppercase tracking-widest">
+      <span class="msc-foot-actions">
+        <button type="button" class="btn ghost" (click)="close()"
+                data-testid="model-source-cancel-btn">
           Cancel
         </button>
-        <button type="button" (click)="save()"
+        <button type="button" class="btn primary" (click)="save()"
                 data-testid="model-source-save-btn"
-                [disabled]="!canSave()"
-                class="bg-brand hover:bg-brand/80 text-white text-sm font-bold px-5 py-2.5 rounded-theme-md transition-colors uppercase tracking-widest disabled:opacity-40">
+                [disabled]="!canSave()">
           Save
         </button>
-      </div>
+      </span>
     </div>
   `,
+  styles: [`
+    .msc-head-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .msc-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 38px; height: 38px; flex-shrink: 0;
+      border-radius: var(--radius-theme-md);
+      background: color-mix(in oklab, var(--color-brand) 12%, transparent);
+      border: 1px solid color-mix(in oklab, var(--color-brand) 22%, transparent);
+      color: var(--color-brand);
+    }
+    .msc-head-text { min-width: 0; }
+    .msc-title {
+      font-size: 15px; font-weight: 700; color: var(--color-text-primary);
+      max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .msc-body { display: flex; flex-direction: column; gap: 16px; }
+    .msc-field { display: flex; flex-direction: column; }
+    .msc-path-row { display: flex; gap: 8px; }
+    .msc-path-row .input { flex: 1; min-width: 0; }
+    .msc-path-row .btn { flex-shrink: 0; white-space: nowrap; }
+    .msc-spin { animation: msc-spin 0.8s linear infinite; }
+    @keyframes msc-spin { to { transform: rotate(360deg); } }
+
+    .msc-toggle-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px; border-radius: var(--radius-theme-md);
+      background: var(--color-surface-mid);
+      border: 1px solid var(--color-border-subtle);
+    }
+    .msc-toggle-text { display: flex; flex-direction: column; }
+    .msc-toggle-title { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); }
+    .msc-toggle-desc { font-size: 11px; color: var(--color-text-subtle); }
+
+    .msc-note {
+      border-radius: var(--radius-theme-md);
+      border: 1px solid var(--color-border-subtle);
+      padding: 12px; font-size: 13px; color: var(--color-text-secondary);
+    }
+    .msc-note.ok {
+      background: color-mix(in oklab, var(--color-success) 8%, transparent);
+      border-color: color-mix(in oklab, var(--color-success) 30%, transparent);
+      color: var(--color-success);
+    }
+    .msc-note.err {
+      background: color-mix(in oklab, var(--color-danger) 8%, transparent);
+      border-color: color-mix(in oklab, var(--color-danger) 30%, transparent);
+      color: var(--color-danger);
+    }
+    .msc-note.warn {
+      background: color-mix(in oklab, var(--color-warning) 8%, transparent);
+      border-color: color-mix(in oklab, var(--color-warning) 30%, transparent);
+      color: var(--color-warning);
+    }
+    .msc-note-flex { display: flex; align-items: flex-start; gap: 10px; }
+    .msc-note-flex app-ico { flex-shrink: 0; margin-top: 1px; }
+    .msc-note-title { font-weight: 700; display: block; }
+    .msc-note-sub {
+      display: block; margin-top: 4px; font-size: 12px;
+      color: var(--color-text-subtle); font-weight: 400;
+    }
+    .msc-note-warn {
+      display: flex; align-items: flex-start; gap: 6px;
+      margin-top: 6px; font-size: 12px; color: var(--color-warning);
+    }
+
+    .msc-foot { justify-content: space-between; align-items: center; }
+    .msc-foot-actions { display: inline-flex; gap: 8px; }
+  `],
 })
 export class ModelSourceConfigComponent implements OnInit {
   private overlay = inject(OverlayStore);

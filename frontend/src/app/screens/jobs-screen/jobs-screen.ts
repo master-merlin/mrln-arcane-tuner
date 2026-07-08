@@ -56,6 +56,7 @@ import {
     type StepMetrics,
 } from '../../shared/job-metrics';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
+import { persistJobConfig } from '../../shared/job-config-save';
 
 type SectionKey = 'curves' | 'samples' | 'checkpoints' | 'config' | 'log';
 
@@ -409,29 +410,18 @@ export class JobsScreen {
     protected saveJobConfig(): void {
         const j = this.selectedJob();
         if (!j || !this.jobConfigDirty()) return;
-        let parsed: Record<string, unknown>;
-        try {
-            parsed = JSON.parse(this.jobConfigText());
-        } catch {
-            this.toast.error('Invalid JSON — cannot save.');
-            return;
-        }
         this.savingJobConfig.set(true);
-        this.jobService.updateJobConfig(j.id, parsed).subscribe({
-            next: () => {
-                this.savingJobConfig.set(false);
+        const started = persistJobConfig(this.jobService, this.toast, j.id, this.jobConfigText(), {
+            onSuccess: () => {
                 // Baseline now matches what we persisted → dirty clears without
                 // depending on the queue list refreshing this row.
                 this.jobConfigBaseline.set(this.jobConfigText());
-                this.toast.success('Job config saved.');
                 void this.jobStore.loadAll();
                 void this.jobStore.loadHistory();
             },
-            error: (err: { error?: { detail?: string }; message?: string }) => {
-                this.savingJobConfig.set(false);
-                this.toast.error('Save failed: ' + (err?.error?.detail || err?.message));
-            },
+            onSettled: () => this.savingJobConfig.set(false),
         });
+        if (!started) this.savingJobConfig.set(false);
     }
 
     /** Classified, human-readable log tail — live logs, else replayed steps. */

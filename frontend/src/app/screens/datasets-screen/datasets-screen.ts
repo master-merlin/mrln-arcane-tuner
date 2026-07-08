@@ -176,6 +176,19 @@ export class DatasetsScreen {
     /** Source of truth — all datasets currently in the entity store. */
     private allDatasets = this.datasets.entities;
 
+    /**
+     * Fetch-in-flight flag, owned by the store (flips true on `loadAll()` start,
+     * false when it resolves — success or error). Drives the skeleton branch of
+     * {@link gridState} so the first load renders placeholders instead of the
+     * empty-state message (the "false-empty flash").
+     */
+    protected loading = this.datasets.loading;
+
+    /** Placeholder-card slots rendered while {@link loading} is true. A handful
+     *  (just over one 6-column row) is enough to read as "content incoming"
+     *  without implying an exact count. */
+    protected readonly skeletonSlots = Array.from({ length: 8 }, (_, i) => i);
+
     // ── Filter chips + sort dropdown (Task 9) ─────────────────────────────
     //
     // The screen-level filter bar sits under the KPI rail and owns the
@@ -367,6 +380,29 @@ export class DatasetsScreen {
             return 0;
         };
         return [...rows].sort(cmp);
+    });
+
+    /**
+     * Single tri-state (well, five-state) gate the grid template `@switch`es on:
+     *
+     *  - `loading`      — first fetch still in flight → skeleton cards. Wins over
+     *                     everything so a mid-refresh empty map never flashes the
+     *                     empty message.
+     *  - `grid`         — at least one visible dataset → real cards.
+     *  - `search-empty` — zero visible because the search query excluded them.
+     *  - `filter-empty` — zero visible because active filter chips excluded them.
+     *  - `empty`        — zero visible with no search / filters → actionable CTA.
+     *
+     * Search takes precedence over filters when both are active (the search box
+     * is the more prominent control, so its "clear search" affordance is the one
+     * to surface first).
+     */
+    protected gridState = computed<'loading' | 'grid' | 'search-empty' | 'filter-empty' | 'empty'>(() => {
+        if (this.loading()) return 'loading';
+        if (this.visibleDatasets().length > 0) return 'grid';
+        if (this.search.query().trim()) return 'search-empty';
+        if (this.activeFilters().size > 0) return 'filter-empty';
+        return 'empty';
     });
 
     /**

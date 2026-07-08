@@ -27,10 +27,33 @@
                 (segmentsChanged)="onSegmentsChanged($event)"
                 (estimateChanged)="onEstimate($event)"
                 (configSubmitted)="queueJob($event)"/>
-        } @else if (availableModels().length === 0) {
-            <p class="muted ts-empty">Loading available models…</p>
+        } @else if (loading()) {
+            <!-- Form skeleton: section-shaped placeholders approximating the
+                 config sections so a slow first load reads as a loading form,
+                 not an empty/broken page. aria-hidden + a polite status line
+                 for assistive tech. -->
+            <div class="ts-skeleton" data-testid="training-skeleton" aria-hidden="true">
+                @for (section of [0, 1, 2]; track section) {
+                    <div class="tsk-card">
+                        <div class="tsk-bar tsk-title"></div>
+                        <div class="tsk-row">
+                            <div class="tsk-bar tsk-label"></div>
+                            <div class="tsk-bar tsk-field"></div>
+                        </div>
+                        <div class="tsk-row">
+                            <div class="tsk-bar tsk-label"></div>
+                            <div class="tsk-bar tsk-field"></div>
+                        </div>
+                        <div class="tsk-row">
+                            <div class="tsk-bar tsk-label"></div>
+                            <div class="tsk-bar tsk-field"></div>
+                        </div>
+                    </div>
+                }
+            </div>
+            <p class="sr-only" role="status">Loading training configuration…</p>
         } @else {
-            <p class="muted ts-empty">Loading training configuration…</p>
+            <p class="muted ts-empty">Training configuration is unavailable. Please retry.</p>
         }
     </main>
 

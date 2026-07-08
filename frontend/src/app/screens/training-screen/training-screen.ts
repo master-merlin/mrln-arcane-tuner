@@ -68,6 +68,15 @@ export class TrainingScreen {
     protected availableModels = signal<ModelDefinition[]>([]);
     protected currentSchema = signal<SchemaNode | undefined>(undefined);
 
+    /**
+     * True from construction until the initial model-list + plugin-schema fetch
+     * settles (success OR error). Gates the form skeleton so a slow first load
+     * shows section-shaped placeholders instead of a bare "Loading…" line.
+     * Only the FIRST resolve flips it — scope re-fetches keep the loaded form
+     * on screen rather than flashing back to the skeleton.
+     */
+    protected loading = signal(true);
+
     /** Config segments emitted by the dynamic config form (DOM order). */
     protected segments = signal<TrainingSegment[]>([]);
     /** Section currently in view (scroll-spy). */
@@ -206,8 +215,12 @@ export class TrainingScreen {
             next: defs => {
                 this.availableModels.set(defs); // the scope effect loads the schema once this lands
             },
-            error: (err: { message?: string }) =>
-                this.toast.error('Failed to load model definitions: ' + (err?.message ?? 'unknown error')),
+            error: (err: { message?: string }) => {
+                // No model list → the schema effect never fires, so settle the
+                // loading gate here or the skeleton would spin forever.
+                this.loading.set(false);
+                this.toast.error('Failed to load model definitions: ' + (err?.message ?? 'unknown error'));
+            },
         });
     }
 
@@ -220,9 +233,14 @@ export class TrainingScreen {
         // Scope the dataset dropdown to the project's datasets when in a project
         // (the backend filters dataset_name's enum by project_id); global omits it.
         this.jobs.getPluginSchema(this.pluginId, projectId).subscribe({
-            next: (s) => this.currentSchema.set(s),
-            error: (err: { message?: string }) =>
-                this.toast.error('Failed to load training schema: ' + (err?.message ?? 'unknown error')),
+            next: (s) => {
+                this.currentSchema.set(s);
+                this.loading.set(false);
+            },
+            error: (err: { message?: string }) => {
+                this.loading.set(false);
+                this.toast.error('Failed to load training schema: ' + (err?.message ?? 'unknown error'));
+            },
         });
     }
 

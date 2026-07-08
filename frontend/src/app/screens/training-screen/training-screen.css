@@ -68,6 +68,69 @@
     border-radius: var(--radius-theme-xl);
 }
 
+/* ── Loading skeleton (T12) ───────────────────────────────────────
+   Section-shaped placeholders shown while the model list + plugin
+   schema fetch is in flight, so a slow first load reads as a loading
+   form rather than an empty page. Purely cosmetic (aria-hidden). */
+.ts-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 4px;
+}
+.tsk-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px;
+    background: var(--color-surface-low);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-xl);
+}
+.tsk-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.tsk-bar {
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(
+        90deg,
+        var(--color-surface-mid) 25%,
+        var(--color-surface-high, var(--color-surface-mid)) 37%,
+        var(--color-surface-mid) 63%
+    );
+    background-size: 400% 100%;
+    animation: tsk-shimmer 1.4s ease-in-out infinite;
+}
+.tsk-title {
+    height: 16px;
+    width: 42%;
+    margin-bottom: 2px;
+}
+.tsk-label {
+    height: 10px;
+    width: 28%;
+}
+.tsk-field {
+    height: 30px;
+    width: 100%;
+    border-radius: var(--radius-theme-md, 8px);
+}
+
+@keyframes tsk-shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tsk-bar {
+        animation: none;
+        background: var(--color-surface-mid);
+    }
+}
+
 /* ── RIGHT · estimate wall + VRAM detail (stacked cards) ──────────── */
 .ts-estimate-rail {
     display: flex;

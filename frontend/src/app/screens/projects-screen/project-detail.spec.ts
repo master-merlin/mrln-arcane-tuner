@@ -16,6 +16,27 @@ function signalStub<T>(value: T): (() => T) & { set: (v: T) => void } {
   return Object.assign(() => value, { set: vi.fn() }) as (() => T) & { set: (v: T) => void };
 }
 
+describe('ProjectDetail.resolveState — loading vs not-found gate (P4)', () => {
+  it('is "loading" before the first project load resolves (no premature not-found)', () => {
+    expect(ProjectDetail.resolveState({ hasId: true, loaded: false, loading: true, hasProject: false })).toBe('loading');
+    // Even if a stale `loaded` is true, an in-flight refresh with no match yet reads as loading.
+    expect(ProjectDetail.resolveState({ hasId: true, loaded: true, loading: true, hasProject: false })).toBe('loading');
+  });
+
+  it('is "ready" as soon as the project resolves, regardless of load flags', () => {
+    expect(ProjectDetail.resolveState({ hasId: true, loaded: false, loading: true, hasProject: true })).toBe('ready');
+    expect(ProjectDetail.resolveState({ hasId: true, loaded: true, loading: false, hasProject: true })).toBe('ready');
+  });
+
+  it('is "not-found" ONLY after load resolves and the id is genuinely absent', () => {
+    expect(ProjectDetail.resolveState({ hasId: true, loaded: true, loading: false, hasProject: false })).toBe('not-found');
+  });
+
+  it('stays "loading" while the route id has not been read yet', () => {
+    expect(ProjectDetail.resolveState({ hasId: false, loaded: true, loading: false, hasProject: false })).toBe('loading');
+  });
+});
+
 describe('ProjectDetail — themed confirm migrations', () => {
   it('removeAllDatasets opens the destructive confirm and only removes on confirm', async () => {
     const removeProjectDataset = vi.fn().mockReturnValue(of({}));

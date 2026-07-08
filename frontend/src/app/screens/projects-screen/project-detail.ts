@@ -84,6 +84,37 @@ export class ProjectDetail implements OnInit {
         return this.projects.allProjects().find(p => p.id === id) ?? null;
     });
 
+    /**
+     * Tri-state for the top-level header render (P4). The old template resolved
+     * the project by scanning `allProjects()` and fell straight to a "Project
+     * not found" card whenever the match was missing — including the window
+     * BEFORE the first `loadProjects()` resolves, so a valid deep-link flashed
+     * "not found". Split that window out explicitly:
+     *
+     *  - `ready`     — the project resolved; render the detail.
+     *  - `not-found` — load has resolved and settled, id genuinely absent.
+     *  - `loading`   — route id not read yet, OR a load is in flight / the first
+     *                  load hasn't resolved, so we can't yet claim "missing".
+     *
+     * Pure/static so it's unit-testable without a component instance.
+     */
+    static resolveState(o: { hasId: boolean; loaded: boolean; loading: boolean; hasProject: boolean }):
+        'loading' | 'ready' | 'not-found' {
+        if (o.hasProject) return 'ready';
+        if (!o.hasId) return 'loading';
+        if (o.loaded && !o.loading) return 'not-found';
+        return 'loading';
+    }
+
+    protected viewState = computed<'loading' | 'ready' | 'not-found'>(() =>
+        ProjectDetail.resolveState({
+            hasId: !!this.projectId(),
+            loaded: this.projects.loaded(),
+            loading: this.projects.loading(),
+            hasProject: !!this.project(),
+        }),
+    );
+
     protected tab = signal<DetailTab>('overview');
 
     protected tabs: ReadonlyArray<TabItem<DetailTab>> = [

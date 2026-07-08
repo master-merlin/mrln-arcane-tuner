@@ -90,24 +90,16 @@
                             <div class="card-title">
                                 <app-ico name="Activity" [size]="11"/> Recent activity
                             </div>
-                            <span class="muted" style="font-size: 11px;">stub</span>
                         </div>
+                        <!-- P8: no fabricated rows. Recent activity is derived only
+                             from REAL runs already loaded for this project; until a
+                             dedicated per-project activity feed exists we show the
+                             most recent runs, or an honest empty state. -->
                         <div class="pd-activity-list">
-                            <!-- TODO(backend): no per-project activity feed endpoint yet; stub list. -->
-                            <div class="pd-activity-row">
-                                <div class="pd-activity-icon">
-                                    <app-ico name="Sparkles" [size]="12"/>
-                                </div>
-                                <div class="pd-activity-text">
-                                    <div class="pd-activity-title">Project created</div>
-                                    <div class="pd-activity-sub">{{ p.name }}</div>
-                                </div>
-                                <span class="pd-activity-when">{{ formatUpdated(p.created_at) }}</span>
-                            </div>
                             @if (runs().length === 0) {
-                                <div class="pd-empty">No runs yet for this project.</div>
+                                <div class="pd-empty">No activity yet for this project.</div>
                             } @else {
-                                @for (r of runs().slice(0, 3); track trackJob($index, r)) {
+                                @for (r of runs().slice(0, 5); track trackJob($index, r)) {
                                     <div class="pd-activity-row">
                                         <div class="pd-activity-icon">
                                             <app-ico name="Play" [size]="12"/>
@@ -241,6 +233,11 @@
                             </table>
                         }
                     </div>
+                } @placeholder {
+                    <div class="card pd-defer-skel" aria-hidden="true">
+                        <div class="pd-skel pd-skel-line" style="width: 34%;"></div>
+                        <div class="pd-skel pd-skel-block"></div>
+                    </div>
                 }
             }
 
@@ -342,6 +339,11 @@
                             }
                         </div>
                     }
+                } @placeholder {
+                    <div class="card pd-defer-skel" aria-hidden="true">
+                        <div class="pd-skel pd-skel-line" style="width: 34%;"></div>
+                        <div class="pd-skel pd-skel-block"></div>
+                    </div>
                 }
             }
 
@@ -494,6 +496,11 @@
                             emptyText="Select a template to estimate."
                             (updateStats)="updateStatsFromHistory()" />
                     </div>
+                } @placeholder {
+                    <div class="card pd-defer-skel" aria-hidden="true">
+                        <div class="pd-skel pd-skel-line" style="width: 34%;"></div>
+                        <div class="pd-skel pd-skel-block"></div>
+                    </div>
                 }
             }
 
@@ -526,12 +533,40 @@
                             </div>
                         }
                     </div>
+                } @placeholder {
+                    <div class="card pd-defer-skel" aria-hidden="true">
+                        <div class="pd-skel pd-skel-line" style="width: 34%;"></div>
+                        <div class="pd-skel pd-skel-block"></div>
+                    </div>
                 }
             }
         }
-    } @else {
+    } @else if (viewState() === 'not-found') {
         <div class="card pd-empty">
             Project not found. <button class="btn ghost sm" type="button" routerLink="/projects">Back to Projects</button>
+        </div>
+    } @else {
+        <!-- P4: loading skeleton — distinct from "not found" so a valid deep-link
+             never flashes the missing-project card before the list resolves. -->
+        <div class="card pd-header-card" role="status" aria-label="Loading project" aria-busy="true">
+            <div class="pd-header-row">
+                <div class="pd-header-left">
+                    <div class="pd-skel pd-skel-badge"></div>
+                    <div class="pd-title-stack" style="flex: 1;">
+                        <div class="pd-skel pd-skel-line sm" style="width: 90px;"></div>
+                        <div class="pd-skel pd-skel-line lg" style="width: 240px;"></div>
+                        <div class="pd-skel pd-skel-line" style="width: 320px;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="pd-stat-strip">
+                @for (i of [0,1,2,3,4]; track i) {
+                    <div>
+                        <div class="pd-skel pd-skel-line sm" style="width: 60%;"></div>
+                        <div class="pd-skel pd-skel-line lg" style="width: 40%; margin-top: 6px;"></div>
+                    </div>
+                }
+            </div>
         </div>
     }
 </div>

@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { EntityStore } from './entity-store';
 import { Dataset, DatasetService } from '../services/dataset';
@@ -20,6 +20,16 @@ import { ToastService } from '../services/toast';
 export class DatasetStore extends EntityStore<Dataset> {
     protected entityName = 'dataset';
     private api = inject(DatasetService);
+
+    /**
+     * Tri-state gate for the library grid. `true` from construction until the
+     * first {@link loadAll} resolves (success OR error), and again for the
+     * duration of any subsequent reload. Lets the datasets screen render
+     * skeleton cards instead of flashing the empty-state message while the
+     * initial list is still in flight (the "false-empty flash").
+     */
+    private _loading = signal(true);
+    readonly loading = this._loading.asReadonly();
 
     constructor(ws: WebSocketService, toast: ToastService) {
         super(ws, toast);
@@ -119,8 +129,13 @@ export class DatasetStore extends EntityStore<Dataset> {
     }
 
     public override async loadAll(): Promise<void> {
-        const datasets = await firstValueFrom(this.api.listDatasets());
-        this.setAll(datasets);
+        this._loading.set(true);
+        try {
+            const datasets = await firstValueFrom(this.api.listDatasets());
+            this.setAll(datasets);
+        } finally {
+            this._loading.set(false);
+        }
     }
 
     /**

@@ -151,4 +151,33 @@ describe('DatasetStore', () => {
         // Same object reference ⇒ no second upsert.
         expect(store.entities().find(d => d.name === 'alpha')).toBe(ref);
     });
+
+    // ── loading tri-state (D2) ─────────────────────────────────────────────
+    //
+    // The datasets grid needs a real "fetch in flight" flag so it can render
+    // skeletons instead of flashing the empty-state message before the first
+    // list arrives. The store owns loadAll(), so it owns the flag.
+
+    it('starts in a loading state before the first load resolves', () => {
+        // Constructed in beforeEach; no loadAll has resolved yet.
+        expect(store.loading()).toBe(true);
+    });
+
+    it('loading stays true while the fetch is in flight and clears on success', async () => {
+        const gate = new Subject<Dataset[]>();
+        api.listDatasets.mockReturnValue(gate.asObservable());
+        const p = store.loadAll();
+        // Synchronously after loadAll() starts, the fetch is in flight.
+        expect(store.loading()).toBe(true);
+        gate.next([makeDataset('a', 'alpha')]);
+        gate.complete();
+        await p;
+        expect(store.loading()).toBe(false);
+    });
+
+    it('clears loading even when the fetch fails', async () => {
+        api.listDatasets.mockReturnValue(throwError(() => new Error('boom')));
+        await store.loadAll().catch(() => undefined);
+        expect(store.loading()).toBe(false);
+    });
 });

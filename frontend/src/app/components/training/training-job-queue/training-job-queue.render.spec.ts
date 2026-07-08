@@ -38,6 +38,7 @@ function setup(): {
         setAutoResume: Mock;
         getAutoQueue: Mock;
         setAutoQueue: Mock;
+        reorderJob: Mock;
     };
 } {
     const api = {
@@ -48,6 +49,7 @@ function setup(): {
         setAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
         getAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
         setAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
+        reorderJob: vi.fn().mockReturnValue(of({ status: 'ok', direction: 'up' })),
     };
     const wsStub = {
         entityChanged: signal(null),
@@ -149,5 +151,72 @@ describe('TrainingJobQueueComponent — rendered DOM', () => {
         // The control soft-stops the run (saves a checkpoint, then ends it) —
         // the label must make the stop explicit rather than implying a snapshot.
         expect(btn!.title.toLowerCase()).toContain('stop');
+    });
+
+    // ── T8: keyboard-operable rows + optimistic reorder ────────────────
+    function pending(id: string, priority: number): Job {
+        return { id, plugin_id: 'p', config: { lora_name: id }, status: JobStatus.PENDING, created_at: 0, priority };
+    }
+
+    it('makes queue rows keyboard-operable: role="button" + tabindex, Enter selects', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        fixture.componentInstance.jobs.set([pending('p1', 0), pending('p2', 1)]);
+        fixture.detectChanges();
+
+        const el = fixture.nativeElement as HTMLElement;
+        const row = el.querySelector<HTMLElement>('[data-testid="job-item-p1"]')!;
+        expect(row.getAttribute('role')).toBe('button');
+        expect(row.getAttribute('tabindex')).toBe('0');
+
+        expect(fixture.componentInstance.isSelected('p1')).toBe(false);
+        row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        fixture.detectChanges();
+        expect(fixture.componentInstance.isSelected('p1')).toBe(true);
+    });
+
+    it('selects a queue row on Space (and the row is focusable)', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        fixture.componentInstance.jobs.set([pending('p1', 0), pending('p2', 1)]);
+        fixture.detectChanges();
+
+        const el = fixture.nativeElement as HTMLElement;
+        const row = el.querySelector<HTMLElement>('[data-testid="job-item-p2"]')!;
+        row.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+        fixture.detectChanges();
+        expect(fixture.componentInstance.isSelected('p2')).toBe(true);
+    });
+
+    it('reorder chevrons expose aria-labels (Move up / Move down)', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        fixture.componentInstance.jobs.set([pending('p1', 0), pending('p2', 1)]);
+        fixture.detectChanges();
+
+        const el = fixture.nativeElement as HTMLElement;
+        const up = el.querySelector<HTMLButtonElement>('[data-testid="move-up-p2"]')!;
+        const down = el.querySelector<HTMLButtonElement>('[data-testid="move-down-p1"]')!;
+        expect(up.getAttribute('aria-label')).toBe('Move up');
+        expect(down.getAttribute('aria-label')).toBe('Move down');
+    });
+
+    it('reorders optimistically in the local list before/without a full reload', () => {
+        const { fixture, api } = setup();
+        fixture.detectChanges(); // ngOnInit → one listJobs call
+        fixture.componentInstance.jobs.set([pending('p1', 0), pending('p2', 1)]);
+        fixture.detectChanges();
+
+        // Baseline order comes from priority ascending.
+        expect(fixture.componentInstance.pendingJobs().map(j => j.id)).toEqual(['p1', 'p2']);
+        const listCallsBefore = api.listJobs.mock.calls.length;
+
+        // Nudge p2 up — the local list must reflect it immediately.
+        fixture.componentInstance.reorder('p2', 'up');
+        expect(fixture.componentInstance.pendingJobs().map(j => j.id)).toEqual(['p2', 'p1']);
+
+        // Persisted exactly once, with no full reload on the success path.
+        expect(api.reorderJob).toHaveBeenCalledWith('p2', 'up');
+        expect(api.listJobs.mock.calls.length).toBe(listCallsBefore);
     });
 });

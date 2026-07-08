@@ -753,3 +753,136 @@
     cursor: pointer;
 }
 .ds-sort-dir:hover { border-color: var(--color-brand); }
+
+/* ── D5 · per-card selection + bulk bar ─────────────────────────────────── */
+
+/* Selection checkbox: sits top-left of the preview. Hidden by default, it
+   fades in on card hover/focus and stays visible once anything is selected
+   (the `.selection-active` flag on the card) or this card itself is selected. */
+.ds-card-select {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 6;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: var(--radius-theme-sm);
+    border: 1.5px solid oklch(1 0 0 / 0.55);
+    background: oklch(0.10 0.01 265 / 0.6);
+    backdrop-filter: blur(6px);
+    color: oklch(0.98 0.01 265);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 140ms, background 140ms, border-color 140ms;
+}
+.ds-card:hover .ds-card-select,
+.ds-card:focus-within .ds-card-select,
+.ds-card.selection-active .ds-card-select,
+.ds-card-select.on,
+.ds-card-select:focus-visible {
+    opacity: 1;
+}
+.ds-card-select.on {
+    background: var(--color-brand);
+    border-color: var(--color-brand);
+    color: #fff;
+}
+/* The HPS pill also lives top-left; nudge it right when the checkbox shows so
+   they don't overlap. */
+.ds-card.selection-active .ds-card-hps,
+.ds-card:hover .ds-card-hps,
+.ds-card:focus-within .ds-card-hps {
+    left: 38px;
+}
+.ds-card.is-selected {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+}
+
+/* Keyboard focus ring — cards are now role="button" tabindex="0". */
+.ds-card:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+}
+
+/* Bulk action bar — appears above the grid when ≥1 card is selected. */
+.ds-bulk-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    position: sticky;
+    top: 8px;
+    z-index: 30;
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    background: var(--color-surface-high);
+    border: 1px solid var(--color-brand);
+    border-radius: var(--radius-theme-lg);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.ds-bulk-info {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--color-text-primary);
+    font-weight: 600;
+}
+.ds-bulk-count {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--color-brand);
+}
+.ds-bulk-label {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.ds-bulk-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.ds-bulk-sep {
+    width: 1px;
+    height: 20px;
+    background: var(--color-border-subtle);
+}
+.ds-bulk-add-wrap {
+    position: relative;
+}
+/* The bulk picker anchors below its trigger (bar sits above the grid), unlike
+   the per-card picker which opens upward. */
+.ds-bulk-project-picker {
+    top: calc(100% + 4px);
+    bottom: auto;
+    left: 0;
+    right: auto;
+}
+.ds-bulk-danger {
+    color: var(--color-danger);
+    border-color: color-mix(in oklab, var(--color-danger) 35%, transparent);
+}
+.ds-bulk-danger:hover {
+    background: color-mix(in oklab, var(--color-danger) 12%, transparent);
+    border-color: var(--color-danger);
+}
+
+/* Menu-item keyboard focus ring for the role="menu" popups. */
+.ds-filter-picker-item:focus-visible,
+.ds-filter-picker-back:focus-visible,
+.ds-project-picker-item:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ds-card-select { transition: none; }
+}

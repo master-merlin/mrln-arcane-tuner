@@ -64,6 +64,13 @@ interface ProjectCard {
             position: relative;
             overflow: hidden;
         }
+        /* P3: the cards are role="button" click targets — give keyboard users a
+           visible focus ring matching the app's focus-visible convention. */
+        .ps-card:focus-visible,
+        .ps-new-card:focus-visible {
+            outline: 2px solid var(--color-brand);
+            outline-offset: 2px;
+        }
         .ps-card-accent {
             position: absolute;
             top: 0; left: 0; right: 0;

@@ -80,7 +80,13 @@
     } @else {
         <div class="ps-grid">
             @for (c of cards(); track trackById($index, c)) {
-                <div class="card lift ps-card" (click)="open(c.project)">
+                <div class="card lift ps-card"
+                     role="button" tabindex="0"
+                     [attr.aria-label]="'Open project ' + c.project.name"
+                     data-testid="project-card"
+                     (click)="open(c.project)"
+                     (keydown.enter)="open(c.project)"
+                     (keydown.space)="open(c.project); $event.preventDefault()">
                     <div class="ps-card-accent" [style.background]="c.project.color || '#6366f1'"></div>
                     <div class="ps-card-head">
                         <div class="ps-card-head-left">
@@ -96,13 +102,15 @@
                         </div>
                         <div class="ps-card-head-actions">
                             <button class="icon-btn" type="button"
+                                    data-testid="project-card-export"
                                     (click)="exportProject(c.project, $event)"
-                                    title="Export project">
+                                    title="Export project" aria-label="Export project">
                                 <app-ico name="Download" [size]="13"/>
                             </button>
                             <button class="icon-btn" type="button"
+                                    data-testid="project-card-edit"
                                     (click)="editProject(c.project, $event)"
-                                    title="Edit project">
+                                    title="Edit project" aria-label="Edit project">
                                 <app-ico name="Settings" [size]="13"/>
                             </button>
                         </div>
@@ -135,7 +143,13 @@
             }
 
             <!-- New project card -->
-            <div class="card lift ps-new-card" (click)="newProject()">
+            <div class="card lift ps-new-card"
+                 role="button" tabindex="0"
+                 aria-label="New project"
+                 data-testid="new-project-card"
+                 (click)="newProject()"
+                 (keydown.enter)="newProject()"
+                 (keydown.space)="newProject(); $event.preventDefault()">
                 <div class="ps-new-bubble">
                     <app-ico name="Plus" [size]="20"/>
                 </div>

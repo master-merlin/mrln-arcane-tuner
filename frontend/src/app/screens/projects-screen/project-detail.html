@@ -23,16 +23,16 @@
                     </div>
                 </div>
                 <div class="pd-header-actions">
-                    <button class="btn sm" type="button" (click)="exportThisProject()" title="Export project">
+                    <button class="btn sm" type="button" (click)="exportThisProject()" title="Export project" aria-label="Export project">
                         <app-ico name="Download" [size]="13"/>
                     </button>
-                    <button class="btn sm" type="button" (click)="importIntoProject()" title="Import into project">
+                    <button class="btn sm" type="button" (click)="importIntoProject()" title="Import into project" aria-label="Import into project">
                         <app-ico name="Upload" [size]="13"/>
                     </button>
-                    <button class="btn sm" type="button" (click)="editProject()" title="Edit project">
+                    <button class="btn sm" type="button" (click)="editProject()" title="Edit project" aria-label="Edit project">
                         <app-ico name="Pencil" [size]="13"/>
                     </button>
-                    <button class="btn sm danger-out" type="button" (click)="deleteProject()" title="Delete project">
+                    <button class="btn sm danger-out" type="button" (click)="deleteProject()" title="Delete project" aria-label="Delete project">
                         <app-ico name="Trash2" [size]="13"/>
                     </button>
                 </div>
@@ -223,7 +223,8 @@
                                             <td>
                                                 <button class="icon-btn" type="button"
                                                         (click)="removeDatasetFromProject(d, $event)"
-                                                        title="Remove from project">
+                                                        title="Remove from project"
+                                                        [attr.aria-label]="'Remove dataset ' + d.name + ' from project'">
                                                     <app-ico name="X" [size]="13"/>
                                                 </button>
                                             </td>
@@ -313,22 +314,26 @@
                                                     </div>
                                                     <button class="icon-btn" type="button"
                                                             (click)="exportTemplate(s.domain, t)"
-                                                            title="Export this template">
+                                                            title="Export this template"
+                                                            [attr.aria-label]="'Export template ' + t.name">
                                                         <app-ico name="Download" [size]="13"/>
                                                     </button>
                                                     <button class="icon-btn" type="button"
                                                             (click)="editTemplate(s.domain, t)"
-                                                            [title]="s.domain === 'training' ? 'Open in Training screen' : 'Edit template settings'">
+                                                            [title]="s.domain === 'training' ? 'Open in Training screen' : 'Edit template settings'"
+                                                            [attr.aria-label]="(s.domain === 'training' ? 'Open template ' + t.name + ' in Training screen' : 'Edit template ' + t.name + ' settings')">
                                                         <app-ico name="Pencil" [size]="13"/>
                                                     </button>
                                                     <button class="icon-btn" type="button"
                                                             (click)="editTemplateJson(s.domain, t)"
-                                                            title="Edit raw JSON">
+                                                            title="Edit raw JSON"
+                                                            [attr.aria-label]="'Edit raw JSON of template ' + t.name">
                                                         <app-ico name="Braces" [size]="13"/>
                                                     </button>
                                                     <button class="icon-btn" type="button"
                                                             (click)="deleteProjectTemplate(s.domain, t)"
-                                                            title="Delete this project template">
+                                                            title="Delete this project template"
+                                                            [attr.aria-label]="'Delete template ' + t.name">
                                                         <app-ico name="Trash2" [size]="13"/>
                                                     </button>
                                                 </div>

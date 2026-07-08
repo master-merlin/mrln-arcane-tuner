@@ -40,7 +40,9 @@
       </div>
       @for (job of runningJobs(); track job.id) {
         <div [attr.data-testid]="'job-item-' + job.id"
+             role="button" tabindex="0"
              (click)="select(job.id)"
+             (keydown)="onRowSelectKey($event, job.id)"
              class="q-card mb-2 p-3 rounded-theme-md bg-surface-mid/70 cursor-pointer transition-colors hover:bg-surface-mid border-l-2 border-l-success"
              [class.q-card-selected]="isSelected(job.id)">
           <div class="mb-1.5">
@@ -102,7 +104,9 @@
       </div>
       @for (job of pendingJobs(); track job.id; let i = $index) {
         <div [attr.data-testid]="'job-item-' + job.id"
+             role="button" tabindex="0"
              (click)="select(job.id)"
+             (keydown)="onRowSelectKey($event, job.id)"
              class="q-card mb-2 p-3 rounded-theme-md cursor-pointer transition-colors hover:bg-surface-mid/60 border-l-2 border-l-warning"
              [class.q-card-selected]="isSelected(job.id)">
           <div class="flex items-start justify-between gap-1.5 mb-1.5">
@@ -119,10 +123,10 @@
             <button (click)="startJob(job.id)" [attr.data-testid]="'start-job-' + job.id" class="btn sm flex-1 justify-center" title="Start now">
               <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start
             </button>
-            <button (click)="reorder(job.id, 'up')" [disabled]="i === 0" [attr.data-testid]="'move-up-' + job.id" class="q-icon disabled:opacity-30 disabled:cursor-not-allowed" title="Move up (run sooner)">
+            <button (click)="reorder(job.id, 'up')" [disabled]="i === 0" [attr.data-testid]="'move-up-' + job.id" aria-label="Move up" class="q-icon disabled:opacity-30 disabled:cursor-not-allowed" title="Move up (run sooner)">
               <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
             </button>
-            <button (click)="reorder(job.id, 'down')" [disabled]="i === pendingJobs().length - 1" [attr.data-testid]="'move-down-' + job.id" class="q-icon disabled:opacity-30 disabled:cursor-not-allowed" title="Move down (run later)">
+            <button (click)="reorder(job.id, 'down')" [disabled]="i === pendingJobs().length - 1" [attr.data-testid]="'move-down-' + job.id" aria-label="Move down" class="q-icon disabled:opacity-30 disabled:cursor-not-allowed" title="Move down (run later)">
               <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
             </button>
             @if (canEditConfig(job)) {
@@ -183,7 +187,9 @@
 <!-- ── Reusable recent/archive row ──────────────────────────────────── -->
 <ng-template #recentRow let-job>
   <div [attr.data-testid]="'job-item-' + job.id"
+       role="button" tabindex="0"
        (click)="select(job.id)"
+       (keydown)="onRowSelectKey($event, job.id)"
        class="q-recent flex items-center gap-2.5 px-2.5 py-2 mb-0.5 rounded cursor-pointer transition-colors hover:bg-surface-mid/60"
        [class.q-card-selected]="isSelected(job.id)"
        [style.border-left]="'2px solid ' + (job.status === JobStatus.FAILED ? 'var(--color-danger)' : 'var(--color-text-disabled)')">

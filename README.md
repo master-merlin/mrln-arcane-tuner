@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.7.2-beta` · PyTorch 2.10 · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
+`v0.7.5-beta` · PyTorch 2.10 · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
 
 **Author:** [master-merlin](https://github.com/master-merlin) · **Repository:** [github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)
 
@@ -152,8 +152,8 @@ required:
 
 ```
 mastermerlin/mrln-arcane-tuner:latest             # rolling latest (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:0.7.2-beta        # pinned version (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:0.7.2-beta-cu126  # fallback for legacy R560–R565 drivers
+mastermerlin/mrln-arcane-tuner:0.7.5-beta        # pinned version (CUDA 12.8 / cu128)
+mastermerlin/mrln-arcane-tuner:0.7.5-beta-cu126  # fallback for legacy R560–R565 drivers
 ```
 
 The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.10 · Python 3.12**
@@ -172,14 +172,14 @@ is parameterized via build args (default cu128):
 
 ```bash
 # Primary (cu128 — Blackwell + modern fleet). Tag with version and latest.
-docker build -t mastermerlin/mrln-arcane-tuner:0.7.2-beta -t mastermerlin/mrln-arcane-tuner:latest .
-docker push mastermerlin/mrln-arcane-tuner:0.7.2-beta
+docker build -t mastermerlin/mrln-arcane-tuner:0.7.5-beta -t mastermerlin/mrln-arcane-tuner:latest .
+docker push mastermerlin/mrln-arcane-tuner:0.7.5-beta
 docker push mastermerlin/mrln-arcane-tuner:latest
 
 # Fallback (cu126 — legacy R560–R565 drivers).
 docker build --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
-    -t mastermerlin/mrln-arcane-tuner:0.7.2-beta-cu126 .
-docker push mastermerlin/mrln-arcane-tuner:0.7.2-beta-cu126
+    -t mastermerlin/mrln-arcane-tuner:0.7.5-beta-cu126 .
+docker push mastermerlin/mrln-arcane-tuner:0.7.5-beta-cu126
 ```
 
 ### 2. Create the pod on RunPod
@@ -188,7 +188,7 @@ docker push mastermerlin/mrln-arcane-tuner:0.7.2-beta-cu126
   6000 Blackwell). The default image is built for **CUDA 12.8** (cu128) and
   needs an **R570+** host driver — standard on current cloud hosts and mandatory
   for Blackwell anyway. On a legacy host stuck on **R560–R565**, use the
-  `:0.7.2-beta-cu126` tag instead (no Blackwell support). Avoid CUDA 13 in the
+  `:0.7.5-beta-cu126` tag instead (no Blackwell support). Avoid CUDA 13 in the
   container: it needs R580+ and its forward-compat layer breaks cuBLAS on older
   drivers.
 - **Container image:** `mastermerlin/mrln-arcane-tuner:latest`

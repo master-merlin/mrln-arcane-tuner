@@ -6,14 +6,14 @@
 .ds-screen { display: contents; }
 .ds-actions { display: flex; gap: 8px; }
 
-/* D8 · fluid KPI rail. Tiles auto-fill by available width (min ~160px) so the
-   rail reflows instead of forcing six columns onto narrow viewports. The two
-   media breakpoints then pin it to a tidy 3-up, then 2-up, on progressively
-   narrower widths (auto-fill alone can leave an awkward orphan column). The
-   page body never scrolls horizontally: 1fr tracks + a 160px min shrink to fit. */
+/* D8 · fluid KPI rail. auto-FIT (not auto-fill) so the six tiles always stretch
+   to fill the full width — auto-fill leaves empty phantom tracks on wide
+   viewports, pinning the tiles to their 160px min and orphaning space on the
+   right. The two media breakpoints pin it to a tidy 3-up, then 2-up, on
+   progressively narrower widths. Body never scrolls horizontally (1fr + min). */
 .ds-kpi-rail {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 12px;
     margin-bottom: 18px;
 }
@@ -24,13 +24,15 @@
     .ds-kpi-rail { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* D8 · fluid card grid. Cards auto-fill at a ~230px min so they reflow by
-   available width (was a fixed 6-col grid with no breakpoints). Combined with
-   the D4 container-query action bar, each card adapts its own internals to the
-   width the grid hands it. 1fr tracks guarantee no horizontal page scroll. */
+/* D8 · fluid card grid, capped at 6 columns. The dynamic min
+   `max(240px, (100% - gaps)/6)` keeps cards LARGE on wide monitors (never more
+   than six columns, matching the pre-P07 feel) while still reflowing to fewer
+   columns as the viewport narrows and the 240px floor takes over. Uncapped
+   auto-fill previously produced 8–10 tiny columns on big screens. gap 12px ×
+   5 = 60px of inter-column space at the 6-col cap. No horizontal page scroll. */
 .ds-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(max(240px, (100% - 60px) / 6), 1fr));
     gap: 12px;
 }
 
@@ -485,7 +487,11 @@
     position: relative;
     align-items: center;
 }
-@container (max-width: 340px) {
+/* Collapse the secondary icons into the "⋯" overflow only when a card is
+   genuinely too narrow to seat all ten actions inline (~280px). Above that —
+   the common desktop case now that the grid caps at six large columns — every
+   icon shows and the trigger is hidden. */
+@container (max-width: 280px) {
     .ds-card-actions-secondary { display: none; }
     .ds-card-actions-overflow { display: inline-flex; }
 }

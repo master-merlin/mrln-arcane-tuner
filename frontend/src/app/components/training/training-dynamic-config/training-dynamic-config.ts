@@ -432,12 +432,48 @@ export interface TrainingSegment {
           }
         </div>
 
-        <button type="submit"
-          [disabled]="!form.valid"
-          data-testid="submit-config-btn"
-          class="btn primary self-start mt-1">
-          Start Training Session
-        </button>
+        <!-- ── Sticky launch bar (T10/T11) ──────────────────────────────
+             Pinned to the bottom of the scrolling form pane so the launch is
+             reachable without scrolling to the form's end. Carries a compact
+             echo of the key estimate (peak VRAM + wall time, reusing the rail
+             signals) and — when the form is invalid — surfaces HOW MANY
+             sections need attention with a jump-to-first-invalid affordance. -->
+        <div class="ts-launch-bar" data-testid="launch-bar">
+          <div class="ts-launch-estimate" aria-live="polite">
+            @if (stickyWallTime(); as wt) {
+              <span class="ts-launch-metric">
+                <span class="ts-launch-metric-k">Wall</span>
+                <span class="ts-launch-metric-v" data-testid="launch-wall-time">{{ wt }}</span>
+              </span>
+            }
+            @if (vramReport(); as v) {
+              <span class="ts-launch-metric" [class.over]="!v.fits">
+                <span class="ts-launch-metric-k">Peak VRAM</span>
+                <span class="ts-launch-metric-v" data-testid="launch-peak-vram">{{ stickyPeakVram() }}</span>
+              </span>
+            }
+          </div>
+
+          <div class="ts-launch-actions">
+            @if (invalidSectionCount() > 0) {
+              <button type="button"
+                      class="ts-launch-attn"
+                      data-testid="jump-to-invalid"
+                      (click)="jumpToFirstInvalid()"
+                      [attr.aria-label]="'Go to ' + firstInvalidSegment()?.label + ' — first of ' + invalidSectionCount() + ' section' + (invalidSectionCount() === 1 ? '' : 's') + ' needing attention'">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                <span data-testid="invalid-count">{{ invalidSectionCount() }} section{{ invalidSectionCount() === 1 ? '' : 's' }} need{{ invalidSectionCount() === 1 ? 's' : '' }} attention</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg>
+              </button>
+            }
+            <button type="submit"
+              [disabled]="!form.valid"
+              data-testid="submit-config-btn"
+              class="btn primary ts-launch-cta">
+              Start Training Session
+            </button>
+          </div>
+        </div>
 
       </form>
     }
@@ -1766,6 +1802,77 @@ export class TrainingDynamicConfigComponent {
     }
     return out;
   });
+
+  // ── Launch UX (T10/T11) ─────────────────────────────────────────────
+  /**
+   * Sections (Model Selection + each visible group) that currently hold an
+   * invalid, visible control — i.e. the reasons the launch is blocked. Emitted
+   * in DOM order so `firstInvalidSegment` is the top-most one to jump to. Reuses
+   * the same per-group validity check that drives the section-header "attn"
+   * chips, and reads `formVersion`/`capabilities` so it recomputes as the form
+   * mutates (signals don't track FormGroup value changes natively).
+   */
+  readonly invalidSegments = computed<{ id: string; label: string }[]>(() => {
+    this.formVersion();
+    this.capabilities();
+    const out: { id: string; label: string }[] = [];
+    const consider = (label: string) => {
+      if (this._groupHasInvalid(label)) out.push({ id: this.segmentId(label), label });
+    };
+    consider('Model Selection');
+    for (const group of this.groups()) {
+      if (this.isGroupHidden(group)) continue;
+      consider(group.name);
+    }
+    return out;
+  });
+
+  /** How many sections need attention (0 ⇒ the form is launch-ready). */
+  readonly invalidSectionCount = computed(() => this.invalidSegments().length);
+
+  /** The top-most section needing attention, or null when launch-ready. */
+  readonly firstInvalidSegment = computed<{ id: string; label: string } | null>(
+    () => this.invalidSegments()[0] ?? null,
+  );
+
+  /**
+   * Expand (and smooth-scroll to) the first section that needs attention, so a
+   * user is never left hunting for a validation error buried inside a collapsed
+   * group. Wired to the launch bar's "N sections need attention" affordance.
+   * No-op when the form is already valid.
+   */
+  jumpToFirstInvalid(): void {
+    const target = this.firstInvalidSegment();
+    if (!target) return;
+    this.expandSegment(target.id);
+    // Scroll on the next tick so the just-expanded group body is laid out.
+    // Guarded for headless/unit runs where the section element isn't mounted.
+    setTimeout(() => {
+      const behavior: ScrollBehavior = this._prefersReducedMotion() ? 'auto' : 'smooth';
+      document.getElementById(target.id)?.scrollIntoView({ behavior, block: 'start' });
+    });
+  }
+
+  private _prefersReducedMotion(): boolean {
+    return typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  /**
+   * Compact peak-VRAM echo for the sticky launch bar (e.g. "20.0 / 96.0 GB").
+   * Reuses the live VRAM report — never recomputes the estimate.
+   */
+  readonly stickyPeakVram = computed(() => {
+    const v = this.vramReport();
+    if (!v) return null;
+    const peak = (v.peak_mb / 1024).toFixed(1);
+    const total = ((v.total_mb || v.available_mb) / 1024).toFixed(1);
+    return `${peak} / ${total} GB`;
+  });
+
+  /** Compact wall-time echo for the sticky launch bar. Reuses the estimate. */
+  readonly stickyWallTime = computed(() => this.estimate()?.wall_time?.display ?? null);
 
   /** Emits the segment list whenever it changes, for the shell to render a TOC. */
   segmentsChanged = output<TrainingSegment[]>();

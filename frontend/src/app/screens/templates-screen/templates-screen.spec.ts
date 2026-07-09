@@ -132,3 +132,43 @@ describe('TemplatesScreen.remove — themed confirm', () => {
     expect(deleteTemplate).toHaveBeenCalledWith('training', 't1');
   });
 });
+
+describe('TemplatesScreen — P7 training-template edit affordance', () => {
+  const proto = TemplatesScreen.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+
+  it('marks training edits with a distinct "leaves the screen" icon vs the in-place pencil', () => {
+    expect(proto['editIcon'].call({}, 'training')).toBe('ExternalLink');
+    expect(proto['editIcon'].call({}, 'captioning')).toBe('Pencil');
+    expect(proto['editIcon'].call({}, 'masking')).toBe('Pencil');
+  });
+
+  it('edit(): training hands off to /training (no modal); caption opens the edit modal', () => {
+    const set = vi.fn();
+    const navigate = vi.fn();
+    const openModal = vi.fn();
+    const scope = { setProject: vi.fn(), setGlobal: vi.fn() };
+
+    const trainingCtx = {
+      templates: { getTemplate: () => of({ id: 't1', name: 'T', config: { a: 1 }, definition_id: 'flux', project_id: 'p1' }) },
+      scope, handoff: { set }, router: { navigate }, overlay: { openModal },
+      toast: { error: vi.fn() },
+      msg: () => 'err',
+      openTrainingTemplate: proto['openTrainingTemplate'],
+    };
+    proto['edit'].call(trainingCtx, { domain: 'training', tpl: { id: 't1' } });
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith(['/training']);
+    expect(openModal).not.toHaveBeenCalled();
+
+    openModal.mockClear();
+    const captionCtx = {
+      templates: { getTemplate: () => of({ id: 'c1', name: 'C', config: {}, project_id: null }) },
+      scope, handoff: { set }, router: { navigate }, overlay: { openModal },
+      toast: { error: vi.fn() },
+      msg: () => 'err',
+      load: vi.fn(),
+    };
+    proto['edit'].call(captionCtx, { domain: 'captioning', tpl: { id: 'c1' } });
+    expect(openModal).toHaveBeenCalledWith('template-edit', expect.objectContaining({ domain: 'captioning' }));
+  });
+});

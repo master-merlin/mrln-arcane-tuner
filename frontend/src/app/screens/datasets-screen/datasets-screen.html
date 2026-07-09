@@ -65,6 +65,9 @@
         <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="danger" [sub]="maskedSub()"/>
         <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="violet" [sub]="cachedSub()"/>
         <app-kpi-tile label="HPS — MEDIAN" [value]="hpsMedianLabel()" accent="warning" [sub]="hpsRangeLabel()">
+            <span class="ds-hps-info" role="img" tabindex="0"
+                  aria-label="What is HPS?"
+                  [title]="hpsLegend">i</span>
             <div class="ds-mini-histo">
                 @for (b of hpsStats().buckets; track $index) {
                     <div class="ds-mini-histo-bar"
@@ -392,9 +395,12 @@
                     }
 
                     @if (hpsTone(d); as tone) {
-                        <span [class]="'ds-card-hps hps-pill ' + tone" title="Median HPSv2 quality score">
+                        <span [class]="'ds-card-hps hps-pill ' + tone"
+                              [title]="hpsPillAria(d)"
+                              [attr.aria-label]="hpsPillAria(d)">
                             <span class="hps-pill-label">HPS</span>
                             <span class="hps-pill-value">{{ hpsLabel(d) }}</span>
+                            <span class="hps-pill-band">{{ hpsBandWord(tone) }}</span>
                         </span>
                     }
                     @if (scopeIsGlobal && projectBadge(); as pb) {

@@ -72,10 +72,32 @@
 .pd-template-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pd-template-name { font-size: 12.5px; font-weight: 600; }
 .pd-template-sub { font-size: 10.5px; color: var(--color-text-muted); font-family: var(--font-mono); }
+/* P7: the training "Edit" opens the separate Training screen (leaves this
+   project), so tint its icon (violet = training domain colour) to set it apart
+   from the in-place caption/mask pencil in the same row. */
+.pd-edit-training { color: var(--color-violet); }
 
 /* Quick train */
 .pd-quick-train { display: grid; grid-template-columns: 1fr 320px; gap: 14px; }
 .pd-qt-body { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+
+/* Guided flow steps (P5): ① dataset → ② template → ③ name & launch. */
+.pd-qt-step { display: flex; flex-direction: column; gap: 10px; }
+.pd-qt-step + .pd-qt-step { padding-top: 14px; border-top: 1px solid var(--color-border-subtle); }
+.pd-qt-step-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; font-weight: 700;
+    color: var(--color-text-secondary);
+    letter-spacing: -0.01em;
+}
+.pd-qt-step-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 50%;
+    font-size: 11px; font-weight: 800; line-height: 1;
+    color: white;
+    background: var(--color-brand);
+    flex-shrink: 0;
+}
 .pd-qt-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .pd-qt-input-row { display: flex; gap: 6px; align-items: stretch; }
 .pd-qt-input-row .input { flex: 1; }

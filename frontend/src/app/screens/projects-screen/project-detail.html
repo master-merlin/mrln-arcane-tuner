@@ -320,9 +320,10 @@
                                                     </button>
                                                     <button class="icon-btn" type="button"
                                                             (click)="editTemplate(s.domain, t)"
-                                                            [title]="s.domain === 'training' ? 'Open in Training screen' : 'Edit template settings'"
+                                                            [class.pd-edit-training]="s.domain === 'training'"
+                                                            [title]="s.domain === 'training' ? 'Open in Training screen (leaves this project)' : 'Edit template settings'"
                                                             [attr.aria-label]="(s.domain === 'training' ? 'Open template ' + t.name + ' in Training screen' : 'Edit template ' + t.name + ' settings')">
-                                                        <app-ico name="Pencil" [size]="13"/>
+                                                        <app-ico [name]="editIcon(s.domain)" [size]="13"/>
                                                     </button>
                                                     <button class="icon-btn" type="button"
                                                             (click)="editTemplateJson(s.domain, t)"
@@ -362,12 +363,50 @@
                                 </div>
                             </div>
                             <div class="pd-qt-body">
-                                <div>
-                                    <label class="field-label">Training template</label>
+                                <!-- Guided flow (P5): ① dataset → ② template → ③ name & launch.
+                                     Inline actions jump to the feeding tab in place (no route
+                                     change) so the user never loses the Quick Train context. -->
+
+                                <!-- ① Pick a dataset -->
+                                <section class="pd-qt-step">
+                                    <div class="pd-qt-step-head">
+                                        <span class="pd-qt-step-num">1</span> Pick a dataset
+                                    </div>
+                                    @if (projectDatasets().length === 0) {
+                                        <div class="pd-empty">
+                                            No datasets linked to this project yet.
+                                            <button class="btn ghost sm" type="button" (click)="onTabChange('datasets')">
+                                                <app-ico name="Plus" [size]="12"/> Link a dataset
+                                            </button>
+                                        </div>
+                                    } @else if (datasetsSchema()) {
+                                        <!-- Shared schema-driven datasets form (same blocks as the Training screen) -->
+                                        <div class="pd-qt-datasets-form">
+                                            <app-dynamic-form-group
+                                                [fieldKey]="'datasets'"
+                                                [schema]="datasetsSchema()!"
+                                                [rootSchema]="trainingSchema()"
+                                                [parentForm]="launchForm"
+                                                [datasetNames]="projectDatasetNames()"
+                                                (arrayItemAdded)="addDatasetItem($event.schemaParam)"
+                                                (arrayItemRemoved)="removeDatasetItem($event.index)"/>
+                                        </div>
+                                    } @else {
+                                        <div class="pd-empty">Loading dataset configuration…</div>
+                                    }
+                                </section>
+
+                                <!-- ② Pick a template -->
+                                <section class="pd-qt-step">
+                                    <div class="pd-qt-step-head">
+                                        <span class="pd-qt-step-num">2</span> Pick a template
+                                    </div>
                                     @if (projectTrainingTemplates().length === 0) {
                                         <div class="pd-empty">
-                                            No project training templates yet. Branch one from the
-                                            <button class="btn ghost sm" type="button" (click)="onTabChange('templates')">Templates</button> tab.
+                                            No project training templates yet.
+                                            <button class="btn ghost sm" type="button" (click)="onTabChange('templates')">
+                                                <app-ico name="Plus" [size]="12"/> Branch a template
+                                            </button>
                                         </div>
                                     } @else {
                                         <select class="select"
@@ -386,101 +425,86 @@
                                             <div class="pd-qt-template-hint muted">Select a template to configure the run.</div>
                                         }
                                     }
-                                </div>
+                                </section>
 
+                                <!-- ③ Name & launch -->
                                 @if (selectedTemplateId()) {
-                                    <div class="pd-qt-grid-2">
-                                        <div>
-                                            <label class="field-label">LoRA prefix</label>
-                                            <div class="pd-qt-input-row">
-                                                <input class="input" type="text"
-                                                       placeholder="e.g. mydataset"
-                                                       [value]="loraPrefix()"
-                                                       (input)="loraPrefix.set($any($event.target).value)"
-                                                       (blur)="saveQuickTrainPreferences()"/>
-                                                <button class="icon-btn" type="button"
-                                                        title="Auto-derive from selected dataset"
-                                                        (click)="autofillLora('prefix')">
-                                                    <app-ico name="Sparkles" [size]="13"/>
-                                                </button>
-                                            </div>
+                                    <section class="pd-qt-step">
+                                        <div class="pd-qt-step-head">
+                                            <span class="pd-qt-step-num">3</span> Name &amp; launch
                                         </div>
-                                        <div>
-                                            <label class="field-label">LoRA suffix</label>
-                                            <div class="pd-qt-input-row">
-                                                <input class="input" type="text"
-                                                       placeholder="e.g. v1"
-                                                       [value]="loraSuffix()"
-                                                       (input)="loraSuffix.set($any($event.target).value)"
-                                                       (blur)="saveQuickTrainPreferences()"/>
-                                                <button class="icon-btn" type="button"
-                                                        title="Auto-derive from selected dataset"
-                                                        (click)="autofillLora('suffix')">
-                                                    <app-ico name="Sparkles" [size]="13"/>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div class="pd-qt-grid-2">
-                                        <div>
-                                            <label class="field-label">
-                                                LoRA name
-                                                <span class="pd-qt-hint">supports &#123;placeholders&#125;</span>
-                                            </label>
-                                            <input class="input mono" type="text"
-                                                   placeholder="{lora_prefix}_{definition_id}_{lora_suffix}"
-                                                   [value]="loraName()"
-                                                   (input)="loraName.set($any($event.target).value)"
-                                                   (blur)="saveQuickTrainPreferences()"/>
-                                            @if (loraNamePreview() && loraNamePreview() !== loraName()) {
-                                                <div class="pd-qt-preview">
-                                                    <span class="pd-qt-preview-label">Preview:</span>
-                                                    <span class="mono pd-qt-preview-value">{{ loraNamePreview() }}.safetensors</span>
+                                        <div class="pd-qt-grid-2">
+                                            <div>
+                                                <label class="field-label">LoRA prefix</label>
+                                                <div class="pd-qt-input-row">
+                                                    <input class="input" type="text"
+                                                           placeholder="e.g. mydataset"
+                                                           [value]="loraPrefix()"
+                                                           (input)="loraPrefix.set($any($event.target).value)"
+                                                           (blur)="saveQuickTrainPreferences()"/>
+                                                    <button class="icon-btn" type="button"
+                                                            title="Auto-derive from selected dataset"
+                                                            (click)="autofillLora('prefix')">
+                                                        <app-ico name="Sparkles" [size]="13"/>
+                                                    </button>
                                                 </div>
-                                            }
-                                        </div>
-                                        <div>
-                                            <label class="field-label">Trigger word</label>
-                                            <div class="pd-qt-input-row">
-                                                <input class="input" type="text" placeholder="ohwx"
-                                                       [value]="triggerWord()"
-                                                       (input)="triggerWord.set($any($event.target).value)"
-                                                       (blur)="saveQuickTrainPreferences()"/>
-                                                <button class="icon-btn" type="button"
-                                                        title="Use a dataset's trigger word, or suggest one from its name"
-                                                        (click)="fillTriggerFromDataset()">
-                                                    <app-ico name="Wand2" [size]="13"/>
-                                                </button>
+                                            </div>
+                                            <div>
+                                                <label class="field-label">LoRA suffix</label>
+                                                <div class="pd-qt-input-row">
+                                                    <input class="input" type="text"
+                                                           placeholder="e.g. v1"
+                                                           [value]="loraSuffix()"
+                                                           (input)="loraSuffix.set($any($event.target).value)"
+                                                           (blur)="saveQuickTrainPreferences()"/>
+                                                    <button class="icon-btn" type="button"
+                                                            title="Auto-derive from selected dataset"
+                                                            (click)="autofillLora('suffix')">
+                                                        <app-ico name="Sparkles" [size]="13"/>
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
 
-                                    <div>
-                                        @if (projectDatasets().length === 0) {
-                                            <label class="field-label">Datasets</label>
-                                            <div class="pd-empty">No datasets linked to this project yet.</div>
-                                        } @else if (datasetsSchema()) {
-                                            <!-- Shared schema-driven datasets form (same blocks as the Training screen) -->
-                                            <div class="pd-qt-datasets-form">
-                                                <app-dynamic-form-group
-                                                    [fieldKey]="'datasets'"
-                                                    [schema]="datasetsSchema()!"
-                                                    [rootSchema]="trainingSchema()"
-                                                    [parentForm]="launchForm"
-                                                    [datasetNames]="projectDatasetNames()"
-                                                    (arrayItemAdded)="addDatasetItem($event.schemaParam)"
-                                                    (arrayItemRemoved)="removeDatasetItem($event.index)"/>
+                                        <div class="pd-qt-grid-2">
+                                            <div>
+                                                <label class="field-label">
+                                                    LoRA name
+                                                    <span class="pd-qt-hint">supports &#123;placeholders&#125;</span>
+                                                </label>
+                                                <input class="input mono" type="text"
+                                                       placeholder="{lora_prefix}_{definition_id}_{lora_suffix}"
+                                                       [value]="loraName()"
+                                                       (input)="loraName.set($any($event.target).value)"
+                                                       (blur)="saveQuickTrainPreferences()"/>
+                                                @if (loraNamePreview() && loraNamePreview() !== loraName()) {
+                                                    <div class="pd-qt-preview">
+                                                        <span class="pd-qt-preview-label">Preview:</span>
+                                                        <span class="mono pd-qt-preview-value">{{ loraNamePreview() }}.safetensors</span>
+                                                    </div>
+                                                }
                                             </div>
-                                        } @else {
-                                            <label class="field-label">Datasets</label>
-                                            <div class="pd-empty">Loading dataset configuration…</div>
-                                        }
-                                    </div>
+                                            <div>
+                                                <label class="field-label">Trigger word</label>
+                                                <div class="pd-qt-input-row">
+                                                    <input class="input" type="text" placeholder="ohwx"
+                                                           [value]="triggerWord()"
+                                                           (input)="triggerWord.set($any($event.target).value)"
+                                                           (blur)="saveQuickTrainPreferences()"/>
+                                                    <button class="icon-btn" type="button"
+                                                            title="Use a dataset's trigger word, or suggest one from its name"
+                                                            (click)="fillTriggerFromDataset()">
+                                                        <app-ico name="Wand2" [size]="13"/>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </section>
                                 }
 
                                 <div class="pd-qt-foot">
-                                    <button class="btn" type="button" routerLink="/training">
+                                    <button class="btn" type="button" (click)="openFullConfiguration()"
+                                            title="Continue this setup on the full Training screen">
                                         <app-ico name="Sliders" [size]="13"/> Full configuration
                                     </button>
                                     <button class="btn primary right" type="button"

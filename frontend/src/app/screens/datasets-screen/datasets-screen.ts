@@ -547,7 +547,9 @@ export class DatasetsScreen {
 
     protected hpsMedianLabel = computed(() => {
         const m = this.hpsStats().median;
-        return m == null ? '—' : m.toFixed(4);
+        // Two decimals — HPSv2 scores cluster in ~0.2–0.3; four decimals
+        // implied a precision the median doesn't carry.
+        return m == null ? '—' : m.toFixed(2);
     });
 
     protected hpsRangeLabel = computed(() => {
@@ -710,7 +712,9 @@ export class DatasetsScreen {
     protected hpsLabel(d: Dataset): string {
         const v = d.median_quality_score;
         if (v === undefined || v === null || Number.isNaN(v)) return '—';
-        return v.toFixed(4);
+        // Two decimals: the score is a coarse quality band, not a precise
+        // measurement — four decimals read as false precision.
+        return v.toFixed(2);
     }
 
     /** Tone for the HPS chip — matches legacy thresholds (≥0.27 good, ≥0.24 warn). */
@@ -721,6 +725,41 @@ export class DatasetsScreen {
         if (v >= 0.24) return 'warning';
         return 'danger';
     }
+
+    /**
+     * Qualitative band word for a tone — the same Good/Fair/Low bands the
+     * color already conveys, spelled out as TEXT so colorblind and
+     * screen-reader users aren't left relying on the pill's hue alone.
+     */
+    protected hpsBandWord(tone: 'success' | 'warning' | 'danger' | ''): string {
+        switch (tone) {
+            case 'success': return 'Good';
+            case 'warning': return 'Fair';
+            case 'danger': return 'Low';
+            default: return '';
+        }
+    }
+
+    /**
+     * Screen-reader / tooltip phrase for a card's HPS pill. Combines the raw
+     * value with its qualitative band so the band survives without color,
+     * e.g. "HPS 0.28 — Good (median HPSv2 quality)".
+     */
+    protected hpsPillAria(d: Dataset): string {
+        const word = this.hpsBandWord(this.hpsTone(d));
+        const value = this.hpsLabel(d);
+        const band = word ? ` — ${word}` : '';
+        return `HPS ${value}${band} (median HPSv2 quality)`;
+    }
+
+    /**
+     * Lightweight "what is HPS" legend surfaced near the KPI tile so the
+     * bands are explained in-place. HPSv2 = Human Preference Score v2, a
+     * learned aesthetic/quality estimate; the thresholds mirror {@link hpsTone}.
+     */
+    protected readonly hpsLegend =
+        'HPSv2 (Human Preference Score) rates image quality. ' +
+        'Median across the dataset: Good ≥ 0.27, Fair ≥ 0.24, Low below.';
 
     /**
      * Dataset-level H/C/M pills: colored by % completeness (full ≥90% green,

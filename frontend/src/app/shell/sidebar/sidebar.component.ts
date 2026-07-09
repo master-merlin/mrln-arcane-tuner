@@ -40,6 +40,7 @@ const NAV: ReadonlyArray<NavItem> = [
     imports: [RouterLink, RouterLinkActive, IcoComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './sidebar.component.html',
+    styleUrl: './sidebar.component.css',
 })
 export class SidebarComponent implements OnInit {
     protected scope = inject(ScopeStore);
@@ -71,6 +72,29 @@ export class SidebarComponent implements OnInit {
     });
 
     protected appVersion = signal<string>('…');
+
+    /**
+     * Threshold tone for a percentage-based meter (T19). Drives the fill color
+     * so a maxed bar reads danger-red instead of looking identical to idle.
+     * success (< 70%) → warning (70–90%) → danger (≥ 90%); the lower edge is
+     * inclusive (70 → warn, 90 → crit). Pure — unit-tested at the boundaries.
+     */
+    protected meterTone(pct: number): 'ok' | 'warn' | 'crit' {
+        if (pct >= 90) return 'crit';
+        if (pct >= 70) return 'warn';
+        return 'ok';
+    }
+
+    /** Design-token CSS color for a meter's tone (inline-bound on the fill). */
+    protected meterColor(pct: number): string {
+        return SidebarComponent.TONE_COLOR[this.meterTone(pct)];
+    }
+
+    private static readonly TONE_COLOR = {
+        ok: 'var(--color-success)',
+        warn: 'var(--color-warning)',
+        crit: 'var(--color-danger)',
+    } as const;
 
     ngOnInit() {
         this.systemService.getVersion().subscribe({

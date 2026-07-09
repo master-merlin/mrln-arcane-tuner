@@ -130,6 +130,14 @@ export class DatasetsScreen {
      *  to right-extending so cards near the viewport's LEFT edge don't clip. */
     private pickerAlign = signal<Map<string, 'left' | 'right'>>(new Map());
 
+    /** Dataset name whose card-action "⋯" overflow menu is open (D4). Empty
+     *  string = none. Keyed by name (not reference) so the menu survives grid
+     *  re-renders, exactly like {@link projectPickerOpenFor}. Only one card's
+     *  overflow menu is open at a time. The inline-vs-collapsed decision is a
+     *  pure-CSS container query (see `.ds-card-actions-overflow` in the CSS);
+     *  this signal only drives the popover's visibility. */
+    protected overflowOpenFor = signal<string>('');
+
     /** Projects available to add datasets to. Reads from {@link ProjectService.allProjects}
      *  which is loaded once on app boot by the shell — no fetch needed here. */
     protected availableProjects = computed<Project[]>(() => this.projects.allProjects());
@@ -185,7 +193,8 @@ export class DatasetsScreen {
             this.filterPickerTier();               // re-focus first item on tier change
             const projectOpen = this.projectPickerOpenFor();
             const bulkOpen = this.bulkProjectPickerOpen();
-            if (filterOpen || projectOpen || bulkOpen) {
+            const overflowOpen = this.overflowOpenFor();
+            if (filterOpen || projectOpen || bulkOpen || overflowOpen) {
                 queueMicrotask(() => this.focusFirstMenuItem());
             }
         });
@@ -1048,7 +1057,7 @@ export class DatasetsScreen {
      * role="menuitem" entries (roving tabindex); Home/End jump to the ends;
      * Escape closes the popup and restores focus to its trigger.
      */
-    protected onMenuKeydown(event: KeyboardEvent, which: 'filter' | 'project' | 'bulk', trigger: HTMLElement): void {
+    protected onMenuKeydown(event: KeyboardEvent, which: 'filter' | 'project' | 'bulk' | 'overflow', trigger: HTMLElement): void {
         if (event.key === 'Escape') {
             event.preventDefault();
             event.stopPropagation();
@@ -1072,9 +1081,10 @@ export class DatasetsScreen {
         this.applyRovingFocus(items, next);
     }
 
-    private closeMenu(which: 'filter' | 'project' | 'bulk'): void {
+    private closeMenu(which: 'filter' | 'project' | 'bulk' | 'overflow'): void {
         if (which === 'filter') this.filterPickerOpen.set(false);
         else if (which === 'project') this.closeProjectPicker();
+        else if (which === 'overflow') this.closeOverflow();
         else this.bulkProjectPickerOpen.set(false);
     }
 
@@ -1088,7 +1098,9 @@ export class DatasetsScreen {
             ? '[data-testid="bulk-project-picker-panel"]'
             : this.filterPickerOpen()
                 ? '[data-testid="filter-picker-panel"]'
-                : '[data-testid="project-picker-panel"]';
+                : this.overflowOpenFor()
+                    ? '[data-testid="overflow-menu-panel"]'
+                    : '[data-testid="project-picker-panel"]';
         const panel = el.querySelector<HTMLElement>(selector);
         if (!panel) return;
         const items = Array.from(panel.querySelectorAll<HTMLElement>('[role="menuitem"]'));
@@ -1376,6 +1388,24 @@ export class DatasetsScreen {
     }
 
     /**
+     * Toggle the per-card "⋯" overflow menu for the given dataset (D4). Opening
+     * one card's menu closes any other (single open at a time). `stopPropagation`
+     * keeps the click off {@link openCard} so revealing the menu never navigates,
+     * and off the host's document-click dismiss handler (which would otherwise
+     * fire on the same event that opened it).
+     */
+    protected toggleOverflow(name: string, event: MouseEvent): void {
+        event.stopPropagation();
+        this.overflowOpenFor.set(this.overflowOpenFor() === name ? '' : name);
+    }
+
+    protected closeOverflow(): void {
+        if (this.overflowOpenFor() !== '') {
+            this.overflowOpenFor.set('');
+        }
+    }
+
+    /**
      * Adds a dataset to the picked project. Closes the picker first so a slow
      * network call doesn't leave it hanging. On success: toast + if the user is
      * currently scoped to the picked project, fold the new id into the in-screen
@@ -1415,6 +1445,7 @@ export class DatasetsScreen {
     @HostListener('document:click')
     onDocumentClick(): void {
         this.closeProjectPicker();
+        this.closeOverflow();
         if (this.filterPickerOpen()) this.filterPickerOpen.set(false);
         if (this.bulkProjectPickerOpen()) this.bulkProjectPickerOpen.set(false);
     }

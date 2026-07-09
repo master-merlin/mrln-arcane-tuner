@@ -38,39 +38,19 @@
     <div class="side-section">Active scope</div>
     @if (activeProject(); as p) {
         <a
+            class="scope-card scope-card--project"
             [routerLink]="['/projects', p.id]"
-            [style.background]="'color-mix(in oklab, ' + p.color + ' 12%, transparent)'"
-            [style.border]="'1px solid color-mix(in oklab, ' + p.color + ' 35%, transparent)'"
-            style="
-                padding: 6px 10px;
-                border-radius: var(--radius-theme-md);
-                display: flex; align-items: center; gap: 8px;
-                margin-bottom: 2px; cursor: pointer;
-                text-decoration: none; color: inherit;
-            ">
-            <div
-                [style.background]="'linear-gradient(135deg, ' + p.color + ', color-mix(in oklab, ' + p.color + ' 70%, black))'"
-                style="
-                    width: 18px; height: 18px; border-radius: 4px;
-                    display: flex; align-items: center; justify-content: center;
-                    font-size: 10px; font-weight: 700; color: white;
-                ">
-                {{ activeProjectInitials() }}
-            </div>
-            <div style="line-height: 1.15; flex: 1; min-width: 0;">
-                <div
-                    style="
-                        font-size: 12.5px; font-weight: 600;
-                        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                    ">{{ p.name }}</div>
-                <div style="font-size: 10px; color: var(--color-text-muted);">
+            [style.--proj-color]="p.color">
+            <div class="scope-badge">{{ activeProjectInitials() }}</div>
+            <div class="scope-body">
+                <div class="scope-name">{{ p.name }}</div>
+                <div class="scope-meta">
                     {{ p.stats?.datasets ?? 0 }} datasets ·
                     {{ p.stats?.jobs ?? 0 }} jobs
                 </div>
             </div>
             <button
-                class="icon-btn"
-                style="width: 22px; height: 22px;"
+                class="icon-btn scope-exit"
                 (click)="$event.preventDefault(); $event.stopPropagation(); scope.setGlobal()"
                 title="Back to global"
                 type="button">
@@ -78,35 +58,13 @@
             </button>
         </a>
     } @else {
-        <div
-            style="
-                padding: 6px 10px;
-                background: var(--color-surface-mid);
-                border: 1px solid var(--color-border-subtle);
-                border-radius: var(--radius-theme-md);
-                display: flex; align-items: center; gap: 8px;
-                margin-bottom: 2px;
-            ">
-            <span
-                style="
-                    width: 12px; height: 12px; border-radius: 50%;
-                    border: 1.5px solid var(--color-text-muted);
-                    position: relative; flex-shrink: 0; display: inline-block;
-                "
-                aria-hidden="true">
-                <span
-                    style="
-                        position: absolute; inset: 1px 3px;
-                        border-left: 1.2px solid var(--color-text-muted);
-                        border-right: 1.2px solid var(--color-text-muted);
-                        border-radius: 50%;
-                    "></span>
+        <div class="scope-card scope-card--global">
+            <span class="scope-orb" aria-hidden="true">
+                <span class="scope-orb-ring"></span>
             </span>
-            <div style="line-height: 1.15; flex: 1;">
-                <div style="font-size: 12.5px; font-weight: 600;">Global</div>
-                <div style="font-size: 10px; color: var(--color-text-muted);">
-                    all datasets &amp; jobs
-                </div>
+            <div class="scope-body">
+                <div class="scope-name">Global</div>
+                <div class="scope-meta">all datasets &amp; jobs</div>
             </div>
         </div>
     }
@@ -138,7 +96,7 @@
                 </div>
                 <div class="bar">
                     <i [style.width.%]="system.sidebar().gpuPct"
-                       [style.background]="'var(--color-warning)'"></i>
+                       [style.background]="meterColor(system.sidebar().gpuPct)"></i>
                 </div>
             </div>
             <div style="margin-bottom: 8px;">
@@ -151,7 +109,7 @@
                 </div>
                 <div class="bar">
                     <i [style.width.%]="vramPct()"
-                       [style.background]="'var(--color-warning)'"></i>
+                       [style.background]="meterColor(vramPct())"></i>
                 </div>
             </div>
             <div style="margin-bottom: 8px;">
@@ -161,7 +119,7 @@
                 </div>
                 <div class="bar">
                     <i [style.width.%]="powerPct()"
-                       [style.background]="'var(--color-warning)'"></i>
+                       [style.background]="meterColor(powerPct())"></i>
                 </div>
             </div>
             <div style="margin-bottom: 8px;">
@@ -171,7 +129,7 @@
                 </div>
                 <div class="bar">
                     <i [style.width.%]="system.sidebar().cpuPct"
-                       [style.background]="'var(--color-chart-lr)'"></i>
+                       [style.background]="meterColor(system.sidebar().cpuPct)"></i>
                 </div>
             </div>
             <div>
@@ -184,7 +142,7 @@
                 </div>
                 <div class="bar">
                     <i [style.width.%]="ramPct()"
-                       [style.background]="'var(--color-chart-lr)'"></i>
+                       [style.background]="meterColor(ramPct())"></i>
                 </div>
             </div>
         </div>

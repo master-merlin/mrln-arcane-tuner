@@ -1,0 +1,96 @@
+/*
+ * Sidebar component styles (T21). The active-scope / Global cards were ~70
+ * lines of inline `style="…"`; moved here as classes over the app `--color-*`
+ * design tokens so they're themeable and maintainable. Layout/visuals are
+ * intentionally byte-for-byte equivalent to the former inline styles.
+ *
+ * The project card's accent colour is per-project (dynamic), so it stays a
+ * single bound custom property `--proj-color` on the host `<a>`; everything
+ * else is static and lives here.
+ */
+
+/* Shared card shell (project + global). */
+.scope-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--radius-theme-md);
+    margin-bottom: 2px;
+}
+
+/* Active-project variant — tinted from the project's own colour. */
+.scope-card--project {
+    background: color-mix(in oklab, var(--proj-color) 12%, transparent);
+    border: 1px solid color-mix(in oklab, var(--proj-color) 35%, transparent);
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+}
+
+/* Global (no project) variant — neutral surface. */
+.scope-card--global {
+    background: var(--color-surface-mid);
+    border: 1px solid var(--color-border-subtle);
+}
+
+/* Project initials chip. */
+.scope-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: white;
+    background: linear-gradient(
+        135deg,
+        var(--proj-color),
+        color-mix(in oklab, var(--proj-color) 70%, black)
+    );
+}
+
+.scope-body {
+    flex: 1;
+    min-width: 0;
+    line-height: 1.15;
+}
+
+.scope-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.scope-meta {
+    font-size: 10px;
+    color: var(--color-text-muted);
+}
+
+.scope-exit {
+    width: 22px;
+    height: 22px;
+}
+
+/* Global "no project" orb — a hollow ringed dot. */
+.scope-orb {
+    position: relative;
+    display: inline-block;
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid var(--color-text-muted);
+    border-radius: 50%;
+}
+
+.scope-orb-ring {
+    position: absolute;
+    inset: 1px 3px;
+    border-left: 1.2px solid var(--color-text-muted);
+    border-right: 1.2px solid var(--color-text-muted);
+    border-radius: 50%;
+}

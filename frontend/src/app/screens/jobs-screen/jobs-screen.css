@@ -660,3 +660,35 @@
     border-radius: var(--radius-theme-lg);
     border: 1px solid var(--color-border-subtle);
 }
+
+/* ── Responsive fallbacks ───────────────────────────────────────────
+   Desktop keeps the fixed 3-pane grid. Below the thresholds the side
+   rails collapse so the center detail pane is never crushed and the page
+   never scrolls horizontally. */
+
+/* Medium: drop the right SYSTEM rail; keep the queue + detail two-up. */
+@media (max-width: 1200px) {
+    .jobs-grid {
+        grid-template-columns: 320px minmax(0, 1fr);
+    }
+    .system-pane {
+        display: none;
+    }
+}
+
+/* Narrow: stack the queue above the detail pane (no side rails). The queue
+   keeps a capped height and scrolls internally; the detail pane takes the
+   rest. */
+@media (max-width: 820px) {
+    .jobs-grid {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 240px) minmax(0, 1fr);
+    }
+    .queue-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--color-border-subtle);
+    }
+    .detail-pane {
+        padding: 14px 16px 24px;
+    }
+}

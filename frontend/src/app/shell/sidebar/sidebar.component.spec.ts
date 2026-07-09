@@ -36,7 +36,11 @@ function mount(url: string) {
     const fixture = TestBed.createComponent(SidebarComponent);
     fixture.detectChanges();
     // Bracket access bypasses the `protected` modifier for the assertions.
-    return fixture.componentInstance as unknown as { showSystem: () => boolean };
+    return fixture.componentInstance as unknown as {
+        showSystem: () => boolean;
+        meterTone: (pct: number) => 'ok' | 'warn' | 'crit';
+        meterColor: (pct: number) => string;
+    };
 }
 
 describe('SidebarComponent — system panel route gating (T7)', () => {
@@ -54,5 +58,33 @@ describe('SidebarComponent — system panel route gating (T7)', () => {
 
     it('shows the mini-monitor on /training', () => {
         expect(mount('/training').showSystem()).toBe(true);
+    });
+});
+
+describe('SidebarComponent — meter threshold tint (T19)', () => {
+    // success (< 70%) → warning (70–90%) → danger (> 90%). Boundaries are
+    // inclusive at the lower edge: 70 → warn, 90 → crit.
+    const cases: ReadonlyArray<[number, 'ok' | 'warn' | 'crit']> = [
+        [0, 'ok'],
+        [69, 'ok'],
+        [69.9, 'ok'],
+        [70, 'warn'],
+        [89, 'warn'],
+        [89.9, 'warn'],
+        [90, 'crit'],
+        [100, 'crit'],
+    ];
+
+    for (const [pct, tone] of cases) {
+        it(`maps ${pct}% → ${tone}`, () => {
+            expect(mount('/datasets').meterTone(pct)).toBe(tone);
+        });
+    }
+
+    it('drives the fill color from the tone (success/warning/danger tokens)', () => {
+        const c = mount('/datasets');
+        expect(c.meterColor(10)).toBe('var(--color-success)');
+        expect(c.meterColor(80)).toBe('var(--color-warning)');
+        expect(c.meterColor(95)).toBe('var(--color-danger)');
     });
 });

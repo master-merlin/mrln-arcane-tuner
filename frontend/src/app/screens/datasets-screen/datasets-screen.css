@@ -6,18 +6,31 @@
 .ds-screen { display: contents; }
 .ds-actions { display: flex; gap: 8px; }
 
+/* D8 · fluid KPI rail. Tiles auto-fill by available width (min ~160px) so the
+   rail reflows instead of forcing six columns onto narrow viewports. The two
+   media breakpoints then pin it to a tidy 3-up, then 2-up, on progressively
+   narrower widths (auto-fill alone can leave an awkward orphan column). The
+   page body never scrolls horizontally: 1fr tracks + a 160px min shrink to fit. */
 .ds-kpi-rail {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 12px;
     margin-bottom: 18px;
 }
+@media (max-width: 960px) {
+    .ds-kpi-rail { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 560px) {
+    .ds-kpi-rail { grid-template-columns: repeat(2, 1fr); }
+}
 
-/* Card grid mirrors the 6-col KPI rail (same gap), so 1 card = 1 KPI width.
-   Roomy enough for the 7 action icons on the bottom of each card. */
+/* D8 · fluid card grid. Cards auto-fill at a ~230px min so they reflow by
+   available width (was a fixed 6-col grid with no breakpoints). Combined with
+   the D4 container-query action bar, each card adapts its own internals to the
+   width the grid hands it. 1fr tracks guarantee no horizontal page scroll. */
 .ds-grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
     gap: 12px;
 }
 
@@ -96,6 +109,12 @@
     display: flex;
     flex-direction: column;
     position: relative;
+    /* D4 · make the card a query container so its action bar can collapse the
+       secondary icons into a "⋯" menu when the card itself is narrow (see
+       .ds-card-actions-secondary / .ds-card-actions-overflow). `inline-size`
+       applies layout/style/inline-size containment only — NOT paint — so the
+       per-card project picker + drop overlay still escape via `overflow: visible`. */
+    container-type: inline-size;
 }
 
 .ds-card-img {
@@ -450,6 +469,87 @@
 
 .ds-action-danger:hover:not([disabled]) {
     color: var(--color-danger);
+}
+
+/* ── D4 · responsive card-action overflow ────────────────────────────────
+   The six secondary actions (Edit / Rescan / Analyze / Cache / Download /
+   Export) render inline in `.ds-card-actions-secondary` (a `display: contents`
+   wrapper, so its buttons participate directly in the action row's flex
+   layout) AND, redundantly, as a "⋯" popover in `.ds-card-actions-overflow`.
+   A container query on the card decides which copy is visible: inline when the
+   card is wide enough, the "⋯" menu when it's narrow. Below the breakpoint the
+   inline copy is hidden and the trigger shown; above it, vice-versa. */
+.ds-card-actions-secondary { display: contents; }
+.ds-card-actions-overflow {
+    display: none;
+    position: relative;
+    align-items: center;
+}
+@container (max-width: 340px) {
+    .ds-card-actions-secondary { display: none; }
+    .ds-card-actions-overflow { display: inline-flex; }
+}
+
+/* Subtle divider that fences the destructive Delete off from the routine
+   actions — present at every width (D4). */
+.ds-action-divider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 18px;
+    margin: 0 2px;
+    background: var(--color-border-subtle);
+}
+
+/* Focus ring for the "⋯" trigger — the global .icon-btn may not carry one,
+   so guarantee a visible ring for keyboard users. */
+.ds-overflow-trigger:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+}
+
+/* Overflow popover — opens UPWARD (the action bar sits at the card's bottom)
+   and anchors to the trigger's RIGHT edge (extends leftward, so it can't spill
+   past the card's right side). Visual language mirrors `.ds-project-picker`;
+   items are icon + label rows for readability in the collapsed menu. */
+.ds-overflow-menu {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    right: 0;
+    z-index: 40;
+    min-width: 180px;
+    background: var(--color-surface-high);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-theme-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.ds-overflow-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--color-text-primary);
+    padding: 7px 10px;
+    border-radius: var(--radius-theme-sm);
+    font-size: 12px;
+    cursor: pointer;
+}
+.ds-overflow-item:hover:not([disabled]) {
+    background: color-mix(in oklab, var(--color-brand) 18%, transparent);
+}
+.ds-overflow-item[disabled] {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.ds-overflow-item:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
 }
 
 /* Red pill rendered as a flex sibling of the dataset name text when the

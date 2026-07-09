@@ -470,6 +470,14 @@
                     </div>
                 </div>
 
+                <!-- D4 · responsive action bar. Primary actions (Open, Add-to-
+                     project, Upload, Delete) stay inline at every width. The six
+                     secondary actions render inline in .ds-card-actions-secondary
+                     when the card is wide enough, and collapse into the "⋯"
+                     overflow menu when narrow — the inline-vs-collapsed swap is a
+                     pure-CSS container query (see .ds-card CSS), so BOTH copies
+                     are in the DOM and CSS decides which is visible. Delete is
+                     separated from the routine actions by a divider. -->
                 <div class="ds-card-actions" (click)="$event.stopPropagation()">
                     <button class="icon-btn ds-action" type="button"
                             (click)="openCard(d)" title="Open workspace">
@@ -508,28 +516,88 @@
                             }
                         </div>
                     }
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="editDataset(d, $event)" title="Edit metadata">
-                        <app-ico name="Pencil" [size]="14"/>
-                    </button>
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="rescanDataset(d, $event)" title="Rescan files">
-                        <app-ico name="RefreshCw" [size]="14"/>
-                    </button>
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="analyzeDataset(d, $event)" title="Analyze dataset">
-                        <app-ico name="BarChart2" [size]="14"/>
-                    </button>
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="cacheDataset(d, $event)"
-                            [disabled]="!d.has_cache"
-                            [title]="d.has_cache ? 'Cache administration' : 'No cache data'">
-                        <app-ico name="Database" [size]="14"/>
-                    </button>
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="downloadDataset(d, $event)" title="Download as zip">
-                        <app-ico name="Download" [size]="14"/>
-                    </button>
+
+                    <!-- Secondary actions — inline copy (visible at wide widths). -->
+                    <span class="ds-card-actions-secondary">
+                        <button class="icon-btn ds-action" type="button"
+                                (click)="editDataset(d, $event)" title="Edit metadata">
+                            <app-ico name="Pencil" [size]="14"/>
+                        </button>
+                        <button class="icon-btn ds-action" type="button"
+                                (click)="rescanDataset(d, $event)" title="Rescan files">
+                            <app-ico name="RefreshCw" [size]="14"/>
+                        </button>
+                        <button class="icon-btn ds-action" type="button"
+                                (click)="analyzeDataset(d, $event)" title="Analyze dataset">
+                            <app-ico name="BarChart2" [size]="14"/>
+                        </button>
+                        <button class="icon-btn ds-action" type="button"
+                                (click)="cacheDataset(d, $event)"
+                                [disabled]="!d.has_cache"
+                                [title]="d.has_cache ? 'Cache administration' : 'No cache data'">
+                            <app-ico name="Database" [size]="14"/>
+                        </button>
+                        <button class="icon-btn ds-action" type="button"
+                                (click)="downloadDataset(d, $event)" title="Download as zip">
+                            <app-ico name="Download" [size]="14"/>
+                        </button>
+                        <button class="icon-btn ds-action" type="button"
+                                (click)="exportDataset(d, $event)" title="Export (portable zip + metadata)">
+                            <app-ico name="Share2" [size]="14"/>
+                        </button>
+                    </span>
+
+                    <!-- Secondary actions — collapsed "⋯" copy (visible at narrow
+                         widths). A real button with aria-haspopup/expanded; the
+                         menu items are keyboard-navigable and Esc-dismissable via
+                         onMenuKeydown. -->
+                    <div class="ds-card-actions-overflow">
+                        <button class="icon-btn ds-action ds-overflow-trigger" type="button"
+                                #overflowBtn
+                                data-testid="btn-card-overflow"
+                                aria-haspopup="menu"
+                                [attr.aria-expanded]="overflowOpenFor() === d.name"
+                                [attr.aria-label]="'More actions for ' + d.name"
+                                (click)="toggleOverflow(d.name, $event)"
+                                title="More actions">
+                            <app-ico name="MoreHorizontal" [size]="14"/>
+                        </button>
+                        @if (overflowOpenFor() === d.name) {
+                            <div class="ds-overflow-menu"
+                                 role="menu"
+                                 data-testid="overflow-menu-panel"
+                                 (keydown)="onMenuKeydown($event, 'overflow', overflowBtn)"
+                                 (click)="$event.stopPropagation()">
+                                <button class="ds-overflow-item" type="button" role="menuitem"
+                                        (click)="editDataset(d, $event); closeOverflow()">
+                                    <app-ico name="Pencil" [size]="14"/> Edit metadata
+                                </button>
+                                <button class="ds-overflow-item" type="button" role="menuitem"
+                                        (click)="rescanDataset(d, $event); closeOverflow()">
+                                    <app-ico name="RefreshCw" [size]="14"/> Rescan files
+                                </button>
+                                <button class="ds-overflow-item" type="button" role="menuitem"
+                                        (click)="analyzeDataset(d, $event); closeOverflow()">
+                                    <app-ico name="BarChart2" [size]="14"/> Analyze dataset
+                                </button>
+                                <button class="ds-overflow-item" type="button" role="menuitem"
+                                        [disabled]="!d.has_cache"
+                                        (click)="cacheDataset(d, $event); closeOverflow()">
+                                    <app-ico name="Database" [size]="14"/>
+                                    {{ d.has_cache ? 'Cache administration' : 'No cache data' }}
+                                </button>
+                                <button class="ds-overflow-item" type="button" role="menuitem"
+                                        (click)="downloadDataset(d, $event); closeOverflow()">
+                                    <app-ico name="Download" [size]="14"/> Download as zip
+                                </button>
+                                <button class="ds-overflow-item" type="button" role="menuitem"
+                                        (click)="exportDataset(d, $event); closeOverflow()">
+                                    <app-ico name="Share2" [size]="14"/> Export (portable)
+                                </button>
+                            </div>
+                        }
+                    </div>
+
                     <input type="file" multiple
                            class="ds-upload-input"
                            (change)="onUploadFiles(d.name, $any($event.target).files); $any($event.target).value = ''"
@@ -542,10 +610,10 @@
                             title="Upload images to this dataset">
                         <app-ico name="Upload" [size]="14"/>
                     </button>
-                    <button class="icon-btn ds-action" type="button"
-                            (click)="exportDataset(d, $event)" title="Export (portable zip + metadata)">
-                        <app-ico name="Share2" [size]="14"/>
-                    </button>
+
+                    <!-- Divider keeps the destructive Delete off the routine
+                         actions (D4) — a subtle separation at every width. -->
+                    <span class="ds-action-divider" aria-hidden="true"></span>
                     <button class="icon-btn ds-action ds-action-danger" type="button"
                             (click)="deleteDataset(d, $event)"
                             [title]="scope.projectId() ? 'Remove from project' : 'Delete from library'">

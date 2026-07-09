@@ -33,3 +33,91 @@
 .ts-segment-status[data-status="success"] { color: var(--color-success, #34d399); background: color-mix(in oklch, var(--color-success, #34d399) 12%, transparent); }
 .ts-segment-status[data-status="warning"] { color: var(--color-warning, #fbbf24); background: color-mix(in oklch, var(--color-warning, #fbbf24) 12%, transparent); }
 .ts-segment-status[data-status="idle"]    { color: var(--color-text-subtle, #6b7280); background: color-mix(in oklch, #6b7280 12%, transparent); }
+
+/* ── Sticky launch bar (T10/T11) ─────────────────────────────────────
+   Pins the primary CTA + a compact peak-VRAM/wall-time echo to the bottom
+   of the scrolling form pane so launch is always reachable, and surfaces
+   how many sections still need attention (with a jump-to-first control).
+   Sits inside the <form>, so the CTA stays a native submit. */
+.ts-launch-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-theme-xl, 14px);
+  background: color-mix(in oklch, var(--color-surface-low, #14161c) 92%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 -6px 20px -12px rgba(0, 0, 0, 0.6);
+}
+.ts-launch-estimate {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.ts-launch-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.ts-launch-metric-k {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-subtle, #6b7280);
+}
+.ts-launch-metric-v {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary, #d1d5db);
+}
+.ts-launch-metric.over .ts-launch-metric-v { color: var(--color-warning, #fbbf24); }
+
+.ts-launch-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+.ts-launch-attn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-warning, #fbbf24);
+  background: color-mix(in oklch, var(--color-warning, #fbbf24) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--color-warning, #fbbf24) 35%, transparent);
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.ts-launch-attn:hover {
+  background: color-mix(in oklch, var(--color-warning, #fbbf24) 20%, transparent);
+}
+.ts-launch-attn:focus-visible {
+  outline: 2px solid var(--color-warning, #fbbf24);
+  outline-offset: 2px;
+}
+.ts-launch-cta:focus-visible {
+  outline: 2px solid var(--color-brand, #6366f1);
+  outline-offset: 2px;
+}
+.ts-launch-cta[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ts-launch-attn { transition: none; }
+}

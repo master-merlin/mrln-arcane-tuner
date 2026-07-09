@@ -117,13 +117,21 @@ export class ProjectDetail implements OnInit {
 
     protected tab = signal<DetailTab>('overview');
 
-    protected tabs: ReadonlyArray<TabItem<DetailTab>> = [
+    /**
+     * Sub-tab order (P5). Follows the natural authoring flow — dataset →
+     * template → train — so Quick Train sits AFTER the Datasets/Templates that
+     * feed it rather than before them. Static so the order is unit-testable
+     * without constructing the component.
+     */
+    static readonly TABS: ReadonlyArray<TabItem<DetailTab>> = [
         { value: 'overview', label: 'Overview' },
-        { value: 'quick-train', label: 'Quick Train' },
         { value: 'datasets', label: 'Datasets' },
         { value: 'templates', label: 'Templates' },
+        { value: 'quick-train', label: 'Quick Train' },
         { value: 'runs', label: 'Runs' },
     ];
+
+    protected tabs = ProjectDetail.TABS;
 
     // Loaded lazily on tab activation.
     protected projectDatasets = signal<ProjectDatasetRow[]>([]);
@@ -406,6 +414,17 @@ export class ProjectDetail implements OnInit {
             error: (err: { error?: { detail?: string }; message?: string }) =>
                 this.toast.error('Could not load template: ' + (err?.error?.detail || err?.message)),
         });
+    }
+
+    /**
+     * Icon for the domain "Edit" affordance (P7). Training templates are edited
+     * on the separate Training screen (the pencil LEAVES the project), so they
+     * get a distinct "external"/hand-off glyph; caption + mask edit in place via
+     * a modal and keep the pencil. The tooltip/aria-label already disambiguate;
+     * this makes the difference visible at a glance.
+     */
+    protected editIcon(domain: TemplateDomain): 'ExternalLink' | 'Pencil' {
+        return domain === 'training' ? 'ExternalLink' : 'Pencil';
     }
 
     /** Raw-JSON "Edit JSON" action — works for all three domains. */
@@ -882,6 +901,59 @@ export class ProjectDetail implements OnInit {
         } finally {
             this.quickTrainSubmitting.set(false);
         }
+    }
+
+    /**
+     * "Full configuration" (P6). Instead of dropping the user on a blank
+     * Training screen (the old bare `routerLink="/training"` discarded the
+     * chosen template, LoRA naming and dataset rows), assemble the SAME config
+     * shape `startQuickTrain` builds — template config + LoRA overrides +
+     * resolved `{placeholder}` name + selected dataset rows — and push it through
+     * the existing TrainingHandoffService before navigating, so /training
+     * CONTINUES the setup. The handoff's public shape is unchanged; we only set
+     * it. A template is normally selected here, so we hand off in `template`
+     * mode (selects that template as the save-target); with no template we fall
+     * back to `reload` so the form is still patched with the overrides.
+     */
+    protected openFullConfiguration(): void {
+        const projectId = this.projectId();
+        const tpl = this.selectedTemplate();
+
+        const config: Record<string, unknown> = { ...((tpl?.config ?? {}) as Record<string, unknown>) };
+        const definitionId = tpl?.definition_id || (config['definition_id'] as string) || '';
+        if (!config['definition_id']) config['definition_id'] = definitionId;
+
+        config['lora_prefix'] = this.loraPrefix();
+        config['lora_suffix'] = this.loraSuffix();
+        config['global_triggerword'] = this.triggerWord();
+        if (projectId) config['project_id'] = projectId;
+
+        // Resolve {placeholder} tokens in lora_name against the merged config,
+        // exactly like startQuickTrain, so the Training screen sees the final name.
+        const rawName = this.loraName();
+        if (rawName) {
+            config['lora_name'] = rawName.replace(/\{(\w+)\}/g, (_, key: string) => {
+                const v = config[key];
+                return v === undefined || v === null ? '' : String(v);
+            });
+        }
+
+        const fa = this.launchForm.get('datasets') as FormArray;
+        const datasetEntries = (fa?.value as Array<Record<string, unknown>> ?? [])
+            .filter(ds => !!ds['dataset_name']);
+        if (datasetEntries.length) config['datasets'] = datasetEntries;
+
+        // Keep the target project active so a save on the Training screen lands here.
+        if (projectId) this.scope.setProject(projectId);
+
+        this.handoff.set({
+            config,
+            mode: tpl ? 'template' : 'reload',
+            templateId: tpl?.id,
+            templateName: tpl?.name,
+            definitionId,
+        });
+        void this.router.navigate(['/training']);
     }
 
     // ── Estimate panel ────────────────────────────────────────────────

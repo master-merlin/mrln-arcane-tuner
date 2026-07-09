@@ -152,8 +152,10 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
                             </button>
                             <button class="icon-btn" type="button"
                                     (click)="edit(r)"
-                                    title="Edit template">
-                                <app-ico name="Pencil" [size]="14"/>
+                                    [class.tl-edit-training]="r.domain === 'training'"
+                                    [title]="r.domain === 'training' ? 'Open in Training screen (leaves this screen)' : 'Edit template'"
+                                    [attr.aria-label]="r.domain === 'training' ? 'Open template ' + r.tpl.name + ' in Training screen' : 'Edit template ' + r.tpl.name">
+                                <app-ico [name]="editIcon(r.domain)" [size]="14"/>
                             </button>
                             <button class="icon-btn" type="button"
                                     (click)="editJson(r)"
@@ -275,6 +277,10 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
             gap: 4px;
             flex-shrink: 0;
         }
+        /* P7: the training "Edit" leaves this screen for /training — tint it
+           (violet = the training domain colour) so it reads distinctly from the
+           in-place caption/mask pencil beside it. */
+        .tl-edit-training { color: var(--color-violet); }
     `],
 })
 export class TemplatesScreen implements OnInit {
@@ -424,6 +430,16 @@ export class TemplatesScreen implements OnInit {
             ...(projectId ? { projectId } : {}),
             onImported: () => void this.load(),
         });
+    }
+
+    /**
+     * Icon for the row "Edit" affordance (P7). Training templates edit on the
+     * separate Training screen (this button LEAVES `/templates`), so they get a
+     * distinct external glyph; caption + mask edit in place via a modal and keep
+     * the pencil. Mirrors ProjectDetail.editIcon.
+     */
+    editIcon(domain: Domain): 'ExternalLink' | 'Pencil' {
+        return domain === 'training' ? 'ExternalLink' : 'Pencil';
     }
 
     edit(r: TemplateRow): void {

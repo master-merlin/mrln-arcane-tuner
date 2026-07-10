@@ -40,6 +40,14 @@ _OVIS_MAX_SHIFT: float = 1.15
 _OVIS_BASE_IMAGE_SEQ_LEN: int = 256
 _OVIS_MAX_IMAGE_SEQ_LEN: int = 4096
 
+# OvisImagePipeline.__call__ native defaults. The generic base fills unset
+# sample prompts with 20 steps / guidance 3.5 — under the dynamic-shifted
+# schedule (mu = 1.15 at 1024²) 20 steps starve the low-sigma region where
+# fine detail forms (2026-07-10 UAT: coherent but detail-free samples).
+_OVIS_DEFAULT_RESOLUTION: int = 1024
+_OVIS_DEFAULT_STEPS: int = 50
+_OVIS_DEFAULT_GUIDANCE: float = 5.0
+
 
 def _calculate_shift(
     image_seq_len: int,
@@ -78,6 +86,34 @@ class OvisImageSampler(GenericSamplingPipeline):
     def __init__(self, pipeline: "OvisImageTrainer") -> None:
         super().__init__(pipeline)
         self._scheduler = None
+
+    # ── Native sample defaults (prx sampler precedent) ───────────────────
+
+    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Image.Image:
+        """Fill Ovis-native defaults before the generic sampling flow.
+
+        Pipeline ``__call__`` defaults: 50 steps, guidance 5.0 (sourced from
+        the definition's ``defaults`` when present). The generic base's
+        20-step fallback under-samples the low-sigma detail region of the
+        dynamic-shifted schedule.
+        """
+        cfg = dict(prompt_cfg)
+        defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
+        resolution = int(defaults.get("resolution", _OVIS_DEFAULT_RESOLUTION))
+        fill = {
+            "width": resolution,
+            "height": resolution,
+            "num_inference_steps": int(
+                defaults.get("num_inference_steps", _OVIS_DEFAULT_STEPS),
+            ),
+            "guidance_scale": float(
+                defaults.get("guidance_scale", _OVIS_DEFAULT_GUIDANCE),
+            ),
+        }
+        for key, value in fill.items():
+            if cfg.get(key) in (None, 0):
+                cfg[key] = value
+        return super()._sample_single(cfg, step)
 
     # ── Lazy scheduler ───────────────────────────────────────────────────
 

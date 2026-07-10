@@ -389,3 +389,55 @@ class TestPrecisionContract:
         assert seen_ts[0] > 500.0, (
             f"first timestep should be near 1000 (raw scale), got {seen_ts[0]}"
         )
+
+
+# -- Native sample defaults (pipeline __call__: 50 steps, guidance 5.0) -------
+
+
+class TestNativeSampleDefaults:
+    def test_sample_single_fills_ovis_native_defaults(self, monkeypatch):
+        """Unset steps/guidance default to the OvisImagePipeline natives
+        (50 / 5.0), NOT the generic base's 20 / 3.5 -- the dynamic-shifted
+        schedule (mu=1.15 at 1024^2) starves the low-sigma detail region at
+        20 steps (2026-07-10 UAT: coherent but detail-free samples)."""
+        from unittest.mock import MagicMock
+
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        sampler._sample_single({"prompt": "defaults"}, 0)
+        assert captured["num_inference_steps"] == 50
+        assert captured["guidance_scale"] == 5.0
+        assert captured["width"] == 1024
+        assert captured["height"] == 1024
+
+    def test_sample_single_respects_explicit_values(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        sampler._sample_single(
+            {"prompt": "explicit", "width": 768, "height": 768,
+             "num_inference_steps": 12, "guidance_scale": 1.0},
+            0,
+        )
+        assert captured["num_inference_steps"] == 12
+        assert captured["guidance_scale"] == 1.0
+        assert captured["width"] == 768

@@ -352,6 +352,19 @@ FAMILIES: list[FamilySpec] = [
         "model", "model", property_alias="transformer",
         encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
     ),
+    # ── boogu_image: INVERTED flow-match convention (x0-noise target, raw
+    # [0,1) t) delegated at the trainer level; Qwen3-VL full-VLM encode_text
+    # returns the (embeddings, mask) tuple contract like krea2/ernie/
+    # ideogram4/longcat_image. Convention-delegation load-bearing test lives
+    # in test_boogu_image_trainer.py; only the _update_primary_model /
+    # alias / property-alias + encode_text shape aspects run here.
+    FamilySpec(
+        "boogu_image",
+        "app.engine.models.families.boogu_image.trainer:BooguImageTrainer",
+        "app.engine.models.families.boogu_image.driver:BooguImageDriver",
+        "model", "model", property_alias="transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
 ]
 
 _IDS = [f.id for f in FAMILIES]

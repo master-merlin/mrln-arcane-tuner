@@ -1,11 +1,13 @@
 """BooguImageDriver — family-specific training behavior for Boogu-Image.
 
-Task 4 scope (this file): the REAL driver — replaces Task 2's stubs with the
-load-bearing correctness contracts (time convention, timestep scale, LoRA
-targeting, list-tensor I/O adapter, RoPE wiring). ``encode_text`` and
-``get_saver`` were ``NotImplementedError`` — Qwen3-VL text encoding lands
-in Task 5 (trainer), the safetensors saver in a later task; both are outside
-this task's charter (driver forward-pass math only).
+Task 4 scope (this file, historical): the REAL driver — replaced Task 2's
+stubs with the load-bearing correctness contracts (time convention,
+timestep scale, LoRA targeting, list-tensor I/O adapter, RoPE wiring).
+``encode_text`` and ``get_saver`` were ``NotImplementedError`` at that
+point — Qwen3-VL text encoding landed in Task 5 (below), the safetensors
+saver in Task 7 (``get_saver`` now returns the real ``BooguImageSaver`` —
+see "Phase 6: LoRA Output & Saver" below); both were outside Task 4's
+charter (driver forward-pass math only).
 
 ## Task 5 update — ``encode_text`` implemented + ``sample_timesteps``
 ``progress`` forwarding added
@@ -129,6 +131,7 @@ per-sample caption lengths — must not be ``None``).
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import structlog
@@ -180,6 +183,26 @@ _SYSTEM_PROMPT_DROP = (
     "with the original input where appropriate."
 )
 
+# Fingerprint of the two system-prompt strings above, hashed together so any
+# future edit to EITHER prompt's text changes the fingerprint automatically.
+# Exposed publicly via :func:`te_template_fingerprint` so callers outside
+# this module (``BooguImageTrainer``'s disk-cache key template identity —
+# see trainer.py module docstring) never need to import the private
+# ``_SYSTEM_PROMPT_*`` constants directly to derive it themselves.
+_TE_TEMPLATE_FINGERPRINT = hashlib.sha256(
+    "\x00".join([_SYSTEM_PROMPT_T2I, _SYSTEM_PROMPT_DROP]).encode("utf-8")
+).hexdigest()[:16]
+
+
+def te_template_fingerprint() -> str:
+    """Public fingerprint of this driver's chat-template system prompts.
+
+    Used by ``BooguImageTrainer`` to version its disk-cache key template
+    identity (``_TE_TEMPLATE_ID`` in trainer.py) without reaching across the
+    module boundary to import driver-private ``_SYSTEM_PROMPT_*`` constants.
+    """
+    return _TE_TEMPLATE_FINGERPRINT
+
 
 def _select_system_prompt(caption: str) -> str:
     """Mirror upstream ``_apply_chat_template``'s adaptive no-image branch
@@ -189,8 +212,13 @@ def _select_system_prompt(caption: str) -> str:
         return _SYSTEM_PROMPT_DROP
     return _SYSTEM_PROMPT_T2I
 
-# te.max_sequence_length, both definitions (base.yaml / turbo.yaml).
-_MAX_SEQUENCE_LENGTH = 256
+# Fallback when a definition ships no ``te.max_sequence_length`` (both
+# shipped definitions do — base.yaml / turbo.yaml — so this is the "never
+# actually hit in practice" safety net, not the live value). Read from
+# ``definition.architecture_params`` per-instance in ``__init__`` below
+# instead of hardcoding this constant at every call site, so a future
+# definition with a different VLM context window is honored automatically.
+_DEFAULT_MAX_SEQUENCE_LENGTH = 256
 
 # See module docstring "Task 5 update" note 2 — always 1 in practice due to
 # an upstream config-key name mismatch.
@@ -213,6 +241,14 @@ class BooguImageDriver(IModelDriver):
         self.processor: Any = None
         self.scheduler: Any = None
         self._components: dict[str, Any] = {}
+
+        # te.max_sequence_length (base.yaml / turbo.yaml both ship 256) —
+        # read from the definition instead of hardcoding, with the module
+        # default as a fallback for a definition that omits the field.
+        arch_params = getattr(definition, "architecture_params", None) or {}
+        self._max_sequence_length = int(
+            arch_params.get("te.max_sequence_length", _DEFAULT_MAX_SEQUENCE_LENGTH)
+        )
 
         # Lazily-built static RoPE lookup table (independent of batch shape —
         # see ``_build_freqs_cis``). Cached per-model since it never changes
@@ -367,7 +403,7 @@ class BooguImageDriver(IModelDriver):
         vlm_inputs = self.processor.apply_chat_template(
             prompts,
             padding="longest",
-            max_length=_MAX_SEQUENCE_LENGTH,
+            max_length=self._max_sequence_length,
             truncation=False,
             padding_side="right",
             return_tensors="pt",

@@ -300,7 +300,7 @@ class TestEncodeTextTupleContract:
 
 
 class TestBooguVlmEncodeTextPath:
-    def _wire(self, dim=TINY_INSTRUCTION_FEAT_DIM, seq_len=6):
+    def _wire(self, dim=TINY_INSTRUCTION_FEAT_DIM, seq_len=6, architecture_params=None):
         captured = {}
 
         class _FakeOutput:
@@ -328,7 +328,10 @@ class TestBooguVlmEncodeTextPath:
                     "attention_mask": torch.ones(B, seq_len, dtype=torch.long),
                 }
 
-        drv = BooguImageDriver(_definition(), torch.device("cpu"))
+        definition = _definition()
+        if architecture_params is not None:
+            definition.architecture_params = architecture_params
+        drv = BooguImageDriver(definition, torch.device("cpu"))
         drv.text_encoder = _FakeTextEncoder()
         drv.processor = _FakeProcessor()
         return drv, captured
@@ -380,6 +383,17 @@ class TestBooguVlmEncodeTextPath:
         assert captured["kwargs"]["padding"] == "longest"
         assert captured["kwargs"]["truncation"] is False
 
+    def test_max_sequence_length_read_from_definition_architecture_params(self):
+        """Task 5 review minor: ``te.max_sequence_length`` must come from
+        the definition (``architecture_params``), not a hardcoded module
+        constant — a definition shipping a different VLM context window
+        must be honored without a code change."""
+        drv, captured = self._wire(
+            architecture_params={"te.max_sequence_length": 128},
+        )
+        drv.encode_text(["x"], torch.float32)
+        assert captured["kwargs"]["max_length"] == 128
+
     def test_encode_text_without_assign_components_raises(self):
         drv = BooguImageDriver(_definition(), torch.device("cpu"))
         with pytest.raises(RuntimeError, match="assign_components"):
@@ -428,20 +442,16 @@ class TestDiskCacheKeyTemplateIdentity:
         """The template id embeds a fingerprint HASHED FROM the actual
         system-prompt strings — editing either prompt text changes every
         disk-cache key automatically, so a future prompt tweak can never
-        silently forget the version bump (reviewer minor #3)."""
-        import hashlib
-
+        silently forget the version bump. Sourced via the driver's PUBLIC
+        ``te_template_fingerprint()`` helper (reviewer minor #3) rather than
+        the trainer reaching into the driver's private
+        ``_SYSTEM_PROMPT_*`` constants to recompute it itself."""
         from app.engine.models.families.boogu_image.driver import (
-            _SYSTEM_PROMPT_DROP,
-            _SYSTEM_PROMPT_T2I,
+            te_template_fingerprint,
         )
         from app.engine.models.families.boogu_image.trainer import _TE_TEMPLATE_ID
 
-        expected_fingerprint = hashlib.sha256(
-            "\x00".join([_SYSTEM_PROMPT_T2I, _SYSTEM_PROMPT_DROP]).encode("utf-8")
-        ).hexdigest()[:16]
-
-        assert expected_fingerprint in _TE_TEMPLATE_ID
+        assert te_template_fingerprint() in _TE_TEMPLATE_ID
 
 
 # ── Fix wave 1, Finding 2: caption-dropout DROP system prompt ───────────────

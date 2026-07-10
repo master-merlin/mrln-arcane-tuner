@@ -45,6 +45,7 @@ from app.engine.models.families.boogu_image.lora_ecosystem import (
     convert_diffusers_to_ecosystem,
     convert_ecosystem_to_diffusers,
     qkv_split_from_config,
+    to_transformer_prefixed,
 )
 
 TINY_HIDDEN_SIZE = 16
@@ -176,6 +177,62 @@ class TestQkvSplitFromConfig:
             hidden_size=3360, num_attention_heads=28, num_kv_heads=7,
         )
         assert qkv_split_from_config(config) != (2304, 768, 768)
+
+
+class TestToTransformerPrefixed:
+    """Task 7 minor: the diffusers-native ``transformer.*``-prefixed route
+    that today's stock ComfyUI-Boogu mixin actually loads for ALL 418
+    curated modules -- portable AND non-portable alike, unlike
+    ``convert_diffusers_to_ecosystem``'s qkv-fusion (252/418 modules,
+    PORTABLE_BLOCK_PREFIXES only)."""
+
+    def test_swaps_diffusion_model_prefix_to_transformer_verbatim(self):
+        raw = {
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_A.weight": torch.randn(4, 16),
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_B.weight": torch.randn(16, 4),
+            "diffusion_model.ref_image_refiner.0.attn.to_q.lora_A.weight": torch.randn(4, 16),
+            "diffusion_model.double_stream_layers.0.img_instruct_attn.processor.img_to_q.lora_A.weight": torch.randn(4, 16),
+        }
+        out = to_transformer_prefixed(raw)
+
+        assert set(out) == {
+            "transformer.noise_refiner.0.attn.to_q.lora_A.weight",
+            "transformer.noise_refiner.0.attn.to_q.lora_B.weight",
+            "transformer.ref_image_refiner.0.attn.to_q.lora_A.weight",
+            "transformer.double_stream_layers.0.img_instruct_attn.processor.img_to_q.lora_A.weight",
+        }
+        for key, value in raw.items():
+            new_key = "transformer." + key[len("diffusion_model."):]
+            assert torch.equal(out[new_key], value)
+
+    def test_non_diffusion_model_keys_pass_through_unchanged(self):
+        raw = {"already.transformer.prefixed.lora_A.weight": torch.randn(2, 2)}
+        out = to_transformer_prefixed(raw)
+        assert out == raw
+
+    def test_covers_all_418_curated_modules_from_real_saver_output(self, tmp_path):
+        """Unlike ``convert_diffusers_to_ecosystem`` (252/418 portable-only
+        modules), this route is loadable for ALL curated modules --
+        including the 166 non-portable ones (``ref_image_refiner`` +
+        ``double_stream_layers``) that have no fused-ecosystem-format
+        analogue at all."""
+        from safetensors.torch import load_file
+
+        targets = _load_curated_targets()
+        model = _build_peft_model(targets)
+        saver = _get_saver()
+        out_path = tmp_path / "full_lora.safetensors"
+        saver.save(components={"unet": model, "config": {}}, path=out_path)
+        original = load_file(str(out_path))
+        assert len(original) == 836  # 418 modules * 2 (lora_A + lora_B)
+
+        converted = to_transformer_prefixed(original)
+
+        assert len(converted) == 836
+        for key, value in original.items():
+            new_key = "transformer." + key[len("diffusion_model."):]
+            assert new_key in converted
+            assert torch.equal(converted[new_key], value)
 
 
 class TestConvertEcosystemToDiffusers:

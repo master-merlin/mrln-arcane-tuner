@@ -20,8 +20,9 @@ Stock/near-stock components load through the generic manifest path:
   ``rope_scaling`` translation shim here (krea2 has one for its
   transformers-5.2-format checkpoint; do not copy it for Boogu).
 - ``processor`` (``Qwen3VLProcessor``, ``processor/`` subfolder) — drives
-  ``apply_chat_template`` in the trainer/sampler (later tasks); the loader
-  just loads it as-is. Not a torch model.
+  ``apply_chat_template`` in ``BooguImageDriver.encode_text`` (used by both
+  the trainer's TE cache and the sampler); the loader just loads it as-is.
+  Not a torch model.
 - ``vae`` (FLUX-style ``AutoencoderKL``, ``vae/`` subfolder, 16ch, scaling
   0.3611 / shift 0.1159 — both come from ``architecture_params``, not the
   loader).

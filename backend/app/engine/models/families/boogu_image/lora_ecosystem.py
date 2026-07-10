@@ -55,7 +55,9 @@ stock converter entirely and goes straight to
 format-supported route for our exports (portable AND non-portable modules
 alike, since the module paths are the transformer's own ``named_modules``
 paths) until Boogu's upstream ships a corrected converter for the fused
-``diffusion_model.*`` format.
+``diffusion_model.*`` format. :func:`to_transformer_prefixed` produces
+exactly this variant from our saver's ``diffusion_model.*`` output — a
+plain prefix swap, no qkv fusion, covering all 418 modules.
 
 Naming scheme: the vendored converter pops/writes ``.lora_A.weight`` /
 ``.lora_B.weight`` suffixes throughout (``vendor/lora_conversion.py:50-51,
@@ -284,6 +286,50 @@ def _pop_pair(
     if key_a in working and key_b in working:
         return working.pop(key_a), working.pop(key_b)
     return None
+
+
+def to_transformer_prefixed(
+    state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Rename our saver's ``diffusion_model.*`` keys to ``transformer.*`` —
+    the diffusers-native prefix route that today's stock
+    ``BooguImageLoraLoaderMixin`` actually loads for EVERY curated module,
+    portable and non-portable alike (module docstring, "What a ComfyUI-Boogu
+    user can actually do TODAY": a state dict that does NOT start with
+    ``"diffusion_model."`` bypasses the broken stock fused-qkv converter
+    entirely and goes straight to
+    ``transformer.load_lora_adapter(state_dict, prefix="transformer")``).
+
+    Unlike :func:`convert_diffusers_to_ecosystem` (qkv-fusion into the
+    stock-Lumina2 format, restricted to the 252/418 ``PORTABLE_BLOCK_
+    PREFIXES`` modules), this is a PURE PREFIX SWAP over ALL modules —
+    lossless and total, because ``GenericLoRASaver``'s module paths already
+    ARE the transformer's own ``named_modules()`` paths
+    (``BooguImageSaver``'s docstring: "no Boogu-specific override is needed
+    here"). It closes the gap the module docstring's Finding describes but
+    does not itself implement: today, the only way for a
+    ``diffusion_model.``-prefixed export to become loadable is by renaming
+    it to this prefix by hand.
+
+    Args:
+        state_dict: House-format state dict (``BooguImageSaver`` output),
+            ``diffusion_model.<module>.lora_A/B.weight`` keys.
+
+    Returns:
+        The same tensors (no copy) under ``transformer.<module>.lora_A/B.weight``
+        keys — directly loadable via ``transformer.load_lora_adapter(...,
+        prefix="transformer")`` for all 418 curated modules. Any key NOT
+        under ``diffusion_model.`` passes through with its original name
+        unchanged (defensive — the house saver never emits such a key).
+    """
+    return {
+        (
+            f"transformer.{key[len('diffusion_model.'):]}"
+            if key.startswith("diffusion_model.")
+            else key
+        ): value
+        for key, value in state_dict.items()
+    }
 
 
 def convert_ecosystem_to_diffusers(

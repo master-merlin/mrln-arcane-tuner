@@ -69,7 +69,6 @@ is the house TE-cache plumbing around it (mirrors
 
 from __future__ import annotations
 
-import hashlib
 import os
 
 import structlog
@@ -77,7 +76,7 @@ import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
 
-from .driver import _SYSTEM_PROMPT_DROP, _SYSTEM_PROMPT_T2I
+from .driver import te_template_fingerprint
 
 logger = structlog.get_logger(__name__)
 
@@ -92,13 +91,13 @@ logger = structlog.get_logger(__name__)
 #        empty/whitespace dropout), matching upstream's
 #        ``_apply_chat_template`` adaptive branch.
 #
-# The id also embeds a fingerprint HASHED FROM the actual prompt strings, so
-# any future edit to either prompt text changes every disk-cache key
+# The id also embeds a fingerprint HASHED FROM the actual prompt strings
+# (via the driver's public ``te_template_fingerprint()`` — never a direct
+# import of the driver's private ``_SYSTEM_PROMPT_*`` constants), so any
+# future edit to either prompt text changes every disk-cache key
 # automatically — a prompt tweak can never silently forget the version bump.
 _TE_TEMPLATE_VERSION = "v2"
-_TE_TEMPLATE_FINGERPRINT = hashlib.sha256(
-    "\x00".join([_SYSTEM_PROMPT_T2I, _SYSTEM_PROMPT_DROP]).encode("utf-8")
-).hexdigest()[:16]
+_TE_TEMPLATE_FINGERPRINT = te_template_fingerprint()
 _TE_TEMPLATE_ID = (
     f"boogu_image/chatml_system_prompt/{_TE_TEMPLATE_VERSION}/"
     f"{_TE_TEMPLATE_FINGERPRINT}"

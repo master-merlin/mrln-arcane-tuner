@@ -286,14 +286,23 @@ class Kandinsky5Driver(IModelDriver):
         module names, so the text blocks / modulations / embedders (incl. the
         time embedder's own ``in_layer``/``out_layer``) stay untouched.
 
-        A definition's ``lora_targetable_modules`` overrides the SUFFIX set
-        (still expanded per block), never the container.
+        A definition's ``lora_targetable_modules`` overrides the defaults:
+        entries that are already fully-indexed (``visual_transformer_blocks.*``
+        — the shipped YAML lists, dreamlite precedent) pass through VERBATIM;
+        bare suffixes are still expanded per block. Re-expanding a full path
+        would yield ``visual_transformer_blocks.{i}.visual_transformer_blocks
+        .{j}...`` — matching nothing, PEFT would wrap zero modules.
         """
-        suffixes = (
-            list(getattr(self.definition, "lora_targetable_modules", None) or [])
-            or list(K5_LORA_TARGET_SUFFIXES)
+        entries = list(
+            getattr(self.definition, "lora_targetable_modules", None) or []
         )
-        targets = [
+        full_paths = [
+            e for e in entries if e.startswith("visual_transformer_blocks.")
+        ]
+        suffixes = [
+            e for e in entries if not e.startswith("visual_transformer_blocks.")
+        ] or ([] if full_paths else list(K5_LORA_TARGET_SUFFIXES))
+        targets = full_paths + [
             f"visual_transformer_blocks.{i}.{suffix}"
             for i in range(self.num_visual_blocks)
             for suffix in suffixes
@@ -301,6 +310,7 @@ class Kandinsky5Driver(IModelDriver):
         self.logger.info(
             "lora_targets_expanded",
             blocks=self.num_visual_blocks,
+            verbatim=len(full_paths),
             suffixes=len(suffixes),
             total=len(targets),
         )

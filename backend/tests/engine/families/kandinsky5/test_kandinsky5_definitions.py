@@ -117,3 +117,45 @@ def test_i2v_video_mode_rejected_on_t2v_definition(registry):
         registry.get_definition(T2V_ID), {"num_frames": 121, "video_mode": "i2v"}
     )
     assert not report.ok
+
+
+@pytest.mark.parametrize(("def_id", "blocks"), [(T2V_ID, 32), (I2V_ID, 60)])
+def test_definitions_ship_curated_lora_target_list(registry, def_id, blocks):
+    """Both definitions MUST ship the curated fully-indexed target list.
+
+    dreamlite precedent (2026-07-08 GPU-UAT crash): a definition without a
+    non-empty ``lora_targetable_modules`` gets the field auto-filled at first
+    real model load by ``registry.enrich_definition`` with the introspector's
+    EXHAUSTIVE Linear catalog (text_transformer_blocks, time embedder, ...) —
+    and for kandinsky5 those harvested full paths would then be re-expanded
+    per block into paths matching NOTHING, so PEFT would wrap zero modules.
+
+    The shipped list equals the driver's own expansion of
+    ``K5_LORA_TARGET_SUFFIXES`` over the checkpoint's visual block count
+    (Lite 32×10=320, Pro 60×10=600 — VISUAL blocks only), and the driver
+    returns it verbatim (no re-expansion).
+    """
+    import torch
+
+    from app.engine.models.families.kandinsky5.driver import (
+        K5_LORA_TARGET_SUFFIXES,
+        Kandinsky5Driver,
+    )
+
+    defn = registry.get_definition(def_id)
+    expected = {
+        f"visual_transformer_blocks.{i}.{suffix}"
+        for i in range(blocks)
+        for suffix in K5_LORA_TARGET_SUFFIXES
+    }
+    shipped = set(defn.lora_targetable_modules or [])
+    assert shipped, f"{def_id}: YAML must ship the curated LoRA target list"
+    assert shipped == expected, (
+        f"{def_id}: shipped list diverges from the driver expansion "
+        f"(+{len(shipped - expected)} extra, -{len(expected - shipped)} missing)"
+    )
+
+    drv = Kandinsky5Driver(defn, torch.device("cpu"))
+    targets = drv.get_lora_targets()
+    assert set(targets) == expected
+    assert len(targets) == blocks * len(K5_LORA_TARGET_SUFFIXES)

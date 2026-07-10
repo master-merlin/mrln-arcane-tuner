@@ -200,6 +200,75 @@ def test_mqa_lora_b_widths_pinned():
     assert kv_widths == {64}, f"real-config MQA widths must be 64: {kv_widths}"
 
 
+def _real_config_model():
+    """Meta-instantiate the REAL checkpoint unet config (no weights)."""
+    from diffusers.models.unets.unet_dreamlite import DreamLiteUNetModel
+
+    with torch.device("meta"):
+        return DreamLiteUNetModel(
+            block_out_channels=(256, 512, 896),
+            attention_head_dim=(4, 8, 14),
+            cross_attention_dim=2304,
+            layers_per_block=2,
+            transformer_layers_per_block=(1, 2, 4),
+            use_linear_projection=True,
+            encoder_hid_dim=2048,
+            encoder_hid_dim_type="text_proj_rms",
+            addition_embed_type="time",
+            addition_time_embed_dim=256,
+            projection_class_embeddings_input_dim=512,
+            num_kv_heads=1,
+            qk_norm="rms_norm",
+            ff_mult=3,
+            use_sep_conv=True,
+        )
+
+
+def test_definitions_ship_curated_lora_target_list():
+    """Both dreamlite definitions MUST ship the curated 312-module list.
+
+    Root cause of the 2026-07-08 GPU-UAT crash: the YAML shipped NO
+    ``lora_targetable_modules``, so ``registry.enrich_definition`` auto-filled
+    it at first model load with the introspector's exhaustive Linear+Conv2d
+    catalog — including the ``use_sep_conv`` depthwise convs (groups=256/512/
+    896). The driver prefers a non-empty definition list over its curated
+    pattern defaults, and PEFT crashed at inject time (rank 32 % groups 256).
+
+    A shipped curated list is the fix: the enrichment guard
+    (``if not defn.lora_targetable_modules``) never overwrites a non-empty
+    list, so training targets stay exactly the tested surface.
+    """
+    from app.engine.models.registry import ModelRegistry
+
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry._definitions = {}
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+
+    suffixes = (
+        "attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0",
+        "attn2.to_q", "attn2.to_k", "attn2.to_v", "attn2.to_out.0",
+        "ff.net.0.proj", "ff.net.2",
+    )
+    real = _real_config_model()
+    expected = {
+        n for n, m in real.named_modules()
+        if isinstance(m, torch.nn.Linear) and n.endswith(suffixes)
+    }
+    assert len(expected) == _EXPECTED_FULL_MODEL_MODULES  # 312
+
+    for def_id in ("dreamlite-base", "dreamlite-mobile"):
+        defn = ModelRegistry._definitions[def_id]
+        shipped = set(defn.lora_targetable_modules or [])
+        assert shipped, f"{def_id}: YAML must ship the curated LoRA target list"
+        assert shipped == expected, (
+            f"{def_id}: shipped list diverges from the curated/tested surface "
+            f"(+{len(shipped - expected)} extra, -{len(expected - shipped)} missing). "
+            f"Extras include e.g. {sorted(shipped - expected)[:3]}"
+        )
+
+
 def test_saver_key_format_is_ai_toolkit():
     """All keys are diffusion_model.{module}.lora_A/B.weight."""
     with tempfile.TemporaryDirectory() as td:

@@ -138,10 +138,17 @@ class ModelIntrospector:
     def _find_lora_targets(self, module: nn.Module) -> list[str]:
         """
         Find all module paths eligible for LoRA injection.
-        Returns fully qualified names of nn.Linear and nn.Conv2d modules.
+        Returns fully qualified names of nn.Linear and groups=1 nn.Conv2d
+        modules. Grouped/depthwise convs are excluded: PEFT's LoRA Conv2d
+        requires ``rank % groups == 0``, which no practical rank satisfies for
+        depthwise convs (groups == channels, e.g. 256+ in separable-conv
+        U-Nets) — injecting there crashes at get_peft_model time.
         """
         targets = []
         for name, child in module.named_modules():
-            if isinstance(child, self.LORA_TARGET_TYPES) and name:
-                targets.append(name)
+            if not (isinstance(child, self.LORA_TARGET_TYPES) and name):
+                continue
+            if isinstance(child, nn.Conv2d) and child.groups != 1:
+                continue
+            targets.append(name)
         return targets

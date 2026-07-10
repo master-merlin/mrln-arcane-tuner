@@ -55,6 +55,30 @@ class TestModelIntrospector:
         for target in result.lora_targetable_modules:
             assert "1" not in target or target != "1"  # ReLU is index 1
 
+    def test_grouped_convs_are_not_lora_targets(self):
+        """Depthwise/grouped Conv2d must be excluded from LoRA targets.
+
+        PEFT's LoRA Conv2d requires ``rank % groups == 0``; with typical ranks
+        (8-64) a depthwise conv (groups == channels, e.g. DreamLite's
+        use_sep_conv blocks at groups=256) always fails at inject time with
+        "Targeting a Conv2d with groups=256 and rank 32". Only groups=1 convs
+        are eligible.
+        """
+        from app.engine.utils.introspection import ModelIntrospector
+
+        model = nn.Sequential()
+        model.add_module("linear", nn.Linear(8, 8))
+        model.add_module("plain_conv", nn.Conv2d(8, 8, 3))
+        model.add_module("depthwise", nn.Conv2d(8, 8, 3, groups=8))
+        model.add_module("grouped", nn.Conv2d(8, 8, 3, groups=4))
+
+        result = ModelIntrospector().introspect({"unet": model})
+
+        assert "linear" in result.lora_targetable_modules
+        assert "plain_conv" in result.lora_targetable_modules
+        assert "depthwise" not in result.lora_targetable_modules
+        assert "grouped" not in result.lora_targetable_modules
+
     def test_counts_total_params(self):
         """Introspector counts total parameters correctly."""
         from app.engine.utils.introspection import ModelIntrospector

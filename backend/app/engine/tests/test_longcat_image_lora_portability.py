@@ -143,6 +143,74 @@ def test_full_config_key_count_formula():
     assert tiny_modules * 2 == _TINY_EXPECTED_KEYS
 
 
+def _real_config_model():
+    """Meta-instantiate the REAL checkpoint transformer config (no weights)."""
+    from diffusers.models.transformers.transformer_longcat_image import (
+        LongCatImageTransformer2DModel,
+    )
+
+    with torch.device("meta"):
+        return LongCatImageTransformer2DModel(
+            patch_size=1,
+            in_channels=64,
+            num_layers=19,
+            num_single_layers=38,
+            attention_head_dim=128,
+            num_attention_heads=24,
+            joint_attention_dim=3584,
+            pooled_projection_dim=3584,
+            axes_dims_rope=(16, 56, 56),
+        )
+
+
+def test_definition_ships_curated_lora_target_list():
+    """longcat-image-base MUST ship the curated 419-module list in its YAML.
+
+    The definition previously shipped ``lora_targetable_modules: []`` — but an
+    EMPTY list is exactly as exposed as a missing one: the enrichment guard is
+    ``if not defn.lora_targetable_modules``, so at first real model load
+    ``registry.enrich_definition`` fills it with the introspector's EXHAUSTIVE
+    Linear catalog (time/text embedders, img_in, norm_out.linear...), and the
+    driver prefers a non-empty definition list over its curated pattern
+    defaults — silently breaking the 838-key pinned surface (dreamlite
+    2026-07-08 precedent).
+
+    The shipped list is the driver's pattern targets fully expanded over the
+    real config: 19×12 double + 38×5 single + the top-level ``proj_out``
+    (intentional, flux1 precedent) = 419 module paths.
+    """
+    from app.engine.models.registry import ModelRegistry
+
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry._definitions = {}
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+
+    real = _real_config_model()
+    expected = {
+        n
+        for n, m in real.named_modules()
+        if isinstance(m, torch.nn.Linear)
+        and any(n == p or n.endswith("." + p) for p in _LORA_TARGETS)
+    }
+    assert len(expected) == _FULL_EXPECTED_KEYS // 2  # == 419
+    assert "proj_out" in expected  # top-level stays IN (flux1 precedent)
+
+    defn = ModelRegistry._definitions["longcat-image-base"]
+    shipped = set(defn.lora_targetable_modules or [])
+    assert shipped, (
+        "longcat-image-base: YAML must ship the curated LoRA target list "
+        "(an empty [] is auto-filled by enrich_definition)"
+    )
+    assert shipped == expected, (
+        f"longcat-image-base: shipped list diverges from the curated/tested "
+        f"surface (+{len(shipped - expected)} extra, "
+        f"-{len(expected - shipped)} missing). "
+        f"Extras include e.g. {sorted(shipped - expected)[:3]}"
+    )
+
+
 def test_saver_architecture_metadata():
     """modelspec.architecture must be 'longcat_image' (not qwen_image etc.)."""
     from safetensors import safe_open

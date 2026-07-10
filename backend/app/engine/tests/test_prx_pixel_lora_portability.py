@@ -131,6 +131,71 @@ def test_key_count_pinned_12_tiny_288_full():
     assert _EXPECTED_FULL_MODEL_KEYS == 288
 
 
+def _real_config_model():
+    """Meta-instantiate the REAL checkpoint transformer config (no weights)."""
+    from diffusers.models.transformers.transformer_prx import (
+        PRXTransformer2DModel,
+    )
+
+    with torch.device("meta"):
+        return PRXTransformer2DModel(
+            in_channels=3,
+            patch_size=16,
+            context_in_dim=2048,
+            hidden_size=3584,
+            mlp_ratio=3.5,
+            num_heads=28,
+            depth=_DEPTH,
+            axes_dim=[64, 64],
+            theta=10000,
+            bottleneck_size=768,
+            resolution_embeds=True,
+        )
+
+
+def test_definition_ships_curated_lora_target_list():
+    """prx-pixel-t2i MUST ship the curated 144-module list in its YAML.
+
+    dreamlite precedent (2026-07-08 GPU-UAT crash): a YAML with NO
+    ``lora_targetable_modules`` gets the field auto-filled at first real model
+    load by ``registry.enrich_definition`` with the introspector's EXHAUSTIVE
+    Linear catalog (bottleneck img_in.0/img_in.1, txt_in, time_in,
+    final_layer, resolution embedders...), and the driver prefers a non-empty
+    definition list over the curated prx_shared patterns — silently breaking
+    the 288-key pinned surface.
+
+    The shipped list is PRX_BLOCK_LORA_TARGETS fully expanded over the real
+    depth-24 pixel config: 24 × 6 = 144 block-scoped module paths.
+    """
+    from app.engine.models.families.prx_shared import PRX_BLOCK_LORA_TARGETS
+    from app.engine.models.registry import ModelRegistry
+
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry._definitions = {}
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+
+    real = _real_config_model()
+    expected = {
+        n
+        for n, m in real.named_modules()
+        if isinstance(m, torch.nn.Linear)
+        and any(n == p or n.endswith("." + p) for p in PRX_BLOCK_LORA_TARGETS)
+    }
+    assert len(expected) == _DEPTH * _BLOCK_MODULES  # == 144
+    assert all(n.startswith("blocks.") for n in expected)
+
+    defn = ModelRegistry._definitions["prx-pixel-t2i"]
+    shipped = set(defn.lora_targetable_modules or [])
+    assert shipped, "prx-pixel-t2i: YAML must ship the curated LoRA target list"
+    assert shipped == expected, (
+        f"prx-pixel-t2i: shipped list diverges from the curated/tested surface "
+        f"(+{len(shipped - expected)} extra, -{len(expected - shipped)} missing). "
+        f"Extras include e.g. {sorted(shipped - expected)[:3]}"
+    )
+
+
 def test_saver_key_format_is_ai_toolkit():
     """All keys are diffusion_model.{module}.lora_A/B.weight and ONLY
     block-level modules are wrapped — in particular the pixel variant's

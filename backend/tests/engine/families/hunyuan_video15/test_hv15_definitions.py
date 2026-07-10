@@ -147,3 +147,48 @@ def test_i2v_mode_supported_only_on_i2v_definition(registry):
     assert not bad.ok
     ok = validate_video_config(i2v, {"num_frames": 17, "video_mode": "i2v"})
     assert ok.ok, ok.errors
+
+
+@pytest.mark.parametrize("def_id", HV15_IDS)
+def test_definitions_ship_curated_lora_target_list(registry, def_id):
+    """Both 480p definitions MUST ship the curated 648-path target list.
+
+    They previously shipped ``lora_targetable_modules: []`` — but an EMPTY
+    list is exactly as exposed as a missing one: the enrichment guard is
+    ``if not defn.lora_targetable_modules``, so at first real model load
+    ``registry.enrich_definition`` fills it with the introspector's
+    EXHAUSTIVE Linear catalog (token refiner, embedders, proj_out, ...) and
+    the driver prefers a non-empty definition list over
+    ``hv15_lora_target_paths`` — silently widening the tested surface
+    (dreamlite 2026-07-08 precedent).
+
+    The shipped list equals the driver's own full-path expansion for the
+    checkpoint depth: ``hv15_lora_target_paths(54)`` → 54×12 = 648 paths
+    (full ``transformer_blocks.{i}.*`` so the token refiner's look-alike
+    ``attn.to_q``/``ff.net.*`` modules are never wrapped).
+    """
+    import torch
+
+    from app.engine.models.families.hunyuan_video15.driver import (
+        Hv15Driver,
+        hv15_lora_target_paths,
+    )
+
+    defn = registry.get_definition(def_id)
+    num_layers = defn.architecture_params["transformer.num_layers"]
+    expected = set(hv15_lora_target_paths(num_layers))
+    assert len(expected) == 648
+
+    shipped = set(defn.lora_targetable_modules or [])
+    assert shipped, (
+        f"{def_id}: YAML must ship the curated LoRA target list "
+        "(an empty [] is auto-filled by enrich_definition)"
+    )
+    assert shipped == expected, (
+        f"{def_id}: shipped list diverges from hv15_lora_target_paths "
+        f"(+{len(shipped - expected)} extra, -{len(expected - shipped)} missing)"
+    )
+
+    # The driver returns the shipped list verbatim.
+    drv = Hv15Driver(defn, torch.device("cpu"))
+    assert set(drv.get_lora_targets()) == expected

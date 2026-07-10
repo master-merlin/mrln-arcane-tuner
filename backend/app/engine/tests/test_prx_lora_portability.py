@@ -126,6 +126,68 @@ def test_key_count_pinned_12_tiny_192_full():
     assert _EXPECTED_FULL_MODEL_KEYS == 192
 
 
+def _real_config_model():
+    """Meta-instantiate the REAL checkpoint transformer config (no weights)."""
+    from diffusers.models.transformers.transformer_prx import (
+        PRXTransformer2DModel,
+    )
+
+    with torch.device("meta"):
+        return PRXTransformer2DModel(
+            in_channels=16,
+            patch_size=2,
+            context_in_dim=2304,
+            hidden_size=1792,
+            mlp_ratio=3.5,
+            num_heads=28,
+            depth=_DEPTH,
+            axes_dim=[32, 32],
+            theta=10000,
+        )
+
+
+def test_definition_ships_curated_lora_target_list():
+    """prx-sft MUST ship the curated 96-module list in its YAML.
+
+    dreamlite precedent (2026-07-08 GPU-UAT crash): a YAML with NO
+    ``lora_targetable_modules`` gets the field auto-filled at first real model
+    load by ``registry.enrich_definition`` with the introspector's EXHAUSTIVE
+    Linear catalog (img_in/txt_in/time_in/final_layer/modulation...), and the
+    driver prefers a non-empty definition list over the curated prx_shared
+    patterns — silently breaking the 192-key pinned surface.
+
+    The shipped list is PRX_BLOCK_LORA_TARGETS fully expanded over the real
+    depth-16 config: 16 × 6 = 96 block-scoped module paths.
+    """
+    from app.engine.models.families.prx_shared import PRX_BLOCK_LORA_TARGETS
+    from app.engine.models.registry import ModelRegistry
+
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry._definitions = {}
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+
+    real = _real_config_model()
+    expected = {
+        n
+        for n, m in real.named_modules()
+        if isinstance(m, torch.nn.Linear)
+        and any(n == p or n.endswith("." + p) for p in PRX_BLOCK_LORA_TARGETS)
+    }
+    assert len(expected) == _DEPTH * _BLOCK_MODULES  # == 96
+    assert all(n.startswith("blocks.") for n in expected)
+
+    defn = ModelRegistry._definitions["prx-sft"]
+    shipped = set(defn.lora_targetable_modules or [])
+    assert shipped, "prx-sft: YAML must ship the curated LoRA target list"
+    assert shipped == expected, (
+        f"prx-sft: shipped list diverges from the curated/tested surface "
+        f"(+{len(shipped - expected)} extra, -{len(expected - shipped)} missing). "
+        f"Extras include e.g. {sorted(shipped - expected)[:3]}"
+    )
+
+
 def test_saver_key_format_is_ai_toolkit():
     """All keys are diffusion_model.{module}.lora_A/B.weight and ONLY
     block-level modules are wrapped (no top-level img_in/txt_in/time_in/

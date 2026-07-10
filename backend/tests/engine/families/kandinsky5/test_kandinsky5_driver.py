@@ -395,6 +395,26 @@ def test_definition_suffixes_override_but_stay_visual_scoped():
     ]
 
 
+def test_definition_full_paths_pass_through_verbatim():
+    """Fully-indexed definition entries must NOT be re-expanded per block.
+
+    The YAMLs ship the curated list as FULL ``visual_transformer_blocks.{i}.*``
+    paths (dreamlite precedent — a shipped non-empty list blocks
+    ``registry.enrich_definition`` from auto-filling the introspector's
+    exhaustive catalog). Re-expanding them as suffixes would produce
+    ``visual_transformer_blocks.{i}.visual_transformer_blocks.{j}...`` paths
+    that match NOTHING, so PEFT would wrap zero modules.
+    """
+    d = _definition("t2v", **{"transformer.num_visual_blocks": 2})
+    full = [
+        "visual_transformer_blocks.0.self_attention.to_query",
+        "visual_transformer_blocks.1.feed_forward.out_layer",
+    ]
+    d.lora_targetable_modules = full
+    drv = Kandinsky5Driver(d, torch.device("cpu"))
+    assert drv.get_lora_targets() == full
+
+
 # ── RoPE helpers + scale factor ────────────────────────────────────────────
 
 

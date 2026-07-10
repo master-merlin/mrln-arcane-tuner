@@ -130,6 +130,75 @@ def test_key_count_pinned_34_tiny_414_full():
     assert _EXPECTED_FULL_MODEL_KEYS == 414
 
 
+def _real_config_model():
+    """Meta-instantiate the REAL checkpoint transformer config (no weights)."""
+    from diffusers.models.transformers.transformer_ovis_image import (
+        OvisImageTransformer2DModel,
+    )
+
+    with torch.device("meta"):
+        return OvisImageTransformer2DModel(
+            patch_size=1,
+            in_channels=64,
+            out_channels=64,
+            num_layers=_NUM_LAYERS,
+            num_single_layers=_NUM_SINGLE_LAYERS,
+            attention_head_dim=128,
+            num_attention_heads=24,
+            joint_attention_dim=2048,
+            axes_dims_rope=(16, 56, 56),
+        )
+
+
+def test_definition_ships_curated_lora_target_list():
+    """ovis-image-base MUST ship the curated 207-module list in its YAML.
+
+    dreamlite precedent (2026-07-08 GPU-UAT crash): a YAML with NO
+    ``lora_targetable_modules`` gets the field auto-filled at first real model
+    load by ``registry.enrich_definition`` with the introspector's EXHAUSTIVE
+    Linear catalog (time embedders, input/output projections, text blocks...),
+    and the driver prefers a non-empty definition list over its curated
+    pattern defaults — silently breaking the 414-key pinned surface.
+
+    The shipped list is the fully-expanded resolution of the driver's pattern
+    targets + top-level ``proj_out`` exclusion against the real config:
+    6×12 double + 27×5 single = 207 modules. The top-level ``proj_out`` is
+    OMITTED from the list (the driver's exclude regex becomes a no-op on the
+    full-path list), so PEFT wraps exactly the tested surface either way.
+    """
+    from app.engine.models.registry import ModelRegistry
+
+    ModelRegistry._discovered = False
+    ModelRegistry._families = {}
+    ModelRegistry._definitions = {}
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+
+    patterns = _make_driver().get_lora_targets()  # pattern defaults
+    real = _real_config_model()
+    expected = {
+        n
+        for n, m in real.named_modules()
+        if isinstance(m, torch.nn.Linear)
+        and any(n == p or n.endswith("." + p) for p in patterns)
+    }
+    assert "proj_out" in expected  # sanity: suffix DOES hit the top level...
+    expected.discard("proj_out")  # ...and the curated list must omit it
+    assert len(expected) == (
+        _NUM_LAYERS * _DOUBLE_BLOCK_MODULES
+        + _NUM_SINGLE_LAYERS * _SINGLE_BLOCK_MODULES
+    )  # == 207
+
+    defn = ModelRegistry._definitions["ovis-image-base"]
+    shipped = set(defn.lora_targetable_modules or [])
+    assert shipped, "ovis-image-base: YAML must ship the curated LoRA target list"
+    assert shipped == expected, (
+        f"ovis-image-base: shipped list diverges from the curated/tested surface "
+        f"(+{len(shipped - expected)} extra, -{len(expected - shipped)} missing). "
+        f"Extras include e.g. {sorted(shipped - expected)[:3]}"
+    )
+
+
 def test_saver_key_format_is_ai_toolkit():
     """All keys are diffusion_model.{module}.lora_A/B.weight; the model's
     top-level proj_out (final projection) is NOT among them."""

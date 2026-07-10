@@ -619,9 +619,12 @@ class TestTurboRenoiseMath:
         )
 
         # Hand-replay: same sigma ladder, same model output (constant 3.0),
-        # same generator seed/sequence.
+        # same renoise generator sequence. The sampler seeds its renoise
+        # generator with seed + 1 (NOT seed) to decorrelate the first renoise
+        # draw from the initial-latent noise the base class already drew from
+        # a seed-seeded generator of the same shape (review Fix wave 1).
         sigmas = _build_dmd_sigmas(2, torch.device("cpu"), torch.float32, 0.001).tolist()
-        gen = torch.Generator(device="cpu").manual_seed(seed)
+        gen = torch.Generator(device="cpu").manual_seed(seed + 1)
 
         z = noise0.clone()
         v = 3.0
@@ -633,6 +636,72 @@ class TestTurboRenoiseMath:
         x0_hat_1 = z + (1.0 - sigmas[1]) * v
 
         assert torch.allclose(latents, x0_hat_1, atol=1e-5)
+
+    def test_first_renoise_draw_decorrelated_from_initial_noise(self):
+        """REGRESSION (review Fix wave 1): the first renoise draw must NOT be
+        bitwise identical to the initial latent noise.
+
+        The base ``GenericSamplingPipeline._sample_single`` seeds a generator
+        with ``seed`` and draws the initial noise as its FIRST randn of shape
+        ``[1, C, lat_h, lat_w]`` (sampling.py:573-574). If the turbo loop
+        re-derives ``manual_seed(seed)`` for its renoise generator, its first
+        draw is the SAME shape from the SAME state -> ``fresh_noise ==
+        noise0`` exactly, violating the DMD renoise contract of INDEPENDENT
+        noise (upstream threads ONE generator through both draws --
+        pipeline_boogu_turbo.py:137/:178/:204 -- so they are distinct
+        sequential draws).
+
+        This test mirrors the base class's exact generator usage (seed-seeded
+        generator, first draw = initial noise via _create_initial_noise),
+        runs the real turbo path, and algebraically recovers the fresh noise
+        from the constant-velocity walk to assert it differs from noise0.
+        """
+        from app.engine.models.families.boogu_image.sampler import (
+            BooguImageSampler,
+            _build_dmd_sigmas,
+        )
+
+        model = _ConstantModel()
+        definition = _definition(True)
+        drv = _driver_with_model(model, definition)
+        pipeline = _build_pipeline(drv, definition)
+        sampler = BooguImageSampler(pipeline)
+
+        # cond embeds mean == 3.0 -> constant velocity 3.0.
+        prompt_emb = {
+            "embeds": torch.full((1, 3, TINY_TEXT_DIM), 3.0),
+            "mask": torch.ones(1, 3, dtype=torch.long),
+        }
+
+        seed = 42
+        # EXACTLY what the base _sample_single does: seed-seeded generator,
+        # first randn draw of the latent shape = the initial noise.
+        base_gen = torch.Generator(device="cpu").manual_seed(seed)
+        noise0 = sampler._create_initial_noise(32, 32, base_gen)
+
+        latents = sampler.denoise(
+            noise0.clone(), prompt_emb, num_steps=2, guidance_scale=1.0, seed=seed,
+        )
+
+        # Recover the fresh renoise noise algebraically:
+        # x0_hat_0 = noise0 + (1-s0)*v
+        # z1       = (1-s1)*fresh + s1*x0_hat_0
+        # latents  = z1 + (1-s1)*v
+        # -> fresh = (latents - (1-s1)*v - s1*x0_hat_0) / (1-s1)
+        sigmas = _build_dmd_sigmas(
+            2, torch.device("cpu"), torch.float32, 0.001,
+        ).tolist()
+        v = 3.0
+        x0_hat_0 = noise0 + (1.0 - sigmas[0]) * v
+        fresh = (
+            latents - (1.0 - sigmas[1]) * v - sigmas[1] * x0_hat_0
+        ) / (1.0 - sigmas[1])
+
+        assert not torch.allclose(fresh, noise0, atol=1e-4), (
+            "first renoise draw is bitwise identical to the initial latent "
+            "noise -- the renoise generator must be decorrelated from the "
+            "base class's seed-seeded initial-noise generator"
+        )
 
 
 class TestTurboOracleConsistency:

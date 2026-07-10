@@ -204,9 +204,6 @@ class BooguImageSampler(GenericSamplingPipeline):
         lat_h = height // vae_sf
         lat_w = width // vae_sf
 
-        self._sample_height = height
-        self._sample_width = width
-
         return torch.randn(
             (1, lat_channels, lat_h, lat_w),
             generator=generator,
@@ -382,9 +379,21 @@ class BooguImageSampler(GenericSamplingPipeline):
         # The house denoise() interface receives only `seed` (not the
         # generator used for _create_initial_noise) — a fresh generator is
         # deterministically re-derived from it for the renoise draws
-        # (documented deviation from upstream's single shared generator,
-        # which is not plumbed through this interface).
-        generator = torch.Generator(device=device).manual_seed(seed)
+        # (documented deviation from upstream's SINGLE shared generator
+        # threaded through both initial latents and renoise —
+        # pipeline_boogu_turbo.py:137/:178/:204 — which is not plumbed
+        # through this interface).
+        #
+        # The `+ 1` is LOAD-BEARING, do not "simplify" it away: the base
+        # _sample_single already seeded a generator with `seed` and drew the
+        # initial noise as its FIRST randn of this exact latent shape
+        # (sampling.py:573-574). Re-seeding with the SAME seed here would
+        # make the first renoise draw bitwise IDENTICAL to the initial
+        # latents — violating the DMD renoise contract of independent noise
+        # (upstream's shared generator yields distinct sequential draws).
+        # Pinned by TestTurboRenoiseMath::
+        # test_first_renoise_draw_decorrelated_from_initial_noise.
+        generator = torch.Generator(device=device).manual_seed(seed + 1)
 
         with torch.no_grad():
             sigma_list = sigmas.tolist()
@@ -431,11 +440,15 @@ class BooguImageSampler(GenericSamplingPipeline):
     def decode_latents(self, latents: Tensor) -> Image.Image:
         """``latents / scaling_factor + shift_factor`` -> ``vae.decode``
         (``pipeline_boogu.py:3681-3686`` / ``pipeline_boogu_turbo.py:
-        211-218`` — identical order in both loops' decode tail)."""
+        211-218`` — identical order in both loops' decode tail).
+
+        Device placement is owned by the base ``_sample_single`` (its Phase 3
+        ``_ensure_on_gpu(["vae"])`` / ``_offload_to_cpu`` bracket) — no
+        ``vae.to(...)`` here, so offload bookkeeping has exactly one owner.
+        """
         vae = self.pipeline.vae
         vae_dtype = next(vae.parameters()).dtype
 
-        vae.to(self.device)
         with torch.no_grad():
             scaling_factor = getattr(vae.config, "scaling_factor", 1.0) or 1.0
             shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0

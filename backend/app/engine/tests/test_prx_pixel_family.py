@@ -771,6 +771,35 @@ def test_trainer_encode_to_forward_real_seam():
     assert pred.isfinite().all(), "forward_pass output contains NaN/inf"
 
 
+def test_trainer_compute_target_dispatches_to_x0():
+    """C5: the PIPELINE calls ``self.compute_target`` (the TRAINER method),
+    not ``driver.compute_target``. The trainer must therefore override it to
+    the x0 objective — otherwise the base ``GenericTrainingPipeline`` returns
+    the flow-match VELOCITY (``noise - latents``) while the forward emits x0,
+    giving an ~3-5 MSE that trains the LoRA toward noise-scale output.
+    """
+    import torch  # noqa: PLC0415
+
+    from app.engine.models.families.prx_pixel.trainer import PRXPixelTrainer
+
+    trainer = _build_real_trainer_shell()
+
+    latents = torch.randn(2, 3, 8, 8)
+    noise = torch.randn(2, 3, 8, 8)
+    timesteps = torch.tensor([500.0, 250.0])
+
+    # Dispatch through the exact bound method the pipeline invokes.
+    target = PRXPixelTrainer.compute_target(trainer, latents, noise, timesteps)
+
+    assert torch.equal(target, latents), (
+        "trainer.compute_target must return the clean pixels (x0); a "
+        "velocity target here trains the x0 model toward noise"
+    )
+    assert not torch.equal(target, noise - latents), (
+        "base velocity target leaked through the trainer dispatch"
+    )
+
+
 def test_trainer_cached_encode_returns_batched_tuple():
     """Cached path stacks per-caption entries back to ([B,L,D], [B,L])."""
     import torch  # noqa: PLC0415

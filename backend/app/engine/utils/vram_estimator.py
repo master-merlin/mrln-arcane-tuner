@@ -201,6 +201,18 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 5.7,  # UMT5-XXL encoder
         "vae": 0.13,  # AutoencoderKLWan (127M params)
     },
+    "boogu_image": {
+        # Both boogu-image-base/-turbo definitions ship real on-disk
+        # model_size_mb (transformer 10300 MB, text_encoder/mllm 8800 MB,
+        # vae 80 MB — verified checkpoint sizes, task-3-brief.md), which the
+        # estimator prefers via _get_component_disk_mb. This entry is a true
+        # FALLBACK, calibrated to those on-disk bf16 sizes (size_mb / 2000 ==
+        # size_mb / 2 bytes-per-param, in billions of params) — same
+        # convention as microsoft_lens/ernie_image.
+        "transformer": 5.15,  # 10300 MB / 2000
+        "text_encoder": 4.4,  # Qwen3-VL mllm, 8800 MB / 2000
+        "vae": 0.04,  # FLUX-style AutoencoderKL 16ch, 80 MB / 2000
+    },
 }
 
 # Bytes-per-param for common dtypes

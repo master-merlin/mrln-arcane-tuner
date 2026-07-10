@@ -234,3 +234,31 @@ def test_hunyuan_video15_dual_te_sums_and_vae_is_measured():
     assert _get_te_params("hunyuan_video15") == pytest.approx(7.32)
     assert _get_vae_params("hunyuan_video15") == pytest.approx(1.26)
     assert _get_primary_params("hunyuan_video15", {}) == pytest.approx(8.3)
+
+
+def test_boogu_image_fallback_matches_on_disk_sizes():
+    """boogu_image (Task 3) ships real model_size_mb in both definitions
+    (transformer 10300 MB, text_encoder/mllm 8800 MB, vae 80 MB — verified
+    checkpoint sizes, task-3-brief.md) which the estimator prefers via
+    _get_component_disk_mb; its _FAMILY_PARAMS entry is a true FALLBACK,
+    calibrated to those on-disk bf16 sizes (size_mb / 2000 == size_mb /
+    2 bytes-per-param, in billions) — same convention as microsoft_lens/
+    ernie_image."""
+    assert "boogu_image" in _FAMILY_PARAMS
+    entry = _FAMILY_PARAMS["boogu_image"]
+    assert any("text_encoder" in k for k in entry)
+    assert "vae" in entry
+
+    assert _get_primary_params("boogu_image", {}) == pytest.approx(5.15)
+    assert _get_te_params("boogu_image") == pytest.approx(4.4)
+    assert _get_vae_params("boogu_image") == pytest.approx(0.04)
+
+    for def_id in ("boogu-image-base", "boogu-image-turbo"):
+        defn = registry.get_definition(def_id)
+        assert defn is not None, f"definition {def_id} not found"
+        d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+        # model_size_mb["transformer"] = 10300 MB drives the primary estimate
+        # directly (disk-size path) -- the fallback table (2.0 B default =
+        # ~3.8 GB) must NOT be the source. bf16, no quantization scaling.
+        assert 9_000 < d["model_weights_mb"] < 12_000, (def_id, d["model_weights_mb"])
+        assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id

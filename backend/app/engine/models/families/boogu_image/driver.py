@@ -142,10 +142,6 @@ from app.engine.core.text_encoding import TextEncoderOutput
 
 logger = structlog.get_logger(__name__)
 
-_NOT_IMPLEMENTED_NOTE = (
-    " — lands in a later task, see .agent/workdir/sdd-boogu/task-4-report.md"
-)
-
 # RoPE base frequency — hardcoded in the vendored transformer's own
 # ``rope_embedder`` construction (transformer_boogu.py:859,
 # ``BooguImageDoubleStreamRotaryPosEmbed(theta=10000, ...)``) and in the
@@ -585,4 +581,13 @@ class BooguImageDriver(IModelDriver):
     # --- Phase 6: LoRA Output & Saver ---
 
     def get_saver(self) -> IModelSaver:
-        raise NotImplementedError("boogu_image saver" + _NOT_IMPLEMENTED_NOTE)
+        """Return the Boogu-Image LoRA saver (house ai-toolkit-format).
+
+        See ``saver.py`` (``BooguImageSaver`` — plain ``GenericLoRASaver``
+        subclass) and ``lora_ecosystem.py`` (the ecosystem-portability
+        mapping to/from the non-diffusers fused-qkv convention that
+        ``BooguImageLoraLoaderMixin`` expects — Task 7).
+        """
+        from .saver import BooguImageSaver  # noqa: PLC0415
+
+        return BooguImageSaver()

@@ -3,9 +3,44 @@
 Task 4 scope (this file): the REAL driver — replaces Task 2's stubs with the
 load-bearing correctness contracts (time convention, timestep scale, LoRA
 targeting, list-tensor I/O adapter, RoPE wiring). ``encode_text`` and
-``get_saver`` remain ``NotImplementedError`` — Qwen3-VL text encoding lands
+``get_saver`` were ``NotImplementedError`` — Qwen3-VL text encoding lands
 in Task 5 (trainer), the safetensors saver in a later task; both are outside
 this task's charter (driver forward-pass math only).
+
+## Task 5 update — ``encode_text`` implemented + ``sample_timesteps``
+``progress`` forwarding added
+
+``encode_text`` below is the Qwen3-VL VLM forward (chat-template + system
+prompt + last-layer tap) — see ``task-5-report.md`` for the full evidence
+trail. Two verified facts worth flagging here because they contradict what
+a literal reading of the upstream pipeline suggests:
+
+1. **No ``.last_hidden_state`` fast path.** Upstream's
+   ``_get_instruction_feature_embeds`` (``pipeline_boogu.py:1467-1490``)
+   tries ``self.mllm(**vlm_inputs, output_hidden_states=False).last_hidden_state``
+   first and falls back to ``output_hidden_states=True`` +
+   ``hidden_states[-1]`` in an ``except Exception`` handler. Verified against
+   the installed ``transformers==4.57.0``: ``Qwen3VLForConditionalGeneration``
+   (the class both upstream AND this loader instantiate — not a vendored
+   subclass) returns ``Qwen3VLCausalLMOutputWithPast``, which has NO
+   ``last_hidden_state`` field (only the inner ``Qwen3VLModel``'s own output
+   does). The "fast path" therefore ALWAYS raises for this model class —
+   the except-branch is the one that genuinely executes upstream. This
+   driver calls that path directly instead of reproducing the try/except.
+2. **``num_instruction_feature_layers`` is always 1 in practice.** Upstream
+   reads ``self.transformer.instruction_feature_configs.get(
+   "num_instruction_feature_layers", 1)`` — but the vendored transformer's
+   own config dict key is ``"num_instruction_feat_layers"`` (no "ure"), a
+   name mismatch (verified: ``transformer_boogu.py:824-828``). The ``.get()``
+   call therefore always misses and falls through to its default, ``1``.
+   Hardcoded here rather than threaded through a live config lookup.
+
+``sample_timesteps`` now accepts and forwards a ``progress: float = 0.0``
+keyword to ``TimestepSampler.sample`` (previously always implicitly ``0.0``
+via the sampler's own default) — the trainer computes real progress from
+``global_step``/``max_train_steps`` and passes it through; without this the
+``radc`` curriculum timestep mode silently never advances past its
+step-0 center regardless of training progress.
 
 ## Time convention (DERIVED, not assumed — see task-4-report.md for the full
 evidence trail with file:line citations)
@@ -117,6 +152,29 @@ _NOT_IMPLEMENTED_NOTE = (
 # upstream pipeline's ``get_freqs_cis(..., theta=10000)`` call
 # (pipeline_boogu.py:2899). Not a definition/config knob.
 _ROPE_THETA = 10000
+
+# Verbatim from upstream pipeline_boogu.py:232
+# (``self.SYSTEM_PROMPT_4_T2I_UNIFIED``, aliased as ``SYSTEM_PROMPT_4_T2I``
+# at :234) — the branch ``_apply_chat_template`` (pipeline_boogu.py:1596-1600)
+# selects for a non-empty instruction with no reference images, i.e. every
+# Boogu-Image training caption (``control_inputs: 0``, pure T2I; both
+# shipped definitions). The adjacent ``SYSTEM_PROMPT_DROP`` branch
+# (pipeline_boogu.py:1597-1598, empty-instruction/unconditional case) uses a
+# DIFFERENT text (``SYSTEM_PROMPT_4_TI2I_UNIFIED``) reserved for the TI2I/
+# edit workflows Boogu-Image doesn't support here — caption-dropout training
+# (empty caption) still uses THIS T2I prompt for determinism; see
+# task-5-report.md.
+_SYSTEM_PROMPT_T2I = (
+    "You are a helpful assistant that generates high-quality images "
+    "based on user instructions. The instructions are as follows."
+)
+
+# te.max_sequence_length, both definitions (base.yaml / turbo.yaml).
+_MAX_SEQUENCE_LENGTH = 256
+
+# See module docstring "Task 5 update" note 2 — always 1 in practice due to
+# an upstream config-key name mismatch.
+_NUM_INSTRUCTION_FEATURE_LAYERS = 1
 
 
 class BooguImageDriver(IModelDriver):
@@ -233,8 +291,83 @@ class BooguImageDriver(IModelDriver):
     def encode_text(
         self, captions: list[str], dtype: torch.dtype,
     ) -> TextEncoderOutput:
-        raise NotImplementedError(
-            "boogu_image Qwen3-VL text encoding" + _NOT_IMPLEMENTED_NOTE
+        """Qwen3-VL full-VLM text encoding — chat template + last-layer tap.
+
+        Mirrors upstream ``_get_instruction_feature_embeds``'s
+        ``use_prompt_tuning_embedding=False`` / ``num_instruction_feature_layers
+        == 1`` path (``pipeline_boogu.py:1448-1498``): build one
+        ``[system, user]`` chat-template message list per caption (T2I system
+        prompt, no images — ``control_inputs: 0``), tokenize via the
+        processor's ``apply_chat_template`` (stock Qwen3-VL ChatML jinja,
+        attention-mask based — NO fixed-token crop), forward through the mllm
+        with ``output_hidden_states=True``, and tap the LAST decoder layer
+        (``hidden_states[-1]``) — see module docstring "Task 5 update" note 1
+        for why this driver calls that path directly instead of upstream's
+        ``.last_hidden_state`` attribute access (which does not exist on
+        this exact model class).
+
+        ``use_prompt_tuning: false`` in both shipped definitions — no
+        ``PromptEmbedding`` soft-token prepending (skipped entirely, matching
+        the loader's docstring).
+
+        Args:
+            captions: Batch of caption strings.
+            dtype: Target dtype for the returned embeddings.
+
+        Returns:
+            ``TextEncoderOutput`` with:
+            - ``embeddings``: ``[B, L<=256, 4096]`` (``te.hidden_size``)
+            - ``attention_mask``: ``[B, L]`` (processor's own mask, int/bool)
+        """
+        if self.processor is None or self.text_encoder is None:
+            raise RuntimeError(
+                "boogu_image encode_text: 'processor'/'text_encoder' not "
+                "assigned — assign_components() must run first."
+            )
+
+        prompts = [
+            [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": _SYSTEM_PROMPT_T2I}],
+                },
+                {"role": "user", "content": [{"type": "text", "text": caption}]},
+            ]
+            for caption in captions
+        ]
+
+        vlm_inputs = self.processor.apply_chat_template(
+            prompts,
+            padding="longest",
+            max_length=_MAX_SEQUENCE_LENGTH,
+            truncation=False,
+            padding_side="right",
+            return_tensors="pt",
+            tokenize=True,
+            return_dict=True,
+        )
+        vlm_inputs = {
+            k: (v.to(self.device) if isinstance(v, torch.Tensor) else v)
+            for k, v in vlm_inputs.items()
+        }
+
+        with torch.no_grad():
+            outputs = self.text_encoder(
+                **vlm_inputs, output_hidden_states=True, return_dict=True,
+            )
+
+        # See module docstring "Task 5 update" note 1: Qwen3VLForConditional
+        # Generation's output has no `.last_hidden_state` — the last decoder
+        # layer of the `hidden_states` tuple IS what upstream's own
+        # except-fallback computes, and num_instruction_feature_layers==1
+        # (note 2) means we only ever need that single last layer.
+        assert _NUM_INSTRUCTION_FEATURE_LAYERS == 1
+        hidden_states = outputs.hidden_states[-1]
+        attention_mask = vlm_inputs["attention_mask"]
+
+        return TextEncoderOutput(
+            embeddings=hidden_states.to(dtype=dtype),
+            attention_mask=attention_mask,
         )
 
     # --- Phase 4: Precision, LoRA Targets & Layer Manifest ---
@@ -251,18 +384,26 @@ class BooguImageDriver(IModelDriver):
         device: torch.device,
         config: dict[str, Any],
         latents: torch.Tensor | None = None,
+        progress: float = 0.0,
     ) -> torch.Tensor:
         """Sample raw ``[0, 1)`` timesteps — NO scaling (contract 2).
 
         Delegates the actual distribution to the shared ``TimestepSampler``
         (``.sample``, not ``.sample_scaled`` — the latter multiplies by
         1000, which is wrong for Boogu's own ``[0, 1)``-native scheduler).
+
+        ``progress`` (training progress in ``[0, 1]``, ``global_step /
+        max_train_steps``) is forwarded to ``TimestepSampler.sample`` — it
+        drives the ``radc`` curriculum mode's center shift. The TRAINER
+        (Task 5) computes and passes this; the default ``0.0`` here only
+        applies to direct/legacy callers that don't supply it (e.g. Task 4's
+        driver-level tests).
         """
         from app.engine.strategies.timestep_sampling import TimestepSampler
 
         mode = config.get("timestep_sampling", "logit_normal")
         return TimestepSampler.sample(
-            mode, batch_size, device, config, latents=latents,
+            mode, batch_size, device, config, latents=latents, progress=progress,
         )
 
     def add_noise(

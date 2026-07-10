@@ -86,6 +86,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "kandinsky5": (True, True),  # latent_diffusion video DiT (HunyuanVideo VAE) + dual Qwen2.5-VL/CLIP TE
     "hidream_o1": (False, False),  # unified transformer: pixel-space, TE inside the model
     "prx_pixel": (False, True),  # pixel_transformer: NO VAE, external Qwen3-VL text TE
+    "boogu_image": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen3-VL mllm TE (no TE training)
 }
 
 

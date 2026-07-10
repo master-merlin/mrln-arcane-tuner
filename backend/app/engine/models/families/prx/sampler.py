@@ -95,6 +95,13 @@ class PRXSampler(GenericSamplingPipeline):
         20 — off-distribution for this 512-native checkpoint. Pipeline
         ``__call__`` defaults: 512×512, 28 steps, guidance 4.0 (sourced
         from the definition's ``defaults`` when present).
+
+        The preview resolution is also CLAMPED to native: the UI stamps
+        sample prompts with the global-default 1024, and rendering this
+        512-native model at 2× native produces doubled/mirrored composition
+        (coherent local detail, repeated global structure). Any request
+        above native is scaled down (longest side → native) preserving
+        aspect ratio and the ``vae_scale_factor × patch_size`` multiple.
         """
         cfg = dict(prompt_cfg)
         defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
@@ -112,7 +119,40 @@ class PRXSampler(GenericSamplingPipeline):
         for key, value in fill.items():
             if cfg.get(key) in (None, 0):
                 cfg[key] = value
+
+        cfg["width"], cfg["height"] = self._clamp_to_native(
+            int(cfg["width"]), int(cfg["height"]), resolution,
+        )
         return super()._sample_single(cfg, step)
+
+    def _clamp_to_native(
+        self, width: int, height: int, native: int
+    ) -> tuple[int, int]:
+        """Scale (w, h) down so the longest side ≤ ``native``.
+
+        Preserves aspect ratio and snaps each dimension to the required
+        ``vae_scale_factor × patch_size`` multiple (16 for the sft
+        checkpoint). Returns the input unchanged when already within native.
+        """
+        longest = max(width, height)
+        if longest <= native:
+            return width, height
+
+        arch = getattr(self.pipeline.definition, "architecture_params", {}) or {}
+        vae_sf = int(arch.get("vae.vae_scale_factor", 8))
+        patch = int(arch.get("transformer.patch_size", 2))
+        mult = max(vae_sf * patch, 1)
+
+        scale = native / longest
+        w = max(round(width * scale / mult) * mult, mult)
+        h = max(round(height * scale / mult) * mult, mult)
+        logger.info(
+            "prx_sampler_resolution_clamped",
+            requested=(width, height),
+            native=native,
+            clamped=(w, h),
+        )
+        return w, h
 
     # ── Text encoding ────────────────────────────────────────────────────
 

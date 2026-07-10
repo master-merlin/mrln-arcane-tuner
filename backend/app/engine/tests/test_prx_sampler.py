@@ -342,15 +342,52 @@ class TestDefaultsDecodeAndWiring:
 
         monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
 
+        # Native-compatible explicit values (both <= 512) pass through.
         sampler._sample_single(
-            {"prompt": "explicit", "width": 704, "height": 352,
+            {"prompt": "explicit", "width": 384, "height": 256,
              "num_inference_steps": 12, "guidance_scale": 1.0},
             0,
         )
-        assert captured["width"] == 704
-        assert captured["height"] == 352
+        assert captured["width"] == 384
+        assert captured["height"] == 256
         assert captured["num_inference_steps"] == 12
         assert captured["guidance_scale"] == 1.0
+
+    def test_sample_single_clamps_over_native_resolution(self, monkeypatch):
+        """A 512-native checkpoint must NOT be previewed above native.
+
+        The UI stamps sample prompts with the global-default 1024; rendering
+        the 512-native model at 2x native produces doubled/mirrored
+        composition. _sample_single clamps the longest side down to 512,
+        preserving aspect ratio and the 16px dimension multiple.
+        """
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        # Square 2x-native → clamp to native square.
+        sampler._sample_single(
+            {"prompt": "big", "width": 1024, "height": 1024}, 0
+        )
+        assert captured["width"] == 512
+        assert captured["height"] == 512
+
+        # Non-square over-native → longest side to 512, aspect preserved,
+        # each dim a multiple of 16.
+        captured.clear()
+        sampler._sample_single(
+            {"prompt": "wide", "width": 1024, "height": 512}, 0
+        )
+        assert captured["width"] == 512
+        assert captured["height"] == 256
+        assert captured["width"] % 16 == 0 and captured["height"] % 16 == 0
 
     def test_decode_latents_returns_pil(self):
         from PIL import Image

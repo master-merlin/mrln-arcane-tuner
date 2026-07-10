@@ -1509,6 +1509,17 @@ class JobManager:
         if fresh:
             self._delete_job_output_dir(job)
             self._auto_resume_state.pop(job_id, None)  # clean slate → reset budget
+            # A from-zero restart must NOT resume. If this job was previously
+            # continued from a checkpoint, its config still carries
+            # resume_from_checkpoint pointing into the output dir we just
+            # deleted — the trainer would then crash in _resume_if_needed with
+            # FileNotFoundError. Strip it (and persist) so fresh means fresh.
+            if job.config.get("resume_from_checkpoint") is not None:
+                new_config = copy.deepcopy(job.config)
+                new_config.pop("resume_from_checkpoint", None)
+                with self._lock:
+                    job.config = new_config
+                self._persist_config(job_id, new_config)
 
         self._stop_tailer(job_id)
         self._reset_job_log_state(job)

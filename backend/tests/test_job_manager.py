@@ -595,6 +595,36 @@ class TestRestartJob:
         mock_start.assert_called_once_with(job.id)
 
     @patch.object(JobManager, "start_job")
+    def test_restart_fresh_clears_stale_resume_from_checkpoint(self, mock_start):
+        """A from-zero (fresh) restart must strip resume_from_checkpoint.
+
+        If the job was previously continued from a checkpoint, its config
+        still carries resume_from_checkpoint pointing into the output dir that
+        the fresh restart just deleted — the trainer would then crash in
+        _resume_if_needed with FileNotFoundError. Fresh means from scratch.
+        """
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.STOPPED
+        job.config["resume_from_checkpoint"] = r"D:\outputs\run\final"
+
+        persisted: dict = {}
+        with patch.object(mgr, "_delete_job_output_dir"), patch.object(
+            mgr, "_reset_job_log_state"
+        ), patch.object(mgr, "_persist_status"), patch.object(
+            mgr, "_persist_config", side_effect=lambda jid, cfg: persisted.update(cfg)
+        ):
+            mgr.restart_job(job.id, fresh=True)
+
+        assert "resume_from_checkpoint" not in job.config, (
+            "fresh restart left the stale resume path in the job config"
+        )
+        assert "resume_from_checkpoint" not in persisted, (
+            "the cleared config was not persisted"
+        )
+        mock_start.assert_called_once_with(job.id)
+
+    @patch.object(JobManager, "start_job")
     def test_restart_queues_when_another_job_running(self, mock_start):
         """Restarting from the archive while a job is running must queue (not
         launch concurrently — the GPU runs one job at a time)."""

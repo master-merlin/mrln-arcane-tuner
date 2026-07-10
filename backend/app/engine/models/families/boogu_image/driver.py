@@ -155,19 +155,43 @@ _ROPE_THETA = 10000
 
 # Verbatim from upstream pipeline_boogu.py:232
 # (``self.SYSTEM_PROMPT_4_T2I_UNIFIED``, aliased as ``SYSTEM_PROMPT_4_T2I``
-# at :234) — the branch ``_apply_chat_template`` (pipeline_boogu.py:1596-1600)
-# selects for a non-empty instruction with no reference images, i.e. every
-# Boogu-Image training caption (``control_inputs: 0``, pure T2I; both
-# shipped definitions). The adjacent ``SYSTEM_PROMPT_DROP`` branch
-# (pipeline_boogu.py:1597-1598, empty-instruction/unconditional case) uses a
-# DIFFERENT text (``SYSTEM_PROMPT_4_TI2I_UNIFIED``) reserved for the TI2I/
-# edit workflows Boogu-Image doesn't support here — caption-dropout training
-# (empty caption) still uses THIS T2I prompt for determinism; see
-# task-5-report.md.
+# at :234) — the branch ``_apply_chat_template`` (pipeline_boogu.py:1600)
+# selects for a NON-EMPTY instruction with no reference images, i.e. every
+# real Boogu-Image training caption (``control_inputs: 0``, pure T2I; both
+# shipped definitions).
 _SYSTEM_PROMPT_T2I = (
     "You are a helpful assistant that generates high-quality images "
     "based on user instructions. The instructions are as follows."
 )
+
+# Verbatim from upstream pipeline_boogu.py:231
+# (``self.SYSTEM_PROMPT_4_TI2I_UNIFIED``, aliased as ``SYSTEM_PROMPT_DROP``
+# at :235). ``_apply_chat_template``'s adaptive branch
+# (pipeline_boogu.py:1596-1598 — the default
+# ``system_prompt_follows_task_type=False`` path, defaults at :2291/:2699)
+# applies THIS prompt to EVERY empty-instruction/no-image encode, including
+# the plain-T2I CFG NEGATIVE (``encode_instruction`` defaults
+# ``negative_instruction=""`` at :2491-2494). The base checkpoint's learned
+# unconditional anchor therefore lives under this DROP prompt —
+# caption-dropout training ("" captions) must encode with it, NOT the T2I
+# prompt, or the LoRA's CFG semantics drift from the base model (Task-5
+# review Finding 2; see task-5-report.md "Fix wave 1").
+_SYSTEM_PROMPT_DROP = (
+    "Describe the key features of the input image (color, shape, size, "
+    "texture, objects, background), then explain how the user's text "
+    "instruction should alter or modify the image. Generate a new image "
+    "that meets the user's requirements while maintaining consistency "
+    "with the original input where appropriate."
+)
+
+
+def _select_system_prompt(caption: str) -> str:
+    """Mirror upstream ``_apply_chat_template``'s adaptive no-image branch
+    (pipeline_boogu.py:1596-1600): empty/whitespace-only instruction ->
+    DROP prompt, otherwise the T2I prompt."""
+    if caption is None or len(caption.strip()) == 0:
+        return _SYSTEM_PROMPT_DROP
+    return _SYSTEM_PROMPT_T2I
 
 # te.max_sequence_length, both definitions (base.yaml / turbo.yaml).
 _MAX_SEQUENCE_LENGTH = 256
@@ -296,8 +320,10 @@ class BooguImageDriver(IModelDriver):
         Mirrors upstream ``_get_instruction_feature_embeds``'s
         ``use_prompt_tuning_embedding=False`` / ``num_instruction_feature_layers
         == 1`` path (``pipeline_boogu.py:1448-1498``): build one
-        ``[system, user]`` chat-template message list per caption (T2I system
-        prompt, no images — ``control_inputs: 0``), tokenize via the
+        ``[system, user]`` chat-template message list per caption (system
+        prompt selected per caption by :func:`_select_system_prompt` —
+        T2I for real captions, DROP for empty/dropout ones; no images —
+        ``control_inputs: 0``), tokenize via the
         processor's ``apply_chat_template`` (stock Qwen3-VL ChatML jinja,
         attention-mask based — NO fixed-token crop), forward through the mllm
         with ``output_hidden_states=True``, and tap the LAST decoder layer
@@ -325,11 +351,17 @@ class BooguImageDriver(IModelDriver):
                 "assigned — assign_components() must run first."
             )
 
+        # Per-caption system prompt (upstream's adaptive branch): non-empty
+        # caption -> T2I prompt; empty/whitespace (caption dropout / CFG
+        # unconditional) -> DROP prompt, matching the base checkpoint's
+        # learned unconditional anchor (review Finding 2).
         prompts = [
             [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": _SYSTEM_PROMPT_T2I}],
+                    "content": [
+                        {"type": "text", "text": _select_system_prompt(caption)},
+                    ],
                 },
                 {"role": "user", "content": [{"type": "text", "text": caption}]},
             ]

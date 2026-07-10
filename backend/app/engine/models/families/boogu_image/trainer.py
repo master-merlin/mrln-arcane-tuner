@@ -55,10 +55,21 @@ is the house TE-cache plumbing around it (mirrors
   ``_get_cached_text_embeddings``'s ``.to(self.device, dtype=dtype)`` on
   read (the same house mechanism krea2 relies on) — verified, not
   reimplemented here.
+- **Ragged-length entries (review Finding 1).** Boogu is the first
+  VARIABLE-LENGTH family on this cache pattern (``padding="longest"``, no
+  fixed crop), so per-caption cache entries have different lengths and a
+  plain ``torch.stack`` reassembly would crash on any real mixed-length
+  batch. Entries are stored TRIMMED to their true (mask) length —
+  :meth:`BooguImageTrainer._trim_entry`, the kandinsky5 precedent — in both
+  the lazy path and ``_pre_cache_text_embeddings`` (whose per-4 sub-batches
+  each pad to their own max), and reassembly pads embeddings AND masks to
+  the batch max with zeros (mask=0 == ignored position, equivalent to the
+  direct encode path's processor-side batch padding).
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 
 import structlog
@@ -66,12 +77,32 @@ import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
 
+from .driver import _SYSTEM_PROMPT_DROP, _SYSTEM_PROMPT_T2I
+
 logger = structlog.get_logger(__name__)
 
-# Disk-cache key template identity — see module docstring. Bump the version
-# suffix whenever the chat-template / system-prompt text changes so stale
-# disk-cached embeddings are never silently reused under a new template.
-_TE_TEMPLATE_ID = "boogu_image/t2i_system_prompt/v1"
+# Disk-cache key template identity — see module docstring.
+#
+# Version history:
+#   v1 — T2I system prompt for ALL captions (including dropout ""). WRONG
+#        for empty captions (review Finding 2): the base checkpoint's
+#        learned unconditional anchor lives under the DROP prompt, so v1
+#        dropout embeddings on disk must never be reused — hence the bump.
+#   v2 — per-caption adaptive prompt (T2I for real captions, DROP for
+#        empty/whitespace dropout), matching upstream's
+#        ``_apply_chat_template`` adaptive branch.
+#
+# The id also embeds a fingerprint HASHED FROM the actual prompt strings, so
+# any future edit to either prompt text changes every disk-cache key
+# automatically — a prompt tweak can never silently forget the version bump.
+_TE_TEMPLATE_VERSION = "v2"
+_TE_TEMPLATE_FINGERPRINT = hashlib.sha256(
+    "\x00".join([_SYSTEM_PROMPT_T2I, _SYSTEM_PROMPT_DROP]).encode("utf-8")
+).hexdigest()[:16]
+_TE_TEMPLATE_ID = (
+    f"boogu_image/chatml_system_prompt/{_TE_TEMPLATE_VERSION}/"
+    f"{_TE_TEMPLATE_FINGERPRINT}"
+)
 
 
 def _disk_cache_key(caption: str) -> str:
@@ -252,20 +283,56 @@ class BooguImageTrainer(GenericTrainingPipeline):
         out = self.driver.encode_text(captions, dtype)
         return out.embeddings, out.attention_mask
 
+    @staticmethod
+    def _trim_entry(
+        emb: torch.Tensor, mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Trim a single per-caption cache entry to its TRUE (mask) length.
+
+        Boogu tokenizes with ``padding="longest"`` and no fixed crop
+        (driver.encode_text), so a per-caption entry sliced out of a padded
+        batch carries whatever padding THAT batch happened to have. Cache
+        entries must be length-normalized (the kandinsky5 precedent:
+        "per-caption te1 entries are trimmed to the caption's TRUE length")
+        so reassembly padding is well-defined and independent of the batch
+        an entry was first encoded in.
+
+        Args:
+            emb: Per-caption embeddings ``[L_padded, D]``.
+            mask: Per-caption attention mask ``[L_padded]``
+                (``padding_side="right"``, so valid positions are a prefix).
+
+        Returns:
+            ``(emb [L_true, D], mask [L_true])``.
+        """
+        true_len = int(mask.sum().item())
+        return emb[:true_len], mask[:true_len]
+
     def _get_cached_text_embeddings(
         self, captions: list[str], dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode on first encounter, reuse thereafter.
 
-        Mirrors ``Krea2Trainer._get_cached_text_embeddings``. The in-memory
-        ``self.text_cache`` dict is keyed by the RAW caption string (not the
-        disk-cache's template-baked key — see module docstring).
+        Mirrors ``Krea2Trainer._get_cached_text_embeddings`` with ONE
+        Boogu-specific addition (review Finding 1): cache entries are
+        VARIABLE-LENGTH (``padding="longest"``, no fixed crop — boogu is
+        the first such family on this pattern; krea2 crops to 34 tokens,
+        longcat pads to a fixed 512), so a plain ``torch.stack`` over
+        ragged ``[L_i, D]`` entries would raise RuntimeError on any real
+        batch whose captions tokenize to different lengths. Entries are
+        stored TRIMMED to their true length and reassembly PADS to the
+        batch max — embeddings zero-padded, masks zero-padded (mask=0 ==
+        ignored position; the model derives per-sample caption lengths
+        from ``mask.sum(dim=1)``, so this is equivalent to the direct
+        encode path's processor-side ``padding="longest"`` batch).
+
+        The in-memory ``self.text_cache`` dict is keyed by the RAW caption
+        string (not the disk-cache's template-baked key — see module
+        docstring).
 
         Returns:
-            (text_embeddings ``[B, L, 4096]``, attention_mask ``[B, L]``).
+            (text_embeddings ``[B, L_max, 4096]``, attention_mask ``[B, L_max]``).
         """
-        emb_results: list[torch.Tensor] = []
-        mask_results: list[torch.Tensor] = []
         uncached: list[tuple[int, str]] = []
 
         for i, cap in enumerate(captions):
@@ -285,7 +352,7 @@ class BooguImageTrainer(GenericTrainingPipeline):
 
             for _, cap in uncached:
                 single_emb, single_mask = self._encode_text_direct([cap], dtype)
-                self.text_cache[cap] = (
+                self.text_cache[cap] = self._trim_entry(
                     single_emb.squeeze(0).cpu(),
                     single_mask.squeeze(0).cpu(),
                 )
@@ -303,10 +370,23 @@ class BooguImageTrainer(GenericTrainingPipeline):
                 + ", ".join(cap[:50] for _, cap in uncached)
             )
 
-        for cap in captions:
-            cached_emb, cached_mask = self.text_cache[cap]
-            emb_results.append(cached_emb.to(self.device, dtype=dtype))
-            mask_results.append(cached_mask.to(self.device))
+        # Mask-aware padded reassembly (see docstring — entries are ragged).
+        entries = [self.text_cache[cap] for cap in captions]
+        max_len = max(e.shape[0] for e, _ in entries)
+
+        emb_results: list[torch.Tensor] = []
+        mask_results: list[torch.Tensor] = []
+        for cached_emb, cached_mask in entries:
+            emb = cached_emb.to(self.device, dtype=dtype)
+            mask = cached_mask.to(self.device)
+            pad_rows = max_len - emb.shape[0]
+            if pad_rows > 0:
+                emb = torch.cat(
+                    [emb, emb.new_zeros(pad_rows, *emb.shape[1:])], dim=0,
+                )
+                mask = torch.cat([mask, mask.new_zeros(pad_rows)], dim=0)
+            emb_results.append(emb)
+            mask_results.append(mask)
 
         return torch.stack(emb_results, dim=0), torch.stack(mask_results, dim=0)
 
@@ -421,8 +501,14 @@ class BooguImageTrainer(GenericTrainingPipeline):
                 emb_batch, mask_batch = self._encode_text_direct(batch_caps, dtype)
 
                 for j, (cap, hint) in enumerate(batch_items):
-                    emb_cpu = emb_batch[j].cpu()
-                    mask_cpu = mask_batch[j].cpu()
+                    # Trim each entry out of the sub-batch's own padding
+                    # (each sub-batch of 4 pads to ITS OWN max — un-trimmed
+                    # entries would carry inconsistent cross-sub-batch
+                    # padding; review Finding 1). Both memory and disk store
+                    # the trimmed entry; reassembly pads to the batch max.
+                    emb_cpu, mask_cpu = self._trim_entry(
+                        emb_batch[j].cpu(), mask_batch[j].cpu(),
+                    )
                     self.text_cache[cap] = (emb_cpu, mask_cpu)
                     if te1_dir:
                         TextEmbeddingCache.save(_disk_cache_key(cap), emb_cpu, te1_dir, hint)

@@ -398,15 +398,274 @@ class TestDiskCacheKeyTemplateIdentity:
         from app.engine.components.text_embeddings import TextEmbeddingCache
 
         caption = "a red bicycle"
-        key_v1 = _disk_cache_key(caption)
-        key_v2_hypothetical = "boogu_image/t2i_system_prompt/v2::" + caption
+        key_current = _disk_cache_key(caption)
+        key_other_version = "boogu_image/some_other_template_version::" + caption
 
-        fname_v1 = TextEmbeddingCache.caption_to_filename(key_v1)
-        fname_v2 = TextEmbeddingCache.caption_to_filename(key_v2_hypothetical)
+        fname_current = TextEmbeddingCache.caption_to_filename(key_current)
+        fname_other = TextEmbeddingCache.caption_to_filename(key_other_version)
         fname_raw = TextEmbeddingCache.caption_to_filename(caption)
 
-        assert fname_v1 != fname_v2
-        assert fname_v1 != fname_raw
+        assert fname_current != fname_other
+        assert fname_current != fname_raw
+
+    def test_template_id_bumped_past_v1(self):
+        """Fix wave 1 (Finding 2): the v1 template (T2I prompt for ALL
+        captions, including dropout) produced embeddings that are now WRONG
+        for empty captions — the disk-cache key must have moved off the v1
+        identity so no stale v1 embedding is ever silently reused."""
+        from app.engine.components.text_embeddings import TextEmbeddingCache
+
+        caption = "a red bicycle"
+        key_now = _disk_cache_key(caption)
+        key_v1_legacy = f"boogu_image/t2i_system_prompt/v1::{caption}"
+
+        assert key_now != key_v1_legacy
+        assert TextEmbeddingCache.caption_to_filename(
+            key_now
+        ) != TextEmbeddingCache.caption_to_filename(key_v1_legacy)
+
+    def test_template_id_derived_from_prompt_texts(self):
+        """The template id embeds a fingerprint HASHED FROM the actual
+        system-prompt strings — editing either prompt text changes every
+        disk-cache key automatically, so a future prompt tweak can never
+        silently forget the version bump (reviewer minor #3)."""
+        import hashlib
+
+        from app.engine.models.families.boogu_image.driver import (
+            _SYSTEM_PROMPT_DROP,
+            _SYSTEM_PROMPT_T2I,
+        )
+        from app.engine.models.families.boogu_image.trainer import _TE_TEMPLATE_ID
+
+        expected_fingerprint = hashlib.sha256(
+            "\x00".join([_SYSTEM_PROMPT_T2I, _SYSTEM_PROMPT_DROP]).encode("utf-8")
+        ).hexdigest()[:16]
+
+        assert expected_fingerprint in _TE_TEMPLATE_ID
+
+
+# ── Fix wave 1, Finding 2: caption-dropout DROP system prompt ───────────────
+
+
+class TestDropoutSystemPromptSelection:
+    """Upstream adjudication (pipeline_boogu.py:235 + :1596-1598): EVERY
+    empty-instruction/no-image encode — including the plain-T2I CFG negative
+    (``encode_instruction`` defaults ``negative_instruction=""`` at
+    :2491-2494; ``system_prompt_follows_task_type`` defaults ``False`` at
+    :2291/:2699) — uses ``SYSTEM_PROMPT_DROP`` (= ``SYSTEM_PROMPT_4_TI2I_
+    UNIFIED``, a DIFFERENT text from the T2I prompt). The base checkpoint's
+    learned unconditional anchor therefore lives under the DROP prompt; our
+    caption-dropout ``""`` encodes must match it or CFG semantics drift."""
+
+    _DROP_TEXT = (
+        "Describe the key features of the input image (color, shape, size, "
+        "texture, objects, background), then explain how the user's text "
+        "instruction should alter or modify the image. Generate a new image "
+        "that meets the user's requirements while maintaining consistency "
+        "with the original input where appropriate."
+    )
+    _T2I_TEXT = (
+        "You are a helpful assistant that generates high-quality images "
+        "based on user instructions. The instructions are as follows."
+    )
+
+    def _wire(self):
+        captured = {}
+
+        class _FakeOutput:
+            def __init__(self, hidden_states):
+                self.hidden_states = hidden_states
+
+        class _FakeTextEncoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.p = nn.Linear(1, 1)
+
+            def forward(self, input_ids=None, attention_mask=None,
+                        output_hidden_states=False, return_dict=True):
+                B, L = input_ids.shape
+                hs = tuple(
+                    torch.randn(B, L, TINY_INSTRUCTION_FEAT_DIM) for _ in range(2)
+                )
+                return _FakeOutput(hidden_states=hs)
+
+        class _FakeProcessor:
+            def apply_chat_template(self, prompts, **kwargs):
+                captured["prompts"] = prompts
+                B, L = len(prompts), 4
+                return {
+                    "input_ids": torch.arange(B * L).reshape(B, L),
+                    "attention_mask": torch.ones(B, L, dtype=torch.long),
+                }
+
+        drv = BooguImageDriver(_definition(), torch.device("cpu"))
+        drv.text_encoder = _FakeTextEncoder()
+        drv.processor = _FakeProcessor()
+        return drv, captured
+
+    def _system_text(self, messages) -> str:
+        return next(m for m in messages if m["role"] == "system")["content"][0]["text"]
+
+    def test_empty_caption_uses_verbatim_drop_prompt(self):
+        drv, captured = self._wire()
+        drv.encode_text([""], torch.float32)
+        assert self._system_text(captured["prompts"][0]) == self._DROP_TEXT
+
+    def test_whitespace_only_caption_uses_drop_prompt(self):
+        """Mirrors upstream's ``len(instruction.strip()) == 0`` test
+        (pipeline_boogu.py:1597) — whitespace-only counts as empty."""
+        drv, captured = self._wire()
+        drv.encode_text(["   \n\t "], torch.float32)
+        assert self._system_text(captured["prompts"][0]) == self._DROP_TEXT
+
+    def test_non_empty_caption_still_uses_t2i_prompt(self):
+        drv, captured = self._wire()
+        drv.encode_text(["draw a cat"], torch.float32)
+        assert self._system_text(captured["prompts"][0]) == self._T2I_TEXT
+
+    def test_mixed_batch_selects_per_caption(self):
+        drv, captured = self._wire()
+        drv.encode_text(["draw a cat", ""], torch.float32)
+        assert self._system_text(captured["prompts"][0]) == self._T2I_TEXT
+        assert self._system_text(captured["prompts"][1]) == self._DROP_TEXT
+
+
+# ── Fix wave 1, Finding 1: ragged-length TE cache entries ───────────────────
+
+
+class TestRaggedLengthCachePath:
+    """Boogu is the FIRST variable-length family on this cache pattern
+    (``padding="longest"``, no fixed crop — krea2 crops to 34 tokens,
+    longcat pads to a fixed 512). Cache entries have per-caption lengths,
+    so the reassembly ``torch.stack`` must pad to the batch max
+    (mask-aware) or any real batch whose captions tokenize to different
+    lengths crashes with RuntimeError at step 1."""
+
+    def _wire_trainer(self, dim=TINY_INSTRUCTION_FEAT_DIM):
+        """Real trainer + real driver + a fake processor whose tokenized
+        length DEPENDS ON the caption (word count + 2), so different
+        captions genuinely produce different-length cache entries."""
+
+        class _FakeOutput:
+            def __init__(self, hidden_states):
+                self.hidden_states = hidden_states
+
+        class _FakeTextEncoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.p = nn.Linear(1, 1)
+
+            def forward(self, input_ids=None, attention_mask=None,
+                        output_hidden_states=False, return_dict=True):
+                B, L = input_ids.shape
+                torch.manual_seed(int(input_ids.sum().item()) % 10_000)
+                hs = tuple(torch.randn(B, L, dim) for _ in range(2))
+                return _FakeOutput(hidden_states=hs)
+
+        class _FakeProcessor:
+            def apply_chat_template(self, prompts, **kwargs):
+                B = len(prompts)
+                lengths = []
+                for messages in prompts:
+                    user = next(m for m in messages if m["role"] == "user")
+                    caption = user["content"][0]["text"]
+                    lengths.append(len(caption.split()) + 2)
+                L = max(lengths)
+                mask = torch.zeros(B, L, dtype=torch.long)
+                for i, li in enumerate(lengths):
+                    mask[i, :li] = 1
+                return {
+                    "input_ids": torch.arange(B * L).reshape(B, L),
+                    "attention_mask": mask,
+                }
+
+        trainer = _trainer_shell()
+        trainer.config = {"cache_text_embeddings": True}
+        trainer.text_cache = {}
+        trainer.driver.text_encoder = _FakeTextEncoder()
+        trainer.driver.processor = _FakeProcessor()
+        trainer.text_encoder = trainer.driver.text_encoder
+        return trainer
+
+    def test_ragged_batch_through_real_cache_path_reaches_forward_pass(self):
+        """The exact crash mode under review: cache miss -> per-caption
+        entries of DIFFERENT lengths -> cache hit -> ``torch.stack`` over
+        ragged ``[L_i, D]`` entries raises RuntimeError. Must instead pad
+        to the batch max with mask=0 at padded positions and flow through
+        the REAL forward_pass."""
+        trainer = self._wire_trainer()
+        short_cap = "cat"                                    # 1 word  -> L=3
+        long_cap = "a much longer caption with many words"   # 7 words -> L=9
+
+        # Cache-miss pass (per-caption single encodes populate the cache).
+        emb, mask = trainer.encode_text([short_cap, long_cap], torch.float32)
+
+        L_max = 9
+        assert emb.shape == (2, L_max, TINY_INSTRUCTION_FEAT_DIM)
+        assert mask.shape == (2, L_max)
+        # Padded positions carry mask=0; real positions mask=1.
+        assert mask[0, :3].bool().all() and not mask[0, 3:].bool().any()
+        assert mask[1].bool().all()
+
+        # Cache-HIT pass must produce the identical batch (pure reassembly).
+        emb2, mask2 = trainer.encode_text([short_cap, long_cap], torch.float32)
+        assert torch.allclose(emb, emb2)
+        assert torch.equal(mask, mask2)
+
+        # And the stacked batch must be consumable by the REAL forward_pass.
+        trainer.driver.model = _tiny_transformer()
+        noisy = torch.randn(2, TINY_IN_CHANNELS, 4, 4)
+        with torch.no_grad():
+            pred = trainer.forward_pass(noisy, torch.rand(2), (emb2, mask2), {})
+        assert pred.shape == noisy.shape
+        assert torch.isfinite(pred).all()
+
+    def test_cache_entries_are_trimmed_to_true_length(self):
+        """Entries must be stored TRIMMED to their mask length (the
+        kandinsky5 precedent) so reassembly padding is well-defined and a
+        given caption's cached entry is independent of whichever batch it
+        happened to be first encoded in."""
+        trainer = self._wire_trainer()
+        trainer.encode_text(
+            ["cat", "a much longer caption with many words"], torch.float32,
+        )
+
+        emb_short, mask_short = trainer.text_cache["cat"]
+        assert emb_short.shape[0] == 3
+        assert mask_short.shape[0] == 3
+        assert mask_short.bool().all()
+
+    def test_pre_cache_sub_batch_entries_are_trimmed_consistently(self):
+        """``_pre_cache_text_embeddings`` encodes in sub-batches of 4 —
+        each sub-batch pads to ITS OWN max, so un-trimmed entries would
+        carry inconsistent cross-sub-batch padding. Entries must land in
+        ``text_cache`` trimmed to true length, exactly like the lazy path."""
+        trainer = self._wire_trainer()
+        trainer.config = {
+            "cache_text_embeddings": True,
+            "te_quantization": "none",
+            "sample_prompts": [],
+        }
+        trainer._log_writer = None
+        trainer._resolve_te_cache_dirs = lambda: []
+        caps = {
+            "cat": "img_a",
+            "a much longer caption with many words": "img_b",
+        }
+        trainer._build_caption_hints = lambda: caps
+        trainer._resolve_loading_dtype = lambda: torch.float32
+
+        trainer._pre_cache_text_embeddings()
+
+        assert trainer.text_cache["cat"][0].shape[0] == 3
+        assert trainer.text_cache[
+            "a much longer caption with many words"
+        ][0].shape[0] == 9
+
+        # Reassembly across the two lengths must not crash and must pad.
+        emb, mask = trainer.encode_text(list(caps), torch.float32)
+        assert emb.shape == (2, 9, TINY_INSTRUCTION_FEAT_DIM)
+        assert not mask[0, 3:].bool().any()
 
 
 # ── Contract 4: _update_primary_model / transformer property ───────────────

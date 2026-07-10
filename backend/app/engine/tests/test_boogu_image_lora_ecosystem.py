@@ -17,12 +17,16 @@ Covers:
      not stock's ``layers``) + leftover (non-portable) keys pass through
      untouched instead of raising.
   3. The EXPORT direction (``convert_diffusers_to_ecosystem``) and the full
-     bidirectional round trip, under the documented shared-``lora_A``
-     precondition (see ``lora_ecosystem.py`` module docstring).
-  4. The precondition guard: real, independently-PEFT-trained
-     to_q/to_k/to_v adapters (as this family's saver actually produces) do
-     NOT share a common ``lora_A`` and must raise a clear error rather than
-     silently mis-fuse.
+     bidirectional round trip: the shared-``lora_A`` fast path AND the
+     lossless rank-stacking path for real, independently-PEFT-trained
+     to_q/to_k/to_v adapters (as this family's saver actually produces --
+     Task 7 review Finding 1), including alpha-scale folding (``alpha`` /=
+     rank -> scale folded into ``lora_B`` at export; the ecosystem format
+     is alpha-free).
+  4. Graceful partial-checkpoint handling in BOTH directions (Task 7 review
+     Finding 3): non-contiguous layer indices, attn-only LoRAs, half-present
+     adaLN pairs, and incomplete qkv triples pass through as ``unconverted``
+     without aborting the rest of the conversion -- never ``KeyError``.
 """
 
 from __future__ import annotations
@@ -345,24 +349,6 @@ class TestConvertDiffusersToEcosystemAndBackBidirectional:
                 ]
                 assert torch.equal(orig, got)
 
-    def test_independent_per_target_adapters_raise_not_silently_mis_fuse(self, tmp_path):
-        """Without the shared-A doctoring, our saver's REAL output (PEFT
-        trains to_q/to_k/to_v as independent adapters -- driver.py
-        get_lora_targets) cannot losslessly fuse into the ecosystem's
-        shared-A format. Must raise, not silently produce a wrong
-        checkpoint."""
-        from safetensors.torch import load_file
-
-        model = _build_peft_model(self._TARGETS)
-        # deliberately NOT calling _force_shared_qkv_lora_a.
-        saver = _get_saver()
-        out = tmp_path / "independent_lora.safetensors"
-        saver.save(components={"unet": model, "config": {}}, path=out)
-        original = load_file(str(out))
-
-        with pytest.raises(ValueError, match="cannot losslessly fuse"):
-            convert_diffusers_to_ecosystem(original)
-
     def test_non_portable_keys_pass_through_diffusers_to_ecosystem_untouched(self):
         """A house-format state dict containing double_stream_layers /
         ref_image_refiner keys must leave them in `unconverted`, not drop
@@ -374,3 +360,230 @@ class TestConvertDiffusersToEcosystemAndBackBidirectional:
         converted, unconverted = convert_diffusers_to_ecosystem(raw)
         assert not converted
         assert len(unconverted) == 2
+
+
+def _effective_delta(sd: dict, key_base: str) -> torch.Tensor:
+    """B @ A in fp32 -- the effective LoRA weight delta for one module.
+    Key-level comparison is meaningless after rank-stacking (A is fused,
+    B is zero-padded); the delta is the load-bearing invariant."""
+    a = sd[f"{key_base}.lora_A.weight"].float()
+    b = sd[f"{key_base}.lora_B.weight"].float()
+    return b @ a
+
+
+class TestRankStackingExport:
+    """Task 7 review Finding 1: independently-PEFT-trained to_q/to_k/to_v
+    adapters (what this family's driver ALWAYS produces -- three separate
+    PEFT target modules) must export losslessly via rank-stacking instead
+    of aborting the whole conversion with a ValueError:
+
+        A_fused = cat([A_q, A_k, A_v], dim=0)               # [3r, in]
+        B'_q = [B_q | 0 | 0], B'_k = [0 | B_k | 0], ...      # [out_x, 3r]
+        => B'_x @ A_fused == B_x @ A_x  bit-exactly.
+    """
+
+    _TARGETS = TestConvertDiffusersToEcosystemAndBackBidirectional._TARGETS
+
+    def test_independent_adapters_round_trip_effective_delta_bit_exact(self, tmp_path):
+        """REAL saver output (no shared-A doctoring) -> export converter ->
+        import converter -> every module's effective delta (B@A) matches
+        the original bit-exactly. This is the reviewer-flagged case that
+        previously raised on the first qkv block (0/252 effective export
+        portability)."""
+        from safetensors.torch import load_file
+
+        model = _build_peft_model(self._TARGETS)
+        # deliberately NOT forcing shared lora_A -- real independent adapters.
+        saver = _get_saver()
+        out = tmp_path / "independent_lora.safetensors"
+        saver.save(components={"unet": model, "config": {}}, path=out)
+        original = load_file(str(out))
+
+        ecosystem, leftover_export = convert_diffusers_to_ecosystem(original)
+        assert not leftover_export, f"unexpected leftovers: {list(leftover_export)[:5]}"
+
+        back, leftover_import = convert_ecosystem_to_diffusers(ecosystem, TINY_QKV_SPLIT)
+        assert not leftover_import
+
+        for target in self._TARGETS:
+            orig_delta = _effective_delta(original, f"diffusion_model.{target}")
+            back_delta = _effective_delta(back, f"transformer.{target}")
+            assert torch.equal(orig_delta, back_delta), (
+                f"effective delta mismatch at {target}"
+            )
+
+    def test_fused_qkv_shapes_are_rank_stacked(self):
+        """Independent A_q/A_k/A_v (rank 4 each) -> fused A is [12, 16]
+        (3r stacked), fused B is [32, 12] (out 16+8+8, rank cols 3r)."""
+        rank, in_dim = 4, TINY_HIDDEN_SIZE
+        raw = {
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_B.weight": torch.randn(16, rank),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_B.weight": torch.randn(8, rank),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_B.weight": torch.randn(8, rank),
+        }
+        converted, unconverted = convert_diffusers_to_ecosystem(raw)
+        assert not unconverted
+
+        fused_a = converted["diffusion_model.noise_refiner.0.attention.qkv.lora_A.weight"]
+        fused_b = converted["diffusion_model.noise_refiner.0.attention.qkv.lora_B.weight"]
+        assert fused_a.shape == (3 * rank, in_dim)
+        assert fused_b.shape == (16 + 8 + 8, 3 * rank)
+
+    def test_shared_a_fast_path_keeps_original_rank(self):
+        """When to_q/to_k/to_v already share one lora_A (the ecosystem's
+        native shape), no rank inflation: fused A stays [r, in]."""
+        rank, in_dim = 4, TINY_HIDDEN_SIZE
+        shared_a = torch.randn(rank, in_dim)
+        raw = {
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_A.weight": shared_a.clone(),
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_B.weight": torch.randn(16, rank),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_A.weight": shared_a.clone(),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_B.weight": torch.randn(8, rank),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_A.weight": shared_a.clone(),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_B.weight": torch.randn(8, rank),
+        }
+        converted, _ = convert_diffusers_to_ecosystem(raw)
+        fused_a = converted["diffusion_model.noise_refiner.0.attention.qkv.lora_A.weight"]
+        assert fused_a.shape == (rank, in_dim)
+        assert torch.equal(fused_a, shared_a)
+
+    def test_alpha_scaling_folded_into_exported_B(self):
+        """The ecosystem format is alpha-free (upstream loads with
+        network_alphas=None -> PEFT defaults alpha=rank -> scale 1). Our
+        training scale is alpha/r (network_alpha config, default = rank).
+        alpha != rank must fold scale alpha/r into B at export so the
+        consumer's effective delta matches training."""
+        rank, in_dim, alpha = 4, TINY_HIDDEN_SIZE, 8.0
+        b_q = torch.randn(16, rank)
+        ff_b = torch.randn(64, rank)
+        raw = {
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_B.weight": b_q.clone(),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_B.weight": torch.randn(8, rank),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_B.weight": torch.randn(8, rank),
+            "diffusion_model.noise_refiner.0.feed_forward.linear_1.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.feed_forward.linear_1.lora_B.weight": ff_b.clone(),
+        }
+        converted, _ = convert_diffusers_to_ecosystem(raw, alpha=alpha)
+
+        # Non-qkv module: B scaled by alpha/rank = 2 verbatim.
+        got_ff_b = converted["diffusion_model.noise_refiner.0.feed_forward.w1.lora_B.weight"]
+        assert torch.equal(got_ff_b, ff_b * 2.0)
+
+        # qkv: the to_q block rows of the fused B carry the scale too
+        # (first 16 rows, first `rank` cols = scaled B_q).
+        fused_b = converted["diffusion_model.noise_refiner.0.attention.qkv.lora_B.weight"]
+        assert torch.equal(fused_b[:16, :rank], b_q * 2.0)
+
+    def test_alpha_scaled_round_trip_matches_scaled_training_delta(self, tmp_path):
+        """End-to-end: independent real-saver adapters + alpha=2r -> round
+        trip -> reconstructed delta == (alpha/r) * raw delta, i.e. exactly
+        the effective weight the training run applied."""
+        from safetensors.torch import load_file
+
+        rank = 4
+        alpha = 8.0  # scale alpha/r = 2 (exact in bf16)
+        model = _build_peft_model(self._TARGETS, rank=rank)
+        saver = _get_saver()
+        out = tmp_path / "alpha_lora.safetensors"
+        saver.save(components={"unet": model, "config": {}}, path=out)
+        original = load_file(str(out))
+
+        ecosystem, _ = convert_diffusers_to_ecosystem(original, alpha=alpha)
+        back, _ = convert_ecosystem_to_diffusers(ecosystem, TINY_QKV_SPLIT)
+
+        for target in self._TARGETS:
+            raw_delta = _effective_delta(original, f"diffusion_model.{target}")
+            back_delta = _effective_delta(back, f"transformer.{target}")
+            assert torch.equal(back_delta, raw_delta * 2.0), (
+                f"alpha-scaled delta mismatch at {target}"
+            )
+
+    def test_incomplete_qkv_triple_does_not_abort_other_modules(self):
+        """Finding 1 tail: no remaining error path may abort unaffected
+        keys. A qkv triple missing to_k's lora_B leaves ALL its qkv keys in
+        `unconverted`, while the complete feed_forward/out modules in the
+        same dict still convert."""
+        rank, in_dim = 4, TINY_HIDDEN_SIZE
+        raw = {
+            # incomplete qkv (no to_k lora_B):
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_q.lora_B.weight": torch.randn(16, rank),
+            "diffusion_model.noise_refiner.0.attn.to_k.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_v.lora_B.weight": torch.randn(8, rank),
+            # complete out + ff:
+            "diffusion_model.noise_refiner.0.attn.to_out.0.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.attn.to_out.0.lora_B.weight": torch.randn(in_dim, rank),
+            "diffusion_model.noise_refiner.0.feed_forward.linear_1.lora_A.weight": torch.randn(rank, in_dim),
+            "diffusion_model.noise_refiner.0.feed_forward.linear_1.lora_B.weight": torch.randn(64, rank),
+        }
+        converted, unconverted = convert_diffusers_to_ecosystem(raw)
+
+        assert "diffusion_model.noise_refiner.0.attention.out.lora_A.weight" in converted
+        assert "diffusion_model.noise_refiner.0.feed_forward.w1.lora_B.weight" in converted
+        # The 5 incomplete-qkv keys stay unconverted, nothing fused:
+        assert "diffusion_model.noise_refiner.0.attention.qkv.lora_A.weight" not in converted
+        assert len(unconverted) == 5
+        assert "noise_refiner.0.attn.to_q.lora_A.weight" in unconverted
+
+
+class TestGracefulPartialImport:
+    """Task 7 review Finding 3: convert_ecosystem_to_diffusers must honor
+    its own 'graceful, does NOT raise on leftovers' contract for partial
+    checkpoints -- pop-if-present pairs, iterate ACTUAL indices."""
+
+    def _fused_qkv_only(self, prefix: str, index: int, rank: int = 4) -> dict:
+        in_dim = TINY_HIDDEN_SIZE
+        qkv_out = sum(TINY_QKV_SPLIT)
+        return {
+            f"{prefix}.{index}.attention.qkv.lora_A.weight": torch.randn(rank, in_dim),
+            f"{prefix}.{index}.attention.qkv.lora_B.weight": torch.randn(qkv_out, rank),
+        }
+
+    def test_non_contiguous_layer_indices_convert(self):
+        """Indices {0, 5} (2 distinct) previously iterated range(2) ->
+        KeyError popping index 1. Must convert BOTH actual indices."""
+        raw = {}
+        raw.update(self._fused_qkv_only("single_stream_layers", 0))
+        raw.update(self._fused_qkv_only("single_stream_layers", 5))
+
+        converted, unconverted = convert_ecosystem_to_diffusers(raw, TINY_QKV_SPLIT)
+
+        assert not unconverted
+        assert "transformer.single_stream_layers.0.attn.to_q.lora_A.weight" in converted
+        assert "transformer.single_stream_layers.5.attn.to_q.lora_A.weight" in converted
+
+    def test_attn_only_checkpoint_converts_without_feed_forward(self):
+        """attn-only LoRA (qkv + out, no feed_forward.w*) previously
+        KeyError'd on the unconditional feed_forward pop."""
+        rank, in_dim = 4, TINY_HIDDEN_SIZE
+        raw = self._fused_qkv_only("noise_refiner", 0, rank)
+        raw.update({
+            "noise_refiner.0.attention.out.lora_A.weight": torch.randn(rank, in_dim),
+            "noise_refiner.0.attention.out.lora_B.weight": torch.randn(in_dim, rank),
+        })
+        converted, unconverted = convert_ecosystem_to_diffusers(raw, TINY_QKV_SPLIT)
+
+        assert not unconverted
+        assert "transformer.noise_refiner.0.attn.to_q.lora_A.weight" in converted
+        assert "transformer.noise_refiner.0.attn.to_out.0.lora_A.weight" in converted
+        assert not any("feed_forward" in k for k in converted)
+
+    def test_adaln_a_without_b_left_unconverted(self):
+        """adaLN pair guarded only on lora_A previously KeyError'd popping
+        the absent lora_B. Half-present pair -> left in `unconverted`."""
+        raw = self._fused_qkv_only("noise_refiner", 0)
+        raw["noise_refiner.0.adaLN_modulation.1.lora_A.weight"] = torch.randn(4, 16)
+        # NO matching lora_B.
+
+        converted, unconverted = convert_ecosystem_to_diffusers(raw, TINY_QKV_SPLIT)
+
+        assert "transformer.noise_refiner.0.attn.to_q.lora_A.weight" in converted
+        assert "transformer.noise_refiner.0.norm1.linear.lora_A.weight" not in converted
+        assert "noise_refiner.0.adaLN_modulation.1.lora_A.weight" in unconverted

@@ -124,6 +124,29 @@ class PRXPixelTrainer(GenericTrainingPipeline):
         """
         return self.driver.model if self.driver is not None else None
 
+    # -- Training objective --
+
+    def compute_target(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """x0 objective — delegate to the driver's clean-pixel target (C5).
+
+        The training loop calls ``self.compute_target`` (the PIPELINE/trainer
+        method), NOT ``driver.compute_target``. The base
+        ``GenericTrainingPipeline`` default returns the flow-match VELOCITY
+        (``noise - latents``); PRXPixel is an x0-prediction model, so without
+        this override the LoRA is trained to make an x0 forward match a
+        noise-scale velocity target (MSE ≈ 3-5, flat, unlearnable) — the
+        sampler then converts that noise-scale output through
+        ``v = (x_t - x0_pred)/t`` and produces noise. Delegating to the
+        driver keeps the objective's single source of truth on the driver
+        (which the sampler's per-step conversion mirrors).
+        """
+        return self.driver.compute_target(latents, noise, timesteps)
+
     # -- Disk-backed TE Pre-caching --
 
     def _sample_prompt_texts(self) -> list[str]:

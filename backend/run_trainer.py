@@ -119,27 +119,13 @@ async def run_async_trainer(trainer, log_writer=None):
     """
     Helper to run async trainer methods properly.
     
-    Phased orchestration for minimal peak VRAM.
-    
-    The flow supports two quantization strategies (configurable via
-    ``quantization_strategy`` config):
-    
-    **fastest** (default, best for >= 24 GB VRAM):
+    Phased orchestration for minimal peak VRAM:
         1. Load all → CPU
         2. TE → GPU → quantize → stay on GPU → cache embeddings → offload
         3. VAE → GPU → cache latents → offload
         4. Model → GPU → freeze → quantize → PEFT → optimizer → train
-    
-    **vram_safe** (for <= 16 GB VRAM):
-        1. Load all → CPU
-        2. TE → GPU → quantize → offload to CPU
-        3. TE → GPU (quantized, small) → cache embeddings → offload
-        4. VAE → GPU → cache latents → offload
-        5. Model → GPU → freeze → quantize → PEFT → optimizer → train
     """
     try:
-        trainer.config.get("quantization_strategy", "fastest")
-
         # Inject the log writer into the trainer so components can use it
         if log_writer:
             trainer._log_writer = log_writer

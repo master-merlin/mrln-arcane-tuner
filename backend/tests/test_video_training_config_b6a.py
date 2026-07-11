@@ -2,7 +2,7 @@
 
 Covers three slices of the video-LoRA program:
 
-1. ``BaseTrainingConfig`` gains nine optional VIDEO fields with the stated
+1. ``BaseTrainingConfig`` gains its optional VIDEO fields with the stated
    defaults, and an image-family config (no video fields set) still validates.
 2. ``resolve_capabilities`` field-visibility gating shows/hides the video
    fields per family capability (image hides all; wan21 shows frames only;
@@ -56,10 +56,9 @@ def test_video_fields_have_stated_defaults():
     assert cfg.audio_loss_weight == pytest.approx(1.0)
     assert cfg.expert_swap_mode == "auto"
     assert cfg.expert_switch_interval == 1
-    assert cfg.boundary_ratio_override == 0
 
 
-def test_all_nine_video_fields_exist():
+def test_all_video_fields_exist():
     expected = {
         "num_frames",
         "target_fps",
@@ -69,7 +68,6 @@ def test_all_nine_video_fields_exist():
         "audio_loss_weight",
         "expert_swap_mode",
         "expert_switch_interval",
-        "boundary_ratio_override",
     }
     assert expected <= set(BaseTrainingConfig.model_fields)
 
@@ -85,7 +83,6 @@ def test_video_fields_declare_video_group():
         "audio_loss_weight",
         "expert_swap_mode",
         "expert_switch_interval",
-        "boundary_ratio_override",
     ):
         extra = fields[name].json_schema_extra or {}
         assert extra.get("group") == "VIDEO", name
@@ -134,7 +131,6 @@ def test_image_family_hides_all_video_fields():
         "audio_loss_weight",
         "expert_swap_mode",
         "expert_switch_interval",
-        "boundary_ratio_override",
     ):
         assert _shown(vis, field) is False, field
 
@@ -149,7 +145,6 @@ def test_wan21_shows_frames_hides_audio_and_experts():
     assert _shown(vis, "audio_loss_weight") is False
     assert _shown(vis, "expert_swap_mode") is False
     assert _shown(vis, "expert_switch_interval") is False
-    assert _shown(vis, "boundary_ratio_override") is False
 
 
 def test_ltx2_shows_frames_and_audio_hides_experts():
@@ -160,7 +155,6 @@ def test_ltx2_shows_frames_and_audio_hides_experts():
     # Single-transformer → no expert routing.
     assert _shown(vis, "expert_swap_mode") is False
     assert _shown(vis, "expert_switch_interval") is False
-    assert _shown(vis, "boundary_ratio_override") is False
 
 
 def test_wan22_shows_frames_and_experts_hides_audio():
@@ -168,7 +162,6 @@ def test_wan22_shows_frames_and_experts_hides_audio():
     assert _shown(vis, "num_frames") is True
     assert _shown(vis, "expert_swap_mode") is True
     assert _shown(vis, "expert_switch_interval") is True
-    assert _shown(vis, "boundary_ratio_override") is True
     # WAN 2.2 has no audio modality.
     assert _shown(vis, "train_audio") is False
     assert _shown(vis, "audio_loss_weight") is False

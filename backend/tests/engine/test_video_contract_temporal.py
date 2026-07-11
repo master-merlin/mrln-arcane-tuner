@@ -17,7 +17,6 @@ def test_phase1_video_fields_exist_with_defaults():
     # Axis B
     assert schema["frame_stride"]["default"] == 1
     # Forward-compat (declared, inert in Phase 1)
-    assert schema["still_resolutions"]["default"] == []
     assert schema["radc_seqlen_influence"]["default"] == 0.0
 
 
@@ -28,7 +27,6 @@ def test_phase1_video_fields_carry_group_and_depends_on():
         "window_overlap",
         "max_windows",
         "frame_stride",
-        "still_resolutions",
         "radc_seqlen_influence",
     ):
         assert schema[key]["group"] == "VIDEO"
@@ -46,7 +44,6 @@ def test_new_video_knobs_hidden_for_image_models():
         "window_overlap",
         "max_windows",
         "frame_stride",
-        "still_resolutions",
         "radc_seqlen_influence",
     ):
         assert key in vis, f"{key} missing from field_visibility"
@@ -60,7 +57,6 @@ def test_new_video_knobs_shown_for_video_models():
         "window_overlap",
         "max_windows",
         "frame_stride",
-        "still_resolutions",
         "radc_seqlen_influence",
     ):
         assert vis[key]["supported"] is True

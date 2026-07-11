@@ -173,17 +173,11 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         "dual_expert",
         "single-transformer model — no expert routing",
     ),
-    (
-        "boundary_ratio_override",
-        "dual_expert",
-        "single-transformer model — no expert routing",
-    ),
     # ── Temporal sampling (Phase 1) — video-only, same gate as num_frames ──
     ("temporal_coverage", "is_video", "image model — no temporal windows"),
     ("window_overlap", "is_video", "image model — no temporal windows"),
     ("max_windows", "is_video", "image model — no temporal windows"),
     ("frame_stride", "is_video", "image model — no video frames to stride"),
-    ("still_resolutions", "is_video", "image model — single resolution only"),
     ("radc_seqlen_influence", "is_video", "image model — no F×H×W sequence-length term"),
     ("sliding_max_clip_seconds", "is_video", "image model — no temporal windows"),
 ]

@@ -43,8 +43,6 @@ BASE_CONFIG: dict = {
          "use_model_aware_captions": True, "num_frames": 0},
     ],
     "resolutions": [768],
-    "still_resolutions": [1920, 1280],
-    "resolution_strategy": "mixed",
     "num_frames": 25,
     "video_mode": "t2v",
     "train_batch_size": 1,

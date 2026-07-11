@@ -42,7 +42,12 @@ classic HTTP downloader —
 caller as the classic ``http_get`` path (see ``file_download.py`` around the
 ``_get_metadata_or_catch_error`` call sites). The stall watchdog's on-disk
 probe (which scans ``blobs/``) therefore observes xet growth too — no need to
-force ``HF_HUB_DISABLE_XET=1``.
+force ``HF_HUB_DISABLE_XET=1``. As a structural belt-and-braces for xet's
+UNVERIFIED write pattern (if it preallocates the destination and fills it
+with positional writes, the directory's byte total would freeze at the full
+size immediately), the default probe's signature also includes the newest
+blob mtime — same-size writes still register as activity (see
+``_newest_mtime`` / ``_dir_signature``).
 
 Design: ``spawn_fn`` / ``probe_bytes_fn`` / ``poll_interval_s`` / ``clock``
 are all injectable with production defaults, so tests exercise the
@@ -55,7 +60,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -169,17 +176,112 @@ def _make_default_spawn(
     return _spawn
 
 
-def _make_default_probe(repo_id: str) -> Callable[[], int]:
-    """Build the production 'cache-dir prober': on-disk bytes for *repo_id*,
-    reused from the download-progress poller (same signal, same directory)."""
-    from app.api.events.download_progress import _on_disk_bytes, _repo_cache_dir
+def _newest_mtime(repo_cache_dir: Optional[str]) -> float:
+    """Newest mtime of any file in the repo's ``blobs/`` dir, or 0.0.
+
+    Companion signal to ``_on_disk_bytes`` for the stall watchdog: a
+    PREALLOCATING writer (e.g. a downloader that reserves the full file size
+    up front, then fills it with positional writes — a plausible hf_xet
+    pattern that on-disk *size* alone would misread as frozen) keeps bumping
+    the file's mtime on every write even though the directory's byte total
+    stopped moving. Treating a newer mtime as activity prevents a false
+    stall-kill on such writers."""
+    if not repo_cache_dir:
+        return 0.0
+    blobs = os.path.join(repo_cache_dir, "blobs")
+    newest = 0.0
+    try:
+        with os.scandir(blobs) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        newest = max(newest, entry.stat().st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        return 0.0
+    return newest
+
+
+def _dir_signature(repo_cache_dir: Optional[str]) -> tuple[int, float]:
+    """Progress signature for a repo cache dir: ``(bytes, newest_mtime)``.
+
+    The watchdog treats ANY signature change as activity, so this covers
+    append writers (bytes grow), etag restarts (bytes shrink), and
+    preallocating/high-offset writers (bytes frozen, mtime moves)."""
+    from app.api.events.download_progress import _on_disk_bytes
+
+    return (_on_disk_bytes(repo_cache_dir), _newest_mtime(repo_cache_dir))
+
+
+def _make_default_probe(repo_id: str) -> Callable[[], object]:
+    """Build the production 'cache-dir prober' for *repo_id*.
+
+    Returns the composite ``_dir_signature`` (on-disk bytes reused from the
+    download-progress poller + newest blob mtime); the watchdog only ever
+    compares consecutive probe values for equality, so any equatable return
+    type works — tests inject plain byte-count probes."""
+    from app.api.events.download_progress import _repo_cache_dir
 
     cache_dir = _repo_cache_dir(repo_id)
 
-    def _probe() -> int:
-        return _on_disk_bytes(cache_dir)
+    def _probe() -> tuple[int, float]:
+        return _dir_signature(cache_dir)
 
     return _probe
+
+
+class _PipeTail:
+    """Continuously drain one child pipe on a daemon thread, keeping only
+    the last ``max_chars`` of output.
+
+    WHY: without an active reader, a chatty child (tqdm bars when the user
+    env sets ``HF_HUB_DISABLE_PROGRESS_BARS=0`` — our setdefault respects an
+    explicit value — or urllib3 retry warnings on exactly the flaky networks
+    this guard targets) fills the ~4-64KB OS pipe buffer, BLOCKS on its next
+    write, on-disk growth stops, and the watchdog would kill a perfectly
+    healthy download as "stalled". Draining decouples the child's verbosity
+    from the stall signal; the bounded tail keeps memory flat while
+    preserving the lines that matter (the resolved path is the LAST stdout
+    line; the newest stderr carries the real error)."""
+
+    def __init__(self, stream, max_chars: int = 65536):
+        self._chunks: deque[str] = deque()
+        self._size = 0
+        self._max = max_chars
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(
+            target=self._drain, args=(stream,), daemon=True, name="hf_guard_pipe",
+        )
+        self._thread.start()
+
+    def _drain(self, stream) -> None:
+        try:
+            for line in stream:
+                with self._lock:
+                    self._chunks.append(line)
+                    self._size += len(line)
+                    while self._size > self._max and len(self._chunks) > 1:
+                        self._size -= len(self._chunks.popleft())
+        except Exception:
+            # Pipe closed mid-read (child killed) — the tail so far stands.
+            pass
+
+    def text(self, join_timeout_s: float = 5.0) -> str:
+        """Join the drain thread (EOF arrives when the child exits or is
+        killed) and return the retained tail."""
+        self._thread.join(timeout=join_timeout_s)
+        with self._lock:
+            return "".join(self._chunks)
+
+
+def _drain_pipes(
+    proc: "subprocess.Popen[str]",
+) -> tuple[Optional[_PipeTail], Optional[_PipeTail]]:
+    """Attach tail-drainers to whichever of stdout/stderr are pipes."""
+    out = _PipeTail(proc.stdout) if proc.stdout is not None else None
+    err = _PipeTail(proc.stderr) if proc.stderr is not None else None
+    return out, err
 
 
 def _kill(proc: "subprocess.Popen[str]") -> None:
@@ -202,24 +304,33 @@ def _kill(proc: "subprocess.Popen[str]") -> None:
 def _run_one_attempt(
     *,
     spawn: Callable[[], "subprocess.Popen[str]"],
-    probe: Callable[[], int],
+    probe: Callable[[], object],
     stall_timeout_s: float,
     poll_interval_s: float,
     clock: Callable[[], float],
 ) -> _AttemptOutcome:
     """Spawn one child, watch it to completion or stall-kill it.
 
-    Progress = bytes grew since the last sample, or the child exited (a
-    natural exit is handled below, not treated as a stall). The stall timer
-    resets on ANY byte growth — metadata/etag phases that write nothing yet
-    are covered simply by ``stall_timeout_s`` being generous (default 180s).
+    Activity = the probe value CHANGED since the last sample (any change,
+    not just growth: an etag change deletes a large partial blob and
+    restarts the transfer, so a shrink is full-speed progress — a
+    high-water-mark check would starve the restarted transfer of timer
+    resets until it re-earned the old byte count and falsely kill it), or
+    the child exited (a natural exit is handled below, not treated as a
+    stall). Metadata/etag phases that touch nothing on disk are covered
+    simply by ``stall_timeout_s`` being generous (default 180s).
+
+    The child's stdout/stderr pipes are actively drained the whole time
+    (see ``_PipeTail``) so a chatty child can never wedge itself on pipe
+    backpressure and get misread as stalled.
     """
     proc = spawn()
+    tail_out, tail_err = _drain_pipes(proc)
     try:
-        last_bytes = probe()
+        last_sig = probe()
     except Exception:
-        last_bytes = 0
-    last_growth_t = clock()
+        last_sig = None
+    last_activity_t = clock()
 
     try:
         while True:
@@ -227,27 +338,21 @@ def _run_one_attempt(
                 break
             now = clock()
             try:
-                cur_bytes = probe()
+                cur_sig = probe()
             except Exception:
-                cur_bytes = last_bytes
-            if cur_bytes > last_bytes:
-                last_bytes = cur_bytes
-                last_growth_t = now
-            elif now - last_growth_t >= stall_timeout_s:
+                cur_sig = last_sig
+            if cur_sig != last_sig:
+                last_sig = cur_sig
+                last_activity_t = now
+            elif now - last_activity_t >= stall_timeout_s:
                 _kill(proc)
-                try:
-                    proc.communicate(timeout=5)
-                except Exception:
-                    pass
                 return _AttemptOutcome(
-                    ok=False, reason="stalled", detail="no on-disk growth",
+                    ok=False, reason="stalled", detail="no on-disk activity",
                 )
             time.sleep(poll_interval_s)
 
-        try:
-            stdout, stderr = proc.communicate(timeout=10)
-        except Exception:
-            stdout, stderr = "", ""
+        stdout = tail_out.text() if tail_out else ""
+        stderr = tail_err.text() if tail_err else ""
 
         if proc.returncode == 0:
             lines = [ln for ln in (stdout or "").splitlines() if ln.strip()]
@@ -277,19 +382,21 @@ def download_with_stall_guard(
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     clock: Callable[[], float] = time.monotonic,
     spawn_fn: Optional[Callable[[], "subprocess.Popen[str]"]] = None,
-    probe_bytes_fn: Optional[Callable[[], int]] = None,
+    probe_bytes_fn: Optional[Callable[[], object]] = None,
 ) -> str:
     """Download *repo_id* (a full snapshot, or a single *filename*) killably.
 
     Runs the actual ``snapshot_download``/``hf_hub_download`` call in a child
     process (``hf_fetch_worker``) so a wedged transfer CAN be aborted —
     Python threads cannot be killed, so an in-process call is un-abortable.
-    Polls on-disk cache growth (``probe_bytes_fn``) as the progress signal; a
-    child with no growth for ``stall_timeout_s`` is killed and the attempt
-    retried (up to ``max_attempts``, with a short backoff between attempts).
-    A killed attempt loses only the in-flight chunk — the next attempt's
-    ``snapshot_download``/``hf_hub_download`` re-checks etags and resumes
-    from partial blobs (the cache self-heals across attempts).
+    Polls an on-disk progress signature (``probe_bytes_fn`` — by default
+    ``(bytes, newest blob mtime)``; ANY change counts as activity, covering
+    growth, etag-restart shrinks, and same-size preallocated writes); a
+    child with no on-disk activity for ``stall_timeout_s`` is killed and the
+    attempt retried (up to ``max_attempts``, with a short backoff between
+    attempts). A killed attempt loses only the in-flight chunk — the next
+    attempt's ``snapshot_download``/``hf_hub_download`` re-checks etags and
+    resumes from partial blobs (the cache self-heals across attempts).
 
     ``stall_timeout_s`` / ``max_attempts`` default from the
     ``MRLN_HF_STALL_TIMEOUT_S`` / ``MRLN_HF_DOWNLOAD_ATTEMPTS`` env vars (read

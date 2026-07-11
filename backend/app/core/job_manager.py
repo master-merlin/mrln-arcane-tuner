@@ -67,6 +67,12 @@ def _parse_persisted_log_lines(log_path: str, limit: int = 1000) -> list[str]:
 
 _MIRROR_LEVEL = {"log": "info", "warning": "warning"}
 
+# Live status_label shown while start_job's preflight downloads the base
+# model. A module constant because start_job later CLEARS the label only if
+# it still equals this exact string (a preflight FAILURE label must survive
+# the clear) — set-site and clear-compare must never drift apart.
+_PREFLIGHT_DOWNLOAD_LABEL = "Downloading base model…"
+
 # Training-state folder names a job can resume from (mirrors the saver +
 # the validation regex in job_routes.py). Anchored, so it also blocks path
 # traversal in the user-supplied checkpoint_dir.
@@ -1181,7 +1187,7 @@ class JobManager:
             # would mark stopped. ``_preflight_download`` then emits the HF
             # download progress onto the top-bar indicator.
             job.status = JobStatus.RUNNING
-            job.status_label = "Downloading base model…"
+            job.status_label = _PREFLIGHT_DOWNLOAD_LABEL
             if job.started_at is None:
                 job.started_at = time.time()
             if self._loop:
@@ -1203,12 +1209,12 @@ class JobManager:
                 job.started_at = time.time()
             # Base model is cached now; hand the status line back to the trainer
             # (it emits its own "Loading"/"Training"/… labels). Clearing avoids a
-            # stale "Downloading base model…" lingering until the first trainer
-            # status message arrives. A preflight FAILURE label (set + broadcast
-            # by _preflight_download) is deliberately left in place here instead
+            # stale download label lingering until the first trainer status
+            # message arrives. A preflight FAILURE label (set + broadcast by
+            # _preflight_download) is deliberately left in place here instead
             # of being silently wiped — it stays visible until the trainer's own
             # first status line naturally supersedes it.
-            if job.status_label == "Downloading base model…":
+            if job.status_label == _PREFLIGHT_DOWNLOAD_LABEL:
                 job.status_label = None
             self._persist_status(job_id, "running", started_at=job.started_at)
 

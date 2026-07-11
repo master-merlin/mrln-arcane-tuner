@@ -132,15 +132,17 @@ class TestDownloadWithStallGuard:
     def test_slow_but_progressing_child_not_killed(self, tmp_path):
         """A child that writes a byte every poll tick is NOT killed even
         though the total run time exceeds stall_timeout_s — the stall timer
-        resets on every byte of growth."""
+        resets on every byte of growth. Write cadence (0.05s) is kept ~6x
+        tighter than the stall timeout (0.3s) so a slow CI scheduler can't
+        flake this into a spurious kill."""
         blob = tmp_path / "blob.bin"
         code = (
             "import pathlib, time\n"
             f"p = pathlib.Path(r'{blob}')\n"
-            "for _ in range(6):\n"
+            "for _ in range(10):\n"
             "    with open(p, 'ab') as f:\n"
             "        f.write(b'x')\n"
-            "    time.sleep(0.08)\n"
+            "    time.sleep(0.05)\n"
             # safety-net print: stub child's stdout-path protocol (fixture)
             "print('/resolved/slow-path')\n"
         )
@@ -156,11 +158,11 @@ class TestDownloadWithStallGuard:
         def probe():
             return blob.stat().st_size if blob.exists() else 0
 
-        # Total child runtime ~= 6 * 0.08s = 0.48s, well past stall_timeout_s
-        # (0.2s) IF the timer didn't reset — proving growth-resets-the-timer.
+        # Total child runtime ~= 10 * 0.05s = 0.5s, well past stall_timeout_s
+        # (0.3s) IF the timer didn't reset — proving growth-resets-the-timer.
         result = download_with_stall_guard(
             repo_id="org/slow-repo",
-            stall_timeout_s=0.2,
+            stall_timeout_s=0.3,
             max_attempts=2,
             poll_interval_s=0.02,
             spawn_fn=spawn,
@@ -169,6 +171,154 @@ class TestDownloadWithStallGuard:
 
         assert result == "/resolved/slow-path"
         assert calls["n"] == 1, "must not have been killed/retried"
+
+    def test_chatty_child_not_wedged_by_pipe_backpressure(self, tmp_path):
+        """REGRESSION (review finding): a child that spews >1MB to stdout
+        while healthily growing the cache must NOT be stall-killed.
+
+        Without the guard actively draining the child's pipes, the OS pipe
+        buffer (~4-64KB) fills, the child BLOCKS on its next write, disk
+        growth stops, and the watchdog kills a perfectly healthy download —
+        a chatty child is realistic (tqdm bars if the user env sets
+        HF_HUB_DISABLE_PROGRESS_BARS=0, urllib3 retry warnings on exactly the
+        flaky networks this guard targets). The resolved path must still
+        parse as the last meaningful stdout line after ~1MB of junk."""
+        blob = tmp_path / "blob.bin"
+        code = (
+            "import pathlib\n"
+            f"p = pathlib.Path(r'{blob}')\n"
+            "junk = 'x' * 1023\n"
+            "for _ in range(1024):\n"  # ~1MB of stdout noise
+            # safety-net print: stub child's stdout noise (fixture)
+            "    print(junk)\n"
+            "    with open(p, 'ab') as f:\n"
+            "        f.write(b'y')\n"
+            # safety-net print: stub child's stdout-path protocol (fixture)
+            "print('/resolved/chatty-path')\n"
+        )
+        calls = {"n": 0}
+
+        def spawn():
+            calls["n"] += 1
+            return subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+
+        def probe():
+            return blob.stat().st_size if blob.exists() else 0
+
+        result = download_with_stall_guard(
+            repo_id="org/chatty-repo",
+            stall_timeout_s=0.5,
+            max_attempts=2,
+            backoff_s=(0.01,),
+            poll_interval_s=0.02,
+            spawn_fn=spawn,
+            probe_bytes_fn=probe,
+        )
+
+        assert result == "/resolved/chatty-path"
+        assert calls["n"] == 1, "healthy chatty child must not be killed/retried"
+
+    def test_shrinking_cache_is_activity_not_stall(self, tmp_path):
+        """REGRESSION (review finding): a SHRINK is activity, not a stall.
+
+        An etag change makes huggingface_hub delete a large partial
+        ``*.incomplete`` blob and restart the transfer. With a
+        high-water-mark growth check (``cur > last``), the restarted
+        transfer would have to re-earn the old high-water byte count before
+        the first timer reset — killed at stall_timeout despite full-speed
+        progress, potentially eating every attempt. ANY change must reset
+        the timer."""
+        blob = tmp_path / "blob.bin"
+        blob.write_bytes(b"P" * 10240)  # pre-existing large partial
+        code = (
+            "import pathlib, time\n"
+            f"p = pathlib.Path(r'{blob}')\n"
+            "p.unlink()\n"  # etag change: partial discarded
+            "time.sleep(0.05)\n"
+            "for _ in range(8):\n"  # restarted transfer, slow but steady
+            "    with open(p, 'ab') as f:\n"
+            "        f.write(b'x')\n"
+            "    time.sleep(0.05)\n"
+            # safety-net print: stub child's stdout-path protocol (fixture)
+            "print('/resolved/restarted-path')\n"
+        )
+        calls = {"n": 0}
+
+        def spawn():
+            calls["n"] += 1
+            return subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+
+        def probe():
+            return blob.stat().st_size if blob.exists() else 0
+
+        # Child runs ~0.45s; bytes go 10240 -> 0 -> 1..8, never re-earning
+        # the old high-water mark. With change-is-activity semantics the
+        # timer resets on every sample; with `cur > last` it would be killed
+        # at stall_timeout (0.3s).
+        result = download_with_stall_guard(
+            repo_id="org/etag-restart-repo",
+            stall_timeout_s=0.3,
+            max_attempts=2,
+            backoff_s=(0.01,),
+            poll_interval_s=0.02,
+            spawn_fn=spawn,
+            probe_bytes_fn=probe,
+        )
+
+        assert result == "/resolved/restarted-path"
+        assert calls["n"] == 1, "shrink-then-grow child must not be killed"
+
+    def test_mtime_touch_resets_stall_timer(self, tmp_path):
+        """REGRESSION (review finding, xet mitigation): a same-size mtime
+        touch counts as activity. A preallocating writer (potential hf_xet
+        pattern) can freeze the directory's apparent byte total early while
+        still writing into the file — the default probe therefore includes
+        the newest blob mtime in its signature, so those writes still reset
+        the stall timer."""
+        from app.engine.utils.hf_download_guard import _dir_signature
+
+        repo_dir = tmp_path / "models--org--prealloc"
+        blobs = repo_dir / "blobs"
+        blobs.mkdir(parents=True)
+        blob = blobs / "shard.incomplete"
+        blob.write_bytes(b"\0" * 4096)  # preallocated, size never changes
+        code = (
+            "import os, time\n"
+            f"p = r'{blob}'\n"
+            "t = os.stat(p).st_mtime\n"
+            "for i in range(1, 9):\n"
+            "    os.utime(p, (t + i, t + i))\n"  # same size, newer mtime
+            "    time.sleep(0.05)\n"
+            # safety-net print: stub child's stdout-path protocol (fixture)
+            "print('/resolved/prealloc-path')\n"
+        )
+        calls = {"n": 0}
+
+        def spawn():
+            calls["n"] += 1
+            return subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+
+        result = download_with_stall_guard(
+            repo_id="org/prealloc-repo",
+            stall_timeout_s=0.3,
+            max_attempts=2,
+            backoff_s=(0.01,),
+            poll_interval_s=0.02,
+            spawn_fn=spawn,
+            probe_bytes_fn=lambda: _dir_signature(str(repo_dir)),
+        )
+
+        assert result == "/resolved/prealloc-path"
+        assert calls["n"] == 1, "same-size mtime touches must reset the timer"
 
     def test_nonzero_exit_error_propagated_and_retried(self):
         """A child that exits nonzero with a stderr message is retried up to
@@ -229,11 +379,37 @@ class TestDownloadWithStallGuard:
         assert calls["n"] == 2, "MRLN_HF_DOWNLOAD_ATTEMPTS=2 must be honored"
 
 
+class TestDefaultSpawnWorker:
+    """The guard's REAL default spawn path — ``-m`` module resolution from
+    the ``__file__``-derived backend root, the stdin JSON handshake, and the
+    child env — exercised offline by handing the real worker an invalid
+    payload (``repo_id=None``), which huggingface_hub's argument validation
+    rejects before any network I/O."""
+
+    def test_default_spawn_invalid_repo_id_surfaces_error(self):
+        from app.engine.utils.hf_download_guard import _make_default_spawn
+
+        spawn = _make_default_spawn(None, None, None)
+        proc = spawn()
+        try:
+            stdout, stderr = proc.communicate(timeout=90)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+        assert proc.returncode != 0, (
+            f"worker must exit nonzero on invalid payload; stdout={stdout!r}"
+        )
+        assert "repo" in (stderr or "").lower(), (
+            f"stderr must name the offending key; stderr={stderr!r}"
+        )
+
+
 class TestHfFetchWorkerProtocol:
     """The worker's own contract, tested in-process (no subprocess spawn) —
-    fast, offline, deterministic. Real subprocess execution of this module is
-    exercised transitively by TestDownloadWithStallGuard via the guard's
-    default spawn (not unit-tested standalone; it needs live network)."""
+    fast, offline, deterministic. The real default-spawn plumbing (module
+    resolution, cwd bootstrap, stdin handshake, child env) is covered by
+    ``TestDefaultSpawnWorker`` above."""
 
     def test_run_download_snapshot(self, monkeypatch):
         from app.engine.utils import hf_fetch_worker

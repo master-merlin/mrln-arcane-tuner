@@ -5,6 +5,7 @@ Covers: default hooks, helper methods, freeze/quantize/PEFT logic,
 configuration resolution, batch construction utilities, and trainable
 component collection.
 """
+
 import torch
 import torch.nn as nn
 from unittest.mock import MagicMock
@@ -16,6 +17,7 @@ from typing import Any
 # We can't instantiate GenericTrainingPipeline directly because it has
 # abstract methods. Create a minimal concrete subclass for testing the
 # shared (non-abstract) methods.
+
 
 class _StubPipeline:
     """Minimal stub that mimics pipeline attributes without importing."""
@@ -39,14 +41,18 @@ class TestDefaultHooks:
         from app.engine.core.pipeline import GenericTrainingPipeline
 
         # Access via the class — default method returns None
-        result = GenericTrainingPipeline.compute_loss_weight(MagicMock(), torch.tensor([500.0]))
+        result = GenericTrainingPipeline.compute_loss_weight(
+            MagicMock(), torch.tensor([500.0])
+        )
         assert result is None
 
     def test_build_batch_extra_default_empty(self):
-        """Default build_batch_extra should return empty dict."""
+        """Default build_batch_extra should return empty dict (no driver override)."""
         from app.engine.core.pipeline import GenericTrainingPipeline
 
-        result = GenericTrainingPipeline.build_batch_extra(MagicMock(), [])
+        stub = MagicMock()
+        stub._driver_hook_override.return_value = None  # driver does not override
+        result = GenericTrainingPipeline.build_batch_extra(stub, [])
         assert result == {}
 
     def test_prepare_latents_default_passthrough(self):
@@ -66,6 +72,7 @@ class TestDefaultHooks:
 
         stub = MagicMock()
         stub.text_cache = {}
+        stub._driver_hook_override.return_value = None  # driver does not override
         result = GenericTrainingPipeline.get_te_cache(stub)
         assert result is None
 
@@ -80,7 +87,9 @@ class TestDefaultHooks:
         """Default init_scheduler should return None (flow-matching)."""
         from app.engine.core.pipeline import GenericTrainingPipeline
 
-        result = GenericTrainingPipeline.init_scheduler(MagicMock())
+        stub = MagicMock()
+        stub._driver_hook_override.return_value = None  # driver does not override
+        result = GenericTrainingPipeline.init_scheduler(stub)
         assert result is None
 
     def test_compute_target_default_velocity(self):
@@ -91,7 +100,9 @@ class TestDefaultHooks:
         noise = torch.tensor([4.0, 5.0, 6.0])
         timesteps = torch.tensor([500.0])
 
-        result = GenericTrainingPipeline.compute_target(MagicMock(), latents, noise, timesteps)
+        stub = MagicMock()
+        stub._driver_hook_override.return_value = None  # driver does not override
+        result = GenericTrainingPipeline.compute_target(stub, latents, noise, timesteps)
         expected = noise - latents
         assert torch.allclose(result, expected)
 
@@ -102,6 +113,7 @@ class TestDefaultHooks:
 
         stub = MagicMock()
         stub.noise_interpolation = NoiseInterpolation("linear")
+        stub._driver_hook_override.return_value = None  # driver does not override
 
         latents = torch.randn(2, 4, 8, 8)
         noise = torch.randn(2, 4, 8, 8)
@@ -165,7 +177,6 @@ class TestOffloadVae:
 
         # Should not raise
         GenericTrainingPipeline._offload_vae(stub)
-
 
 
 # ── Loading Dtype Resolution ────────────────────────────────────────
@@ -262,7 +273,10 @@ class TestGetTextEncoders:
         te2 = nn.Linear(4, 4)
         stub = MagicMock()
         stub.driver = MagicMock()
-        stub.driver.get_text_encoders.return_value = {"text_encoder_1": te1, "text_encoder_2": te2}
+        stub.driver.get_text_encoders.return_value = {
+            "text_encoder_1": te1,
+            "text_encoder_2": te2,
+        }
 
         result = GenericTrainingPipeline._get_text_encoders(stub)
         assert result == {"text_encoder_1": te1, "text_encoder_2": te2}

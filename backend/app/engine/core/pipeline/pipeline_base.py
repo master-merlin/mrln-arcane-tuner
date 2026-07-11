@@ -14,6 +14,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from app.engine.strategies.ema import EMAHandler
+from app.engine.core.hook_dispatch import (
+    driver_hook_accepts_kwarg,
+    driver_meaningfully_overrides,
+)
 from app.engine.core.interfaces import BaseTrainer
 
 logger = structlog.get_logger(__name__)
@@ -39,18 +43,61 @@ class PipelineBaseMixin(BaseTrainer):
         except Exception:
             return False
 
+    # ── Auto-delegation of clobber-capable hooks ─────────────────────────
+    #
+    # STRUCTURAL CURE for the dead-dispatch (clobber) bug class (W5-1). The real
+    # training loop calls lifecycle hooks on the TRAINER via MRO
+    # (``self.<hook>(...)``), NOT on the driver. Several hooks below have a
+    # self-contained base default that historically did NOT reach the family
+    # driver's same-named method, so a driver-level override was DEAD CODE unless
+    # the family's trainer ALSO overrode the hook to delegate. That gap shipped
+    # six live bugs (boogu scheduler; k5/ltx2 i2v frame-0 noised; sdxl/flux1
+    # pooled-TE caches; wan22 expert timesteps).
+    #
+    # Each clobber-capable base default now routes through
+    # :meth:`_driver_hook_override`: it dispatches to ``self.driver.<hook>``
+    # whenever the driver *meaningfully* overrides the hook, and otherwise runs
+    # the base default. Priority: **trainer explicit override (shadows this base
+    # method entirely via MRO) > driver override (auto-delegated here) > base
+    # default**. The existing per-family trainer delegations (boogu
+    # init_scheduler, k5/ltx2 add_noise, wan22 sample_timesteps, sdxl/flux1
+    # te_cache, …) are now redundant-but-harmless and serve as documentation.
+    #
+    # The "meaningful override" predicate is shared verbatim with the structural
+    # meta-guard (``tests/engine/test_hook_wiring_meta.py``) via
+    # :func:`app.engine.core.hook_dispatch.driver_meaningfully_overrides`, so the
+    # guard proves the exact mechanism that runs. Detection is cached per driver
+    # class and fails CLOSED (base default) when source is unavailable — never
+    # worse than the shipped base behavior.
+
+    def _driver_hook_override(self, hook: str):
+        """Return ``self.driver``'s bound method for *hook* IFF the driver
+        meaningfully overrides it (auto-delegation); otherwise ``None`` (use the
+        base default). Tolerates a not-yet-assigned driver (early setup / bare
+        dispatch-test shells) by returning ``None``."""
+        driver = getattr(self, "driver", None)
+        if driver is None:
+            return None
+        if not driver_meaningfully_overrides(type(driver), hook):
+            return None
+        return getattr(driver, hook)
+
     # ── Family Hooks (abstract) ──────────────────────────────────────────
 
     def init_scheduler(self) -> Any:
         """Create and return the noise scheduler for this architecture.
 
         Default returns ``None`` (flow-matching families need no external
-        scheduler).  Override for DDPM-based families (e.g. SDXL) that
-        require a diffusers scheduler with ``alphas_cumprod``.
+        scheduler).  Auto-delegates to ``driver.init_scheduler()`` when the
+        driver builds a real scheduler (e.g. SDXL DDPM, boogu vendored) —
+        curing the historical boogu clobber without a trainer override.
 
         Returns:
             A scheduler object with an ``add_noise`` method, or ``None``.
         """
+        fn = self._driver_hook_override("init_scheduler")
+        if fn is not None:
+            return fn()
         return None
 
     def get_lora_targets(self) -> list[str]:
@@ -100,9 +147,13 @@ class PipelineBaseMixin(BaseTrainer):
     ) -> torch.Tensor:
         """Compute the training target for the loss function.
 
-        Default: flow-matching velocity ``noise - latents``.
-        Override for epsilon-prediction (SDXL): ``return noise``.
+        Default: flow-matching velocity ``noise - latents``.  Auto-delegates to
+        ``driver.compute_target`` when the driver meaningfully overrides it
+        (e.g. SDXL epsilon-prediction ``return noise``).
         """
+        fn = self._driver_hook_override("compute_target")
+        if fn is not None:
+            return fn(latents, noise, timesteps)
         return noise - latents
 
     def sample_timesteps(
@@ -110,20 +161,38 @@ class PipelineBaseMixin(BaseTrainer):
     ) -> torch.Tensor:
         """Sample timesteps for this batch.
 
-        Default: flow-matching continuous [0,1] via ``TimestepSampler``.
-        Override for discrete schedulers (e.g. SDXL uses uniform [0, N)).
+        Default: flow-matching continuous [0,1] via ``TimestepSampler``.  Auto-
+        delegates to ``driver.sample_timesteps`` when the driver meaningfully
+        overrides it (e.g. SDXL discrete uniform, wan22 expert-truncated),
+        injecting the driver-signature ``device``/``config`` and forwarding the
+        training ``progress`` fraction only to drivers whose signature declares
+        it (boogu-style).
 
         Returns:
             Timestep tensor on ``self.device``.
         """
+        fn = self._driver_hook_override("sample_timesteps")
+        if fn is not None:
+            kwargs: dict[str, Any] = {"latents": latents}
+            if driver_hook_accepts_kwarg(
+                type(self.driver), "sample_timesteps", "progress"
+            ):
+                max_steps = getattr(self, "max_train_steps", 1)
+                kwargs["progress"] = getattr(self, "global_step", 0) / max(max_steps, 1)
+            return fn(batch_size, self.device, self.config, **kwargs)
+
         from app.engine.strategies.timestep_sampling import TimestepSampler
 
         mode = self.config.get("timestep_sampling", "logit_normal")
         max_steps = getattr(self, "max_train_steps", 1)
         progress = getattr(self, "global_step", 0) / max(max_steps, 1)
         return TimestepSampler.sample_scaled(
-            mode, batch_size, self.device, self.config,
-            latents=latents, progress=progress,
+            mode,
+            batch_size,
+            self.device,
+            self.config,
+            latents=latents,
+            progress=progress,
         )
 
     def add_noise(
@@ -134,9 +203,14 @@ class PipelineBaseMixin(BaseTrainer):
     ) -> torch.Tensor:
         """Add noise to latents at the given timesteps.
 
-        Delegates to the shared :class:`NoiseInterpolation` component.
-        Override only for models needing scheduler-specific logic.
+        Default: the shared :class:`NoiseInterpolation` component.  Auto-
+        delegates to ``driver.add_noise`` when the driver meaningfully overrides
+        it (e.g. SDXL DDPM, ltx2/kandinsky i2v frame-0 pin, wan flow-match lerp)
+        — curing the historical i2v-frame-0 clobber without a trainer override.
         """
+        fn = self._driver_hook_override("add_noise")
+        if fn is not None:
+            return fn(latents, noise, timesteps)
         return self.noise_interpolation.add_noise(latents, noise, timesteps)
 
     def prepare_noise_for_training(self, noise: torch.Tensor) -> torch.Tensor:
@@ -202,9 +276,13 @@ class PipelineBaseMixin(BaseTrainer):
     def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
         """Add family-specific data to the batch dict.
 
-        Override in families that need extra conditioning (e.g. SDXL time_ids).
-        Default returns empty dict.
+        Default returns empty dict.  Auto-delegates to
+        ``driver.build_batch_extra`` when the driver meaningfully overrides it
+        (e.g. SDXL time_ids).
         """
+        fn = self._driver_hook_override("build_batch_extra")
+        if fn is not None:
+            return fn(items)
         return {}
 
     def prepare_latents_for_training(self, latents: torch.Tensor) -> torch.Tensor:
@@ -215,7 +293,9 @@ class PipelineBaseMixin(BaseTrainer):
         """
         return self.driver.prepare_latents(latents)
 
-    def _attach_conditioning(self, batch: dict[str, Any], latents: torch.Tensor) -> None:
+    def _attach_conditioning(
+        self, batch: dict[str, Any], latents: torch.Tensor
+    ) -> None:
         """Stash pre-noise conditioning (e.g. i2v first-frame latent) into *batch*.
 
         Called in the train loop after the clean latents are loaded/flipped and
@@ -246,10 +326,15 @@ class PipelineBaseMixin(BaseTrainer):
         """Return text embedding caches for checkpoint persistence.
 
         Default returns ``{"te": self.text_cache}`` if ``text_cache`` is
-        non-empty.  Override in families with additional caches (e.g.
-        Flux1 stores ``t5`` + ``clip_pooled``, SDXL stores ``prompt`` +
-        ``pooled``).
+        non-empty.  Auto-delegates to ``driver.get_te_cache`` when the driver
+        meaningfully overrides it (multi-cache families).  Note the existing
+        multi-cache families (Flux1 ``t5`` + ``clip_pooled``, SDXL ``prompt`` +
+        ``pooled``) override this on the TRAINER — those trainer overrides win
+        over both this default and any driver override.
         """
+        fn = self._driver_hook_override("get_te_cache")
+        if fn is not None:
+            return fn()
         if hasattr(self, "text_cache") and self.text_cache:
             return {"te": dict(self.text_cache)}
         return None
@@ -257,11 +342,14 @@ class PipelineBaseMixin(BaseTrainer):
     def set_te_cache(self, caches: dict[str, dict[str, torch.Tensor]]) -> None:
         """Restore text embedding caches from a loaded checkpoint.
 
-        Default restores ``caches["te"]`` into ``self.text_cache``.
-        Also checks ``"t5"`` as a fallback for backward compatibility
-        with older Flux2 checkpoints.
-        Override in families with additional caches.
+        Default restores ``caches["te"]`` into ``self.text_cache`` (with a
+        legacy ``"t5"`` fallback).  Auto-delegates to ``driver.set_te_cache``
+        when the driver meaningfully overrides it.
         """
+        fn = self._driver_hook_override("set_te_cache")
+        if fn is not None:
+            fn(caches)
+            return
         te_data = caches.get("te") or caches.get("t5")
         if te_data:
             self.text_cache = te_data
@@ -341,31 +429,38 @@ class PipelineBaseMixin(BaseTrainer):
 
     def _apply_quantization(self) -> None:
         """Apply quantization to frozen components (Unet, TEs).
-        
+
         Called implicitly by the pipeline after setup but before training loops.
         """
         from app.engine.factories.quantization import QuantizationFactory
-        
+
         scheme = self.config.get("quantization", "none")
         backend = self.config.get("quantization_backend", "auto")
         if scheme in ("none", "bf16"):
             return
-            
+
         self.logger.info("applying_quantization", scheme=scheme)
-        
+
         # Quantize Primary Model
         model = self._get_primary_model()
         if model is not None and not next(model.parameters()).requires_grad:
-            quantized_model = QuantizationFactory.quantize(model, scheme, backend_name=backend, device=str(self.device))
+            quantized_model = QuantizationFactory.quantize(
+                model, scheme, backend_name=backend, device=str(self.device)
+            )
             self._update_primary_model(quantized_model)
-            
+
         # Quantize Text Encoders
         te_quant_scheme = self.config.get("te_quantization", "none")
         te_backend = self.config.get("te_quantization_backend", "auto")
         if te_quant_scheme not in ("none", "bf16"):
             for name, te in self._get_text_encoders().items():
                 if not next(te.parameters()).requires_grad:
-                    quantized_te = QuantizationFactory.quantize(te, te_quant_scheme, backend_name=te_backend, device=str(self.device))
+                    quantized_te = QuantizationFactory.quantize(
+                        te,
+                        te_quant_scheme,
+                        backend_name=te_backend,
+                        device=str(self.device),
+                    )
                     self.components[name] = quantized_te
                     if hasattr(self, name):
                         setattr(self, name, quantized_te)

@@ -125,3 +125,46 @@ def build_i2v_conditioning(
     cond = build_first_frame_cond(first_frame_latent, f)
 
     return torch.cat([noisy_latents, mask, cond], dim=1)
+
+
+def build_still_t2v_input(noisy_latents: Tensor) -> Tensor:
+    """36-ch input for an F=1 still on an i2v run — NO conditioning leak.
+
+    A single still has no frame to predict beyond a conditioning frame, so it
+    must train as t2v: the model denoises the one frame from full noise with no
+    reference. The i2v transformer's ``patch_embedding`` is a 36-in-channel
+    conv, so we still concat to 36 channels — but the ``mask(4)`` AND
+    ``cond(16)`` channels are ZEROED (``mask=0`` ⇒ "denoise this frame",
+    ``cond=0`` ⇒ "no reference frame"). This is what keeps the still's own clean
+    latent from being handed back as the answer, which — because the flow-match
+    target ``noise - latents`` is recoverable from ``noisy`` + ``cond`` — would
+    otherwise be a degenerate, zero-information training step.
+
+    Parity with ltx2/k5's ``_i2v_conditioning_engaged`` F>1 gate; WAN differs
+    only in that the 36-ch architecture forces this zero-pad instead of a
+    plain 16-channel t2v tensor.
+
+    Args:
+        noisy_latents: ``[B, 16, 1, H, W]`` — the noised single-frame latent.
+
+    Returns:
+        ``[B, 36, 1, H, W]`` = ``[noisy(16), zeros(4), zeros(16)]``. The first
+        16 channels are exactly ``noisy_latents``.
+    """
+    if noisy_latents.ndim != 5:
+        raise ValueError(
+            f"noisy_latents must be 5D [B, C, F, H, W], got {tuple(noisy_latents.shape)}"
+        )
+    if noisy_latents.shape[1] != NOISE_CHANNELS:
+        raise ValueError(
+            f"noisy_latents must have {NOISE_CHANNELS} channels, "
+            f"got {noisy_latents.shape[1]}"
+        )
+
+    b, _, f, h, w = noisy_latents.shape
+    pad = torch.zeros(
+        (b, MASK_CHANNELS + COND_CHANNELS, f, h, w),
+        device=noisy_latents.device,
+        dtype=noisy_latents.dtype,
+    )
+    return torch.cat([noisy_latents, pad], dim=1)

@@ -24,8 +24,16 @@ transformer_hunyuan_video15.py``) and the hub checkpoint configs
   (pipeline lines 719-725) and I2V feeds the Siglip ``last_hidden_state``.
 - **Raw [0, 1000] timestep**: ``HunyuanVideo15TimeEmbedding`` is a sinusoidal
   ``Timesteps`` projection over the raw FlowMatchEuler value (no internal
-  /1000) — the ``/1000`` lives in ``add_noise``'s LERP ONLY (the WAN
-  pure-noise gotcha; see ``wan_shared/driver_base.py``).
+  /1000) — the ``/1000`` lerp lives in the REAL training path's
+  ``add_noise`` (the base ``PipelineBaseMixin.add_noise`` → shared
+  ``NoiseInterpolation('linear')`` component, the WAN pure-noise gotcha; see
+  ``wan_shared/driver_base.py``). Unlike WAN/LTX-2/Kandinsky5, hv15 has NO
+  driver-level ``add_noise`` override: i2v conditioning never touches which
+  frames get noised — it is carried entirely by the separate cond/mask
+  channels built in :func:`build_model_input` below, so every frame
+  (including frame 0) is noised uniformly and the base component's generic
+  lerp is exactly correct as-is (proven equivalent + pinned in
+  ``test_hv15_addnoise_wiring.py``).
 - **Dual TE**: Qwen2.5-VL chat-template encoding (``hidden_states[-3]``, crop
   the first 108 template tokens) + a ByT5 glyph channel fed from QUOTED
   substrings of the prompt (zero embeddings + zero mask when the prompt has no
@@ -479,22 +487,19 @@ class Hv15Driver(IModelDriver):
         lat = latents if latents.ndim == 5 else latents.unsqueeze(2)
         batch[self.BATCH_FIRST_FRAME_LATENT] = lat[:, :, :1, :, :].detach().clone()
 
-    def add_noise(
-        self,
-        latents: torch.Tensor,
-        noise: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> torch.Tensor:
-        """Flow-match lerp in the ``[0, 1000]`` space (÷1000 exactly ONCE here).
-
-        ``noisy = (t/1000) * noise + (1 - t/1000) * latents`` with the implied
-        velocity target ``noise - latents``. The timestep handed to the
-        transformer stays RAW ``[0, 1000]`` (see :meth:`forward_pass`).
-        """
-        t = timesteps / 1000.0
-        while t.ndim < latents.ndim:
-            t = t.unsqueeze(-1)
-        return t * noise + (1.0 - t) * latents
+    # NOTE: no ``add_noise`` override here (dead-dispatch audit finding,
+    # A0-4). The real training loop calls the TRAINER's ``self.add_noise``
+    # (MRO-resolved, ``pipeline_train.py``), which ``Hv15Trainer`` does not
+    # override — it resolves to ``PipelineBaseMixin.add_noise`` →
+    # ``NoiseInterpolation('linear')``. A driver-level override used to live
+    # here with the SAME formula (``t*noise + (1-t)*latents``, raw [0,1000]
+    # scale) — proven algebraically identical to the base component and
+    # never reached by the real path, so it was deleted rather than wired
+    # (see ``test_hv15_addnoise_wiring.py``). Unlike WAN/LTX-2/Kandinsky5,
+    # hv15's i2v conditioning never needs an add_noise special case — it is
+    # carried entirely by the separate cond/mask channels concatenated in
+    # ``build_model_input`` (all frames, including frame 0, are noised
+    # uniformly).
 
     def forward_pass(
         self,

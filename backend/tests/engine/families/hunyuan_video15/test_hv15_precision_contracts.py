@@ -1,8 +1,12 @@
-"""hv15 precision-contract tests against the REAL driver/sampler code paths.
+"""hv15 precision-contract tests against the REAL trainer/sampler code paths.
 
-1. Flow-match timestep [0, 1000] scale — the REAL ``Hv15Driver.add_noise``
-   divides by 1000 exactly ONCE (the LERP); a deliberately-wrong variant must
-   FAIL the contract (proves the test bites).
+1. Flow-match timestep [0, 1000] scale — the REAL dispatch path (the
+   trainer's ``add_noise`` family hook, MRO-resolved to the base
+   ``PipelineBaseMixin.add_noise`` → shared ``NoiseInterpolation('linear')``
+   component — hv15 carries NO driver-level override, see
+   ``test_hv15_addnoise_wiring.py``) divides by 1000 exactly ONCE (the
+   LERP); a deliberately-wrong variant must FAIL the contract (proves the
+   test bites).
 2. Autocast sampler collapse — a linear-velocity fake transformer runs through
    the REAL ``Hv15Sampler.euler_integrate`` fp32 loop (via ``build_denoise``)
    and matches the fp64 analytic endpoint; a bf16-accumulated loop must MISS.
@@ -10,8 +14,9 @@
 
 import torch
 
-from app.engine.models.families.hunyuan_video15.driver import Hv15Driver
 from app.engine.models.families.hunyuan_video15.sampler import Hv15Sampler
+from app.engine.models.families.hunyuan_video15.trainer import Hv15Trainer
+from app.engine.strategies.noise_interpolation import NoiseInterpolation
 from tests.engine.precision_contracts import (
     LinearVelocityFakeTransformer,
     assert_flowmatch_timestep_contract,
@@ -31,25 +36,30 @@ class _Pipeline:
         self.definition = _Defn()
 
 
-def _make_driver() -> Hv15Driver:
-    return Hv15Driver(_Defn(), torch.device("cpu"))
-
-
 def _make_sampler() -> Hv15Sampler:
     return Hv15Sampler(_Pipeline())
 
 
-# ── Gotcha 1: flow-match [0, 1000] lerp on the REAL add_noise ──────────────
+def _make_real_dispatch_trainer() -> Hv15Trainer:
+    """A trainer shell exercising the REAL ``self.add_noise(...)`` dispatch
+    ``pipeline_train.py`` makes — ``Hv15Trainer`` has no override, so this
+    resolves through MRO to ``PipelineBaseMixin.add_noise``."""
+    t = object.__new__(Hv15Trainer)
+    t.noise_interpolation = NoiseInterpolation("linear")
+    return t
+
+
+# ── Gotcha 1: flow-match [0, 1000] lerp on the REAL dispatch path ─────────
 
 
 def test_real_add_noise_obeys_flowmatch_contract():
-    driver = _make_driver()
-    assert_flowmatch_timestep_contract(driver.add_noise, scale=1000.0)
+    trainer = _make_real_dispatch_trainer()
+    assert_flowmatch_timestep_contract(trainer.add_noise, scale=1000.0)
 
 
 def test_wrong_x1000_add_noise_fails_contract():
     """Sanity: an add_noise that treats t as already-[0,1] must FAIL."""
-    driver = _make_driver()
+    trainer = _make_real_dispatch_trainer()
 
     def wrong_add_noise(latents, noise, t):
         while t.ndim < latents.ndim:
@@ -62,7 +72,7 @@ def test_wrong_x1000_add_noise_fails_contract():
     except AssertionError:
         raised = True
     assert raised, "wrong x1000 add_noise should have failed the contract"
-    assert_flowmatch_timestep_contract(driver.add_noise, scale=1000.0)
+    assert_flowmatch_timestep_contract(trainer.add_noise, scale=1000.0)
 
 
 # ── Gotcha 2: autocast sampler collapse on the REAL euler integrator ───────

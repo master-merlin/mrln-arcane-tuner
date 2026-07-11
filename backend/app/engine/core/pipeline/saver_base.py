@@ -38,6 +38,22 @@ class GenericLoRASaver(ModelSaver):
     architecture_name: str = ""
     """Override in subclass, e.g. ``"flux1"``, ``"qwen_image"``, ``"zimage"``."""
 
+    key_prefix: str = "diffusion_model."
+    """Key namespace for the exported LoRA modules.
+
+    The house default ``"diffusion_model."`` is the ai-toolkit/BFL convention
+    ComfyUI maps for families whose ComfyUI-internal module names equal their
+    diffusers names (qwen_image, kandinsky5, ernie_image, ...). Flux-architecture
+    families whose ComfyUI implementation uses BFL-native names
+    (``double_blocks.*``/``single_blocks.*``) instead of diffusers
+    ``transformer_blocks.*`` MUST override this to ``"transformer."`` — that is
+    the diffusers/PEFT/SimpleTuner prefix ComfyUI's ``flux_to_diffusers``
+    ``key_map`` registers (``comfy/lora.py::model_lora_keys_unet``). Emitting
+    ``diffusion_model.`` with diffusers module names matches NOTHING in the
+    Flux key_map and yields a silent zero-effect LoRA. See
+    ``ovis_image/saver.py``.
+    """
+
     def save(
         self,
         components: dict[str, Any],
@@ -75,8 +91,14 @@ class GenericLoRASaver(ModelSaver):
                 continue
 
             clean = key.replace("base_model.model.", "")
-            if not clean.startswith("diffusion_model."):
-                clean = f"diffusion_model.{clean}"
+            # Strip any house prefix already present, then apply this saver's
+            # configured namespace (default ``diffusion_model.``; Flux-family
+            # savers override ``key_prefix`` to ``transformer.``).
+            for _known in ("diffusion_model.", "transformer."):
+                if clean.startswith(_known):
+                    clean = clean[len(_known):]
+                    break
+            clean = f"{self.key_prefix}{clean}"
             final_dict[clean] = value
 
         if not final_dict:

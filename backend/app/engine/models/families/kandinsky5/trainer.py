@@ -18,6 +18,14 @@ Implements the Kandinsky-specific behaviour on top of
   velocity target is meaningless) — ``_compute_step_loss`` drops it, mirroring
   the upstream I2V pipeline's frame-0 scheduler skip (LTX-2's excluded-token
   precedent).
+- **``add_noise`` convention delegation** (boogu_image precedent): overrides
+  the base ``PipelineBaseMixin.add_noise`` (which hardcodes a generic
+  ``NoiseInterpolation`` component) to delegate to ``driver.add_noise``,
+  wiring the I2V frame-0-clean pin into the REAL training loop. Without this
+  the trainer-level ``self.add_noise(...)`` family-hook call the loop
+  actually makes would noise frame 0 even when I2V is engaged — silently
+  contradicting the loss exclusion above (see
+  ``test_kandinsky5_addnoise_wiring.py``).
 - The trainer-override trio (``_setup_family`` / ``_create_sampler`` /
   ``_update_primary_model``) — the seam-contract ``FamilySpec`` pins them.
 """
@@ -89,6 +97,36 @@ class Kandinsky5Trainer(GenericTrainingPipeline):
         self.driver._i2v_active = active
         if active:
             self.driver.attach_conditioning(batch, latents)
+
+    # ── Convention delegation (I2V frame-0 pin — real-path wiring) ────────
+
+    def add_noise(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """Delegate to the driver's flow-match lerp + I2V frame-0 clean pin.
+
+        The base ``PipelineBaseMixin.add_noise`` hardcodes
+        ``self.noise_interpolation.add_noise`` (:class:`NoiseInterpolation`,
+        mode ``"linear"``) — a component with NO knowledge of Kandinsky5's
+        I2V conditioning. Left un-overridden, the REAL training loop
+        (``pipeline_train.py``'s ``self.add_noise(...)`` family-hook call)
+        resolves to that generic component and noises frame 0 even when I2V
+        is engaged — directly contradicting ``_compute_step_loss``'s
+        frame-0 exclusion below, which assumes frame 0 stays clean (mirrors
+        the boogu_image convention-delegation precedent).
+
+        SAFE for T2V: ``Kandinsky5Driver.add_noise``'s un-engaged math
+        (``t*noise + (1-t)*latents``, raw ``[0, 1000]`` scale) is
+        algebraically identical to ``NoiseInterpolation._linear``'s
+        ``(1-t)*latents + t*noise`` — same terms, commutative sum, same
+        ``/1000`` scale — so this delegation changes ZERO T2V training
+        behavior (pinned by
+        ``test_kandinsky5_addnoise_wiring.py``'s bit-identity test).
+        """
+        return self.driver.add_noise(latents, noise, timesteps)
 
     # ── I2V frame-0 loss exclusion ────────────────────────────────────────
 

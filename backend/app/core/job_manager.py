@@ -1102,9 +1102,18 @@ class JobManager:
         on a worker thread (off the event loop), so the blocking download is
         safe and the WS emits schedule onto the captured loop.
 
-        Failures are swallowed: the pre-fetch must never block or fail a launch
-        that the trainer could otherwise complete — the trainer re-resolves the
-        model and surfaces any real error through the job log as before.
+        ``_resolve_hf`` routes online downloads through the HF stall guard
+        (``hf_download_guard``), which retries a bounded number of times and
+        then raises loudly on a genuine stall/failure — so an exception here
+        is no longer necessarily transient. Failures are still swallowed for
+        the LAUNCH decision: the pre-fetch must never block or fail a launch
+        that the trainer could otherwise complete (the trainer re-resolves the
+        model — through the same guard — and surfaces any real error through
+        the job log). But we DO update the job's live status_label + broadcast
+        on failure, so the UI never lingers on "Downloading base model…"
+        after a preflight that actually failed — mirrors the broadcast
+        pattern used for every other live status_label transition (e.g. the
+        GPU-fault auto-resume label in ``_schedule_auto_resume``).
         """
         try:
             from app.engine.models.registry import registry
@@ -1119,6 +1128,12 @@ class JobManager:
             logger.warning(
                 "preflight_download_failed", job_id=job.id, error=str(e),
             )
+            job.status_label = "Base model download failed — trainer will retry"
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    event_manager.broadcast("job_update", job.model_dump()),
+                    self._loop,
+                )
 
     def start_job(
         self, job_id: str, clear_stale_signal: bool = True, preflight: bool = True,
@@ -1189,8 +1204,12 @@ class JobManager:
             # Base model is cached now; hand the status line back to the trainer
             # (it emits its own "Loading"/"Training"/… labels). Clearing avoids a
             # stale "Downloading base model…" lingering until the first trainer
-            # status message arrives.
-            job.status_label = None
+            # status message arrives. A preflight FAILURE label (set + broadcast
+            # by _preflight_download) is deliberately left in place here instead
+            # of being silently wiped — it stays visible until the trainer's own
+            # first status line naturally supersedes it.
+            if job.status_label == "Downloading base model…":
+                job.status_label = None
             self._persist_status(job_id, "running", started_at=job.started_at)
 
             # Broadcast start

@@ -12,6 +12,8 @@ import os
 import structlog
 from huggingface_hub import hf_hub_download, snapshot_download
 
+from app.engine.utils.hf_download_guard import download_with_stall_guard
+
 # Prevent WinError 1314: symlink permission errors on Windows.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
@@ -161,16 +163,25 @@ class ModelPathResolver:
                     "the model first.",
                 )
 
+        # Every ONLINE call below routes through download_with_stall_guard,
+        # which runs the actual snapshot_download/hf_hub_download in a
+        # killable child process — see hf_download_guard's module docstring
+        # for why: an in-process HF call cannot be aborted on a stall (Python
+        # threads/socket reads are un-abortable), and this resolve runs both
+        # in the API process AND inside the detached trainer subprocess,
+        # where a wedged download is invisible and survives backend
+        # restarts. local_files_only (above) is unaffected — offline
+        # resolves never hit the network, so there's nothing to stall on.
         try:
             if filename:
                 logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
-                # hf_hub_download() does NOT accept tqdm_class (huggingface_hub
-                # >= 0.36 — only snapshot_download does), and HF never routes a
-                # custom tqdm to per-file byte transfers anyway. with_progress
-                # emits a coarse start/complete pair for the indicator.
+                # with_progress emits a coarse start/complete pair for the
+                # indicator; the guard's child process can't be attached to
+                # an in-process tqdm (see hf_download_guard's docstring for
+                # the accepted per-file-breakdown regression).
                 with with_progress(model_id=progress_id, category="training"):
-                    return hf_hub_download(
-                        repo_id=repo_id, filename=filename, **rev_kwargs,
+                    return download_with_stall_guard(
+                        repo_id=repo_id, filename=filename, revision=revision,
                     )
 
             # Snapshot (full repo). Only surface the download indicator on a
@@ -182,7 +193,7 @@ class ModelPathResolver:
             # cache, so only a genuinely complete snapshot skips the bar.
             if _snapshot_fully_cached(repo_id, revision):
                 logger.info("snapshot_cache_hit", repo=repo_id)
-                return snapshot_download(repo_id=repo_id, **rev_kwargs)
+                return download_with_stall_guard(repo_id=repo_id, revision=revision)
 
             # A real (or partial-resume) transfer. We can't attach an emitting
             # tqdm for BYTE progress — HF only routes tqdm_class to the coarse
@@ -190,13 +201,17 @@ class ModelPathResolver:
             # each individual download"), which sits frozen at 0/N while a single
             # multi-GB shard downloads. snapshot_byte_progress instead polls the
             # on-disk cache growth against the repo's total size for true,
-            # resume-aware byte progress. The online snapshot_download re-checks
-            # etags and fetches only what's missing, so a partial cache heals.
+            # resume-aware byte progress — the SAME on-disk signal the guard's
+            # own stall watchdog polls, so it keeps working when the bytes are
+            # written by a child process instead of this one. The online
+            # download re-checks etags and fetches only what's missing, so a
+            # partial cache (whether from an old interruption or a guard-killed
+            # attempt) self-heals.
             logger.info("downloading_snapshot_from_hub", repo=repo_id)
             with snapshot_byte_progress(
                 repo_id=repo_id, model_id=progress_id, category="training",
             ):
-                return snapshot_download(repo_id=repo_id, **rev_kwargs)
+                return download_with_stall_guard(repo_id=repo_id, revision=revision)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("hf_download_failed", repo=repo_id, file=filename, error=str(e))
             raise

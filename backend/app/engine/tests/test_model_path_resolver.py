@@ -31,56 +31,53 @@ class TestResolve:
         assert os.path.isabs(result)
         assert result.endswith(os.path.join("relative", "path"))
 
-    @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_resolve_hf_snapshot_uri(self, mock_download):
-        mock_download.return_value = "/cache/models/repo-id"
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=False)
+    @patch("app.engine.utils.model_utils.download_with_stall_guard")
+    def test_resolve_hf_snapshot_uri(self, mock_guard, _mock_cached):
+        mock_guard.return_value = "/cache/models/repo-id"
         result = ModelPathResolver.resolve("huggingface:org/repo-id")
         assert result == "/cache/models/repo-id"
+        mock_guard.assert_called_once_with(repo_id="org/repo-id", revision=None)
 
-    @patch("app.engine.utils.model_utils.hf_hub_download")
-    def test_resolve_hf_single_file_uri(self, mock_download):
-        mock_download.return_value = "/cache/models/file.safetensors"
+    @patch("app.engine.utils.model_utils.download_with_stall_guard")
+    def test_resolve_hf_single_file_uri(self, mock_guard):
+        mock_guard.return_value = "/cache/models/file.safetensors"
         result = ModelPathResolver.resolve("huggingface:org/repo:file.safetensors")
         assert result == "/cache/models/file.safetensors"
-
-    @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_resolve_hf_online_returns_resumable_not_cache_probe(self, mock_download):
-        """Online mode must return the resumable download, never a cache probe.
-
-        Regression: a previously interrupted download leaves a *partial*
-        snapshot (missing e.g. ``tokenizer/``); returning a cache-only result
-        as if complete makes the loader fail with "Unrecognized model ...
-        should have a ``model_type`` key".
-
-        Online resolve may *probe* the cache (``local_files_only=True``) to
-        decide whether to show the download indicator — a pure cache hit must
-        not flash the progress bar — but the path it RETURNS must always come
-        from the resumable online ``snapshot_download`` (no ``local_files_only``),
-        which re-verifies every file's etag and refetches whatever is missing,
-        self-healing a partial cache. The probe result must never be returned.
-        """
-        def fake_snapshot(**kwargs):
-            # The cache-only probe and the resumable online resolve return
-            # distinct paths so we can prove which one the caller gets.
-            return "/cache/probe" if kwargs.get("local_files_only") else "/cache/online"
-
-        mock_download.side_effect = fake_snapshot
-        result = ModelPathResolver.resolve("huggingface:org/repo")
-        # Returned path is the online (self-healing) resolve, not the probe.
-        assert result == "/cache/online"
-        # A resumable, non-cache-only snapshot_download was actually run.
-        online_calls = [
-            c for c in mock_download.call_args_list
-            if c.kwargs.get("local_files_only") is not True
-        ]
-        assert online_calls, (
-            "online resolve must run a resumable (non-cache-only) "
-            "snapshot_download so partial caches self-heal"
+        mock_guard.assert_called_once_with(
+            repo_id="org/repo", filename="file.safetensors", revision=None,
         )
 
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=False)
     @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_resolve_hf_offline_cache_hit(self, mock_download):
-        """Offline / skip-update mode reads cache only — single call."""
+    @patch("app.engine.utils.model_utils.download_with_stall_guard")
+    def test_resolve_hf_online_routes_through_killable_guard(
+        self, mock_guard, mock_inprocess_snapshot, _mock_cached,
+    ):
+        """Online resolve must go through the killable guard (a child
+        process), never call snapshot_download in-process directly.
+
+        Regression context: a previously interrupted download leaves a
+        *partial* snapshot (missing e.g. ``tokenizer/``); resolving from an
+        in-process, un-abortable call risks the exact wedge this guard exists
+        to fix — an in-process HF call cannot be aborted on a stall (Python
+        threads/socket reads are un-abortable), and the trainer subprocess
+        that hit this in production has no way to recover from one. The
+        guard's own resumable retry (see test_hf_download_guard.py) is what
+        re-verifies etags and self-heals a partial cache now — not this
+        resolver directly.
+        """
+        mock_guard.return_value = "/cache/online"
+        result = ModelPathResolver.resolve("huggingface:org/repo")
+        assert result == "/cache/online"
+        mock_guard.assert_called_once_with(repo_id="org/repo", revision=None)
+        mock_inprocess_snapshot.assert_not_called()
+
+    @patch("app.engine.utils.model_utils.download_with_stall_guard")
+    @patch("app.engine.utils.model_utils.snapshot_download")
+    def test_resolve_hf_offline_cache_hit(self, mock_download, mock_guard):
+        """Offline / skip-update mode reads cache only — single in-process
+        call, and never touches the guard (nothing to stall on offline)."""
         mock_download.return_value = "/cache/local"
         result = ModelPathResolver.resolve(
             "huggingface:org/repo", local_files_only=True,
@@ -89,6 +86,7 @@ class TestResolve:
             repo_id="org/repo", local_files_only=True,
         )
         assert result == "/cache/local"
+        mock_guard.assert_not_called()
 
     @patch("app.engine.utils.model_utils.snapshot_download")
     def test_resolve_hf_offline_cache_miss_raises(self, mock_download):
@@ -110,22 +108,18 @@ class TestRevision:
     canonical revision), so the resolver must be able to pin a revision.
     """
 
-    @patch("app.engine.utils.model_utils.snapshot_download")
-    def test_snapshot_uri_with_revision(self, mock_download):
-        mock_download.return_value = "/cache/models/repo-rev"
+    @patch("app.engine.utils.model_utils._snapshot_fully_cached", return_value=False)
+    @patch("app.engine.utils.model_utils.download_with_stall_guard")
+    def test_snapshot_uri_with_revision(self, mock_guard, _mock_cached):
+        mock_guard.return_value = "/cache/models/repo-rev"
         result = ModelPathResolver.resolve(
             "huggingface:carlofkl/DreamLite-base@diffusers",
         )
         assert result == "/cache/models/repo-rev"
         # The @revision must be split OFF the repo_id and passed as revision=
-        for call in mock_download.call_args_list:
-            assert call.kwargs.get("repo_id") == "carlofkl/DreamLite-base"
-        online_calls = [
-            c for c in mock_download.call_args_list
-            if not c.kwargs.get("local_files_only")
-        ]
-        assert online_calls, "no online snapshot_download run"
-        assert online_calls[-1].kwargs.get("revision") == "diffusers"
+        mock_guard.assert_called_once_with(
+            repo_id="carlofkl/DreamLite-base", revision="diffusers",
+        )
 
     @patch("app.engine.utils.model_utils.snapshot_download")
     def test_offline_snapshot_uri_with_revision(self, mock_download):
@@ -138,17 +132,16 @@ class TestRevision:
         )
         assert result == "/cache/local-rev"
 
-    @patch("app.engine.utils.model_utils.hf_hub_download")
-    def test_single_file_uri_with_revision(self, mock_download):
-        mock_download.return_value = "/cache/file.safetensors"
+    @patch("app.engine.utils.model_utils.download_with_stall_guard")
+    def test_single_file_uri_with_revision(self, mock_guard):
+        mock_guard.return_value = "/cache/file.safetensors"
         result = ModelPathResolver.resolve(
             "huggingface:org/repo@rev1:file.safetensors",
         )
         assert result == "/cache/file.safetensors"
-        call = mock_download.call_args
-        assert call.kwargs.get("repo_id") == "org/repo"
-        assert call.kwargs.get("filename") == "file.safetensors"
-        assert call.kwargs.get("revision") == "rev1"
+        mock_guard.assert_called_once_with(
+            repo_id="org/repo", filename="file.safetensors", revision="rev1",
+        )
 
     @patch("app.engine.utils.model_utils.snapshot_download")
     def test_no_revision_keeps_legacy_call_shape(self, mock_download):

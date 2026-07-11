@@ -338,29 +338,14 @@ class SDXLDriver(IModelDriver):
         return {"time_ids": torch.stack(time_ids_list).to(self.device)}
 
     # --- Phase 8: Checkpoint Resume ---
-
-    def get_te_cache(self) -> dict[str, dict[str, torch.Tensor]] | None:
-        """Return prompt + pooled caches for checkpoint persistence."""
-        text_cache = getattr(self, "text_cache", {})
-        if not text_cache:
-            return None
-        pooled = getattr(self, "_pooled_cache", {})
-        return {
-            "prompt": dict(text_cache),
-            "pooled": dict(pooled),
-        }
-
-    def set_te_cache(self, caches: dict[str, dict[str, torch.Tensor]]) -> None:
-        """Restore prompt + pooled caches from checkpoint."""
-        if "prompt" in caches:
-            self.text_cache = caches["prompt"]
-        if "pooled" in caches:
-            self._pooled_cache = caches["pooled"]
-        self.logger.info(
-            "te_cache_restored",
-            prompt_entries=len(getattr(self, "text_cache", {})),
-            pooled_entries=len(getattr(self, "_pooled_cache", {})),
-        )
+    #
+    # NOTE: get_te_cache/set_te_cache live on ``SDXLTrainer`` (trainer.py),
+    # not here. The real checkpoint dispatch path
+    # (pipeline_train.py save sites + pipeline_optimization.py resume merge)
+    # calls ``self.get_te_cache()``/``set_te_cache()`` on the TRAINER, never
+    # on the driver — a driver-level override here would be dead code (and
+    # ``self.text_cache``/``self._pooled_cache`` don't even live on the
+    # driver instance; they're set on the trainer).
 
     # --- Phase 9: Advanced Memory & Training Features ---
 

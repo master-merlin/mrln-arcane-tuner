@@ -32,6 +32,31 @@ from .saver import Ltx2Saver
 logger = structlog.get_logger(__name__)
 
 
+def _audio_vae_fingerprint(audio_vae: Any) -> str:
+    """Stable short id for an audio VAE's encode-relevant identity.
+
+    Prefers the per-feature normalization stats (``latents_mean``/``latents_std``)
+    the packed latents are normalized by — these change whenever the VAE does and
+    are cheap to hash. Falls back to the class name when stats are absent.
+    """
+    if audio_vae is None:
+        return "none"
+    tag = type(audio_vae).__name__
+    stats = []
+    for attr in ("latents_mean", "latents_std"):
+        val = getattr(audio_vae, attr, None)
+        if val is not None:
+            try:
+                stats.append(
+                    hashlib.sha1(
+                        val.detach().cpu().to(torch.float32).contiguous().numpy().tobytes()
+                    ).hexdigest()[:8]
+                )
+            except Exception:  # noqa: BLE001 — identity is best-effort
+                stats.append(str(val))
+    return tag + ("-" + "-".join(stats) if stats else "")
+
+
 class Ltx2Trainer(GenericTrainingPipeline):
     """LTX 2.3 (joint audio + video) LoRA trainer."""
 
@@ -458,15 +483,38 @@ class Ltx2Trainer(GenericTrainingPipeline):
 
     # ── Audio latent cache (data path) ────────────────────────────────────
 
-    @staticmethod
-    def _audio_cache_dir(video_cache_dir: str) -> str:
-        """Audio latents live in an ``audio/`` sibling of the video latent dir.
+    def _audio_cache_dir(self, video_cache_dir: str) -> str:
+        """Audio latents live in an ``audio/<version>/`` sibling of the video dir.
 
         Keeping them in a SEPARATE file (same content-addressed, trim-aware
         filename) means enabling audio never disturbs an existing video-only
         cache, and audio coverage is checked independently of video coverage.
+
+        The ``<version>`` segment fingerprints the params the encode depends on
+        (mel transform + audio-VAE identity) so a param change forces a
+        re-encode instead of silently serving stale audio latents.
         """
-        return os.path.join(video_cache_dir, "audio")
+        return os.path.join(video_cache_dir, "audio", self._audio_cache_version())
+
+    def _audio_cache_version(self) -> str:
+        """Short fingerprint of everything the audio-latent encode depends on.
+
+        Covers the log-mel transform (sample rate, n_fft, hop, mel bins) and
+        the audio VAE's identity (its per-feature normalization stats, which
+        change whenever the VAE does). A mismatch here previously exposed stale
+        cached latents when mel/audio-VAE params changed.
+        """
+        from .audio_mel import DEFAULT_MEL_BINS, DEFAULT_MEL_HOP, DEFAULT_N_FFT
+
+        driver = getattr(self, "driver", None)
+        parts = [
+            str(int(getattr(driver, "audio_sampling_rate", 16000))),
+            str(DEFAULT_N_FFT),
+            str(DEFAULT_MEL_HOP),
+            str(DEFAULT_MEL_BINS),
+            _audio_vae_fingerprint(getattr(driver, "audio_vae", None)),
+        ]
+        return "v" + hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
 
     def _pre_cache_aux(self) -> None:
         """Pre-cache LTX-2 audio latents alongside the video latents.
@@ -497,7 +545,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
 
         sr = int(self.driver.audio_sampling_rate)
         default_fps = float(getattr(self.driver, "frame_rate", 24.0) or 24.0)
-        encoded = skipped = absent = 0
+        encoded = skipped = absent = failed = 0
 
         for item in self.inventory:
             if not item.get("is_video"):
@@ -526,20 +574,42 @@ class Ltx2Trainer(GenericTrainingPipeline):
                 continue
 
             waveform, wav_sr = wav
-            with torch.no_grad():
-                # encode_audio_clean wants [B, C, N]; waveform is [C=1, N].
-                latent = self.driver.encode_audio_clean(
-                    waveform.unsqueeze(0).to(self.device), wav_sr,
-                )  # [1, L, 128]
-            os.makedirs(adir, exist_ok=True)
-            save_file({"audio_latents": latent[0].detach().cpu()}, path)
-            encoded += 1
+            try:
+                with torch.no_grad():
+                    # encode_audio_clean wants [B, C, N]; waveform is [C=1, N].
+                    latent = self.driver.encode_audio_clean(
+                        waveform.unsqueeze(0).to(self.device), wav_sr,
+                    )  # [1, L, 128]
+                os.makedirs(adir, exist_ok=True)
+                save_file({"audio_latents": latent[0].detach().cpu()}, path)
+                encoded += 1
+            except Exception as e:  # noqa: BLE001 — a bad clip must not kill the run
+                # Graceful path: leave this clip's audio uncached — build_batch_extra
+                # treats it as absent (audio_mask=0). That degradation (the clip's
+                # audio stream silently drops out of training) must be VISIBLE.
+                failed += 1
+                self.logger.warning(
+                    "ltx2_audio_encode_failed",
+                    path=item.get("path"),
+                    error=str(e),
+                )
 
+        if failed:
+            self.logger.warning(
+                "ltx2_audio_precache_incomplete",
+                failed=failed,
+                encoded=encoded,
+                skipped=skipped,
+                absent=absent,
+                hint="clips whose audio failed to encode train with NO audio "
+                     "(audio_mask=0 → zero audio-loss contribution)",
+            )
         self.logger.info(
             "ltx2_audio_precache_done",
             encoded=encoded,
             skipped=skipped,
             absent=absent,
+            failed=failed,
         )
 
         # The audio VAE is unused after this point at train time — offload it so

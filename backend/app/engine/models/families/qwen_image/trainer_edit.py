@@ -111,6 +111,8 @@ class QwenImageEditTrainer(QwenImageTrainer):
         self._ctrl_hash_memo: dict[str, bytes] = {}
         self._processor: Any | None = None
         self._processor_resolved = False
+        self._warned_no_processor = False
+        self._no_processor_reason: str | None = None
 
     def _create_sampler(self):
         interval = int(self.config.get("sample_every_n_steps", 0))
@@ -263,13 +265,15 @@ class QwenImageEditTrainer(QwenImageTrainer):
                     self._processor = AutoProcessor.from_pretrained(
                         repo, subfolder="processor",
                     )
+                else:
+                    self._no_processor_reason = (
+                        "no processor repo configured in the definition"
+                    )
             except Exception as exc:  # noqa: BLE001 — env-gated, never fatal
-                self.logger.warning(
-                    "qwen_edit_processor_unavailable",
-                    error=str(exc),
-                    hint="text encoder will run text-only; control still "
-                         "conditions the transformer via concatenated latents",
-                )
+                # Record the reason; the single user-visible warning fires at the
+                # fallback site (_encode_text_with_control) so it is emitted once
+                # per run regardless of which None-path we took here.
+                self._no_processor_reason = f"processor load failed: {exc}"
                 self._processor = None
         return self._processor
 
@@ -283,6 +287,18 @@ class QwenImageEditTrainer(QwenImageTrainer):
         """
         processor = self._ensure_processor()
         if processor is None:
+            # Silent-failure policy: the VL image path is OFF this run (the
+            # control image is NOT attended by the text encoder). Warn ONCE,
+            # loudly, with the reason — behavior (text-only encode) unchanged.
+            if not self._warned_no_processor:
+                self._warned_no_processor = True
+                self.logger.warning(
+                    "qwen_edit_vl_processor_fallback_text_only",
+                    reason=self._no_processor_reason or "VL processor unavailable",
+                    hint="control image NOT attended by the VL text encoder this "
+                         "run; control still conditions the transformer via "
+                         "concatenated latents",
+                )
             return self._encode_text_direct([caption], dtype)
 
         from PIL import Image

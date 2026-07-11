@@ -311,7 +311,17 @@ class Ltx2Sampler(GenericSamplingPipeline):
             try:
                 audio = self._decode_audio(driver)
             except Exception as e:  # noqa: BLE001
-                logger.warning("ltx2_audio_decode_failed", error=str(e))
+                # Best-effort: degrade to a SILENT clip (never lose the video
+                # sample to an audio-only error) — but count + surface it so a
+                # run that silently drops audio is diagnosable.
+                count = getattr(self, "_audio_decode_failures", 0) + 1
+                self._audio_decode_failures = count
+                logger.warning(
+                    "ltx2_audio_decode_failed",
+                    error=str(e),
+                    occurrence=count,
+                    hint="audio dropped — sample saved as a silent clip",
+                )
                 audio = None
 
         fps = float(self.config.get("sample_fps", driver.frame_rate))

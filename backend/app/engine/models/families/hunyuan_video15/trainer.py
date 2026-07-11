@@ -342,22 +342,45 @@ class Hv15Trainer(GenericTrainingPipeline):
                 failed += 1
                 continue
 
-            with torch.no_grad():
-                inputs = self.driver.feature_extractor.preprocess(
-                    images=pil,
-                    do_resize=True,
-                    return_tensors="pt",
-                    do_convert_rgb=True,
+            try:
+                with torch.no_grad():
+                    inputs = self.driver.feature_extractor.preprocess(
+                        images=pil,
+                        do_resize=True,
+                        return_tensors="pt",
+                        do_convert_rgb=True,
+                    )
+                    ie_dtype = next(self.driver.image_encoder.parameters()).dtype
+                    pixel_values = inputs["pixel_values"].to(self.device, dtype=ie_dtype)
+                    emb = self.driver.image_encoder(
+                        pixel_values=pixel_values
+                    ).last_hidden_state  # [1, 729, 1152]
+                os.makedirs(sdir, exist_ok=True)
+                save_file({"image_embeds": emb[0].detach().cpu()}, path)
+                encoded += 1
+            except Exception as e:  # noqa: BLE001 — a bad item must not kill the run
+                # Graceful path: leave this item uncached — build_batch_extra
+                # will ZERO-FILL its image_embeds (image stream inactive). That
+                # degradation must be VISIBLE, never silent.
+                failed += 1
+                self.logger.warning(
+                    "hv15_siglip_encode_failed",
+                    path=item.get("path"),
+                    error=str(e),
                 )
-                ie_dtype = next(self.driver.image_encoder.parameters()).dtype
-                pixel_values = inputs["pixel_values"].to(self.device, dtype=ie_dtype)
-                emb = self.driver.image_encoder(
-                    pixel_values=pixel_values
-                ).last_hidden_state  # [1, 729, 1152]
-            os.makedirs(sdir, exist_ok=True)
-            save_file({"image_embeds": emb[0].detach().cpu()}, path)
-            encoded += 1
 
+        if failed:
+            # Surface the zero-fill exposure loudly — a run with N uncached
+            # items trains those items with ZERO image_embeds (I2V conditioning
+            # effectively off for them), which is otherwise silent.
+            self.logger.warning(
+                "hv15_siglip_precache_incomplete",
+                failed=failed,
+                encoded=encoded,
+                skipped=skipped,
+                hint="items without a cached Siglip embedding train with ZERO "
+                     "image_embeds (image stream inactive for those items)",
+            )
         self.logger.info(
             "hv15_siglip_precache_done",
             encoded=encoded,

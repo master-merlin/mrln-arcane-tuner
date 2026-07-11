@@ -1,0 +1,31 @@
+fix(hardening/w3-3): silent-failure policy sweep across degradation sites
+
+Extends the A0 "fail loud or warn visibly, never silent" policy to the
+remaining known silent-degradation sites in the owned families + shared
+saver layer.
+
+- hv15 trainer: guard the Siglip per-item encode (was unguarded → a bad
+  item crashed the run); count failures and emit a visible
+  hv15_siglip_precache_incomplete WARNING so zero-filled items are
+  diagnosable. Fallback (zero-fill) unchanged.
+- ltx2 trainer: same treatment for the audio-latent encode
+  (ltx2_audio_precache_incomplete + failed count); behavior unchanged.
+- ltx2 audio-latent cache: add a config-version segment to the cache path
+  (audio/<version>/) fingerprinting mel params + audio-VAE identity, so a
+  param change forces a re-encode instead of serving stale latents.
+  INVALIDATES existing audio caches once merged (one-time re-encode).
+- ltx2 sampler: occurrence-count the audio-decode degradation-to-silent-clip
+  and add a clarifying hint; behavior unchanged.
+- qwen_image edit trainer: the VL-processor -> text-only fallback now warns
+  ONCE per run with the reason at the fallback site (covers all None paths,
+  including the previously-silent empty-repo path).
+- GenericLoRASaver: re-raise on write failure (was swallowed) so the
+  CheckpointManager's periodic/final policy governs it — matches the A0 SDXL
+  precedent; fixes every ai-toolkit-format family (hv15, qwen_image, ...).
+- ltx2 driver: fix the stale t/1000 forward docstring (transformer sees RAW
+  [0,1000]; only add_noise divides).
+
+TDD red-first; hv15 + ltx2 + qwen_image(edit) + saver + hook-wiring-meta
+suites green (424 passed in the owned set).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

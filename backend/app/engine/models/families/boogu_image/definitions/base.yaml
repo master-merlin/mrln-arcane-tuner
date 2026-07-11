@@ -1,0 +1,575 @@
+id: boogu-image-base
+family: boogu_image
+name: Boogu-Image 0.1 Base
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-5
+  is_distilled: false
+  # Native sample defaults (Lumina-style (scale-1) guidance -- 1.0 means OFF; README sweet spot 2.0-5.0). See task-2-brief.md.
+  guidance_scale: 4.0
+  num_inference_steps: 50
+components:
+  repo:
+    path: huggingface:Boogu/Boogu-Image-0.1-Base
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # -- Transformer (BooguImageTransformer2DModel; real checkpoint geometry --
+  #    verified facts, task-2-brief.md. Constructor kwarg names below match
+  #    the vendored class's __init__ signature exactly.) --
+  transformer._class_name: BooguImageTransformer2DModel
+  transformer.patch_size: 2
+  transformer.in_channels: 16
+  transformer.out_channels: 16
+  transformer.hidden_size: 3360
+  transformer.num_layers: 40
+  transformer.num_double_stream_layers: 8
+  # Derived (num_layers - num_double_stream_layers), not a real constructor
+  # kwarg -- kept for documentation / activation-estimate hints only.
+  transformer.num_single_stream_layers: 32
+  # Verified fact (task-2-brief.md): 3 refiner CONTAINERS -- noise/
+  # ref_image/context. Per-refiner DEPTH (2) is not separately stated in the
+  # brief or the upstream code drop (no checkpoint config.json ships), so we
+  # use the vendored class's own __init__ default (num_refiner_layers=2),
+  # corroborated by two other brief-given values (axes_dim_rope, axes_lens)
+  # that also match this class's defaults exactly (task-2-report.md).
+  # Authoritative source remains the real checkpoint's config.json at
+  # from_pretrained load time -- cross-check there if it ever ships.
+  transformer.num_refiner_layers: 2
+  transformer.num_attention_heads: 28
+  transformer.num_kv_heads: 7
+  # attention_head_dim = hidden_size / num_attention_heads = 3360 / 28 = 120.
+  # GQA: to_k/to_v out width = num_kv_heads * head_dim = 7 * 120 = 840;
+  # to_q/to_out width = num_attention_heads * head_dim = 28 * 120 = 3360.
+  transformer.attention_head_dim: 120
+  transformer.axes_dim_rope: [40, 40, 40]
+  transformer.axes_lens: [2048, 1664, 1664]
+  # Applied INSIDE the transformer (Lumina2CombinedTimestepCaptionEmbedding) --
+  # callers pass raw [0, 1) sigmas; the transformer multiplies by 1000 internally.
+  transformer.timestep_scale: 1000
+  # Vendored class defaults (unconfirmed against the real checkpoint's
+  # config.json -- no such file ships in the upstream code drop).
+  transformer.multiple_of: 256
+  transformer.norm_eps: 1.0e-05
+  transformer.prompt_tuning_configs.use_prompt_tuning: false
+  # Generic activation-estimate hints (widest/deepest path).
+  hidden_size: 3360
+  depth: 40
+  in_channels: 16
+  # -- Text conditioning: Qwen3-VL mllm (~8.77B, 36 layers, hidden 4096) --
+  te.type: qwen3_vl
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.processor_class: Qwen3VLProcessor
+  te.hidden_size: 4096
+  te.num_hidden_layers: 36
+  # Attention-mask based conditioning (no fixed crop); VLM last_hidden_state tap.
+  te.max_sequence_length: 256
+  # -- Scheduler (vendored, NOT the stock diffusers FlowMatchEulerDiscreteScheduler
+  #    -- see families/boogu_image/vendor/schedulers/
+  #    scheduling_flow_match_euler_discrete_time_shifting.py) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.do_shift: true
+  scheduler.dynamic_time_shift: false
+  scheduler.time_shift_version: v1
+  scheduler.seq_len: 4096
+  # -> static mu = 1.15 (pinned by test_boogu_image_vendor.py::TestSchedulerMath).
+  # -- VAE (FLUX.1-dev AutoencoderKL, 16ch, 4-D latents) --
+  vae._class_name: AutoencoderKL
+  vae.latent_channels: 16
+  vae.vae_scale_factor: 8
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+# Verified on-disk sizes (2026-07, final-review Finding 1 fix): the
+# task-2/3-brief.md "10.3 / 8.8 / 0.08" figures were a transcription error --
+# those are PARAM COUNTS IN BILLIONS (10.29B / 8.77B / ~84M; see
+# _FAMILY_PARAMS["boogu_image"] in vram_estimator.py), not MB on disk.
+# Measured via HfApi(files_metadata=True) shard-size totals on
+# Boogu/Boogu-Image-0.1-Base (metadata only, no download; identical on
+# -Turbo): transformer 20,585,331,562 bytes bf16 (2 bytes/param),
+# mllm 17,545,915,828 bytes bf16, vae 335,307,052 bytes fp32 (4 bytes/param
+# -- the FLUX-style AutoencoderKL ships fp32 on disk despite the bf16
+# detected_precision used at load time).
+model_size_mb:
+  transformer: 19632
+  text_encoder: 16733
+  vae: 320
+block_topology:
+- name: double_stream_layers
+  attr_path: double_stream_layers
+  count: 8
+  approx_vram_mb: 700
+- name: single_stream_layers
+  attr_path: single_stream_layers
+  count: 32
+  approx_vram_mb: 350
+- name: noise_refiner
+  attr_path: noise_refiner
+  count: 2
+  approx_vram_mb: 350
+- name: ref_image_refiner
+  attr_path: ref_image_refiner
+  count: 2
+  approx_vram_mb: 350
+- name: context_refiner
+  attr_path: context_refiner
+  count: 2
+  approx_vram_mb: 350
+# Curated LoRA target surface (418 modules = 836 lora_A/B keys -- pinned by
+# app/engine/tests/test_boogu_image_definitions.py). Attention + feed-forward
+# Linears ONLY (house convention -- matches krea2/ovis/dreamlite curated
+# lists), excluding AdaLN modulation (norm*.linear), embedders, and the
+# final output-norm projection.
+#
+# TWO naming schemes (verified upstream fact, transformer_boogu.py):
+#  - single_stream_layers / noise_refiner / ref_image_refiner / context_refiner
+#    (all BooguImageTransformerBlock subclasses): stock
+#    attn.{to_q,to_k,to_v,to_out.0} + feed_forward.{linear_1,linear_2,linear_3}.
+#  - double_stream_layers (BooguImageDoubleStreamTransformerBlock): DELETES its
+#    module-level attn.{to_q,to_k,to_v} and owns them in the PROCESSOR --
+#    img_instruct_attn.processor.{img_to_q,img_to_k,img_to_v,instruct_to_q,
+#    instruct_to_k,instruct_to_v,img_out,instruct_out} (plain nn.Linear) --
+#    PLUS the retained stock img_instruct_attn.to_out.0 (final joint-attention
+#    output projection, fed by processor.img_out/instruct_out) and the
+#    untouched stock img_self_attn.to_{q,k,v,out.0}, img_feed_forward.*,
+#    instruct_feed_forward.*. A list missing the processor-owned names
+#    silently leaves the joint-attention path un-adapted.
+#
+# GQA: num_kv_heads=7, attention_head_dim=120 -> to_k/to_v out width = 840;
+# num_attention_heads=28 -> to_q/to_out width = 3360.
+#
+# Block counts: 8 double-stream + 32 single-stream + 2 each of noise_refiner/
+# ref_image_refiner/context_refiner. The 3 refiner CONTAINERS are a verified
+# fact (task-2-brief.md); the per-refiner depth (2) is the vendored class's
+# own __init__ default, used absent a checkpoint config.json -- see
+# task-2-report.md for corroborating evidence.
+#
+# MUST stay non-empty: registry.enrich_definition only auto-fills an EMPTY
+# list, and the introspector's exhaustive catalog would otherwise replace
+# this curated surface (dreamlite 2026-07-08 GPU-UAT crash precedent).
+lora_targetable_modules:
+- context_refiner.0.attn.to_k
+- context_refiner.0.attn.to_out.0
+- context_refiner.0.attn.to_q
+- context_refiner.0.attn.to_v
+- context_refiner.0.feed_forward.linear_1
+- context_refiner.0.feed_forward.linear_2
+- context_refiner.0.feed_forward.linear_3
+- context_refiner.1.attn.to_k
+- context_refiner.1.attn.to_out.0
+- context_refiner.1.attn.to_q
+- context_refiner.1.attn.to_v
+- context_refiner.1.feed_forward.linear_1
+- context_refiner.1.feed_forward.linear_2
+- context_refiner.1.feed_forward.linear_3
+- double_stream_layers.0.img_feed_forward.linear_1
+- double_stream_layers.0.img_feed_forward.linear_2
+- double_stream_layers.0.img_feed_forward.linear_3
+- double_stream_layers.0.img_instruct_attn.processor.img_out
+- double_stream_layers.0.img_instruct_attn.processor.img_to_k
+- double_stream_layers.0.img_instruct_attn.processor.img_to_q
+- double_stream_layers.0.img_instruct_attn.processor.img_to_v
+- double_stream_layers.0.img_instruct_attn.processor.instruct_out
+- double_stream_layers.0.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.0.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.0.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.0.img_instruct_attn.to_out.0
+- double_stream_layers.0.img_self_attn.to_k
+- double_stream_layers.0.img_self_attn.to_out.0
+- double_stream_layers.0.img_self_attn.to_q
+- double_stream_layers.0.img_self_attn.to_v
+- double_stream_layers.0.instruct_feed_forward.linear_1
+- double_stream_layers.0.instruct_feed_forward.linear_2
+- double_stream_layers.0.instruct_feed_forward.linear_3
+- double_stream_layers.1.img_feed_forward.linear_1
+- double_stream_layers.1.img_feed_forward.linear_2
+- double_stream_layers.1.img_feed_forward.linear_3
+- double_stream_layers.1.img_instruct_attn.processor.img_out
+- double_stream_layers.1.img_instruct_attn.processor.img_to_k
+- double_stream_layers.1.img_instruct_attn.processor.img_to_q
+- double_stream_layers.1.img_instruct_attn.processor.img_to_v
+- double_stream_layers.1.img_instruct_attn.processor.instruct_out
+- double_stream_layers.1.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.1.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.1.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.1.img_instruct_attn.to_out.0
+- double_stream_layers.1.img_self_attn.to_k
+- double_stream_layers.1.img_self_attn.to_out.0
+- double_stream_layers.1.img_self_attn.to_q
+- double_stream_layers.1.img_self_attn.to_v
+- double_stream_layers.1.instruct_feed_forward.linear_1
+- double_stream_layers.1.instruct_feed_forward.linear_2
+- double_stream_layers.1.instruct_feed_forward.linear_3
+- double_stream_layers.2.img_feed_forward.linear_1
+- double_stream_layers.2.img_feed_forward.linear_2
+- double_stream_layers.2.img_feed_forward.linear_3
+- double_stream_layers.2.img_instruct_attn.processor.img_out
+- double_stream_layers.2.img_instruct_attn.processor.img_to_k
+- double_stream_layers.2.img_instruct_attn.processor.img_to_q
+- double_stream_layers.2.img_instruct_attn.processor.img_to_v
+- double_stream_layers.2.img_instruct_attn.processor.instruct_out
+- double_stream_layers.2.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.2.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.2.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.2.img_instruct_attn.to_out.0
+- double_stream_layers.2.img_self_attn.to_k
+- double_stream_layers.2.img_self_attn.to_out.0
+- double_stream_layers.2.img_self_attn.to_q
+- double_stream_layers.2.img_self_attn.to_v
+- double_stream_layers.2.instruct_feed_forward.linear_1
+- double_stream_layers.2.instruct_feed_forward.linear_2
+- double_stream_layers.2.instruct_feed_forward.linear_3
+- double_stream_layers.3.img_feed_forward.linear_1
+- double_stream_layers.3.img_feed_forward.linear_2
+- double_stream_layers.3.img_feed_forward.linear_3
+- double_stream_layers.3.img_instruct_attn.processor.img_out
+- double_stream_layers.3.img_instruct_attn.processor.img_to_k
+- double_stream_layers.3.img_instruct_attn.processor.img_to_q
+- double_stream_layers.3.img_instruct_attn.processor.img_to_v
+- double_stream_layers.3.img_instruct_attn.processor.instruct_out
+- double_stream_layers.3.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.3.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.3.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.3.img_instruct_attn.to_out.0
+- double_stream_layers.3.img_self_attn.to_k
+- double_stream_layers.3.img_self_attn.to_out.0
+- double_stream_layers.3.img_self_attn.to_q
+- double_stream_layers.3.img_self_attn.to_v
+- double_stream_layers.3.instruct_feed_forward.linear_1
+- double_stream_layers.3.instruct_feed_forward.linear_2
+- double_stream_layers.3.instruct_feed_forward.linear_3
+- double_stream_layers.4.img_feed_forward.linear_1
+- double_stream_layers.4.img_feed_forward.linear_2
+- double_stream_layers.4.img_feed_forward.linear_3
+- double_stream_layers.4.img_instruct_attn.processor.img_out
+- double_stream_layers.4.img_instruct_attn.processor.img_to_k
+- double_stream_layers.4.img_instruct_attn.processor.img_to_q
+- double_stream_layers.4.img_instruct_attn.processor.img_to_v
+- double_stream_layers.4.img_instruct_attn.processor.instruct_out
+- double_stream_layers.4.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.4.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.4.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.4.img_instruct_attn.to_out.0
+- double_stream_layers.4.img_self_attn.to_k
+- double_stream_layers.4.img_self_attn.to_out.0
+- double_stream_layers.4.img_self_attn.to_q
+- double_stream_layers.4.img_self_attn.to_v
+- double_stream_layers.4.instruct_feed_forward.linear_1
+- double_stream_layers.4.instruct_feed_forward.linear_2
+- double_stream_layers.4.instruct_feed_forward.linear_3
+- double_stream_layers.5.img_feed_forward.linear_1
+- double_stream_layers.5.img_feed_forward.linear_2
+- double_stream_layers.5.img_feed_forward.linear_3
+- double_stream_layers.5.img_instruct_attn.processor.img_out
+- double_stream_layers.5.img_instruct_attn.processor.img_to_k
+- double_stream_layers.5.img_instruct_attn.processor.img_to_q
+- double_stream_layers.5.img_instruct_attn.processor.img_to_v
+- double_stream_layers.5.img_instruct_attn.processor.instruct_out
+- double_stream_layers.5.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.5.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.5.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.5.img_instruct_attn.to_out.0
+- double_stream_layers.5.img_self_attn.to_k
+- double_stream_layers.5.img_self_attn.to_out.0
+- double_stream_layers.5.img_self_attn.to_q
+- double_stream_layers.5.img_self_attn.to_v
+- double_stream_layers.5.instruct_feed_forward.linear_1
+- double_stream_layers.5.instruct_feed_forward.linear_2
+- double_stream_layers.5.instruct_feed_forward.linear_3
+- double_stream_layers.6.img_feed_forward.linear_1
+- double_stream_layers.6.img_feed_forward.linear_2
+- double_stream_layers.6.img_feed_forward.linear_3
+- double_stream_layers.6.img_instruct_attn.processor.img_out
+- double_stream_layers.6.img_instruct_attn.processor.img_to_k
+- double_stream_layers.6.img_instruct_attn.processor.img_to_q
+- double_stream_layers.6.img_instruct_attn.processor.img_to_v
+- double_stream_layers.6.img_instruct_attn.processor.instruct_out
+- double_stream_layers.6.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.6.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.6.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.6.img_instruct_attn.to_out.0
+- double_stream_layers.6.img_self_attn.to_k
+- double_stream_layers.6.img_self_attn.to_out.0
+- double_stream_layers.6.img_self_attn.to_q
+- double_stream_layers.6.img_self_attn.to_v
+- double_stream_layers.6.instruct_feed_forward.linear_1
+- double_stream_layers.6.instruct_feed_forward.linear_2
+- double_stream_layers.6.instruct_feed_forward.linear_3
+- double_stream_layers.7.img_feed_forward.linear_1
+- double_stream_layers.7.img_feed_forward.linear_2
+- double_stream_layers.7.img_feed_forward.linear_3
+- double_stream_layers.7.img_instruct_attn.processor.img_out
+- double_stream_layers.7.img_instruct_attn.processor.img_to_k
+- double_stream_layers.7.img_instruct_attn.processor.img_to_q
+- double_stream_layers.7.img_instruct_attn.processor.img_to_v
+- double_stream_layers.7.img_instruct_attn.processor.instruct_out
+- double_stream_layers.7.img_instruct_attn.processor.instruct_to_k
+- double_stream_layers.7.img_instruct_attn.processor.instruct_to_q
+- double_stream_layers.7.img_instruct_attn.processor.instruct_to_v
+- double_stream_layers.7.img_instruct_attn.to_out.0
+- double_stream_layers.7.img_self_attn.to_k
+- double_stream_layers.7.img_self_attn.to_out.0
+- double_stream_layers.7.img_self_attn.to_q
+- double_stream_layers.7.img_self_attn.to_v
+- double_stream_layers.7.instruct_feed_forward.linear_1
+- double_stream_layers.7.instruct_feed_forward.linear_2
+- double_stream_layers.7.instruct_feed_forward.linear_3
+- noise_refiner.0.attn.to_k
+- noise_refiner.0.attn.to_out.0
+- noise_refiner.0.attn.to_q
+- noise_refiner.0.attn.to_v
+- noise_refiner.0.feed_forward.linear_1
+- noise_refiner.0.feed_forward.linear_2
+- noise_refiner.0.feed_forward.linear_3
+- noise_refiner.1.attn.to_k
+- noise_refiner.1.attn.to_out.0
+- noise_refiner.1.attn.to_q
+- noise_refiner.1.attn.to_v
+- noise_refiner.1.feed_forward.linear_1
+- noise_refiner.1.feed_forward.linear_2
+- noise_refiner.1.feed_forward.linear_3
+- ref_image_refiner.0.attn.to_k
+- ref_image_refiner.0.attn.to_out.0
+- ref_image_refiner.0.attn.to_q
+- ref_image_refiner.0.attn.to_v
+- ref_image_refiner.0.feed_forward.linear_1
+- ref_image_refiner.0.feed_forward.linear_2
+- ref_image_refiner.0.feed_forward.linear_3
+- ref_image_refiner.1.attn.to_k
+- ref_image_refiner.1.attn.to_out.0
+- ref_image_refiner.1.attn.to_q
+- ref_image_refiner.1.attn.to_v
+- ref_image_refiner.1.feed_forward.linear_1
+- ref_image_refiner.1.feed_forward.linear_2
+- ref_image_refiner.1.feed_forward.linear_3
+- single_stream_layers.0.attn.to_k
+- single_stream_layers.0.attn.to_out.0
+- single_stream_layers.0.attn.to_q
+- single_stream_layers.0.attn.to_v
+- single_stream_layers.0.feed_forward.linear_1
+- single_stream_layers.0.feed_forward.linear_2
+- single_stream_layers.0.feed_forward.linear_3
+- single_stream_layers.1.attn.to_k
+- single_stream_layers.1.attn.to_out.0
+- single_stream_layers.1.attn.to_q
+- single_stream_layers.1.attn.to_v
+- single_stream_layers.1.feed_forward.linear_1
+- single_stream_layers.1.feed_forward.linear_2
+- single_stream_layers.1.feed_forward.linear_3
+- single_stream_layers.10.attn.to_k
+- single_stream_layers.10.attn.to_out.0
+- single_stream_layers.10.attn.to_q
+- single_stream_layers.10.attn.to_v
+- single_stream_layers.10.feed_forward.linear_1
+- single_stream_layers.10.feed_forward.linear_2
+- single_stream_layers.10.feed_forward.linear_3
+- single_stream_layers.11.attn.to_k
+- single_stream_layers.11.attn.to_out.0
+- single_stream_layers.11.attn.to_q
+- single_stream_layers.11.attn.to_v
+- single_stream_layers.11.feed_forward.linear_1
+- single_stream_layers.11.feed_forward.linear_2
+- single_stream_layers.11.feed_forward.linear_3
+- single_stream_layers.12.attn.to_k
+- single_stream_layers.12.attn.to_out.0
+- single_stream_layers.12.attn.to_q
+- single_stream_layers.12.attn.to_v
+- single_stream_layers.12.feed_forward.linear_1
+- single_stream_layers.12.feed_forward.linear_2
+- single_stream_layers.12.feed_forward.linear_3
+- single_stream_layers.13.attn.to_k
+- single_stream_layers.13.attn.to_out.0
+- single_stream_layers.13.attn.to_q
+- single_stream_layers.13.attn.to_v
+- single_stream_layers.13.feed_forward.linear_1
+- single_stream_layers.13.feed_forward.linear_2
+- single_stream_layers.13.feed_forward.linear_3
+- single_stream_layers.14.attn.to_k
+- single_stream_layers.14.attn.to_out.0
+- single_stream_layers.14.attn.to_q
+- single_stream_layers.14.attn.to_v
+- single_stream_layers.14.feed_forward.linear_1
+- single_stream_layers.14.feed_forward.linear_2
+- single_stream_layers.14.feed_forward.linear_3
+- single_stream_layers.15.attn.to_k
+- single_stream_layers.15.attn.to_out.0
+- single_stream_layers.15.attn.to_q
+- single_stream_layers.15.attn.to_v
+- single_stream_layers.15.feed_forward.linear_1
+- single_stream_layers.15.feed_forward.linear_2
+- single_stream_layers.15.feed_forward.linear_3
+- single_stream_layers.16.attn.to_k
+- single_stream_layers.16.attn.to_out.0
+- single_stream_layers.16.attn.to_q
+- single_stream_layers.16.attn.to_v
+- single_stream_layers.16.feed_forward.linear_1
+- single_stream_layers.16.feed_forward.linear_2
+- single_stream_layers.16.feed_forward.linear_3
+- single_stream_layers.17.attn.to_k
+- single_stream_layers.17.attn.to_out.0
+- single_stream_layers.17.attn.to_q
+- single_stream_layers.17.attn.to_v
+- single_stream_layers.17.feed_forward.linear_1
+- single_stream_layers.17.feed_forward.linear_2
+- single_stream_layers.17.feed_forward.linear_3
+- single_stream_layers.18.attn.to_k
+- single_stream_layers.18.attn.to_out.0
+- single_stream_layers.18.attn.to_q
+- single_stream_layers.18.attn.to_v
+- single_stream_layers.18.feed_forward.linear_1
+- single_stream_layers.18.feed_forward.linear_2
+- single_stream_layers.18.feed_forward.linear_3
+- single_stream_layers.19.attn.to_k
+- single_stream_layers.19.attn.to_out.0
+- single_stream_layers.19.attn.to_q
+- single_stream_layers.19.attn.to_v
+- single_stream_layers.19.feed_forward.linear_1
+- single_stream_layers.19.feed_forward.linear_2
+- single_stream_layers.19.feed_forward.linear_3
+- single_stream_layers.2.attn.to_k
+- single_stream_layers.2.attn.to_out.0
+- single_stream_layers.2.attn.to_q
+- single_stream_layers.2.attn.to_v
+- single_stream_layers.2.feed_forward.linear_1
+- single_stream_layers.2.feed_forward.linear_2
+- single_stream_layers.2.feed_forward.linear_3
+- single_stream_layers.20.attn.to_k
+- single_stream_layers.20.attn.to_out.0
+- single_stream_layers.20.attn.to_q
+- single_stream_layers.20.attn.to_v
+- single_stream_layers.20.feed_forward.linear_1
+- single_stream_layers.20.feed_forward.linear_2
+- single_stream_layers.20.feed_forward.linear_3
+- single_stream_layers.21.attn.to_k
+- single_stream_layers.21.attn.to_out.0
+- single_stream_layers.21.attn.to_q
+- single_stream_layers.21.attn.to_v
+- single_stream_layers.21.feed_forward.linear_1
+- single_stream_layers.21.feed_forward.linear_2
+- single_stream_layers.21.feed_forward.linear_3
+- single_stream_layers.22.attn.to_k
+- single_stream_layers.22.attn.to_out.0
+- single_stream_layers.22.attn.to_q
+- single_stream_layers.22.attn.to_v
+- single_stream_layers.22.feed_forward.linear_1
+- single_stream_layers.22.feed_forward.linear_2
+- single_stream_layers.22.feed_forward.linear_3
+- single_stream_layers.23.attn.to_k
+- single_stream_layers.23.attn.to_out.0
+- single_stream_layers.23.attn.to_q
+- single_stream_layers.23.attn.to_v
+- single_stream_layers.23.feed_forward.linear_1
+- single_stream_layers.23.feed_forward.linear_2
+- single_stream_layers.23.feed_forward.linear_3
+- single_stream_layers.24.attn.to_k
+- single_stream_layers.24.attn.to_out.0
+- single_stream_layers.24.attn.to_q
+- single_stream_layers.24.attn.to_v
+- single_stream_layers.24.feed_forward.linear_1
+- single_stream_layers.24.feed_forward.linear_2
+- single_stream_layers.24.feed_forward.linear_3
+- single_stream_layers.25.attn.to_k
+- single_stream_layers.25.attn.to_out.0
+- single_stream_layers.25.attn.to_q
+- single_stream_layers.25.attn.to_v
+- single_stream_layers.25.feed_forward.linear_1
+- single_stream_layers.25.feed_forward.linear_2
+- single_stream_layers.25.feed_forward.linear_3
+- single_stream_layers.26.attn.to_k
+- single_stream_layers.26.attn.to_out.0
+- single_stream_layers.26.attn.to_q
+- single_stream_layers.26.attn.to_v
+- single_stream_layers.26.feed_forward.linear_1
+- single_stream_layers.26.feed_forward.linear_2
+- single_stream_layers.26.feed_forward.linear_3
+- single_stream_layers.27.attn.to_k
+- single_stream_layers.27.attn.to_out.0
+- single_stream_layers.27.attn.to_q
+- single_stream_layers.27.attn.to_v
+- single_stream_layers.27.feed_forward.linear_1
+- single_stream_layers.27.feed_forward.linear_2
+- single_stream_layers.27.feed_forward.linear_3
+- single_stream_layers.28.attn.to_k
+- single_stream_layers.28.attn.to_out.0
+- single_stream_layers.28.attn.to_q
+- single_stream_layers.28.attn.to_v
+- single_stream_layers.28.feed_forward.linear_1
+- single_stream_layers.28.feed_forward.linear_2
+- single_stream_layers.28.feed_forward.linear_3
+- single_stream_layers.29.attn.to_k
+- single_stream_layers.29.attn.to_out.0
+- single_stream_layers.29.attn.to_q
+- single_stream_layers.29.attn.to_v
+- single_stream_layers.29.feed_forward.linear_1
+- single_stream_layers.29.feed_forward.linear_2
+- single_stream_layers.29.feed_forward.linear_3
+- single_stream_layers.3.attn.to_k
+- single_stream_layers.3.attn.to_out.0
+- single_stream_layers.3.attn.to_q
+- single_stream_layers.3.attn.to_v
+- single_stream_layers.3.feed_forward.linear_1
+- single_stream_layers.3.feed_forward.linear_2
+- single_stream_layers.3.feed_forward.linear_3
+- single_stream_layers.30.attn.to_k
+- single_stream_layers.30.attn.to_out.0
+- single_stream_layers.30.attn.to_q
+- single_stream_layers.30.attn.to_v
+- single_stream_layers.30.feed_forward.linear_1
+- single_stream_layers.30.feed_forward.linear_2
+- single_stream_layers.30.feed_forward.linear_3
+- single_stream_layers.31.attn.to_k
+- single_stream_layers.31.attn.to_out.0
+- single_stream_layers.31.attn.to_q
+- single_stream_layers.31.attn.to_v
+- single_stream_layers.31.feed_forward.linear_1
+- single_stream_layers.31.feed_forward.linear_2
+- single_stream_layers.31.feed_forward.linear_3
+- single_stream_layers.4.attn.to_k
+- single_stream_layers.4.attn.to_out.0
+- single_stream_layers.4.attn.to_q
+- single_stream_layers.4.attn.to_v
+- single_stream_layers.4.feed_forward.linear_1
+- single_stream_layers.4.feed_forward.linear_2
+- single_stream_layers.4.feed_forward.linear_3
+- single_stream_layers.5.attn.to_k
+- single_stream_layers.5.attn.to_out.0
+- single_stream_layers.5.attn.to_q
+- single_stream_layers.5.attn.to_v
+- single_stream_layers.5.feed_forward.linear_1
+- single_stream_layers.5.feed_forward.linear_2
+- single_stream_layers.5.feed_forward.linear_3
+- single_stream_layers.6.attn.to_k
+- single_stream_layers.6.attn.to_out.0
+- single_stream_layers.6.attn.to_q
+- single_stream_layers.6.attn.to_v
+- single_stream_layers.6.feed_forward.linear_1
+- single_stream_layers.6.feed_forward.linear_2
+- single_stream_layers.6.feed_forward.linear_3
+- single_stream_layers.7.attn.to_k
+- single_stream_layers.7.attn.to_out.0
+- single_stream_layers.7.attn.to_q
+- single_stream_layers.7.attn.to_v
+- single_stream_layers.7.feed_forward.linear_1
+- single_stream_layers.7.feed_forward.linear_2
+- single_stream_layers.7.feed_forward.linear_3
+- single_stream_layers.8.attn.to_k
+- single_stream_layers.8.attn.to_out.0
+- single_stream_layers.8.attn.to_q
+- single_stream_layers.8.attn.to_v
+- single_stream_layers.8.feed_forward.linear_1
+- single_stream_layers.8.feed_forward.linear_2
+- single_stream_layers.8.feed_forward.linear_3
+- single_stream_layers.9.attn.to_k
+- single_stream_layers.9.attn.to_out.0
+- single_stream_layers.9.attn.to_q
+- single_stream_layers.9.attn.to_v
+- single_stream_layers.9.feed_forward.linear_1
+- single_stream_layers.9.feed_forward.linear_2
+- single_stream_layers.9.feed_forward.linear_3

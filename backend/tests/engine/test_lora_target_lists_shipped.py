@@ -13,8 +13,9 @@ pinned key counts and portability expectations at GPU UAT.
 
 The fix (per family) is to ship the curated list in the YAML; the per-family
 portability/definition suites pin the exact contents. THIS test only guards
-the shared invariant — non-empty for every definition of the seven new
-families — so a future definition can't reintroduce the exposure.
+the shared invariant — non-empty for every definition of the (now eight, per
+boogu_image Task 2) new families — so a future definition can't reintroduce
+the exposure.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ NEW_FAMILIES = (
     "dreamlite",
     "hunyuan_video15",
     "kandinsky5",
+    "boogu_image",
 )
 
 

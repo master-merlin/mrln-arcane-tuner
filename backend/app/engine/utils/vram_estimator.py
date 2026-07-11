@@ -201,6 +201,25 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 5.7,  # UMT5-XXL encoder
         "vae": 0.13,  # AutoencoderKLWan (127M params)
     },
+    "boogu_image": {
+        # CORRECTED 2026-07 (final-review Finding 1): task-2/3-brief.md's
+        # "transformer 10.3 GB, mllm 8.8 GB, vae 0.08 GB" was a transcription
+        # error — those are PARAM COUNTS IN BILLIONS (10.29B / 8.77B / ~84M),
+        # not on-disk GB, as the brief's own prose confirms elsewhere
+        # ("~10.29B... hidden 3360" transformer; "~8.77B, 36 layers" mllm).
+        # Verified directly via HfApi(files_metadata=True) shard-size totals
+        # on Boogu/Boogu-Image-0.1-Base (identical on -Turbo): transformer
+        # 20,585,331,562 bytes / 2 bytes-per-param (bf16) = 10.29B; mllm
+        # 17,545,915,828 bytes / 2 (bf16) = 8.77B; vae 335,307,052 bytes / 4
+        # bytes-per-param (fp32 on disk) = 0.084B (~84M). Both definitions'
+        # model_size_mb now ship the true on-disk MB (19632/16733/320), which
+        # the estimator prefers via _get_component_disk_mb; this entry is the
+        # true FALLBACK, in billions of params — same convention as
+        # ideogram4's identical Qwen3-VL-8B "text_encoder": 8.8 entry.
+        "transformer": 10.3,  # BooguImageTransformer2DModel, ~10.29B
+        "text_encoder": 8.8,  # Qwen3-VL-8B mllm, ~8.77B (== ideogram4's TE)
+        "vae": 0.08,  # FLUX-style AutoencoderKL, ~84M params (fp32 on disk)
+    },
 }
 
 # Bytes-per-param for common dtypes

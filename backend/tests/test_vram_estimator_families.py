@@ -234,3 +234,34 @@ def test_hunyuan_video15_dual_te_sums_and_vae_is_measured():
     assert _get_te_params("hunyuan_video15") == pytest.approx(7.32)
     assert _get_vae_params("hunyuan_video15") == pytest.approx(1.26)
     assert _get_primary_params("hunyuan_video15", {}) == pytest.approx(8.3)
+
+
+def test_boogu_image_fallback_matches_on_disk_sizes():
+    """boogu_image ships real model_size_mb in both definitions (transformer
+    19632 MB, text_encoder/mllm 16733 MB, vae 320 MB — verified via
+    HfApi(files_metadata=True) shard-size totals on
+    Boogu/Boogu-Image-0.1-Base, metadata only, no download; identical on
+    -Turbo; final-review Finding 1 fix, corrects an earlier transcription
+    error where the brief's param-count-in-billions figures 10.3/8.8/0.08
+    were mistakenly used as MB) which the estimator prefers via
+    _get_component_disk_mb; its _FAMILY_PARAMS entry is a true FALLBACK, in
+    true param-count billions (10.3B / 8.8B / 0.08B) — same convention as
+    ideogram4's identical Qwen3-VL-8B "text_encoder": 8.8 entry."""
+    assert "boogu_image" in _FAMILY_PARAMS
+    entry = _FAMILY_PARAMS["boogu_image"]
+    assert any("text_encoder" in k for k in entry)
+    assert "vae" in entry
+
+    assert _get_primary_params("boogu_image", {}) == pytest.approx(10.3)
+    assert _get_te_params("boogu_image") == pytest.approx(8.8)
+    assert _get_vae_params("boogu_image") == pytest.approx(0.08)
+
+    for def_id in ("boogu-image-base", "boogu-image-turbo"):
+        defn = registry.get_definition(def_id)
+        assert defn is not None, f"definition {def_id} not found"
+        d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+        # model_size_mb["transformer"] = 19632 MB drives the primary estimate
+        # directly (disk-size path) -- the fallback table (2.0 B default =
+        # ~3.8 GB) must NOT be the source. bf16, no quantization scaling.
+        assert 18_000 < d["model_weights_mb"] < 21_000, (def_id, d["model_weights_mb"])
+        assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id

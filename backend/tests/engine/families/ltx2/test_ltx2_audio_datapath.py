@@ -17,6 +17,9 @@ Covered:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 import structlog
 import torch
 from safetensors.torch import load_file, save_file
@@ -247,8 +250,43 @@ class _RecLogger:
         pass
 
 
-def test_precache_survives_audio_encode_failure_and_counts_it(tmp_path, monkeypatch):
-    """A per-item audio encode failure must not kill the run — counted + visible."""
+def test_precache_partial_audio_failure_warns_and_continues(tmp_path, monkeypatch):
+    """A per-clip audio encode failure must not kill the run when OTHER clips
+    encode — counted, left uncached (audio_mask=0 downstream), and visible."""
+    _patch_decode(monkeypatch)
+    t = _trainer()
+    rec = _RecLogger()
+    t.logger = rec
+
+    calls = {"n": 0}
+
+    def _sometimes_boom(waveform, sample_rate):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("first clip audio encode blew up")
+        return torch.ones(1, L, 128)
+
+    t.driver.encode_audio_clean = _sometimes_boom
+    # clipBad encoded first (fails), clipGood second (succeeds) → partial failure.
+    t.inventory = [
+        _video_item(tmp_path, "clipBad"),
+        _video_item(tmp_path, "clipGood"),
+    ]
+
+    t._pre_cache_aux()  # must not raise — partial failure degrades gracefully
+
+    good = Path(t._audio_cache_dir(str(tmp_path / "clipGood"))) / "clipGood.safetensors"
+    bad = Path(t._audio_cache_dir(str(tmp_path / "clipBad"))) / "clipBad.safetensors"
+    assert good.exists() and not bad.exists()
+    done = [kw for ev, kw in rec.infos if ev == "ltx2_audio_precache_done"]
+    assert done and done[0]["failed"] == 1 and done[0]["encoded"] == 1
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "ltx2_audio_precache_incomplete" in warn_events
+
+
+def test_precache_raises_when_all_audio_clips_fail(tmp_path, monkeypatch):
+    """TOTAL audio encode failure must ESCALATE — audio-on training with zero
+    audio latents is a misconfigured run, not a silent degrade."""
     _patch_decode(monkeypatch)
     t = _trainer()
     rec = _RecLogger()
@@ -260,12 +298,11 @@ def test_precache_survives_audio_encode_failure_and_counts_it(tmp_path, monkeypa
     t.driver.encode_audio_clean = _boom
     t.inventory = [_video_item(tmp_path, "clipA")]
 
-    t._pre_cache_aux()  # must not raise
+    with pytest.raises(RuntimeError, match="ltx2_audio_precache_incomplete"):
+        t._pre_cache_aux()
 
     adir = t._audio_cache_dir(str(tmp_path / "clipA"))
-    assert not (__import__("pathlib").Path(adir) / "clipA.safetensors").exists()
-    done = [kw for ev, kw in rec.infos if ev == "ltx2_audio_precache_done"]
-    assert done and done[0]["failed"] == 1
+    assert not (Path(adir) / "clipA.safetensors").exists()
     warn_events = [ev for ev, _ in rec.warnings]
     assert "ltx2_audio_precache_incomplete" in warn_events
 

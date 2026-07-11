@@ -388,6 +388,18 @@ class Hv15Trainer(GenericTrainingPipeline):
             failed=failed,
         )
 
+        if failed and not encoded:
+            # TOTAL failure: every item that needed encoding failed and NONE
+            # succeeded. Proceeding would train a 100% zero-image_embeds run —
+            # the image stream is inactive for every item, i.e. a silently
+            # mislabeled T2V run. Escalate loudly instead of degrading silently.
+            raise RuntimeError(
+                f"hv15 Siglip precache produced ZERO image embeddings: all "
+                f"{failed} item(s) failed to encode "
+                f"(hv15_siglip_precache_incomplete). An I2V run with no "
+                f"image_embeds trains as T2V — refusing to proceed."
+            )
+
         # Offload the image encoder — unused during UNet training.
         image_encoder = self.driver.image_encoder
         if image_encoder is not None and hasattr(image_encoder, "to"):

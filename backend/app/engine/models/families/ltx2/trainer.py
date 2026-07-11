@@ -612,6 +612,19 @@ class Ltx2Trainer(GenericTrainingPipeline):
             failed=failed,
         )
 
+        if failed and not encoded:
+            # TOTAL failure: every clip whose audio we attempted to encode
+            # failed and NONE succeeded. Audio training is ON, yet the run would
+            # carry ZERO audio latents (every clip audio_mask=0 → audio LoRA
+            # gets no gradient) — a misconfigured run. Escalate loudly instead
+            # of silently training video-only under an audio-on label.
+            raise RuntimeError(
+                f"ltx2 audio precache produced ZERO audio latents: all "
+                f"{failed} clip(s) failed to encode "
+                f"(ltx2_audio_precache_incomplete). Audio-on training with no "
+                f"audio latents is misconfigured — refusing to proceed."
+            )
+
         # The audio VAE is unused after this point at train time — offload it so
         # it doesn't sit in VRAM during UNet training (the base _offload_vae only
         # handles the video VAE).

@@ -40,7 +40,9 @@ class TestFlux2Loader:
         assert "unet" in keys
 
         te_spec = next(s for s in manifest if s.key == "text_encoder")
-        assert "AutoModelForCausalLM" in te_spec.hf_class
+        # W2-B: pinned to the concrete Qwen3ForCausalLM (was AutoModelForCausalLM)
+        # so a silent upstream Auto-remap can't random-init the Klein TE.
+        assert te_spec.hf_class == "transformers.Qwen3ForCausalLM"
 
     def test_manifest_mistral3(self):
         from app.engine.models.families.flux2.loader import Flux2Loader
@@ -201,7 +203,8 @@ class TestZImageLoader:
         assert "unet" in keys
 
         te_spec = next(s for s in manifest if s.key == "text_encoder")
-        assert "AutoModelForCausalLM" in te_spec.hf_class
+        # W2-B: pinned to the concrete Qwen3ForCausalLM (was AutoModelForCausalLM).
+        assert te_spec.hf_class == "transformers.Qwen3ForCausalLM"
 
     def test_transformer_separate_repo(self):
         """unet/transformer spec supports a pinned separate repo (De-Turbo)."""

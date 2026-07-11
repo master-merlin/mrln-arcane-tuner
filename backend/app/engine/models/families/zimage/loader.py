@@ -2,7 +2,7 @@
 
 Uses diffusers ``from_pretrained`` for all components:
 - ``ZImageTransformer2DModel`` (S3-DiT, single-stream architecture)
-- Text encoder via ``AutoModelForCausalLM`` / ``AutoTokenizer``
+- Text encoder via ``Qwen3ForCausalLM`` / ``AutoTokenizer``
 - ``AutoencoderKL`` (standard diffusers VAE)
 """
 
@@ -26,9 +26,17 @@ class ZImageLoader(GenericComponentLoader):
                 is_torch_model=False,
             ),
             # -- Text Encoder --
+            # Pinned concrete class (was ``AutoModelForCausalLM``). The
+            # Z-Image / Z-Image-Turbo ``text_encoder/config.json`` declares
+            # ``architectures=["Qwen3ForCausalLM"]`` (verified from cache) —
+            # exactly what ``AutoModelForCausalLM`` resolves to today, so this
+            # is behaviour-preserving — but pinning prevents a silent upstream
+            # Auto-mapping change from swapping the architecture and
+            # random-initialising the TE (B1 loading-contract bug class; see
+            # tests/test_te_loading_contracts.py).
             ComponentSpec(
                 key="text_encoder",
-                hf_class="transformers.AutoModelForCausalLM",
+                hf_class="transformers.Qwen3ForCausalLM",
                 subfolder="text_encoder",
                 candidates=["text_encoder"],
             ),

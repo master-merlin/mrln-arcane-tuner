@@ -7,8 +7,13 @@ Components (matching ``ErnieImagePipeline.__init__``):
   ``"tokenizer_class": "TokenizersBackend"``, a Baidu-internal class
   name not registered in ``transformers``; the fast-tokenizer loader
   bypasses that class lookup and accepts any ``tokenizer.json``.
-- Text encoder: ``transformers.AutoModel`` (Mistral3-derived in the
-  official checkpoint; ``AutoModel`` lets the checkpoint config decide).
+- Text encoder: ``transformers.Mistral3Model`` (pinned concrete class).
+  The official ``text_encoder/config.json`` declares
+  ``architectures=["Mistral3Model"]`` (verified from cache) — exactly what
+  ``AutoModel`` resolved to before, so behaviour is unchanged — but pinning
+  stops a silent upstream Auto-mapping change from swapping the architecture
+  and random-initialising the TE (B1 loading-contract bug class; see
+  tests/test_te_loading_contracts.py).
 - VAE: ``diffusers.AutoencoderKLFlux2`` (reused from FLUX.2).
 - Transformer: ``diffusers.ErnieImageTransformer2DModel`` → mapped to
   ``unet`` key for compatibility with the generic pipeline.
@@ -38,7 +43,7 @@ class ErnieImageLoader(GenericComponentLoader):
             ),
             ComponentSpec(
                 key="text_encoder",
-                hf_class="transformers.AutoModel",
+                hf_class="transformers.Mistral3Model",
                 subfolder="text_encoder",
                 fallback_to_root=True,
             ),

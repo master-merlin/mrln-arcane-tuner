@@ -394,5 +394,4 @@ lora_targetable_modules:
 - model.x_embedder.proj1
 - model.x_embedder.proj2
 - model.final_layer2.linear
-- lm_head
 block_topology: []

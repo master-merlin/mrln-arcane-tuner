@@ -107,10 +107,6 @@
         "tip": "Target pixel resolutions for aspect-ratio bucketing. Placeholder: {resolutions}",
         "detail": "Images are grouped into aspect-ratio buckets based on these target resolutions. The bucketing system finds the optimal width×height combination where both dimensions are divisible by 32.\n\n**Common values:**\n- **512**: SDXL fine-tuning at lower res (faster, less VRAM)\n- **1024**: Native SDXL / Flux resolution\n- **1280–1536**: Higher quality, more VRAM\n\nMultiple resolutions can be selected for mixed-resolution training."
     },
-    "resolution_strategy": {
-        "tip": "How multiple resolutions are used during training. Placeholder: {resolution_strategy}",
-        "detail": "When multiple target resolutions are configured:\n\n- **Mixed**: All resolutions are available from the start. Each batch randomly draws from any resolution bucket.\n- **Progressive**: Start training at the smallest resolution, then gradually introduce larger resolutions. This can help the model learn coarse features first."
-    },
     "bucketing_mode": {
         "tip": "How images are assigned to resolution buckets. Placeholder: {bucketing_mode}",
         "detail": "Controls how each training image maps to resolution buckets:\n\n- **Kohya**: Each image appears in exactly one bucket — the closest matching aspect ratio. Standard approach, deterministic.\n- **Multi**: Each image appears in every bucket it qualifies for. Increases latent diversity and training data variety at the cost of more cached latents on disk."

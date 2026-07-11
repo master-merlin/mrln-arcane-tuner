@@ -28,7 +28,6 @@ const SCHEMA: SchemaNode = {
         model_family: { type: 'string', default: '' },
         max_train_steps: { type: 'integer', default: 1000 },
         learning_rate: { type: 'number', default: 0.0001 },
-        resolution_strategy: { type: 'string', default: 'single' },
         resolutions: { type: 'array', default: [1024], items: { type: 'integer' } },
         datasets: {
             type: 'array',
@@ -48,7 +47,6 @@ const CONFIG = {
     model_family: 'flux2',
     max_train_steps: 5000,
     learning_rate: 0.0002,
-    resolution_strategy: 'mixed',
     resolutions: [1024, 768, 512, 1440],
     datasets: [{ dataset_name: 'Porsche 935-78 Moby Dick - 1978', num_repeats: 3 }],
 };
@@ -91,7 +89,6 @@ describe('TrainingDynamicConfig — template load fidelity (patchFormRecursive)'
         expect(out.definition_id).toBe('flux2-klein-base-9b');
         expect(out.max_train_steps).toBe(5000);
         expect(out.learning_rate).toBe(0.0002);
-        expect(out.resolution_strategy).toBe('mixed');
         // The crux: the full resolutions list, not just the seeded [1024].
         expect(out.resolutions).toEqual([1024, 768, 512, 1440]);
         expect(out.datasets).toEqual([

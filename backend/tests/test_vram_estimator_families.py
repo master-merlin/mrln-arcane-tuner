@@ -265,3 +265,78 @@ def test_boogu_image_fallback_matches_on_disk_sizes():
         # ~3.8 GB) must NOT be the source. bf16, no quantization scaling.
         assert 18_000 < d["model_weights_mb"] < 21_000, (def_id, d["model_weights_mb"])
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
+
+
+# ── UAT: corrupt/stale calibration must not blow up the estimate ──────────
+#
+# LIVE BUG (2026-07): switching to ltx2 showed "587.1 GB — INSUFFICIENT". The
+# analytic estimate for ltx2 defaults is a sane ~56 GB, but the definition had
+# ORPHANED per-component calibration coefficients in ``definition_stats`` (its
+# job_history rows were gone, so ``recompute`` could never correct them). Those
+# multipliers were 10-23x — a physically impossible measured/analytic ratio —
+# and were applied unbounded, inflating caching_peak 26 GB -> 601 GB (587 GiB).
+#
+# Calibration is a modest correction toward measured reality; a multiplier well
+# outside a plausible band signals stale/orphaned/unit-corrupt data and MUST be
+# ignored (the component reverts to its uncalibrated analytic value).
+
+# The exact orphaned coefficients captured from the live DB for ltx2-3-base.
+_CORRUPT_LTX2_CALIBRATION = {
+    "model_weights_mb": 10.05478374836173,
+    "lora_adapters_mb": 21.263157894736842,
+    "optimizer_states_mb": 13.296943231441048,
+    "gradients_mb": 10.631578947368421,
+    "activations_mb": 0.25201871903101486,
+    "overhead_mb": 2.7138671875,
+    "caching_peak_mb": 22.946854663774403,
+}
+
+# The real payload the Training screen sends for ltx2 defaults.
+_LTX2_DEFAULT_CONFIG = {
+    "num_frames": 81,
+    "resolutions": [1024],
+    "train_batch_size": 1,
+    "batch_size": 1,
+    "network_rank": 16,
+    "lora_rank": 16,
+    "gradient_checkpointing": True,
+    "optimizer_type": "AdamW8bit",
+    "quantization": "none",
+    "te_quantization": "none",
+}
+
+
+def test_ltx2_uncalibrated_estimate_is_sane():
+    """Baseline: with NO calibration, ltx2 defaults estimate is far below the card."""
+    defn = registry.get_definition("ltx2-3-base")
+    assert defn is not None
+    d = VRAMEstimator.estimate(defn, _LTX2_DEFAULT_CONFIG).to_dict()
+    # ~56 GB analytic — comfortably under a 120 GB sanity ceiling.
+    assert d["peak_mb"] < 120_000, d["peak_mb"]
+    assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
+
+
+def test_corrupt_calibration_is_rejected_not_applied():
+    """Implausible (10-23x) calibration multipliers must NOT inflate the estimate.
+
+    Regression for the live 587 GB ltx2 estimate: unbounded application of the
+    orphaned coefficients produced peak_mb ~= 601000. With the sanity guard the
+    corrupt multipliers are ignored and the peak reverts to the sane analytic.
+    """
+    defn = registry.get_definition("ltx2-3-base")
+    assert defn is not None
+
+    analytic = VRAMEstimator.estimate(defn, _LTX2_DEFAULT_CONFIG).to_dict()
+    calibrated = VRAMEstimator.estimate(
+        defn, _LTX2_DEFAULT_CONFIG, calibration=_CORRUPT_LTX2_CALIBRATION
+    ).to_dict()
+
+    # The corrupt coefficients must not have been applied to the big drivers.
+    assert calibrated["peak_mb"] < 120_000, calibrated["peak_mb"]
+    # model_weights (coeff 10.05x) and caching_peak (coeff 22.9x) reject -> analytic.
+    assert calibrated["model_weights_mb"] == pytest.approx(
+        analytic["model_weights_mb"], rel=0.01
+    )
+    assert calibrated["caching_peak_mb"] == pytest.approx(
+        analytic["caching_peak_mb"], rel=0.01
+    )

@@ -83,6 +83,32 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
         self.driver.configure_swap_mode(swap)
         return router
 
+    # ── Convention delegation (load-bearing — dead-dispatch guard) ────────
+
+    def sample_timesteps(
+        self, batch_size: int, latents: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Delegate to the driver's expert-aware, router-truncated sampler.
+
+        WAN 2.2 is a Mixture-of-Experts: the high-noise expert must only ever
+        see timesteps ``>= boundary`` and the low-noise expert only ``< boundary``
+        (:class:`ExpertRouter`). ``Wan22Driver.sample_timesteps`` draws from the
+        configured distribution truncated to the *active* expert's range.
+
+        The base ``PipelineBaseMixin.sample_timesteps`` is the FULL-range
+        flow-match sampler with no knowledge of the expert boundary or the
+        router — using it un-overridden (as the real ``pipeline_train`` loop does
+        via ``self.sample_timesteps``) would train every expert across the whole
+        ``[0, 1000]`` range, defeating the MoE split (the router truncation would
+        be dead code on the real path). This override wires the driver's sampler
+        to the real training loop — mirrors ``boogu_image``'s convention
+        delegation (``families/boogu_image/trainer.py``). Pinned check:
+        ``test_wan22_sample_timesteps_wiring.py``.
+        """
+        return self.driver.sample_timesteps(
+            batch_size, self.device, self.config, latents=latents,
+        )
+
     # ── Dual LoRA injection ──────────────────────────────────────────────
 
     def _apply_peft(self) -> None:

@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Native in-training-preview step count (FluxPipeline dev __call__ default is
+# 28; FluxKontextPipeline 28; Schnell is 4-step distilled). Definition-sourced
+# via each YAML's `defaults.num_inference_steps`; this constant is the fallback
+# used only when a definition omits the key. GUIDANCE is intentionally NOT
+# definition-sourced here — `defaults.guidance_scale` is the TRAINING guidance-
+# embed value (kontext trains at 1.0), while the native SAMPLE guidance for Dev
+# and Kontext is 3.5, which already matches the generic base passthrough. See
+# each definition YAML's `defaults` comment for the full rationale.
+_FLUX1_DEFAULT_RESOLUTION: int = 1024
+_FLUX1_DEFAULT_STEPS: int = 28
+
 
 # ── Resolution-dependent time shift (matches FLUX pre-training) ──────────
 # Ref: diffusers FlowMatchEulerDiscreteScheduler, kohya-ss get_schedule(),
@@ -59,6 +70,33 @@ class Flux1Sampler(GenericSamplingPipeline):
     """
 
     pipeline: Flux1Trainer
+
+    # ── Native sample defaults (W3-1; steps + resolution only) ───────────
+
+    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Any:
+        """Fill FLUX.1's native preview step count before the generic flow.
+
+        Sources ``num_inference_steps`` (28 for Dev/Kontext, 4 for Schnell) and
+        ``resolution`` from the definition's ``defaults`` (constants are
+        fallback only). ``guidance_scale`` is deliberately left to the generic
+        base passthrough (3.5 == native Dev/Kontext SAMPLE guidance) — see the
+        module-level constant comment for why it is NOT definition-sourced.
+        Explicit per-prompt values always win (fill only when unset/0).
+        """
+        cfg = dict(prompt_cfg)
+        defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
+        resolution = int(defaults.get("resolution", _FLUX1_DEFAULT_RESOLUTION))
+        fill = {
+            "width": resolution,
+            "height": resolution,
+            "num_inference_steps": int(
+                defaults.get("num_inference_steps", _FLUX1_DEFAULT_STEPS),
+            ),
+        }
+        for key, value in fill.items():
+            if cfg.get(key) in (None, 0):
+                cfg[key] = value
+        return super()._sample_single(cfg, step)
 
     # ── Abstract Hook Implementations ────────────────────────────────────
 

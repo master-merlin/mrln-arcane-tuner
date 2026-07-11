@@ -45,7 +45,7 @@ import { ModelCapabilities, isFieldHidden } from '../../../services/model-capabi
              @if (isPrimitiveArray()) {
 
                <!-- Specialized resolution picker overrides standard primitive array
-                    (resolutions: presets + custom + add). -->
+                    (resolutions + still_resolutions: presets + custom + add). -->
                @if (isResolutionField()) {
                   <div class="space-y-3">
                      <!-- Presets -->
@@ -656,13 +656,16 @@ export class DynamicFormGroupComponent {
 
   /** Fields rendered with the resolution picker (presets + custom + add). */
   isResolutionField(): boolean {
-    return this.fieldKey() === 'resolutions';
+    return this.fieldKey() === 'resolutions' || this.fieldKey() === 'still_resolutions';
   }
 
-  /** Grid-column class for the group's root: array fields keep the default
-   *  2-column span. */
+  /** Grid-column class for the group's root: still_resolutions gets its own
+   *  full-width row (like a standalone picker); other array fields keep the
+   *  default 2-column span. */
   protected containerClass(): string {
-    return 'md:col-span-2 space-y-4';
+    return this.fieldKey() === 'still_resolutions'
+      ? 'col-span-full space-y-4'
+      : 'md:col-span-2 space-y-4';
   }
 
   /** Picker test ids: keep `resolutions` byte-identical (existing selectors)

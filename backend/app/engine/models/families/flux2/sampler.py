@@ -31,6 +31,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Native in-training-preview defaults (FLUX.2 / Klein pipeline __call__:
+# 50 steps, guidance 4.0, 1024²). Definition-sourced via each YAML's
+# `defaults`; these constants are the fallback used only when a definition
+# omits the key. The generic base's 20 steps / 3.5 guidance are off-
+# distribution for FLUX.2 (its native pipeline uses 50 / 4.0).
+_FLUX2_DEFAULT_RESOLUTION: int = 1024
+_FLUX2_DEFAULT_STEPS: int = 50
+_FLUX2_DEFAULT_GUIDANCE: float = 4.0
+
 
 def _compute_mu(image_seq_len: int, num_steps: int) -> float:
     """Empirical mu schedule matching ``Flux2KleinPipeline``."""
@@ -46,6 +55,35 @@ class Flux2Sampler(GenericSamplingPipeline):
     def __init__(self, pipeline: Flux2Trainer) -> None:
         super().__init__(pipeline)
         self._scheduler = None
+
+    # ── Native sample defaults (W3-1; ovis/boogu precedent) ──────────────
+
+    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Any:
+        """Fill FLUX.2's native preview defaults before the generic flow.
+
+        Sources 50 steps / 4.0 guidance / 1024² from the definition's
+        ``defaults`` (constants are fallback only) — the FLUX.2/Klein
+        pipeline's own ``__call__`` defaults, versus the generic base's
+        off-distribution 20 steps / 3.5 guidance. Explicit per-prompt values
+        always win (fill only when unset/0).
+        """
+        cfg = dict(prompt_cfg)
+        defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
+        resolution = int(defaults.get("resolution", _FLUX2_DEFAULT_RESOLUTION))
+        fill = {
+            "width": resolution,
+            "height": resolution,
+            "num_inference_steps": int(
+                defaults.get("num_inference_steps", _FLUX2_DEFAULT_STEPS),
+            ),
+            "guidance_scale": float(
+                defaults.get("guidance_scale", _FLUX2_DEFAULT_GUIDANCE),
+            ),
+        }
+        for key, value in fill.items():
+            if cfg.get(key) in (None, 0):
+                cfg[key] = value
+        return super()._sample_single(cfg, step)
 
     # ── Lazy scheduler ───────────────────────────────────────────────────
 

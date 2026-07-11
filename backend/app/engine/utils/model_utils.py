@@ -57,6 +57,36 @@ def _snapshot_fully_cached(repo_id: str, revision: str | None = None) -> bool:
         return False
 
 
+def _file_fully_cached(
+    repo_id: str, filename: str, revision: str | None = None,
+) -> bool:
+    """True iff *filename* from *repo_id* is a COMPLETE blob in the local cache.
+
+    Purely OFFLINE — no network. ``try_to_load_from_cache`` inspects the
+    on-disk cache only and returns a filesystem path ONLY for a fully
+    materialized blob; a partial ``*.incomplete`` download, a
+    known-nonexistent sentinel, or an outright miss all yield a non-``str``.
+    So unlike a full snapshot — whose offline completeness is unknowable
+    without the Hub manifest (see ``_snapshot_fully_cached``) — a single
+    file's cache state is unambiguous offline, which is exactly what the
+    single-file warm-cache fast path in ``_resolve_hf`` needs.
+
+    Any error → ``False`` (fail-safe: prefer the guarded download).
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        rev_kwargs = {"revision": revision} if revision else {}
+        return isinstance(
+            try_to_load_from_cache(repo_id, filename, **rev_kwargs), str,
+        )
+    except Exception as e:
+        logger.debug(
+            "file_cache_probe_failed", repo=repo_id, file=filename, error=str(e),
+        )
+        return False
+
+
 class ModelPathResolver:
     """Resolve model component paths from local or ``huggingface:`` URIs."""
 
@@ -174,6 +204,36 @@ class ModelPathResolver:
         # resolves never hit the network, so there's nothing to stall on.
         try:
             if filename:
+                # WARM-CACHE FAST PATH (W5-2): a single file already complete
+                # on disk is LOADED, not downloaded — resolve it in-process
+                # with local_files_only=True, skipping the killable child
+                # entirely (the ~2-4s worker spawn is paid twice per job:
+                # preflight + trainer subprocess). Nothing can stall because
+                # an offline resolve never touches the network. _file_fully_-
+                # cached is a purely-offline per-blob check (no Hub manifest
+                # call), and it reports a partial *.incomplete blob as a MISS,
+                # so only a genuinely complete file takes this path.
+                if _file_fully_cached(repo_id, filename, revision):
+                    try:
+                        cached = hf_hub_download(
+                            repo_id=repo_id, filename=filename,
+                            local_files_only=True, **rev_kwargs,
+                        )
+                        logger.info(
+                            "file_cache_hit", repo=repo_id, file=filename,
+                            resolve="in_process",
+                        )
+                        return cached
+                    except Exception as e:
+                        # SAFETY RAIL: the optimization must NEVER fail a
+                        # resolve. If the offline resolve unexpectedly raises
+                        # (e.g. the blob was evicted between the probe and
+                        # here), fall through to the guarded download below.
+                        logger.debug(
+                            "file_fastpath_fell_through", repo=repo_id,
+                            file=filename, error=str(e),
+                        )
+
                 logger.info("downloading_file_from_hub", repo=repo_id, file=filename)
                 # with_progress emits a coarse start/complete pair for the
                 # indicator; the guard's child process can't be attached to
@@ -191,9 +251,32 @@ class ModelPathResolver:
             # would resume SILENTLY (dark indicator, job stuck looking idle).
             # _snapshot_fully_cached cross-checks the Hub's file list against the
             # cache, so only a genuinely complete snapshot skips the bar.
+            #
+            # WARM-CACHE FAST PATH (W5-2): once completeness is CONFIRMED,
+            # resolve in-process with local_files_only=True instead of
+            # spawning the killable child. The child is only needed to make a
+            # real network transfer abortable on a stall; a fully-cached
+            # snapshot does zero network I/O, so there is nothing to stall on
+            # — and the ~2-4s worker spawn (paid twice per job: preflight +
+            # trainer subprocess, once per HF component) is pure overhead.
             if _snapshot_fully_cached(repo_id, revision):
-                logger.info("snapshot_cache_hit", repo=repo_id)
-                return download_with_stall_guard(repo_id=repo_id, revision=revision)
+                try:
+                    cached = snapshot_download(
+                        repo_id=repo_id, local_files_only=True, **rev_kwargs,
+                    )
+                    logger.info(
+                        "snapshot_cache_hit", repo=repo_id, resolve="in_process",
+                    )
+                    return cached
+                except Exception as e:
+                    # SAFETY RAIL: the optimization must NEVER fail a resolve.
+                    # If the offline resolve unexpectedly raises (e.g. the
+                    # cache was evicted between the manifest check and here),
+                    # fall through to the guarded (resumable) download below.
+                    logger.debug(
+                        "snapshot_fastpath_fell_through", repo=repo_id,
+                        error=str(e),
+                    )
 
             # A real (or partial-resume) transfer. We can't attach an emitting
             # tqdm for BYTE progress — HF only routes tqdm_class to the coarse

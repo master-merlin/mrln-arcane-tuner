@@ -1,198 +1,121 @@
-"""Repo-wide META-GUARD against the dead-dispatch (clobber) bug class.
+"""Repo-wide META-GUARD for the (now-cured) dead-dispatch bug class.
+
+HISTORY — THE BUG CLASS
+-----------------------
+The training pipeline dispatches lifecycle hooks on the TRAINER via MRO
+(:class:`app.engine.core.pipeline.pipeline_base.PipelineBaseMixin`). Several of
+those hooks historically had a **self-contained base default** that did NOT
+delegate to the family driver's same-named method (``init_scheduler`` returned
+``None``; ``add_noise`` went to a generic ``NoiseInterpolation`` component; etc.).
+For those hooks a driver-level override was **DEAD CODE on the real training
+path** unless the family's TRAINER also overrode the hook to delegate to the
+driver. That exact gap bit the project repeatedly (boogu ``init_scheduler``
+clobber; k5 / ltx2 I2V frame-0 trained NOISED; sdxl / flux1 pooled-TE caches
+never persisted; WAN 2.2 dual-expert timesteps sampled full-range).
+
+THE STRUCTURAL CURE (W5-1)
+--------------------------
+Each clobber-capable ``PipelineBaseMixin`` hook default now **auto-delegates**:
+via :meth:`PipelineBaseMixin._driver_hook_override` it dispatches to
+``self.driver.<hook>`` whenever the driver *meaningfully overrides* the hook
+(:func:`app.engine.core.hook_dispatch.driver_meaningfully_overrides` — the SAME
+predicate this guard uses), and otherwise runs the base default. Priority is:
+
+    trainer explicit override  >  driver override (auto-delegated)  >  base default
+
+A driver override without trainer wiring is therefore **no longer dead** — the
+base hook dispatches it. This guard's job flips accordingly: instead of proving
+"every meaningful driver override is trainer-wired", it now proves the
+**mechanism itself works** and pins **which families depend on it**.
 
 WHAT THIS PINS
 --------------
-The training pipeline dispatches lifecycle hooks on the TRAINER via MRO
-(:class:`app.engine.core.pipeline.pipeline_base.PipelineBaseMixin`). Some of
-those hooks have a **self-contained base default** that does NOT delegate to the
-family driver's same-named method (e.g. ``init_scheduler`` returns ``None``,
-``add_noise`` delegates to a generic ``NoiseInterpolation`` component, NOT the
-driver). For those hooks, a driver-level override is **DEAD CODE on the real
-training path** unless the family's TRAINER also overrides the hook to delegate
-to the driver.
+1. Structural floors (family count, hook-list sanity, trainer/driver resolution)
+   so registry breakage can't silently hollow the guard into a no-op.
+2. The auto-delegation MECHANISM, functionally, on the real ``PipelineBaseMixin``
+   MRO: a driver that overrides a hook is dispatched with no trainer wiring; a
+   driver that does not falls back to the base default; a trainer override still
+   wins over the driver's.
+3. The exact set of real (family, hook) pairs that rely on auto-delegation
+   (driver meaningfully overrides AND trainer does not) — a reviewed allowlist-
+   equivalent. A new entry means a family started depending on the mechanism.
+4. The inverse-shape guard for ``_resolve_loading_dtype`` (loading routes through
+   the DRIVER; see :func:`test_resolve_loading_dtype_inverse_shape`).
 
-This exact gap bit the project repeatedly (boogu ``init_scheduler`` clobber; k5
-I2V frame-0 trained NOISED; ltx2 I2V same; sdxl/flux1 pooled-TE caches never
-persisted; and — found by THIS guard — WAN 2.2 dual-expert timesteps were sampled
-full-range instead of truncated to the active expert's boundary). Every one of
-those was invisible to unit tests because the family's ``*_driver`` tests called
-``driver.<hook>(...)`` **directly**, never through ``trainer.<hook>`` (the real
-loop's call), so the MRO-resolution gap never surfaced.
-
-THE INVARIANT
--------------
-For every registered family, for every *clobber-capable* hook: **if the family's
-DRIVER class meaningfully overrides the hook, the family's TRAINER class must also
-override it** (i.e. ``trainer.<hook>`` must NOT resolve to the
-``PipelineBaseMixin`` default). Otherwise the driver override is dead.
-
-The clobber-capable hook list is DERIVED programmatically (:func:`_clobber_hooks`)
-— it is every method present on BOTH ``PipelineBaseMixin`` and ``IModelDriver``
-whose ``PipelineBaseMixin`` implementation does NOT delegate to
-``self.driver.<hook>``. Deriving it (rather than hardcoding) means a newly added
-self-contained hook is guarded automatically. As of writing it resolves to:
-``add_noise, build_batch_extra, compute_target, get_te_cache, init_scheduler,
-sample_timesteps, set_te_cache`` (7 hooks).
-
-INVERSE SHAPE — ``_resolve_loading_dtype`` (documented, see the test below)
--------------------------------------------------------------------------
-``_resolve_loading_dtype`` has the *inverse* dispatch: the model-LOADING pipeline
-(``pipeline_loading.py``) calls ``self.driver.resolve_loading_dtype()`` — the
-DRIVER — so a TRAINER-level override of ``_resolve_loading_dtype`` is dead **for
-loading**. A blanket "no trainer may override ``_resolve_loading_dtype``" would be
-WRONG (sdxl legitimately overrides it for its *text-embedding-cache* dtype, a
-separate concern, AND its driver overrides ``resolve_loading_dtype`` to match).
-So instead we pin the narrow, sound inverse guard: a trainer that overrides
-``_resolve_loading_dtype`` MUST have a driver that overrides
-``resolve_loading_dtype`` (evidence the author knew loading routes through the
-driver, keeping the loading + TE-cache dtypes consistent).
-
-PURE INTROSPECTION — no GPU, no model loads, no driver instantiation.
+PURE INTROSPECTION + tiny synthetic dispatches — no GPU, no model loads, no real
+driver instantiation beyond attribute-free ``object.__new__`` shells.
 """
 
 from __future__ import annotations
 
-import ast
 import importlib
 import inspect
 import re
-import textwrap
 from types import SimpleNamespace
 
-import pytest
+import structlog
+import torch
 
+from app.engine.core.hook_dispatch import driver_meaningfully_overrides
 from app.engine.core.interfaces import IModelDriver
 from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
 from app.engine.models.registry import registry
+from app.engine.strategies.noise_interpolation import NoiseInterpolation
 
 # ── Expected family floor ────────────────────────────────────────────────────
 # Guards against silent registry breakage hollowing the test out to a no-op.
 MIN_EXPECTED_FAMILIES = 21
 
-
-# ── ALLOWLIST ────────────────────────────────────────────────────────────────
-# (family, hook) pairs where the driver overrides a clobber-capable hook but the
-# trainer intentionally does NOT delegate — because the driver's override is
-# PROVABLY EQUIVALENT to the base ``PipelineBaseMixin`` path. Every entry carries
-# a one-line justification. Adding an entry is a deliberate, reviewed act.
-ALLOWLIST: dict[tuple[str, str], str] = {
-    ("wan21", "add_noise"): (
-        "WanDriverBase.add_noise is the family's contract-pinned flow-match lerp "
-        "in [0,1000] space: t=timesteps/1000; t*noise+(1-t)*latents. This is "
-        "ALGEBRAICALLY IDENTICAL to the base PipelineBaseMixin.add_noise path "
-        "(NoiseInterpolation('linear'), whose _linear ALSO divides t by 1000), so "
-        "the real-path result is bit-identical whether or not the trainer "
-        "delegates. The driver method is exercised directly by the wan precision-"
-        "contract tests (test_wan21_precision_contracts.py) — it is a tested, "
-        "contract-defining method, not dead unused code; the trainer leaving "
-        "add_noise at base default is safe and intentional."
-    ),
-    ("wan22", "add_noise"): (
-        "Inherits WanDriverBase.add_noise (see wan21 justification): "
-        "algebraically identical to the base NoiseInterpolation('linear') path, "
-        "so no clobber. Pinned by test_wan22_precision_contracts.py."
-    ),
+# ── Reviewed set of families that rely on the auto-delegation MECHANISM ───────
+# (family, hook) pairs where the DRIVER meaningfully overrides a clobber-capable
+# hook and the TRAINER does NOT — so the ONLY thing wiring the driver override to
+# the real training path is the base auto-delegation. Every entry is a reviewed,
+# proven-safe reliance on the mechanism. Adding one is a deliberate act.
+#
+# wan21/wan22 ``add_noise``: WanDriverBase.add_noise is the family's contract-
+# pinned flow-match lerp in [0,1000] space (t=timesteps/1000; t*noise+(1-t)*
+# latents) — ALGEBRAICALLY IDENTICAL to the base NoiseInterpolation('linear')
+# path. Auto-delegation therefore changes ZERO training math vs the old base
+# default; it merely makes the (previously dead-but-equivalent) driver method the
+# one that actually runs. Pinned by test_wan2{1,2}_precision_contracts.py.
+AUTODELEGATED_FAMILY_HOOKS: set[tuple[str, str]] = {
+    ("wan21", "add_noise"),
+    ("wan22", "add_noise"),
 }
 
 
-# ── Hook-list derivation ─────────────────────────────────────────────────────
-def _delegates_to_driver(fn, hook: str) -> bool:
-    """True if PipelineBaseMixin.<hook>'s body calls ``self.driver.<hook>``."""
-    try:
-        src = inspect.getsource(fn)
-    except (OSError, TypeError):
-        return False
-    return bool(re.search(rf"self\.driver\.{re.escape(hook)}\b", src)) or bool(
-        re.search(rf"\bdriver\.{re.escape(hook)}\b", src)
-    )
-
-
+# ── Clobber-hook derivation (the auto-delegating hooks) ──────────────────────
 def _clobber_hooks() -> list[str]:
     """Every method on BOTH PipelineBaseMixin and IModelDriver whose
-    PipelineBaseMixin default is self-contained (does NOT delegate to the
-    driver's same-named method) — i.e. the clobber-capable hooks."""
+    PipelineBaseMixin default is wired for auto-delegation (its body routes
+    through :meth:`PipelineBaseMixin._driver_hook_override`). Deriving the list
+    from the wiring itself — rather than hardcoding — means a newly auto-
+    delegated hook is guarded automatically, and a hook that LOSES its wiring
+    (regressing to a self-contained non-delegating default) drops out and trips
+    :func:`test_clobber_hook_list_is_nonempty_and_sane`."""
     tr = {n for n, _ in inspect.getmembers(PipelineBaseMixin, inspect.isfunction)}
     dr = {n for n, _ in inspect.getmembers(IModelDriver, inspect.isfunction)}
     hooks = []
     for name in sorted(tr & dr):
         base_fn = getattr(PipelineBaseMixin, name)
-        if not _delegates_to_driver(base_fn, name):
+        try:
+            src = inspect.getsource(base_fn)
+        except (OSError, TypeError):
+            continue
+        if "_driver_hook_override" in src:
             hooks.append(name)
     return hooks
 
 
 CLOBBER_HOOKS = _clobber_hooks()
 
-# Normalized method bodies that are considered EQUIVALENT-to-base (no clobber)
-# for a given hook, beyond the automatic "identical to IModelDriver body" check.
-# init_scheduler is @abstractmethod on IModelDriver (no comparable body), so its
-# equivalent baseline is the PipelineBaseMixin default "return None".
-_TRIVIAL_BODIES: dict[str, set[str]] = {
-    "init_scheduler": {"return None"},
-}
-
-
-# ── Source-body helpers ──────────────────────────────────────────────────────
-def _normalize_body(fn) -> str | None:
-    """Return a normalized method body (docstring/comments/whitespace-free).
-
-    Parses the function via :mod:`ast` and re-emits its statements with
-    ``ast.unparse`` — robust to multi-line signatures, comments, and formatting
-    (a naive line-based skip breaks on the multi-line ``def foo(\\n  self,\\n
-    ...\\n):`` signatures every one of these hooks uses). The leading docstring
-    statement is dropped. Used to decide whether a driver override is *meaningful*
-    vs a trivial redundant re-statement of the base default.
-    """
-    try:
-        src = textwrap.dedent(inspect.getsource(fn))
-    except (OSError, TypeError):
-        return None
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        return None
-    func = tree.body[0] if tree.body else None
-    if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return None
-    stmts = list(func.body)
-    if (
-        stmts
-        and isinstance(stmts[0], ast.Expr)
-        and isinstance(stmts[0].value, ast.Constant)
-        and isinstance(stmts[0].value.value, str)
-    ):
-        stmts = stmts[1:]  # drop docstring
-    return " ".join(ast.unparse(s) for s in stmts).strip()
-
-
-def _driver_meaningfully_overrides(driver_cls, hook: str) -> bool:
-    """True iff ``driver_cls`` provides a non-trivial override of ``hook``.
-
-    Non-trivial = defined below IModelDriver AND its normalized body differs from
-    both the IModelDriver base body and any known trivial-equivalent body, and is
-    not a bare ``return super().<hook>(...)`` delegation.
-    """
-    fn = getattr(driver_cls, hook, None)
-    base_fn = getattr(IModelDriver, hook, None)
-    if fn is None or fn is base_fn:
-        return False
-    body = _normalize_body(fn)
-    if not body:
-        return False
-    base_body = _normalize_body(base_fn)
-    if base_body and body == base_body:
-        return False  # byte-identical re-statement of the base default
-    if body in _TRIVIAL_BODIES.get(hook, set()):
-        return False
-    if re.fullmatch(rf"return super\(\)\.{re.escape(hook)}\([^)]*\)", body):
-        return False  # pure delegation to the (base) default
-    return True
-
 
 def _trainer_overrides(trainer_cls, hook: str) -> bool:
     """True iff ``trainer_cls`` resolves ``hook`` to something other than the
     ``PipelineBaseMixin`` default (i.e. the trainer overrides the hook)."""
-    return getattr(trainer_cls, hook, None) is not getattr(PipelineBaseMixin, hook, None)
+    return getattr(trainer_cls, hook, None) is not getattr(
+        PipelineBaseMixin, hook, None
+    )
 
 
 # ── Family → trainer(s) → driver resolution ──────────────────────────────────
@@ -275,11 +198,7 @@ def _families() -> dict[str, type]:
     return dict(registry._families)
 
 
-# Build the (family, hook) parameter grid once at collection time.
 _FAMILIES = _families()
-_PARAMS = [
-    (fam, hook) for fam in sorted(_FAMILIES) for hook in CLOBBER_HOOKS
-]
 
 
 # ── Structural guards (fail loud if the introspection basis erodes) ──────────
@@ -292,15 +211,23 @@ def test_registry_has_expected_family_floor() -> None:
 
 
 def test_clobber_hook_list_is_nonempty_and_sane() -> None:
-    # If this shrinks unexpectedly, the base-mixin dispatch shape changed and the
-    # guard may no longer be watching the hooks it thinks it is.
-    assert CLOBBER_HOOKS, "derived clobber-capable hook list is empty"
-    for expected in ("init_scheduler", "add_noise", "compute_target",
-                     "sample_timesteps", "get_te_cache", "set_te_cache",
-                     "build_batch_extra"):
+    # If this shrinks unexpectedly, a base hook LOST its auto-delegation wiring
+    # (regressed to a self-contained non-delegating default) and the dead-
+    # dispatch trap is reopened for that hook.
+    assert CLOBBER_HOOKS, "derived auto-delegating hook list is empty"
+    for expected in (
+        "init_scheduler",
+        "add_noise",
+        "compute_target",
+        "sample_timesteps",
+        "get_te_cache",
+        "set_te_cache",
+        "build_batch_extra",
+    ):
         assert expected in CLOBBER_HOOKS, (
-            f"{expected!r} unexpectedly absent from the derived clobber-hook "
-            f"list {CLOBBER_HOOKS} — dispatch shape changed?"
+            f"{expected!r} unexpectedly absent from the derived auto-delegating "
+            f"hook list {CLOBBER_HOOKS} — did its base default lose the "
+            f"_driver_hook_override wiring?"
         )
 
 
@@ -319,36 +246,249 @@ def test_every_family_resolves_a_trainer_and_driver() -> None:
     assert not missing, "unresolved trainer/driver classes:\n  " + "\n  ".join(missing)
 
 
-# ── The core meta-guard ──────────────────────────────────────────────────────
-@pytest.mark.parametrize("family,hook", _PARAMS, ids=lambda v: v if isinstance(v, str) else None)
-def test_driver_hook_override_is_wired_to_trainer(family: str, hook: str) -> None:
-    """If the family DRIVER meaningfully overrides a clobber-capable hook, the
-    family TRAINER must also override it (delegate) — else the driver override is
-    dead code on the real training path."""
-    fcls = _FAMILIES[family]
-    for trainer_cls in _trainer_variants(fcls):
-        driver_cls = _driver_for_trainer(trainer_cls)
-        if driver_cls is None:
-            continue  # covered (and failed) by the resolution guard above
-        if not _driver_meaningfully_overrides(driver_cls, hook):
-            continue
-        if _trainer_overrides(trainer_cls, hook):
-            continue
-        # Driver overrides, trainer does not — either an allowlisted equivalence
-        # or a LIVE dead-dispatch bug.
-        if (family, hook) in ALLOWLIST:
-            continue
-        pytest.fail(
-            f"DEAD DISPATCH: {driver_cls.__name__}.{hook} is a meaningful "
-            f"override, but {trainer_cls.__name__} does NOT override "
-            f"'{hook}', so the real training loop (self.{hook}) resolves to "
-            f"PipelineBaseMixin.{hook} (the self-contained base default) and the "
-            f"driver's override is DEAD CODE. Fix: add a trainer-level '{hook}' "
-            f"that delegates to self.driver.{hook}(...) (see boogu_image / "
-            f"wan22 sample_timesteps precedent), or — if the driver override is "
-            f"provably equivalent to the base path — delete it (hv15 precedent) "
-            f"or add an ALLOWLIST entry with justification."
-        )
+# ── Synthetic mechanism fixtures ─────────────────────────────────────────────
+class _MechDriver(IModelDriver):
+    """Minimal concrete driver with NO meaningful clobber-hook override.
+
+    Every clobber-capable hook is left at (or trivially equal to) the
+    ``IModelDriver`` default, so :func:`driver_meaningfully_overrides` reports
+    ``False`` for all of them — the trainer must fall back to the base default.
+    """
+
+    def __init__(self) -> None:
+        self.text_cache: dict = {}
+
+    def assign_components(self, components):  # noqa: D102
+        pass
+
+    def get_components(self):  # noqa: D102
+        return {}
+
+    def get_primary_model(self):  # noqa: D102
+        return None
+
+    def get_text_encoders(self):  # noqa: D102
+        return {}
+
+    def get_lora_targets(self):  # noqa: D102
+        return []
+
+    def init_scheduler(self):  # noqa: D102 — trivial (== base default None)
+        return None
+
+    def resolve_loading_dtype(self):  # noqa: D102
+        return torch.float32
+
+    def encode_text(self, captions, dtype):  # noqa: D102
+        return None
+
+    def get_te_lora_targets(self):  # noqa: D102
+        return []
+
+    def forward_pass(self, noisy_input, timesteps, text_embeddings, batch):  # noqa: D102
+        return None
+
+    def get_saver(self):  # noqa: D102
+        return None
+
+
+class _MechOverrideDriver(_MechDriver):
+    """Driver that MEANINGFULLY overrides every clobber-capable hook with a
+    recognizable sentinel — used to prove auto-delegation dispatches each one."""
+
+    def add_noise(self, latents, noise, timesteps):
+        return "D:add_noise"
+
+    def build_batch_extra(self, items):
+        return {"src": "driver"}
+
+    def compute_target(self, latents, noise, timesteps):
+        return "D:compute_target"
+
+    def get_te_cache(self):
+        return {"driver_cache": {"k": torch.zeros(1)}}
+
+    def init_scheduler(self):
+        return "D:scheduler"
+
+    def sample_timesteps(self, batch_size, device, config, latents=None):
+        return "D:sample_timesteps"
+
+    def set_te_cache(self, caches):
+        self.restored = caches
+
+
+class _MechTrainer(PipelineBaseMixin):
+    """Concrete PipelineBaseMixin subclass (all abstracts stubbed) so we can
+    exercise the REAL base-hook MRO with ``object.__new__`` + manual state."""
+
+    def _setup_family(self):  # noqa: D102
+        pass
+
+    async def setup(self):  # noqa: D102
+        pass
+
+    async def load_model(self):  # noqa: D102
+        pass
+
+    async def prepare_data(self):  # noqa: D102
+        pass
+
+    async def train(self):  # noqa: D102
+        pass
+
+
+class _MechTrainerOverridesAddNoise(_MechTrainer):
+    """A trainer that explicitly overrides add_noise — must win over the
+    driver's override (precedence: trainer > driver > base)."""
+
+    def add_noise(self, latents, noise, timesteps):
+        return "T:add_noise"
+
+
+def _make_trainer(driver, *, cls=_MechTrainer):
+    t = object.__new__(cls)
+    t.driver = driver
+    t.device = torch.device("cpu")
+    t.config = {}
+    t.text_cache = {}
+    t.noise_interpolation = NoiseInterpolation("linear")
+    t.logger = structlog.get_logger("mech")
+    return t
+
+
+# ── The core mechanism guards ────────────────────────────────────────────────
+def test_autodelegation_dispatches_driver_override_for_every_hook() -> None:
+    """A driver that overrides each clobber hook is dispatched on the REAL base
+    MRO path with NO trainer wiring — the structural cure for dead dispatch."""
+    t = _make_trainer(_MechOverrideDriver())
+    latents = torch.randn(2, 4, 4, 4)
+    noise = torch.randn_like(latents)
+    timesteps = torch.tensor([500.0, 500.0])
+
+    assert t.add_noise(latents, noise, timesteps) == "D:add_noise"
+    assert t.compute_target(latents, noise, timesteps) == "D:compute_target"
+    assert t.build_batch_extra([]) == {"src": "driver"}
+    assert t.init_scheduler() == "D:scheduler"
+    assert t.sample_timesteps(2) == "D:sample_timesteps"
+    assert t.get_te_cache() == {"driver_cache": {"k": torch.zeros(1)}}
+
+    sentinel = {"te": {"cap": torch.ones(1)}}
+    t.set_te_cache(sentinel)
+    assert t.driver.restored is sentinel
+
+
+def test_base_default_runs_when_driver_does_not_override() -> None:
+    """A driver with no meaningful override leaves each hook at the base
+    default — auto-delegation must NOT fire and change behavior."""
+    t = _make_trainer(_MechDriver())
+    latents = torch.randn(2, 4, 4, 4)
+    noise = torch.randn_like(latents)
+    timesteps = torch.tensor([500.0, 500.0])
+
+    assert torch.equal(
+        t.add_noise(latents, noise, timesteps),
+        t.noise_interpolation.add_noise(latents, noise, timesteps),
+    )
+    assert torch.equal(t.compute_target(latents, noise, timesteps), noise - latents)
+    assert t.build_batch_extra([]) == {}
+    assert t.init_scheduler() is None
+
+    # get/set_te_cache fall back to the trainer-level text_cache dict.
+    assert t.get_te_cache() is None  # empty text_cache
+    t.text_cache = {"cap": torch.ones(1)}
+    got = t.get_te_cache()
+    assert set(got) == {"te"} and "cap" in got["te"]
+    t.set_te_cache({"te": {"other": torch.zeros(1)}})
+    assert set(t.text_cache) == {"other"}
+
+    # sample_timesteps falls back to the base TimestepSampler (a real tensor).
+    out = t.sample_timesteps(2, latents=latents)
+    assert isinstance(out, torch.Tensor)
+
+
+def test_trainer_override_wins_over_driver_override() -> None:
+    """Precedence: an explicit TRAINER override shadows the base auto-delegating
+    hook entirely via MRO, so the driver's override never runs."""
+    t = _make_trainer(_MechOverrideDriver(), cls=_MechTrainerOverridesAddNoise)
+    latents = torch.randn(2, 4, 4, 4)
+    noise = torch.randn_like(latents)
+    timesteps = torch.tensor([500.0, 500.0])
+    assert t.add_noise(latents, noise, timesteps) == "T:add_noise"
+
+
+def test_missing_driver_falls_back_to_base_default() -> None:
+    """A trainer shell without a ``driver`` attribute (early setup / hv15-style
+    dispatch tests) must still resolve the base default, not AttributeError."""
+    t = object.__new__(_MechTrainer)
+    t.noise_interpolation = NoiseInterpolation("linear")
+    latents = torch.randn(2, 4, 4, 4)
+    noise = torch.randn_like(latents)
+    timesteps = torch.tensor([250.0, 900.0])
+    assert torch.equal(
+        t.add_noise(latents, noise, timesteps),
+        t.noise_interpolation.add_noise(latents, noise, timesteps),
+    )
+
+
+def test_real_family_autodelegation_engages_on_wan() -> None:
+    """Non-vacuity: the mechanism actually engages on a REAL family. WAN's
+    driver add_noise is dispatched through the base hook with no trainer wiring,
+    and is bit-identical to both the driver method and the base linear path."""
+    from app.engine.models.families.wan21.driver import Wan21Driver
+    from app.engine.models.families.wan21.trainer import Wan21Trainer
+
+    assert driver_meaningfully_overrides(Wan21Driver, "add_noise")
+    assert not _trainer_overrides(Wan21Trainer, "add_noise")
+
+    t = _make_trainer(object.__new__(Wan21Driver))
+    # The base hook must SELECT the driver method (mechanism engaged), not fall
+    # back — wan's driver output is bit-identical to the base linear path, so
+    # this identity check is what actually proves delegation (not the values).
+    selected = t._driver_hook_override("add_noise")
+    assert selected is not None
+    assert selected.__func__ is Wan21Driver.add_noise
+
+    latents = torch.randn(2, 16, 1, 4, 4)
+    noise = torch.randn_like(latents)
+    timesteps = torch.tensor([700.0, 700.0])
+
+    via_trainer = t.add_noise(latents, noise, timesteps)
+    via_driver = Wan21Driver.add_noise(t.driver, latents, noise, timesteps)
+    assert torch.equal(via_trainer, via_driver), (
+        "base auto-delegation must dispatch WAN's real driver add_noise"
+    )
+    # Equivalent to the base NoiseInterpolation('linear') path it replaced.
+    assert torch.allclose(
+        via_trainer, t.noise_interpolation.add_noise(latents, noise, timesteps)
+    )
+
+
+def test_autodelegated_family_hook_set_is_exactly_expected() -> None:
+    """Sweep every real family: the set of (family, hook) relying on auto-
+    delegation (driver meaningfully overrides AND trainer does NOT) must match
+    the reviewed :data:`AUTODELEGATED_FAMILY_HOOKS`. A NEW entry means a family
+    started depending on the base mechanism — a deliberate, reviewed event that
+    must be added here with a safety justification. A MISSING entry means a
+    family that used to rely on it grew a trainer override (harmless) or lost its
+    driver override (investigate)."""
+    got: set[tuple[str, str]] = set()
+    for fam, fcls in sorted(_FAMILIES.items()):
+        for tc in _trainer_variants(fcls):
+            dc = _driver_for_trainer(tc)
+            if dc is None:
+                continue
+            for hook in CLOBBER_HOOKS:
+                if driver_meaningfully_overrides(dc, hook) and not _trainer_overrides(
+                    tc, hook
+                ):
+                    got.add((fam, hook))
+    assert got == AUTODELEGATED_FAMILY_HOOKS, (
+        "auto-delegated (family, hook) set drifted from the reviewed "
+        f"expectation.\n  unexpected (newly relying on the mechanism): "
+        f"{sorted(got - AUTODELEGATED_FAMILY_HOOKS)}\n  missing (no longer "
+        f"relying): {sorted(AUTODELEGATED_FAMILY_HOOKS - got)}"
+    )
 
 
 # ── Inverse-shape guard: _resolve_loading_dtype ──────────────────────────────
@@ -361,9 +501,9 @@ def test_resolve_loading_dtype_inverse_shape() -> None:
     offenders = []
     for fam, fcls in sorted(_FAMILIES.items()):
         for trainer_cls in _trainer_variants(fcls):
-            t_over = getattr(trainer_cls, "_resolve_loading_dtype", None) is not getattr(
-                PipelineBaseMixin, "_resolve_loading_dtype", None
-            )
+            t_over = getattr(
+                trainer_cls, "_resolve_loading_dtype", None
+            ) is not getattr(PipelineBaseMixin, "_resolve_loading_dtype", None)
             if not t_over:
                 continue
             driver_cls = _driver_for_trainer(trainer_cls)
@@ -371,10 +511,6 @@ def test_resolve_loading_dtype_inverse_shape() -> None:
                 getattr(driver_cls, "resolve_loading_dtype", None)
                 is not getattr(IModelDriver, "resolve_loading_dtype", None)
             )
-            # resolve_loading_dtype is @abstractmethod on IModelDriver, so every
-            # concrete driver defines it (d_over is True) — this guard therefore
-            # mainly documents the inverse trap and catches a trainer override
-            # paired with a driver that somehow left it abstract.
             if not d_over:
                 offenders.append(f"{fam}/{trainer_cls.__name__}")
     assert not offenders, (

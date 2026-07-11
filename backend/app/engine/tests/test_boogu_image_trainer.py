@@ -132,7 +132,8 @@ class TestConventionDelegationLoadBearing:
             return [true_velocity[i] for i in range(B)]
 
         oracle.config = MagicMock(
-            axes_dim_rope=TINY_AXES_DIM_ROPE, axes_lens=TINY_AXES_LENS,
+            axes_dim_rope=TINY_AXES_DIM_ROPE,
+            axes_lens=TINY_AXES_LENS,
         )
         trainer.driver.model = oracle
 
@@ -146,11 +147,21 @@ class TestConventionDelegationLoadBearing:
 
         assert loss.item() < 1e-8
 
-    def test_standard_mixin_path_is_not_zero_loss(self):
-        """The SAME oracle model through the un-overridden
-        ``PipelineBaseMixin`` (standard-convention) path must NOT land near
-        zero — proves the trainer-level override is load-bearing, not
-        cosmetic."""
+    def test_base_mixin_path_autodelegates_to_driver_convention(self):
+        """W5-1 structural cure: the SAME oracle model through the un-overridden
+        ``PipelineBaseMixin`` base defaults now ALSO lands near ~0 loss — because
+        the base ``add_noise``/``compute_target`` auto-delegate to
+        ``BooguImageDriver`` (which meaningfully overrides both) instead of the
+        old standard-convention ``NoiseInterpolation('linear')`` + ``noise -
+        latents`` path.
+
+        BEFORE W5-1 this same call landed at HIGH loss (Boogu's raw ``[0,1)`` t
+        run through the wrong standard convention) — that was the dead-dispatch
+        trap this class pinned. The trainer-level override (exercised by
+        :meth:`test_inverted_trainer_override_gives_zero_loss`) is now
+        redundant-but-harmless: even a family that ``forgot`` to override would
+        get the driver's convention via auto-delegation, so this wrong path is
+        structurally unreachable."""
         trainer = _trainer_shell()
         torch.manual_seed(0)
         B = 1
@@ -162,7 +173,8 @@ class TestConventionDelegationLoadBearing:
             return [true_velocity[i] for i in range(B)]
 
         oracle.config = MagicMock(
-            axes_dim_rope=TINY_AXES_DIM_ROPE, axes_lens=TINY_AXES_LENS,
+            axes_dim_rope=TINY_AXES_DIM_ROPE,
+            axes_lens=TINY_AXES_LENS,
         )
         trainer.driver.model = oracle
         trainer.noise_interpolation = NoiseInterpolation("linear")
@@ -170,15 +182,16 @@ class TestConventionDelegationLoadBearing:
         t = torch.tensor([0.37])
         text = _fake_text(B)
 
-        # Real, un-overridden PipelineBaseMixin methods — the bug class this
-        # whole test class exists to pin against (a family that forgot to
-        # override would hit exactly this path with Boogu's raw [0,1) t).
+        # Un-overridden PipelineBaseMixin base defaults — post-W5-1 these
+        # auto-delegate to the driver's Boogu convention, so the previously-wrong
+        # standard-convention path is no longer reachable here.
         noisy_std = PipelineBaseMixin.add_noise(trainer, x0, noise, t)
         target_std = PipelineBaseMixin.compute_target(trainer, x0, noise, t)
         pred_std = trainer.forward_pass(noisy_std, t, text, {})
         loss_std = F.mse_loss(pred_std, target_std)
 
-        assert loss_std.item() > 0.5
+        # Matches the driver-convention round-trip (test_inverted_...) exactly.
+        assert loss_std.item() < 1e-8
 
     def test_sample_timesteps_delegates_to_driver_raw_0_1(self):
         trainer = _trainer_shell()
@@ -213,9 +226,12 @@ class TestConventionDelegationLoadBearing:
         noise = torch.zeros(1, 1, 2, 2)
         t = torch.tensor([0.5])
 
-        assert torch.allclose(trainer.add_noise(x0, noise, t), trainer.driver.add_noise(x0, noise, t))
         assert torch.allclose(
-            trainer.compute_target(x0, noise, t), trainer.driver.compute_target(x0, noise, t),
+            trainer.add_noise(x0, noise, t), trainer.driver.add_noise(x0, noise, t)
+        )
+        assert torch.allclose(
+            trainer.compute_target(x0, noise, t),
+            trainer.driver.compute_target(x0, noise, t),
         )
         # Sanity: inverted convention values, not the standard-convention ones.
         assert torch.allclose(trainer.add_noise(x0, noise, t), torch.full_like(x0, 0.5))
@@ -228,7 +244,12 @@ class TestConventionDelegationLoadBearing:
 class TestEncodeTextTupleContract:
     def test_encode_text_returns_2_tuple_not_text_encoder_output(self):
         trainer = _trainer_shell()
-        trainer.text_cache = {"a caption": (torch.randn(3, TINY_INSTRUCTION_FEAT_DIM), torch.ones(3, dtype=torch.long))}
+        trainer.text_cache = {
+            "a caption": (
+                torch.randn(3, TINY_INSTRUCTION_FEAT_DIM),
+                torch.ones(3, dtype=torch.long),
+            )
+        }
         trainer.text_encoder = None  # pre-cached, never touched
 
         out = trainer.encode_text(["a caption"], torch.float32)
@@ -261,7 +282,13 @@ class TestEncodeTextTupleContract:
                 self.dim = dim
                 self.proj = nn.Linear(1, dim)
 
-            def forward(self, input_ids=None, attention_mask=None, output_hidden_states=False, return_dict=True):
+            def forward(
+                self,
+                input_ids=None,
+                attention_mask=None,
+                output_hidden_states=False,
+                return_dict=True,
+            ):
                 assert output_hidden_states is True
                 B, L = input_ids.shape
                 hs = tuple(torch.randn(B, L, self.dim) for _ in range(3))
@@ -312,7 +339,13 @@ class TestBooguVlmEncodeTextPath:
                 super().__init__()
                 self.p = nn.Linear(1, 1)
 
-            def forward(self, input_ids=None, attention_mask=None, output_hidden_states=False, return_dict=True):
+            def forward(
+                self,
+                input_ids=None,
+                attention_mask=None,
+                output_hidden_states=False,
+                return_dict=True,
+            ):
                 captured["output_hidden_states"] = output_hidden_states
                 B, L = input_ids.shape
                 hs = tuple(torch.full((B, L, dim), float(i)) for i in range(3))
@@ -359,7 +392,9 @@ class TestBooguVlmEncodeTextPath:
 
         assert captured["output_hidden_states"] is True
         # Our fake tags layer i with value i -- last layer (index 2) -> all 2.0.
-        assert torch.allclose(out.embeddings.float(), torch.full_like(out.embeddings.float(), 2.0))
+        assert torch.allclose(
+            out.embeddings.float(), torch.full_like(out.embeddings.float(), 2.0)
+        )
 
     def test_attention_mask_is_processor_mask_no_fixed_crop(self):
         """No krea2-style fixed-token crop -- returned length matches
@@ -491,8 +526,13 @@ class TestDropoutSystemPromptSelection:
                 super().__init__()
                 self.p = nn.Linear(1, 1)
 
-            def forward(self, input_ids=None, attention_mask=None,
-                        output_hidden_states=False, return_dict=True):
+            def forward(
+                self,
+                input_ids=None,
+                attention_mask=None,
+                output_hidden_states=False,
+                return_dict=True,
+            ):
                 B, L = input_ids.shape
                 hs = tuple(
                     torch.randn(B, L, TINY_INSTRUCTION_FEAT_DIM) for _ in range(2)
@@ -565,8 +605,13 @@ class TestRaggedLengthCachePath:
                 super().__init__()
                 self.p = nn.Linear(1, 1)
 
-            def forward(self, input_ids=None, attention_mask=None,
-                        output_hidden_states=False, return_dict=True):
+            def forward(
+                self,
+                input_ids=None,
+                attention_mask=None,
+                output_hidden_states=False,
+                return_dict=True,
+            ):
                 B, L = input_ids.shape
                 torch.manual_seed(int(input_ids.sum().item()) % 10_000)
                 hs = tuple(torch.randn(B, L, dim) for _ in range(2))
@@ -604,8 +649,8 @@ class TestRaggedLengthCachePath:
         to the batch max with mask=0 at padded positions and flow through
         the REAL forward_pass."""
         trainer = self._wire_trainer()
-        short_cap = "cat"                                    # 1 word  -> L=3
-        long_cap = "a much longer caption with many words"   # 7 words -> L=9
+        short_cap = "cat"  # 1 word  -> L=3
+        long_cap = "a much longer caption with many words"  # 7 words -> L=9
 
         # Cache-miss pass (per-caption single encodes populate the cache).
         emb, mask = trainer.encode_text([short_cap, long_cap], torch.float32)
@@ -637,7 +682,8 @@ class TestRaggedLengthCachePath:
         happened to be first encoded in."""
         trainer = self._wire_trainer()
         trainer.encode_text(
-            ["cat", "a much longer caption with many words"], torch.float32,
+            ["cat", "a much longer caption with many words"],
+            torch.float32,
         )
 
         emb_short, mask_short = trainer.text_cache["cat"]
@@ -668,9 +714,9 @@ class TestRaggedLengthCachePath:
         trainer._pre_cache_text_embeddings()
 
         assert trainer.text_cache["cat"][0].shape[0] == 3
-        assert trainer.text_cache[
-            "a much longer caption with many words"
-        ][0].shape[0] == 9
+        assert (
+            trainer.text_cache["a much longer caption with many words"][0].shape[0] == 9
+        )
 
         # Reassembly across the two lengths must not crash and must pad.
         emb, mask = trainer.encode_text(list(caps), torch.float32)
@@ -753,16 +799,22 @@ class TestEndToEndTrainingStep:
 
         targets = _tiny_expanded_targets(model)
         peft_model = get_peft_model(
-            model, LoraConfig(r=4, lora_alpha=4, target_modules=targets),
+            model,
+            LoraConfig(r=4, lora_alpha=4, target_modules=targets),
         )
         peft_model.train()
 
         definition = _definition(lora_targets=targets)
         driver = BooguImageDriver(definition, torch.device("cpu"))
-        driver.assign_components({
-            "unet": peft_model, "vae": None, "text_encoder": None,
-            "processor": None, "scheduler": None,
-        })
+        driver.assign_components(
+            {
+                "unet": peft_model,
+                "vae": None,
+                "text_encoder": None,
+                "processor": None,
+                "scheduler": None,
+            }
+        )
 
         trainer = object.__new__(BooguImageTrainer)
         trainer.device = torch.device("cpu")
@@ -776,7 +828,9 @@ class TestEndToEndTrainingStep:
         noise = torch.randn(B, TINY_IN_CHANNELS, 4, 4)
         text = _fake_text(B)
 
-        timesteps = trainer.driver.sample_timesteps(B, torch.device("cpu"), trainer.config)
+        timesteps = trainer.driver.sample_timesteps(
+            B, torch.device("cpu"), trainer.config
+        )
         noisy = trainer.add_noise(x0, noise, timesteps)
         target = trainer.compute_target(x0, noise, timesteps)
         pred = trainer.forward_pass(noisy, timesteps, text, {})
@@ -793,7 +847,9 @@ class TestEndToEndTrainingStep:
             elif has_grad_signal:
                 base_leak.append(name)
 
-        assert lora_nonzero > 0, "no LoRA param received a gradient -- graph is disconnected"
+        assert lora_nonzero > 0, (
+            "no LoRA param received a gradient -- graph is disconnected"
+        )
         assert not base_leak, f"gradient leaked into frozen base weights: {base_leak}"
 
     def test_frozen_base_weights_never_require_grad_after_peft_wrap(self):
@@ -802,7 +858,8 @@ class TestEndToEndTrainingStep:
         model = _tiny_transformer()
         targets = _tiny_expanded_targets(model)
         peft_model = get_peft_model(
-            model, LoraConfig(r=2, lora_alpha=2, target_modules=targets),
+            model,
+            LoraConfig(r=2, lora_alpha=2, target_modules=targets),
         )
 
         for name, p in peft_model.named_parameters():

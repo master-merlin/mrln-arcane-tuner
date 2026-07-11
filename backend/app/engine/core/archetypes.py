@@ -179,6 +179,7 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     ("max_windows", "is_video", "image model — no temporal windows"),
     ("frame_stride", "is_video", "image model — no video frames to stride"),
     ("sliding_max_clip_seconds", "is_video", "image model — no temporal windows"),
+    ("still_resolutions", "is_video", "image model — no still/video split"),
 ]
 
 

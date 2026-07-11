@@ -1174,6 +1174,16 @@ class BaseTrainingConfig(BaseModel):
             "step": 1.0,
         },
     )
+    still_resolutions: list[int] = Field(
+        default=[],
+        description=(
+            "Resolutions for F=1 STILL images when mixing stills + video "
+            "datasets in one video job. Empty list means INHERIT from "
+            "`resolutions`. Lets stills train at higher resolution than the "
+            "video buckets for extra detail (Phase 3, live since 2026-07)."
+        ),
+        json_schema_extra={"group": "VIDEO"},
+    )
     # [SAMPLING] Sample Generation During Training
     sample_every_n_steps: int = Field(
         0,

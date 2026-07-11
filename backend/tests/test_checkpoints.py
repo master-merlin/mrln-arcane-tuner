@@ -191,6 +191,40 @@ class TestCheckpointManagerSave:
         assert os.path.isdir(path)
         assert "checkpoint-000005" in path
 
+    def test_periodic_lora_save_failure_does_not_raise(self, tmp_path):
+        """A distribution-LoRA save failure on a PERIODIC checkpoint must be
+        logged loudly but must NOT crash the training loop — training
+        continues past a bad mid-run checkpoint."""
+
+        class FailingSaver:
+            def save(self, components, path, metadata=None):
+                raise OSError("disk full")
+
+        mgr = CheckpointManager(str(tmp_path), saver_impl=FailingSaver())
+
+        # Should not raise — periodic saves are best-effort for the
+        # distribution LoRA; resume state still gets written.
+        path = mgr.save_checkpoint(
+            step=10, components={}, config={"lora_name": "t"}, is_final=False,
+        )
+        assert os.path.isdir(path)
+
+    def test_final_lora_save_failure_raises(self, tmp_path):
+        """A distribution-LoRA save failure on the FINAL checkpoint must
+        propagate — the job must fail loudly rather than report success
+        with no LoRA file written."""
+
+        class FailingSaver:
+            def save(self, components, path, metadata=None):
+                raise OSError("disk full")
+
+        mgr = CheckpointManager(str(tmp_path), saver_impl=FailingSaver())
+
+        with pytest.raises(OSError, match="disk full"):
+            mgr.save_checkpoint(
+                step=1000, components={}, config={"lora_name": "t"}, is_final=True,
+            )
+
 
 # ── CheckpointManager Load ──────────────────────────────────────────────
 

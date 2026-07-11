@@ -164,4 +164,10 @@ class SDXLSaver(ModelSaver):
 
             
         except (OSError, ValueError, RuntimeError) as e:
+            # Log with full context, then re-raise — a swallowed save
+            # failure here previously let a training job "succeed" while
+            # writing no LoRA file. The caller (CheckpointManager) decides
+            # whether a save failure at this point is fatal (final save)
+            # or should be logged-and-continued (periodic checkpoint).
             logger.error("lora_save_failed", path=str(path), error=str(e))
+            raise

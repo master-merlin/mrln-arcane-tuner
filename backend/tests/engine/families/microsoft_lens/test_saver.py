@@ -1,4 +1,7 @@
 """microsoft_lens saver: lora_unet_* keys + ss_ metadata."""
+from unittest.mock import patch
+
+import pytest
 from peft import LoraConfig, get_peft_model
 from safetensors.torch import safe_open
 
@@ -53,4 +56,27 @@ def test_saver_bails_on_non_peft_model(tmp_path):
     import torch.nn as nn
     out = tmp_path / "nope.safetensors"
     MicrosoftLensSaver().save({"unet": nn.Linear(4, 4)}, out, metadata={})
+    assert not out.exists()
+
+
+def test_save_failure_propagates(tmp_path):
+    """A safetensors write failure must raise out of save(), not be swallowed.
+
+    Regression test for the silent-failure bug class: a training job must
+    not "succeed" while writing no LoRA file.
+    """
+    unet = _tiny_peft_dit()
+    out = tmp_path / "lens_lora.safetensors"
+
+    with patch(
+        "app.engine.models.families.microsoft_lens.saver.safe_save_file",
+        side_effect=OSError("disk full"),
+    ):
+        with pytest.raises(OSError, match="disk full"):
+            MicrosoftLensSaver().save(
+                {"unet": unet, "config": {
+                    "network_rank": 8, "network_alpha": 8, "save_precision": "bf16",
+                }},
+                out, metadata={},
+            )
     assert not out.exists()

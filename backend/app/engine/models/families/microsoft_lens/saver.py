@@ -115,4 +115,10 @@ class MicrosoftLensSaver(ModelSaver):
                 size_mb = os.path.getsize(str(path)) / (1024 * 1024)
                 logger.info("lora_saved", path=str(path), size_mb=f"{size_mb:.2f}MB")
         except (OSError, ValueError, RuntimeError) as e:
+            # Log with full context, then re-raise — a swallowed save
+            # failure here previously let a training job "succeed" while
+            # writing no LoRA file. The caller (CheckpointManager) decides
+            # whether a save failure at this point is fatal (final save)
+            # or should be logged-and-continued (periodic checkpoint).
             logger.error("save_failed", path=str(path), error=str(e))
+            raise

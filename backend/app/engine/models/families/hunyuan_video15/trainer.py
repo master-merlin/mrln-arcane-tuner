@@ -388,11 +388,13 @@ class Hv15Trainer(GenericTrainingPipeline):
             failed=failed,
         )
 
-        if failed and not encoded:
-            # TOTAL failure: every item that needed encoding failed and NONE
-            # succeeded. Proceeding would train a 100% zero-image_embeds run —
-            # the image stream is inactive for every item, i.e. a silently
-            # mislabeled T2V run. Escalate loudly instead of degrading silently.
+        if failed and not encoded and not skipped:
+            # TOTAL failure: every item that needed encoding failed, NONE
+            # succeeded, and nothing was already cached. Proceeding would train
+            # a 100% zero-image_embeds run — the image stream is inactive for
+            # every item, i.e. a silently mislabeled T2V run. Escalate loudly.
+            # With skipped>0 (resume with cached items) the run still carries
+            # real embeds for the cached majority → partial-degrade path above.
             raise RuntimeError(
                 f"hv15 Siglip precache produced ZERO image embeddings: all "
                 f"{failed} item(s) failed to encode "

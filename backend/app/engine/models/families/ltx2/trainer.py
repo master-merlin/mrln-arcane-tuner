@@ -612,12 +612,14 @@ class Ltx2Trainer(GenericTrainingPipeline):
             failed=failed,
         )
 
-        if failed and not encoded:
+        if failed and not encoded and not skipped:
             # TOTAL failure: every clip whose audio we attempted to encode
-            # failed and NONE succeeded. Audio training is ON, yet the run would
-            # carry ZERO audio latents (every clip audio_mask=0 → audio LoRA
-            # gets no gradient) — a misconfigured run. Escalate loudly instead
-            # of silently training video-only under an audio-on label.
+            # failed, NONE succeeded, and nothing was already cached. Audio
+            # training is ON, yet the run would carry ZERO audio latents (every
+            # clip audio_mask=0 → audio LoRA gets no gradient) — a misconfigured
+            # run. Escalate loudly instead of silently training video-only.
+            # With skipped>0 (resume with cached clips) the run still carries
+            # real latents for the cached majority → partial-degrade path above.
             raise RuntimeError(
                 f"ltx2 audio precache produced ZERO audio latents: all "
                 f"{failed} clip(s) failed to encode "

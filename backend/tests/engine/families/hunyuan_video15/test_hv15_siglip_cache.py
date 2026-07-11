@@ -234,6 +234,29 @@ def test_precache_aux_raises_when_all_items_fail_to_encode(tmp_path):
     assert "hv15_siglip_precache_incomplete" in warn_events
 
 
+def test_precache_aux_resume_with_cached_items_does_not_escalate(tmp_path):
+    """Resume nuance: when prior items are already cached (skipped>0) and only
+    the NEW item(s) fail, the run still has real image_embeds for the cached
+    majority — that is the partial-degrade case (warn + zero-fill), NOT the
+    total-failure case. Escalating here would hard-abort a healthy resume."""
+    cached = _still_item(tmp_path, "cached")
+    t1 = _make_trainer("i2v", tmp_path, [cached])
+    t1._pre_cache_aux()  # working encoder → "cached" lands on disk
+
+    new_bad = _still_item(tmp_path, "newboom")
+    t2 = _make_trainer("i2v", tmp_path, [cached, new_bad])
+    rec = _RecLogger()
+    t2.logger = rec
+    t2.driver.image_encoder = _FailingImageEncoder()
+
+    t2._pre_cache_aux()  # must NOT raise: skipped=1, failed=1, encoded=0
+
+    done = [kw for ev, kw in rec.infos if ev == "hv15_siglip_precache_done"]
+    assert done and done[0]["skipped"] == 1 and done[0]["failed"] == 1
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "hv15_siglip_precache_incomplete" in warn_events
+
+
 def test_precache_aux_no_incomplete_warning_when_all_ok(tmp_path):
     item = _still_item(tmp_path, "ok")
     t = _make_trainer("i2v", tmp_path, [item])

@@ -307,6 +307,38 @@ def test_precache_raises_when_all_audio_clips_fail(tmp_path, monkeypatch):
     assert "ltx2_audio_precache_incomplete" in warn_events
 
 
+def test_precache_resume_with_cached_clips_does_not_escalate(tmp_path, monkeypatch):
+    """Resume nuance: when prior clips are already cached (skipped>0) and only
+    the NEW clip(s) fail, the run still carries real audio latents for the
+    cached majority — partial-degrade (warn + audio_mask=0), NOT total failure.
+    Escalating here would hard-abort a healthy resume."""
+    _patch_decode(monkeypatch)
+    t1 = _trainer()
+    t1.driver.encode_audio_clean = lambda waveform, sample_rate: torch.ones(1, L, 128)
+    t1.inventory = [_video_item(tmp_path, "clipCached")]
+    t1._pre_cache_aux()  # clipCached lands on disk
+
+    t2 = _trainer()
+    rec = _RecLogger()
+    t2.logger = rec
+
+    def _boom(waveform, sample_rate):
+        raise RuntimeError("audio vae encode blew up")
+
+    t2.driver.encode_audio_clean = _boom
+    t2.inventory = [
+        _video_item(tmp_path, "clipCached"),
+        _video_item(tmp_path, "clipNewBad"),
+    ]
+
+    t2._pre_cache_aux()  # must NOT raise: skipped=1, failed=1, encoded=0
+
+    done = [kw for ev, kw in rec.infos if ev == "ltx2_audio_precache_done"]
+    assert done and done[0]["skipped"] == 1 and done[0]["failed"] == 1
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "ltx2_audio_precache_incomplete" in warn_events
+
+
 # ── audio-latent cache versioning (stale-cache guard) ──────────────────────
 
 

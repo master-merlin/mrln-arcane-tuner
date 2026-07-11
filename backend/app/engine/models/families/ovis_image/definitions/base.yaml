@@ -7,6 +7,14 @@ defaults:
   scheduler: flow_match
   learning_rate: 1e-4
   is_distilled: false
+  # Native in-training-preview defaults, definition-sourced (W3-1). These are
+  # OvisImagePipeline.__call__'s own defaults (pipeline_ovis_image.py:463/466
+  # in diffusers 0.39) — NOT the generic base's 20 steps / 3.5 guidance, which
+  # under the dynamic-shifted schedule (mu=1.15 at 1024^2) starve the low-sigma
+  # detail region (2026-07-10 UAT: coherent but detail-free samples). The
+  # sampler reads these; the Python constants in sampler.py are fallbacks only.
+  num_inference_steps: 50
+  guidance_scale: 5.0
 components:
   repo:
     path: huggingface:AIDC-AI/Ovis-Image-7B

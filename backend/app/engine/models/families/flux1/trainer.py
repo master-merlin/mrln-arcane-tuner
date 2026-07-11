@@ -244,7 +244,12 @@ class Flux1Trainer(GenericTrainingPipeline):
         uncached: list[tuple[int, str]] = []
 
         for i, cap in enumerate(captions):
-            if cap in self.text_cache:
+            # Check BOTH caches: a caption restored from an old (pre-fix)
+            # checkpoint can be present in ``text_cache`` but missing from
+            # ``_clip_pooled_cache`` (old checkpoints never saved pooled
+            # entries) — treat that as a cache miss too so it re-warms
+            # instead of KeyError-ing on ``self._clip_pooled_cache[cap]``.
+            if cap in self.text_cache and cap in self._clip_pooled_cache:
                 t5_results.append(self.text_cache[cap])
                 pooled_results.append(self._clip_pooled_cache[cap])
             else:
@@ -291,6 +296,50 @@ class Flux1Trainer(GenericTrainingPipeline):
         )
         self._clip_pooled = pooled_batch
         return t5_batch
+
+    # ── Checkpoint Resume: pooled TE cache ───────────────────────────────
+    #
+    # The base ``PipelineBaseMixin.get_te_cache``/``set_te_cache`` only
+    # persist ``self.text_cache`` (the T5 sequence-embedding cache). Flux1
+    # also caches a SECOND dict, ``self._clip_pooled_cache`` (pooled CLIP
+    # embeds used as ``pooled_projections``), keyed by the same captions.
+    # Without this override, ``_clip_pooled_cache`` silently vanished on
+    # every checkpoint save — a resumed run with offloaded/unloaded TEs
+    # would then hit a missing pooled entry for any caption not re-warmed
+    # this run.
+
+    def get_te_cache(self) -> dict[str, dict[str, torch.Tensor]] | None:
+        """Return T5 + CLIP pooled caches for checkpoint persistence."""
+        if not self.text_cache:
+            return None
+        return {
+            "t5": dict(self.text_cache),
+            "clip_pooled": dict(self._clip_pooled_cache),
+        }
+
+    def set_te_cache(self, caches: dict[str, dict[str, torch.Tensor]]) -> None:
+        """Restore T5 + CLIP pooled caches from a checkpoint.
+
+        Backward compatible with pre-fix checkpoints that only ever saved
+        ``{"te": ...}`` (no ``"clip_pooled"`` subcache at all): the T5 cache
+        unions ``"te"`` (legacy key) with ``"t5"`` (current key); a missing
+        ``"clip_pooled"`` subcache leaves ``_clip_pooled_cache`` untouched
+        (empty on first resume from an old checkpoint) rather than raising —
+        ``_get_cached_text_embeddings`` re-warms any caption whose pooled
+        entry is missing (or raises the existing, non-silent "not
+        pre-cached" error if the TE has since been unloaded).
+        """
+        t5_data = {**caches.get("te", {}), **caches.get("t5", {})}
+        if t5_data:
+            self.text_cache = t5_data
+        clip_data = caches.get("clip_pooled")
+        if clip_data:
+            self._clip_pooled_cache = clip_data
+        self.logger.info(
+            "te_cache_restored",
+            t5_entries=len(self.text_cache),
+            clip_entries=len(self._clip_pooled_cache),
+        )
 
     # ── Latent Packing ───────────────────────────────────────────────────
 

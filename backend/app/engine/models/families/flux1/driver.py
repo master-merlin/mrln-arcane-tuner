@@ -295,29 +295,14 @@ class Flux1Driver(IModelDriver):
         return Flux1Saver()
 
     # --- Phase 8: Checkpoint Resume ---
-
-    def get_te_cache(self) -> dict[str, dict[str, torch.Tensor]] | None:
-        """Return T5 + CLIP pooled caches for checkpoint persistence."""
-        text_cache = getattr(self, "text_cache", {})
-        if not text_cache:
-            return None
-        clip_pooled = getattr(self, "_clip_pooled_cache", {})
-        return {
-            "t5": dict(text_cache),
-            "clip_pooled": dict(clip_pooled),
-        }
-
-    def set_te_cache(self, caches: dict[str, dict[str, torch.Tensor]]) -> None:
-        """Restore T5 + CLIP pooled caches from checkpoint."""
-        if "t5" in caches:
-            self.text_cache = caches["t5"]
-        if "clip_pooled" in caches:
-            self._clip_pooled_cache = caches["clip_pooled"]
-        self.logger.info(
-            "te_cache_restored",
-            t5_entries=len(getattr(self, "text_cache", {})),
-            clip_entries=len(getattr(self, "_clip_pooled_cache", {})),
-        )
+    #
+    # NOTE: get_te_cache/set_te_cache live on ``Flux1Trainer`` (trainer.py),
+    # not here. The real checkpoint dispatch path
+    # (pipeline_train.py save sites + pipeline_optimization.py resume merge)
+    # calls ``self.get_te_cache()``/``set_te_cache()`` on the TRAINER, never
+    # on the driver — a driver-level override here would be dead code (and
+    # ``self.text_cache``/``self._clip_pooled_cache`` don't even live on the
+    # driver instance; they're set on the trainer).
 
     # --- Phase 9: Advanced Memory & Training Features ---
 

@@ -240,7 +240,12 @@ class SDXLTrainer(GenericTrainingPipeline):
         uncached: list[tuple[int, str]] = []
 
         for i, cap in enumerate(captions):
-            if cap not in self.text_cache:
+            # Check BOTH caches: a caption restored from an old (pre-fix)
+            # checkpoint can be present in ``text_cache`` but missing from
+            # ``_pooled_cache`` (old checkpoints never saved pooled entries)
+            # — treat that as a cache miss too so it re-warms instead of
+            # KeyError-ing on ``self._pooled_cache[cap]`` below.
+            if cap not in self.text_cache or cap not in self._pooled_cache:
                 uncached.append((i, cap))
 
         if uncached and self.text_encoder_1 is not None:
@@ -349,6 +354,49 @@ class SDXLTrainer(GenericTrainingPipeline):
         ).min(dim=1)[0] / snr
 
         return weight
+
+    # ── Checkpoint Resume: pooled TE cache ───────────────────────────────
+    #
+    # The base ``PipelineBaseMixin.get_te_cache``/``set_te_cache`` only
+    # persist ``self.text_cache`` (the penultimate-hidden-state cache).
+    # SDXL also caches a SECOND dict, ``self._pooled_cache`` (pooled CLIP-G
+    # embeds used in ``added_cond_kwargs["text_embeds"]``), keyed by the same
+    # captions. Without this override, ``_pooled_cache`` silently vanished on
+    # every checkpoint save — a resumed run with offloaded/unloaded TEs would
+    # then hit a missing pooled entry for any caption not re-warmed this run.
+
+    def get_te_cache(self) -> dict[str, dict[str, torch.Tensor]] | None:
+        """Return prompt + pooled caches for checkpoint persistence."""
+        if not self.text_cache:
+            return None
+        return {
+            "prompt": dict(self.text_cache),
+            "pooled": dict(self._pooled_cache),
+        }
+
+    def set_te_cache(self, caches: dict[str, dict[str, torch.Tensor]]) -> None:
+        """Restore prompt + pooled caches from a checkpoint.
+
+        Backward compatible with pre-fix checkpoints that only ever saved
+        ``{"te": ...}`` (no ``"pooled"`` subcache at all): the prompt cache
+        unions ``"te"`` (legacy key) with ``"prompt"`` (current key); a
+        missing ``"pooled"`` subcache leaves ``_pooled_cache`` untouched
+        (empty on first resume from an old checkpoint) rather than raising —
+        ``_get_cached_text_embeddings`` re-warms any caption whose pooled
+        entry is missing (or raises the existing, non-silent "not
+        pre-cached" error if the TE has since been unloaded).
+        """
+        prompt_data = {**caches.get("te", {}), **caches.get("prompt", {})}
+        if prompt_data:
+            self.text_cache = prompt_data
+        pooled_data = caches.get("pooled")
+        if pooled_data:
+            self._pooled_cache = pooled_data
+        self.logger.info(
+            "te_cache_restored",
+            prompt_entries=len(self.text_cache),
+            pooled_entries=len(self._pooled_cache),
+        )
 
     # ── SDXL Batch Extra (time_ids) ──────────────────────────────────────
 

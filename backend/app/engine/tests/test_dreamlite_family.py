@@ -177,7 +177,9 @@ def test_manifest_components():
     families' ``transformer/`` subfolder. All four components are
     diffusers-0.39 / transformers-4.57-native: the TE config is saved by
     transformers 4.57.3 (verified), so no krea2-style rope translation is
-    needed and the plain manifest path suffices.
+    needed and the plain manifest path suffices. The TE class must be
+    ``Qwen3VLForConditionalGeneration`` (the checkpoint's actual saved
+    class), not the base ``Qwen3VLModel``.
     """
     import torch  # noqa: PLC0415
 
@@ -198,9 +200,15 @@ def test_manifest_components():
     assert "AutoTokenizer" in spec_map["tokenizer"].hf_class
     assert spec_map["tokenizer"].is_torch_model is False
 
-    # Text encoder: Qwen3-VL base model (no LM head; hidden_states[-1] is
-    # identical to the pipeline's Qwen3VLForConditionalGeneration tap).
-    assert spec_map["text_encoder"].hf_class == "transformers.Qwen3VLModel"
+    # Text encoder: Qwen3-VL VLM checkpoint layout — MUST be
+    # Qwen3VLForConditionalGeneration (the checkpoint's "model."-prefixed
+    # keys only load under this class; the base Qwen3VLModel has
+    # base_model_prefix="" and silently random-inits the whole TE — see
+    # loader.py module docstring + test_text_encoder_hf_class_consumes_
+    # real_checkpoint_key_layout).
+    assert spec_map["text_encoder"].hf_class == (
+        "transformers.Qwen3VLForConditionalGeneration"
+    )
     assert spec_map["text_encoder"].subfolder == "text_encoder"
 
     # VAE: AutoencoderTiny (taesdxl â€” NO latent_dist, encode returns .latents)
@@ -229,6 +237,114 @@ def test_loader_dtype_policy_is_generic():
         assert spec.dtype_override is None, (
             f"{spec.key} must not force a dtype override"
         )
+
+
+def test_text_encoder_hf_class_consumes_real_checkpoint_key_layout():
+    """The declared text_encoder hf_class must load 100% of the checkpoint.
+
+    Root-caused regression test for a silent random-TE bug: the manifest
+    used to declare ``transformers.Qwen3VLModel`` (``base_model_prefix``
+    ``""``) for a checkpoint that was saved from
+    ``Qwen3VLForConditionalGeneration`` (``base_model_prefix`` ``"model"``;
+    every ``text_encoder/`` tensor on disk is prefixed ``"model."``).
+    Because the WRONG class's prefix never matched, ``from_pretrained``'s
+    prefix-stripping never engaged, so it merely WARNED and silently
+    random-initialized the entire ~2.1B TE -- every dreamlite sample
+    (train + preview, cond + uncond) was conditioned on garbage.
+    (Historical precedent: the ideogram4 family hit the identical
+    Qwen3-VL AutoModel/prefix-mismatch trap -- see
+    ``families/ideogram4/loader.py``.)
+
+    Builds a TINY ``Qwen3VLForConditionalGeneration`` from a mini config
+    (real 2-tower text+vision layout, matching the checkpoint's actual
+    architecture) and ``save_pretrained``'s it to a tmp dir, producing the
+    genuine ``"model."``-prefixed key layout on disk -- a real
+    ``save_pretrained``/``from_pretrained`` round trip, no network access.
+    It then loads that checkpoint via the class the manifest DECLARES
+    (resolved dynamically off the ``ComponentSpec`` via
+    ``GenericComponentLoader._import_class`` -- never hardcoded) with
+    ``output_loading_info=True`` and asserts every tensor was consumed:
+    ``missing_keys == []`` and ``unexpected_keys == []``.
+    ``lm_head.weight`` is TIED (``tie_word_embeddings=True``, matching the
+    checkpoint's ``te.tie_word_embeddings: true``), so it is legitimately
+    absent from the safetensors file and from ``missing_keys`` -- no
+    special-casing needed.
+
+    On the OLD ``Qwen3VLModel`` declaration this test is RED: every single
+    tensor mismatches (40/40 missing, 40/40 unexpected at this tiny
+    scale -- the same 0/N-consumed pattern the real checkpoint hit at
+    625/625). It goes GREEN once the manifest declares
+    ``Qwen3VLForConditionalGeneration``.
+    """
+    import tempfile  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+    from transformers import Qwen3VLForConditionalGeneration  # noqa: PLC0415
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import (  # noqa: PLC0415
+        Qwen3VLConfig,
+        Qwen3VLTextConfig,
+        Qwen3VLVisionConfig,
+    )
+
+    from app.engine.core.pipeline.loader_base import GenericComponentLoader
+    from app.engine.models.families.dreamlite.loader import DreamLiteLoader
+
+    text_cfg = Qwen3VLTextConfig(
+        vocab_size=64,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=4,
+        max_position_embeddings=32,
+        tie_word_embeddings=True,
+        rope_scaling={"rope_type": "default", "mrope_section": [1, 1, 2]},
+    )
+    vision_cfg = Qwen3VLVisionConfig(
+        depth=1,
+        hidden_size=8,
+        intermediate_size=16,
+        num_heads=2,
+        in_channels=3,
+        patch_size=4,
+        spatial_merge_size=1,
+        temporal_patch_size=2,
+        out_hidden_size=8,
+        num_position_embeddings=16,
+        deepstack_visual_indexes=[0],
+    )
+    top_cfg = Qwen3VLConfig(
+        # NOTE: sub-configs MUST be passed as dicts -- Qwen3VLConfig.__init__
+        # only materializes ``self.vision_config``/``self.text_config`` for
+        # ``dict``/``None`` inputs; an already-constructed config instance
+        # is silently dropped (neither branch fires).
+        text_config=text_cfg.to_dict(),
+        vision_config=vision_cfg.to_dict(),
+        tie_word_embeddings=True,
+    )
+    checkpoint_model = Qwen3VLForConditionalGeneration(top_cfg)
+
+    loader = DreamLiteLoader(torch.device("cpu"))
+    definition = _make_dreamlite_definition()
+    spec_map = {
+        s.key: s for s in loader.get_component_manifest(definition)
+    }
+    declared_hf_class = spec_map["text_encoder"].hf_class
+    te_cls = GenericComponentLoader._import_class(declared_hf_class)
+
+    with tempfile.TemporaryDirectory() as td:
+        checkpoint_model.save_pretrained(td)
+        _loaded, info = te_cls.from_pretrained(td, output_loading_info=True)
+
+    assert info["missing_keys"] == [], (
+        f"text_encoder hf_class {declared_hf_class!r} failed to consume "
+        f"checkpoint tensors (prefix mismatch): {info['missing_keys']}"
+    )
+    assert info["unexpected_keys"] == [], (
+        f"text_encoder hf_class {declared_hf_class!r} left checkpoint "
+        f"tensors unmatched (prefix mismatch): {info['unexpected_keys']}"
+    )
 
 
 # â”€â”€ Task 4: Driver â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

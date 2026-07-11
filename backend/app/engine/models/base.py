@@ -1174,22 +1174,6 @@ class BaseTrainingConfig(BaseModel):
             "step": 1.0,
         },
     )
-    # ── Forward-compat (Phase 3): declared now so configs validate, inert until P3 ──
-    radc_seqlen_influence: float = Field(
-        0.0,
-        description=(
-            "RADC SNR-shift weight on total sequence length F×H×W (0 = off). "
-            "Phase 3 — has no effect in Phase 1."
-        ),
-        json_schema_extra={
-            "group": "VIDEO",
-            "depends_on": "timestep_sampling:radc",
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.05,
-        },
-    )
-
     # [SAMPLING] Sample Generation During Training
     sample_every_n_steps: int = Field(
         0,

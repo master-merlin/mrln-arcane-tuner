@@ -269,14 +269,6 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             "must be >= 0."
         )
 
-    # radc_seqlen_influence is only meaningful under the radc sampler.
-    if _to_float(config.get("radc_seqlen_influence")) > 0.0 and str(
-        config.get("timestep_sampling", "")
-    ) != "radc":
-        report.errors.append(
-            "radc_seqlen_influence is only valid when timestep_sampling='radc'."
-        )
-
     return report
 
 

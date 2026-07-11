@@ -16,8 +16,6 @@ def test_phase1_video_fields_exist_with_defaults():
     assert schema["max_windows"]["default"] == 10
     # Axis B
     assert schema["frame_stride"]["default"] == 1
-    # Forward-compat (declared, inert in Phase 1)
-    assert schema["radc_seqlen_influence"]["default"] == 0.0
 
 
 def test_phase1_video_fields_carry_group_and_depends_on():
@@ -27,12 +25,10 @@ def test_phase1_video_fields_carry_group_and_depends_on():
         "window_overlap",
         "max_windows",
         "frame_stride",
-        "radc_seqlen_influence",
     ):
         assert schema[key]["group"] == "VIDEO"
     assert schema["window_overlap"]["depends_on"] == "temporal_coverage:tiled"
     assert schema["max_windows"]["depends_on"] == "temporal_coverage:tiled"
-    assert schema["radc_seqlen_influence"]["depends_on"] == "timestep_sampling:radc"
 
 
 def test_new_video_knobs_hidden_for_image_models():
@@ -44,7 +40,6 @@ def test_new_video_knobs_hidden_for_image_models():
         "window_overlap",
         "max_windows",
         "frame_stride",
-        "radc_seqlen_influence",
     ):
         assert key in vis, f"{key} missing from field_visibility"
         assert vis[key]["supported"] is False, f"{key} should be hidden for image models"
@@ -57,7 +52,6 @@ def test_new_video_knobs_shown_for_video_models():
         "window_overlap",
         "max_windows",
         "frame_stride",
-        "radc_seqlen_influence",
     ):
         assert vis[key]["supported"] is True
 
@@ -180,39 +174,12 @@ def test_stride_with_manual_target_fps_rejected(monkeypatch):
     assert any("frame_stride" in e and "target_fps" in e for e in rep.errors)
 
 
-def test_radc_seqlen_influence_rejected_without_radc(monkeypatch):
-    rep = validate_video_config(
-        _defn(monkeypatch),
-        {
-            "radc_seqlen_influence": 0.3,
-            "timestep_sampling": "uniform",
-            "num_frames": 25,
-        },
-    )
-    assert not rep.ok
-    assert any("radc_seqlen_influence" in e for e in rep.errors)
-
-
 def test_sliding_coverage_accepted(monkeypatch):
     # Forward-compat (Phase 2): the contract must ACCEPT 'sliding' (validated,
     # not errored) so Phase 2 wires only behavior, not config/validation/UI.
     rep = validate_video_config(
         _defn(monkeypatch),
         {"temporal_coverage": "sliding", "num_frames": 25},
-    )
-    assert rep.ok, rep.errors
-
-
-def test_radc_seqlen_influence_accepted_with_radc(monkeypatch):
-    # Positive branch: radc_seqlen_influence > 0 is valid WHEN the radc sampler
-    # is selected (mirror of test_radc_seqlen_influence_rejected_without_radc).
-    rep = validate_video_config(
-        _defn(monkeypatch),
-        {
-            "radc_seqlen_influence": 0.3,
-            "timestep_sampling": "radc",
-            "num_frames": 25,
-        },
     )
     assert rep.ok, rep.errors
 

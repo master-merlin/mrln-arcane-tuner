@@ -14,12 +14,14 @@ runtime test catches:
 (attribute access ``.field`` or dict-key access ``"field"`` / ``'field'``),
 excluding the model definition itself and the gating/visibility plumbing
 (``archetypes.py``), OR be listed in :data:`ALLOWED_STUBS` with a one-line
-justification. The four W4-1 dead fields (``quantization_strategy``,
-``resolution_strategy``, ``boundary_ratio_override``, ``still_resolutions``)
-were deleted, so they must NOT be needed here. The fifth recon candidate,
-``radc_seqlen_influence``, was RETAINED — it is read by
-``video_contract.validate_video_config`` (a live consumer), so deleting it was
-out of scope for this wave.
+justification. All five W4-1 dead fields (``quantization_strategy``,
+``resolution_strategy``, ``boundary_ratio_override``, ``still_resolutions`` and
+``radc_seqlen_influence``) were deleted, so they must NOT be needed here. The
+fifth, ``radc_seqlen_influence``, was initially retained for a self-referential
+``video_contract`` guard (it only read the field to reject it unless the RADC
+sampler was selected — a Phase-3 stub that never consumes the value); the fix
+wave recognised that guard as circular and deleted the field. It will be
+re-added with Phase 3.
 
 **Gating-coverage guard** — every field must either be gated in
 ``_FIELD_RULES`` OR be explicitly enrolled in :data:`UNIVERSAL_FIELDS`. A new

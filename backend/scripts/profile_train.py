@@ -72,7 +72,6 @@ CONFIG: dict = {
     "radc_end": 0.3,
     "radc_width": 0.5,
     "radc_res_influence": 0.15,
-    "radc_seqlen_influence": 0,
     # Audio joint training
     "train_audio": True,
     "audio_loss_weight": 1.0,

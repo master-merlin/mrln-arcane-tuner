@@ -4,26 +4,25 @@ carry the removed keys.
 
 ``BaseTrainingConfig`` uses Pydantic's default ``extra='ignore'`` policy, so an
 unknown key is silently dropped rather than raising. These tests pin that
-contract for the four W4-1 deletions specifically, and confirm the fifth recon
-candidate (``radc_seqlen_influence``) is still a first-class field.
+contract for all five W4-1 deletions, including ``radc_seqlen_influence`` —
+originally retained for its self-referential ``video_contract`` guard, deleted
+in the W4-1 fix wave once that guard was recognised as circular (the RADC
+sampler is a Phase-3 stub that never reads the field). It will be re-added with
+Phase 3.
 """
 
 from __future__ import annotations
 
-import pytest
-
 from app.engine.models.base import BaseTrainingConfig
 
-# The four fields deleted in W4-1 (with representative legacy values).
+# The five fields deleted in W4-1 (with representative legacy values).
 DELETED_KEYS: dict[str, object] = {
     "quantization_strategy": "vram_safe",
     "resolution_strategy": "progressive",
     "boundary_ratio_override": 0.5,
     "still_resolutions": [512, 768],
+    "radc_seqlen_influence": 0.3,
 }
-
-# Retained: read by video_contract.validate_video_config, so NOT deleted.
-RETAINED_KEY = "radc_seqlen_influence"
 
 
 def _minimal(**overrides):
@@ -52,17 +51,3 @@ def test_deleted_keys_do_not_survive_round_trip():
     dumped = BaseTrainingConfig.model_validate(legacy).model_dump()
     leaked = sorted(k for k in DELETED_KEYS if k in dumped)
     assert not leaked, f"deleted keys leaked back into model_dump(): {leaked}"
-
-
-def test_retained_radc_field_still_round_trips():
-    cfg = BaseTrainingConfig.model_validate(_minimal(**{RETAINED_KEY: 0.3}))
-    dumped = cfg.model_dump()
-    assert RETAINED_KEY in dumped
-    assert dumped[RETAINED_KEY] == pytest.approx(0.3)
-
-
-def test_legacy_config_mixing_deleted_and_retained_keys_loads():
-    legacy = _minimal(radc_seqlen_influence=0.3, **DELETED_KEYS)
-    dumped = BaseTrainingConfig.model_validate(legacy).model_dump()
-    assert RETAINED_KEY in dumped
-    assert not any(k in dumped for k in DELETED_KEYS)

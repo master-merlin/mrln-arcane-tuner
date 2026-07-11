@@ -54,7 +54,7 @@ BASE_CONFIG: dict = {
     "lr_scheduler": "constant",
     "timestep_sampling": "radc",
     "radc_start": 0.9, "radc_end": 0.3, "radc_width": 0.5,
-    "radc_res_influence": 0.15, "radc_seqlen_influence": 0,
+    "radc_res_influence": 0.15,
     "train_audio": True,
     "audio_loss_weight": 1.0,
     "temporal_coverage": "tiled",

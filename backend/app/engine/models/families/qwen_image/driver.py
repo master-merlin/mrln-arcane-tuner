@@ -6,6 +6,7 @@ Phase 1 scope: loading-related methods only.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import structlog
@@ -35,6 +36,31 @@ PROMPT_TEMPLATE = (
     "<|im_start|>assistant\n"
 )
 PROMPT_TEMPLATE_DROP_IDX = 34  # system preamble tokens to drop
+
+
+# Fingerprint of the pre-encode prompt transformation (the system-prompt chat
+# template + the number of system-preamble tokens dropped), hashed so any future
+# edit to either changes the fingerprint automatically. Exposed publicly so
+# ``QwenImageTrainer`` can version its disk-cache key (``_TE_TEMPLATE_ID`` in
+# trainer.py — the boogu_image precedent) WITHOUT reaching across the module
+# boundary to reconstruct the template itself. A stale-cache hazard: the raw
+# caption alone was previously the disk key, so a template edit would silently
+# serve embeddings encoded under the OLD template (the dreamlite poisoned-cache
+# incident class).
+_TE_TEMPLATE_FINGERPRINT = hashlib.sha256(
+    f"{PROMPT_TEMPLATE}\x00{PROMPT_TEMPLATE_DROP_IDX}".encode("utf-8")
+).hexdigest()[:16]
+
+
+def te_template_fingerprint() -> str:
+    """Public fingerprint of this driver's pre-encode prompt transformation.
+
+    Used by ``QwenImageTrainer`` to version its disk-cache key so a change to
+    ``PROMPT_TEMPLATE`` / ``PROMPT_TEMPLATE_DROP_IDX`` produces fresh on-disk
+    filenames instead of silently reusing embeddings encoded under the old
+    template.
+    """
+    return _TE_TEMPLATE_FINGERPRINT
 
 
 class QwenImageDriver(IModelDriver):

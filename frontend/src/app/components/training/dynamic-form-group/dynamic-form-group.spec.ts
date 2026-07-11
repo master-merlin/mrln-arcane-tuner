@@ -8,6 +8,10 @@ import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import type { SchemaNode } from '../schema-node';
+import type {
+    ModelCapabilities,
+    FieldVisibility,
+} from '../../../services/model-capabilities.service';
 
 /**
  * OnPush staleness: the rows render from `formArray().controls`, but template
@@ -191,6 +195,120 @@ describe('DynamicFormGroup — dataset row toggle placement', () => {
         const child = fixture.debugElement.children[0].componentInstance as DynamicFormGroupComponent;
         const keys = child.nestedProps().map(p => p.key);
         expect(keys.indexOf('original_weight')).toBeLessThan(keys.indexOf('mask_opacity'));
+    });
+});
+
+/**
+ * Nested-field capability gating (W4-3). Per-dataset fields render from a
+ * capability-BLIND branch — until this fix, `field_visibility` was consulted
+ * only for TOP-LEVEL fields, so a per-dataset field the family doesn't support
+ * (e.g. `masking_enabled` on a paired edit model, gated by
+ * archetypes.py `supports_masking_variants`) still rendered a live toggle that
+ * did nothing. The group must consult the SAME `field_visibility` descriptor
+ * for nested props: gated-off ⇒ not rendered (same UX as top-level), and a
+ * hidden master toggle takes its `depends_on` dependents with it so no orphaned
+ * greyed control lingers.
+ */
+function nestedCaps(
+    overrides: Record<string, FieldVisibility>,
+): ModelCapabilities {
+    return {
+        enriched: true,
+        block_topology: [],
+        lora_targetable_modules: [],
+        trainable_layers: [],
+        archetype: 'edit',
+        capabilities: {} as ModelCapabilities['capabilities'],
+        field_visibility: overrides,
+        defaults: {},
+    };
+}
+
+@Component({
+    standalone: true,
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    imports: [DynamicFormGroupComponent],
+    template: `<app-dynamic-form-group fieldKey="datasets" [schema]="schema" [parentForm]="form()" [capabilities]="caps()" />`,
+})
+class GatedDatasetsHostComponent {
+    schema = DATASETS_SCHEMA;
+    caps = signal<ModelCapabilities | null>(null);
+    form = signal(new FormGroup({
+        datasets: new FormArray([
+            new FormGroup({
+                use_captions: new FormControl(true),
+                use_model_aware_captions: new FormControl(true),
+                masking_enabled: new FormControl(false),
+                recreate_masks: new FormControl(false),
+                mask_opacity: new FormControl(0),
+                original_weight: new FormControl(1),
+            }),
+        ]),
+    }));
+}
+
+describe('DynamicFormGroup — nested capability gating', () => {
+    function buildGated(caps: ModelCapabilities | null) {
+        TestBed.configureTestingModule({
+            imports: [GatedDatasetsHostComponent],
+            providers: [
+                { provide: DatasetService, useValue: { listDatasets: () => of([]) } },
+                { provide: DatasetStore, useValue: { entities: () => [] } },
+                { provide: RuntimeConfigService, useValue: { mediaBaseUrl: '' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(GatedDatasetsHostComponent);
+        fixture.componentInstance.caps.set(caps);
+        fixture.detectChanges();
+        return fixture;
+    }
+
+    const maskId = '[data-testid="config-nested-checkbox-datasets-masking_enabled"]';
+    const recreateId = '[data-testid="config-nested-checkbox-datasets-recreate_masks"]';
+    const captionsId = '[data-testid="config-nested-checkbox-datasets-use_captions"]';
+
+    it('renders the masking toggle for a supporting family (no descriptor)', () => {
+        const el = buildGated(null).nativeElement as HTMLElement;
+        expect(el.querySelector(maskId)).toBeTruthy();
+        expect(el.querySelector(captionsId)).toBeTruthy();
+    });
+
+    it('renders the masking toggle when the descriptor marks it supported', () => {
+        const el = buildGated(
+            nestedCaps({ masking_enabled: { supported: true } }),
+        ).nativeElement as HTMLElement;
+        expect(el.querySelector(maskId)).toBeTruthy();
+    });
+
+    it('HIDES the masking toggle for a family that gates it off (edit model)', () => {
+        const el = buildGated(
+            nestedCaps({ masking_enabled: { supported: false, reason: 'paired edit' } }),
+        ).nativeElement as HTMLElement;
+        // The gated master toggle is gone…
+        expect(el.querySelector(maskId)).toBeNull();
+        // …and its depends_on dependent (recreate_masks) goes with it — no
+        // orphaned, permanently-disabled control under an "Enable masking" header.
+        expect(el.querySelector(recreateId)).toBeNull();
+        // Unrelated groups (Captions) are untouched.
+        expect(el.querySelector(captionsId)).toBeTruthy();
+    });
+
+    it('drops the whole "Enable masking" inline group when it empties out', () => {
+        const el = buildGated(
+            nestedCaps({ masking_enabled: { supported: false } }),
+        ).nativeElement as HTMLElement;
+        const cell = el.querySelector('[data-testid="config-inline-groups-cell"]');
+        expect(cell).toBeTruthy(); // caption_toggles still renders the cell
+        expect(cell!.textContent).toContain('Captions');
+        expect(cell!.textContent).not.toContain('Enable masking');
+    });
+
+    it('leaves nested rendering unchanged when no field is gated off', () => {
+        const el = buildGated(
+            nestedCaps({ some_unrelated_field: { supported: false } }),
+        ).nativeElement as HTMLElement;
+        const cell = el.querySelector('[data-testid="config-inline-groups-cell"]');
+        expect(cell!.querySelectorAll('input[type="checkbox"]').length).toBe(4);
     });
 });
 

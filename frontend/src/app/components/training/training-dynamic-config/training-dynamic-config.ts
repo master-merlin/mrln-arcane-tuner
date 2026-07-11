@@ -700,6 +700,26 @@ export class TrainingDynamicConfigComponent {
     }
   });
 
+  // Load the field-capability descriptor whenever the SELECTED definition
+  // changes. Driving this off the `currentDefinitionId` signal (rather than the
+  // `definition_id` FormControl's valueChanges) is what makes capabilities
+  // follow the model through EVERY path uniformly — including the ones that
+  // update the control with `{ emitEvent: false }` and only sync the signal:
+  //   - the model_family `depends_on` cascade (re-selects the first valid
+  //     definition on a family switch) — the family-switch staleness bug;
+  //   - the model-change modal "Keep" revert (restores the previous definition);
+  //   - plus the ordinary definition-dropdown change, jobs-screen handoff and
+  //     template apply, which all set the signal too.
+  // The read of `currentDefinitionId()` is the ONLY tracked dependency; the
+  // body is wrapped in `untracked()` because `_loadFieldCapabilities` writes the
+  // `capabilities` signal and reads `schema()` (via applyDefinitionDefaults) —
+  // tracking those would re-fire the effect on its own writes (the past
+  // scope-switch freeze) and on unrelated schema changes.
+  private _capabilitiesEffect = effect(() => {
+    const defId = this.currentDefinitionId();
+    untracked(() => this._loadFieldCapabilities(defId));
+  });
+
   constructor() {
     this.configHelpService.getConfigHelp()
       .subscribe(data => this.configHelp.set(data));
@@ -994,6 +1014,8 @@ export class TrainingDynamicConfigComponent {
     const newFamily = this.form.get('model_family')?.value || '';
     const newDefId = this.form.get('definition_id')?.value || '';
     this.selectedFamily.set(newFamily);
+    // Setting currentDefinitionId drives `_capabilitiesEffect`, which refreshes
+    // the field-visibility descriptor for the newly-applied model.
     this.currentDefinitionId.set(newDefId);
     this._lastKnownModelFamily = newFamily;
     this._lastKnownDefinitionId = newDefId;
@@ -1001,8 +1023,6 @@ export class TrainingDynamicConfigComponent {
     if (newDefId && this.advancedVramCard) {
       this.advancedVramCard.loadCapabilities(newDefId);
     }
-    // Refresh field-visibility descriptor for the newly-applied model
-    this._loadFieldCapabilities(newDefId);
     this._pendingDefinitionId = null;
     this._previousModelFamily = null;
     this._previousDefinitionId = null;
@@ -1463,14 +1483,12 @@ export class TrainingDynamicConfigComponent {
     // Run once on load
     updateDisabledStates();
 
-    // Sync definition_id to reactive signal for UI updates
+    // Sync definition_id to reactive signal for UI updates. Setting the signal
+    // here also seeds the capability descriptor for the initial definition via
+    // `_capabilitiesEffect` — no explicit `_loadFieldCapabilities` call needed.
     this.currentDefinitionId.set(this.form.get('definition_id')?.value || '');
     this._lastKnownDefinitionId = this.form.get('definition_id')?.value || '';
     this._lastKnownModelFamily = this.form.get('model_family')?.value || '';
-
-    // Seed capability descriptor for the initial definition so family-unsupported
-    // fields are hidden on first render (valueChanges below only fires on change).
-    this._loadFieldCapabilities(this.form.get('definition_id')?.value || '');
 
     this.form.get('definition_id')?.valueChanges.pipe(
       takeUntilDestroyed(this.destroyRef)
@@ -1482,15 +1500,14 @@ export class TrainingDynamicConfigComponent {
         }
       }
       this._lastKnownDefinitionId = val || '';
+      // Sync the tracking signal — `_capabilitiesEffect` reacts to this and
+      // (re)loads the field-capability descriptor for the newly-selected
+      // definition, so family-unsupported fields hide correctly.
       this.currentDefinitionId.set(val || '');
       // Trigger capabilities fetch for advanced VRAM card
       if (val && this.advancedVramCard) {
         this.advancedVramCard.loadCapabilities(val);
       }
-      // Fetch the capability descriptor to hide family-unsupported fields.
-      // Read-only/additive: it does not touch the model-change-modal revert
-      // logic above (which uses emitEvent:false and therefore never reaches here).
-      this._loadFieldCapabilities(val);
     });
 
     // Watch model_family changes (definition_id auto-set uses emitEvent:false,
@@ -1522,7 +1539,7 @@ export class TrainingDynamicConfigComponent {
 
   organizeGroups(properties: SchemaProp[]) {
     const groupMap: Record<string, SchemaProp[]> = {};
-    const groupOrder = ['MODEL_SELECTION', 'BASE', 'CONCEPTS', 'STRATEGY', 'NETWORK', 'OPTIMIZER', 'OPTIMIZER_EXPERT', 'SAMPLING', 'ENGINE', 'OTHER'];
+    const groupOrder = ['MODEL_SELECTION', 'BASE', 'CONCEPTS', 'STRATEGY', 'VIDEO', 'NETWORK', 'OPTIMIZER', 'OPTIMIZER_EXPERT', 'SAMPLING', 'ENGINE', 'OTHER'];
 
     properties.forEach(prop => {
       const groupName = prop.schema.group || 'OTHER';
@@ -1591,6 +1608,7 @@ export class TrainingDynamicConfigComponent {
       'BASE': 'General Settings',
       'MODEL_SELECTION': 'Model Selection',
       'STRATEGY': 'Training Dynamics',
+      'VIDEO': 'Video Settings',
       'NETWORK': 'LoRA Parameters',
       'OPTIMIZER': 'Optimizer Settings',
       'OPTIMIZER_EXPERT': 'Expert Features',
@@ -1615,6 +1633,7 @@ export class TrainingDynamicConfigComponent {
       'Concepts & Triggerwords': 'datasets',
       'General Settings': 'general',
       'Training Dynamics': 'dynamics',
+      'Video Settings': 'video-settings',
       'LoRA Parameters': 'lora',
       'Optimizer Settings': 'optim',
       'Expert Features': 'expert',

@@ -381,3 +381,101 @@ class TestDecodeAndTrainerWiring:
         trainer.definition = MagicMock()
 
         assert LongCatImageTrainer._create_sampler(trainer) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# W3-1 — native sample defaults (LongCatImagePipeline __call__: 50 / 4.5 / 1024)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNativeSampleDefaults:
+    def test_sample_single_fills_longcat_native_defaults(self, monkeypatch):
+        """Unset steps/guidance/resolution default to the LongCatImagePipeline
+        natives (50 / 4.5 / 1024), NOT the generic base's 20 / 3.5. Sourced
+        from the shipped base.yaml `defaults` (constants are fallback only)."""
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        # Mirror the shipped base.yaml defaults on the mock definition.
+        sampler.pipeline.definition.defaults = {
+            "num_inference_steps": 50,
+            "guidance_scale": 4.5,
+            "resolution": 1024,
+        }
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        sampler._sample_single({"prompt": "defaults"}, 0)
+        assert captured["num_inference_steps"] == 50
+        assert captured["guidance_scale"] == 4.5
+        assert captured["width"] == 1024
+        assert captured["height"] == 1024
+
+    def test_sample_single_sources_from_definition_not_constant(self, monkeypatch):
+        """Definition-sourced, not hardcoded: sentinel YAML values pass through
+        (proving the sampler reads `definition.defaults`, not the constants)."""
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        sampler.pipeline.definition.defaults = {
+            "num_inference_steps": 37,
+            "guidance_scale": 2.7,
+            "resolution": 512,
+        }
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        sampler._sample_single({"prompt": "sourced"}, 0)
+        assert captured["num_inference_steps"] == 37
+        assert captured["guidance_scale"] == 2.7
+        assert captured["width"] == 512
+        assert captured["height"] == 512
+
+    def test_sample_single_respects_explicit_values(self, monkeypatch):
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        sampler.pipeline.definition.defaults = {
+            "num_inference_steps": 50, "guidance_scale": 4.5, "resolution": 1024,
+        }
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        sampler._sample_single(
+            {"prompt": "explicit", "width": 768, "height": 768,
+             "num_inference_steps": 12, "guidance_scale": 1.0},
+            0,
+        )
+        assert captured["num_inference_steps"] == 12
+        assert captured["guidance_scale"] == 1.0
+        assert captured["width"] == 768
+
+    def test_shipped_yaml_carries_native_sample_defaults(self):
+        """base.yaml is the source of truth for LongCat's preview natives."""
+        import pathlib
+
+        import yaml
+
+        base = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "models" / "families" / "longcat_image" / "definitions" / "base.yaml"
+        )
+        defaults = yaml.safe_load(base.read_text(encoding="utf-8"))["defaults"]
+        assert defaults["num_inference_steps"] == 50
+        assert defaults["guidance_scale"] == 4.5
+        assert defaults["resolution"] == 1024

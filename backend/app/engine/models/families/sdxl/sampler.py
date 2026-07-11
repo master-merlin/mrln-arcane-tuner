@@ -24,6 +24,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Native in-training-preview defaults (StableDiffusionXLPipeline.__call__:
+# 50 steps, guidance 5.0, 1024²). Definition-sourced via sdxl_base_1.0.yaml's
+# `defaults`; these constants are the fallback used only when a definition
+# omits the key. The generic base's 20 steps / 3.5 guidance are off-
+# distribution for SDXL (its native pipeline uses 50 / 5.0).
+_SDXL_DEFAULT_RESOLUTION: int = 1024
+_SDXL_DEFAULT_STEPS: int = 50
+_SDXL_DEFAULT_GUIDANCE: float = 5.0
+
 
 class SDXLSampler(GenericSamplingPipeline):
     """SDXL family sampler — DDIM denoising with Classifier-Free Guidance.
@@ -62,6 +71,35 @@ class SDXLSampler(GenericSamplingPipeline):
             clip_sample=False,
             set_alpha_to_one=False,
         )
+
+    # ── Native sample defaults (W3-1; ovis/boogu precedent) ──────────────
+
+    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Any:
+        """Fill SDXL's native preview defaults before the generic flow.
+
+        Sources 50 steps / 5.0 guidance / 1024² from the definition's
+        ``defaults`` (constants are fallback only) — the diffusers SDXL
+        pipeline's own ``__call__`` defaults, versus the generic base's
+        off-distribution 20 steps / 3.5 guidance. Explicit per-prompt values
+        always win (fill only when unset/0).
+        """
+        cfg = dict(prompt_cfg)
+        defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
+        resolution = int(defaults.get("resolution", _SDXL_DEFAULT_RESOLUTION))
+        fill = {
+            "width": resolution,
+            "height": resolution,
+            "num_inference_steps": int(
+                defaults.get("num_inference_steps", _SDXL_DEFAULT_STEPS),
+            ),
+            "guidance_scale": float(
+                defaults.get("guidance_scale", _SDXL_DEFAULT_GUIDANCE),
+            ),
+        }
+        for key, value in fill.items():
+            if cfg.get(key) in (None, 0):
+                cfg[key] = value
+        return super()._sample_single(cfg, step)
 
     # ── Abstract Hook Implementations ────────────────────────────────────
 

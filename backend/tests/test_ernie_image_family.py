@@ -76,7 +76,10 @@ def test_loader_manifest_shape():
     by_key = {spec.key: spec for spec in manifest}
     assert by_key["unet"].hf_class == "diffusers.ErnieImageTransformer2DModel"
     assert by_key["vae"].hf_class == "diffusers.AutoencoderKLFlux2"
-    assert by_key["text_encoder"].hf_class == "transformers.AutoModel"
+    # Pinned to the concrete class (W2-B). The checkpoint declares
+    # architectures=["Mistral3Model"] -- exactly what AutoModel resolved to --
+    # but pinning stops a silent upstream Auto-remap from random-initing the TE.
+    assert by_key["text_encoder"].hf_class == "transformers.Mistral3Model"
     # ERNIE checkpoint's tokenizer_config.json declares a Baidu-internal
     # class ("TokenizersBackend") not registered in transformers, so we
     # load via PreTrainedTokenizerFast directly from tokenizer.json.

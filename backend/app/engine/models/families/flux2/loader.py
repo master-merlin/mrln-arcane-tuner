@@ -26,7 +26,15 @@ class Flux2Loader(GenericComponentLoader):
             te_class = "transformers.Mistral3ForConditionalGeneration"
             tok_class = "transformers.AutoProcessor"
         else:
-            te_class = "transformers.AutoModelForCausalLM"
+            # Pin the concrete class instead of ``AutoModelForCausalLM``. The
+            # Klein ``text_encoder/config.json`` declares
+            # ``architectures=["Qwen3ForCausalLM"]`` (verified: klein-base-4B,
+            # klein-9B), which is exactly what ``AutoModelForCausalLM`` resolves
+            # to today — so this is behaviour-preserving — but pinning stops a
+            # silent upstream Auto-mapping change from swapping in a different
+            # architecture and random-initialising the TE (the B1 loading-contract
+            # bug class; see tests/test_te_loading_contracts.py).
+            te_class = "transformers.Qwen3ForCausalLM"
             tok_class = "transformers.AutoTokenizer"
 
         return [

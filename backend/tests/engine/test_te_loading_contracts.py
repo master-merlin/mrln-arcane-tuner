@@ -70,17 +70,27 @@ D:/AI/huggingface/hub, unless noted):
   ** kandinsky5's Kandinsky-5 repo is not in the local cache; the declared
      classes (Qwen2.5-VL CFG + CLIP-L) are the standard Kandinsky-5 text towers.
 
-Exemptions (see ``test_all_families_covered``):
-  * hidream_o1 -- a UNIFIED model (the whole DiT is a vendored
-    ``Qwen3VLForConditionalGeneration`` subclass with extra heads); it has NO
-    standalone TE component and is loaded ``strict=False`` by design (the
+Coverage guard (see ``test_all_families_covered``)
+==================================================
+``test_all_families_covered`` enforces coverage on two levels: family-level
+(every family with a loader is in ``CASES`` or ``_EXEMPT_FAMILIES``) AND
+COMPONENT-granular (for every family, each TE-like manifest component --
+detected dynamically as a ``transformers``-backed torch model -- is pinned in
+``CASES`` or listed in ``_EXEMPT_COMPONENTS``). The component-granular layer is
+what stops a NEW text encoder (e.g. a ``text_encoder_3`` on an already-covered
+family) from silently escaping the contract.
+
+Exemptions:
+  * ``_EXEMPT_FAMILIES`` -- hidream_o1: a UNIFIED model (the whole DiT is a
+    vendored ``Qwen3VLForConditionalGeneration`` subclass with extra heads); it
+    has NO standalone TE component and is loaded ``strict=False`` by design (the
     extra ``x_embedder`` / ``final_layer2`` / ``t_embedder1`` heads legitimately
     create missing keys), so a byte-clean round-trip contract does not apply.
     Its hand-load already surfaces missing/unexpected keys via ``self.warnings``.
-  * wan21 ``image_encoder`` (open_clip ``.bin`` CLIP-ViT-H) and
-    hunyuan_video15 i2v ``image_encoder`` (SiglipVisionModel) are VISION
-    encoders, not text encoders, and load from non-diffusers formats -- outside
-    the B1 text-encoder bug class.
+  * ``_EXEMPT_COMPONENTS`` -- wan21 i2v ``image_encoder`` (open_clip ``.bin``
+    CLIP-ViT-H) and hunyuan_video15 i2v ``image_encoder`` (SiglipVisionModel):
+    VISION encoders, not text encoders, loaded from non-diffusers formats --
+    outside the B1 text-encoder bug class.
 """
 
 from __future__ import annotations
@@ -379,7 +389,28 @@ CASES: list[_Case] = [
 _EXEMPT_FAMILIES = {
     "hidream_o1": (
         "Unified vendored Qwen3VLForConditionalGeneration DiT (extra heads); no "
-        "standalone TE, loaded strict=False by design -- no byte-clean round-trip."
+        "standalone TE, loaded strict=False by design -- no byte-clean round-trip. "
+        "Its single manifest entry (key='unet') carries the VENDORED class "
+        "(app.engine...Qwen3VLForConditionalGeneration), so it is not even flagged "
+        "TE-like by the component-granular guard below."
+    ),
+}
+
+# TE-like manifest components that are intentionally NOT under the text-encoder
+# loading contract, keyed by ``(family, component_key)``. These are surfaced by
+# ``_te_like_components`` (transformers-backed torch models) but fall outside the
+# B1 *text*-encoder bug class, so they carry an explicit justification rather than
+# a ``_Case``. Adding a NEW TE-like component to any family fails the coverage
+# guard until it is either given a ``_Case`` or listed here.
+_EXEMPT_COMPONENTS: dict[tuple[str, str], str] = {
+    ("wan21", "image_encoder"): (
+        "I2V conditioning VISION encoder (open_clip CLIP-ViT-H '.bin', declared "
+        "transformers.CLIPVisionModel) -- a vision tower, not a text encoder, and "
+        "loaded from a non-diffusers format; outside the B1 text-encoder bug class."
+    ),
+    ("hunyuan_video15", "image_encoder"): (
+        "I2V conditioning VISION encoder (transformers.SiglipVisionModel) -- a "
+        "vision tower, not a text encoder; outside the B1 text-encoder bug class."
     ),
 }
 
@@ -401,6 +432,76 @@ def _resolve_declared_from_manifest(case: _Case) -> str:
         f"{case.family}: component {case.component_key!r} not found in manifest "
         f"(keys: {[s.key for s in manifest]})",
     )
+
+
+# ---------------------------------------------------------------------------
+# TE-like component enumeration (component-granular coverage guard)
+# ---------------------------------------------------------------------------
+#
+# The coverage guard used to compare FAMILY names only, so a NEW TE-like
+# component added to an already-covered family (e.g. a ``text_encoder_3`` on
+# kandinsky5) would silently escape the loading contract. The helpers below make
+# coverage COMPONENT-granular: for every family we enumerate its loader's real
+# manifest, detect the TE-like entries DYNAMICALLY (never a hand-maintained
+# family set), and require each one to be pinned in ``CASES`` or exempted.
+
+# Architecture-param variants to enumerate so *conditionally* added components
+# (e.g. the i2v image encoders) are surfaced, not just the t2v default manifest.
+_MANIFEST_ARCH_VARIANTS: tuple[dict, ...] = ({}, {"mode": "i2v"})
+
+
+def _is_te_like(spec) -> bool:
+    """Whether a manifest entry is a text-encoder-like component.
+
+    DYNAMIC detection off the manifest metadata: a TE-like component is a torch
+    model (``is_torch_model``) whose ``hf_class`` resolves from the
+    ``transformers`` package (text OR vision encoders -- e.g. CLIPTextModel,
+    T5EncoderModel, Qwen*ForConditionalGeneration, SiglipVisionModel). This
+    excludes tokenizers / processors (``is_torch_model=False``) and the
+    diffusers / vendored classes (VAE, DiT/transformer), which are not part of
+    the B1 random-TE bug class. Any newly added transformers-backed encoder
+    component is therefore caught by the coverage guard.
+    """
+    return bool(spec.is_torch_model) and spec.hf_class.startswith("transformers.")
+
+
+def _loader_class_for_family(family: str):
+    """Resolve the family's loader class WITHOUT relying on ``CASES``.
+
+    Discovers the single ``GenericComponentLoader`` subclass *defined in* the
+    family's ``loader`` module (so exempt families like ``hidream_o1`` that have
+    no ``_Case`` are still enumerable).
+    """
+    mod = importlib.import_module(_m(family))
+    candidates = [
+        obj
+        for _name, obj in inspect.getmembers(mod, inspect.isclass)
+        if issubclass(obj, GenericComponentLoader)
+        and obj is not GenericComponentLoader
+        and obj.__module__ == mod.__name__
+    ]
+    assert len(candidates) == 1, (
+        f"{family}: expected exactly one loader class defined in {mod.__name__}, "
+        f"found {[c.__name__ for c in candidates]}"
+    )
+    return candidates[0]
+
+
+def _te_like_components(family: str) -> set[str]:
+    """The set of TE-like manifest component keys for ``family``.
+
+    Unions the manifest across ``_MANIFEST_ARCH_VARIANTS`` so mode-gated
+    components (i2v image encoders) are included alongside the default manifest.
+    """
+    loader = _loader_class_for_family(family)(torch.device("cpu"))
+    keys: set[str] = set()
+    for arch in _MANIFEST_ARCH_VARIANTS:
+        definition = SimpleNamespace(
+            architecture_params=dict(arch), components={}, family=family,
+        )
+        manifest = loader.get_component_manifest(definition)
+        keys.update(spec.key for spec in manifest if _is_te_like(spec))
+    return keys
 
 
 def _roundtrip_missing_unexpected(true_model, declared_cls):
@@ -481,11 +582,21 @@ def test_krea2_hand_loaded_te_contract():
 
 
 def test_all_families_covered():
-    """Every family with a loader.py is either contract-tested or exempted.
+    """Every family, and every TE-like component it declares, is accounted for.
 
-    Guards the W2-B rollout: a newly added family that ships a TE must appear in
-    ``CASES`` (or be justified in ``_EXEMPT_FAMILIES``) rather than silently
-    skipping the loading-contract check.
+    Two layers of coverage guard the W2-B rollout:
+
+    * **Family-level** -- a newly added family that ships a loader must appear in
+      ``CASES`` (or be justified in ``_EXEMPT_FAMILIES``) rather than silently
+      skipping the loading-contract check. Retained so a family that *hand-loads*
+      its TE (no manifest entry, e.g. a krea2-style loader) can't slip through.
+
+    * **Component-granular** -- for every family, the loader's real manifest is
+      enumerated and each TE-like component (detected DYNAMICALLY off the manifest
+      metadata, not a hand-maintained family set) must be pinned in ``CASES`` or
+      listed in ``_EXEMPT_COMPONENTS``. This closes the gap where a NEW TE-like
+      component (e.g. a ``text_encoder_3``) added to an ALREADY-covered family
+      would escape a family-name-only guard.
     """
     from pathlib import Path
 
@@ -496,11 +607,32 @@ def test_all_families_covered():
         p.parent.name
         for p in families_dir.glob("*/loader.py")
     }
-    covered = {c.family for c in CASES}
-    accounted = covered | set(_EXEMPT_FAMILIES)
-    missing = with_loader - accounted
-    assert not missing, (
+
+    # -- Layer 1: family-level completeness -------------------------------------
+    covered_families = {c.family for c in CASES}
+    accounted_families = covered_families | set(_EXEMPT_FAMILIES)
+    missing_families = with_loader - accounted_families
+    assert not missing_families, (
         f"families with a loader.py but no TE loading-contract case or exemption: "
-        f"{sorted(missing)} -- add a _Case (build a tiny TRUE-arch model) or an "
-        f"_EXEMPT_FAMILIES entry with justification."
+        f"{sorted(missing_families)} -- add a _Case (build a tiny TRUE-arch model) "
+        f"or an _EXEMPT_FAMILIES entry with justification."
+    )
+
+    # -- Layer 2: component-granular coverage -----------------------------------
+    covered_components = {
+        (c.family, c.component_key) for c in CASES if c.in_manifest
+    }
+    accounted_components = covered_components | set(_EXEMPT_COMPONENTS)
+    escaped = sorted(
+        f"{family}:{key}"
+        for family in with_loader
+        for key in _te_like_components(family)
+        if (family, key) not in accounted_components
+    )
+    assert not escaped, (
+        f"TE-like manifest components with no loading-contract case or exemption: "
+        f"{escaped} -- a text encoder was added to a loader manifest without being "
+        f"enumerated. Add a _Case (build a tiny TRUE-arch model in _BUILDERS and "
+        f"pin the declared class) or an _EXEMPT_COMPONENTS entry with a "
+        f"justification. A newly added TE must be pinned, never silently skipped."
     )

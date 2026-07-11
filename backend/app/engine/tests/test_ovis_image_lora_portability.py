@@ -1,8 +1,23 @@
 """Ovis-Image LoRA portability: canonical keys + pinned key count.
 
-No upstream LoRA loader mixin exists for Ovis — OUR saver's canonical
-ai-toolkit keys (``diffusion_model.{module}.lora_A/B.weight``) are the
-format of record.
+Ovis is a Flux-architecture MMDiT. ComfyUI detects and loads it as a
+``comfy.model_base.Flux`` model (``comfy/model_detection.py``: the
+``double_blocks.*.img_mlp.gate_proj`` + ``txt_norm`` branch, ``# Ovis
+model``), so its LoRA key mapping is governed by the Flux handler in
+``comfy/lora.py::model_lora_keys_unet`` — ``comfy.utils.flux_to_diffusers``
+registers ``key_map`` entries keyed ``transformer.<diffusers_module>`` (and
+bare ``<diffusers_module>`` for DiffSynth), NEVER ``diffusion_model.<module>``
+with diffusers module names (that prefix in ComfyUI is paired with
+BFL-native ``double_blocks.*``/``single_blocks.*`` names via the generic
+block, which our diffusers ``transformer_blocks.*`` names do not match).
+
+Therefore OUR saver's canonical portable keys are
+``transformer.{module}.lora_A/B.weight`` — the diffusers/PEFT/SimpleTuner
+convention that ComfyUI's ``flux_to_diffusers`` ``transformer.`` route maps
+onto every one of our 207 curated modules. (Historic note: the saver
+previously emitted ``diffusion_model.{module}.*``, which matched NOTHING in
+ComfyUI's Flux key_map and silently applied a zero-effect LoRA — the
+UAT bug this pins against.)
 
 Pinned key math (checkpoint config: num_layers=6, num_single_layers=27):
 - double block:  8 attention + 4 feed-forward projections = 12 modules
@@ -199,29 +214,85 @@ def test_definition_ships_curated_lora_target_list():
     )
 
 
-def test_saver_key_format_is_ai_toolkit():
-    """All keys are diffusion_model.{module}.lora_A/B.weight; the model's
+def test_saver_key_format_is_transformer_prefixed():
+    """All keys are transformer.{module}.lora_A/B.weight; the model's
     top-level proj_out (final projection) is NOT among them."""
     with tempfile.TemporaryDirectory() as td:
         _, sd = _save_lora(td)
 
     assert sd, "Saved state dict is empty"
     for k in sd:
-        assert k.startswith("diffusion_model."), f"bad prefix: {k!r}"
+        assert k.startswith("transformer."), f"bad prefix: {k!r}"
+        assert not k.startswith("diffusion_model."), (
+            f"legacy diffusion_model. prefix is a ComfyUI zero-match: {k!r}"
+        )
         assert k.endswith(".weight"), f"bad suffix: {k!r}"
         assert ".lora_A." in k or ".lora_B." in k, f"not a LoRA key: {k!r}"
         assert ".default." not in k, f"PEFT adapter name leaked: {k!r}"
 
     # Final projection excluded (regex-string exclude_modules)
-    assert "diffusion_model.proj_out.lora_A.weight" not in sd, (
+    assert "transformer.proj_out.lora_A.weight" not in sd, (
         "top-level proj_out must be excluded from the LoRA"
     )
     # But single-block proj_out is present
-    assert "diffusion_model.single_transformer_blocks.0.proj_out.lora_A.weight" in sd
+    assert "transformer.single_transformer_blocks.0.proj_out.lora_A.weight" in sd
 
     lora_a = [k for k in sd if ".lora_A." in k]
     lora_b = [k for k in sd if ".lora_B." in k]
     assert len(lora_a) == len(lora_b), "lora_A/lora_B counts must match"
+
+
+def test_saver_keys_match_comfyui_flux_transformer_route():
+    """The saved keys must be exactly what ComfyUI's Flux LoRA handler maps.
+
+    ComfyUI loads Ovis as ``comfy.model_base.Flux`` and builds its LoRA
+    ``key_map`` from ``comfy.utils.flux_to_diffusers``, registering entries
+    keyed ``transformer.<diffusers_module>`` (``comfy/lora.py``
+    ``model_lora_keys_unet``: ``key_map["transformer.{}".format(k[:-len(
+    ".weight")])] = to``). ``comfy/weight_adapter/lora.py::LoRAAdapter.load``
+    then accepts our PEFT ``lora_A``/``lora_B`` suffix via its
+    ``diffusers2_lora`` branch (``"{x}.lora_B.weight"``). So for each saved
+    module ``transformer.<m>.lora_B.weight``, ComfyUI's adapter key ``x`` is
+    ``transformer.<m>`` — which is a live key_map entry -> the LoRA applies.
+
+    This spot-checks the exact diffusers module names ``flux_to_diffusers``
+    emits for double blocks (``transformer_blocks.N.attn.to_q``,
+    ``...ff.net.0.proj``, ``...ff_context.net.2``) and single blocks
+    (``single_transformer_blocks.N.attn.to_q``, ``...proj_mlp``,
+    ``...proj_out``) — every module class in our curated target list.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        _, sd = _save_lora(td)
+
+    # Spot-check one representative of every module class flux_to_diffusers
+    # maps under the transformer. route (tiny model => block index 0).
+    must_have = [
+        # double-block attention (img_attn.qkv + txt_attn.qkv slices + proj)
+        "transformer.transformer_blocks.0.attn.to_q.lora_A.weight",
+        "transformer.transformer_blocks.0.attn.to_k.lora_B.weight",
+        "transformer.transformer_blocks.0.attn.to_v.lora_A.weight",
+        "transformer.transformer_blocks.0.attn.to_out.0.lora_B.weight",
+        "transformer.transformer_blocks.0.attn.add_q_proj.lora_A.weight",
+        "transformer.transformer_blocks.0.attn.add_k_proj.lora_B.weight",
+        "transformer.transformer_blocks.0.attn.add_v_proj.lora_A.weight",
+        "transformer.transformer_blocks.0.attn.to_add_out.lora_B.weight",
+        # double-block feed-forward (img_mlp + txt_mlp)
+        "transformer.transformer_blocks.0.ff.net.0.proj.lora_A.weight",
+        "transformer.transformer_blocks.0.ff.net.2.lora_B.weight",
+        "transformer.transformer_blocks.0.ff_context.net.0.proj.lora_A.weight",
+        "transformer.transformer_blocks.0.ff_context.net.2.lora_B.weight",
+        # single-block (linear1 qkv+mlp slices + linear2)
+        "transformer.single_transformer_blocks.0.attn.to_q.lora_A.weight",
+        "transformer.single_transformer_blocks.0.attn.to_k.lora_B.weight",
+        "transformer.single_transformer_blocks.0.attn.to_v.lora_A.weight",
+        "transformer.single_transformer_blocks.0.proj_mlp.lora_B.weight",
+        "transformer.single_transformer_blocks.0.proj_out.lora_A.weight",
+    ]
+    missing = [k for k in must_have if k not in sd]
+    assert not missing, (
+        f"keys ComfyUI's flux_to_diffusers transformer. route expects are "
+        f"absent from the saved LoRA: {missing}"
+    )
 
 
 def test_saver_architecture_metadata():
@@ -248,7 +319,7 @@ def test_lora_round_trips_onto_fresh_model():
     fresh = _build_peft_model(_make_driver())
 
     def _remap_to_peft(key: str) -> str:
-        module_path = key[len("diffusion_model."):]
+        module_path = key[len("transformer."):]
         module_path = module_path.replace(".lora_A.weight", ".lora_A.default.weight")
         module_path = module_path.replace(".lora_B.weight", ".lora_B.default.weight")
         return f"base_model.model.{module_path}"

@@ -348,9 +348,63 @@ class JobManager:
         for key, value in report.derived.items():
             config[key] = value
 
+    def _apply_capability_allowlist(
+        self, config: dict[str, Any], definition_id: str | None
+    ) -> None:
+        """Silently drop top-level config keys the target family's descriptor
+        gates OFF (the same ``field_visibility`` source the Training UI reads to
+        strip unsupported fields before submit).
+
+        Runs at the SAME choke points as :meth:`_apply_video_contract`, but
+        AFTER it: the video contract deliberately HARD-rejects illegal video /
+        audio / expert settings (``train_audio`` on a non-audio model, etc.), so
+        it must see the raw config first — this sweep then removes the remaining
+        capability-gated keys. Unlike the contract this NEVER rejects: it
+        silent-drops (preserving template-import permissiveness and old DB rows)
+        and logs one INFO line naming the family + dropped keys. Unknown / vendor
+        keys and exempt runtime keys are left untouched. Fails open (a lookup /
+        resolve error skips the sweep rather than blocking the job).
+        """
+        if not definition_id:
+            return
+        try:
+            from app.engine.models.registry import registry
+
+            definition = registry.get_definition(definition_id)
+        except Exception as e:  # registry not ready / unknown id — don't block
+            logger.warning(
+                "capability_allowlist_lookup_failed",
+                definition_id=definition_id,
+                error=str(e),
+            )
+            return
+        if definition is None:
+            return
+
+        from app.engine.core.config_allowlist import apply_capability_allowlist
+
+        try:
+            dropped = apply_capability_allowlist(config, definition)
+        except Exception as e:  # never let the sweep block a job
+            logger.warning(
+                "capability_allowlist_failed",
+                definition_id=definition_id,
+                error=str(e),
+            )
+            return
+        if dropped:
+            logger.info(
+                "capability_allowlist_dropped",
+                definition_id=definition_id,
+                dropped=dropped,
+            )
+
     def create_job(self, plugin_id: str, config: dict[str, Any]) -> Job:
         """Create a new pending job and register it."""
         self._apply_video_contract(config, config.get("definition_id") or plugin_id)
+        self._apply_capability_allowlist(
+            config, config.get("definition_id") or plugin_id
+        )
         job = Job.create(plugin_id, config)
         job.config["job_id"] = job.id
         with self._lock:
@@ -478,6 +532,7 @@ class JobManager:
 
         # Re-validate + re-derive video settings on edit (same contract as create).
         self._apply_video_contract(new_config, new_config.get("definition_id"))
+        self._apply_capability_allowlist(new_config, new_config.get("definition_id"))
 
         if job is not None:
             with self._lock:

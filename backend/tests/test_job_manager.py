@@ -1131,6 +1131,41 @@ class TestStartJobPreflightDownload:
 
         plugin.start_training.assert_called_once()
 
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_prefetch_failure_updates_status_label_and_broadcasts(
+        self, mock_pm, mock_get_def, mock_prefetch, tmp_path,
+    ):
+        """A pre-fetch failure (e.g. the HF stall guard exhausting its
+        retries) must not leave the UI stuck on 'Downloading base model…'
+        forever — the label flips to a failure message and broadcasts
+        immediately, even though the launch itself proceeds (best-effort:
+        the trainer's OWN guarded resolve either succeeds from a partial-but-
+        resumable cache or fails the job visibly via the job log)."""
+        plugin = self._mock_plugin()
+        mock_pm.get_plugin.return_value = plugin
+        mock_get_def.return_value = self._fake_definition()
+        mock_prefetch.side_effect = RuntimeError(
+            "HF download stalled: no progress for 180s on attempt 3/3 "
+            "for 'org/repo' — check network/proxy",
+        )
+        mgr = JobManager()
+        mock_loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        mgr.set_loop(mock_loop)
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pflabel"),
+        )
+
+        with patch("app.core.job_manager.asyncio.run_coroutine_threadsafe") as mock_rct:
+            mgr.start_job(job.id)
+
+        assert job.status_label == "Base model download failed — trainer will retry"
+        # Broadcast on the "Downloading base model…" transition AND again on
+        # the failure-label transition — not just the first one.
+        assert mock_rct.call_count >= 2
+        plugin.start_training.assert_called_once()
+
 
 class TestAutoQueue:
     """Backend-owned queue advancement.

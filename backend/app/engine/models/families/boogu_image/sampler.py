@@ -139,6 +139,25 @@ class BooguImageSampler(GenericSamplingPipeline):
 
     def __init__(self, pipeline: "BooguImageTrainer") -> None:
         super().__init__(pipeline)
+        # One-time-per-instance guard for the sample_negative_prompt warning
+        # (see _warn_negative_prompt_ignored_once below).
+        self._negative_prompt_warned = False
+
+    def _warn_negative_prompt_ignored_once(self) -> None:
+        """Warn (once per sampler instance) when a non-empty
+        ``sample_negative_prompt`` is configured for boogu_image — the Base
+        CFG negative is hard-pinned to the DROP prompt (``""``, Task-5 review
+        Finding 2 / ``_CFG_NEGATIVE_CAPTION``), so a configured negative
+        prompt is silently ignored. Instance-scoped (not module-global) since
+        one ``BooguImageSampler`` is created per training run
+        (``pipeline_optimization.py``'s ``self.sampler = self._create_sampler()``)."""
+        if self._negative_prompt_warned:
+            return
+        self._negative_prompt_warned = True
+        logger.warning(
+            "boogu_image ignores sample_negative_prompt; CFG negative is "
+            "the model's native DROP-prompt unconditional",
+        )
 
     # ── Base/Turbo dispatch ──────────────────────────────────────────────
 
@@ -278,6 +297,11 @@ class BooguImageSampler(GenericSamplingPipeline):
         uncond_embeds = None
         uncond_mask = None
         if cfg_on:
+            configured_negative = str(
+                self.config.get("sample_negative_prompt", "") or "",
+            )
+            if configured_negative:
+                self._warn_negative_prompt_ignored_once()
             # driver.encode_text("") -> the DROP system prompt (Task-5 fix;
             # do NOT hand-roll a different negative encode). Encoded once,
             # reused across all steps.

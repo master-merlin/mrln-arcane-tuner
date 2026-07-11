@@ -34,10 +34,14 @@ architecture_params:
   # Derived (num_layers - num_double_stream_layers), not a real constructor
   # kwarg -- kept for documentation / activation-estimate hints only.
   transformer.num_single_stream_layers: 32
-  # ASSUMED -- the vendored class's num_refiner_layers DEFAULT (2). The
-  # task-2 brief states "3 refiner pairs noise/ref_image/context" but does
-  # not give a per-refiner depth, and the upstream code drop ships no
-  # checkpoint config.json to cross-check against. See task-2-report.md.
+  # Verified fact (task-2-brief.md): 3 refiner CONTAINERS -- noise/
+  # ref_image/context. Per-refiner DEPTH (2) is not separately stated in the
+  # brief or the upstream code drop (no checkpoint config.json ships), so we
+  # use the vendored class's own __init__ default (num_refiner_layers=2),
+  # corroborated by two other brief-given values (axes_dim_rope, axes_lens)
+  # that also match this class's defaults exactly (task-2-report.md).
+  # Authoritative source remains the real checkpoint's config.json at
+  # from_pretrained load time -- cross-check there if it ever ships.
   transformer.num_refiner_layers: 2
   transformer.num_attention_heads: 28
   transformer.num_kv_heads: 7
@@ -83,10 +87,20 @@ architecture_params:
   vae.vae_scale_factor: 8
   vae.scaling_factor: 0.3611
   vae.shift_factor: 0.1159
+# Verified on-disk sizes (2026-07, final-review Finding 1 fix): the
+# task-2/3-brief.md "10.3 / 8.8 / 0.08" figures were a transcription error --
+# those are PARAM COUNTS IN BILLIONS (10.29B / 8.77B / ~84M; see
+# _FAMILY_PARAMS["boogu_image"] in vram_estimator.py), not MB on disk.
+# Measured via HfApi(files_metadata=True) shard-size totals on
+# Boogu/Boogu-Image-0.1-Base (metadata only, no download; identical on
+# -Turbo): transformer 20,585,331,562 bytes bf16 (2 bytes/param),
+# mllm 17,545,915,828 bytes bf16, vae 335,307,052 bytes fp32 (4 bytes/param
+# -- the FLUX-style AutoencoderKL ships fp32 on disk despite the bf16
+# detected_precision used at load time).
 model_size_mb:
-  transformer: 10300
-  text_encoder: 8800
-  vae: 80
+  transformer: 19632
+  text_encoder: 16733
+  vae: 320
 block_topology:
 - name: double_stream_layers
   attr_path: double_stream_layers
@@ -132,9 +146,10 @@ block_topology:
 # num_attention_heads=28 -> to_q/to_out width = 3360.
 #
 # Block counts: 8 double-stream + 32 single-stream + 2 each of noise_refiner/
-# ref_image_refiner/context_refiner (refiner depth ASSUMED = vendored class
-# default; see task-2-report.md -- not stated in the task-2 brief or the
-# upstream code drop, which ships no checkpoint config.json).
+# ref_image_refiner/context_refiner. The 3 refiner CONTAINERS are a verified
+# fact (task-2-brief.md); the per-refiner depth (2) is the vendored class's
+# own __init__ default, used absent a checkpoint config.json -- see
+# task-2-report.md for corroborating evidence.
 #
 # MUST stay non-empty: registry.enrich_definition only auto-fills an EMPTY
 # list, and the introspector's exhaustive catalog would otherwise replace

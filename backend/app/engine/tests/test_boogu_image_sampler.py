@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import inspect
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -373,6 +373,87 @@ class TestBaseGuidanceGateAndFormula:
         expected_latents = 0.0 + (t_next - t) * expected_pred
 
         assert torch.allclose(latents, torch.full_like(latents, float(expected_latents)), atol=1e-4)
+
+
+# ── Base loop: ignored sample_negative_prompt warning (final-review
+#    Finding 2) ──────────────────────────────────────────────────────────
+
+
+class TestNegativePromptIgnoredWarning:
+    """The Base CFG negative is hard-pinned to the "" DROP prompt
+    (_CFG_NEGATIVE_CAPTION, Task-5 review Finding 2) -- a configured
+    ``sample_negative_prompt`` is silently ignored. This must not pass
+    silently: a one-time-per-sampler-instance warning must fire, and the
+    "" DROP-prompt path must still be what's actually encoded."""
+
+    def test_warns_once_and_still_uses_drop_prompt(self):
+        from app.engine.models.families.boogu_image import sampler as sampler_mod
+        from app.engine.models.families.boogu_image.sampler import BooguImageSampler
+
+        model = _ConstantModel()
+        definition = _definition(False)
+        drv = _driver_with_model(model, definition)
+        drv.scheduler = _make_scheduler()
+
+        encode_calls = []
+
+        def spy(captions, dtype=None, batch=None):
+            encode_calls.append(list(captions))
+            emb = torch.full((1, 3, TINY_TEXT_DIM), 1.0)
+            return emb, torch.ones(1, 3, dtype=torch.long)
+
+        pipeline = _build_pipeline(drv, definition, encode_text_fn=spy)
+        pipeline.config["sample_negative_prompt"] = "blurry, low quality"
+        sampler = BooguImageSampler(pipeline)
+
+        prompt_emb = sampler.encode_prompt("cat")
+        encode_calls.clear()
+
+        noise = torch.randn(1, TINY_IN_CHANNELS, 4, 4)
+        with patch.object(sampler_mod, "logger") as mock_logger:
+            sampler.denoise(noise, prompt_emb, num_steps=2, guidance_scale=4.0, seed=0)
+
+            assert mock_logger.warning.call_count == 1
+            warning_msg = mock_logger.warning.call_args[0][0]
+            assert "boogu_image ignores sample_negative_prompt" in warning_msg
+            assert "DROP-prompt" in warning_msg
+
+            # A second denoise() call on the SAME sampler instance must NOT
+            # re-warn (one-time-per-instance guard, not once-per-step).
+            sampler.denoise(noise, prompt_emb, num_steps=2, guidance_scale=4.0, seed=0)
+            assert mock_logger.warning.call_count == 1
+
+        # The "" DROP path must still be what's actually encoded, NOT the
+        # configured "blurry, low quality" negative, across BOTH calls.
+        assert encode_calls == [[""], [""]], (
+            "the configured sample_negative_prompt must be IGNORED -- the "
+            "CFG negative must still route through the empty DROP prompt"
+        )
+
+    def test_no_warning_when_negative_prompt_unset(self):
+        """No sample_negative_prompt configured (the common case) -> no
+        warning noise."""
+        from app.engine.models.families.boogu_image import sampler as sampler_mod
+        from app.engine.models.families.boogu_image.sampler import BooguImageSampler
+
+        model = _ConstantModel()
+        definition = _definition(False)
+        drv = _driver_with_model(model, definition)
+        drv.scheduler = _make_scheduler()
+
+        def spy(captions, dtype=None, batch=None):
+            emb = torch.full((1, 3, TINY_TEXT_DIM), 1.0)
+            return emb, torch.ones(1, 3, dtype=torch.long)
+
+        pipeline = _build_pipeline(drv, definition, encode_text_fn=spy)
+        # sample_negative_prompt absent from pipeline.config entirely.
+        sampler = BooguImageSampler(pipeline)
+
+        prompt_emb = sampler.encode_prompt("cat")
+        noise = torch.randn(1, TINY_IN_CHANNELS, 4, 4)
+        with patch.object(sampler_mod, "logger") as mock_logger:
+            sampler.denoise(noise, prompt_emb, num_steps=2, guidance_scale=4.0, seed=0)
+            mock_logger.warning.assert_not_called()
 
 
 class TestBaseLoopUsesLoaderScheduler:

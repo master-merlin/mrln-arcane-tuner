@@ -293,14 +293,6 @@ class BaseTrainingConfig(BaseModel):
             "depends_on": "te_quantization_backend",
         },
     )
-    quantization_strategy: Literal["fastest", "vram_safe"] = Field(
-        "fastest",
-        description="Quantization loading strategy: 'fastest' quantizes on GPU in-place, 'vram_safe' quantizes one component at a time",
-        json_schema_extra={
-            "group": "MODEL_SELECTION",
-            "depends_on": "quantization:!none|te_quantization:!none",
-        },
-    )
     store_quantized_version: bool = Field(
         True,
         description="Cache quantized model to disk for instant reload (auto-skipped on Blackwell — not needed with native FP8 training)",
@@ -407,11 +399,6 @@ class BaseTrainingConfig(BaseModel):
         0,
         description="Base resolution for control images in paired edit training (0 = follow the target's bucket). Qwen-Edit recommends 1024.",
         json_schema_extra={"group": "STRATEGY", "min": 0, "max": 2048, "step": 64},
-    )
-    resolution_strategy: Literal["mixed", "progressive"] = Field(
-        "mixed",
-        description="Mixed: all resolutions at once. Progressive: small resolutions first, scale up during training.",
-        json_schema_extra={"group": "STRATEGY"},
     )
     bucketing_mode: Literal["kohya", "multi"] = Field(
         "kohya",
@@ -1131,11 +1118,6 @@ class BaseTrainingConfig(BaseModel):
             "step": 1,
         },
     )
-    boundary_ratio_override: float = Field(
-        0,
-        description="Override the MoE high/low timestep boundary (0 = use the definition default)",
-        json_schema_extra={"group": "VIDEO", "min": 0.0, "max": 1.0, "step": 0.025},
-    )
 
     # ── [VIDEO] Temporal sampling (Phase 1: Axis A tiled + Axis B stride) ──
     temporal_coverage: Literal["first", "tiled", "sliding"] = Field(
@@ -1192,31 +1174,6 @@ class BaseTrainingConfig(BaseModel):
             "step": 1.0,
         },
     )
-    # ── Forward-compat (Phase 3): declared now so configs validate, inert until P3 ──
-    still_resolutions: list[int] = Field(
-        default=[],
-        description=(
-            "F=1 (stills) resolutions when mixing stills + video. Empty list "
-            "means INHERIT from `resolutions` (the Phase-3 contract). Phase 3 — "
-            "has no effect in Phase 1."
-        ),
-        json_schema_extra={"group": "VIDEO"},
-    )
-    radc_seqlen_influence: float = Field(
-        0.0,
-        description=(
-            "RADC SNR-shift weight on total sequence length F×H×W (0 = off). "
-            "Phase 3 — has no effect in Phase 1."
-        ),
-        json_schema_extra={
-            "group": "VIDEO",
-            "depends_on": "timestep_sampling:radc",
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.05,
-        },
-    )
-
     # [SAMPLING] Sample Generation During Training
     sample_every_n_steps: int = Field(
         0,

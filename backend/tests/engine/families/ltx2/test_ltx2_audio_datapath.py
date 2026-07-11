@@ -17,6 +17,9 @@ Covered:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 import structlog
 import torch
 from safetensors.torch import load_file, save_file
@@ -110,9 +113,11 @@ def test_precache_writes_one_latent_per_audio_clip(tmp_path, monkeypatch):
 
     t._pre_cache_aux()
 
-    a = tmp_path / "clipA" / "audio" / "clipA.safetensors"
-    b = tmp_path / "clipB" / "audio" / "clipB.safetensors"
-    c = tmp_path / "clipC" / "audio" / "clipC.safetensors"
+    from pathlib import Path
+
+    a = Path(t._audio_cache_dir(str(tmp_path / "clipA"))) / "clipA.safetensors"
+    b = Path(t._audio_cache_dir(str(tmp_path / "clipB"))) / "clipB.safetensors"
+    c = Path(t._audio_cache_dir(str(tmp_path / "clipC"))) / "clipC.safetensors"
     assert a.exists() and b.exists()
     assert not c.exists()  # audio-less clip not cached
     assert not (tmp_path / "img1" / "audio").exists()  # still skipped
@@ -228,6 +233,117 @@ class _RecVae:
     def encode(self, mel):  # extract_audio_latents handles a raw-tensor return
         b = mel.shape[0]
         return torch.zeros(b, 8, L, 16)  # → pack_audio_latents → [B, L, 128]
+
+
+class _RecLogger:
+    def __init__(self):
+        self.infos: list = []
+        self.warnings: list = []
+
+    def info(self, event, **kw):
+        self.infos.append((event, kw))
+
+    def warning(self, event, **kw):
+        self.warnings.append((event, kw))
+
+    def debug(self, *a, **k):
+        pass
+
+
+def test_precache_partial_audio_failure_warns_and_continues(tmp_path, monkeypatch):
+    """A per-clip audio encode failure must not kill the run when OTHER clips
+    encode — counted, left uncached (audio_mask=0 downstream), and visible."""
+    _patch_decode(monkeypatch)
+    t = _trainer()
+    rec = _RecLogger()
+    t.logger = rec
+
+    calls = {"n": 0}
+
+    def _sometimes_boom(waveform, sample_rate):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("first clip audio encode blew up")
+        return torch.ones(1, L, 128)
+
+    t.driver.encode_audio_clean = _sometimes_boom
+    # clipBad encoded first (fails), clipGood second (succeeds) → partial failure.
+    t.inventory = [
+        _video_item(tmp_path, "clipBad"),
+        _video_item(tmp_path, "clipGood"),
+    ]
+
+    t._pre_cache_aux()  # must not raise — partial failure degrades gracefully
+
+    good = Path(t._audio_cache_dir(str(tmp_path / "clipGood"))) / "clipGood.safetensors"
+    bad = Path(t._audio_cache_dir(str(tmp_path / "clipBad"))) / "clipBad.safetensors"
+    assert good.exists() and not bad.exists()
+    done = [kw for ev, kw in rec.infos if ev == "ltx2_audio_precache_done"]
+    assert done and done[0]["failed"] == 1 and done[0]["encoded"] == 1
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "ltx2_audio_precache_incomplete" in warn_events
+
+
+def test_precache_raises_when_all_audio_clips_fail(tmp_path, monkeypatch):
+    """TOTAL audio encode failure must ESCALATE — audio-on training with zero
+    audio latents is a misconfigured run, not a silent degrade."""
+    _patch_decode(monkeypatch)
+    t = _trainer()
+    rec = _RecLogger()
+    t.logger = rec
+
+    def _boom(waveform, sample_rate):
+        raise RuntimeError("audio vae encode blew up")
+
+    t.driver.encode_audio_clean = _boom
+    t.inventory = [_video_item(tmp_path, "clipA")]
+
+    with pytest.raises(RuntimeError, match="ltx2_audio_precache_incomplete"):
+        t._pre_cache_aux()
+
+    adir = t._audio_cache_dir(str(tmp_path / "clipA"))
+    assert not (Path(adir) / "clipA.safetensors").exists()
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "ltx2_audio_precache_incomplete" in warn_events
+
+
+# ── audio-latent cache versioning (stale-cache guard) ──────────────────────
+
+
+def test_audio_cache_dir_carries_a_version_segment(tmp_path):
+    import os as _os
+
+    t = _trainer()
+    adir = t._audio_cache_dir(str(tmp_path / "cache"))
+    parts = _os.path.normpath(adir).split(_os.sep)
+    assert "audio" in parts
+    i = parts.index("audio")
+    assert i + 1 < len(parts) and parts[i + 1].startswith("v")
+
+
+def test_audio_cache_version_stable_for_same_params(tmp_path):
+    t = _trainer()
+    assert t._audio_cache_dir(str(tmp_path / "cache")) == t._audio_cache_dir(
+        str(tmp_path / "cache")
+    )
+
+
+def test_audio_cache_version_changes_with_sampling_rate(tmp_path):
+    t = _trainer()
+    v1 = t._audio_cache_dir(str(tmp_path / "cache"))
+    t.driver.audio_sampling_rate = 22050
+    v2 = t._audio_cache_dir(str(tmp_path / "cache"))
+    assert v1 != v2
+
+
+def test_audio_cache_version_changes_with_vae_stats(tmp_path):
+    t = _trainer()
+    t.driver.audio_vae.latents_mean = torch.zeros(128)
+    t.driver.audio_vae.latents_std = torch.ones(128)
+    v1 = t._audio_cache_dir(str(tmp_path / "cache"))
+    t.driver.audio_vae.latents_mean = torch.ones(128)  # different VAE identity
+    v2 = t._audio_cache_dir(str(tmp_path / "cache"))
+    assert v1 != v2
 
 
 def test_encode_audio_clean_colocates_vae_with_input():

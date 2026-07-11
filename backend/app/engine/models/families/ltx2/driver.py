@@ -8,7 +8,9 @@ LTX-2 trains with flow matching on the ``[0, 1000]`` FlowMatchEuler scale:
 
     add_noise:  noisy = (t/1000) * noise + (1 - t/1000) * latents
     target:     v = noise - latents              (t-independent)
-    forward:    transformer sees timestep = t / 1000  (normalized)
+    forward:    transformer sees the RAW [0, 1000] timestep t (NOT normalized —
+                only add_noise divides by the scale; the DiT's own time embedder
+                consumes the raw flow-match value, matching the sampler)
 
 ``add_noise`` is the contract surface proven by
 ``assert_flowmatch_timestep_contract`` — it must NOT apply an extra ×1000.

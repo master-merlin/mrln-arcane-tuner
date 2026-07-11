@@ -190,5 +190,10 @@ class GenericLoRASaver(ModelSaver):
             if os.path.exists(path):
                 size_mb = os.path.getsize(path) / (1024 * 1024)
                 logger.info("lora_saved", path=str(path), size_mb=f"{size_mb:.2f}MB")
-        except OSError as e:
+        except (OSError, ValueError, RuntimeError) as e:
+            # Log with full context, then RE-RAISE — a swallowed write failure
+            # here previously let a training job "succeed" while writing no LoRA
+            # file. The caller (CheckpointManager) decides whether this is fatal
+            # (final save → fail the job) or log-and-continue (periodic).
             logger.error("save_failed", path=str(path), error=str(e))
+            raise

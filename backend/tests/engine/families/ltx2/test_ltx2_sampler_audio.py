@@ -170,6 +170,40 @@ def test_decode_latents_degrades_to_silent_on_audio_error(monkeypatch):
     assert art.frames.shape == (3, 2, 4, 4)  # video sample preserved
 
 
+def test_decode_latents_audio_error_is_logged_visibly_and_counted(monkeypatch):
+    """The silent-clip degradation must be surfaced (warning) + occurrence-counted."""
+    import app.engine.models.families.ltx2.sampler as sampler_mod
+
+    class _RecLogger:
+        def __init__(self):
+            self.warnings = []
+
+        def warning(self, event, **kw):
+            self.warnings.append((event, kw))
+
+        def info(self, *a, **k):
+            pass
+
+        def debug(self, *a, **k):
+            pass
+
+    rec = _RecLogger()
+    monkeypatch.setattr(sampler_mod, "logger", rec)
+
+    s = _sampler(train_audio=True)
+    monkeypatch.setattr(s, "_decode_video", lambda vae, driver, latents: torch.zeros(3, 2, 4, 4))
+    monkeypatch.setattr(
+        s, "_decode_audio", lambda driver: (_ for _ in ()).throw(RuntimeError("vocoder boom"))
+    )
+
+    s.decode_latents(torch.zeros(1, 7, 128))
+    s.decode_latents(torch.zeros(1, 7, 128))
+
+    fails = [kw for ev, kw in rec.warnings if ev == "ltx2_audio_decode_failed"]
+    assert len(fails) == 2
+    assert fails[0]["occurrence"] == 1 and fails[1]["occurrence"] == 2
+
+
 # ── classifier-free guidance (CFG) ────────────────────────────────────────
 
 

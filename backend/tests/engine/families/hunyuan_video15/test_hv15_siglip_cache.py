@@ -9,6 +9,7 @@ T2V runs are no-ops on both paths.
 import os
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from app.engine.models.families.hunyuan_video15.driver import Hv15Driver
@@ -32,6 +33,49 @@ class _FakeImageEncoder(torch.nn.Module):
         return SimpleNamespace(
             last_hidden_state=torch.full((1, _TOKENS, _DIM), 3.0)
         )
+
+
+class _FailingImageEncoder(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(1, 1)  # gives parameters() a dtype
+
+    def forward(self, pixel_values=None):
+        raise RuntimeError("siglip encode blew up (e.g. CUDA OOM)")
+
+
+class _PartialFailingImageEncoder(torch.nn.Module):
+    """Fails the FIRST encode, then succeeds — a partial-failure run."""
+
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(1, 1)  # gives parameters() a dtype
+        self.calls = 0
+
+    def forward(self, pixel_values=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("first item siglip encode blew up")
+        return SimpleNamespace(
+            last_hidden_state=torch.full((1, _TOKENS, _DIM), 3.0)
+        )
+
+
+class _RecLogger:
+    """Records structured log events so tests can assert visibility."""
+
+    def __init__(self):
+        self.infos: list[tuple] = []
+        self.warnings: list[tuple] = []
+
+    def info(self, event, **kw):
+        self.infos.append((event, kw))
+
+    def warning(self, event, **kw):
+        self.warnings.append((event, kw))
+
+    def debug(self, *a, **k):
+        pass
 
 
 class _FakeLatentManager:
@@ -135,3 +179,68 @@ def test_build_batch_extra_noop_for_t2v(tmp_path):
     item = _still_item(tmp_path)
     t = _make_trainer("t2v", tmp_path, [item])
     assert t.build_batch_extra([item]) == {}
+
+
+# ── silent-failure policy: encoder failures counted + surfaced visibly ─────
+
+
+def test_precache_aux_partial_failure_warns_and_continues(tmp_path):
+    """A per-item Siglip encode failure must NOT kill the run when OTHER items
+    encode — it is counted and the item is left uncached (→ zero-filled
+    downstream), surfaced by a visible warning, never silent."""
+    bad = _still_item(tmp_path, "boom")
+    good = _still_item(tmp_path, "good")
+    # bad fails first, good succeeds → partial failure.
+    t = _make_trainer("i2v", tmp_path, [bad, good])
+    rec = _RecLogger()
+    t.logger = rec
+    t.driver.image_encoder = _PartialFailingImageEncoder()
+
+    t._pre_cache_aux()  # must not raise — partial failure degrades gracefully
+
+    # Good item cached; failing item left uncached.
+    assert os.path.exists(
+        os.path.join(good["cache_dir"], "siglip", "good.safetensors")
+    )
+    assert not os.path.exists(
+        os.path.join(bad["cache_dir"], "siglip", "boom.safetensors")
+    )
+    # Summary carries both counts.
+    done = [kw for ev, kw in rec.infos if ev == "hv15_siglip_precache_done"]
+    assert done and done[0]["failed"] == 1 and done[0]["encoded"] == 1
+    # A VISIBLE warning surfaces the zero-fill exposure.
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "hv15_siglip_precache_incomplete" in warn_events
+
+
+def test_precache_aux_raises_when_all_items_fail_to_encode(tmp_path):
+    """TOTAL Siglip encode failure must ESCALATE — proceeding would train a
+    100%% zero-image_embeds run, i.e. a silently mislabeled t2v run."""
+    item = _still_item(tmp_path, "boom")
+    t = _make_trainer("i2v", tmp_path, [item])
+    rec = _RecLogger()
+    t.logger = rec
+    t.driver.image_encoder = _FailingImageEncoder()
+
+    with pytest.raises(RuntimeError, match="hv15_siglip_precache_incomplete"):
+        t._pre_cache_aux()
+
+    # Nothing cached for the failing item.
+    assert not os.path.exists(
+        os.path.join(item["cache_dir"], "siglip", "boom.safetensors")
+    )
+    # The visible incomplete warning still fired before escalating.
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "hv15_siglip_precache_incomplete" in warn_events
+
+
+def test_precache_aux_no_incomplete_warning_when_all_ok(tmp_path):
+    item = _still_item(tmp_path, "ok")
+    t = _make_trainer("i2v", tmp_path, [item])
+    rec = _RecLogger()
+    t.logger = rec
+
+    t._pre_cache_aux()
+
+    warn_events = [ev for ev, _ in rec.warnings]
+    assert "hv15_siglip_precache_incomplete" not in warn_events

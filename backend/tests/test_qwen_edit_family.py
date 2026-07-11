@@ -222,6 +222,60 @@ class TestEditEncodeTextComposite:
         assert called["n"] == 1
 
 
+# ── VL-processor fallback visibility (silent-failure policy) ─────────────
+
+
+class _RecLogger:
+    def __init__(self):
+        self.warnings: list = []
+
+    def warning(self, event, **kw):
+        self.warnings.append((event, kw))
+
+    def info(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+
+class TestEditProcessorFallbackVisibility:
+    def _trainer_no_repo(self):
+        t = object.__new__(QwenImageEditTrainer)
+        t._processor = None
+        t._processor_resolved = False
+        t._warned_no_processor = False
+        t._no_processor_reason = None
+        t.device = torch.device("cpu")
+        t.definition = ModelDefinition(
+            id="qwen-image-edit", family="qwen_image", name="Qwen-Image-Edit",
+            defaults={}, components={},  # no processor repo → falls back to text-only
+        )
+        t.logger = _RecLogger()
+        # Text-only fallback stub (avoids loading the 20B TE).
+        t._encode_text_direct = lambda caps, dtype: (
+            torch.zeros(1, 2, 8), torch.ones(1, 2, dtype=torch.long)
+        )
+        return t
+
+    def test_missing_processor_warns_once_with_reason(self):
+        t = self._trainer_no_repo()
+
+        t._encode_text_with_control("a cat", "/nope.png", torch.float32)
+        t._encode_text_with_control("a dog", "/nope.png", torch.float32)
+
+        events = [ev for ev, _ in t.logger.warnings]
+        assert events.count("qwen_edit_vl_processor_fallback_text_only") == 1
+        kw = next(kw for ev, kw in t.logger.warnings
+                  if ev == "qwen_edit_vl_processor_fallback_text_only")
+        assert kw.get("reason")  # the reason is surfaced, not silent
+
+    def test_fallback_still_returns_text_only_embeddings(self):
+        t = self._trainer_no_repo()
+        emb, msk = t._encode_text_with_control("a cat", "/nope.png", torch.float32)
+        assert emb.shape[0] == 1 and msk.shape[0] == 1  # behavior unchanged
+
+
 # ── Sampler precision + slicing contract ─────────────────────────────────
 
 

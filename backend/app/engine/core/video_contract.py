@@ -211,7 +211,13 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
     # resolutions; empty/unset inherits `resolutions`. Only entry positivity is
     # validated here — BucketManager snaps to divisibility itself, and Task 1's
     # data-path consumer (resolve_still_resolutions) is the field's real reader.
-    bad_still = [r for r in (config.get("still_resolutions") or []) if int(r) <= 0]
+    # _int_or_none (file convention) so malformed payloads ("abc") produce a
+    # clean validation error instead of an uncaught ValueError.
+    bad_still = [
+        r
+        for r in (config.get("still_resolutions") or [])
+        if (_int_or_none(r) or 0) <= 0
+    ]
     if bad_still:
         report.errors.append(
             f"still_resolutions entries must be positive ints, got {bad_still}."

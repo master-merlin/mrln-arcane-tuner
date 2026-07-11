@@ -211,6 +211,14 @@ def test_still_resolutions_rejects_non_positive_entries():
     assert any("still_resolutions" in e for e in r.errors)
 
 
+def test_still_resolutions_rejects_malformed_entries_cleanly():
+    # Garbage entries ("abc") must yield a clean validation error, never an
+    # uncaught ValueError (review finding: raw int() crashed validation).
+    r = validate_video_config(_defn(LTX2), {"still_resolutions": ["abc", 1024]})
+    assert not r.ok
+    assert any("still_resolutions" in e for e in r.errors)
+
+
 def test_still_resolutions_empty_and_unset_are_valid():
     # Empty/unset means "inherit resolutions" — never an error.
     for cfg in ({}, {"still_resolutions": []}, {"still_resolutions": None}):

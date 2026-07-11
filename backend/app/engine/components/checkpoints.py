@@ -305,11 +305,24 @@ class CheckpointManager:
             try:
                 self.saver.save(save_components, dist_path, metadata=metadata)
                 logger.info("saved_distribution_lora", path=str(dist_path))
-            except (OSError, RuntimeError) as e:
-                logger.error("failed_to_save_distribution_lora", error=str(e))
-
-            if ema_handler:
-                ema_handler.restore()
+            except Exception as e:
+                # A LoRA save failure must never be a silent no-file
+                # "success". Always log loudly here. Whether it is FATAL
+                # depends on which checkpoint this is:
+                #   - periodic (is_final=False): the training loop should
+                #     survive a bad mid-run save and keep training — log
+                #     and continue, resume state below still gets written.
+                #   - final (is_final=True): this IS the deliverable. No
+                #     silent success — re-raise so the job fails loudly.
+                logger.error(
+                    "failed_to_save_distribution_lora",
+                    error=str(e), path=str(dist_path), is_final=is_final,
+                )
+                if is_final:
+                    raise
+            finally:
+                if ema_handler:
+                    ema_handler.restore()
 
         # 2. Save resume state
         self._save_train_state(save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest)

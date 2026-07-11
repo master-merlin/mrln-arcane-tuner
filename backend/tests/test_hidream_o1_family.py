@@ -379,3 +379,31 @@ def test_definition_yaml_loads_into_model_definition():
     definition = ModelDefinition(**data)
     assert definition.id == "hidream_o1_image"
     assert definition.family == "hidream_o1"
+
+
+def test_definition_target_list_excludes_dead_lm_head_entry():
+    """The definition's ``lora_targetable_modules`` must NOT list ``lm_head``.
+
+    ``inject_lora_layers`` (the sole LoRA injection path — ``_apply_peft``
+    calls it, NOT ``get_lora_targets``) skips any module whose qualified name
+    contains a ``LORA_EXCLUDED_SUBSTRINGS`` entry, and ``lm_head`` is one of
+    them. So a ``lm_head`` entry in the YAML target list can never be injected
+    — it is dead metadata that misrepresents the trainable surface. W2-C
+    (2026-07-11) removed it.
+    """
+    from app.engine.models.families.hidream_o1.lora_wrapper import (
+        LORA_EXCLUDED_SUBSTRINGS,
+    )
+
+    assert "lm_head" in LORA_EXCLUDED_SUBSTRINGS  # premise: injector skips it
+
+    yaml_path = (
+        Path(__file__).parent.parent
+        / "app/engine/models/families/hidream_o1/definitions/hidream_o1_image.yaml"
+    )
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+
+    targets = data.get("lora_targetable_modules") or []
+    assert targets, "hidream_o1 must still ship a non-empty target list"
+    assert "lm_head" not in targets, "dead lm_head entry still present in YAML"

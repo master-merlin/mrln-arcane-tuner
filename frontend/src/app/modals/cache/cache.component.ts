@@ -154,6 +154,11 @@ const TONES = ['brand', 'success', 'violet', 'teal', 'warning'];
         </div>
     `,
     styles: [`
+        /* The modal-layer shell (.modal) is a max-height flex column with
+           overflow:hidden and .modal-body as the flex:1 scroll area. This host
+           element sits between them — without display:contents it breaks the
+           flex chain and a long model list gets CLIPPED instead of scrolling. */
+        :host { display: contents; }
         .modal-title { font-size: 16px; font-weight: 700; margin-top: 2px; }
         .ca-empty {
             display: flex;

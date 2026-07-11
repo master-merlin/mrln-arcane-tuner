@@ -13,7 +13,17 @@ defaults:
   learning_rate: 1e-5
   # Kontext doubles the latent sequence (target + context) → heavier; keep
   # the augmentation-free, masking-free edit defaults (enforced anyway).
+  # NOTE: `guidance_scale: 1.0` here is the TRAINING guidance-embed value
+  # (read by Flux1KontextTrainer, matching Kontext's forward-pass default) —
+  # it is deliberately NOT the sample guidance. In-training previews use
+  # FluxKontextPipeline's native SAMPLE guidance (3.5, generic passthrough);
+  # the sampler does not source guidance from `defaults` for exactly this
+  # reason (would otherwise sample kontext at a weak 1.0).
   guidance_scale: 1.0
+  # Native in-training-preview step count, definition-sourced (W3-1).
+  # FluxKontextPipeline.__call__ defaults to 28 steps (pipeline_flux_kontext.py
+  # :763); the generic base's 20 steps under-sample. Steps only.
+  num_inference_steps: 28
 components:
   repo:
     path: huggingface:black-forest-labs/FLUX.1-Kontext-dev

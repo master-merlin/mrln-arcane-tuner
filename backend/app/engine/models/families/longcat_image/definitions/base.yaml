@@ -12,6 +12,14 @@ defaults:
   resolution: 1024
   scheduler: euler_a
   learning_rate: 5e-6
+  # Native in-training-preview defaults, definition-sourced (W3-1). These are
+  # LongCatImagePipeline.__call__'s own defaults (pipeline_longcat_image.py:479/
+  # 481 in diffusers 0.39: num_inference_steps=50, guidance_scale=4.5) — NOT
+  # the generic base's 20 steps / 3.5 guidance, which under LongCat's dynamic-
+  # shifted flow-match schedule under-sample the low-sigma detail region. The
+  # sampler reads these; the Python constants in sampler.py are fallbacks only.
+  num_inference_steps: 50
+  guidance_scale: 4.5
 components:
   repo:
     path: huggingface:meituan-longcat/LongCat-Image

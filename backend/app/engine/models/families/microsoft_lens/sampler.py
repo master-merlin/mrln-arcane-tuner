@@ -78,21 +78,45 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
         self._latent_h = 0
         self._latent_w = 0
 
-    # ── Lazy scheduler (matches Lens-Base scheduler_config.json) ─────────
+    # ── Lazy scheduler (definition-sourced; matches Lens-Base) ───────────
+
+    def _arch(self) -> dict:
+        defn = getattr(self.pipeline, "definition", None)
+        return getattr(defn, "architecture_params", {}) or {}
 
     def _get_scheduler(self):
+        """Build the sampling scheduler from the definition's ``scheduler.*``
+        architecture_params (W3-1 plumbing).
+
+        The values are Lens-Base's own ``scheduler_config.json`` (shipped in
+        ``lens_base.yaml``: shift 3.0, dynamic shifting, exponential time-shift,
+        1000 train timesteps, base/max shift 0.5/1.15, base/max image_seq_len
+        256/4096). The constant fallbacks below are byte-identical and used
+        only if a definition omits a key.
+        """
         if self._scheduler is None:
             from diffusers import FlowMatchEulerDiscreteScheduler
 
+            arch = self._arch()
             self._scheduler = FlowMatchEulerDiscreteScheduler(
-                num_train_timesteps=1000,
-                shift=3.0,
-                use_dynamic_shifting=True,
-                base_shift=0.5,
-                max_shift=1.15,
-                base_image_seq_len=256,
-                max_image_seq_len=4096,
-                time_shift_type="exponential",
+                num_train_timesteps=int(
+                    arch.get("scheduler.num_train_timesteps", 1000),
+                ),
+                shift=float(arch.get("scheduler.shift", 3.0)),
+                use_dynamic_shifting=bool(
+                    arch.get("scheduler.use_dynamic_shifting", True),
+                ),
+                base_shift=float(arch.get("scheduler.base_shift", 0.5)),
+                max_shift=float(arch.get("scheduler.max_shift", 1.15)),
+                base_image_seq_len=int(
+                    arch.get("scheduler.base_image_seq_len", 256),
+                ),
+                max_image_seq_len=int(
+                    arch.get("scheduler.max_image_seq_len", 4096),
+                ),
+                time_shift_type=str(
+                    arch.get("scheduler.time_shift_type", "exponential"),
+                ),
             )
         return self._scheduler
 
@@ -186,8 +210,17 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
         batch = {"latent_h": self._latent_h, "latent_w": self._latent_w}
 
         # Timestep schedule (dynamic shifting on the image sequence length).
+        # Definition-sourced base/max shift + seq-len (W3-1) — byte-identical
+        # fallbacks keep the pipeline's calculate_shift math unchanged.
+        arch = self._arch()
         image_seq_len = latents.shape[1]
-        mu = _calculate_shift(image_seq_len)
+        mu = _calculate_shift(
+            image_seq_len,
+            base_seq_len=int(arch.get("scheduler.base_image_seq_len", 256)),
+            max_seq_len=int(arch.get("scheduler.max_image_seq_len", 4096)),
+            base_shift=float(arch.get("scheduler.base_shift", 0.5)),
+            max_shift=float(arch.get("scheduler.max_shift", 1.15)),
+        )
         sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
         scheduler.set_timesteps(
             num_inference_steps=num_steps, device=device, sigmas=sigmas, mu=mu,

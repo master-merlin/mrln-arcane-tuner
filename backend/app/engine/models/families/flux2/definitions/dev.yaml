@@ -6,6 +6,14 @@ defaults:
   resolution: 1024
   scheduler: euler_a
   learning_rate: 1e-5
+  # Native in-training-preview defaults, definition-sourced (W3-1). These are
+  # the FLUX.2 pipeline __call__ defaults (Flux2Pipeline / Flux2KleinPipeline:
+  # num_inference_steps=50, guidance_scale=4.0) — NOT the generic base's 20
+  # steps / 3.5 guidance. The flux2 trainer does not read `guidance_scale` from
+  # config (sample-only knob here), so sourcing it is safe. Sampler reads
+  # these; explicit per-prompt values win.
+  num_inference_steps: 50
+  guidance_scale: 4.0
 components:
   repo:
     path: huggingface:black-forest-labs/FLUX.2-dev

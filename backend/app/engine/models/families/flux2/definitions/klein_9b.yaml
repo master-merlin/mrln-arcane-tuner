@@ -6,6 +6,13 @@ defaults:
   resolution: 1024
   scheduler: euler_a
   learning_rate: 1e-5
+  # Native in-training-preview defaults, definition-sourced (W3-1). These are
+  # Flux2KleinPipeline.__call__'s own defaults (pipeline_flux2_klein.py:620/622:
+  # num_inference_steps=50, guidance_scale=4.0) — NOT the generic base's 20
+  # steps / 3.5 guidance. The flux2 trainer does not read `guidance_scale` from
+  # config, so sourcing it is safe. Explicit per-prompt values win.
+  num_inference_steps: 50
+  guidance_scale: 4.0
 components:
   repo:
     path: huggingface:black-forest-labs/FLUX.2-klein-base-9B

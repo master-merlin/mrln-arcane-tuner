@@ -40,6 +40,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# LongCatImagePipeline.__call__ native defaults (pipeline_longcat_image.py:
+# 479/481, diffusers 0.39). Definition-sourced via base.yaml's `defaults`;
+# these constants are the fallback used only when a definition omits the key
+# (the shipped YAML always carries them). The generic base's 20 steps / 3.5
+# guidance are off-distribution for LongCat's dynamic-shifted schedule.
+_LONGCAT_DEFAULT_RESOLUTION: int = 1024
+_LONGCAT_DEFAULT_STEPS: int = 50
+_LONGCAT_DEFAULT_GUIDANCE: float = 4.5
+
 
 def _calculate_shift(
     image_seq_len: int,
@@ -76,6 +85,35 @@ class LongCatImageSampler(GenericSamplingPipeline):
     def __init__(self, pipeline: LongCatImageTrainer) -> None:
         super().__init__(pipeline)
         self._scheduler = None
+
+    # ── Native sample defaults (W3-1; ovis/boogu precedent) ──────────────
+
+    def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Any:
+        """Fill LongCat-native preview defaults before the generic flow.
+
+        Pipeline ``__call__`` defaults: 50 steps, guidance 4.5, 1024² —
+        sourced from the definition's ``defaults`` when present (constants are
+        fallbacks only). The generic base's 20-step / 3.5-guidance fallback is
+        off-distribution for LongCat's dynamic-shifted flow-match schedule.
+        Explicit per-prompt values always win (fill only when unset/0).
+        """
+        cfg = dict(prompt_cfg)
+        defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
+        resolution = int(defaults.get("resolution", _LONGCAT_DEFAULT_RESOLUTION))
+        fill = {
+            "width": resolution,
+            "height": resolution,
+            "num_inference_steps": int(
+                defaults.get("num_inference_steps", _LONGCAT_DEFAULT_STEPS),
+            ),
+            "guidance_scale": float(
+                defaults.get("guidance_scale", _LONGCAT_DEFAULT_GUIDANCE),
+            ),
+        }
+        for key, value in fill.items():
+            if cfg.get(key) in (None, 0):
+                cfg[key] = value
+        return super()._sample_single(cfg, step)
 
     # ── Lazy scheduler ───────────────────────────────────────────────────
 

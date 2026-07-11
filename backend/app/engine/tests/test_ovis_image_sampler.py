@@ -441,3 +441,50 @@ class TestNativeSampleDefaults:
         assert captured["num_inference_steps"] == 12
         assert captured["guidance_scale"] == 1.0
         assert captured["width"] == 768
+
+    def test_sample_single_sources_from_definition_not_constant(self, monkeypatch):
+        """W3-1: the fill is DEFINITION-sourced, not the hardcoded constant.
+
+        When the definition's ``defaults`` carry non-native sentinel values,
+        the sampler must pass THOSE through (proving it reads the YAML, not the
+        module constants ``_OVIS_DEFAULT_STEPS`` / ``_OVIS_DEFAULT_GUIDANCE``).
+        """
+        from app.engine.core.sampling import GenericSamplingPipeline
+
+        sampler, _ = _build_sampler()
+        sampler.pipeline.definition.defaults = {
+            "num_inference_steps": 33,
+            "guidance_scale": 2.2,
+            "resolution": 512,
+        }
+        captured: dict = {}
+
+        def _fake_base(self, cfg, step):
+            captured.update(cfg)
+            return MagicMock()
+
+        monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", _fake_base)
+
+        sampler._sample_single({"prompt": "sourced"}, 0)
+        assert captured["num_inference_steps"] == 33
+        assert captured["guidance_scale"] == 2.2
+        assert captured["width"] == 512
+        assert captured["height"] == 512
+
+    def test_shipped_yaml_carries_native_sample_defaults(self):
+        """The shipped ovis base.yaml is the source of truth for the native
+        preview defaults (50 steps / 5.0 guidance) — pinned so a future edit
+        that drops them (silently falling back to the Python constants) fails
+        loudly here."""
+        import pathlib
+
+        import yaml
+
+        base = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "models" / "families" / "ovis_image" / "definitions" / "base.yaml"
+        )
+        defaults = yaml.safe_load(base.read_text(encoding="utf-8"))["defaults"]
+        assert defaults["num_inference_steps"] == 50
+        assert defaults["guidance_scale"] == 5.0
+        assert defaults["resolution"] == 1024

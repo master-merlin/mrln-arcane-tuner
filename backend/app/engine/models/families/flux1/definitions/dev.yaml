@@ -6,6 +6,14 @@ defaults:
   resolution: 1024
   scheduler: euler_a
   learning_rate: 1e-5
+  # Native in-training-preview step count, definition-sourced (W3-1).
+  # FluxPipeline.__call__ defaults to 28 steps for Dev (pipeline_flux.py:663);
+  # the generic base's 20 steps under-sample the shifted schedule. Guidance is
+  # NOT sourced here: `guidance_scale` in `defaults` is the TRAINING guidance-
+  # embed value (read by the trainer), whereas Dev's native SAMPLE guidance
+  # (3.5) already matches the generic passthrough — so the sampler leaves
+  # guidance untouched and only overrides the step count.
+  num_inference_steps: 28
 components:
   repo:
     path: huggingface:black-forest-labs/FLUX.1-dev

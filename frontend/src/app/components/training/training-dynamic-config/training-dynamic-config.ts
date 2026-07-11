@@ -411,6 +411,7 @@ export interface TrainingSegment {
                             [rootSchema]="schema()"
                             [parentForm]="form"
                             [isVideoModel]="isVideoModel()"
+                            [capabilities]="capabilities()"
                             [currentBackend]="form.get('backend')?.value || 'local'"
                             [outputDir]="form.get('output_dir')?.value || 'outputs'"
                             [configHelp]="configHelp()"
@@ -2281,6 +2282,12 @@ export class TrainingDynamicConfigComponent {
           delete raw['targeted_layers'];
         }
       }
+      // Nested (per-item) capability strip: fields the selected family doesn't
+      // support (e.g. `masking_enabled` on a paired edit model) must never reach
+      // the backend from an array row either, even if the form model still
+      // carries a stale value. Mirrors the top-level strip using the SAME
+      // field_visibility descriptor (isFieldHidden) — no parallel rule system.
+      this._stripHiddenNestedFields(raw);
       // Coerce numeric fields to real numbers before sending to the backend.
       // Number inputs render as `[type]="'number'"` (a property binding), so
       // Angular's NumberValueAccessor — whose selector is the *static*
@@ -2320,6 +2327,29 @@ export class TrainingDynamicConfigComponent {
         }
       }
       this.configSubmitted.emit(raw);
+    }
+  }
+
+  /**
+   * Strip family-unsupported fields from array-of-object rows in the submit
+   * payload. `field_visibility` is a FLAT map keyed by bare field name (the
+   * backend gates nested keys like `masking_enabled` there just like top-level
+   * ones), so any array item property whose key is capability-hidden is deleted
+   * — the exact descriptor + helper the top-level strip uses. Fail-open: no
+   * descriptor ⇒ nothing stripped.
+   */
+  private _stripHiddenNestedFields(raw: Record<string, unknown>): void {
+    const caps = this.capabilities();
+    if (!caps) return;
+    for (const value of Object.values(raw)) {
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const row = item as Record<string, unknown>;
+        for (const key of Object.keys(row)) {
+          if (isFieldHidden(caps, key)) delete row[key];
+        }
+      }
     }
   }
 

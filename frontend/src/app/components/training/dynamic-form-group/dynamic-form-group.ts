@@ -9,6 +9,7 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
 import type { TrainingConfig } from '../../../services/job';
 import { SchemaNode, SchemaProp, collapseNullableUnion } from '../schema-node';
 import { datasetPreviewUrl } from '../../../shared/media-preview';
+import { ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
 
 @Component({
   selector: 'app-dynamic-form-group',
@@ -141,7 +142,7 @@ import { datasetPreviewUrl } from '../../../shared/media-preview';
                                  side (e.g. [Captions | Enable masking] in column 1, leaving
                                  columns 2-3 of the row for Original Weight / Mask Opacity).
                                  Rendered once, at the first inline-group prop encountered. -->
-                            @if (nestedProp.schema.inline_group && isFirstInlineGroupProp(nestedProp.key)) {
+                            @if (nestedProp.schema.inline_group && isFirstInlineGroupProp(nestedProp.key) && inlineGroups().length) {
                               <!-- pr-9 = the caption-prefix wand (28px) + its gap (8px), so the
                                    right-aligned masking group ends flush with the INPUT above it. -->
                               <div class="flex flex-wrap items-start justify-between gap-6 pr-9" data-testid="config-inline-groups-cell">
@@ -172,7 +173,7 @@ import { datasetPreviewUrl } from '../../../shared/media-preview';
                             }
 
                             <!-- Skip non-first inline_group props (already rendered above) -->
-                            @if (!nestedProp.schema.inline_group && !shouldHideNestedField(nestedProp.schema, formArray().at(dsIdx))) {
+                            @if (!nestedProp.schema.inline_group && !shouldHideNestedField(nestedProp.schema, formArray().at(dsIdx), nestedProp.key)) {
                               <div [class.col-span-full]="nestedProp.key === 'dataset_name'"
                                    [class.opacity-40]="isNestedFieldDisabled(nestedProp.schema, formArray().at(dsIdx))"
                                    [class.pointer-events-none]="isNestedFieldDisabled(nestedProp.schema, formArray().at(dsIdx))"
@@ -334,6 +335,12 @@ export class DynamicFormGroupComponent {
   /** Whether the selected model is a video model. Gates `video_only` nested
    *  fields (e.g. per-dataset num_frames). Defaults true → fail-open. */
   isVideoModel = input<boolean>(true);
+  /** Capability descriptor for the selected model definition (same object the
+   *  parent reads for TOP-LEVEL gating). Nested/per-item fields consult its
+   *  `field_visibility` map so a per-dataset field the family doesn't support
+   *  (e.g. `masking_enabled` on a paired edit model) is not rendered. `null`
+   *  ⇒ no descriptor ⇒ everything visible (fail-open). */
+  capabilities = input<ModelCapabilities | null>(null);
 
   // External actions
   arrayItemAdded = output<{ key: string, schemaParam: SchemaNode | undefined }>();
@@ -540,18 +547,42 @@ export class DynamicFormGroupComponent {
     return first?.key === key;
   }
 
-  /** Distinct inline-group names, in schema order. */
+  /** Distinct inline-group names, in schema order. Groups whose every prop is
+   *  capability-hidden are dropped so no empty "Enable masking"-style column
+   *  (header with no toggles) lingers for a family that gates the group off. */
   inlineGroups(): string[] {
     const seen: string[] = [];
     for (const p of this.nestedProps()) {
       const g = p.schema.inline_group;
-      if (g && !seen.includes(g)) seen.push(g);
+      if (!g || seen.includes(g)) continue;
+      if (this.getInlineGroupProps(g).length > 0) seen.push(g);
     }
     return seen;
   }
 
   getInlineGroupProps(groupName: string): SchemaProp[] {
-    return this.nestedProps().filter(p => p.schema.inline_group === groupName);
+    return this.nestedProps().filter(
+      p => p.schema.inline_group === groupName && !this.isNestedCapabilityHidden(p),
+    );
+  }
+
+  /**
+   * Capability gate for a nested/per-item prop, mirroring the top-level
+   * `field_visibility` check (`isFieldHidden`). A prop is capability-hidden
+   * when EITHER its own key is marked unsupported, OR its `depends_on` master
+   * is unsupported — a hidden master toggle takes its dependents with it, so no
+   * orphaned, permanently-disabled control lingers under a now-headless group.
+   * (`depends_on` may carry a ":value" enum matcher; the descriptor keys on the
+   * bare field name, so strip any suffix.) Read-only w.r.t. form values, so
+   * unlike `isNestedFieldDisabled` this does NOT grey on a value being false —
+   * that behaviour is unchanged.
+   */
+  private isNestedCapabilityHidden(prop: SchemaProp): boolean {
+    const caps = this.capabilities();
+    if (isFieldHidden(caps, prop.key)) return true;
+    const dep = prop.schema.depends_on;
+    if (dep && isFieldHidden(caps, dep.split(':')[0])) return true;
+    return false;
   }
 
   /** Friendly header for an inline toggle group (fallback: titlecased key). */
@@ -597,7 +628,13 @@ export class DynamicFormGroupComponent {
     return false;
   }
 
-  shouldHideNestedField(schema: SchemaNode, itemGroup: AbstractControl | null): boolean {
+  shouldHideNestedField(schema: SchemaNode, itemGroup: AbstractControl | null, key?: string): boolean {
+    // Capability gate: hide per-item fields the selected family doesn't support
+    // (field_visibility[key].supported === false), mirroring the parent's
+    // top-level shouldHideField. Also hides a dependent whose depends_on master
+    // is itself capability-hidden (no orphaned control). Fail-open when there's
+    // no descriptor. Keyed on the bare field name (strip any ":value" matcher).
+    if (key && this.isNestedCapabilityHidden({ key, schema })) return true;
     // video_only fields (e.g. per-dataset num_frames) only show for video models
     if (schema.video_only && !this.isVideoModel()) return true;
     // depends_on: boolean parent → hide when parent is false

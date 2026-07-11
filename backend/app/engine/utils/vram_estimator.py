@@ -246,6 +246,12 @@ _QUANT_BITS: dict[str, float] = {
     "int8": 8,
 }
 
+# Plausible band for a per-component VRAM calibration multiplier
+# (measured ÷ analytic). Calibration is a modest correction; anything outside
+# this band is treated as corrupt/stale and ignored (see § 7b in ``estimate``).
+_CALIB_MIN = 0.1
+_CALIB_MAX = 4.0
+
 
 # ---------------------------------------------------------------------------
 # Result data-class
@@ -500,6 +506,16 @@ class VRAMEstimator:
         # Per-component multipliers refine each analytic row toward measured
         # reality; the training peak is re-summed from the calibrated parts.
         # ``caching_peak_mb`` scales the (single-number) caching-phase peak.
+        #
+        # A calibration coefficient is a MODEST correction — measured VRAM is
+        # within a small factor of the (conservative, worst-case) analytic
+        # estimate. A multiplier well outside ``[_CALIB_MIN, _CALIB_MAX]`` is
+        # not "reality is 10× bigger" — it signals STALE / ORPHANED / unit-
+        # corrupt stats (e.g. a definition whose ``job_history`` rows were
+        # deleted so ``recompute`` can never self-correct the coefficients).
+        # Applying such a value unbounded produced the live 587 GB ltx2 estimate
+        # (caching_peak 26 GB × 22.9 → 601 GB). Reject the implausible ones so
+        # the affected component reverts to its uncalibrated analytic value.
         if calibration:
             for field in (
                 "model_weights_mb",
@@ -509,8 +525,8 @@ class VRAMEstimator:
                 "activations_mb",
                 "overhead_mb",
             ):
-                k = calibration.get(field)
-                if k and k > 0:
+                k = _sane_calibration(calibration.get(field), field, report)
+                if k is not None:
                     setattr(report, field, getattr(report, field) * k)
             report.training_peak_mb = (
                 report.model_weights_mb
@@ -520,8 +536,10 @@ class VRAMEstimator:
                 + report.activations_mb
                 + report.overhead_mb
             )
-            cache_k = calibration.get("caching_peak_mb")
-            if cache_k and cache_k > 0:
+            cache_k = _sane_calibration(
+                calibration.get("caching_peak_mb"), "caching_peak_mb", report
+            )
+            if cache_k is not None:
                 report.caching_peak_mb *= cache_k
 
         # ── 8. Overall peak ──────────────────────────────────────────────
@@ -680,6 +698,34 @@ def _get_vae_params(family: str) -> float:
 def _bytes_per_param(dtype_str: str) -> int:
     """Get bytes per parameter for a dtype string."""
     return _DTYPE_BYTES.get(dtype_str, 2)  # default bf16
+
+
+def _sane_calibration(
+    k: Any, field: str, report: VRAMReport
+) -> float | None:
+    """Validate a per-component calibration multiplier.
+
+    Returns the multiplier when it is a positive number inside the plausible
+    ``[_CALIB_MIN, _CALIB_MAX]`` band, else ``None`` (caller leaves the
+    component uncalibrated). An out-of-band value indicates stale/orphaned or
+    unit-corrupt stats, so it is ignored and a warning is recorded rather than
+    inflating the estimate by an order of magnitude.
+    """
+    try:
+        k = float(k)
+    except (TypeError, ValueError):
+        return None
+    if k <= 0:
+        return None
+    if k < _CALIB_MIN or k > _CALIB_MAX:
+        report.warnings.append(
+            f"Ignored an implausible VRAM calibration factor for {field} "
+            f"({k:.2f}× — outside {_CALIB_MIN}–{_CALIB_MAX}×). The stored "
+            f"per-definition stats look stale or corrupt; using the analytic "
+            f"estimate for this component."
+        )
+        return None
+    return k
 
 
 def _check_quant_compat(

@@ -1539,7 +1539,7 @@ export class TrainingDynamicConfigComponent {
       'save_every_n_steps', 'keep_last_checkpoints',
       'persist_latents', 'persist_embeddings',
       'resume_from_checkpoint', 'use_cached_latents', 'use_cached_embeddings',
-      'resolutions', 'resolution_strategy', 'bucketing_mode',
+      'resolutions', 'bucketing_mode',
       'timestep_sampling', 'logit_normal_mu', 'logit_normal_sigma',
     ];
     if (groupMap['STRATEGY']) {

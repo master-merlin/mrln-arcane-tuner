@@ -35,6 +35,12 @@ NEW_FAMILIES = (
     "boogu_image",
 )
 
+# Pre-existing families swept in after a hardening recon found an inert-but-real
+# exposure (flux1-schnell shipped `lora_targetable_modules: []`). Guarded
+# separately from NEW_FAMILIES so this list can grow one family at a time
+# without re-touching the (documented, dated) tuple above.
+GUARDED_FAMILIES = ("flux1",)
+
 
 @pytest.fixture()
 def registry():
@@ -55,6 +61,30 @@ def registry():
 
 @pytest.mark.parametrize("family", NEW_FAMILIES)
 def test_every_definition_ships_nonempty_lora_target_list(registry, family):
+    defs = [d for d in ModelRegistry._definitions.values() if d.family == family]
+    assert defs, f"no definitions registered for family {family!r}"
+    for defn in defs:
+        shipped = getattr(defn, "lora_targetable_modules", None) or []
+        assert len(shipped) > 0, (
+            f"{defn.id}: lora_targetable_modules is empty — "
+            "registry.enrich_definition would auto-fill it with the "
+            "introspector's exhaustive Linear catalog at first model load, "
+            "overriding the driver's curated targets (dreamlite 2026-07-08 "
+            "precedent). Ship the curated list in the definition YAML."
+        )
+
+
+@pytest.mark.parametrize("family", GUARDED_FAMILIES)
+def test_every_definition_ships_nonempty_lora_target_list_guarded(registry, family):
+    """Same invariant as above, swept onto pre-existing families one at a time.
+
+    flux1-schnell shipped `lora_targetable_modules: []` (2026-07-11 hardening
+    recon) — inert only because Flux1Driver.get_lora_targets() hardcodes its
+    own list and never reads the definition, but enrich_definition would still
+    WRITE the introspector's exhaustive catalog into the YAML at first real
+    model load, and any future driver change to definition-sourced targets
+    would silently inherit it.
+    """
     defs = [d for d in ModelRegistry._definitions.values() if d.family == family]
     assert defs, f"no definitions registered for family {family!r}"
     for defn in defs:

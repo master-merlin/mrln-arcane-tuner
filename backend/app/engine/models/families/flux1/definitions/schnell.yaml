@@ -32,7 +32,21 @@ model_size_mb:
   transformer: 23800.0
   text_encoder: 10000.0
   vae: 167.0
-lora_targetable_modules: []
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0
+- add_q_proj
+- add_k_proj
+- add_v_proj
+- to_add_out
+- ff.net.0.proj
+- ff.net.2
+- ff_context.net.0.proj
+- ff_context.net.2
+- proj_mlp
+- proj_out
 block_topology:
 - name: double_blocks
   attr_path: transformer_blocks

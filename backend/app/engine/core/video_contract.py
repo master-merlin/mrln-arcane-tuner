@@ -207,6 +207,16 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
                 "Use 0 (inherit) or a valid value."
             )
 
+    # still_resolutions (Phase 3): F=1 stills in a video job bucket at their own
+    # resolutions; empty/unset inherits `resolutions`. Only entry positivity is
+    # validated here — BucketManager snaps to divisibility itself, and Task 1's
+    # data-path consumer (resolve_still_resolutions) is the field's real reader.
+    bad_still = [r for r in (config.get("still_resolutions") or []) if int(r) <= 0]
+    if bad_still:
+        report.errors.append(
+            f"still_resolutions entries must be positive ints, got {bad_still}."
+        )
+
     # target_fps: 0 means "use native"; a set value far from native is rejected.
     fps = _to_float(config.get("target_fps"))
     if fps and profile.native_fps and abs(fps - profile.native_fps) > _FPS_TOL:

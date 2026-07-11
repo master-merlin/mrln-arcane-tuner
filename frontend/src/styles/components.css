@@ -571,6 +571,16 @@
         from { opacity: 0; transform: translateY(8px) scale(0.98); }
         to   { opacity: 1; transform: translateY(0) scale(1); }
     }
+    /* Modal components render inside .modal as <app-modal-*> host elements.
+       .modal is a max-height flex column with overflow:hidden and .modal-body
+       is its flex:1 scroll area — but the component host sits BETWEEN them and
+       (as a default-inline box) breaks the flex chain: long content gets
+       CLIPPED instead of the body scrolling (hit live: cache modal with many
+       cached models). Collapse every modal host so head/body/foot are direct
+       flex children, matching what this shell was designed for. The @defer
+       placeholder markup renders .modal-head/.modal-body directly and is
+       excluded by :not(). */
+    .modal > *:not(.modal-head):not(.modal-body):not(.modal-foot) { display: contents; }
     .modal-head {
         padding: 18px 22px;
         border-bottom: 1px solid var(--color-border-subtle);

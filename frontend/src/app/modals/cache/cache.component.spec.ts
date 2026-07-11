@@ -50,3 +50,34 @@ describe('CacheModalComponent — purge confirm contract', () => {
         expect(api.purgeCache).toHaveBeenCalledWith('ds1', {});
     });
 });
+
+describe('CacheModalComponent — modal shell scroll contract', () => {
+    beforeEach(() => {
+        TestBed.configureTestingModule({
+            providers: [
+                OverlayStore,
+                {
+                    provide: DatasetService,
+                    useValue: { listCache: vi.fn().mockReturnValue(of({ cache: {} })), purgeCache: vi.fn() },
+                },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn() } },
+            ],
+        });
+        TestBed.inject(OverlayStore).openModal('cache', { datasetName: 'ds1' });
+    });
+
+    it('host uses display:contents so .modal-body scrolls inside the flex shell', () => {
+        // The modal-layer shell (.modal) is a max-height flex column with
+        // overflow:hidden; .modal-body is the flex:1 scroll area. The component
+        // host element sits BETWEEN them — unless it is display:contents, it
+        // breaks the flex chain and long model lists get CLIPPED instead of
+        // scrolling (bug: cache modal unscrollable with many cached models).
+        const fixture = TestBed.createComponent(CacheModalComponent);
+        fixture.detectChanges();
+
+        const styles = Array.from(document.head.querySelectorAll('style'))
+            .map(s => s.textContent ?? '')
+            .join('\n');
+        expect(styles).toMatch(/\[_nghost-[^\]]*\][^{}]*\{[^{}]*display:\s*contents/);
+    });
+});

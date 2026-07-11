@@ -147,6 +147,33 @@ class BooguImageTrainer(GenericTrainingPipeline):
             return BooguImageSampler(self)
         return None
 
+    def init_scheduler(self) -> object:
+        """Delegate to the driver's ``init_scheduler()`` (real-path fix).
+
+        ``PipelineLoadingMixin.load_model()`` calls ``self.init_scheduler()``
+        on the TRAINER (this class), not the driver — the trainer-level hook
+        (``PipelineBaseMixin.init_scheduler``) defaults to ``None`` and, left
+        un-overridden, ``load_model()`` writes that ``None`` back into
+        ``self.components["scheduler"]``, clobbering the real vendored
+        scheduler the loader placed there. The clobbered ``None`` then
+        propagates to ``driver.scheduler`` the next time
+        ``self._assign_components()`` re-syncs from ``self.components`` —
+        which happens unconditionally in ``_quantize_text_encoders()`` on
+        EVERY real job (``prepare_for_training()`` ->
+        ``_quantize_components()`` -> ``_quantize_text_encoders()``),
+        regardless of ``te_quantization``. The result: ``driver.scheduler``
+        is ``None`` by the time sampling runs, tripping the sampler's
+        deliberate fail-loud guard (``sampler.py``'s ``_denoise_base``).
+
+        ``BooguImageDriver.init_scheduler()`` already correctly reads
+        ``self._components["scheduler"]`` (the loader-provided vendored
+        instance, never a fresh/stock one) — this override just makes sure
+        the real path actually calls it, mirroring the sdxl precedent of a
+        trainer-level ``init_scheduler()`` override but reusing the
+        driver's existing implementation instead of duplicating it.
+        """
+        return self.driver.init_scheduler()
+
     # ── Component Assignment (override trio 2/3 continuation) ─────────────
 
     def _assign_components(self) -> None:

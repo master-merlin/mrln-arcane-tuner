@@ -1,0 +1,238 @@
+id: wan2.2-ti2v-5b
+family: wan22_ti2v_5b
+name: WAN 2.2 TI2V 5B (Dense)
+version: '1.0'
+defaults:
+  resolution: 720
+  scheduler: flow_match_euler
+  learning_rate: 0.0001
+  timestep_sampling: model_shift
+components:
+  repo:
+    path: huggingface:Wan-AI/Wan2.2-TI2V-5B-Diffusers
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  mode: both
+  dual_expert: false
+  transformer._class_name: WanTransformer3DModel
+  transformer.in_channels: 48
+  transformer.out_channels: 48
+  transformer.num_layers: 30
+  transformer.num_attention_heads: 24
+  transformer.attention_head_dim: 128
+  transformer.text_dim: 4096
+  transformer.freq_dim: 256
+  transformer.image_dim: null
+  transformer.ffn_dim: 14336
+  transformer.patch_size:
+  - 1
+  - 2
+  - 2
+  transformer.rope_max_seq_len: 1024
+  transformer.hidden_size: 3072
+  transformer.expand_timesteps: true
+  te.model_type: umt5
+  te.max_length: 512
+  vae._class_name: AutoencoderKLWan
+  vae.z_dim: 48
+  video.frame_rule: 4n+1
+  video.native_fps: 24
+  video.vae_spatial: 16
+  video.vae_temporal: 4
+  num_heads: 24
+  depth: 30
+  in_channels: 48
+  transformer.added_kv_proj_dim: null
+  transformer.cross_attn_norm: true
+  transformer.eps: 1.0e-06
+  transformer.qk_norm: rms_norm_across_heads
+  te.architectures:
+  - UMT5EncoderModel
+  te.classifier_dropout: 0.0
+  te.d_ff: 10240
+  te.d_kv: 64
+  te.d_model: 4096
+  te.decoder_start_token_id: 0
+  te.dense_act_fn: gelu_new
+  te.dropout_rate: 0.1
+  te.eos_token_id: 1
+  te.feed_forward_proj: gated-gelu
+  te.initializer_factor: 1.0
+  te.is_encoder_decoder: true
+  te.is_gated_act: true
+  te.layer_norm_epsilon: 1.0e-06
+  te.num_decoder_layers: 24
+  te.num_heads: 64
+  te.num_layers: 24
+  te.output_past: true
+  te.pad_token_id: 0
+  te.relative_attention_max_distance: 128
+  te.relative_attention_num_buckets: 32
+  te.scalable_attention: true
+  te.tie_word_embeddings: false
+  te.tokenizer_class: T5Tokenizer
+  te.torch_dtype: bfloat16
+  te.use_cache: true
+  te.vocab_size: 256384
+  scheduler._class_name: UniPCMultistepScheduler
+  scheduler.beta_end: 0.02
+  scheduler.beta_schedule: linear
+  scheduler.beta_start: 0.0001
+  scheduler.disable_corrector: []
+  scheduler.dynamic_thresholding_ratio: 0.995
+  scheduler.final_sigmas_type: zero
+  scheduler.flow_shift: 5.0
+  scheduler.lower_order_final: true
+  scheduler.num_train_timesteps: 1000
+  scheduler.predict_x0: true
+  scheduler.prediction_type: flow_prediction
+  scheduler.rescale_betas_zero_snr: false
+  scheduler.sample_max_value: 1.0
+  scheduler.solver_order: 2
+  scheduler.solver_p: null
+  scheduler.solver_type: bh2
+  scheduler.steps_offset: 0
+  scheduler.thresholding: false
+  scheduler.time_shift_type: exponential
+  scheduler.timestep_spacing: linspace
+  scheduler.trained_betas: null
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_flow_sigmas: true
+  scheduler.use_karras_sigmas: false
+  vae.attn_scales: []
+  vae.base_dim: 160
+  vae.decoder_base_dim: 256
+  vae.dim_mult:
+  - 1
+  - 2
+  - 4
+  - 4
+  vae.dropout: 0.0
+  vae.is_residual: true
+  vae.clip_output: false
+  vae.scale_factor_spatial: 16
+  vae.scale_factor_temporal: 4
+  vae.latents_mean:
+  - -0.2289
+  - -0.0052
+  - -0.1323
+  - -0.2339
+  - -0.2799
+  - 0.0174
+  - 0.1838
+  - 0.1557
+  - -0.1382
+  - 0.0542
+  - 0.2813
+  - 0.0891
+  - 0.157
+  - -0.0098
+  - 0.0375
+  - -0.1825
+  - -0.2246
+  - -0.1207
+  - -0.0698
+  - 0.5109
+  - 0.2665
+  - -0.2108
+  - -0.2158
+  - 0.2502
+  - -0.2055
+  - -0.0322
+  - 0.1109
+  - 0.1567
+  - -0.0729
+  - 0.0899
+  - -0.2799
+  - -0.123
+  - -0.0313
+  - -0.1649
+  - 0.0117
+  - 0.0723
+  - -0.2839
+  - -0.2083
+  - -0.052
+  - 0.3748
+  - 0.0152
+  - 0.1957
+  - 0.1433
+  - -0.2944
+  - 0.3573
+  - -0.0548
+  - -0.1681
+  - -0.0667
+  vae.latents_std:
+  - 0.4765
+  - 1.0364
+  - 0.4514
+  - 1.1677
+  - 0.5313
+  - 0.499
+  - 0.4818
+  - 0.5013
+  - 0.8158
+  - 1.0344
+  - 0.5894
+  - 1.0901
+  - 0.6885
+  - 0.6165
+  - 0.8454
+  - 0.4978
+  - 0.5759
+  - 0.3523
+  - 0.7135
+  - 0.6804
+  - 0.5833
+  - 1.4146
+  - 0.8986
+  - 0.5659
+  - 0.7069
+  - 0.5338
+  - 0.4889
+  - 0.4917
+  - 0.4069
+  - 0.4999
+  - 0.6866
+  - 0.4093
+  - 0.5709
+  - 0.6065
+  - 0.6415
+  - 0.4944
+  - 0.5726
+  - 1.2042
+  - 0.5458
+  - 1.6887
+  - 0.3971
+  - 1.06
+  - 0.3943
+  - 0.5537
+  - 0.5444
+  - 0.4089
+  - 0.7468
+  - 0.7744
+  vae.num_res_blocks: 2
+  vae.temperal_downsample:
+  - false
+  - true
+  - true
+model_size_mb: {}
+lora_targetable_modules:
+- attn1.to_q
+- attn1.to_k
+- attn1.to_v
+- attn1.to_out.0
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+- ffn.net.0.proj
+- ffn.net.2
+block_topology: []

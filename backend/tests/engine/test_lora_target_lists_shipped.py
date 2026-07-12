@@ -53,6 +53,7 @@ ALL_FAMILIES = (
     "sdxl",
     "wan21",
     "wan22",
+    "wan22_ti2v_5b",
     "zimage",
 )
 

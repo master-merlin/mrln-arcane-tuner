@@ -82,12 +82,25 @@ class Wan22Loader(GenericComponentLoader):
         # Transformer specs depend on expert_mode. Single-expert loads exactly
         # ONE transformer under "unet" (the generic loop's primary model); the
         # driver knows the mode and wires it into the right expert slot.
+        #
+        # ``low_cpu_mem_usage=True`` is LOAD-BEARING for this family: the
+        # ``Wan-AI/Wan2.2-*-A14B-Diffusers`` checkpoints ship each expert in
+        # **fp32** (~53 GB on disk PER expert). ``low_cpu_mem_usage`` streams the
+        # shards straight into the bf16 module (~28 GB resident) instead of
+        # first materialising the full fp32 ``state_dict`` in host RAM. Diffusers
+        # defaults this to True only when ``accelerate`` is importable — pinning
+        # it explicitly guarantees the streamed path everywhere (e.g. minimal
+        # docker/RunPod images), so a dual-expert run can't blow up to
+        # ~2×(53 GB fp32 + 28 GB bf16) of transient host RAM and hang the box.
+        # See krea2/loader.py for the same explicit pin.
+        _EXPERT_LOAD_KWARGS = {"low_cpu_mem_usage": True}
         high_spec = ComponentSpec(
             key="unet",
             hf_class="diffusers.WanTransformer3DModel",
             subfolder="transformer",
             candidates=["transformer"],
             fallback_to_root=True,
+            load_kwargs=dict(_EXPERT_LOAD_KWARGS),
         )
         low_spec = ComponentSpec(
             key="unet_low",
@@ -95,6 +108,7 @@ class Wan22Loader(GenericComponentLoader):
             subfolder="transformer_2",
             candidates=["transformer_2"],
             fallback_to_root=True,
+            load_kwargs=dict(_EXPERT_LOAD_KWARGS),
         )
         if self.expert_mode == "high":
             manifest.append(high_spec)
@@ -107,6 +121,7 @@ class Wan22Loader(GenericComponentLoader):
                     subfolder="transformer_2",
                     candidates=["transformer_2"],
                     fallback_to_root=True,
+                    load_kwargs=dict(_EXPERT_LOAD_KWARGS),
                 )
             )
         else:  # both (default) — high → "unet", low → "unet_low"

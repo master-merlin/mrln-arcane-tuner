@@ -1,0 +1,1189 @@
+id: qwen-image-edit-2511
+family: qwen_image
+name: Qwen-Image-Edit 2511
+version: '1.0'
+# Paired image-edit variant: trains on a control ("before") image + an
+# instruction caption. Same transformer/VAE/Qwen2.5-VL TE architecture as
+# Qwen-Image 2512 — only the weights repo + control_inputs differ.
+# Recon vs qwen_image_edit_2509.yaml (2026-07-12, HF API + raw config diff):
+# - model_index.json pipeline class is UNCHANGED: QwenImageEditPlusPipeline
+#   (both 2509 and 2511 ship the "Plus" edit pipeline) — importable from the
+#   pinned diffusers==0.39.0 install, no bump needed.
+# - transformer/config.json: ONLY delta is a new `zero_cond_t: true` flag
+#   (2509's checkpoint config omits it, which defaults to False in the
+#   installed QwenImageTransformer2DModel signature). All other transformer
+#   dims (hidden_size/heads/layers/rope axes/etc.) are byte-identical.
+# - vae/config.json and scheduler/scheduler_config.json: byte-identical to
+#   2509 (same AutoencoderKLQwenImage + FlowMatchEulerDiscreteScheduler).
+# - text_encoder/config.json: byte-identical Qwen2.5-VL config to 2509.
+# - No family loader/driver/trainer delta needed: component classes are
+#   loaded via from_pretrained off the checkpoint's own configs, and
+#   edit-vs-t2i routing is keyed off `control_inputs`, not the definition id
+#   or repo string (see family.py).
+control_inputs: 1
+defaults:
+  resolution: 1024
+  scheduler: euler_a
+  learning_rate: 5e-6
+  # Community-standard edit-training guidance; no guidance-distillation.
+  guidance_scale: 1.0
+components:
+  repo:
+    path: huggingface:Qwen/Qwen-Image-Edit-2511
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer.hidden_size: 3072
+  transformer.num_attention_heads: 24
+  transformer.attention_head_dim: 128
+  transformer.in_channels: 64
+  transformer.out_channels: 16
+  transformer.num_layers: 60
+  transformer.patch_size: 2
+  transformer.joint_attention_dim: 3584
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.guidance_embeds: false
+  # New in 2511's checkpoint config (absent/defaults-False on 2509).
+  transformer.zero_cond_t: true
+  te.type: qwen2_vl
+  te.max_length: 512
+  hidden_size: 3072
+  num_heads: 24
+  depth: 60
+  in_channels: 64
+  context_dim: 3584
+  transformer._class_name: QwenImageTransformer2DModel
+  te.architectures:
+  - Qwen2_5_VLForConditionalGeneration
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.dtype: bfloat16
+  te.eos_token_id: 151645
+  te.hidden_act: silu
+  te.hidden_size: 3584
+  te.image_token_id: 151655
+  te.initializer_range: 0.02
+  te.intermediate_size: 18944
+  te.max_position_embeddings: 128000
+  te.max_window_layers: 28
+  te.model_type: qwen2_5_vl
+  te.num_attention_heads: 28
+  te.num_hidden_layers: 28
+  te.num_key_value_heads: 4
+  te.rms_norm_eps: 1.0e-06
+  te.rope_scaling:
+    mrope_section:
+    - 16
+    - 24
+    - 24
+    rope_type: default
+    type: default
+  te.rope_scaling.mrope_section:
+  - 16
+  - 24
+  - 24
+  te.rope_scaling.rope_type: default
+  te.rope_scaling.type: default
+  te.rope_theta: 1000000.0
+  te.sliding_window: 32768
+  te.text_config:
+    _name_or_path: /cpfs01/haoyangzhang/pretrained_weights/Qwen2.5-VL
+    architectures:
+    - Qwen2_5_VLForConditionalGeneration
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: float32
+    eos_token_id: 151645
+    hidden_act: silu
+    hidden_size: 3584
+    initializer_range: 0.02
+    intermediate_size: 18944
+    layer_types:
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    - full_attention
+    max_position_embeddings: 128000
+    max_window_layers: 28
+    model_type: qwen2_5_vl_text
+    num_attention_heads: 28
+    num_hidden_layers: 28
+    num_key_value_heads: 4
+    rms_norm_eps: 1.0e-06
+    rope_scaling:
+      mrope_section:
+      - 16
+      - 24
+      - 24
+      rope_type: default
+      type: default
+    rope_theta: 1000000.0
+    sliding_window: null
+    use_cache: true
+    use_sliding_window: false
+    vision_token_id: 151654
+    vocab_size: 152064
+  te.text_config.architectures:
+  - Qwen2_5_VLForConditionalGeneration
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: float32
+  te.text_config.eos_token_id: 151645
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 3584
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 18944
+  te.text_config.layer_types:
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  te.text_config.max_position_embeddings: 128000
+  te.text_config.max_window_layers: 28
+  te.text_config.model_type: qwen2_5_vl_text
+  te.text_config.num_attention_heads: 28
+  te.text_config.num_hidden_layers: 28
+  te.text_config.num_key_value_heads: 4
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_scaling:
+    mrope_section:
+    - 16
+    - 24
+    - 24
+    rope_type: default
+    type: default
+  te.text_config.rope_scaling.mrope_section:
+  - 16
+  - 24
+  - 24
+  te.text_config.rope_scaling.rope_type: default
+  te.text_config.rope_scaling.type: default
+  te.text_config.rope_theta: 1000000.0
+  te.text_config.sliding_window: null
+  te.text_config.use_cache: true
+  te.text_config.use_sliding_window: false
+  te.text_config.vision_token_id: 151654
+  te.text_config.vocab_size: 152064
+  te.tie_word_embeddings: false
+  te.use_cache: true
+  te.use_sliding_window: false
+  te.video_token_id: 151656
+  te.vision_config:
+    depth: 32
+    dtype: float32
+    fullatt_block_indexes:
+    - 7
+    - 15
+    - 23
+    - 31
+    hidden_act: silu
+    hidden_size: 1280
+    in_channels: 3
+    in_chans: 3
+    initializer_range: 0.02
+    intermediate_size: 3420
+    model_type: qwen2_5_vl
+    num_heads: 16
+    out_hidden_size: 3584
+    patch_size: 14
+    spatial_merge_size: 2
+    spatial_patch_size: 14
+    temporal_patch_size: 2
+    tokens_per_second: 2
+    window_size: 112
+  te.vision_config.depth: 32
+  te.vision_config.dtype: float32
+  te.vision_config.fullatt_block_indexes:
+  - 7
+  - 15
+  - 23
+  - 31
+  te.vision_config.hidden_act: silu
+  te.vision_config.hidden_size: 1280
+  te.vision_config.in_channels: 3
+  te.vision_config.in_chans: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 3420
+  te.vision_config.model_type: qwen2_5_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.out_hidden_size: 3584
+  te.vision_config.patch_size: 14
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.spatial_patch_size: 14
+  te.vision_config.temporal_patch_size: 2
+  te.vision_config.tokens_per_second: 2
+  te.vision_config.window_size: 112
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  te.vision_token_id: 151654
+  te.vocab_size: 152064
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 8192
+  scheduler.max_shift: 0.9
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 1.0
+  scheduler.shift_terminal: 0.02
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: true
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae._class_name: AutoencoderKLQwenImage
+  vae.attn_scales: []
+  vae.base_dim: 96
+  vae.dim_mult:
+  - 1
+  - 2
+  - 4
+  - 4
+  vae.dropout: 0.0
+  vae.latents_mean:
+  - -0.7571
+  - -0.7089
+  - -0.9113
+  - 0.1075
+  - -0.1745
+  - 0.9653
+  - -0.1517
+  - 1.5508
+  - 0.4134
+  - -0.0715
+  - 0.5517
+  - -0.3632
+  - -0.1922
+  - -0.9497
+  - 0.2503
+  - -0.2921
+  vae.latents_std:
+  - 2.8184
+  - 1.4541
+  - 2.3275
+  - 2.6558
+  - 1.2196
+  - 1.7708
+  - 2.6052
+  - 2.0743
+  - 3.2687
+  - 2.1526
+  - 2.8652
+  - 1.5579
+  - 1.6382
+  - 1.1253
+  - 2.8251
+  - 1.916
+  vae.num_res_blocks: 2
+  vae.temperal_downsample:
+  - false
+  - true
+  - true
+  vae.z_dim: 16
+  te.concat_layers: 1
+model_size_mb:
+  transformer: 40900.0
+  text_encoder: 16600.0
+  vae: 335.0
+lora_targetable_modules:
+- transformer_blocks.0.img_mod.1
+- transformer_blocks.0.attn.to_q
+- transformer_blocks.0.attn.to_k
+- transformer_blocks.0.attn.to_v
+- transformer_blocks.0.attn.add_k_proj
+- transformer_blocks.0.attn.add_v_proj
+- transformer_blocks.0.attn.add_q_proj
+- transformer_blocks.0.attn.to_out.0
+- transformer_blocks.0.attn.to_add_out
+- transformer_blocks.0.img_mlp.net.0.proj
+- transformer_blocks.0.img_mlp.net.2
+- transformer_blocks.0.txt_mod.1
+- transformer_blocks.0.txt_mlp.net.0.proj
+- transformer_blocks.0.txt_mlp.net.2
+- transformer_blocks.1.img_mod.1
+- transformer_blocks.1.attn.to_q
+- transformer_blocks.1.attn.to_k
+- transformer_blocks.1.attn.to_v
+- transformer_blocks.1.attn.add_k_proj
+- transformer_blocks.1.attn.add_v_proj
+- transformer_blocks.1.attn.add_q_proj
+- transformer_blocks.1.attn.to_out.0
+- transformer_blocks.1.attn.to_add_out
+- transformer_blocks.1.img_mlp.net.0.proj
+- transformer_blocks.1.img_mlp.net.2
+- transformer_blocks.1.txt_mod.1
+- transformer_blocks.1.txt_mlp.net.0.proj
+- transformer_blocks.1.txt_mlp.net.2
+- transformer_blocks.2.img_mod.1
+- transformer_blocks.2.attn.to_q
+- transformer_blocks.2.attn.to_k
+- transformer_blocks.2.attn.to_v
+- transformer_blocks.2.attn.add_k_proj
+- transformer_blocks.2.attn.add_v_proj
+- transformer_blocks.2.attn.add_q_proj
+- transformer_blocks.2.attn.to_out.0
+- transformer_blocks.2.attn.to_add_out
+- transformer_blocks.2.img_mlp.net.0.proj
+- transformer_blocks.2.img_mlp.net.2
+- transformer_blocks.2.txt_mod.1
+- transformer_blocks.2.txt_mlp.net.0.proj
+- transformer_blocks.2.txt_mlp.net.2
+- transformer_blocks.3.img_mod.1
+- transformer_blocks.3.attn.to_q
+- transformer_blocks.3.attn.to_k
+- transformer_blocks.3.attn.to_v
+- transformer_blocks.3.attn.add_k_proj
+- transformer_blocks.3.attn.add_v_proj
+- transformer_blocks.3.attn.add_q_proj
+- transformer_blocks.3.attn.to_out.0
+- transformer_blocks.3.attn.to_add_out
+- transformer_blocks.3.img_mlp.net.0.proj
+- transformer_blocks.3.img_mlp.net.2
+- transformer_blocks.3.txt_mod.1
+- transformer_blocks.3.txt_mlp.net.0.proj
+- transformer_blocks.3.txt_mlp.net.2
+- transformer_blocks.4.img_mod.1
+- transformer_blocks.4.attn.to_q
+- transformer_blocks.4.attn.to_k
+- transformer_blocks.4.attn.to_v
+- transformer_blocks.4.attn.add_k_proj
+- transformer_blocks.4.attn.add_v_proj
+- transformer_blocks.4.attn.add_q_proj
+- transformer_blocks.4.attn.to_out.0
+- transformer_blocks.4.attn.to_add_out
+- transformer_blocks.4.img_mlp.net.0.proj
+- transformer_blocks.4.img_mlp.net.2
+- transformer_blocks.4.txt_mod.1
+- transformer_blocks.4.txt_mlp.net.0.proj
+- transformer_blocks.4.txt_mlp.net.2
+- transformer_blocks.5.img_mod.1
+- transformer_blocks.5.attn.to_q
+- transformer_blocks.5.attn.to_k
+- transformer_blocks.5.attn.to_v
+- transformer_blocks.5.attn.add_k_proj
+- transformer_blocks.5.attn.add_v_proj
+- transformer_blocks.5.attn.add_q_proj
+- transformer_blocks.5.attn.to_out.0
+- transformer_blocks.5.attn.to_add_out
+- transformer_blocks.5.img_mlp.net.0.proj
+- transformer_blocks.5.img_mlp.net.2
+- transformer_blocks.5.txt_mod.1
+- transformer_blocks.5.txt_mlp.net.0.proj
+- transformer_blocks.5.txt_mlp.net.2
+- transformer_blocks.6.img_mod.1
+- transformer_blocks.6.attn.to_q
+- transformer_blocks.6.attn.to_k
+- transformer_blocks.6.attn.to_v
+- transformer_blocks.6.attn.add_k_proj
+- transformer_blocks.6.attn.add_v_proj
+- transformer_blocks.6.attn.add_q_proj
+- transformer_blocks.6.attn.to_out.0
+- transformer_blocks.6.attn.to_add_out
+- transformer_blocks.6.img_mlp.net.0.proj
+- transformer_blocks.6.img_mlp.net.2
+- transformer_blocks.6.txt_mod.1
+- transformer_blocks.6.txt_mlp.net.0.proj
+- transformer_blocks.6.txt_mlp.net.2
+- transformer_blocks.7.img_mod.1
+- transformer_blocks.7.attn.to_q
+- transformer_blocks.7.attn.to_k
+- transformer_blocks.7.attn.to_v
+- transformer_blocks.7.attn.add_k_proj
+- transformer_blocks.7.attn.add_v_proj
+- transformer_blocks.7.attn.add_q_proj
+- transformer_blocks.7.attn.to_out.0
+- transformer_blocks.7.attn.to_add_out
+- transformer_blocks.7.img_mlp.net.0.proj
+- transformer_blocks.7.img_mlp.net.2
+- transformer_blocks.7.txt_mod.1
+- transformer_blocks.7.txt_mlp.net.0.proj
+- transformer_blocks.7.txt_mlp.net.2
+- transformer_blocks.8.img_mod.1
+- transformer_blocks.8.attn.to_q
+- transformer_blocks.8.attn.to_k
+- transformer_blocks.8.attn.to_v
+- transformer_blocks.8.attn.add_k_proj
+- transformer_blocks.8.attn.add_v_proj
+- transformer_blocks.8.attn.add_q_proj
+- transformer_blocks.8.attn.to_out.0
+- transformer_blocks.8.attn.to_add_out
+- transformer_blocks.8.img_mlp.net.0.proj
+- transformer_blocks.8.img_mlp.net.2
+- transformer_blocks.8.txt_mod.1
+- transformer_blocks.8.txt_mlp.net.0.proj
+- transformer_blocks.8.txt_mlp.net.2
+- transformer_blocks.9.img_mod.1
+- transformer_blocks.9.attn.to_q
+- transformer_blocks.9.attn.to_k
+- transformer_blocks.9.attn.to_v
+- transformer_blocks.9.attn.add_k_proj
+- transformer_blocks.9.attn.add_v_proj
+- transformer_blocks.9.attn.add_q_proj
+- transformer_blocks.9.attn.to_out.0
+- transformer_blocks.9.attn.to_add_out
+- transformer_blocks.9.img_mlp.net.0.proj
+- transformer_blocks.9.img_mlp.net.2
+- transformer_blocks.9.txt_mod.1
+- transformer_blocks.9.txt_mlp.net.0.proj
+- transformer_blocks.9.txt_mlp.net.2
+- transformer_blocks.10.img_mod.1
+- transformer_blocks.10.attn.to_q
+- transformer_blocks.10.attn.to_k
+- transformer_blocks.10.attn.to_v
+- transformer_blocks.10.attn.add_k_proj
+- transformer_blocks.10.attn.add_v_proj
+- transformer_blocks.10.attn.add_q_proj
+- transformer_blocks.10.attn.to_out.0
+- transformer_blocks.10.attn.to_add_out
+- transformer_blocks.10.img_mlp.net.0.proj
+- transformer_blocks.10.img_mlp.net.2
+- transformer_blocks.10.txt_mod.1
+- transformer_blocks.10.txt_mlp.net.0.proj
+- transformer_blocks.10.txt_mlp.net.2
+- transformer_blocks.11.img_mod.1
+- transformer_blocks.11.attn.to_q
+- transformer_blocks.11.attn.to_k
+- transformer_blocks.11.attn.to_v
+- transformer_blocks.11.attn.add_k_proj
+- transformer_blocks.11.attn.add_v_proj
+- transformer_blocks.11.attn.add_q_proj
+- transformer_blocks.11.attn.to_out.0
+- transformer_blocks.11.attn.to_add_out
+- transformer_blocks.11.img_mlp.net.0.proj
+- transformer_blocks.11.img_mlp.net.2
+- transformer_blocks.11.txt_mod.1
+- transformer_blocks.11.txt_mlp.net.0.proj
+- transformer_blocks.11.txt_mlp.net.2
+- transformer_blocks.12.img_mod.1
+- transformer_blocks.12.attn.to_q
+- transformer_blocks.12.attn.to_k
+- transformer_blocks.12.attn.to_v
+- transformer_blocks.12.attn.add_k_proj
+- transformer_blocks.12.attn.add_v_proj
+- transformer_blocks.12.attn.add_q_proj
+- transformer_blocks.12.attn.to_out.0
+- transformer_blocks.12.attn.to_add_out
+- transformer_blocks.12.img_mlp.net.0.proj
+- transformer_blocks.12.img_mlp.net.2
+- transformer_blocks.12.txt_mod.1
+- transformer_blocks.12.txt_mlp.net.0.proj
+- transformer_blocks.12.txt_mlp.net.2
+- transformer_blocks.13.img_mod.1
+- transformer_blocks.13.attn.to_q
+- transformer_blocks.13.attn.to_k
+- transformer_blocks.13.attn.to_v
+- transformer_blocks.13.attn.add_k_proj
+- transformer_blocks.13.attn.add_v_proj
+- transformer_blocks.13.attn.add_q_proj
+- transformer_blocks.13.attn.to_out.0
+- transformer_blocks.13.attn.to_add_out
+- transformer_blocks.13.img_mlp.net.0.proj
+- transformer_blocks.13.img_mlp.net.2
+- transformer_blocks.13.txt_mod.1
+- transformer_blocks.13.txt_mlp.net.0.proj
+- transformer_blocks.13.txt_mlp.net.2
+- transformer_blocks.14.img_mod.1
+- transformer_blocks.14.attn.to_q
+- transformer_blocks.14.attn.to_k
+- transformer_blocks.14.attn.to_v
+- transformer_blocks.14.attn.add_k_proj
+- transformer_blocks.14.attn.add_v_proj
+- transformer_blocks.14.attn.add_q_proj
+- transformer_blocks.14.attn.to_out.0
+- transformer_blocks.14.attn.to_add_out
+- transformer_blocks.14.img_mlp.net.0.proj
+- transformer_blocks.14.img_mlp.net.2
+- transformer_blocks.14.txt_mod.1
+- transformer_blocks.14.txt_mlp.net.0.proj
+- transformer_blocks.14.txt_mlp.net.2
+- transformer_blocks.15.img_mod.1
+- transformer_blocks.15.attn.to_q
+- transformer_blocks.15.attn.to_k
+- transformer_blocks.15.attn.to_v
+- transformer_blocks.15.attn.add_k_proj
+- transformer_blocks.15.attn.add_v_proj
+- transformer_blocks.15.attn.add_q_proj
+- transformer_blocks.15.attn.to_out.0
+- transformer_blocks.15.attn.to_add_out
+- transformer_blocks.15.img_mlp.net.0.proj
+- transformer_blocks.15.img_mlp.net.2
+- transformer_blocks.15.txt_mod.1
+- transformer_blocks.15.txt_mlp.net.0.proj
+- transformer_blocks.15.txt_mlp.net.2
+- transformer_blocks.16.img_mod.1
+- transformer_blocks.16.attn.to_q
+- transformer_blocks.16.attn.to_k
+- transformer_blocks.16.attn.to_v
+- transformer_blocks.16.attn.add_k_proj
+- transformer_blocks.16.attn.add_v_proj
+- transformer_blocks.16.attn.add_q_proj
+- transformer_blocks.16.attn.to_out.0
+- transformer_blocks.16.attn.to_add_out
+- transformer_blocks.16.img_mlp.net.0.proj
+- transformer_blocks.16.img_mlp.net.2
+- transformer_blocks.16.txt_mod.1
+- transformer_blocks.16.txt_mlp.net.0.proj
+- transformer_blocks.16.txt_mlp.net.2
+- transformer_blocks.17.img_mod.1
+- transformer_blocks.17.attn.to_q
+- transformer_blocks.17.attn.to_k
+- transformer_blocks.17.attn.to_v
+- transformer_blocks.17.attn.add_k_proj
+- transformer_blocks.17.attn.add_v_proj
+- transformer_blocks.17.attn.add_q_proj
+- transformer_blocks.17.attn.to_out.0
+- transformer_blocks.17.attn.to_add_out
+- transformer_blocks.17.img_mlp.net.0.proj
+- transformer_blocks.17.img_mlp.net.2
+- transformer_blocks.17.txt_mod.1
+- transformer_blocks.17.txt_mlp.net.0.proj
+- transformer_blocks.17.txt_mlp.net.2
+- transformer_blocks.18.img_mod.1
+- transformer_blocks.18.attn.to_q
+- transformer_blocks.18.attn.to_k
+- transformer_blocks.18.attn.to_v
+- transformer_blocks.18.attn.add_k_proj
+- transformer_blocks.18.attn.add_v_proj
+- transformer_blocks.18.attn.add_q_proj
+- transformer_blocks.18.attn.to_out.0
+- transformer_blocks.18.attn.to_add_out
+- transformer_blocks.18.img_mlp.net.0.proj
+- transformer_blocks.18.img_mlp.net.2
+- transformer_blocks.18.txt_mod.1
+- transformer_blocks.18.txt_mlp.net.0.proj
+- transformer_blocks.18.txt_mlp.net.2
+- transformer_blocks.19.img_mod.1
+- transformer_blocks.19.attn.to_q
+- transformer_blocks.19.attn.to_k
+- transformer_blocks.19.attn.to_v
+- transformer_blocks.19.attn.add_k_proj
+- transformer_blocks.19.attn.add_v_proj
+- transformer_blocks.19.attn.add_q_proj
+- transformer_blocks.19.attn.to_out.0
+- transformer_blocks.19.attn.to_add_out
+- transformer_blocks.19.img_mlp.net.0.proj
+- transformer_blocks.19.img_mlp.net.2
+- transformer_blocks.19.txt_mod.1
+- transformer_blocks.19.txt_mlp.net.0.proj
+- transformer_blocks.19.txt_mlp.net.2
+- transformer_blocks.20.img_mod.1
+- transformer_blocks.20.attn.to_q
+- transformer_blocks.20.attn.to_k
+- transformer_blocks.20.attn.to_v
+- transformer_blocks.20.attn.add_k_proj
+- transformer_blocks.20.attn.add_v_proj
+- transformer_blocks.20.attn.add_q_proj
+- transformer_blocks.20.attn.to_out.0
+- transformer_blocks.20.attn.to_add_out
+- transformer_blocks.20.img_mlp.net.0.proj
+- transformer_blocks.20.img_mlp.net.2
+- transformer_blocks.20.txt_mod.1
+- transformer_blocks.20.txt_mlp.net.0.proj
+- transformer_blocks.20.txt_mlp.net.2
+- transformer_blocks.21.img_mod.1
+- transformer_blocks.21.attn.to_q
+- transformer_blocks.21.attn.to_k
+- transformer_blocks.21.attn.to_v
+- transformer_blocks.21.attn.add_k_proj
+- transformer_blocks.21.attn.add_v_proj
+- transformer_blocks.21.attn.add_q_proj
+- transformer_blocks.21.attn.to_out.0
+- transformer_blocks.21.attn.to_add_out
+- transformer_blocks.21.img_mlp.net.0.proj
+- transformer_blocks.21.img_mlp.net.2
+- transformer_blocks.21.txt_mod.1
+- transformer_blocks.21.txt_mlp.net.0.proj
+- transformer_blocks.21.txt_mlp.net.2
+- transformer_blocks.22.img_mod.1
+- transformer_blocks.22.attn.to_q
+- transformer_blocks.22.attn.to_k
+- transformer_blocks.22.attn.to_v
+- transformer_blocks.22.attn.add_k_proj
+- transformer_blocks.22.attn.add_v_proj
+- transformer_blocks.22.attn.add_q_proj
+- transformer_blocks.22.attn.to_out.0
+- transformer_blocks.22.attn.to_add_out
+- transformer_blocks.22.img_mlp.net.0.proj
+- transformer_blocks.22.img_mlp.net.2
+- transformer_blocks.22.txt_mod.1
+- transformer_blocks.22.txt_mlp.net.0.proj
+- transformer_blocks.22.txt_mlp.net.2
+- transformer_blocks.23.img_mod.1
+- transformer_blocks.23.attn.to_q
+- transformer_blocks.23.attn.to_k
+- transformer_blocks.23.attn.to_v
+- transformer_blocks.23.attn.add_k_proj
+- transformer_blocks.23.attn.add_v_proj
+- transformer_blocks.23.attn.add_q_proj
+- transformer_blocks.23.attn.to_out.0
+- transformer_blocks.23.attn.to_add_out
+- transformer_blocks.23.img_mlp.net.0.proj
+- transformer_blocks.23.img_mlp.net.2
+- transformer_blocks.23.txt_mod.1
+- transformer_blocks.23.txt_mlp.net.0.proj
+- transformer_blocks.23.txt_mlp.net.2
+- transformer_blocks.24.img_mod.1
+- transformer_blocks.24.attn.to_q
+- transformer_blocks.24.attn.to_k
+- transformer_blocks.24.attn.to_v
+- transformer_blocks.24.attn.add_k_proj
+- transformer_blocks.24.attn.add_v_proj
+- transformer_blocks.24.attn.add_q_proj
+- transformer_blocks.24.attn.to_out.0
+- transformer_blocks.24.attn.to_add_out
+- transformer_blocks.24.img_mlp.net.0.proj
+- transformer_blocks.24.img_mlp.net.2
+- transformer_blocks.24.txt_mod.1
+- transformer_blocks.24.txt_mlp.net.0.proj
+- transformer_blocks.24.txt_mlp.net.2
+- transformer_blocks.25.img_mod.1
+- transformer_blocks.25.attn.to_q
+- transformer_blocks.25.attn.to_k
+- transformer_blocks.25.attn.to_v
+- transformer_blocks.25.attn.add_k_proj
+- transformer_blocks.25.attn.add_v_proj
+- transformer_blocks.25.attn.add_q_proj
+- transformer_blocks.25.attn.to_out.0
+- transformer_blocks.25.attn.to_add_out
+- transformer_blocks.25.img_mlp.net.0.proj
+- transformer_blocks.25.img_mlp.net.2
+- transformer_blocks.25.txt_mod.1
+- transformer_blocks.25.txt_mlp.net.0.proj
+- transformer_blocks.25.txt_mlp.net.2
+- transformer_blocks.26.img_mod.1
+- transformer_blocks.26.attn.to_q
+- transformer_blocks.26.attn.to_k
+- transformer_blocks.26.attn.to_v
+- transformer_blocks.26.attn.add_k_proj
+- transformer_blocks.26.attn.add_v_proj
+- transformer_blocks.26.attn.add_q_proj
+- transformer_blocks.26.attn.to_out.0
+- transformer_blocks.26.attn.to_add_out
+- transformer_blocks.26.img_mlp.net.0.proj
+- transformer_blocks.26.img_mlp.net.2
+- transformer_blocks.26.txt_mod.1
+- transformer_blocks.26.txt_mlp.net.0.proj
+- transformer_blocks.26.txt_mlp.net.2
+- transformer_blocks.27.img_mod.1
+- transformer_blocks.27.attn.to_q
+- transformer_blocks.27.attn.to_k
+- transformer_blocks.27.attn.to_v
+- transformer_blocks.27.attn.add_k_proj
+- transformer_blocks.27.attn.add_v_proj
+- transformer_blocks.27.attn.add_q_proj
+- transformer_blocks.27.attn.to_out.0
+- transformer_blocks.27.attn.to_add_out
+- transformer_blocks.27.img_mlp.net.0.proj
+- transformer_blocks.27.img_mlp.net.2
+- transformer_blocks.27.txt_mod.1
+- transformer_blocks.27.txt_mlp.net.0.proj
+- transformer_blocks.27.txt_mlp.net.2
+- transformer_blocks.28.img_mod.1
+- transformer_blocks.28.attn.to_q
+- transformer_blocks.28.attn.to_k
+- transformer_blocks.28.attn.to_v
+- transformer_blocks.28.attn.add_k_proj
+- transformer_blocks.28.attn.add_v_proj
+- transformer_blocks.28.attn.add_q_proj
+- transformer_blocks.28.attn.to_out.0
+- transformer_blocks.28.attn.to_add_out
+- transformer_blocks.28.img_mlp.net.0.proj
+- transformer_blocks.28.img_mlp.net.2
+- transformer_blocks.28.txt_mod.1
+- transformer_blocks.28.txt_mlp.net.0.proj
+- transformer_blocks.28.txt_mlp.net.2
+- transformer_blocks.29.img_mod.1
+- transformer_blocks.29.attn.to_q
+- transformer_blocks.29.attn.to_k
+- transformer_blocks.29.attn.to_v
+- transformer_blocks.29.attn.add_k_proj
+- transformer_blocks.29.attn.add_v_proj
+- transformer_blocks.29.attn.add_q_proj
+- transformer_blocks.29.attn.to_out.0
+- transformer_blocks.29.attn.to_add_out
+- transformer_blocks.29.img_mlp.net.0.proj
+- transformer_blocks.29.img_mlp.net.2
+- transformer_blocks.29.txt_mod.1
+- transformer_blocks.29.txt_mlp.net.0.proj
+- transformer_blocks.29.txt_mlp.net.2
+- transformer_blocks.30.img_mod.1
+- transformer_blocks.30.attn.to_q
+- transformer_blocks.30.attn.to_k
+- transformer_blocks.30.attn.to_v
+- transformer_blocks.30.attn.add_k_proj
+- transformer_blocks.30.attn.add_v_proj
+- transformer_blocks.30.attn.add_q_proj
+- transformer_blocks.30.attn.to_out.0
+- transformer_blocks.30.attn.to_add_out
+- transformer_blocks.30.img_mlp.net.0.proj
+- transformer_blocks.30.img_mlp.net.2
+- transformer_blocks.30.txt_mod.1
+- transformer_blocks.30.txt_mlp.net.0.proj
+- transformer_blocks.30.txt_mlp.net.2
+- transformer_blocks.31.img_mod.1
+- transformer_blocks.31.attn.to_q
+- transformer_blocks.31.attn.to_k
+- transformer_blocks.31.attn.to_v
+- transformer_blocks.31.attn.add_k_proj
+- transformer_blocks.31.attn.add_v_proj
+- transformer_blocks.31.attn.add_q_proj
+- transformer_blocks.31.attn.to_out.0
+- transformer_blocks.31.attn.to_add_out
+- transformer_blocks.31.img_mlp.net.0.proj
+- transformer_blocks.31.img_mlp.net.2
+- transformer_blocks.31.txt_mod.1
+- transformer_blocks.31.txt_mlp.net.0.proj
+- transformer_blocks.31.txt_mlp.net.2
+- transformer_blocks.32.img_mod.1
+- transformer_blocks.32.attn.to_q
+- transformer_blocks.32.attn.to_k
+- transformer_blocks.32.attn.to_v
+- transformer_blocks.32.attn.add_k_proj
+- transformer_blocks.32.attn.add_v_proj
+- transformer_blocks.32.attn.add_q_proj
+- transformer_blocks.32.attn.to_out.0
+- transformer_blocks.32.attn.to_add_out
+- transformer_blocks.32.img_mlp.net.0.proj
+- transformer_blocks.32.img_mlp.net.2
+- transformer_blocks.32.txt_mod.1
+- transformer_blocks.32.txt_mlp.net.0.proj
+- transformer_blocks.32.txt_mlp.net.2
+- transformer_blocks.33.img_mod.1
+- transformer_blocks.33.attn.to_q
+- transformer_blocks.33.attn.to_k
+- transformer_blocks.33.attn.to_v
+- transformer_blocks.33.attn.add_k_proj
+- transformer_blocks.33.attn.add_v_proj
+- transformer_blocks.33.attn.add_q_proj
+- transformer_blocks.33.attn.to_out.0
+- transformer_blocks.33.attn.to_add_out
+- transformer_blocks.33.img_mlp.net.0.proj
+- transformer_blocks.33.img_mlp.net.2
+- transformer_blocks.33.txt_mod.1
+- transformer_blocks.33.txt_mlp.net.0.proj
+- transformer_blocks.33.txt_mlp.net.2
+- transformer_blocks.34.img_mod.1
+- transformer_blocks.34.attn.to_q
+- transformer_blocks.34.attn.to_k
+- transformer_blocks.34.attn.to_v
+- transformer_blocks.34.attn.add_k_proj
+- transformer_blocks.34.attn.add_v_proj
+- transformer_blocks.34.attn.add_q_proj
+- transformer_blocks.34.attn.to_out.0
+- transformer_blocks.34.attn.to_add_out
+- transformer_blocks.34.img_mlp.net.0.proj
+- transformer_blocks.34.img_mlp.net.2
+- transformer_blocks.34.txt_mod.1
+- transformer_blocks.34.txt_mlp.net.0.proj
+- transformer_blocks.34.txt_mlp.net.2
+- transformer_blocks.35.img_mod.1
+- transformer_blocks.35.attn.to_q
+- transformer_blocks.35.attn.to_k
+- transformer_blocks.35.attn.to_v
+- transformer_blocks.35.attn.add_k_proj
+- transformer_blocks.35.attn.add_v_proj
+- transformer_blocks.35.attn.add_q_proj
+- transformer_blocks.35.attn.to_out.0
+- transformer_blocks.35.attn.to_add_out
+- transformer_blocks.35.img_mlp.net.0.proj
+- transformer_blocks.35.img_mlp.net.2
+- transformer_blocks.35.txt_mod.1
+- transformer_blocks.35.txt_mlp.net.0.proj
+- transformer_blocks.35.txt_mlp.net.2
+- transformer_blocks.36.img_mod.1
+- transformer_blocks.36.attn.to_q
+- transformer_blocks.36.attn.to_k
+- transformer_blocks.36.attn.to_v
+- transformer_blocks.36.attn.add_k_proj
+- transformer_blocks.36.attn.add_v_proj
+- transformer_blocks.36.attn.add_q_proj
+- transformer_blocks.36.attn.to_out.0
+- transformer_blocks.36.attn.to_add_out
+- transformer_blocks.36.img_mlp.net.0.proj
+- transformer_blocks.36.img_mlp.net.2
+- transformer_blocks.36.txt_mod.1
+- transformer_blocks.36.txt_mlp.net.0.proj
+- transformer_blocks.36.txt_mlp.net.2
+- transformer_blocks.37.img_mod.1
+- transformer_blocks.37.attn.to_q
+- transformer_blocks.37.attn.to_k
+- transformer_blocks.37.attn.to_v
+- transformer_blocks.37.attn.add_k_proj
+- transformer_blocks.37.attn.add_v_proj
+- transformer_blocks.37.attn.add_q_proj
+- transformer_blocks.37.attn.to_out.0
+- transformer_blocks.37.attn.to_add_out
+- transformer_blocks.37.img_mlp.net.0.proj
+- transformer_blocks.37.img_mlp.net.2
+- transformer_blocks.37.txt_mod.1
+- transformer_blocks.37.txt_mlp.net.0.proj
+- transformer_blocks.37.txt_mlp.net.2
+- transformer_blocks.38.img_mod.1
+- transformer_blocks.38.attn.to_q
+- transformer_blocks.38.attn.to_k
+- transformer_blocks.38.attn.to_v
+- transformer_blocks.38.attn.add_k_proj
+- transformer_blocks.38.attn.add_v_proj
+- transformer_blocks.38.attn.add_q_proj
+- transformer_blocks.38.attn.to_out.0
+- transformer_blocks.38.attn.to_add_out
+- transformer_blocks.38.img_mlp.net.0.proj
+- transformer_blocks.38.img_mlp.net.2
+- transformer_blocks.38.txt_mod.1
+- transformer_blocks.38.txt_mlp.net.0.proj
+- transformer_blocks.38.txt_mlp.net.2
+- transformer_blocks.39.img_mod.1
+- transformer_blocks.39.attn.to_q
+- transformer_blocks.39.attn.to_k
+- transformer_blocks.39.attn.to_v
+- transformer_blocks.39.attn.add_k_proj
+- transformer_blocks.39.attn.add_v_proj
+- transformer_blocks.39.attn.add_q_proj
+- transformer_blocks.39.attn.to_out.0
+- transformer_blocks.39.attn.to_add_out
+- transformer_blocks.39.img_mlp.net.0.proj
+- transformer_blocks.39.img_mlp.net.2
+- transformer_blocks.39.txt_mod.1
+- transformer_blocks.39.txt_mlp.net.0.proj
+- transformer_blocks.39.txt_mlp.net.2
+- transformer_blocks.40.img_mod.1
+- transformer_blocks.40.attn.to_q
+- transformer_blocks.40.attn.to_k
+- transformer_blocks.40.attn.to_v
+- transformer_blocks.40.attn.add_k_proj
+- transformer_blocks.40.attn.add_v_proj
+- transformer_blocks.40.attn.add_q_proj
+- transformer_blocks.40.attn.to_out.0
+- transformer_blocks.40.attn.to_add_out
+- transformer_blocks.40.img_mlp.net.0.proj
+- transformer_blocks.40.img_mlp.net.2
+- transformer_blocks.40.txt_mod.1
+- transformer_blocks.40.txt_mlp.net.0.proj
+- transformer_blocks.40.txt_mlp.net.2
+- transformer_blocks.41.img_mod.1
+- transformer_blocks.41.attn.to_q
+- transformer_blocks.41.attn.to_k
+- transformer_blocks.41.attn.to_v
+- transformer_blocks.41.attn.add_k_proj
+- transformer_blocks.41.attn.add_v_proj
+- transformer_blocks.41.attn.add_q_proj
+- transformer_blocks.41.attn.to_out.0
+- transformer_blocks.41.attn.to_add_out
+- transformer_blocks.41.img_mlp.net.0.proj
+- transformer_blocks.41.img_mlp.net.2
+- transformer_blocks.41.txt_mod.1
+- transformer_blocks.41.txt_mlp.net.0.proj
+- transformer_blocks.41.txt_mlp.net.2
+- transformer_blocks.42.img_mod.1
+- transformer_blocks.42.attn.to_q
+- transformer_blocks.42.attn.to_k
+- transformer_blocks.42.attn.to_v
+- transformer_blocks.42.attn.add_k_proj
+- transformer_blocks.42.attn.add_v_proj
+- transformer_blocks.42.attn.add_q_proj
+- transformer_blocks.42.attn.to_out.0
+- transformer_blocks.42.attn.to_add_out
+- transformer_blocks.42.img_mlp.net.0.proj
+- transformer_blocks.42.img_mlp.net.2
+- transformer_blocks.42.txt_mod.1
+- transformer_blocks.42.txt_mlp.net.0.proj
+- transformer_blocks.42.txt_mlp.net.2
+- transformer_blocks.43.img_mod.1
+- transformer_blocks.43.attn.to_q
+- transformer_blocks.43.attn.to_k
+- transformer_blocks.43.attn.to_v
+- transformer_blocks.43.attn.add_k_proj
+- transformer_blocks.43.attn.add_v_proj
+- transformer_blocks.43.attn.add_q_proj
+- transformer_blocks.43.attn.to_out.0
+- transformer_blocks.43.attn.to_add_out
+- transformer_blocks.43.img_mlp.net.0.proj
+- transformer_blocks.43.img_mlp.net.2
+- transformer_blocks.43.txt_mod.1
+- transformer_blocks.43.txt_mlp.net.0.proj
+- transformer_blocks.43.txt_mlp.net.2
+- transformer_blocks.44.img_mod.1
+- transformer_blocks.44.attn.to_q
+- transformer_blocks.44.attn.to_k
+- transformer_blocks.44.attn.to_v
+- transformer_blocks.44.attn.add_k_proj
+- transformer_blocks.44.attn.add_v_proj
+- transformer_blocks.44.attn.add_q_proj
+- transformer_blocks.44.attn.to_out.0
+- transformer_blocks.44.attn.to_add_out
+- transformer_blocks.44.img_mlp.net.0.proj
+- transformer_blocks.44.img_mlp.net.2
+- transformer_blocks.44.txt_mod.1
+- transformer_blocks.44.txt_mlp.net.0.proj
+- transformer_blocks.44.txt_mlp.net.2
+- transformer_blocks.45.img_mod.1
+- transformer_blocks.45.attn.to_q
+- transformer_blocks.45.attn.to_k
+- transformer_blocks.45.attn.to_v
+- transformer_blocks.45.attn.add_k_proj
+- transformer_blocks.45.attn.add_v_proj
+- transformer_blocks.45.attn.add_q_proj
+- transformer_blocks.45.attn.to_out.0
+- transformer_blocks.45.attn.to_add_out
+- transformer_blocks.45.img_mlp.net.0.proj
+- transformer_blocks.45.img_mlp.net.2
+- transformer_blocks.45.txt_mod.1
+- transformer_blocks.45.txt_mlp.net.0.proj
+- transformer_blocks.45.txt_mlp.net.2
+- transformer_blocks.46.img_mod.1
+- transformer_blocks.46.attn.to_q
+- transformer_blocks.46.attn.to_k
+- transformer_blocks.46.attn.to_v
+- transformer_blocks.46.attn.add_k_proj
+- transformer_blocks.46.attn.add_v_proj
+- transformer_blocks.46.attn.add_q_proj
+- transformer_blocks.46.attn.to_out.0
+- transformer_blocks.46.attn.to_add_out
+- transformer_blocks.46.img_mlp.net.0.proj
+- transformer_blocks.46.img_mlp.net.2
+- transformer_blocks.46.txt_mod.1
+- transformer_blocks.46.txt_mlp.net.0.proj
+- transformer_blocks.46.txt_mlp.net.2
+- transformer_blocks.47.img_mod.1
+- transformer_blocks.47.attn.to_q
+- transformer_blocks.47.attn.to_k
+- transformer_blocks.47.attn.to_v
+- transformer_blocks.47.attn.add_k_proj
+- transformer_blocks.47.attn.add_v_proj
+- transformer_blocks.47.attn.add_q_proj
+- transformer_blocks.47.attn.to_out.0
+- transformer_blocks.47.attn.to_add_out
+- transformer_blocks.47.img_mlp.net.0.proj
+- transformer_blocks.47.img_mlp.net.2
+- transformer_blocks.47.txt_mod.1
+- transformer_blocks.47.txt_mlp.net.0.proj
+- transformer_blocks.47.txt_mlp.net.2
+- transformer_blocks.48.img_mod.1
+- transformer_blocks.48.attn.to_q
+- transformer_blocks.48.attn.to_k
+- transformer_blocks.48.attn.to_v
+- transformer_blocks.48.attn.add_k_proj
+- transformer_blocks.48.attn.add_v_proj
+- transformer_blocks.48.attn.add_q_proj
+- transformer_blocks.48.attn.to_out.0
+- transformer_blocks.48.attn.to_add_out
+- transformer_blocks.48.img_mlp.net.0.proj
+- transformer_blocks.48.img_mlp.net.2
+- transformer_blocks.48.txt_mod.1
+- transformer_blocks.48.txt_mlp.net.0.proj
+- transformer_blocks.48.txt_mlp.net.2
+- transformer_blocks.49.img_mod.1
+- transformer_blocks.49.attn.to_q
+- transformer_blocks.49.attn.to_k
+- transformer_blocks.49.attn.to_v
+- transformer_blocks.49.attn.add_k_proj
+- transformer_blocks.49.attn.add_v_proj
+- transformer_blocks.49.attn.add_q_proj
+- transformer_blocks.49.attn.to_out.0
+- transformer_blocks.49.attn.to_add_out
+- transformer_blocks.49.img_mlp.net.0.proj
+- transformer_blocks.49.img_mlp.net.2
+- transformer_blocks.49.txt_mod.1
+- transformer_blocks.49.txt_mlp.net.0.proj
+- transformer_blocks.49.txt_mlp.net.2
+- transformer_blocks.50.img_mod.1
+- transformer_blocks.50.attn.to_q
+- transformer_blocks.50.attn.to_k
+- transformer_blocks.50.attn.to_v
+- transformer_blocks.50.attn.add_k_proj
+- transformer_blocks.50.attn.add_v_proj
+- transformer_blocks.50.attn.add_q_proj
+- transformer_blocks.50.attn.to_out.0
+- transformer_blocks.50.attn.to_add_out
+- transformer_blocks.50.img_mlp.net.0.proj
+- transformer_blocks.50.img_mlp.net.2
+- transformer_blocks.50.txt_mod.1
+- transformer_blocks.50.txt_mlp.net.0.proj
+- transformer_blocks.50.txt_mlp.net.2
+- transformer_blocks.51.img_mod.1
+- transformer_blocks.51.attn.to_q
+- transformer_blocks.51.attn.to_k
+- transformer_blocks.51.attn.to_v
+- transformer_blocks.51.attn.add_k_proj
+- transformer_blocks.51.attn.add_v_proj
+- transformer_blocks.51.attn.add_q_proj
+- transformer_blocks.51.attn.to_out.0
+- transformer_blocks.51.attn.to_add_out
+- transformer_blocks.51.img_mlp.net.0.proj
+- transformer_blocks.51.img_mlp.net.2
+- transformer_blocks.51.txt_mod.1
+- transformer_blocks.51.txt_mlp.net.0.proj
+- transformer_blocks.51.txt_mlp.net.2
+- transformer_blocks.52.img_mod.1
+- transformer_blocks.52.attn.to_q
+- transformer_blocks.52.attn.to_k
+- transformer_blocks.52.attn.to_v
+- transformer_blocks.52.attn.add_k_proj
+- transformer_blocks.52.attn.add_v_proj
+- transformer_blocks.52.attn.add_q_proj
+- transformer_blocks.52.attn.to_out.0
+- transformer_blocks.52.attn.to_add_out
+- transformer_blocks.52.img_mlp.net.0.proj
+- transformer_blocks.52.img_mlp.net.2
+- transformer_blocks.52.txt_mod.1
+- transformer_blocks.52.txt_mlp.net.0.proj
+- transformer_blocks.52.txt_mlp.net.2
+- transformer_blocks.53.img_mod.1
+- transformer_blocks.53.attn.to_q
+- transformer_blocks.53.attn.to_k
+- transformer_blocks.53.attn.to_v
+- transformer_blocks.53.attn.add_k_proj
+- transformer_blocks.53.attn.add_v_proj
+- transformer_blocks.53.attn.add_q_proj
+- transformer_blocks.53.attn.to_out.0
+- transformer_blocks.53.attn.to_add_out
+- transformer_blocks.53.img_mlp.net.0.proj
+- transformer_blocks.53.img_mlp.net.2
+- transformer_blocks.53.txt_mod.1
+- transformer_blocks.53.txt_mlp.net.0.proj
+- transformer_blocks.53.txt_mlp.net.2
+- transformer_blocks.54.img_mod.1
+- transformer_blocks.54.attn.to_q
+- transformer_blocks.54.attn.to_k
+- transformer_blocks.54.attn.to_v
+- transformer_blocks.54.attn.add_k_proj
+- transformer_blocks.54.attn.add_v_proj
+- transformer_blocks.54.attn.add_q_proj
+- transformer_blocks.54.attn.to_out.0
+- transformer_blocks.54.attn.to_add_out
+- transformer_blocks.54.img_mlp.net.0.proj
+- transformer_blocks.54.img_mlp.net.2
+- transformer_blocks.54.txt_mod.1
+- transformer_blocks.54.txt_mlp.net.0.proj
+- transformer_blocks.54.txt_mlp.net.2
+- transformer_blocks.55.img_mod.1
+- transformer_blocks.55.attn.to_q
+- transformer_blocks.55.attn.to_k
+- transformer_blocks.55.attn.to_v
+- transformer_blocks.55.attn.add_k_proj
+- transformer_blocks.55.attn.add_v_proj
+- transformer_blocks.55.attn.add_q_proj
+- transformer_blocks.55.attn.to_out.0
+- transformer_blocks.55.attn.to_add_out
+- transformer_blocks.55.img_mlp.net.0.proj
+- transformer_blocks.55.img_mlp.net.2
+- transformer_blocks.55.txt_mod.1
+- transformer_blocks.55.txt_mlp.net.0.proj
+- transformer_blocks.55.txt_mlp.net.2
+- transformer_blocks.56.img_mod.1
+- transformer_blocks.56.attn.to_q
+- transformer_blocks.56.attn.to_k
+- transformer_blocks.56.attn.to_v
+- transformer_blocks.56.attn.add_k_proj
+- transformer_blocks.56.attn.add_v_proj
+- transformer_blocks.56.attn.add_q_proj
+- transformer_blocks.56.attn.to_out.0
+- transformer_blocks.56.attn.to_add_out
+- transformer_blocks.56.img_mlp.net.0.proj
+- transformer_blocks.56.img_mlp.net.2
+- transformer_blocks.56.txt_mod.1
+- transformer_blocks.56.txt_mlp.net.0.proj
+- transformer_blocks.56.txt_mlp.net.2
+- transformer_blocks.57.img_mod.1
+- transformer_blocks.57.attn.to_q
+- transformer_blocks.57.attn.to_k
+- transformer_blocks.57.attn.to_v
+- transformer_blocks.57.attn.add_k_proj
+- transformer_blocks.57.attn.add_v_proj
+- transformer_blocks.57.attn.add_q_proj
+- transformer_blocks.57.attn.to_out.0
+- transformer_blocks.57.attn.to_add_out
+- transformer_blocks.57.img_mlp.net.0.proj
+- transformer_blocks.57.img_mlp.net.2
+- transformer_blocks.57.txt_mod.1
+- transformer_blocks.57.txt_mlp.net.0.proj
+- transformer_blocks.57.txt_mlp.net.2
+- transformer_blocks.58.img_mod.1
+- transformer_blocks.58.attn.to_q
+- transformer_blocks.58.attn.to_k
+- transformer_blocks.58.attn.to_v
+- transformer_blocks.58.attn.add_k_proj
+- transformer_blocks.58.attn.add_v_proj
+- transformer_blocks.58.attn.add_q_proj
+- transformer_blocks.58.attn.to_out.0
+- transformer_blocks.58.attn.to_add_out
+- transformer_blocks.58.img_mlp.net.0.proj
+- transformer_blocks.58.img_mlp.net.2
+- transformer_blocks.58.txt_mod.1
+- transformer_blocks.58.txt_mlp.net.0.proj
+- transformer_blocks.58.txt_mlp.net.2
+- transformer_blocks.59.img_mod.1
+- transformer_blocks.59.attn.to_q
+- transformer_blocks.59.attn.to_k
+- transformer_blocks.59.attn.to_v
+- transformer_blocks.59.attn.add_k_proj
+- transformer_blocks.59.attn.add_v_proj
+- transformer_blocks.59.attn.add_q_proj
+- transformer_blocks.59.attn.to_out.0
+- transformer_blocks.59.attn.to_add_out
+- transformer_blocks.59.img_mlp.net.0.proj
+- transformer_blocks.59.img_mlp.net.2
+- transformer_blocks.59.txt_mod.1
+- transformer_blocks.59.txt_mlp.net.0.proj
+- transformer_blocks.59.txt_mlp.net.2
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 60
+  approx_vram_mb: 400

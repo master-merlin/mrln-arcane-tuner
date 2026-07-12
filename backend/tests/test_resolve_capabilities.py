@@ -88,6 +88,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "hidream_o1": (False, False),  # unified transformer: pixel-space, TE inside the model
     "prx_pixel": (False, True),  # pixel_transformer: NO VAE, external Qwen3-VL text TE
     "boogu_image": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen3-VL mllm TE (no TE training)
+    "chroma": (True, True),  # latent_diffusion MMDiT (FLUX.1-schnell VAE) + external T5-XXL TE (no TE training)
 }
 
 

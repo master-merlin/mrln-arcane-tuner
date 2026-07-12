@@ -27,7 +27,7 @@ architecture_params:
   transformer._class_name: BooguImageTransformer2DModel
   transformer.patch_size: 2
   transformer.in_channels: 16
-  transformer.out_channels: 16
+  transformer.out_channels:
   transformer.hidden_size: 3360
   transformer.num_layers: 40
   transformer.num_double_stream_layers: 8
@@ -97,6 +97,63 @@ architecture_params:
 # mllm 17,545,915,828 bytes bf16, vae 335,307,052 bytes fp32 (4 bytes/param
 # -- the FLUX-style AutoencoderKL ships fp32 on disk despite the bf16
 # detected_precision used at load time).
+  num_heads: 28
+  transformer.ffn_dim_multiplier:
+  transformer.instruction_feature_configs:
+    instruction_feat_dim: 4096
+    num_instruction_feature_layers: 1
+    reduce_type: mean
+  transformer.instruction_feature_configs.instruction_feat_dim: 4096
+  transformer.instruction_feature_configs.num_instruction_feature_layers: 1
+  transformer.instruction_feature_configs.reduce_type: mean
+  transformer.prompt_tuning_configs:
+    ffn_dim_multiplier:
+    hidden_size: 4096
+    multiple_of: 256
+    norm_eps: 1.0e-05
+    num_attention_heads: 32
+    num_kv_heads: 8
+    num_layers: 0
+    num_trainable_prompt_tokens: 0
+    use_causal_mask: true
+    use_prompt_tuning: false
+  transformer.prompt_tuning_configs.ffn_dim_multiplier:
+  transformer.prompt_tuning_configs.hidden_size: 4096
+  transformer.prompt_tuning_configs.multiple_of: 256
+  transformer.prompt_tuning_configs.norm_eps: 1.0e-05
+  transformer.prompt_tuning_configs.num_attention_heads: 32
+  transformer.prompt_tuning_configs.num_kv_heads: 8
+  transformer.prompt_tuning_configs.num_layers: 0
+  transformer.prompt_tuning_configs.num_trainable_prompt_tokens: 0
+  transformer.prompt_tuning_configs.use_causal_mask: true
+  scheduler.num_train_timesteps: 1000
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latents_mean:
+  vae.latents_std:
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
 model_size_mb:
   transformer: 19632
   text_encoder: 16733

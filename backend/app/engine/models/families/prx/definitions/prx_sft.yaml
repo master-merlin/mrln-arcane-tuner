@@ -90,6 +90,73 @@ architecture_params:
   - 512
   vae.use_post_quant_conv: false
   vae.use_quant_conv: false
+  num_heads: 28
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.attn_logit_softcapping: 50.0
+  te.bos_token_id: 2
+  te.classifier_dropout_rate: 0.0
+  te.dropout_rate: 0.0
+  te.dtype: float32
+  te.eos_token_id: 1
+  te.final_logit_softcapping: 30.0
+  te.hidden_activation: gelu_pytorch_tanh
+  te.initializer_range: 0.02
+  te.layer_types:
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  te.max_position_embeddings: 8192
+  te.model_type: t5_gemma_module
+  te.pad_token_id: 0
+  te.query_pre_attn_scalar: 256
+  te.rms_norm_eps: 1.0e-06
+  te.rope_theta: 10000.0
+  te.sliding_window: 4096
+  te.use_cache: true
+  vae.act_fn: silu
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latents_mean:
+  vae.latents_std:
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
 block_topology:
 - name: blocks
   attr_path: blocks

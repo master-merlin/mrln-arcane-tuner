@@ -80,6 +80,420 @@ architecture_params:
 # 19.311B params -> 36833 MB bf16 on disk. Explicit here (authoritative for
 # the VRAM estimator) because _FAMILY_PARAMS["kandinsky5"] carries the LITE
 # fallback sizes.
+  transformer.attention_causal: false
+  transformer.attention_local: false
+  transformer.attention_glob: false
+  transformer.attention_window: 3
+  transformer.attention_method: topcdf
+  transformer.attention_P: 0.8
+  transformer.attention_add_sta: true
+  transformer.attention_wT: 11
+  transformer.attention_wW: 3
+  transformer.attention_wH: 3
+  te.architectures:
+  - Qwen2_5_VLForConditionalGeneration
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.eos_token_id: 151645
+  te.vision_start_token_id: 151652
+  te.vision_end_token_id: 151653
+  te.vision_token_id: 151654
+  te.image_token_id: 151655
+  te.video_token_id: 151656
+  te.hidden_act: silu
+  te.initializer_range: 0.02
+  te.intermediate_size: 18944
+  te.max_position_embeddings: 128000
+  te.max_window_layers: 28
+  te.model_type: qwen2_5_vl
+  te.num_attention_heads: 28
+  te.num_key_value_heads: 4
+  te.rms_norm_eps: 1.0e-06
+  te.rope_theta: 1000000.0
+  te.sliding_window: 32768
+  te.tie_word_embeddings: false
+  te.torch_dtype: bfloat16
+  te.use_cache: true
+  te.use_sliding_window: false
+  te.vision_config:
+    depth: 32
+    hidden_act: silu
+    hidden_size: 1280
+    intermediate_size: 3420
+    num_heads: 16
+    in_chans: 3
+    out_hidden_size: 3584
+    patch_size: 14
+    spatial_merge_size: 2
+    spatial_patch_size: 14
+    window_size: 112
+    fullatt_block_indexes:
+    - 7
+    - 15
+    - 23
+    - 31
+    tokens_per_second: 2
+    temporal_patch_size: 2
+  te.vision_config.depth: 32
+  te.vision_config.hidden_act: silu
+  te.vision_config.hidden_size: 1280
+  te.vision_config.intermediate_size: 3420
+  te.vision_config.num_heads: 16
+  te.vision_config.in_chans: 3
+  te.vision_config.out_hidden_size: 3584
+  te.vision_config.patch_size: 14
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.spatial_patch_size: 14
+  te.vision_config.window_size: 112
+  te.vision_config.fullatt_block_indexes:
+  - 7
+  - 15
+  - 23
+  - 31
+  te.vision_config.tokens_per_second: 2
+  te.vision_config.temporal_patch_size: 2
+  te.rope_scaling:
+    type: mrope
+    mrope_section:
+    - 16
+    - 24
+    - 24
+  te.rope_scaling.type: mrope
+  te.rope_scaling.mrope_section:
+  - 16
+  - 24
+  - 24
+  te.vocab_size: 152064
+  te2.architectures:
+  - CLIPModel
+  te2.initializer_factor: 1.0
+  te2.logit_scale_init_value: 2.6592
+  te2.model_type: clip
+  te2.projection_dim: 768
+  te2.text_config:
+    _name_or_path: ''
+    add_cross_attention: false
+    architectures:
+    attention_dropout: 0.0
+    bad_words_ids:
+    bos_token_id: 0
+    chunk_size_feed_forward: 0
+    cross_attention_hidden_size:
+    decoder_start_token_id:
+    diversity_penalty: 0.0
+    do_sample: false
+    dropout: 0.0
+    early_stopping: false
+    encoder_no_repeat_ngram_size: 0
+    eos_token_id: 2
+    finetuning_task:
+    forced_bos_token_id:
+    forced_eos_token_id:
+    hidden_act: quick_gelu
+    hidden_size: 768
+    id2label:
+      '0': LABEL_0
+      '1': LABEL_1
+    initializer_factor: 1.0
+    initializer_range: 0.02
+    intermediate_size: 3072
+    is_decoder: false
+    is_encoder_decoder: false
+    label2id:
+      LABEL_0: 0
+      LABEL_1: 1
+    layer_norm_eps: 1.0e-05
+    length_penalty: 1.0
+    max_length: 20
+    max_position_embeddings: 77
+    min_length: 0
+    model_type: clip_text_model
+    no_repeat_ngram_size: 0
+    num_attention_heads: 12
+    num_beam_groups: 1
+    num_beams: 1
+    num_hidden_layers: 12
+    num_return_sequences: 1
+    output_attentions: false
+    output_hidden_states: false
+    output_scores: false
+    pad_token_id: 1
+    prefix:
+    problem_type:
+    projection_dim: 768
+    pruned_heads: {}
+    remove_invalid_values: false
+    repetition_penalty: 1.0
+    return_dict: true
+    return_dict_in_generate: false
+    sep_token_id:
+    task_specific_params:
+    temperature: 1.0
+    tie_encoder_decoder: false
+    tie_word_embeddings: true
+    tokenizer_class:
+    top_k: 50
+    top_p: 1.0
+    torch_dtype:
+    torchscript: false
+    transformers_version: 4.16.0.dev0
+    use_bfloat16: false
+    vocab_size: 49408
+  te2.text_config.add_cross_attention: false
+  te2.text_config.architectures:
+  te2.text_config.attention_dropout: 0.0
+  te2.text_config.bad_words_ids:
+  te2.text_config.bos_token_id: 0
+  te2.text_config.chunk_size_feed_forward: 0
+  te2.text_config.cross_attention_hidden_size:
+  te2.text_config.decoder_start_token_id:
+  te2.text_config.diversity_penalty: 0.0
+  te2.text_config.do_sample: false
+  te2.text_config.dropout: 0.0
+  te2.text_config.early_stopping: false
+  te2.text_config.encoder_no_repeat_ngram_size: 0
+  te2.text_config.eos_token_id: 2
+  te2.text_config.finetuning_task:
+  te2.text_config.forced_bos_token_id:
+  te2.text_config.forced_eos_token_id:
+  te2.text_config.hidden_act: quick_gelu
+  te2.text_config.hidden_size: 768
+  te2.text_config.id2label:
+    '0': LABEL_0
+    '1': LABEL_1
+  te2.text_config.id2label.0: LABEL_0
+  te2.text_config.id2label.1: LABEL_1
+  te2.text_config.initializer_factor: 1.0
+  te2.text_config.initializer_range: 0.02
+  te2.text_config.intermediate_size: 3072
+  te2.text_config.is_decoder: false
+  te2.text_config.is_encoder_decoder: false
+  te2.text_config.label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  te2.text_config.label2id.LABEL_0: 0
+  te2.text_config.label2id.LABEL_1: 1
+  te2.text_config.layer_norm_eps: 1.0e-05
+  te2.text_config.length_penalty: 1.0
+  te2.text_config.max_length: 20
+  te2.text_config.max_position_embeddings: 77
+  te2.text_config.min_length: 0
+  te2.text_config.model_type: clip_text_model
+  te2.text_config.no_repeat_ngram_size: 0
+  te2.text_config.num_attention_heads: 12
+  te2.text_config.num_beam_groups: 1
+  te2.text_config.num_beams: 1
+  te2.text_config.num_hidden_layers: 12
+  te2.text_config.num_return_sequences: 1
+  te2.text_config.output_attentions: false
+  te2.text_config.output_hidden_states: false
+  te2.text_config.output_scores: false
+  te2.text_config.pad_token_id: 1
+  te2.text_config.prefix:
+  te2.text_config.problem_type:
+  te2.text_config.projection_dim: 768
+  te2.text_config.pruned_heads: {}
+  te2.text_config.remove_invalid_values: false
+  te2.text_config.repetition_penalty: 1.0
+  te2.text_config.return_dict: true
+  te2.text_config.return_dict_in_generate: false
+  te2.text_config.sep_token_id:
+  te2.text_config.task_specific_params:
+  te2.text_config.temperature: 1.0
+  te2.text_config.tie_encoder_decoder: false
+  te2.text_config.tie_word_embeddings: true
+  te2.text_config.tokenizer_class:
+  te2.text_config.top_k: 50
+  te2.text_config.top_p: 1.0
+  te2.text_config.torch_dtype:
+  te2.text_config.torchscript: false
+  te2.text_config.use_bfloat16: false
+  te2.text_config.vocab_size: 49408
+  te2.text_config_dict:
+    hidden_size: 768
+    intermediate_size: 3072
+    num_attention_heads: 12
+    num_hidden_layers: 12
+    projection_dim: 768
+  te2.text_config_dict.hidden_size: 768
+  te2.text_config_dict.intermediate_size: 3072
+  te2.text_config_dict.num_attention_heads: 12
+  te2.text_config_dict.num_hidden_layers: 12
+  te2.text_config_dict.projection_dim: 768
+  te2.torch_dtype: float32
+  te2.vision_config:
+    _name_or_path: ''
+    add_cross_attention: false
+    architectures:
+    attention_dropout: 0.0
+    bad_words_ids:
+    bos_token_id:
+    chunk_size_feed_forward: 0
+    cross_attention_hidden_size:
+    decoder_start_token_id:
+    diversity_penalty: 0.0
+    do_sample: false
+    dropout: 0.0
+    early_stopping: false
+    encoder_no_repeat_ngram_size: 0
+    eos_token_id:
+    finetuning_task:
+    forced_bos_token_id:
+    forced_eos_token_id:
+    hidden_act: quick_gelu
+    hidden_size: 1024
+    id2label:
+      '0': LABEL_0
+      '1': LABEL_1
+    image_size: 224
+    initializer_factor: 1.0
+    initializer_range: 0.02
+    intermediate_size: 4096
+    is_decoder: false
+    is_encoder_decoder: false
+    label2id:
+      LABEL_0: 0
+      LABEL_1: 1
+    layer_norm_eps: 1.0e-05
+    length_penalty: 1.0
+    max_length: 20
+    min_length: 0
+    model_type: clip_vision_model
+    no_repeat_ngram_size: 0
+    num_attention_heads: 16
+    num_beam_groups: 1
+    num_beams: 1
+    num_hidden_layers: 24
+    num_return_sequences: 1
+    output_attentions: false
+    output_hidden_states: false
+    output_scores: false
+    pad_token_id:
+    patch_size: 14
+    prefix:
+    problem_type:
+    projection_dim: 768
+    pruned_heads: {}
+    remove_invalid_values: false
+    repetition_penalty: 1.0
+    return_dict: true
+    return_dict_in_generate: false
+    sep_token_id:
+    task_specific_params:
+    temperature: 1.0
+    tie_encoder_decoder: false
+    tie_word_embeddings: true
+    tokenizer_class:
+    top_k: 50
+    top_p: 1.0
+    torch_dtype:
+    torchscript: false
+    transformers_version: 4.16.0.dev0
+    use_bfloat16: false
+  te2.vision_config.add_cross_attention: false
+  te2.vision_config.architectures:
+  te2.vision_config.attention_dropout: 0.0
+  te2.vision_config.bad_words_ids:
+  te2.vision_config.bos_token_id:
+  te2.vision_config.chunk_size_feed_forward: 0
+  te2.vision_config.cross_attention_hidden_size:
+  te2.vision_config.decoder_start_token_id:
+  te2.vision_config.diversity_penalty: 0.0
+  te2.vision_config.do_sample: false
+  te2.vision_config.dropout: 0.0
+  te2.vision_config.early_stopping: false
+  te2.vision_config.encoder_no_repeat_ngram_size: 0
+  te2.vision_config.eos_token_id:
+  te2.vision_config.finetuning_task:
+  te2.vision_config.forced_bos_token_id:
+  te2.vision_config.forced_eos_token_id:
+  te2.vision_config.hidden_act: quick_gelu
+  te2.vision_config.hidden_size: 1024
+  te2.vision_config.id2label:
+    '0': LABEL_0
+    '1': LABEL_1
+  te2.vision_config.id2label.0: LABEL_0
+  te2.vision_config.id2label.1: LABEL_1
+  te2.vision_config.image_size: 224
+  te2.vision_config.initializer_factor: 1.0
+  te2.vision_config.initializer_range: 0.02
+  te2.vision_config.intermediate_size: 4096
+  te2.vision_config.is_decoder: false
+  te2.vision_config.is_encoder_decoder: false
+  te2.vision_config.label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  te2.vision_config.label2id.LABEL_0: 0
+  te2.vision_config.label2id.LABEL_1: 1
+  te2.vision_config.layer_norm_eps: 1.0e-05
+  te2.vision_config.length_penalty: 1.0
+  te2.vision_config.max_length: 20
+  te2.vision_config.min_length: 0
+  te2.vision_config.model_type: clip_vision_model
+  te2.vision_config.no_repeat_ngram_size: 0
+  te2.vision_config.num_attention_heads: 16
+  te2.vision_config.num_beam_groups: 1
+  te2.vision_config.num_beams: 1
+  te2.vision_config.num_hidden_layers: 24
+  te2.vision_config.num_return_sequences: 1
+  te2.vision_config.output_attentions: false
+  te2.vision_config.output_hidden_states: false
+  te2.vision_config.output_scores: false
+  te2.vision_config.pad_token_id:
+  te2.vision_config.patch_size: 14
+  te2.vision_config.prefix:
+  te2.vision_config.problem_type:
+  te2.vision_config.projection_dim: 768
+  te2.vision_config.pruned_heads: {}
+  te2.vision_config.remove_invalid_values: false
+  te2.vision_config.repetition_penalty: 1.0
+  te2.vision_config.return_dict: true
+  te2.vision_config.return_dict_in_generate: false
+  te2.vision_config.sep_token_id:
+  te2.vision_config.task_specific_params:
+  te2.vision_config.temperature: 1.0
+  te2.vision_config.tie_encoder_decoder: false
+  te2.vision_config.tie_word_embeddings: true
+  te2.vision_config.tokenizer_class:
+  te2.vision_config.top_k: 50
+  te2.vision_config.top_p: 1.0
+  te2.vision_config.torch_dtype:
+  te2.vision_config.torchscript: false
+  te2.vision_config.use_bfloat16: false
+  te2.vision_config_dict:
+    hidden_size: 1024
+    intermediate_size: 4096
+    num_attention_heads: 16
+    num_hidden_layers: 24
+    patch_size: 14
+    projection_dim: 768
+  te2.vision_config_dict.hidden_size: 1024
+  te2.vision_config_dict.intermediate_size: 4096
+  te2.vision_config_dict.num_attention_heads: 16
+  te2.vision_config_dict.num_hidden_layers: 24
+  te2.vision_config_dict.patch_size: 14
+  te2.vision_config_dict.projection_dim: 768
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - HunyuanVideoDownBlock3D
+  - HunyuanVideoDownBlock3D
+  - HunyuanVideoDownBlock3D
+  - HunyuanVideoDownBlock3D
+  vae.in_channels: 3
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.up_block_types:
+  - HunyuanVideoUpBlock3D
+  - HunyuanVideoUpBlock3D
+  - HunyuanVideoUpBlock3D
+  - HunyuanVideoUpBlock3D
 model_size_mb:
   transformer: 36833.0
 block_topology:

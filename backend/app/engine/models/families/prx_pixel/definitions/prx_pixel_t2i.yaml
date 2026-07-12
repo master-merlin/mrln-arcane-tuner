@@ -87,6 +87,33 @@ architecture_params:
   scheduler.use_dynamic_shifting: false
   # NO vae.* section: PRXPixel is pixel-space (vae_scale_factor hardcoded 1
   # in the pipeline; the denoised output IS the image in [-1, 1]).
+  num_heads: 28
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.dtype: bfloat16
+  te.eos_token_id: 151645
+  te.hidden_act: silu
+  te.initializer_range: 0.02
+  te.max_position_embeddings: 262144
+  te.model_type: qwen3_vl_text
+  te.rms_norm_eps: 1.0e-06
+  te.rope_scaling:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_type: default
+  te.rope_scaling.mrope_interleaved: true
+  te.rope_scaling.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.rope_scaling.rope_type: default
+  te.rope_theta: 5000000
+  te.tie_word_embeddings: true
+  te.use_cache: true
 block_topology:
 - name: blocks
   attr_path: blocks

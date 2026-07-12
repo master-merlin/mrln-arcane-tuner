@@ -33,7 +33,7 @@ architecture_params:
   transformer._class_name: OvisImageTransformer2DModel
   transformer.patch_size: 1
   transformer.in_channels: 64
-  transformer.out_channels: 64
+  transformer.out_channels:
   transformer.num_layers: 6
   transformer.num_single_layers: 27
   transformer.attention_head_dim: 128
@@ -47,7 +47,7 @@ architecture_params:
   transformer.supports_negative_prompt: true
   # Generic activation-estimate hints (inner dim = 24 * 128, 6 + 27 blocks)
   hidden_size: 3072
-  depth: 33
+  depth: 6
   in_channels: 64
   # -- Text encoder (checkpoint text_encoder/config.json: Qwen3, ~1.7B) --
   te.type: qwen3
@@ -90,6 +90,74 @@ architecture_params:
   - 512
   vae.use_post_quant_conv: false
   vae.use_quant_conv: false
+  num_heads: 24
+  depth_single_blocks: 27
+  context_dim: 2048
+  te._attn_implementation_autoset: true
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.dtype: float32
+  te.eos_token_id: 151645
+  te.hidden_act: silu
+  te.initializer_range: 0.02
+  te.layer_types:
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  te.max_window_layers: 28
+  te.model_type: qwen3
+  te.rope_scaling:
+  te.sliding_window:
+  te.use_cache: true
+  te.use_sliding_window: false
+  vae.act_fn: silu
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latents_mean:
+  vae.latents_std:
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  transformer.hidden_size: 3072
+  te.concat_layers: 1
 block_topology:
 - name: double_blocks
   attr_path: transformer_blocks

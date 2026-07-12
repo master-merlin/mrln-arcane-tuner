@@ -95,6 +95,7 @@ referencing==0.37.0
 regex==2026.1.15
 rembg==2.0.72
 requests==2.32.5
+ruamel.yaml==0.18.16
 rpds-py==0.30.0
 ruff==0.15.2
 safetensors==0.8.0

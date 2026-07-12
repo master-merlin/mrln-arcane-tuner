@@ -386,6 +386,29 @@ class GenericSamplingPipeline(ABC):
 
     # ── Concrete Helpers ─────────────────────────────────────────────────
 
+    def _effective_sample_frames(
+        self, default: int, frame_rule: str | None = None
+    ) -> int:
+        """Frame count for the sample currently being generated.
+
+        Per-prompt ``SamplePromptConfig.num_frames`` (stashed on
+        ``self._active_prompt_cfg`` by :meth:`_sample_single`) overrides the
+        run-level ``sample_num_frames``. Contract: ``None`` = run default;
+        ``1`` = still image; any other value = clip of that length. Snapped to
+        the family frame rule (``F=1`` satisfies every ``Nn+1`` rule), so a
+        still preview flows through the existing video noise/rope/fps plumbing.
+        """
+        from app.engine.core.video_contract import snap_frames
+
+        prompt_cfg = getattr(self, "_active_prompt_cfg", None) or {}
+        per_prompt = prompt_cfg.get("num_frames")
+        frames = (
+            int(per_prompt)
+            if per_prompt
+            else int(self.config.get("sample_num_frames", default))
+        )
+        return snap_frames(frames, frame_rule)
+
     def _get_sample_prompts(self) -> list[dict[str, Any]]:
         """Read sample prompts from config."""
         raw = self.config.get("sample_prompts", [])

@@ -173,7 +173,8 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
         Frame count is read from config (``sample_num_frames``, default 17 →
         ``4n+1``), compressed temporally by 4. Noise is fp32.
         """
-        num_frames = int(self.config.get("sample_num_frames", 17))
+        # Per-prompt num_frames override (None = run default; 1 = still).
+        num_frames = self._effective_sample_frames(17, "4n+1")
         latent_f = (num_frames - 1) // WAN_VAE_TEMPORAL + 1
         lat_h = height // WAN_VAE_SPATIAL
         lat_w = width // WAN_VAE_SPATIAL

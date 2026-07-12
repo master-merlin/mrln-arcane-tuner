@@ -43,6 +43,22 @@ def frame_predicate(rule: str | None) -> Callable[[int], bool]:
     return lambda n: int(n) >= 1 and (int(n) - 1) % step == 0
 
 
+def snap_frames(num_frames: int, rule: str | None) -> int:
+    """Snap an arbitrary frame count DOWN to the nearest valid ``Nn+1`` value.
+
+    A per-prompt preview frame count (``SamplePromptConfig.num_frames``) is NOT
+    run through the video-contract validator, so it may violate the family's
+    frame rule; snapping keeps the sampled latent grid legal. ``F=1`` satisfies
+    every rule (still image). ``"8n+1"``: 30 → 25; ``"4n+1"``: 30 → 29. A
+    ``None``/unrecognized rule imposes no constraint (returned unchanged, min 1).
+    """
+    n = max(int(num_frames), 1)
+    step = BucketManager._parse_frame_step(rule)
+    if not step:
+        return n
+    return ((n - 1) // step) * step + 1
+
+
 @dataclass(frozen=True)
 class VideoProfile:
     """Model-derived video facts — the single source of truth for a family."""
@@ -206,6 +222,22 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
                 f"violates this model's frame rule '{profile.frame_rule}'. "
                 "Use 0 (inherit) or a valid value."
             )
+
+    # still_resolutions (Phase 3): F=1 stills in a video job bucket at their own
+    # resolutions; empty/unset inherits `resolutions`. Only entry positivity is
+    # validated here — BucketManager snaps to divisibility itself, and Task 1's
+    # data-path consumer (resolve_still_resolutions) is the field's real reader.
+    # _int_or_none (file convention) so malformed payloads ("abc") produce a
+    # clean validation error instead of an uncaught ValueError.
+    bad_still = [
+        r
+        for r in (config.get("still_resolutions") or [])
+        if (_int_or_none(r) or 0) <= 0
+    ]
+    if bad_still:
+        report.errors.append(
+            f"still_resolutions entries must be positive ints, got {bad_still}."
+        )
 
     # target_fps: 0 means "use native"; a set value far from native is rejected.
     fps = _to_float(config.get("target_fps"))

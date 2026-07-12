@@ -60,6 +60,21 @@ def video_trim_extra_key(item: dict) -> str:
     return key
 
 
+def resolve_still_resolutions(config: dict, is_video_family: bool) -> list[int]:
+    """Effective spatial resolutions for F=1 stills.
+
+    Phase-3 contract: empty/unset inherits `resolutions`. Image families
+    ALWAYS inherit — the field is is_video-gated and the capability
+    allowlist strips it at job create/update, but old DB rows may still
+    carry it, and it must never change image-job bucketing.
+    """
+    base = list(config.get("resolutions") or [1024])
+    if not is_video_family:
+        return base
+    still = [int(r) for r in (config.get("still_resolutions") or []) if int(r) > 0]
+    return still or base
+
+
 def _coerce_fps(value: Any) -> float:
     """Parse a config/metadata fps value to a non-negative float.
 
@@ -274,6 +289,17 @@ class PipelineDataMixin:
 
         resolutions = self.config.get("resolutions", [1024])
         self.bucket_manager = BucketManager(base_resolutions=resolutions)
+
+        # Stills mixed into a video job bucket at their OWN resolutions
+        # (Phase 3). Empty/unset still_resolutions inherits `resolutions`, in
+        # which case we reuse the same manager object → byte-identical to the
+        # pre-Phase-3 single-manager behavior. Image families always inherit.
+        still_res = resolve_still_resolutions(self.config, self.is_video_family)
+        self.still_bucket_manager = (
+            self.bucket_manager
+            if still_res == resolutions
+            else BucketManager(base_resolutions=still_res)
+        )
 
         # ── Video contract (defensive) ──
         # Config assembly (job_manager) already derives frame_rule + validates,
@@ -599,12 +625,12 @@ class PipelineDataMixin:
                                 buckets = [{**sbucket, "frames": vid_target_frames}]
                         elif bucketing_mode == "multi":
                             buckets = (
-                                self.bucket_manager.get_buckets_for_all_resolutions(
+                                self.still_bucket_manager.get_buckets_for_all_resolutions(
                                     w, h
                                 )
                             )
                         else:
-                            buckets = [self.bucket_manager.get_bucket(w, h)]
+                            buckets = [self.still_bucket_manager.get_bucket(w, h)]
 
                         for bucket in buckets:
                             target_w, target_h = bucket["width"], bucket["height"]

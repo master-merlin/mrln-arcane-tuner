@@ -199,3 +199,28 @@ def test_per_dataset_frame_override_invalid_rejected():
     r = validate_video_config(_defn(LTX2), cfg)
     assert not r.ok
     assert any("num_frames=10" in e and "clips" in e for e in r.errors)
+
+
+# ── still_resolutions (Phase 3: stills-in-video buckets at their own res) ──
+
+
+def test_still_resolutions_rejects_non_positive_entries():
+    # A non-positive entry can't map to a real bucket — hard error.
+    r = validate_video_config(_defn(LTX2), {"still_resolutions": [1024, 0]})
+    assert not r.ok
+    assert any("still_resolutions" in e for e in r.errors)
+
+
+def test_still_resolutions_rejects_malformed_entries_cleanly():
+    # Garbage entries ("abc") must yield a clean validation error, never an
+    # uncaught ValueError (review finding: raw int() crashed validation).
+    r = validate_video_config(_defn(LTX2), {"still_resolutions": ["abc", 1024]})
+    assert not r.ok
+    assert any("still_resolutions" in e for e in r.errors)
+
+
+def test_still_resolutions_empty_and_unset_are_valid():
+    # Empty/unset means "inherit resolutions" — never an error.
+    for cfg in ({}, {"still_resolutions": []}, {"still_resolutions": None}):
+        r = validate_video_config(_defn(LTX2), cfg)
+        assert not [e for e in r.errors if "still_resolutions" in e]

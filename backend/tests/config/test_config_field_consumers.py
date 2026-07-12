@@ -14,14 +14,18 @@ runtime test catches:
 (attribute access ``.field`` or dict-key access ``"field"`` / ``'field'``),
 excluding the model definition itself and the gating/visibility plumbing
 (``archetypes.py``), OR be listed in :data:`ALLOWED_STUBS` with a one-line
-justification. All five W4-1 dead fields (``quantization_strategy``,
-``resolution_strategy``, ``boundary_ratio_override``, ``still_resolutions`` and
-``radc_seqlen_influence``) were deleted, so they must NOT be needed here. The
-fifth, ``radc_seqlen_influence``, was initially retained for a self-referential
+justification. Four of the five W4-1 dead fields (``quantization_strategy``,
+``resolution_strategy``, ``boundary_ratio_override`` and
+``radc_seqlen_influence``) remain deleted, so they must NOT be needed here. The
+fifth, ``still_resolutions``, was re-added with a REAL consumer (Phase 3,
+2026-07-12): the data path reads it via ``resolve_still_resolutions`` in
+``pipeline_data.py`` to bucket F=1 stills at their own resolutions, so the
+consumer guard now expects — and requires — that reader to exist. The
+``radc_seqlen_influence`` field was initially retained for a self-referential
 ``video_contract`` guard (it only read the field to reject it unless the RADC
 sampler was selected — a Phase-3 stub that never consumes the value); the fix
-wave recognised that guard as circular and deleted the field. It will be
-re-added with Phase 3.
+wave recognised that guard as circular and deleted the field. That RADC feature
+remains out of scope.
 
 **Gating-coverage guard** — every field must either be gated in
 ``_FIELD_RULES`` OR be explicitly enrolled in :data:`UNIVERSAL_FIELDS`. A new

@@ -422,7 +422,29 @@ class VRAMEstimator:
         report.gradients_mb = (trainable_params * lora_bpp) / (1024 * 1024)
 
         # ── 5. Activations (highly dependent on resolution + batch) ──────
+        # The scalar ``resolution``/``width`` keys (image-archetype defaults)
+        # win when present; otherwise the spatial term derives from the
+        # resolution LISTS. Phase 3: F=1 stills mixed into a video job bucket at
+        # ``still_resolutions`` and can exceed the video ``resolutions`` — fold
+        # them in via the shared resolver (single source of truth) so a
+        # high-res still isn't silently under-budgeted. Monotonic: this can only
+        # RAISE the (already conservative) scalar default, never lower it, so
+        # every existing estimate is unchanged unless a real bucket edge is
+        # genuinely larger. Image families inherit ``resolutions`` (the field is
+        # is_video-gated), so a stale ``still_resolutions`` can't affect them.
+        is_video = bool(_is_video_definition(definition))
         resolution = config.get("resolution", config.get("width", 1024))
+        from app.engine.core.pipeline.pipeline_data import resolve_still_resolutions
+
+        bucket_edges = [
+            int(r) for r in (config.get("resolutions") or []) if int(r) > 0
+        ] + [
+            int(r)
+            for r in resolve_still_resolutions(config, is_video)
+            if int(r) > 0
+        ]
+        if bucket_edges:
+            resolution = max(int(resolution), max(bucket_edges))
         batch_size = config.get("batch_size", 1)
         grad_checkpointing = config.get("gradient_checkpointing", True)
         # gradient_accumulation_steps doesn't affect peak VRAM (same batch in memory)
@@ -438,7 +460,7 @@ class VRAMEstimator:
         # For an IMAGE family ``latent_frames`` collapses to 1 (temporal_ratio
         # defaults to 1 and num_frames defaults to 1), so the activation term —
         # and therefore the whole estimate — stays BYTE-IDENTICAL to before.
-        is_video = bool(_is_video_definition(definition))
+        # (``is_video`` resolved above, before the spatial term.)
         latent_frames = 1
         if is_video:
             temporal_ratio = int(arch.get("video.vae_temporal", 1) or 1)

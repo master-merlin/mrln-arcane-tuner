@@ -4,23 +4,25 @@ carry the removed keys.
 
 ``BaseTrainingConfig`` uses Pydantic's default ``extra='ignore'`` policy, so an
 unknown key is silently dropped rather than raising. These tests pin that
-contract for all five W4-1 deletions, including ``radc_seqlen_influence`` —
+contract for the remaining four W4-1 deletions, including ``radc_seqlen_influence`` —
 originally retained for its self-referential ``video_contract`` guard, deleted
 in the W4-1 fix wave once that guard was recognised as circular (the RADC
 sampler is a Phase-3 stub that never reads the field). It will be re-added with
-Phase 3.
+Phase 3. (``still_resolutions`` was the fifth deletion; it has been re-added
+with a real consumer in Phase 3, so it is no longer a dead key.)
 """
 
 from __future__ import annotations
 
 from app.engine.models.base import BaseTrainingConfig
 
-# The five fields deleted in W4-1 (with representative legacy values).
+# The fields deleted in W4-1 that remain dead (with representative legacy
+# values). ``still_resolutions`` was re-added in Phase 3 with a real consumer,
+# so it is intentionally NOT listed here.
 DELETED_KEYS: dict[str, object] = {
     "quantization_strategy": "vram_safe",
     "resolution_strategy": "progressive",
     "boundary_ratio_override": 0.5,
-    "still_resolutions": [512, 768],
     "radc_seqlen_influence": 0.3,
 }
 

@@ -40,6 +40,7 @@ from app.engine.core.interfaces import IModelDriver
 from app.engine.core.text_encoding import TextEncoderOutput
 from app.engine.models.families.wan_shared.i2v_conditioning import (
     build_i2v_conditioning,
+    build_still_t2v_input,
 )
 from app.engine.models.families.wan_shared.text_encoding import (
     WAN_TE_MAX_LENGTH,
@@ -196,12 +197,21 @@ class WanDriverBase(IModelDriver):
         ``[noisy(16), mask(4), cond(16)]``. (CLIP image embed stays None — the
         diffusers WAN transformer guards None; full-fidelity CLIP conditioning is
         a documented follow-up.)
+
+        F=1 STILL GUARD: a single still on an i2v run trains as t2v — there is
+        no frame to predict beyond a conditioning frame, so stashing (and later
+        leaking, via the ``cond`` channels) the still's own clean latent as the
+        answer would be a degenerate, zero-information step. Skip the stash;
+        :meth:`forward_pass` takes the zeroed-conditioning t2v path when F=1.
+        (ltx2/k5 parity — their ``_i2v_conditioning_engaged`` gates on F>1.)
         """
         if not self.is_i2v:
             return
         if self.BATCH_FIRST_FRAME_LATENT in batch:
             return
         lat = latents if latents.ndim == 5 else latents.unsqueeze(2)
+        if lat.shape[2] <= 1:
+            return
         batch[self.BATCH_FIRST_FRAME_LATENT] = lat[:, :, :1, :, :].detach().clone()
 
     def add_noise(
@@ -254,14 +264,22 @@ class WanDriverBase(IModelDriver):
         image_embed = None
         hidden_states = noisy_input
         if self.is_i2v:
-            first_frame = batch.get(self.BATCH_FIRST_FRAME_LATENT)
-            if first_frame is None:
-                raise ValueError(
-                    "I2V forward_pass requires batch["
-                    f"'{self.BATCH_FIRST_FRAME_LATENT}'] (first-frame latent)."
-                )
-            hidden_states = build_i2v_conditioning(noisy_input, first_frame)
-            image_embed = batch.get(self.BATCH_IMAGE_EMBED)
+            if noisy_input.shape[2] > 1:
+                first_frame = batch.get(self.BATCH_FIRST_FRAME_LATENT)
+                if first_frame is None:
+                    raise ValueError(
+                        "I2V forward_pass requires batch["
+                        f"'{self.BATCH_FIRST_FRAME_LATENT}'] (first-frame latent)."
+                    )
+                hidden_states = build_i2v_conditioning(noisy_input, first_frame)
+                image_embed = batch.get(self.BATCH_IMAGE_EMBED)
+            else:
+                # F=1 STILL on an i2v run → train as t2v. The 36-in-channel
+                # patch_embedding still needs 36 channels, so pad mask+cond with
+                # ZEROS (no conditioning frame, no answer leak). image_embed
+                # stays None. See attach_conditioning / build_still_t2v_input;
+                # ltx2/k5 parity (their F>1 _i2v_conditioning_engaged gate).
+                hidden_states = build_still_t2v_input(noisy_input)
 
         # RAW [0, 1000] timestep — the diffusers WAN time embedder consumes the
         # FlowMatchEuler value directly (sinusoidal, no internal /1000). The

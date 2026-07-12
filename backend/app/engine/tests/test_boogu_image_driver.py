@@ -407,6 +407,153 @@ class TestForwardSignature:
             )
 
 
+# ── Task A4: edit conditioning (ref_image_hidden_states adapter) ──────────
+
+
+class TestEditControlConditioning:
+    """``control_inputs: 1`` (boogu-image-edit) — ``batch["control_latents"]``
+    (house paired-dataset layer, ``List[Tensor[B,C,H,W]]`` per SLOT) must
+    reach the transformer as ``ref_image_hidden_states``
+    (``List[List[Tensor[C,H,W]]]`` per BATCH ITEM), and Base/Turbo
+    (``control_inputs: 0``, no ``control_latents`` key) must stay byte-
+    unchanged (``None``, already pinned by
+    ``TestForwardSignature.test_kwargs_reaching_transformer_match_documented_contract``)."""
+
+    def test_t2i_batch_without_control_latents_stays_none(self):
+        """Regression: an empty/absent batch (Base/Turbo, and the sampler's
+        own ``batch={}`` call) must not be affected by this task's change."""
+        drv = _driver()
+        captured = {}
+
+        def fake_transformer(**kwargs):
+            captured.update(kwargs)
+            return [h.clone() for h in kwargs["hidden_states"]]
+
+        fake_transformer.config = MagicMock(
+            axes_dim_rope=TINY_AXES_DIM_ROPE, axes_lens=TINY_AXES_LENS,
+        )
+        drv.model = fake_transformer
+
+        noisy = torch.randn(2, TINY_IN_CHANNELS, 4, 4)
+        drv.forward_pass(noisy, torch.rand(2), _fake_text(2), {})
+        assert captured["ref_image_hidden_states"] is None
+
+        # Empty list (falsy) must also fall back to None, not [] per item.
+        captured.clear()
+        drv.forward_pass(
+            noisy, torch.rand(2), _fake_text(2), {"control_latents": []},
+        )
+        assert captured["ref_image_hidden_states"] is None
+
+    def test_single_slot_control_latents_become_per_item_ref_image_lists(self):
+        """One ``control_inputs: 1`` slot -> each batch item gets a
+        length-1 ref-image list, and item i's ref image is EXACTLY slot
+        tensor row i (no cross-sample mixing)."""
+        drv = _driver()
+        captured = {}
+
+        def fake_transformer(**kwargs):
+            captured.update(kwargs)
+            return [h.clone() for h in kwargs["hidden_states"]]
+
+        fake_transformer.config = MagicMock(
+            axes_dim_rope=TINY_AXES_DIM_ROPE, axes_lens=TINY_AXES_LENS,
+        )
+        drv.model = fake_transformer
+
+        noisy = torch.randn(3, TINY_IN_CHANNELS, 4, 4)
+        slot0 = torch.arange(3 * TINY_IN_CHANNELS * 5 * 5, dtype=torch.float32).reshape(
+            3, TINY_IN_CHANNELS, 5, 5,
+        )
+        batch = {"control_latents": [slot0]}
+
+        drv.forward_pass(noisy, torch.rand(3), _fake_text(3), batch)
+
+        ref = captured["ref_image_hidden_states"]
+        assert isinstance(ref, list)
+        assert len(ref) == 3  # one inner list per batch item
+        for i in range(3):
+            assert isinstance(ref[i], list)
+            assert len(ref[i]) == 1  # one ref image per item (control_inputs: 1)
+            assert ref[i][0].shape == (TINY_IN_CHANNELS, 5, 5)
+            assert torch.equal(ref[i][0], slot0[i])
+
+    def test_multi_slot_control_latents_preserve_slot_order_per_item(self):
+        """Multiple control slots (``control_inputs: 2``, hypothetical)
+        transpose into each item's ref-image list IN SLOT ORDER."""
+        drv = _driver()
+        captured = {}
+
+        def fake_transformer(**kwargs):
+            captured.update(kwargs)
+            return [h.clone() for h in kwargs["hidden_states"]]
+
+        fake_transformer.config = MagicMock(
+            axes_dim_rope=TINY_AXES_DIM_ROPE, axes_lens=TINY_AXES_LENS,
+        )
+        drv.model = fake_transformer
+
+        noisy = torch.randn(2, TINY_IN_CHANNELS, 4, 4)
+        slot0 = torch.zeros(2, TINY_IN_CHANNELS, 4, 4)
+        slot1 = torch.ones(2, TINY_IN_CHANNELS, 4, 4)
+        batch = {"control_latents": [slot0, slot1]}
+
+        drv.forward_pass(noisy, torch.rand(2), _fake_text(2), batch)
+
+        ref = captured["ref_image_hidden_states"]
+        for i in range(2):
+            assert len(ref[i]) == 2
+            assert torch.equal(ref[i][0], slot0[i])
+            assert torch.equal(ref[i][1], slot1[i])
+
+    def test_control_latents_cast_to_noisy_input_dtype_and_device(self):
+        """``control_latents`` may arrive in the autocast dtype used by
+        ``_load_control_latents`` — must be cast to match ``noisy_input``
+        before reaching the model (mirrors qwen_image_edit's
+        ``ctrl.to(device=noisy_input.device, dtype=noisy_input.dtype)``)."""
+        drv = _driver()
+        captured = {}
+
+        def fake_transformer(**kwargs):
+            captured.update(kwargs)
+            return [h.clone() for h in kwargs["hidden_states"]]
+
+        fake_transformer.config = MagicMock(
+            axes_dim_rope=TINY_AXES_DIM_ROPE, axes_lens=TINY_AXES_LENS,
+        )
+        drv.model = fake_transformer
+
+        noisy = torch.randn(2, TINY_IN_CHANNELS, 4, 4, dtype=torch.float32)
+        slot0 = torch.randn(2, TINY_IN_CHANNELS, 4, 4, dtype=torch.float64)
+        batch = {"control_latents": [slot0]}
+
+        drv.forward_pass(noisy, torch.rand(2), _fake_text(2), batch)
+
+        ref = captured["ref_image_hidden_states"]
+        for i in range(2):
+            assert ref[i][0].dtype == noisy.dtype
+            assert ref[i][0].device == noisy.device
+
+    def test_end_to_end_forward_on_real_tiny_model_with_control_latents(self):
+        """Shape-level end-to-end proof on the REAL vendored transformer
+        (not just a fake capturing kwargs): a forward with ref images
+        present must still produce a finite, correctly-shaped velocity."""
+        model = _tiny_transformer()
+        drv = _driver()
+        drv.model = model
+
+        noisy = torch.randn(2, TINY_IN_CHANNELS, 4, 4)
+        t = torch.rand(2)
+        control = torch.randn(2, TINY_IN_CHANNELS, 4, 4)
+        batch = {"control_latents": [control]}
+
+        with torch.no_grad():
+            out = drv.forward_pass(noisy, t, _fake_text(2), batch)
+
+        assert out.shape == noisy.shape
+        assert torch.isfinite(out).all()
+
+
 # ── Contract 7: LoRA targeting ─────────────────────────────────────────────
 
 

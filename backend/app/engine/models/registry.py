@@ -18,6 +18,56 @@ from app.engine.core.definitions import ModelDefinition, ModelFamily
 
 logger = structlog.get_logger(__name__)
 
+
+def _roundtrip_yaml():
+    """A ruamel.yaml round-trip instance for comment-preserving saves.
+
+    Floats get an explicit mantissa dot in scientific notation (``1.0e-05``,
+    not ruamel's default ``1e-05``) — YAML 1.1 loaders like PyYAML otherwise
+    re-read them as *strings*, silently corrupting values such as
+    ``norm_eps: 1e-05`` on the next load.
+    """
+    import math
+
+    from ruamel.yaml import YAML
+
+    ryaml = YAML()  # round-trip mode: keeps comments, quotes, key order
+    ryaml.preserve_quotes = True
+    ryaml.width = 4096  # never re-wrap the authors' long lines
+
+    def _float_representer(representer, value):
+        if math.isnan(value):
+            text = ".nan"
+        elif math.isinf(value):
+            text = ".inf" if value > 0 else "-.inf"
+        else:
+            text = repr(value)
+            mantissa, e, exponent = text.partition("e")
+            if e and "." not in mantissa:
+                text = f"{mantissa}.0e{exponent}"
+        return representer.represent_scalar("tag:yaml.org,2002:float", text)
+
+    ryaml.representer.add_representer(float, _float_representer)
+    return ryaml
+
+
+def _merge_mapping(target, source: dict) -> None:
+    """Deep-merge ``source`` into a ruamel CommentedMap ``target`` in place.
+
+    Only differing leaves are assigned and extra keys are dropped, so after
+    the merge ``target`` parses equal to ``source`` — but comments sitting on
+    UNCHANGED sibling keys survive (a wholesale ``target = source`` replace
+    would discard every comment inside the mapping).
+    """
+    for key in [k for k in target if k not in source]:
+        del target[key]
+    for key, value in source.items():
+        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+            _merge_mapping(target[key], value)
+        elif key not in target or target[key] != value:
+            target[key] = value
+
+
 class ModelRegistry:
     """Central registry for model families and YAML-based definitions."""
 
@@ -157,18 +207,68 @@ class ModelRegistry:
         
     @classmethod
     def save_definition(cls, definition_id: str) -> None:
-        """Persist definition back to its YAML file."""
+        """Persist definition back to its YAML file, preserving hand-written
+        comments and key order.
+
+        The file is round-tripped through ruamel.yaml and only keys whose
+        values actually changed are rewritten; keys absent from the file are
+        appended only when they differ from the field default. A plain
+        ``yaml.dump(model_dump())`` rewrite (the old behavior) destroyed the
+        authors' comments and exploded every default field into the file.
+        """
         if definition_id not in cls._definitions:
             raise ValueError(f"Definition {definition_id} not found.")
-            
+
         config = cls._definitions[definition_id]
         path = cls._paths.get(definition_id)
-        
+
         if not path:
              raise ValueError(f"No file path known for {definition_id}. Cannot save.")
-             
-        with open(path, "w") as f:
-            yaml.dump(config.model_dump(), f, sort_keys=False)
+
+        ryaml = _roundtrip_yaml()
+
+        doc = None
+        on_disk: dict = {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = ryaml.load(f)
+            with open(path, encoding="utf-8") as f:
+                on_disk = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError, Exception):  # noqa: BLE001 — any parse
+            # failure falls through to the full-dump path below
+            doc = None
+
+        if doc is None:
+            # Missing/unreadable file — nothing to preserve, write it whole.
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.dump(config.model_dump(), f, sort_keys=False)
+            return
+
+        dumped = config.model_dump()
+        fields = type(config).model_fields
+        for key, value in dumped.items():
+            if key in on_disk:
+                if on_disk[key] != value:
+                    if isinstance(doc.get(key), dict) and isinstance(value, dict):
+                        # Deep-merge so comments on unchanged nested keys
+                        # (e.g. inside architecture_params) survive.
+                        _merge_mapping(doc[key], value)
+                    else:
+                        doc[key] = value
+            else:
+                # Only append keys that moved off their default — untouched
+                # defaults must not leak into the hand-written file.
+                field = fields.get(key)
+                default = (
+                    field.get_default(call_default_factory=True)
+                    if field is not None
+                    else None
+                )
+                if value != default:
+                    doc[key] = value
+
+        with open(path, "w", encoding="utf-8") as f:
+            ryaml.dump(doc, f)
 
     @classmethod
     def enrich_definition(

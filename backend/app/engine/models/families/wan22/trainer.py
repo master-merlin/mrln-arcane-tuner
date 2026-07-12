@@ -264,10 +264,17 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
         ):
             return
 
-        dtype = driver.resolve_loading_dtype()
-        low = loader.load_second_expert(
-            self.definition, torch_dtype=dtype, initial_device="cpu"
-        )
+        try:
+            dtype = driver.resolve_loading_dtype()
+            low = loader.load_second_expert(
+                self.definition, torch_dtype=dtype, initial_device="cpu"
+            )
+        except Exception:
+            # Reset the latch so a hypothetical in-process retry re-attempts the
+            # load instead of silently degrading to single-expert training via
+            # _apply_peft's missing-expert warning path.
+            self._deferred_expert_loaded = False
+            raise
         self.components["unet_low"] = low
         driver.transformer_low = low
         self.logger.info("wan22_deferred_low_expert_materialized", device="cpu")

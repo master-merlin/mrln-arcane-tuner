@@ -21,6 +21,7 @@ to the GPU, so host RAM never holds both experts at once. These tests pin:
 
 from __future__ import annotations
 
+import pytest
 import structlog
 import torch
 import torch.nn as nn
@@ -234,3 +235,51 @@ def test_deferred_flow_still_wraps_both_experts_with_lora():
     assert hasattr(low, "peft_config"), "low expert not PEFT-wrapped (deferral broke wrapping)"
     # And exactly one deferred load happened across the whole flow.
     assert len(t.loader.calls) == 1
+
+
+def test_failed_deferred_load_resets_latch_and_raises():
+    """A failing deferred load must raise LOUDLY and reset the latch — a retry
+    must re-attempt the load, never silently degrade to single-expert training
+    via _apply_peft's missing-expert warning path (review finding)."""
+    t, low = _both_trainer_with_fake_loader()
+
+    real_load = t.loader.load_second_expert
+    boom = {"armed": True}
+
+    def _flaky(definition, torch_dtype, initial_device="cpu"):
+        if boom["armed"]:
+            raise RuntimeError("Failed to load unet_low from disk")
+        return real_load(definition, torch_dtype, initial_device)
+
+    t.loader.load_second_expert = _flaky
+
+    with pytest.raises(RuntimeError, match="unet_low"):
+        t._load_deferred_experts()
+    assert t._deferred_expert_loaded is False, "latch must reset on failure"
+    assert t.driver.transformer_low is None
+
+    boom["armed"] = False
+    t._load_deferred_experts()  # retry genuinely re-attempts
+    assert t.driver.transformer_low is low
+
+
+def test_setup_family_wires_deferral_for_both_mode_only():
+    """THE WIRING SEAM (review finding): dropping `defer = expert_mode == "both"`
+    in _setup_family silently reverts to eager dual loading (the ~67 GB hang)
+    with every other test still green — pin the constructed loader's flag."""
+    for mode, expected in (("both", True), ("high", False), ("low", False)):
+        t = object.__new__(Wan22Trainer)
+        t.device = torch.device("cpu")
+        t.definition = _Defn()
+        t.config = {
+            "expert_mode": mode,
+            "timestep_sampling": "uniform",
+            "expert_switch_interval": 1,
+            "seed": 0,
+        }
+        t._setup_family()
+        assert isinstance(t.loader, Wan22Loader)
+        assert t.loader.defer_second_expert is expected, (
+            f"expert_mode={mode!r}: defer_second_expert must be {expected}"
+        )
+        assert t.loader.expert_mode == mode

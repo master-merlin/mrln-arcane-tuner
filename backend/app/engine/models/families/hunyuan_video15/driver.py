@@ -479,12 +479,24 @@ class Hv15Driver(IModelDriver):
         from this stash. NOTE: the upstream pipeline encodes the conditioning
         image with ``sample_mode="argmax"``; training reuses the cached
         (sampled) latent's frame 0 instead — the WAN i2v precedent.
+
+        F=1 STILL GUARD: a single still on an i2v run trains as t2v — there is no
+        frame to predict beyond a conditioning frame, so stashing (and later
+        leaking, via the ``cond`` channels with ``mask=1`` on the only frame) the
+        still's own clean latent as the answer would be a degenerate,
+        zero-information step (hv15 computes the loss uniformly over all frames
+        with no frame-0 exclusion, so it never crashes — worse than ltx2/k5's
+        loud NaN). Skip the stash; :meth:`forward_pass` takes the
+        zeroed-conditioning t2v path when F=1. (WAN parity — commit 11173c2c; the
+        ltx2/k5 ``_i2v_conditioning_engaged`` F>1 gate.)
         """
         if not self.is_i2v:
             return
         if self.BATCH_FIRST_FRAME_LATENT in batch:
             return
         lat = latents if latents.ndim == 5 else latents.unsqueeze(2)
+        if lat.shape[2] <= 1:
+            return
         batch[self.BATCH_FIRST_FRAME_LATENT] = lat[:, :, :1, :, :].detach().clone()
 
     # NOTE: no ``add_noise`` override here (dead-dispatch audit finding,
@@ -528,7 +540,7 @@ class Hv15Driver(IModelDriver):
                 f"hv15 forward_pass expects 5D latents, got {tuple(noisy_input.shape)}"
             )
 
-        if self.is_i2v:
+        if self.is_i2v and noisy_input.shape[2] > 1:
             first_frame = batch.get(self.BATCH_FIRST_FRAME_LATENT)
             if first_frame is None:
                 raise ValueError(
@@ -552,6 +564,16 @@ class Hv15Driver(IModelDriver):
                     device=noisy_input.device, dtype=noisy_input.dtype
                 )
         else:
+            # T2V, OR an F=1 STILL on an i2v run → train as t2v. There is no frame
+            # to predict beyond a conditioning frame, so the cond(32) + mask(1)
+            # channels are ZEROED (``mask=0`` ⇒ "denoise this frame", zero cond ⇒
+            # "no reference") and ``image_embeds`` is the all-zero stream the
+            # transformer detects (``torch.all(image_embeds == 0)``) and masks
+            # out. This keeps the still's own clean latent from being handed back
+            # as the answer — hv15's uniform (no frame-0-excluded) loss would
+            # otherwise let the i2v path drive the loss to ~0 by copying it (a
+            # degenerate, answer-leaked step). WAN parity (commit 11173c2c);
+            # ltx2/k5's F>1 _i2v_conditioning_engaged gate.
             cond, mask_c = build_t2v_cond_and_mask(noisy_input)
             image_embeds = zero_image_embeds(
                 noisy_input.shape[0], noisy_input.device, noisy_input.dtype

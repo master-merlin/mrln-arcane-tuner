@@ -258,6 +258,13 @@ FAMILIES: list[FamilySpec] = [
         "transformer", "transformer", expert_slots=True,
         encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
     ),
+    FamilySpec(
+        "wan22_ti2v_5b",
+        "app.engine.models.families.wan22_ti2v_5b.trainer:Wan22Ti2v5bTrainer",
+        "app.engine.models.families.wan22_ti2v_5b.driver:Wan22Ti2v5bDriver",
+        "transformer", "transformer",
+        encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
+    ),
     # ── P2a-delegated families (each overrides _update_primary_model itself
     # instead of inheriting the base no-op driver-sync — the exact bug class
     # this contract exists to pin) ─────────────────────────────────────────

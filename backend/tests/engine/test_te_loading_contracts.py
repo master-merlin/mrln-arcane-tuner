@@ -344,6 +344,8 @@ CASES: list[_Case] = [
           "transformers.UMT5EncoderModel", "UMT5EncoderModel"),
     _Case("wan22", _m("wan22"), "Wan22Loader", "text_encoder",
           "transformers.UMT5EncoderModel", "UMT5EncoderModel"),
+    _Case("wan22_ti2v_5b", _m("wan22_ti2v_5b"), "Wan22Ti2v5bLoader", "text_encoder",
+          "transformers.UMT5EncoderModel", "UMT5EncoderModel"),
     _Case("ovis_image", _m("ovis_image"), "OvisImageLoader", "text_encoder",
           "transformers.Qwen3Model", "Qwen3Model"),
     _Case("flux2", _m("flux2"), "Flux2Loader", "text_encoder",

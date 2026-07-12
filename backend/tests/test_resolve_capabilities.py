@@ -76,6 +76,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "ideogram4": (True, True),  # latent_diffusion DiT (custom 32ch VAE) + Qwen3-VL TE
     "wan21": (True, True),  # latent_diffusion DiT (Wan-VAE) + UMT5-XXL external TE
     "wan22": (True, True),  # latent_diffusion dual-expert DiT (Wan-VAE) + UMT5-XXL external TE
+    "wan22_ti2v_5b": (True, True),  # latent_diffusion dense DiT (new high-compression Wan-VAE) + UMT5-XXL external TE
     "ltx2": (True, True),  # latent_diffusion DiT (LTX2 VAE) + Gemma3 external TE
     "krea2": (True, True),  # latent_diffusion DiT + Qwen VAE + external stacked Qwen3-VL TE
     "ovis_image": (True, True),  # latent_diffusion MMDiT (Flux VAE) + external Qwen3 TE (no TE training)

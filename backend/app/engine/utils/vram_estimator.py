@@ -201,6 +201,18 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 5.7,  # UMT5-XXL encoder
         "vae": 0.13,  # AutoencoderKLWan (127M params)
     },
+    "wan22_ti2v_5b": {
+        # Meta-instantiated diffusers WanTransformer3DModel with the REAL
+        # Wan2.2-TI2V-5B-Diffusers transformer/config.json (30 layers, hidden
+        # 24*128=3072, ffn 14336, in/out channels 48) → exactly 5.000 B params
+        # (the checkpoint's own "5B" name). Dense — no second expert.
+        "transformer": 5.0,
+        "text_encoder": 5.7,  # UMT5-XXL encoder — same TE as wan21/wan22
+        # NOT the wan21/wan22 0.13 (127M) VAE — TI2V-5B ships a NEW higher-
+        # compression AutoencoderKLWan (z_dim 48, base_dim 160, decoder_base_dim
+        # 256 vs the older VAE's 16/96/96) meta-instantiated to 0.671 B params.
+        "vae": 0.67,
+    },
     "boogu_image": {
         # CORRECTED 2026-07 (final-review Finding 1): task-2/3-brief.md's
         # "transformer 10.3 GB, mllm 8.8 GB, vae 0.08 GB" was a transcription

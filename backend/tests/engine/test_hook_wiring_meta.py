@@ -78,9 +78,21 @@ MIN_EXPECTED_FAMILIES = 21
 # path. Auto-delegation therefore changes ZERO training math vs the old base
 # default; it merely makes the (previously dead-but-equivalent) driver method the
 # one that actually runs. Pinned by test_wan2{1,2}_precision_contracts.py.
+#
+# wan22_ti2v_5b ``add_noise``: Wan22Ti2v5bDriver.add_noise is the SAME base
+# flow-match lerp for non-i2v-engaged steps (byte-identical — it delegates to
+# ``super().add_noise`` in that branch), but on an i2v-engaged step it pins
+# frame 0's noise scale to 0 (the TI2V-5B ``expand_timesteps`` conditioning
+# scheme — see driver.py's module docstring). This is a REAL, deliberate
+# behavior difference from the base NoiseInterpolation path (not merely a
+# dead-but-equivalent restatement like wan21/wan22), and the auto-delegation
+# mechanism is exactly what's relied on to route it onto the real training
+# path with no trainer wiring. Pinned by
+# test_wan22_ti2v_5b_i2v_conditioning.py.
 AUTODELEGATED_FAMILY_HOOKS: set[tuple[str, str]] = {
     ("wan21", "add_noise"),
     ("wan22", "add_noise"),
+    ("wan22_ti2v_5b", "add_noise"),
 }
 
 

@@ -136,7 +136,8 @@ def test_declared_train_te_matches_ground_truth():
     """THE SAFETY NET — declared supports_train_te is True iff the family
     actually exposes text-encoder LoRA targets.
 
-    sdxl_base_1.0 is the only family with non-empty get_te_lora_targets();
+    sdxl is the only FAMILY with non-empty get_te_lora_targets() (all its
+    definitions inherit it — sdxl_base_1.0, illustrious-xl-v2.0, ...);
     a miscategorized archetype/override would break this.
     """
     for model_id in registry.list_models():
@@ -151,8 +152,8 @@ def test_declared_train_te_matches_ground_truth():
             f"{model_id}: declared supports_train_te={declared} but driver "
             f"TE-LoRA targets present={has_te_targets}"
         )
-        # Pin the expected truth: only SDXL trains the text encoder.
-        assert declared is (model_id == "sdxl_base_1.0")
+        # Pin the expected truth: only the sdxl family trains the text encoder.
+        assert declared is (defn.family == "sdxl")
 
 
 def test_capability_flags_match_drivers():

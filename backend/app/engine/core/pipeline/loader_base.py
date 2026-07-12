@@ -159,135 +159,155 @@ class GenericComponentLoader(IModelLoader):
         components: dict[str, Any] = {}
 
         for spec in manifest:
-            # 1. Resolve path
-            path = self._resolve_component_path(spec, definition, root_path)
-
-            # 2. Determine dtype
-            comp_dtype = spec.dtype_override or dtype
-
-            # 3. Status broadcast
-            display_name = spec.key.replace("_", " ").title()
-            self.logger.info("loading_component", component=spec.key, display_name=display_name)
-
-            # 4. Import HF class
-            cls = self._import_class(spec.hf_class)
-
-            # 5. Load via from_pretrained
-            try:
-                model = self._load_component(
-                    cls, path, comp_dtype, spec,
-                    raw_safetensors=self._raw_safetensors_mode,
-                )
-            except (OSError, ValueError, RuntimeError) as e:
-                self.logger.error(
-                    "component_load_failed",
-                    key=spec.key,
-                    path=path,
-                    error=str(e),
-                )
-                raise RuntimeError(
-                    f"Failed to load {spec.key} from {path}: {e}",
-                ) from e
-
-            # 6. Device placement
-            if spec.is_torch_model and isinstance(model, nn.Module):
-                # Guard: models loaded with low_cpu_mem_usage (diffusers
-                # default) may leave *missing* checkpoint parameters on the
-                # ``meta`` device.  For example, Klein 9B has no
-                # ``guidance_embedder`` weights so those stay on ``meta``
-                # after ``from_pretrained``.
-                #
-                # The old approach called ``model.to_empty(device=...)``
-                # which is **destructive** — it allocates new *un-initialised*
-                # memory for EVERY parameter, wiping the loaded checkpoint.
-                #
-                # Fix: materialise only the individual meta-device params
-                # (zeros), then move the whole model normally.
-                meta_names = [
-                    n for n, p in model.named_parameters()
-                    if p.device.type == "meta"
-                ]
-                meta_bufs = [
-                    n for n, b in model.named_buffers()
-                    if b.device.type == "meta"
-                ]
-                if meta_names or meta_bufs:
-                    self.logger.warning(
-                        "meta_device_detected",
-                        key=spec.key,
-                        meta_params=meta_names,
-                        meta_buffers=meta_bufs,
-                        message=(
-                            f"{len(meta_names)} param(s) and "
-                            f"{len(meta_bufs)} buffer(s) on meta device — "
-                            "materialising individually (checkpoint may lack "
-                            "these weights)"
-                        ),
-                    )
-                    for name in meta_names:
-                        # Walk the module tree to the parent
-                        parts = name.split(".")
-                        parent = model
-                        for part in parts[:-1]:
-                            parent = getattr(parent, part)
-                        old = getattr(parent, parts[-1])
-                        # Replace with a real tensor (zeros) on the target
-                        new = torch.zeros(
-                            old.shape, dtype=old.dtype, device=target_device,
-                        )
-                        setattr(parent, parts[-1], nn.Parameter(
-                            new, requires_grad=old.requires_grad,
-                        ))
-                    for name in meta_bufs:
-                        parts = name.split(".")
-                        parent = model
-                        for part in parts[:-1]:
-                            parent = getattr(parent, part)
-                        old = getattr(parent, parts[-1])
-                        new = torch.zeros(
-                            old.shape, dtype=old.dtype, device=target_device,
-                        )
-                        parent.register_buffer(parts[-1], new)
-
-                model = model.to(target_device)
-                model.eval()
-
-            # 7. Post-load hook
-            if spec.post_load_hook:
-                hook = getattr(self, spec.post_load_hook, None)
-                if hook:
-                    model = hook(model, definition) or model
-                else:
-                    self.logger.warning(
-                        "post_load_hook_missing",
-                        hook=spec.post_load_hook,
-                        key=spec.key,
-                    )
-
-            # 8. Log param count for torch models
-            if spec.is_torch_model and isinstance(model, nn.Module):
-                n_params = sum(p.numel() for p in model.parameters()) / 1e9
-                self.logger.info(
-                    "component_loaded",
-                    key=spec.key,
-                    type=type(model).__name__,
-                    params_B=round(n_params, 2),
-                    device=str(target_device),
-                )
-            else:
-                self.logger.info(
-                    "component_loaded",
-                    key=spec.key,
-                    type=type(model).__name__,
-                )
-
-            components[spec.key] = model
+            components[spec.key] = self._load_single_spec(
+                spec, definition, root_path, dtype, target_device,
+            )
 
         self.logger.info(
             "generic_load_complete",
             components=list(components.keys()),
         )
         return components
+
+    def _load_single_spec(
+        self,
+        spec: ComponentSpec,
+        definition: ModelDefinition,
+        root_path: str,
+        dtype: torch.dtype,
+        target_device: str,
+    ) -> Any:
+        """Load ONE component described by ``spec`` and return the object.
+
+        Extracted from the ``load()`` manifest loop so a family loader can
+        materialise a single component **out of band** (e.g. WAN 2.2 deferring
+        its second expert until after the first has moved to the GPU) while
+        going through the exact same path-resolution, ``from_pretrained``,
+        meta-device, and device-placement code as the batch path.
+        """
+        # 1. Resolve path
+        path = self._resolve_component_path(spec, definition, root_path)
+
+        # 2. Determine dtype
+        comp_dtype = spec.dtype_override or dtype
+
+        # 3. Status broadcast
+        display_name = spec.key.replace("_", " ").title()
+        self.logger.info("loading_component", component=spec.key, display_name=display_name)
+
+        # 4. Import HF class
+        cls = self._import_class(spec.hf_class)
+
+        # 5. Load via from_pretrained
+        try:
+            model = self._load_component(
+                cls, path, comp_dtype, spec,
+                raw_safetensors=getattr(self, "_raw_safetensors_mode", False),
+            )
+        except (OSError, ValueError, RuntimeError) as e:
+            self.logger.error(
+                "component_load_failed",
+                key=spec.key,
+                path=path,
+                error=str(e),
+            )
+            raise RuntimeError(
+                f"Failed to load {spec.key} from {path}: {e}",
+            ) from e
+
+        # 6. Device placement
+        if spec.is_torch_model and isinstance(model, nn.Module):
+            # Guard: models loaded with low_cpu_mem_usage (diffusers
+            # default) may leave *missing* checkpoint parameters on the
+            # ``meta`` device.  For example, Klein 9B has no
+            # ``guidance_embedder`` weights so those stay on ``meta``
+            # after ``from_pretrained``.
+            #
+            # The old approach called ``model.to_empty(device=...)``
+            # which is **destructive** — it allocates new *un-initialised*
+            # memory for EVERY parameter, wiping the loaded checkpoint.
+            #
+            # Fix: materialise only the individual meta-device params
+            # (zeros), then move the whole model normally.
+            meta_names = [
+                n for n, p in model.named_parameters()
+                if p.device.type == "meta"
+            ]
+            meta_bufs = [
+                n for n, b in model.named_buffers()
+                if b.device.type == "meta"
+            ]
+            if meta_names or meta_bufs:
+                self.logger.warning(
+                    "meta_device_detected",
+                    key=spec.key,
+                    meta_params=meta_names,
+                    meta_buffers=meta_bufs,
+                    message=(
+                        f"{len(meta_names)} param(s) and "
+                        f"{len(meta_bufs)} buffer(s) on meta device — "
+                        "materialising individually (checkpoint may lack "
+                        "these weights)"
+                    ),
+                )
+                for name in meta_names:
+                    # Walk the module tree to the parent
+                    parts = name.split(".")
+                    parent = model
+                    for part in parts[:-1]:
+                        parent = getattr(parent, part)
+                    old = getattr(parent, parts[-1])
+                    # Replace with a real tensor (zeros) on the target
+                    new = torch.zeros(
+                        old.shape, dtype=old.dtype, device=target_device,
+                    )
+                    setattr(parent, parts[-1], nn.Parameter(
+                        new, requires_grad=old.requires_grad,
+                    ))
+                for name in meta_bufs:
+                    parts = name.split(".")
+                    parent = model
+                    for part in parts[:-1]:
+                        parent = getattr(parent, part)
+                    old = getattr(parent, parts[-1])
+                    new = torch.zeros(
+                        old.shape, dtype=old.dtype, device=target_device,
+                    )
+                    parent.register_buffer(parts[-1], new)
+
+            model = model.to(target_device)
+            model.eval()
+
+        # 7. Post-load hook
+        if spec.post_load_hook:
+            hook = getattr(self, spec.post_load_hook, None)
+            if hook:
+                model = hook(model, definition) or model
+            else:
+                self.logger.warning(
+                    "post_load_hook_missing",
+                    hook=spec.post_load_hook,
+                    key=spec.key,
+                )
+
+        # 8. Log param count for torch models
+        if spec.is_torch_model and isinstance(model, nn.Module):
+            n_params = sum(p.numel() for p in model.parameters()) / 1e9
+            self.logger.info(
+                "component_loaded",
+                key=spec.key,
+                type=type(model).__name__,
+                params_B=round(n_params, 2),
+                device=str(target_device),
+            )
+        else:
+            self.logger.info(
+                "component_loaded",
+                key=spec.key,
+                type=type(model).__name__,
+            )
+
+        return model
 
     # ── Overridable helpers ───────────────────────────────────────────────
 

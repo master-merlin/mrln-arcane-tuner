@@ -52,7 +52,16 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
         self.expert_mode = str(self.config.get("expert_mode", "both") or "both").lower()
         self.driver = Wan22Driver(self.definition, self.device)
         self.driver.configure_expert_mode(self.expert_mode)
-        self.loader = Wan22Loader(self.device, expert_mode=self.expert_mode)
+        # Dual-expert runs DEFER the low expert out of Phase A: both ~28 GB
+        # experts must never sit on CPU together through the TE/VAE caching
+        # stretch (that ~67 GB host-RAM peak hangs a 64 GB box). The deferred
+        # expert is materialised in _load_deferred_experts() once the high
+        # expert has moved to the GPU. Single-expert runs load exactly one
+        # transformer, so there is nothing to defer.
+        defer = self.expert_mode == "both"
+        self.loader = Wan22Loader(
+            self.device, expert_mode=self.expert_mode, defer_second_expert=defer
+        )
         self.saver = Wan22Saver(mode=self.driver.mode)
         self._build_router()
 
@@ -120,6 +129,10 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
         back on the driver so both transformers carry adapters.
         """
         from peft import LoraConfig, get_peft_model
+
+        # Safety net: guarantee the deferred low expert is present before we wrap
+        # it, independent of the grad-checkpointing hook order (idempotent).
+        self._load_deferred_experts()
 
         # 1. Base PEFT on the active/primary expert (high by default).
         super()._apply_peft()
@@ -213,10 +226,59 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
             total_trainable=len(all_params),
         )
 
+    # ── Deferred low-noise expert (host-RAM sequencing) ──────────────────
+
+    def _load_deferred_experts(self) -> None:
+        """Materialise the deferred low-noise expert onto CPU (dual-expert runs).
+
+        WAN 2.2 A14B holds TWO ~28 GB experts. To keep peak host RAM at ONE
+        expert, the loader leaves the low-noise expert out of Phase A; this
+        method loads it back on demand.
+
+        Call site: the TOP of :meth:`_configure_gradient_checkpointing` — the
+        earliest Phase-B hook run AFTER ``prepare_for_training`` has moved the
+        high expert to the GPU (``_move_component_to_gpu("unet")``) and BEFORE
+        anything touches the second expert (grad-checkpointing here, then
+        ``_apply_peft`` / optimizer). Sequencing so the high expert is on the GPU
+        before the low expert is materialised means host RAM never holds both at
+        once; from here the flow is byte-identical to eager loading (the low
+        expert is CPU-resident exactly as it would have been).
+
+        Idempotent, and a no-op unless the loader actually deferred an expert
+        (so fake-wired unit trainers, single-expert runs, and resumes are
+        unaffected).
+        """
+        if getattr(self, "_deferred_expert_loaded", False):
+            return
+        # Latch first: a genuine no-op path (no loader / not deferred / already
+        # present) should not be retried on every hook call.
+        self._deferred_expert_loaded = True
+
+        loader = getattr(self, "loader", None)
+        driver: Wan22Driver = self.driver  # type: ignore[assignment]
+        if (
+            loader is None
+            or not getattr(loader, "defer_second_expert", False)
+            or getattr(self, "expert_mode", "both") != "both"
+            or driver.transformer_low is not None
+        ):
+            return
+
+        dtype = driver.resolve_loading_dtype()
+        low = loader.load_second_expert(
+            self.definition, torch_dtype=dtype, initial_device="cpu"
+        )
+        self.components["unet_low"] = low
+        driver.transformer_low = low
+        self.logger.info("wan22_deferred_low_expert_materialized", device="cpu")
+
     # ── Set BOTH experts to train mode + place on devices ────────────────
 
     def _configure_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing on BOTH experts (base does primary)."""
+        # Bring the deferred low expert back BEFORE any per-expert work below —
+        # grad-checkpointing, then PEFT/optimizer, all expect both present.
+        self._load_deferred_experts()
         super()._configure_gradient_checkpointing()
         if not self.config.get("gradient_checkpointing", False):
             return

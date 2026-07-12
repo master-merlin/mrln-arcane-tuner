@@ -340,3 +340,50 @@ def test_corrupt_calibration_is_rejected_not_applied():
     assert calibrated["caching_peak_mb"] == pytest.approx(
         analytic["caching_peak_mb"], rel=0.01
     )
+
+
+# ── Phase 3: still_resolutions awareness in the spatial peak term ──────────
+#
+# Stills mixed into a video job bucket at ``still_resolutions`` (F=1), which can
+# exceed the video ``resolutions``. The estimator's spatial term historically
+# read a SCALAR ``resolution`` (default 1024) and ignored the resolution LISTS
+# entirely, so a high-res still could silently under-budget the activation peak.
+# Task 6: the effective spatial term must fold in ``still_resolutions`` via the
+# shared ``resolve_still_resolutions`` resolver — monotonically (it can only
+# RAISE the conservative scalar default, never lower it).
+
+
+def test_still_resolutions_raise_spatial_activation_peak():
+    """A high-res still bucket lifts the estimator's spatial peak to the level
+    of an equivalent all-high-res job; the plain video-res job stays lower."""
+    defn = registry.get_definition("ltx2-3-base")
+    assert defn is not None
+
+    # F=1 keeps latent_frames=1 so the spatial term is directly observable in
+    # the activation row (below the frame-scaled cap at the 768 baseline).
+    base = {"quantization": "none", "num_frames": 1, "resolutions": [768]}
+    still = {**base, "still_resolutions": [1536]}
+    all_hi = {"quantization": "none", "num_frames": 1, "resolutions": [1536]}
+
+    base_d = VRAMEstimator.estimate(defn, base).to_dict()
+    still_d = VRAMEstimator.estimate(defn, still).to_dict()
+    all_hi_d = VRAMEstimator.estimate(defn, all_hi).to_dict()
+
+    # still_resolutions=[1536] must raise the spatial term above the 768 job …
+    assert still_d["activations_mb"] > base_d["activations_mb"]
+    # … up to the same level as if the whole job trained at 1536.
+    assert still_d["activations_mb"] == pytest.approx(all_hi_d["activations_mb"])
+    # and the overall peak never drops below the plain job's.
+    assert still_d["peak_mb"] >= base_d["peak_mb"]
+
+
+def test_still_resolutions_ignored_for_image_family():
+    """The field is is_video-gated: a stale still_resolutions on an image job
+    must not change its estimate (resolve_still_resolutions inherits base)."""
+    defn = registry.get_definition("sdxl_base_1.0")
+    assert defn is not None
+    plain = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+    stale = VRAMEstimator.estimate(
+        defn, {"quantization": "none", "still_resolutions": [4096]}
+    ).to_dict()
+    assert plain == stale

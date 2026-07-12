@@ -344,6 +344,44 @@
     text-align: center;
 }
 
+/* P<index> chip marking which prompt produced a sample (full prompt = tooltip). */
+.sample-prompt-tag {
+    display: inline-block;
+    margin-left: 5px;
+    padding: 0 5px;
+    border-radius: var(--radius-theme-md);
+    border: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-high);
+    color: var(--color-text-secondary);
+    cursor: help;
+}
+
+/* By-step / by-prompt switch above the strip (only shown with ≥2 prompts). */
+.samples-group-bar {
+    padding: 10px 14px 0;
+}
+
+/* By-prompt view: one labelled row per prompt, rows share one scroll area. */
+.samples-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0 10px;
+    max-height: 460px;
+    overflow-y: auto;
+}
+.sample-group-row .samples-strip {
+    max-height: none;
+    overflow-y: visible;
+    padding-top: 6px;
+}
+.sample-group-label {
+    padding: 8px 14px 0;
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    cursor: help;
+}
+
 /* ── Checkpoints list ──────────────────────────────────────────────── */
 .ckpt-list {
     display: flex;
@@ -659,6 +697,15 @@
     object-fit: contain;
     border-radius: var(--radius-theme-lg);
     border: 1px solid var(--color-border-subtle);
+}
+
+/* Prompt that generated the opened sample, under the media. */
+.lightbox-prompt {
+    margin: 8px 0 0;
+    max-width: 88vw;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--color-text-secondary);
 }
 
 /* ── Responsive fallbacks ───────────────────────────────────────────

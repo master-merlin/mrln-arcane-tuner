@@ -105,6 +105,8 @@ export interface JobSample {
   path: string;
   /** Unix seconds (file mtime). */
   created_at: number;
+  /** Prompt that generated this sample (config.sample_prompts[index]), if known. */
+  prompt?: string | null;
 }
 
 @Injectable({

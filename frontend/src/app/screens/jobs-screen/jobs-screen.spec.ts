@@ -198,6 +198,128 @@ describe('JobsScreen lightbox rendering', () => {
 });
 
 /**
+ * Prompt attribution — multi-prompt runs (e.g. video + still preview) need each
+ * sample marked with the prompt that generated it: a P<index> tag with the full
+ * prompt as tooltip on the strip tile, and the prompt text in the lightbox.
+ */
+describe('JobsScreen sample prompt attribution', () => {
+    const PROMPT = 'helicopter parked in a hangar';
+
+    function seed(samples: unknown[]): { fixture: ComponentFixture<JobsScreen>; comp: JobsScreen } {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        (comp as unknown as { samplesByJob: { set: (m: Map<string, unknown>) => void } })
+            .samplesByJob.set(new Map([[JOB_ID, samples]]));
+        fixture.detectChanges();
+        return { fixture, comp };
+    }
+
+    it('strip tile shows a P<index> tag carrying the prompt as tooltip', () => {
+        const { fixture } = seed([{ filename: 'sample_01_step000050.mp4', step: 50, index: 1, prompt: PROMPT }]);
+        const tag = (fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="sample-prompt-tag"]');
+        expect(tag).toBeTruthy();
+        expect(tag!.textContent).toContain('P1');
+        expect(tag!.getAttribute('title')).toBe(PROMPT);
+    });
+
+    it('strip tile shows no tag when the sample has no prompt', () => {
+        const { fixture } = seed([{ filename: 'sample_00_step000050.mp4', step: 50, index: 0 }]);
+        expect((fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="sample-prompt-tag"]')).toBeNull();
+    });
+
+    it('lightbox shows the prompt text when present', () => {
+        const sample = { filename: 'sample_01_step000050.mp4', step: 50, index: 1, prompt: PROMPT };
+        const { fixture, comp } = seed([sample]);
+        (comp as unknown as { openSample: (s: unknown) => void }).openSample(sample);
+        fixture.detectChanges();
+        const cap = (fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="lightbox-prompt"]');
+        expect(cap).toBeTruthy();
+        expect(cap!.textContent).toContain(PROMPT);
+    });
+
+    it('lightbox omits the prompt element when absent', () => {
+        const sample = { filename: 'sample_00_step000050.mp4', step: 50, index: 0 };
+        const { fixture, comp } = seed([sample]);
+        (comp as unknown as { openSample: (s: unknown) => void }).openSample(sample);
+        fixture.detectChanges();
+        expect((fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="lightbox-prompt"]')).toBeNull();
+    });
+});
+
+/**
+ * Sample grouping — with multiple prompts the strip can be viewed flat
+ * ("by step": p0 s0, p1 s0, p0 s100, p1 s100 …) or grouped "by prompt"
+ * (one row per prompt index, its steps in ascending order).
+ */
+describe('JobsScreen sample grouping', () => {
+    const TWO_PROMPT_SAMPLES = [
+        { filename: 'sample_00_step000100.mp4', step: 100, index: 0, prompt: 'video prompt' },
+        { filename: 'sample_01_step000100.mp4', step: 100, index: 1, prompt: 'still prompt' },
+        { filename: 'sample_00_step000000.mp4', step: 0, index: 0, prompt: 'video prompt' },
+        { filename: 'sample_01_step000000.mp4', step: 0, index: 1, prompt: 'still prompt' },
+    ];
+
+    function seed(samples: unknown[]): { fixture: ComponentFixture<JobsScreen>; comp: JobsScreen } {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        (comp as unknown as { samplesByJob: { set: (m: Map<string, unknown>) => void } })
+            .samplesByJob.set(new Map([[JOB_ID, samples]]));
+        fixture.detectChanges();
+        return { fixture, comp };
+    }
+
+    it('defaults to the flat by-step strip (no group rows) and offers the toggle', () => {
+        const { fixture } = seed(TWO_PROMPT_SAMPLES);
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('[data-testid="sample-prompt-group"]')).toBeNull();
+        expect(el.querySelector('[data-testid="sample-group-by-prompt"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="sample-group-by-step"]')).toBeTruthy();
+    });
+
+    it('hides the toggle when only one prompt index exists', () => {
+        const { fixture } = seed([
+            { filename: 'sample_00_step000100.mp4', step: 100, index: 0, prompt: 'video prompt' },
+            { filename: 'sample_00_step000000.mp4', step: 0, index: 0, prompt: 'video prompt' },
+        ]);
+        expect((fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="sample-group-by-prompt"]')).toBeNull();
+    });
+
+    it('by-prompt renders one row per prompt with its steps ascending', () => {
+        const { fixture } = seed(TWO_PROMPT_SAMPLES);
+        const el: HTMLElement = fixture.nativeElement;
+        (el.querySelector('[data-testid="sample-group-by-prompt"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+
+        const rows = el.querySelectorAll('[data-testid="sample-prompt-group"]');
+        expect(rows.length).toBe(2);
+        expect(rows[0].textContent).toContain('P0');
+        expect(rows[1].textContent).toContain('P1');
+        // Each row holds only its prompt's samples, steps ascending.
+        const capsRow0 = [...rows[0].querySelectorAll('.sample-cap')].map((c) => c.textContent?.trim());
+        expect(capsRow0.length).toBe(2);
+        expect(capsRow0[0]).toContain('step 0');
+        expect(capsRow0[1]).toContain('step 100');
+    });
+
+    it('switching back to by-step restores the flat strip', () => {
+        const { fixture } = seed(TWO_PROMPT_SAMPLES);
+        const el: HTMLElement = fixture.nativeElement;
+        (el.querySelector('[data-testid="sample-group-by-prompt"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+        (el.querySelector('[data-testid="sample-group-by-step"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+        expect(el.querySelector('[data-testid="sample-prompt-group"]')).toBeNull();
+    });
+});
+
+/**
  * Tab re-focus refresh.
  *
  * Background tabs throttle the zoneless scheduler and the live WS log stream is

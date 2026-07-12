@@ -360,6 +360,13 @@ async def list_job_samples(job_id: str):
     if not sample_dir.is_dir():
         return []
 
+    # Prompt texts by sample index — sample_NN files map to sample_prompts[NN].
+    raw_prompts = job.config.get("sample_prompts") or []
+    prompt_texts: list[str | None] = [
+        (p.get("prompt") if isinstance(p, dict) else str(p)) or None
+        for p in raw_prompts
+    ]
+
     def _scan_samples() -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for fpath in sample_dir.iterdir():
@@ -390,6 +397,7 @@ async def list_job_samples(job_id: str):
                 "index": index,
                 "path": str(fpath),
                 "created_at": fpath.stat().st_mtime,
+                "prompt": prompt_texts[index] if 0 <= index < len(prompt_texts) else None,
             })
         return items
 

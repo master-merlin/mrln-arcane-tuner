@@ -12,7 +12,7 @@ import {
     viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { UpperCasePipe } from '@angular/common';
+import { NgTemplateOutlet, UpperCasePipe } from '@angular/common';
 import { Router } from '@angular/router';
 import { interval } from 'rxjs';
 
@@ -32,7 +32,7 @@ import {
     TrainingChartComponent,
     type SmoothingMode,
 } from '../../components/training/training-chart/training-chart';
-import { SegmentedComponent } from '../../ui/segmented/segmented.component';
+import { SegmentedComponent, type SegOption } from '../../ui/segmented/segmented.component';
 import { JsonEditorComponent } from '../../ui/json-editor/json-editor.component';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { SparklineComponent } from '../../ui/sparkline/sparkline.component';
@@ -66,6 +66,9 @@ type SectionKey = 'curves' | 'samples' | 'checkpoints' | 'config' | 'log';
 interface JobSampleMeta {
     filename: string;
     step?: number;
+    index?: number;
+    /** Prompt that generated this sample, when the backend could attribute it. */
+    prompt?: string | null;
 }
 
 interface ConfigRow {
@@ -91,6 +94,7 @@ interface ConfigRow {
         SparklineComponent,
         SampleVideoPreviewComponent,
         JobLogViewerComponent,
+        NgTemplateOutlet,
         UpperCasePipe,
         FormatBytesPipe,
     ],
@@ -476,6 +480,36 @@ export class JobsScreen {
         if (!j) return [];
         return this.samplesByJob().get(j.id) ?? [];
     });
+
+    /** Samples-strip layout: flat newest-first ('step') or one row per prompt ('prompt'). */
+    protected readonly sampleGrouping = signal<'step' | 'prompt'>('step');
+
+    protected readonly sampleGroupOptions: ReadonlyArray<SegOption<'step' | 'prompt'>> = [
+        { value: 'step', label: 'By step' },
+        { value: 'prompt', label: 'By prompt' },
+    ];
+
+    /** Samples grouped by prompt index, each group's steps ascending. */
+    protected readonly samplePromptGroups = computed(() => {
+        const groups = new Map<number, JobSampleMeta[]>();
+        for (const s of this.currentSamples()) {
+            const idx = s.index ?? 0;
+            const arr = groups.get(idx);
+            if (arr) arr.push(s);
+            else groups.set(idx, [s]);
+        }
+        return [...groups.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([index, samples]) => ({
+                index,
+                prompt: samples.find((s) => s.prompt)?.prompt ?? null,
+                samples: [...samples].sort((a, b) => (a.step ?? 0) - (b.step ?? 0)),
+            }));
+    });
+
+    /** The by-prompt view (and its toggle) only makes sense with ≥2 prompts. */
+    protected readonly hasMultiplePrompts = computed<boolean>(
+        () => this.samplePromptGroups().length > 1);
 
     /** LoRA `.safetensors` artifacts (checkpoints) discovered per job. */
     protected readonly checkpointsByJob = signal<Map<string, JobCheckpointMeta[]>>(new Map());

@@ -89,6 +89,9 @@ class JobSampleResponse(BaseModel):
     index: int
     path: str
     created_at: float
+    # The prompt that generated this sample (config.sample_prompts[index]),
+    # None when the index has no matching prompt entry.
+    prompt: str | None = None
 
 
 class JobCheckpointResponse(BaseModel):

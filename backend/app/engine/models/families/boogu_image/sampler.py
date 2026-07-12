@@ -166,6 +166,17 @@ class BooguImageSampler(GenericSamplingPipeline):
         defaults = getattr(defn, "defaults", {}) or {}
         return bool(defaults.get("is_distilled", False))
 
+    def _forward_batch(self) -> dict[str, Any]:
+        """Extra ``batch`` dict handed to every ``driver.forward_pass`` call.
+
+        ``{}`` here (T2I — Base/Turbo; behavior-identical to the pre-A4
+        hardcoded ``batch={}``). ``BooguImageEditSampler`` (sampler_edit.py,
+        task A4 fix wave finding 2) overrides this to feed the clean control
+        latents (``{"control_latents": [...]}``) into BOTH denoise loops
+        without duplicating either of them.
+        """
+        return {}
+
     # ── Native sample defaults (ovis F-lesson: generic 20/3.5 defaults are
     #    off-distribution) ───────────────────────────────────────────────
 
@@ -331,7 +342,7 @@ class BooguImageSampler(GenericSamplingPipeline):
                         prompt_embeds.to(dtype=dtype),
                         prompt_mask,
                     ),
-                    batch={},
+                    batch=self._forward_batch(),
                 ).to(torch.float32)
 
                 if cfg_on:
@@ -342,7 +353,7 @@ class BooguImageSampler(GenericSamplingPipeline):
                             uncond_embeds.to(dtype=dtype),
                             uncond_mask,
                         ),
-                        batch={},
+                        batch=self._forward_batch(),
                     ).to(torch.float32)
 
                     # Lumina-style scale-1 guidance (pipeline_boogu.py:3649).
@@ -438,7 +449,7 @@ class BooguImageSampler(GenericSamplingPipeline):
                         prompt_embeds.to(dtype=dtype),
                         prompt_mask,
                     ),
-                    batch={},
+                    batch=self._forward_batch(),
                 ).to(torch.float32)
 
                 # _predict_dmd_student_step (pipeline_boogu_turbo.py:74-98).

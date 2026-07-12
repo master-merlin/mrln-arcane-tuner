@@ -42,7 +42,7 @@ NUM_SINGLE_STREAM = 32
 # ships no checkpoint config.json to cross-check against. See task-2-report.md.
 NUM_REFINER_LAYERS = 2
 
-DEF_IDS = ("boogu-image-base", "boogu-image-turbo")
+DEF_IDS = ("boogu-image-base", "boogu-image-turbo", "boogu-image-edit")
 
 _DEFINITIONS_DIR = (
     pathlib.Path(__file__).resolve().parents[1]  # .../app/engine
@@ -184,6 +184,14 @@ class TestCuratedLoraTargetList:
         turbo = set(registry._definitions["boogu-image-turbo"].lora_targetable_modules)
         assert base == turbo
 
+    def test_edit_definition_ships_identical_curated_list_to_base(self):
+        """Edit's checkpoint transformer/config.json is byte-identical to
+        Base's (a4-report.md recon) — same 418-module curated surface."""
+        registry = _reload_registry()
+        base = set(registry._definitions["boogu-image-base"].lora_targetable_modules)
+        edit = set(registry._definitions["boogu-image-edit"].lora_targetable_modules)
+        assert base == edit
+
     def test_processor_owned_double_stream_names_present(self):
         """The load-bearing regression this task guards against: a curated
         list missing the processor-owned joint-attention projections
@@ -221,7 +229,7 @@ class TestCuratedLoraTargetList:
         # num_attention_heads=28 -> to_q/to_out width 3360. Both numbers must
         # appear in a comment (house convention per dreamlite base.yaml's MQA
         # width comment).
-        for filename in ("base.yaml", "turbo.yaml"):
+        for filename in ("base.yaml", "turbo.yaml", "edit.yaml"):
             text = (_DEFINITIONS_DIR / filename).read_text()
             assert "840" in text, f"{filename}: GQA to_k/to_v width (840) not documented"
             assert "3360" in text, f"{filename}: to_q/to_out width (3360) not documented"
@@ -232,3 +240,50 @@ class TestCuratedLoraTargetList:
         for def_id in DEF_IDS:
             shipped = registry._definitions[def_id].lora_targetable_modules
             assert shipped and len(shipped) > 0
+
+
+class TestEditDefinition:
+    """Task A4: ``boogu-image-edit`` — control_inputs + zero architecture
+    drift from Base (verified by the byte-identical transformer/config.json
+    recon in edit.yaml's header comment / a4-report.md)."""
+
+    def test_control_inputs_is_one(self):
+        registry = _reload_registry()
+        edit = registry._definitions["boogu-image-edit"]
+        assert edit.control_inputs == 1
+
+    def test_base_and_turbo_are_pure_t2i(self):
+        registry = _reload_registry()
+        for def_id in ("boogu-image-base", "boogu-image-turbo"):
+            assert registry._definitions[def_id].control_inputs == 0
+
+    def test_repo_path_points_at_edit_checkpoint(self):
+        registry = _reload_registry()
+        edit = registry._definitions["boogu-image-edit"]
+        path = edit.components["repo"].path
+        assert path == "huggingface:Boogu/Boogu-Image-0.1-Edit"
+
+    def test_architecture_params_identical_to_base(self):
+        """Recon finding (a4-report.md): Edit's transformer/config.json is
+        byte-identical to Base's — the edit checkpoint needs ZERO transformer
+        geometry changes, only the reference-image forward wiring (driver.py
+        ``_build_ref_image_hidden_states``)."""
+        registry = _reload_registry()
+        base = registry._definitions["boogu-image-base"].architecture_params
+        edit = registry._definitions["boogu-image-edit"].architecture_params
+        assert base == edit
+
+    def test_capabilities_resolve_as_edit_model(self):
+        """``resolve_capabilities`` derives ``is_edit`` / disables
+        augmentation+masking purely from ``control_inputs`` — no boogu_image
+        family-specific wiring needed (archetypes.py is fully generic)."""
+        from app.engine.core.archetypes import resolve_capabilities
+
+        registry = _reload_registry()
+        edit = registry._definitions["boogu-image-edit"]
+        resolved = resolve_capabilities(edit)
+        caps = resolved["capabilities"]
+        assert caps["control_inputs"] == 1
+        assert caps["is_edit"] is True
+        assert caps["supports_augmentation"] is False
+        assert caps["supports_masking_variants"] is False

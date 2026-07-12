@@ -27,10 +27,19 @@ from .trainer import BooguImageTrainer
 
 
 class BooguImageFamily(ModelFamily):
-    """Boogu-Image (Base / Turbo) implementation of the ModelFamily logic provider."""
+    """Boogu-Image (Base / Turbo / Edit) implementation of the ModelFamily logic provider."""
 
     family_name = "boogu_image"
     archetype = "latent_diffusion"
 
     def get_trainer_class(self):
+        # Image-edit definitions (control_inputs > 0) train on paired control
+        # images — dispatch to the Edit subclass (mirrors qwen_image's
+        # family-level dispatch / flux1 Kontext; task A4 fix wave). Lazy
+        # import so registry discovery stays light and t2i-only environments
+        # never import the edit module.
+        if int(getattr(self.definition, "control_inputs", 0) or 0) > 0:
+            from .trainer_edit import BooguImageEditTrainer  # noqa: PLC0415
+
+            return BooguImageEditTrainer
         return BooguImageTrainer

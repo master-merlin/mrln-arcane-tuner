@@ -214,6 +214,20 @@ class GenericSamplingPipeline(ABC):
                 )
             return []
 
+        # Reclaim any reservable VRAM BEFORE the headroom check below. That guard
+        # reads device-wide NVML *free* memory, which counts the caching
+        # allocator's reserved-but-unused pool as unavailable. At the step-0
+        # baseline sample the transient model-load / cache reservation is still
+        # held — the per-round reclaim in this method's ``finally`` runs only
+        # AFTER the first sample — so without this a large (video) model can trip
+        # a FALSE low-VRAM skip at step 0 (no baseline sample) while every later
+        # periodic sample, once the allocator has cycled, passes. ``empty_cache``
+        # only returns UNUSED reserved blocks, so this never makes a real OOM
+        # more likely; it only stops the guard skipping on reclaimable memory.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+
         # Guard: skip this sampling round if free VRAM is too low.  The sampling
         # transient (no grad-checkpointing, CFG = 2x forwards) can spike the
         # allocator past physical VRAM; on Windows/WDDM that silently spills

@@ -316,11 +316,45 @@ def _make_run_sampler(tmp_path, prompts, fraction=0.0):
 
 def test_generate_samples_skips_when_low_vram(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    # The pre-check reclaim runs before the headroom guard; stub the CUDA calls
+    # (no real device on the test box) and leave free VRAM genuinely low so the
+    # reclaim frees nothing and the round still skips.
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     _patch_snapshot(monkeypatch, [_gpu(free_mb=3000)])
     s = _make_run_sampler(tmp_path, [{"prompt": "a"}, {"prompt": "b"}], fraction=0.15)
     paths = s.generate_samples(step=100)
     assert paths == []
     assert s.singled == 0  # never entered the per-prompt loop
+
+
+def test_generate_samples_reclaims_before_headroom_check(tmp_path, monkeypatch):
+    """Step-0 baseline must not FALSE-skip on RECLAIMABLE reserved VRAM.
+
+    ``generate_samples`` reclaims (``empty_cache``) BEFORE the headroom guard, so
+    a large model whose transient load-peak reservation is still held at the
+    step-0 baseline samples once that reservation is returned to the driver.
+    Regression guard for "video models produce no step-0 sample": the guard reads
+    device-wide NVML *free*, which counts the reserved-but-unused pool as used, so
+    a big (video) model trips a false low-VRAM skip at step 0 while later periodic
+    samples (allocator already cycled) pass.
+    """
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    # Free VRAM starts below the 15% margin (would skip); the reclaim returns the
+    # reserved pool and lifts it above the margin.
+    state = {"free": 3000}
+    monkeypatch.setattr(
+        torch.cuda, "empty_cache", lambda: state.__setitem__("free", 80000)
+    )
+    monkeypatch.setattr(
+        "app.core.system_monitor.system_monitor.snapshot",
+        lambda: SimpleNamespace(gpus=[_gpu(free_mb=state["free"])]),
+    )
+    s = _make_run_sampler(tmp_path, [{"prompt": "a"}], fraction=0.15)
+    paths = s.generate_samples(step=-1)  # step -1 → the step-0 baseline
+    assert s.singled == 1  # sampled, NOT skipped
+    assert len(paths) == 1
 
 
 def test_generate_samples_reclaims_between_images(tmp_path, monkeypatch):

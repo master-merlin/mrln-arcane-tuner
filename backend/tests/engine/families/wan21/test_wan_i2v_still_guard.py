@@ -26,6 +26,7 @@ import pytest
 import torch
 
 from app.engine.models.families.wan21.driver import Wan21Driver
+from app.engine.models.families.wan21.trainer import Wan21Trainer
 from app.engine.models.families.wan22.driver import Wan22Driver
 from app.engine.models.families.wan_shared.i2v_conditioning import (
     COND_CHANNELS,
@@ -178,3 +179,63 @@ def test_forward_multi_frame_still_conditions_on_first_frame(cls):
     assert torch.all(mask[:, :, 0] == 1.0)
     assert torch.all(mask[:, :, 1:] == 0.0)
     assert torch.equal(cond[:, :, 0], first_frame[:, :, 0])
+
+
+# ── REAL trainer/pipeline dispatch path (MRO) — dispatch-regression pin ─────────
+
+
+def _trainer_shell() -> tuple[Wan21Trainer, _RecordingTransformer]:
+    """REAL Wan21Trainer + REAL Wan21Driver, no model/config load.
+
+    Mirrors ``test_wan22_sample_timesteps_wiring.py``'s ``object.__new__``
+    trainer stub: the MRO that ``pipeline_train.py`` walks on every step
+    (``PipelineBaseMixin._attach_conditioning`` → ``driver.attach_conditioning``;
+    ``PipelineBaseMixin.forward_pass`` → ``driver.forward_pass``) is REAL — only
+    the transformer is a recording fake. Nothing here calls a driver method
+    directly; every hop goes through the trainer instance.
+    """
+    t = object.__new__(Wan21Trainer)
+    t.device = torch.device("cpu")
+    driver = Wan21Driver(_Defn(), torch.device("cpu"))
+    fake = _RecordingTransformer()
+    driver.transformer = fake
+    t.driver = driver
+    assert driver.is_i2v is True
+    return t, fake
+
+
+def test_dispatch_path_f1_still_routes_to_zeroed_t2v_no_leak():
+    """The REAL trainer MRO must route an F=1 still on an i2v run through the
+    zeroed-conditioning t2v path — the whole guard, end to end.
+
+    This is the dispatch-regression pin: the driver-direct tests above prove the
+    F=1 branch works, but a future change that (a) drops the driver override, or
+    (b) fails to auto-delegate through ``PipelineBaseMixin``, would leave those
+    green while the REAL training loop leaks the answer. Here we drive exactly
+    the two hooks ``pipeline_train`` calls per step, in order, on the trainer —
+    so this fails if anyone removes the F=1 guard from the real path.
+    """
+    t, fake = _trainer_shell()
+    latents = torch.randn(2, NOISE_CHANNELS, 1, 4, 4)  # F=1 still
+    noise = torch.randn_like(latents)
+    timesteps = torch.tensor([500.0, 500.0])
+    noisy = t.driver.add_noise(latents, noise, timesteps)
+
+    # Step order per pipeline_train.py: _attach_conditioning (pre-noise) then
+    # forward_pass — both via the trainer, resolved through the real MRO.
+    batch: dict = {}
+    t._attach_conditioning(batch, latents)
+    # No first-frame stash for an F=1 still (the t2v route needs no reference).
+    assert Wan21Driver.BATCH_FIRST_FRAME_LATENT not in batch
+
+    text = torch.randn(2, 8, 16)
+    pred = t.forward_pass(noisy, timesteps, text, batch)
+
+    seen = fake.seen_hidden_states
+    assert seen.shape[1] == I2V_IN_CHANNELS == 36  # architecture still needs 36
+    # First 16 channels are the noisy latent; mask(4)+cond(16) ZEROED — the
+    # still's own clean latent is NOT handed back as the answer (no leak).
+    assert torch.equal(seen[:, :NOISE_CHANNELS], noisy)
+    assert torch.all(seen[:, NOISE_CHANNELS:] == 0.0)
+    assert fake.seen_image_embed is None  # no CLIP image embed on the t2v route
+    assert pred.shape == latents.shape

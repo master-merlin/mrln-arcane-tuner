@@ -229,35 +229,65 @@
                     </div>
                 </div>
                 @if (expanded().samples) {
-                    <div class="card-body samples-strip">
-                        @if (currentSamples().length > 0) {
-                            @for (s of currentSamples(); track s.filename) {
-                                <figure class="sample-tile">
-                                    <button class="sample-btn" type="button" (click)="openSample(s)" [title]="'View ' + s.filename">
-                                        @if (isVideoSample(s.filename)) {
-                                            <!-- Video sample: poster (first frame) at rest, plays muted in
-                                                 place on hover — same look & feel as the dataset grid tile.
-                                                 Clicking still opens the lightbox <video>. -->
-                                            <app-sample-video-preview
-                                                class="sample-img"
-                                                [src]="sampleImageUrl(j.id, s.filename)"
-                                                data-testid="sample-video-thumb" />
-                                        } @else {
-                                            <img class="sample-img"
-                                                 [src]="sampleImageUrl(j.id, s.filename)"
-                                                 [alt]="'sample ' + (s.step ?? '')"
-                                                 loading="lazy"/>
+                    <ng-template #sampleTile let-s>
+                        <figure class="sample-tile">
+                            <button class="sample-btn" type="button" (click)="openSample(s)" [title]="s.prompt || 'View ' + s.filename">
+                                @if (isVideoSample(s.filename)) {
+                                    <!-- Video sample: poster (first frame) at rest, plays muted in
+                                         place on hover — same look & feel as the dataset grid tile.
+                                         Clicking still opens the lightbox <video>. -->
+                                    <app-sample-video-preview
+                                        class="sample-img"
+                                        [src]="sampleImageUrl(j.id, s.filename)"
+                                        data-testid="sample-video-thumb" />
+                                } @else {
+                                    <img class="sample-img"
+                                         [src]="sampleImageUrl(j.id, s.filename)"
+                                         [alt]="'sample ' + (s.step ?? '')"
+                                         loading="lazy"/>
+                                }
+                            </button>
+                            <figcaption class="sample-cap mono">
+                                {{ s.step === 999999 ? 'final' : 'step ' + (s.step ?? '?') }}
+                                @if (s.prompt) {
+                                    <span class="sample-prompt-tag" [title]="s.prompt" data-testid="sample-prompt-tag">P{{ s.index ?? 0 }}</span>
+                                }
+                            </figcaption>
+                        </figure>
+                    </ng-template>
+                    @if (hasMultiplePrompts()) {
+                        <div class="samples-group-bar">
+                            <app-segmented
+                                [options]="sampleGroupOptions"
+                                [value]="sampleGrouping()"
+                                testidPrefix="sample-group-by"
+                                (changed)="sampleGrouping.set($event)"/>
+                        </div>
+                    }
+                    @if (sampleGrouping() === 'prompt' && hasMultiplePrompts()) {
+                        <div class="card-body samples-groups">
+                            @for (g of samplePromptGroups(); track g.index) {
+                                <div class="sample-group-row" data-testid="sample-prompt-group">
+                                    <div class="sample-group-label mono" [title]="g.prompt || ''">P{{ g.index }}</div>
+                                    <div class="samples-strip grouped">
+                                        @for (s of g.samples; track s.filename) {
+                                            <ng-container *ngTemplateOutlet="sampleTile; context: { $implicit: s }"/>
                                         }
-                                    </button>
-                                    <figcaption class="sample-cap mono">
-                                        {{ s.step === 999999 ? 'final' : 'step ' + (s.step ?? '?') }}
-                                    </figcaption>
-                                </figure>
+                                    </div>
+                                </div>
                             }
-                        } @else {
-                            <p class="muted">No sample previews yet.</p>
-                        }
-                    </div>
+                        </div>
+                    } @else {
+                        <div class="card-body samples-strip">
+                            @if (currentSamples().length > 0) {
+                                @for (s of currentSamples(); track s.filename) {
+                                    <ng-container *ngTemplateOutlet="sampleTile; context: { $implicit: s }"/>
+                                }
+                            } @else {
+                                <p class="muted">No sample previews yet.</p>
+                            }
+                        </div>
+                    }
                 }
             </section>
 
@@ -439,6 +469,9 @@
                     <video class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" controls loop autoplay [muted]="sampleMuted()" playsinline data-testid="lightbox-video"></video>
                 } @else {
                     <img class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" [alt]="'sample ' + (modal.step ?? '')" data-testid="lightbox-img"/>
+                }
+                @if (modal.prompt) {
+                    <p class="lightbox-prompt mono" data-testid="lightbox-prompt">P{{ modal.index ?? 0 }} · {{ modal.prompt }}</p>
                 }
             </div>
         </div>

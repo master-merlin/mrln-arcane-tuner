@@ -468,6 +468,45 @@ def test_list_job_samples_final_video_sorts_first(mock_to_thread, mock_jm, clien
 
 @patch("app.api.training.job_routes.job_manager")
 @patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_carries_prompt_by_index(mock_to_thread, mock_jm, client, tmp_path):
+    """Each sample carries the prompt that generated it (mapped from
+    config.sample_prompts by the NN index in sample_NN_*), so the gallery can
+    attribute multi-prompt runs. Out-of-range indices degrade to None."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ltx2-3-base"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000050.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    (sdir / "sample_01_step000050.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    (sdir / "sample_07_step000050.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    mock_job = MagicMock()
+    mock_job.config = {
+        "output_dir": str(tmp_path),
+        "lora_name": "test",
+        "definition_id": defn,
+        "sample_prompts": [
+            {"prompt": "helicopter flying over a canyon", "num_frames": None},
+            {"prompt": "helicopter parked in a hangar", "num_frames": 1},
+        ],
+    }
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    by_name = {s["filename"]: s for s in response.json()}
+    assert by_name["sample_00_step000050.mp4"]["prompt"] == "helicopter flying over a canyon"
+    assert by_name["sample_01_step000050.mp4"]["prompt"] == "helicopter parked in a hangar"
+    assert by_name["sample_07_step000050.mp4"]["prompt"] is None  # no matching prompt
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
 def test_get_sample_image_serves_video_content_type(mock_to_thread, mock_jm, client, tmp_path):
     """An .mp4 sample is served as video/mp4, not the old hard-coded image/png."""
     from app.core.naming import model_part_from_definition_id

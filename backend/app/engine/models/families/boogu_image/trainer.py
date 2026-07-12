@@ -272,8 +272,12 @@ class BooguImageTrainer(GenericTrainingPipeline):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode captions through Qwen3-VL (full-VLM, chat template).
 
-        ``batch`` is accepted for hook compatibility and ignored here (no
-        ref-image/control conditioning — ``control_inputs: 0``).
+        ``batch`` is accepted for hook compatibility and ignored on THIS
+        (text-only) trainer — the Base/Turbo definitions are
+        ``control_inputs: 0``. The Edit variant (``BooguImageEditTrainer``,
+        trainer_edit.py — task A4) OVERRIDES this method to condition the
+        VLM on the batch's control image(s) under a composite
+        ``(caption, control)`` cache key.
 
         Returns a ``(embeddings, attention_mask)`` tuple — the base pipeline
         passes this opaquely to ``forward_pass()`` which passes it to
@@ -284,7 +288,7 @@ class BooguImageTrainer(GenericTrainingPipeline):
         Args:
             captions: Processed captions.
             dtype: Target dtype.
-            batch: Ignored (kept for paired-edit hook compatibility).
+            batch: Ignored here (consumed by the Edit subclass's override).
 
         Returns:
             (text_embeddings ``[B, L<=256, 4096]``, attention_mask ``[B, L]``).

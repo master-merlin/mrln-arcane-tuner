@@ -189,6 +189,49 @@ _SYSTEM_PROMPT_DROP = (
     "with the original input where appropriate."
 )
 
+# With-image (TI2I/I2I) system prompt — upstream aliases
+# ``SYSTEM_PROMPT_4_TI2I == SYSTEM_PROMPT_4_I2I == SYSTEM_PROMPT_DROP ==
+# SYSTEM_PROMPT_4_TI2I_UNIFIED`` to ONE string (pipeline_boogu.py:231-237),
+# i.e. the with-image prompt is TEXTUALLY IDENTICAL to the DROP prompt above,
+# and ``_apply_chat_template``'s adaptive branch (:1601-1605) selects it for
+# EVERY encode that carries input images, non-empty caption or not. Alias —
+# never duplicate the string — so :func:`te_template_fingerprint` keeps
+# covering it automatically (task A4 fix wave, finding 1).
+_SYSTEM_PROMPT_TI2I = _SYSTEM_PROMPT_DROP
+
+# VLM input-image preprocessing (upstream defaults — task A4 fix wave):
+# max pixels 1024*1024 (``_get_max_image_pixels`` default,
+# pipeline_boogu.py:1735), target dims rounded DOWN to multiples of
+# ``vae_scale_factor * 2 == 16`` (``BooguImageProcessor(vae_scale_factor=
+# self.vae_scale_factor * 2)`` at pipeline_boogu.py:221-223 +
+# ``get_new_height_width``'s ``int(dim * ratio) // sf * sf`` rounding,
+# image_processor.py:144-151), NEVER upscaled (ratio clamped <= 1.0,
+# image_processor.py:142).
+_VLM_IMAGE_MAX_PIXELS = 1024 * 1024
+_VLM_IMAGE_DIM_MULTIPLE = 16
+
+
+def _preprocess_vlm_image(image):
+    """Downscale one PIL image for Qwen3-VL input, upstream-faithfully.
+
+    Mirrors ``preprocess_vlm_input_pil_images`` -> ``get_new_height_width``
+    (see the constants' citation block above): scale so ``H*W <=
+    _VLM_IMAGE_MAX_PIXELS``, round both dims DOWN to multiples of 16,
+    never upscale. Returns the image object unchanged when it already
+    satisfies both constraints (no gratuitous re-encode).
+    """
+    w, h = image.size
+    ratio = min((_VLM_IMAGE_MAX_PIXELS / float(w * h)) ** 0.5, 1.0)
+    new_w = int(w * ratio) // _VLM_IMAGE_DIM_MULTIPLE * _VLM_IMAGE_DIM_MULTIPLE
+    new_h = int(h * ratio) // _VLM_IMAGE_DIM_MULTIPLE * _VLM_IMAGE_DIM_MULTIPLE
+    new_w = max(new_w, _VLM_IMAGE_DIM_MULTIPLE)
+    new_h = max(new_h, _VLM_IMAGE_DIM_MULTIPLE)
+    if (new_w, new_h) == (w, h):
+        return image
+    from PIL import Image  # noqa: PLC0415 — keep module import graph light
+
+    return image.resize((new_w, new_h), Image.LANCZOS)
+
 # Fingerprint of the two system-prompt strings above, hashed together so any
 # future edit to EITHER prompt's text changes the fingerprint automatically.
 # Exposed publicly via :func:`te_template_fingerprint` so callers outside
@@ -406,6 +449,98 @@ class BooguImageDriver(IModelDriver):
             for caption in captions
         ]
 
+        return self._run_vlm(prompts, dtype)
+
+    def encode_text_with_images(
+        self,
+        captions: list[str],
+        images_per_caption: list[list[Any]],
+        dtype: torch.dtype,
+    ) -> TextEncoderOutput:
+        """Qwen3-VL encode WITH reference image(s) — the upstream TI2I branch.
+
+        Task A4 fix wave (finding 1): the Edit checkpoint's text encoder is
+        supposed to SEE the reference image — upstream's
+        ``_get_instruction_feature_embeds`` builds the chat template with
+        interleaved image + text content (``_apply_chat_template``'s
+        with-image branch, pipeline_boogu.py:1611-1620: images_content
+        BEFORE user_text_content), under the TI2I system prompt (which
+        upstream aliases to the same string for TI2I/I2I/DROP — see
+        ``_SYSTEM_PROMPT_TI2I``). Images are downscaled per upstream's
+        dataset-matching preprocessing (:func:`_preprocess_vlm_image`).
+
+        No vision-token trimming: upstream's ``MASK_VISION_TOKENS_FEATURE``
+        defaults to ``False`` (pipeline_boogu.py:227) so the image-token
+        positions STAY in the returned feature sequence, exactly as in the
+        text-only path. The mllm forward receives whatever extra tensors the
+        processor emits (``pixel_values``, ``image_grid_thw``) via the same
+        ``**vlm_inputs`` splat.
+
+        Args:
+            captions: Batch of caption strings.
+            images_per_caption: One list of PIL images per caption
+                (parallel to ``captions``; each list must be non-empty —
+                use :meth:`encode_text` for text-only captions).
+            dtype: Target dtype for the returned embeddings.
+
+        Returns:
+            ``TextEncoderOutput`` — same shape contract as
+            :meth:`encode_text` (the image tokens lengthen ``L``).
+        """
+        if self.processor is None or self.text_encoder is None:
+            raise RuntimeError(
+                "boogu_image encode_text_with_images: 'processor'/"
+                "'text_encoder' not assigned — assign_components() must "
+                "run first."
+            )
+        if len(captions) != len(images_per_caption):
+            raise ValueError(
+                "boogu_image encode_text_with_images: captions and "
+                "images_per_caption must be parallel lists "
+                f"(got {len(captions)} vs {len(images_per_caption)})."
+            )
+
+        prompts = []
+        for caption, images in zip(captions, images_per_caption):
+            if not images:
+                raise ValueError(
+                    "boogu_image encode_text_with_images: every caption "
+                    "must carry at least one image — use encode_text() for "
+                    "text-only captions."
+                )
+            images_content = [
+                {"type": "image", "image": _preprocess_vlm_image(img)}
+                for img in images
+            ]
+            prompts.append(
+                [
+                    {
+                        "role": "system",
+                        "content": [
+                            {"type": "text", "text": _SYSTEM_PROMPT_TI2I},
+                        ],
+                    },
+                    {
+                        # Upstream order: images BEFORE the instruction text
+                        # (pipeline_boogu.py:1614-1620).
+                        "role": "user",
+                        "content": images_content
+                        + [{"type": "text", "text": caption}],
+                    },
+                ]
+            )
+
+        return self._run_vlm(prompts, dtype)
+
+    def _run_vlm(self, prompts: list[list[dict]], dtype: torch.dtype) -> TextEncoderOutput:
+        """Shared chat-template -> mllm-forward -> last-layer-tap tail.
+
+        Used by both :meth:`encode_text` (text-only messages) and
+        :meth:`encode_text_with_images` (image + text messages) — the
+        processor call kwargs, device moves, forward and tap are IDENTICAL
+        in both paths (behavior-preserving extraction, task A4 fix wave;
+        pinned by the pre-existing ``TestBooguVlmEncodeTextPath`` suite).
+        """
         vlm_inputs = self.processor.apply_chat_template(
             prompts,
             padding="longest",

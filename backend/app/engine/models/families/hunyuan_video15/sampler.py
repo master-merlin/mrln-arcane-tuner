@@ -170,7 +170,8 @@ class Hv15Sampler(GenericSamplingPipeline):
         self, width: int, height: int, generator: torch.Generator
     ) -> Tensor:
         """5D fp32 noise ``[1, 32, (F-1)/4+1, H/16, W/16]`` for the clip."""
-        num_frames = int(self.config.get("sample_num_frames", 17))
+        # Per-prompt num_frames override (None = run default; 1 = still).
+        num_frames = self._effective_sample_frames(17, "4n+1")
         latent_f = (num_frames - 1) // HV15_VAE_TEMPORAL + 1
         lat_h = height // HV15_VAE_SPATIAL
         lat_w = width // HV15_VAE_SPATIAL

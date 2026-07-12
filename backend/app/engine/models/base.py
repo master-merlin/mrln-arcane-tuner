@@ -65,7 +65,10 @@ class SamplePromptConfig(BaseModel):
     # unaffected.  Capability-based UI gating is handled in a later phase.
     num_frames: int | None = Field(
         None,
-        description="Frames to sample for video models (None = still image)",
+        description=(
+            "Frames for this sample on video models. None = run default "
+            "(sample_num_frames); 1 = still image."
+        ),
         json_schema_extra={
             "group": "SAMPLING",
             "min": 1,

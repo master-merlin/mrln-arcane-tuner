@@ -114,7 +114,8 @@ class Ltx2Sampler(GenericSamplingPipeline):
         vae_sp = int(arch.get("video.vae_spatial", 32))
         vae_t = int(arch.get("video.vae_temporal", 8))
         num_channels = int(arch.get("transformer.in_channels", 128))
-        num_frames = int(self.config.get("sample_num_frames", 25))  # 8n+1
+        # Per-prompt num_frames override (None = run default; 1 = still).
+        num_frames = self._effective_sample_frames(25, "8n+1")
 
         lat_h = height // vae_sp
         lat_w = width // vae_sp
@@ -149,7 +150,7 @@ class Ltx2Sampler(GenericSamplingPipeline):
         sr = int(getattr(cfg, "sample_rate", driver.audio_sampling_rate) or 16000)
         hop = int(getattr(cfg, "mel_hop_length", 160) or 160)
         temporal = int(getattr(audio_vae, "temporal_compression_ratio", 4) or 4)
-        num_frames = int(self.config.get("sample_num_frames", 25))
+        num_frames = self._effective_sample_frames(25, "8n+1")
         fps = float(self.config.get("sample_fps", driver.frame_rate) or driver.frame_rate or 24.0)
         duration_s = num_frames / fps if fps > 0 else 0.0
         per_s = sr / hop / temporal if (hop and temporal) else 25.0
@@ -183,7 +184,10 @@ class Ltx2Sampler(GenericSamplingPipeline):
         video_emb = driver._video_embeddings(prompt_embedding).to(model_dtype)
         f, h, w = driver._latent_grid()
 
-        audio_on = self._audio_enabled()
+        # A still preview (F=1 latent grid) has no temporal extent, so there is
+        # no audio to co-denoise — take the isolated no-audio path even on an
+        # audio-trained run (per-prompt num_frames=1 previews).
+        audio_on = self._audio_enabled() and f > 1
         driver._last_audio_latents = None
         audio_x = None
         audio_emb = None

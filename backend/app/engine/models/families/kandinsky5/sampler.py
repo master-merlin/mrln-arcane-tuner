@@ -158,7 +158,8 @@ class Kandinsky5Sampler(GenericSamplingPipeline):
         compressed temporally by 4 (HunyuanVideo VAE).
         """
         driver: Kandinsky5Driver = self.pipeline.driver
-        num_frames = int(self.config.get("sample_num_frames", 17))
+        # Per-prompt num_frames override (None = run default; 1 = still).
+        num_frames = self._effective_sample_frames(17, "4n+1")
         latent_f = (num_frames - 1) // 4 + 1
         lat_h = height // driver.vae_spatial
         lat_w = width // driver.vae_spatial

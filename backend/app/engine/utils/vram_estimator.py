@@ -279,6 +279,20 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 8.8,  # Qwen3-VL-8B mllm, ~8.77B (== ideogram4's TE)
         "vae": 0.08,  # FLUX-style AutoencoderKL, ~84M params (fp32 on disk)
     },
+    "ace_step15": {
+        # Meta-instantiated diffusers 0.39 AceStepTransformer1DModel +
+        # AceStepConditionEncoder + AutoencoderOobleck with the turbo
+        # checkpoint's verified config (see C1 report / definitions/base.yaml
+        # architecture_params): transformer 1.575B, condition_encoder 0.608B
+        # (counted into the text-encoder sum — it's part of the "text
+        # encoding" pipeline for offload purposes, see driver.py's
+        # get_text_encoders), vae 0.156B. text_encoder is the well-known
+        # Qwen3-Embedding-0.6B (0.6B params).
+        "transformer": 1.575,
+        "text_encoder": 0.6,  # Qwen3-Embedding-0.6B
+        "text_encoder_condition": 0.608,  # AceStepConditionEncoder
+        "vae": 0.156,  # AutoencoderOobleck
+    },
 }
 
 # Bytes-per-param for common dtypes

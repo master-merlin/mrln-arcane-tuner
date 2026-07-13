@@ -92,6 +92,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "lumina2": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Gemma-2-2B TE (no TE training)
     "omnigen2": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen2.5-VL-3B mllm TE, text-only use (no TE training)
     "nucleus_image": (True, True),  # latent_diffusion sparse-MoE DiT (AutoencoderKLQwenImage) + external Qwen3-VL TE, text-only use (no TE training)
+    "ace_step15": (True, True),  # latent_diffusion audio DiT (AutoencoderOobleck VAE) + external Qwen3-Embedding TE + condition encoder (no TE training)
 }
 
 

@@ -33,6 +33,7 @@ from app.engine.models.registry import ModelRegistry
 # edit here — ``test_guarded_set_matches_registered`` cross-checks it against
 # the live registry and fails if the two drift.
 ALL_FAMILIES = (
+    "ace_step15",
     "boogu_image",
     "chroma",
     "dreamlite",

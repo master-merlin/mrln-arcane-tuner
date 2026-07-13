@@ -7,6 +7,8 @@ catalog — dreamlite 2026-07-08 precedent, see test_lora_target_lists_shipped.p
 
 from __future__ import annotations
 
+import pytest
+
 from app.engine.models.registry import ModelRegistry
 
 
@@ -45,6 +47,36 @@ def test_definition_architecture_params_audio_contract():
     assert arch["condition_encoder._class_name"] == "AceStepConditionEncoder"
     assert arch["vae._class_name"] == "AutoencoderOobleck"
     assert arch["transformer.is_turbo"] is True
+
+
+def test_definition_transformer_params_match_real_checkpoint_config():
+    """Task C4a fix: the turbo definition's transformer.* must match the
+    REAL `ACE-Step/acestep-v15-xl-turbo-diffusers/transformer/config.json`
+    (hidden_size=2560/32L/32H, byte-verified via the HF tree API) — C1
+    originally documented 2048/24L/16H, sourced from the legacy
+    combined-wrapper repo's root config (a differently-scoped model)."""
+    defn = _get_definition()
+    arch = defn.architecture_params
+    assert arch["transformer.hidden_size"] == 2560
+    assert arch["transformer.intermediate_size"] == 9728
+    assert arch["transformer.num_hidden_layers"] == 32
+    assert arch["transformer.num_attention_heads"] == 32
+    assert arch["transformer.num_key_value_heads"] == 8
+    assert arch["transformer.head_dim"] == 128
+    assert arch["transformer.model_version"] == "turbo"
+    assert defn.block_topology[0]["count"] == 32
+
+
+def test_definition_ships_real_model_size_mb():
+    """Task C4a: turbo now ships concrete on-disk sizes (previously an
+    intentionally-empty dict routed to the — then wrong — family fallback).
+    Same byte-derived numbers as xl_base (shards are size-identical across
+    the two checkpoint variants)."""
+    defn = _get_definition()
+    size_mb = defn.model_size_mb
+    assert size_mb["transformer"] == pytest.approx(7951.6)
+    assert size_mb["text_encoder"] == 2298
+    assert size_mb["vae"] == 322
 
 
 def test_definition_defaults_match_upstream_preset():
@@ -102,10 +134,9 @@ def test_xl_base_definition_repo_is_diffusers_native():
 
 def test_xl_base_definition_architecture_params_match_byte_verified_config():
     """Pins the RECON-VERIFIED real transformer shape (hidden_size=2560,
-    32 layers, 32 heads) — deliberately NOT the smaller shape the shipped
-    turbo definition documents (hidden_size=2048/24/16), which task C2's
-    recon found is sourced from the wrong upstream config file (see
-    xl_base.yaml's header comment)."""
+    32 layers, 32 heads). Since the C4a fix, the turbo definition documents
+    the SAME (correct) shape — see
+    test_definition_transformer_params_match_real_checkpoint_config."""
     defn = _get_xl_base_definition()
     arch = defn.architecture_params
     assert arch["audio.sample_rate"] == 48000
@@ -145,12 +176,10 @@ def test_xl_base_definition_ships_nonempty_lora_target_list():
 
 
 def test_xl_base_definition_ships_own_model_size_mb():
-    """Unlike turbo's empty ``model_size_mb: {}``, xl_base ships real
-    on-disk sizes so the VRAM estimator does not fall back to
-    ``_FAMILY_PARAMS["ace_step15"]["transformer"]`` (1.575 B) — that
-    fallback is calibrated to turbo's incorrect, smaller documented shape
-    (see xl_base.yaml header comment) and would understate this
-    definition's real ~4.17 B-parameter DiT by ~2.6x."""
+    """xl_base ships real on-disk sizes so the VRAM estimator prefers them
+    over the ``_FAMILY_PARAMS["ace_step15"]`` fallback (since the C4a fix
+    both the fallback and turbo's own model_size_mb agree with these
+    numbers — the shards are size-identical across checkpoint variants)."""
     defn = _get_xl_base_definition()
     size_mb = defn.model_size_mb
     assert size_mb["transformer"] == 7952

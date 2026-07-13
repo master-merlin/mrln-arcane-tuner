@@ -62,6 +62,7 @@ D:/AI/huggingface/hub, unless noted):
   hunyuan_video15   text_encoder_2   T5EncoderModel                       T5EncoderModel
   prx               text_encoder     T5GemmaEncoder                       T5GemmaEncoder (flat t5_gemma_module cfg)
   chroma            text_encoder     T5EncoderModel                       T5EncoderModel (T5-XXL, no CLIP at all)
+  lumina2           text_encoder     Gemma2Model                          Gemma2Model (Gemma-2-2B, bare encoder)
 
   *  ideogram4 loads its TE from the SEPARATE repo ``Qwen/Qwen3-VL-8B-Instruct``
      (``separate_repo=True``), whose config declares
@@ -271,6 +272,14 @@ def _qwen25vl_text():
     return Qwen2_5_VLTextModel(text)
 
 
+def _gemma2_model():
+    from transformers import Gemma2Config, Gemma2Model
+    return Gemma2Model(Gemma2Config(
+        vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
+        num_attention_heads=2, num_key_value_heads=1, head_dim=8,
+        max_position_embeddings=32, sliding_window=16))
+
+
 def _t5gemma_encoder():
     # The real prx ``text_encoder/config.json`` is a FLAT ``t5_gemma_module``
     # config (T5GemmaModuleConfig, which HAS ``hidden_size`` etc. at top level).
@@ -305,6 +314,7 @@ _BUILDERS = {
     "Qwen2_5_VLForConditionalGeneration": _qwen25vl_conditional,
     "Qwen2_5_VLTextModel": _qwen25vl_text,
     "T5GemmaEncoder": _t5gemma_encoder,
+    "Gemma2Model": _gemma2_model,
 }
 
 
@@ -388,6 +398,8 @@ CASES: list[_Case] = [
           "transformers.Qwen3VLModel", "Qwen3VLModel", in_manifest=False),
     _Case("chroma", _m("chroma"), "ChromaLoader", "text_encoder",
           "transformers.T5EncoderModel", "T5EncoderModel"),
+    _Case("lumina2", _m("lumina2"), "Lumina2Loader", "text_encoder",
+          "transformers.Gemma2Model", "Gemma2Model"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

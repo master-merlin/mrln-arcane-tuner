@@ -1,0 +1,173 @@
+# Lumina-Image-2.0 — Alpha-VLLM's 2.6B DiT + frozen Gemma-2-2B text encoder.
+# Apache-2.0. Also the architectural base of the NetaYume/Neta-Lumina anime
+# finetune lineage — a future NetaYume definition should be able to reuse
+# this SAME family (loader/driver/trainer/sampler/saver) unchanged, just a
+# new YAML pointing at a different checkpoint repo (see driver.py module
+# docstring).
+#
+# All facts below verified against the live HF repo (Alpha-VLLM/
+# Lumina-Image-2.0, 2026-07-13): model_index.json + transformer/vae/
+# text_encoder/scheduler config.json + tokenizer/tokenizer_config.json (no
+# local download needed — fetched via the HF resolve/API endpoints). File
+# sizes from the repo's tree API (bytes/1e6), NOT downloaded weights.
+id: lumina-image-2.0
+family: lumina2
+name: Lumina-Image 2.0
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-5
+  # Lumina2Pipeline.__call__ native defaults (pipeline_lumina2.py signature,
+  # lines 526-550).
+  num_inference_steps: 30
+  guidance_scale: 4.0
+components:
+  repo:
+    path: huggingface:Alpha-VLLM/Lumina-Image-2.0
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json) --
+  transformer._class_name: Lumina2Transformer2DModel
+  transformer.sample_size: 128
+  transformer.patch_size: 2
+  transformer.in_channels: 16
+  transformer.out_channels:
+  transformer.hidden_size: 2304
+  transformer.num_layers: 26
+  transformer.num_refiner_layers: 2
+  transformer.num_attention_heads: 24
+  transformer.num_kv_heads: 8
+  transformer.multiple_of: 256
+  transformer.ffn_dim_multiplier:
+  transformer.norm_eps: 1.0e-05
+  transformer.scaling_factor: 1.0
+  transformer.axes_dim_rope:
+  - 32
+  - 32
+  - 32
+  transformer.axes_lens:
+  - 300
+  - 512
+  - 512
+  # cap_feat_dim MUST equal the Gemma-2-2B text encoder's hidden_size
+  # (2304) — the caption embedder projects raw Gemma hidden states, no
+  # intermediate resize.
+  transformer.cap_feat_dim: 2304
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  # Generic activation-estimate hints
+  hidden_size: 2304
+  depth: 26
+  in_channels: 16
+  context_dim: 2304
+  # -- Text encoder (checkpoint text_encoder/config.json — Gemma-2-2B,
+  #    google/gemma-2-2b lineage; text_encoder/config.json's own
+  #    torch_dtype is "float32" — the raw shard dtype, NOT a load
+  #    restriction; this family loads bf16 like every other Tier-2 image
+  #    family, see driver.py resolve_loading_dtype) --
+  te.type: gemma2
+  te.architectures:
+  - Gemma2Model
+  te.hidden_size: 2304
+  te.num_hidden_layers: 26
+  te.num_attention_heads: 8
+  te.num_key_value_heads: 4
+  te.head_dim: 256
+  te.intermediate_size: 9216
+  te.max_position_embeddings: 8192
+  te.sliding_window: 4096
+  te.vocab_size: 256000
+  te.torch_dtype: float32
+  # _get_gemma_prompt_embeds taps hidden_states[-2] (pipeline_lumina2.py
+  # line 222) — NOT last_hidden_state.
+  te.hidden_state_tap_index: -2
+  # Lumina2Pipeline.__call__ default max_sequence_length (line 550).
+  te.max_sequence_length: 256
+  # tokenizer/ ships a fast tokenizer.json (17.5MB) — model_index.json pins
+  # GemmaTokenizerFast.
+  te.tokenizer_class: GemmaTokenizerFast
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json) --
+  # STATIC shift (use_dynamic_shifting=false, shift=6.0) — cross-checked
+  # against ComfyUI's own Lumina2 supported-model entry
+  # (sampling_settings={"shift": 6.0}), NOT resolution-dependent dynamic
+  # shifting like flux1/ovis_image.
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 6.0
+  scheduler.use_dynamic_shifting: false
+  scheduler.base_shift: 0.5
+  scheduler.max_shift: 1.15
+  scheduler.base_image_seq_len: 256
+  scheduler.max_image_seq_len: 4096
+  scheduler.invert_sigmas: false
+  scheduler.shift_terminal:
+  scheduler.use_beta_sigmas: false
+  scheduler.use_karras_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  # -- VAE (checkpoint vae/config.json — the FLUX.1-dev VAE verbatim,
+  #    _name_or_path: "black-forest-labs/FLUX.1-dev") --
+  vae._class_name: AutoencoderKL
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 16
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+  vae.vae_scale_factor: 8
+# Real on-disk shard sizes (HF tree API, bytes/1e6 — no download needed):
+# transformer 2-shard 9957078112+482046552, text_encoder 3-shard
+# 4992575568+4983442368+481381280, vae 335306212.
+model_size_mb:
+  transformer: 10439.12
+  text_encoder: 10457.4
+  vae: 335.31
+lora_targetable_modules:
+- attn.to_q
+- attn.to_k
+- attn.to_v
+- attn.to_out.0
+- feed_forward.linear_1
+- feed_forward.linear_2
+- feed_forward.linear_3
+block_topology:
+- name: layers
+  attr_path: layers
+  count: 26
+  approx_vram_mb: 340
+- name: context_refiner
+  attr_path: context_refiner
+  count: 2
+  approx_vram_mb: 340
+- name: noise_refiner
+  attr_path: noise_refiner
+  count: 2
+  approx_vram_mb: 340

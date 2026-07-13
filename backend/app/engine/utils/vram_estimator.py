@@ -69,6 +69,16 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 4.8,  # T5-XXL (google/t5-v1_1-xxl) — no CLIP at all
         "vae": 0.08,  # FLUX.1-schnell AutoencoderKL (~84M params)
     },
+    "lumina2": {
+        # Both fp32 shard totals (HF tree API, bytes/4) converge on ~2.6B —
+        # matches the community "2.6B DiT" branding. The definition ships
+        # concrete on-disk model_size_mb, so this table is the fallback-only
+        # path; the VAE is the FLUX.1-dev AutoencoderKL verbatim (same 16ch
+        # architecture as flux1's own VAE entry).
+        "transformer": 2.6,
+        "text_encoder": 2.6,  # Gemma-2-2B (google/gemma-2-2b)
+        "vae": 0.08,  # FLUX.1-dev AutoencoderKL (~84M params)
+    },
     "zimage": {
         "transformer": 6.2,
         "text_encoder": 4.0,  # Qwen3

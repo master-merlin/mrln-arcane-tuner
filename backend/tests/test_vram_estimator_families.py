@@ -386,4 +386,10 @@ def test_still_resolutions_ignored_for_image_family():
     stale = VRAMEstimator.estimate(
         defn, {"quantization": "none", "still_resolutions": [4096]}
     ).to_dict()
-    assert plain == stale
+    # Compare only the model-derived fields: available/used/total/fits come
+    # from a LIVE NVML read and can jitter by a MB between the two calls
+    # (observed flake 2026-07-13 — 25871 vs 25872 available_mb).
+    volatile = {"available_mb", "total_mb", "used_mb", "fits", "warnings"}
+    plain_det = {k: v for k, v in plain.items() if k not in volatile}
+    stale_det = {k: v for k, v in stale.items() if k not in volatile}
+    assert plain_det == stale_det

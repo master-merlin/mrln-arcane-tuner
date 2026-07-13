@@ -87,7 +87,7 @@ class _FakeTokenizer:
         return out
 
 
-def _make_driver() -> AceStep15Driver:
+def _make_driver(is_turbo: bool = True) -> AceStep15Driver:
     from transformers import LlamaConfig, LlamaModel
 
     definition = ModelDefinition(id="ace-step-1.5-test", family="ace_step15", name="test")
@@ -97,8 +97,13 @@ def _make_driver() -> AceStep15Driver:
         vocab_size=100, hidden_size=16, intermediate_size=32,
         num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=1,
     )
+    transformer_overrides = (
+        {}
+        if is_turbo
+        else {"is_turbo": False, "model_version": "base"}
+    )
     components = {
-        "unet": _tiny_transformer(),
+        "unet": _tiny_transformer(**transformer_overrides),
         "vae": _tiny_vae(),
         "text_encoder": LlamaModel(te_cfg),
         "tokenizer": _FakeTokenizer(),

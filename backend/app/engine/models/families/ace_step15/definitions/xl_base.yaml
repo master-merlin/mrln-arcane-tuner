@@ -1,0 +1,203 @@
+# ACE-Step 1.5 XL (Base) — text2music DiT LoRA training, TRUE-CFG path.
+#
+# ai-toolkit's community LoRA trainer calls this checkpoint "Ace Step 1.5 XL"
+# (non-distilled, i.e. NOT guidance-distilled the way the turbo checkpoint
+# is) — "XL (Base)" mirrors that naming while staying parallel to the
+# shipped turbo definition's "(Turbo)" parenthetical.
+#
+# Checkpoint: `ACE-Step/acestep-v15-xl-base-diffusers` — the diffusers-NATIVE
+# multi-folder port of the same `ACE-Step/acestep-v15-xl-base` weights the
+# GitHub-adjacent repo ships as a single-file `trust_remote_code=True`
+# layout (`config.json` + `configuration_acestep_v15.py` +
+# `modeling_acestep_v15_xl_base.py` + 4-shard `model-0000N-of-00004
+# .safetensors`) — verified via the HF API tree listing for both repos
+# (task C2 recon). Same deviation rationale as the turbo definition: only
+# the diffusers-native repo is `from_pretrained`-per-subfolder loadable the
+# way `GenericComponentLoader` needs (`model_index.json` +
+# tokenizer/text_encoder/vae/condition_encoder/transformer/scheduler
+# subfolders, confirmed present).
+#
+# CONFIG DELTAS vs the turbo definition (`definitions/base.yaml`), all
+# byte-verified against the REAL `transformer/config.json` /
+# `condition_encoder/config.json` on both diffusers-native repos via the HF
+# tree API (task C2 recon — see this family's C2 report for the full
+# transcript):
+#   - `is_turbo: false` / `model_version: "base"` (vs `true` / `"turbo"`) —
+#     this is what flips `sampler.py`'s CFG branch on (see below).
+#   - `timestep_mu`/`timestep_sigma` are UNCHANGED (-0.4 / 1.0, confirmed via
+#     the trust_remote_code repo's root config.json, which the diffusers
+#     port doesn't re-expose) — no defaults.* change needed.
+#   - The VAE, Qwen3-Embedding-0.6B text encoder, and `AceStepConditionEncoder`
+#     are BYTE-IDENTICAL to turbo's (same HF LFS content hash for vae/
+#     and text_encoder/; condition_encoder/ is same shape+size, different
+#     trained weights) — a single condition/VAE tower shared across turbo/
+#     base checkpoints. Only the DiT (`transformer/`) differs in content.
+#   - IMPORTANT CORRECTION vs the ALREADY-SHIPPED turbo definition: this
+#     definition's `transformer.*` architecture_params below are the
+#     BYTE-VERIFIED real numbers (hidden_size=2560, layers=32, heads=32) —
+#     do NOT copy the turbo definition's transformer.* block, which
+#     documents a SMALLER architecture (hidden_size=2048/layers=24/heads=16)
+#     that was sourced from the wrong config (the legacy combined-wrapper
+#     `ACE-Step/Ace-Step1.5` repo's root `config.json`, which describes a
+#     different, larger `AceStepConditionGenerationModel` wrapper's own
+#     hidden_size field — NOT the standalone DiT's real shape). The turbo
+#     checkpoint's OWN `transformer/config.json` on
+#     `acestep-v15-xl-turbo-diffusers` is ALSO hidden_size=2560/layers=32/
+#     heads=32 (byte-verified same shapes as this base definition, just
+#     different trained weights) — turbo and base share ONE DiT
+#     architecture. This is a pre-existing documentation/VRAM-estimator-
+#     fallback bug in the shipped turbo definition, flagged in the C2
+#     report; NOT fixed here per the hard rule (turbo definition stays
+#     byte-unchanged on this branch).
+#
+# Upstream inference defaults (`ACE-Step/acestep-v15-xl-base-diffusers`
+# model card, task C2 recon): "num_inference_steps=50, guidance_scale=7.0,
+# and shift=3.0 are the recommended defaults" — explicitly calling out that
+# callers must "Pass num_inference_steps=50 explicitly so generation does
+# not use the lower-step turbo setting" and that this checkpoint "employs
+# ACE-Step's APG guidance path when guidance_scale > 1.0" (i.e. NOT plain
+# CFG) — see `sampler.py`'s module docstring for the APG implementation this
+# activates (`diffusers.guiders.adaptive_projected_guidance.
+# normalized_guidance`, reused verbatim from the pipeline's own denoise
+# loop, momentum=-0.75/eta=0.0/norm_threshold=2.5/
+# use_original_formulation=True/norm_dim=(1,)). This is the FIRST shipped
+# ace_step15 definition to exercise that branch — pinned by
+# `test_ace_step15_sampler.py::test_denoise_base_apg_matches_upstream_formula`.
+#
+# Training hyperparameters (learning_rate/train_batch_size/
+# gradient_accumulation_steps/network_rank/network_alpha) reuse the turbo
+# definition's values verbatim: no distinct base-model LoRA preset was found
+# in the accessible upstream sources during task C2 recon (only the single
+# `training_v2/presets/recommended.json` C1 cited, itself not re-verified
+# here) — an honest "no separate preset found" default, not a re-verified
+# upstream citation for the base variant specifically.
+id: ace-step-1.5-xl-base
+family: ace_step15
+name: ACE-Step 1.5 XL (Base)
+version: '1.0'
+control_inputs: 0
+defaults:
+  # Flow-match timestep sampling — UNCHANGED vs turbo (confirmed identical
+  # in the base checkpoint's own config.json, see header comment).
+  timestep_sampling: logit_normal
+  logit_normal_mu: -0.4
+  logit_normal_sigma: 1.0
+  learning_rate: 0.0001
+  train_batch_size: 1
+  gradient_accumulation_steps: 4
+  network_rank: 64
+  network_alpha: 128
+  # Base (non-distilled) inference defaults — model card's own recommended
+  # values (see header comment). guidance_scale > 1.0 + is_turbo=False
+  # together flip `sampler.py`'s denoise loop onto the real APG path.
+  num_inference_steps: 50
+  guidance_scale: 7.0
+  scheduler: flow_match_euler
+  # AUDIO group (is_audio_family-gated — see core/archetypes.py) — unchanged
+  # from turbo's defaults, no base-specific override documented upstream.
+  duration_s: 30.0
+  genre_ratio: 0.15
+components:
+  repo:
+    path: huggingface:ACE-Step/acestep-v15-xl-base-diffusers
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  condition_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  # -- Audio contract (AutoencoderOobleck config.json — BYTE-IDENTICAL LFS
+  # content hash to the turbo checkpoint's VAE, task C2 recon) --
+  audio.sample_rate: 48000
+  audio.channels: 2
+  audio.latent_hz: 25.0
+  audio.acoustic_hidden_dim: 64
+  audio.max_text_length: 256
+  audio.max_lyric_length: 2048
+  # -- Transformer (AceStepTransformer1DModel `transformer/config.json` on
+  # `ACE-Step/acestep-v15-xl-base-diffusers`, byte-verified via the HF tree
+  # API — task C2 recon; SAME shape as turbo's real (not-yet-corrected-in-
+  # its-own-yaml) transformer, different trained weights) --
+  transformer._class_name: AceStepTransformer1DModel
+  transformer.hidden_size: 2560
+  transformer.intermediate_size: 9728
+  transformer.num_hidden_layers: 32
+  transformer.num_attention_heads: 32
+  transformer.num_key_value_heads: 8
+  transformer.head_dim: 128
+  transformer.in_channels: 192
+  transformer.encoder_hidden_size: 2048
+  transformer.patch_size: 2
+  transformer.rope_theta: 1000000.0
+  transformer.sliding_window: 128
+  transformer.is_turbo: false
+  transformer.model_version: base
+  # Generic activation-estimate hints
+  hidden_size: 2560
+  depth: 32
+  in_channels: 192
+  # -- Condition encoder (text + lyric + timbre -> cross-attn sequence) --
+  # config values verified IDENTICAL to turbo's (shared condition-encoder
+  # architecture; only the trained weights differ per checkpoint variant).
+  condition_encoder._class_name: AceStepConditionEncoder
+  condition_encoder.hidden_size: 2048
+  condition_encoder.text_hidden_dim: 1024
+  condition_encoder.timbre_hidden_dim: 64
+  condition_encoder.num_lyric_encoder_hidden_layers: 8
+  condition_encoder.num_timbre_encoder_hidden_layers: 4
+  # -- Text encoder (Qwen3-Embedding-0.6B — BYTE-IDENTICAL to turbo's) --
+  te.type: qwen3_embedding
+  te.hidden_size: 1024
+  # -- VAE (AutoencoderOobleck, 48kHz stereo — BYTE-IDENTICAL to turbo's) --
+  vae._class_name: AutoencoderOobleck
+  vae.sampling_rate: 48000
+  vae.audio_channels: 2
+  vae.decoder_input_channels: 64
+  vae.downsampling_ratios:
+  - 2
+  - 4
+  - 4
+  - 6
+  - 10
+  # -- Scheduler (model card's recommended shift=3.0 — SAME as turbo's) --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.shift: 3.0
+# Real on-disk bf16 component sizes (HF tree API, task C2 recon — see header
+# comment). SHIPPED HERE (unlike the turbo definition's empty
+# `model_size_mb: {}`) specifically so this definition's VRAM estimate is
+# self-contained and does NOT fall back to
+# `_FAMILY_PARAMS["ace_step15"]["transformer"]` (1.575 B) — that fallback is
+# calibrated to the turbo definition's (incorrect, pre-existing, NOT fixed
+# here) smaller documented shape and would silently understate this
+# definition's real ~4.17 B-parameter DiT by ~2.6x.
+#   - transformer: (4,986,971,904 + 3,350,889,672) bytes / 1024^2 ≈ 7952 MB
+#   - text_encoder: Qwen3-Embedding-0.6B (1,191,586,416 B ≈ 1136 MB) +
+#     AceStepConditionEncoder (1,218,676,312 B ≈ 1162 MB) summed into one
+#     "text_encoder" slot — the estimator has no separate condition_encoder
+#     component key, and both are loaded together on GPU during TE caching
+#     (`driver.get_text_encoders()` returns both), matching the accounting
+#     `_get_te_params()` already does for the turbo fallback via its
+#     `text_encoder` + `text_encoder_condition` family-table entries.
+#   - vae: 337,431,388 bytes / 1024^2 ≈ 322 MB
+model_size_mb:
+  transformer: 7952
+  text_encoder: 2298
+  vae: 322
+block_topology:
+- name: layers
+  attr_path: layers
+  count: 32
+  approx_vram_mb: 249
+# Curated LoRA target surface — SAME suffix list as turbo (PEFT suffix-
+# matching is independent of hidden_size/layer count; the naming contract
+# `to_q`/`to_k`/`to_v`/`to_out.0` under `self_attn`/`cross_attn` is
+# unaffected by the base checkpoint's larger transformer). MUST stay
+# non-empty for the same reason as turbo's (registry.enrich_definition only
+# auto-fills an EMPTY list — dreamlite 2026-07-08 precedent).
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0

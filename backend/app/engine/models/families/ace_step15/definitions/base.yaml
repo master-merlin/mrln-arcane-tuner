@@ -1,0 +1,135 @@
+# ACE-Step 1.5 (turbo) — text2music DiT LoRA training.
+#
+# Checkpoint: `ACE-Step/acestep-v15-xl-turbo-diffusers` — the diffusers-NATIVE
+# multi-folder layout (model_index.json + tokenizer/text_encoder/vae/
+# condition_encoder/transformer/scheduler subfolders), verified against the
+# installed diffusers 0.39.0 package's `AceStepPipeline.__init__` signature
+# (see driver.py's module docstring). This is a DELIBERATE deviation from the
+# GitHub repo's own checkpoint id (`ACE-Step/Ace-Step1.5`, a
+# `trust_remote_code=True` layout with a combined DiT+condition-encoder
+# `model.safetensors` under `acestep-v15-turbo/`) — the diffusers-native repo
+# is what `GenericComponentLoader`'s per-subfolder `from_pretrained` manifest
+# pattern needs, and it is the SAME weights re-packaged (diffusers ported the
+# turbo checkpoint verbatim; see recon report §6).
+#
+# turbo = guidance-distilled (no CFG needed at inference, 8 default steps) —
+# the fastest/simplest of the three shipped variants (turbo/base/sft) and the
+# one the diffusers example docstring itself demonstrates.
+id: ace-step-1.5
+family: ace_step15
+name: ACE-Step 1.5 (Turbo)
+version: '1.0'
+control_inputs: 0
+defaults:
+  # Flow-match timestep sampling — logit-normal mu/sigma READ FROM THE
+  # CHECKPOINT's own config.json (`"timestep_mu": -0.4, "timestep_sigma": 1.0`
+  # — recon report §3), reproduced here via the shared TimestepSampler's
+  # existing `logit_normal_mu`/`logit_normal_sigma` knobs (byte-identical
+  # formula: `sigmoid(randn()*sigma + mu)`) — no driver-level override needed.
+  timestep_sampling: logit_normal
+  logit_normal_mu: -0.4
+  logit_normal_sigma: 1.0
+  learning_rate: 0.0001
+  # Upstream `training_v2/presets/recommended.json`: batch_size=1,
+  # gradient_accumulation=4 (recon report §2) — LoRA training default.
+  train_batch_size: 1
+  gradient_accumulation_steps: 4
+  network_rank: 64
+  network_alpha: 128
+  # Turbo inference defaults (diffusers `AceStepPipeline.__call__` signature —
+  # recon report §7): guidance is distilled into the weights, so CFG is off.
+  num_inference_steps: 8
+  guidance_scale: 1.0
+  scheduler: flow_match_euler
+  # AUDIO group (is_audio_family-gated — see core/archetypes.py)
+  duration_s: 30.0
+  genre_ratio: 0.15
+components:
+  repo:
+    path: huggingface:ACE-Step/acestep-v15-xl-turbo-diffusers
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  condition_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  # -- Audio contract (AutoencoderOobleck config.json, verified via the
+  # installed diffusers package + recon report §4) --
+  audio.sample_rate: 48000
+  audio.channels: 2
+  # 48000 / prod([2,4,4,6,10]) = 25.0 Hz latent rate.
+  audio.latent_hz: 25.0
+  audio.acoustic_hidden_dim: 64
+  audio.max_text_length: 256
+  audio.max_lyric_length: 2048
+  # -- Transformer (AceStepTransformer1DModel config.json, verified via
+  # `ACE-Step/Ace-Step1.5`'s root config.json — recon report §6) --
+  transformer._class_name: AceStepTransformer1DModel
+  transformer.hidden_size: 2048
+  transformer.intermediate_size: 6144
+  transformer.num_hidden_layers: 24
+  transformer.num_attention_heads: 16
+  transformer.num_key_value_heads: 8
+  transformer.head_dim: 128
+  transformer.in_channels: 192
+  transformer.patch_size: 2
+  transformer.rope_theta: 1000000.0
+  transformer.sliding_window: 128
+  transformer.is_turbo: true
+  transformer.model_version: turbo
+  # Generic activation-estimate hints
+  hidden_size: 2048
+  depth: 24
+  in_channels: 192
+  # -- Condition encoder (text + lyric + timbre -> cross-attn sequence) --
+  condition_encoder._class_name: AceStepConditionEncoder
+  condition_encoder.hidden_size: 2048
+  condition_encoder.text_hidden_dim: 1024
+  condition_encoder.timbre_hidden_dim: 64
+  condition_encoder.num_lyric_encoder_hidden_layers: 8
+  condition_encoder.num_timbre_encoder_hidden_layers: 4
+  # -- Text encoder (Qwen3-Embedding-0.6B) --
+  te.type: qwen3_embedding
+  te.hidden_size: 1024
+  # -- VAE (AutoencoderOobleck, 48kHz stereo) --
+  vae._class_name: AutoencoderOobleck
+  vae.sampling_rate: 48000
+  vae.audio_channels: 2
+  vae.decoder_input_channels: 64
+  vae.downsampling_ratios:
+  - 2
+  - 4
+  - 4
+  - 6
+  - 10
+  # -- Scheduler (inference-only shift; training samples continuous
+  # logit-normal t regardless — recon report §3's "Shift and Timestep
+  # Sampling.md" citation: "shift is an inference-only parameter") --
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.shift: 3.0
+# model_size_mb intentionally empty — the VRAM estimator falls back to the
+# meta-instantiated param counts in _FAMILY_PARAMS["ace_step15"].
+model_size_mb: {}
+block_topology:
+- name: layers
+  attr_path: layers
+  count: 24
+  approx_vram_mb: 130
+# Curated LoRA target surface — bare SUFFIX list (safe: `to_q`/`to_k`/`to_v`/
+# `to_out.0` are UNIQUE names within the transformer; unlike Kandinsky5 there
+# is no frozen sibling stack sharing them, so a suffix match cannot bleed
+# outside the DiT). PEFT suffix-matches this across BOTH self_attn AND
+# cross_attn in all 24 layers = 192 Linear modules = 384 lora_A/B keys.
+# Verified against the meta-instantiated real config (see recon report /
+# C1 report for the introspection transcript).
+# MUST stay non-empty: registry.enrich_definition only auto-fills an EMPTY
+# list, and the introspector's exhaustive Linear catalog (time embedders,
+# condition_embedder, ...) would otherwise replace this curated surface at
+# first model load (dreamlite 2026-07-08 precedent).
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0

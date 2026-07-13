@@ -325,6 +325,8 @@ class PipelineCachingMixin:
                         "target_w": item["target_w"],
                         "target_h": item["target_h"],
                         "is_video": item.get("is_video", False),
+                        "is_audio": item.get("is_audio", False),
+                        "window_s": item.get("window_s"),
                         "target_frames": item.get("target_frames", 1),
                         "target_fps": item.get("target_fps"),
                         "trim_start_s": item.get("trim_start_s"),
@@ -361,7 +363,19 @@ class PipelineCachingMixin:
         for i, item in enumerate(work_items):
             try:
                 tw, th = item["target_w"], item["target_h"]
-                if item.get("is_video"):
+                if item.get("is_audio"):
+                    from app.engine.components.audio import AudioClipLoader
+
+                    wav = AudioClipLoader().load_clip(
+                        item["path"],
+                        target_sample_rate=self._audio_target_sample_rate,
+                        target_channels=self._audio_target_channels,
+                        window_s=float(
+                            item.get("window_s") or self._audio_duration_cap
+                        ),
+                    )
+                    input_tensor = wav.unsqueeze(0).to(self.device)  # [1, C, T]
+                elif item.get("is_video"):
                     # Decode the clip via the SAME loader the train loop uses →
                     # [C, F, H, W], already normalized to [-1, 1]. Encoding a
                     # video frame through PIL is what produced the original

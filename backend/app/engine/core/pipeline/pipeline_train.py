@@ -405,7 +405,9 @@ class PipelineTrainMixin:
                 # and re-run it only on a cache miss; image/pixel families (incl.
                 # the pixel-space ones that read batch["images"] in forward)
                 # decode upfront, byte-identical to before.
-                defer_decode = bool(getattr(self, "is_video_family", False))
+                defer_decode = bool(getattr(self, "is_video_family", False)) or bool(
+                    getattr(self, "is_audio_family", False)
+                )
                 batch = self._get_batch(batch_items, decode_pixels=not defer_decode)
 
                 # 1. Encode Latents

@@ -179,8 +179,6 @@ UNIVERSAL_FIELDS = frozenset(
         "resume_from_checkpoint",
         "use_cached_latents",
         "use_cached_embeddings",
-        "resolutions",
-        "bucketing_mode",
         "timestep_sampling",
         "logit_normal_mu",
         "logit_normal_sigma",

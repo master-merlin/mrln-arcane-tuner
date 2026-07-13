@@ -106,6 +106,13 @@ def _seed_variable_tensor(caps: list[str]) -> dict[str, Any]:
     return {c: torch.randn(_L, _D) for c in caps}
 
 
+def _seed_tuple2_batched(caps: list[str]) -> dict[str, Any]:
+    """(emb[1,L,D], mask[1,L]) — ace_step15's (encoder_hidden_states,
+    encoder_attention_mask) cache; batch-dim-1 per entry (each item is
+    encoded ALONE, mirroring the LatentManager-style per-item TE cache)."""
+    return {c: (torch.randn(1, _L, _D), torch.ones(1, _L, dtype=torch.bool)) for c in caps}
+
+
 # ── encode_extra seeders (secondary per-caption caches some families keep
 # alongside ``text_cache`` — e.g. a split-out CLIP-pooled cache) ───────────
 def _seed_pooled_1d_batch(caps: list[str]) -> dict[str, Any]:
@@ -186,6 +193,12 @@ class FamilySpec:
     encode_kind: str | None = None
     encode_seed: Callable[[list[str]], dict[str, Any]] | None = None
     encode_check: Callable[[Any], None] | None = None
+    # Cache-key transform applied to each caption when SEEDING text_cache —
+    # identity for every family whose cache is keyed by the raw caption
+    # string. ace_step15 composes (caption, lyrics) into one key (see its
+    # trainer's ``_compose_key``); the test always calls ``encode_text``
+    # with no ``batch=`` kwarg, so lyrics resolves to "" for every caption.
+    cache_key_fn: Callable[[str], str] | None = None
     # Secondary per-caption caches some families keep alongside ``text_cache``
     # (e.g. a split-out CLIP-pooled cache) — {attr_name: seeder_fn}.
     encode_extra: dict[str, Callable[[list[str]], dict[str, Any]]] = field(
@@ -375,6 +388,19 @@ FAMILIES: list[FamilySpec] = [
     ),
     # ── kandinsky5: dual-TE (Qwen2.5-VL + CLIP pooled) with cu_seqlens in the
     # attention_mask slot; cache entries are (emb, pooled, cu) triples ────────
+    # ── ace_step15: composite (caption, lyrics) cache key; encode_text
+    # returns a plain (encoder_hidden_states[B,L,D], encoder_attention_mask
+    # [B,L]) tuple, batch-reassembled from per-item batch-1 cache entries ──
+    FamilySpec(
+        "ace_step15",
+        "app.engine.models.families.ace_step15.trainer:AceStep15Trainer",
+        "app.engine.models.families.ace_step15.driver:AceStep15Driver",
+        "transformer", "transformer",
+        encode_kind="tuple2_batched",
+        encode_seed=_seed_tuple2_batched,
+        encode_check=_check_tuple2_3d,
+        cache_key_fn=lambda cap: f"{cap}␞",  # AceStep15Trainer._compose_key(cap, "")
+    ),
     FamilySpec(
         "kandinsky5",
         "app.engine.models.families.kandinsky5.trainer:Kandinsky5Trainer",
@@ -490,7 +516,10 @@ def test_encode_returns_documented_contract(spec: FamilySpec):
     t = object.__new__(TrainerCls)
     t.device = torch.device("cpu")
     t.config = {"cache_text_embeddings": True}
-    t.text_cache = spec.encode_seed(_CAPS)
+    seeded = spec.encode_seed(_CAPS)
+    if spec.cache_key_fn:
+        seeded = {spec.cache_key_fn(c): v for c, v in seeded.items()}
+    t.text_cache = seeded
     t.text_encoder = None                       # untouched: every caption pre-cached
     t.driver = SimpleNamespace(text_encoder=None)
     for attr, seeder in spec.encode_extra.items():

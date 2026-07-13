@@ -64,6 +64,7 @@ D:/AI/huggingface/hub, unless noted):
   prx               text_encoder     T5GemmaEncoder                       T5GemmaEncoder (flat t5_gemma_module cfg)
   chroma            text_encoder     T5EncoderModel                       T5EncoderModel (T5-XXL, no CLIP at all)
   lumina2           text_encoder     Gemma2Model                          Gemma2Model (Gemma-2-2B, bare encoder)
+  ace_step15        text_encoder     Qwen3Model                           Qwen3ForCausalLM*** (bare backbone only)
 
   *  ideogram4 loads its TE from the SEPARATE repo ``Qwen/Qwen3-VL-8B-Instruct``
      (``separate_repo=True``), whose config declares
@@ -72,6 +73,13 @@ D:/AI/huggingface/hub, unless noted):
      comment documents this; the declared class is correct for the repo it uses.
   ** kandinsky5's Kandinsky-5 repo is not in the local cache; the declared
      classes (Qwen2.5-VL CFG + CLIP-L) are the standard Kandinsky-5 text towers.
+  *** ace_step15's Qwen3-Embedding-0.6B declares ``architectures:
+      ["Qwen3ForCausalLM"]`` (a causal-LM checkpoint repurposed for
+      embeddings), but only the bare backbone (``last_hidden_state``) is ever
+      consumed -- ``AutoModel.from_pretrained`` on a ``model_type: "qwen3"``
+      config resolves to the SAME bare ``Qwen3Model`` class regardless, so
+      declaring it directly (rather than leaving it underspecified behind
+      ``AutoModel``) pins the exact class for this contract.
 
 Coverage guard (see ``test_all_families_covered``)
 ==================================================
@@ -405,6 +413,12 @@ CASES: list[_Case] = [
           "transformers.Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLForConditionalGeneration"),
     _Case("nucleus_image", _m("nucleus_image"), "NucleusImageLoader", "text_encoder",
           "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
+    # ace_step15's Qwen3-Embedding-0.6B checkpoint declares architectures:
+    # ["Qwen3ForCausalLM"] (a causal-LM checkpoint repurposed for embeddings),
+    # but only the bare backbone (last_hidden_state) is ever consumed -- the
+    # loader declares the same Qwen3Model class ovis_image's Qwen3 TE uses.
+    _Case("ace_step15", _m("ace_step15"), "AceStep15Loader", "text_encoder",
+          "transformers.Qwen3Model", "Qwen3Model"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

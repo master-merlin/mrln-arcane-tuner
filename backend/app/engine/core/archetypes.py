@@ -31,6 +31,16 @@ class Archetype:
     has_audio: bool = False
     dual_expert: bool = False
     has_image_encoder: bool = False
+    # ── Audio-generation capability flags ────────────────────────────────
+    # ``is_audio_family``: this family's PRIMARY modality is audio (ACE-Step
+    # 1.5) — distinct from ``has_audio`` (a VIDEO family whose clips carry an
+    # audio TRACK, e.g. LTX-2). Default False on every archetype so only an
+    # audio family's ``capability_overrides`` flips it.
+    # ``supports_spatial_resolution``: default True (every image/video family
+    # has width/height buckets); an audio family flips this False to hide the
+    # resolution/bucketing fields (audio has no spatial dimension).
+    is_audio_family: bool = False
+    supports_spatial_resolution: bool = True
     config_defaults: dict = field(default_factory=dict)
 
 
@@ -180,6 +190,12 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     ("frame_stride", "is_video", "image model — no video frames to stride"),
     ("sliding_max_clip_seconds", "is_video", "image model — no temporal windows"),
     ("still_resolutions", "is_video", "image model — no still/video split"),
+    # ── Spatial resolution/bucketing (hidden for audio families) ─────────
+    ("resolutions", "supports_spatial_resolution", "audio model — no spatial resolution/buckets"),
+    ("bucketing_mode", "supports_spatial_resolution", "audio model — no spatial resolution/buckets"),
+    # ── Audio fields (gated by is_audio_family; hidden on every other family) ──
+    ("duration_s", "is_audio_family", "this model has no audio-generation modality"),
+    ("genre_ratio", "is_audio_family", "this model has no audio-generation modality"),
 ]
 
 
@@ -234,8 +250,13 @@ def resolve_capabilities(definition) -> dict:
     is_edit = control_inputs > 0
     caps["control_inputs"] = control_inputs
     caps["is_edit"] = is_edit
-    caps["supports_augmentation"] = not is_edit
-    caps["supports_masking_variants"] = not is_edit
+    # Audio families have no pixels to flip/mask — fold is_audio_family into
+    # the same gates as paired-edit models (both already hide h_flip/v_flip/
+    # masking_enabled via these two flags; single-flag field rules can't AND
+    # two conditions, so the OR of "don't apply" lives here instead).
+    is_audio = bool(caps.get("is_audio_family", False))
+    caps["supports_augmentation"] = not is_edit and not is_audio
+    caps["supports_masking_variants"] = not is_edit and not is_audio
 
     merged = {**arch.config_defaults, **(definition.defaults or {})}
     defaults = {k: _coerce_number(v) for k, v in merged.items()}

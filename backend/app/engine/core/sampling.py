@@ -68,6 +68,27 @@ class SampleArtifact:
     fps: float = 16.0
 
 
+@dataclass
+class AudioSampleArtifact:
+    """A decoded audio sample to be persisted as a WAV file.
+
+    Returned from an audio-generation family's ``decode_latents`` in place of
+    a :class:`PIL.Image.Image` — the audio-modality sibling of
+    :class:`SampleArtifact`. The base writes it via ``soundfile.write`` (no
+    new pip dependency — ``soundfile`` is already used by
+    ``app.core.audio.probe``).
+
+    Attributes:
+        waveform: ``[C, T]`` float tensor in ``[-1, 1]`` (channels-first,
+            matching :class:`app.engine.components.audio.AudioClipLoader`'s
+            output convention).
+        sample_rate: Output sample rate in Hz.
+    """
+
+    waveform: Tensor
+    sample_rate: int = 48000
+
+
 def expand_prompt_wildcards(prompt: str, config: dict[str, Any]) -> str:
     """Expand ``[triggerword]`` / ``[captionprefix]`` against a run config.
 
@@ -309,9 +330,12 @@ class GenericSamplingPipeline(ABC):
                 )
                 saved_paths.append(path)
 
-                media_type = (
-                    "video" if isinstance(artifact, SampleArtifact) else "image"
-                )
+                if isinstance(artifact, SampleArtifact):
+                    media_type = "video"
+                elif isinstance(artifact, AudioSampleArtifact):
+                    media_type = "audio"
+                else:
+                    media_type = "image"
                 self._broadcast_sample(
                     path, displayed_step, i, cfg, raw_prompt, media_type=media_type
                 )
@@ -382,14 +406,18 @@ class GenericSamplingPipeline(ABC):
         """
 
     @abstractmethod
-    def decode_latents(self, latents: Any) -> Image.Image | SampleArtifact:
+    def decode_latents(
+        self, latents: Any
+    ) -> Image.Image | SampleArtifact | AudioSampleArtifact:
         """Decode latent tensor(s) to a sample.
 
         Returns:
-            A :class:`PIL.Image.Image` for still-image families, or a
+            A :class:`PIL.Image.Image` for still-image families, a
             :class:`SampleArtifact` for video families (a ``[C, F, H, W]``
-            float clip plus optional audio + fps).  The base persists the
-            correct file type (``.png`` vs ``.mp4``) accordingly.
+            float clip plus optional audio + fps), or an
+            :class:`AudioSampleArtifact` for audio-generation families (a
+            ``[C, T]`` waveform + sample rate). The base persists the correct
+            file type (``.png`` / ``.mp4`` / ``.wav``) accordingly.
         """
 
     @abstractmethod
@@ -649,6 +677,16 @@ class GenericSamplingPipeline(ABC):
             VideoFrameLoader().encode_video(
                 artifact.frames, artifact.audio, artifact.fps, str(path)
             )
+            return path
+
+        if isinstance(artifact, AudioSampleArtifact):
+            # Lazy import: keeps soundfile out of every other family's import graph.
+            import soundfile as sf
+
+            path = output_dir / f"{stem}.wav"
+            wav = artifact.waveform.detach().float().cpu().clamp(-1.0, 1.0)
+            # soundfile wants [T, C] (or 1-D mono); our convention is [C, T].
+            sf.write(str(path), wav.numpy().T, artifact.sample_rate)
             return path
 
         # Default: still image → PNG (original behavior, pattern unchanged).

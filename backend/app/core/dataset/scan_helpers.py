@@ -184,6 +184,67 @@ def _merge_video_probe(entry: dict[str, Any], file_path: str) -> None:
     entry["video_codec"] = probe.video_codec
 
 
+def build_audio_entry(
+    file_path: str,
+    stem: str,
+    ext: str,
+    dataset_path: str,
+    existing_meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the per-file metadata dict for an audio entry.
+
+    Audio has no dimensions/orientation/crop-target concept (that's the
+    image/video branch's ``build_media_entry``), so this is a leaner,
+    dedicated builder rather than overloading that function with a
+    width=0/height=0 special case. Preserves ``enabled`` state, same as
+    ``build_media_entry``.
+
+    Fields fixed by the program plan: ``duration_s`` (float), ``sample_rate``
+    (int), ``channels`` (int). A probe failure keeps best-effort cached
+    values (or zeros for a never-probed file) rather than aborting the scan
+    — mirrors ``_merge_video_probe``'s tolerance.
+    """
+    has_caption = (
+        os.path.exists(os.path.join(dataset_path, f"{stem}.txt"))
+        or os.path.exists(os.path.join(dataset_path, f"{stem}.caption"))
+    )
+    has_lyrics = os.path.exists(os.path.join(dataset_path, f"{stem}.lyrics.txt"))
+
+    entry: dict[str, Any] = {
+        "is_audio": True,
+        "size_bytes": os.path.getsize(file_path),
+        "has_caption": has_caption,
+        "has_lyrics": has_lyrics,
+        "enabled": existing_meta.get("enabled", True),
+        "duration_s": existing_meta.get("duration_s", 0.0),
+        "sample_rate": existing_meta.get("sample_rate", 0),
+        "channels": existing_meta.get("channels", 0),
+    }
+
+    _merge_audio_probe(entry, file_path)
+
+    return entry
+
+
+def _merge_audio_probe(entry: dict[str, Any], file_path: str) -> None:
+    """Probe an audio file and merge its metadata into *entry* in place.
+
+    On any probe failure the existing best-effort metadata is kept and a
+    warning is logged — a single unreadable clip never aborts the scan.
+    """
+    from app.core.audio import AudioProbe, probe_audio
+
+    try:
+        probe: AudioProbe = probe_audio(Path(file_path))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scan_audio_probe_failed", path=file_path, error=str(exc))
+        return
+
+    entry["duration_s"] = probe.duration_s
+    entry["sample_rate"] = probe.sample_rate
+    entry["channels"] = probe.channels
+
+
 # ── Aggregation ──────────────────────────────────────────────────────────
 
 # Standard aspect ratios for bucketing — listed as W/H (landscape form).

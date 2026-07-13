@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api._path_guard import safe_remove
+from app.api._path_guard import reject_audio_op, safe_remove
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
@@ -52,6 +52,7 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
     image_full_path = dataset_root / request.image_rel_path
     if not image_full_path.exists():
         raise HTTPException(status_code=404, detail=f"Image file not found: {request.image_rel_path}")
+    reject_audio_op(request.image_rel_path, "Mask generation")
 
     masks_dir = dataset_root / "masks"
     await asyncio.to_thread(masks_dir.mkdir, parents=True, exist_ok=True)
@@ -114,6 +115,7 @@ async def apply_mask(name: str, request: ApplyMaskRequest):
     image_full_path = dataset_root / request.image_rel_path
     original_stem = Path(request.image_rel_path).stem
     mask_full_path = dataset_root / "masks" / f"{original_stem}.png"
+    reject_audio_op(request.image_rel_path, "Mask apply")
 
     if not mask_full_path.exists():
         raise HTTPException(status_code=404, detail="Mask for this image does not exist yet")

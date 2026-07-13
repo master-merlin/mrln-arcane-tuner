@@ -5,15 +5,18 @@ Provides:
 - Safe file deletion with Windows retry logic
 - Safe directory removal with Windows retry logic
 - Filename sanitization for uploads
+- Audio/image-op guard (reject image-only operations on audio files)
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
 from fastapi import HTTPException
 
+from app.core.dataset.media_types import AUDIO_EXTENSIONS
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +46,22 @@ def validate_path_within(candidate: str | Path, root: str | Path) -> Path:
             detail="Access denied: path is outside the allowed directory.",
         )
     return candidate_resolved
+
+
+def reject_audio_op(path: str | Path, op: str = "This operation") -> None:
+    """Raise ``HTTPException(400)`` if *path*'s extension is an audio type.
+
+    Shared guard for the image-only routes (crop, adjustments, upscale,
+    color-match, histogram, overlay/pipeline render, masking) that open the
+    file with ``PIL.Image`` and would otherwise surface an opaque decode
+    crash (or a generic 500) for an audio file. Matched case-insensitively.
+    """
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext in AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{op} is not supported for audio files.",
+        )
 
 
 def sanitize_filename(raw: str) -> str:

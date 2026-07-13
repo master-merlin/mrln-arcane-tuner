@@ -327,11 +327,21 @@ async def get_sampling_cadence(job_id: str):
 # ── Sample Images ───────────────────────────────────────────────────────
 
 
-# Sample artifacts the gallery lists: still images AND video clips (LTX-2 / WAN
-# families write .mp4). The .png-only filter here silently hid every video
-# sample — the gallery looked empty even though the files were on disk.
+# Sample artifacts the gallery lists: still images, video clips (LTX-2 / WAN
+# families write .mp4), and audio clips (ace_step15 writes .wav). The
+# .png-only filter here originally silently hid every video sample — the
+# gallery looked empty even though the files were on disk; the same gap
+# applied to .wav samples until the audio extensions below were added. The
+# audio set mirrors `app.core.dataset.media_types.AUDIO_EXTENSIONS` (the C0
+# dataset-layer set) for consistency even though samplers only ever emit
+# .wav today — .flac/.ogg/.mp3/.opus future-proof the filter for a later
+# output-format option.
 _SAMPLE_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm"}
+    {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif",
+        ".mp4", ".webm",
+        ".wav", ".flac", ".ogg", ".mp3", ".opus",
+    }
 )
 
 
@@ -347,10 +357,13 @@ def _resolve_sample_dir(job: Job) -> Path:
 
 @router.get("/jobs/{job_id}/samples", response_model=list[JobSampleResponse])
 async def list_job_samples(job_id: str):
-    """List all sample images for a job, sorted by step.
+    """List all sample artifacts (image/video/audio) for a job, sorted by step.
 
     Returns:
-        List of dicts with keys: filename, step, index, path, created_at.
+        List of dicts with keys: filename, step, index, path, created_at,
+        prompt, lyrics. `lyrics` is populated only for audio samples whose
+        matching `sample_prompts[index]` entry set it (ace_step15); every
+        other family's samples carry `lyrics: None`.
     """
     job = await asyncio.to_thread(job_manager.get_job, job_id)
     if not job:
@@ -364,6 +377,13 @@ async def list_job_samples(job_id: str):
     raw_prompts = job.config.get("sample_prompts") or []
     prompt_texts: list[str | None] = [
         (p.get("prompt") if isinstance(p, dict) else str(p)) or None
+        for p in raw_prompts
+    ]
+    # Lyrics by sample index — audio families (ace_step15) carry an optional
+    # per-prompt `lyrics` field (SamplePromptConfig.lyrics) alongside `prompt`.
+    # Non-dict prompt entries (legacy plain-string configs) never have lyrics.
+    lyrics_texts: list[str | None] = [
+        (p.get("lyrics") if isinstance(p, dict) else None) or None
         for p in raw_prompts
     ]
 
@@ -398,6 +418,7 @@ async def list_job_samples(job_id: str):
                 "path": str(fpath),
                 "created_at": fpath.stat().st_mtime,
                 "prompt": prompt_texts[index] if 0 <= index < len(prompt_texts) else None,
+                "lyrics": lyrics_texts[index] if 0 <= index < len(lyrics_texts) else None,
             })
         return items
 
@@ -421,7 +442,14 @@ async def get_sample_image(job_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Sample not found")
 
     # Content-type by extension — a hard-coded image/png mislabels .mp4 video
-    # samples, which can stop the browser <video> element from playing them.
+    # samples (stops the browser <video> element from playing them) and would
+    # equally mislabel .wav/.flac/.ogg/.mp3/.opus audio samples for <audio>.
+    # `mimetypes.guess_type` already resolves audio extensions correctly on
+    # both Windows and Linux (.wav -> "audio/wav" or "audio/x-wav" depending
+    # on platform, .flac -> "audio/x-flac", .ogg/.opus -> "audio/ogg",
+    # .mp3 -> "audio/mpeg" — all audio/* so the frontend's <audio> element
+    # plays them regardless of the exact subtype), so no extra branch is
+    # needed here; pinned by test_get_sample_image_serves_audio_content_type.
     media_type, _ = mimetypes.guess_type(str(fpath))
     return FileResponse(str(fpath), media_type=media_type or "application/octet-stream")
 

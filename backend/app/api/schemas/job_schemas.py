@@ -92,6 +92,11 @@ class JobSampleResponse(BaseModel):
     # The prompt that generated this sample (config.sample_prompts[index]),
     # None when the index has no matching prompt entry.
     prompt: str | None = None
+    # Lyrics text for audio samples (config.sample_prompts[index].lyrics,
+    # SamplePromptConfig — ace_step15 and future audio families). None for
+    # every non-audio sample and for audio prompts with no lyrics set
+    # (instrumental).
+    lyrics: str | None = None
 
 
 class JobCheckpointResponse(BaseModel):

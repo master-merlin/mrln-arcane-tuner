@@ -37,6 +37,7 @@ import { JsonEditorComponent } from '../../ui/json-editor/json-editor.component'
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { SparklineComponent } from '../../ui/sparkline/sparkline.component';
 import { SampleVideoPreviewComponent } from './sample-video-preview';
+import { SampleAudioPreviewComponent } from './sample-audio-preview';
 import { JobLogViewerComponent } from './job-log-viewer';
 import {
     bestLoss,
@@ -69,6 +70,8 @@ interface JobSampleMeta {
     index?: number;
     /** Prompt that generated this sample, when the backend could attribute it. */
     prompt?: string | null;
+    /** Lyrics for audio samples (ace_step15), when the backend could attribute it. */
+    lyrics?: string | null;
 }
 
 interface ConfigRow {
@@ -93,6 +96,7 @@ interface ConfigRow {
         KpiTileComponent,
         SparklineComponent,
         SampleVideoPreviewComponent,
+        SampleAudioPreviewComponent,
         JobLogViewerComponent,
         NgTemplateOutlet,
         UpperCasePipe,
@@ -773,6 +777,17 @@ export class JobsScreen {
     protected isVideoSample(filename: string | null | undefined): boolean {
         if (!filename) return false;
         return /\.(mp4|webm)$/i.test(filename);
+    }
+
+    /**
+     * Whether a sample file is audio (ace_step15 writes `.wav`; the listing
+     * filter also accepts `.flac`/`.ogg`/`.mp3`/`.opus` for future output
+     * formats). Detected by extension, same approach as `isVideoSample` — the
+     * sample DTO does not expose a media_type field. Case-insensitive.
+     */
+    protected isAudioSample(filename: string | null | undefined): boolean {
+        if (!filename) return false;
+        return /\.(wav|flac|ogg|mp3|opus)$/i.test(filename);
     }
 
     /** Toggle audio for the current video sample (autoplay starts muted). */

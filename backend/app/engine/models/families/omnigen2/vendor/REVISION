@@ -1,0 +1,6 @@
+# Vendored Python code source: VectorSpaceLab/OmniGen2 (GitHub, Apache-2.0)
+VECTORSPACELAB_OMNIGEN2_SHA=18e6f9d5271b517fcb32e999f10df943ae9b8f20
+
+# Model weights source: OmniGen2/OmniGen2 (HuggingFace)
+# (Not pinned via this file — resolved by the definition YAML's components.repo.path.)
+OMNIGEN2_HF_REPO=https://huggingface.co/OmniGen2/OmniGen2

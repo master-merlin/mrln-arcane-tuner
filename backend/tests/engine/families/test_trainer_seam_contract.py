@@ -298,6 +298,16 @@ FAMILIES: list[FamilySpec] = [
         "transformer", "transformer",
         encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
     ),
+    # ── omnigen2: lumina2/chroma-lineage attrs (driver stores its model on
+    # ``.transformer``), ovis/boogu-style ragged tuple2 encode_text
+    # (padding="longest" -> trimmed cache entries, padded reassembly).
+    FamilySpec(
+        "omnigen2",
+        "app.engine.models.families.omnigen2.trainer:OmniGen2Trainer",
+        "app.engine.models.families.omnigen2.driver:OmniGen2Driver",
+        "transformer", "transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
     FamilySpec(
         "qwen_image",
         "app.engine.models.families.qwen_image.trainer:QwenImageTrainer",

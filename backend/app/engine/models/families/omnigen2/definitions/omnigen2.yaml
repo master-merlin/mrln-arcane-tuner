@@ -1,0 +1,200 @@
+# OmniGen2 — VectorSpaceLab's unified generate+edit model (arXiv:2506.18871,
+# Apache-2.0): ~4B DiT (32 Lumina2-lineage joint blocks + 3×2 refiner
+# stacks) + Qwen2.5-VL-3B-Instruct used purely as a TEXT encoder + the
+# FLUX.1-dev VAE verbatim. EDIT-FIRST: control_inputs: 1 — instruction edit
+# on paired Target/Control datasets is the point of this family; pure T2I
+# works whenever a prompt/batch carries no control image (the pipeline's
+# own no-input-images path).
+#
+# CONDITIONING MECHANISM (recon evidence, driver.py module docstring §1):
+# the reference/control image enters through EXACTLY ONE channel — its
+# clean VAE latent, fed to the transformer as `ref_image_hidden_states`
+# (pipeline_omnigen2.py prepare_image→encode_vae ~L217-272 → predict
+# ~L667/686/763-764; train.py L523-547 identically). The mllm is invoked
+# with input_ids+attention_mask ONLY (no pixel_values — pipeline
+# _get_qwen2_prompt_embeds ~L324-328, train.py L515-519), so text
+# embeddings are CONTROL-INDEPENDENT (no boogu-style composite TE keys).
+# Inside the transformer: `ref_image_patch_embedder` (separate nn.Linear
+# from the noise path's `x_embedder`) + a dedicated 2-layer
+# `ref_image_refiner` stack + `image_index_embedding` (up to 5 refs), then
+# joint self-attention over [text, ref_img, noise_img] — the model fuses
+# the control internally once `ref_image_hidden_states` is populated; no
+# trainer-level patchify/concat/slice-back (boogu precedent, NOT the
+# qwen_image_edit/flux1-kontext channel-concat scheme).
+#
+# All facts below verified against the live HF repo (OmniGen2/OmniGen2,
+# 2026-07-13): model_index.json + transformer/vae/mllm/scheduler
+# config.json (raw fetches, no download). Shard sizes from the HF tree API
+# (bytes/1e6). diffusers 0.39 ships NO OmniGen2 classes — transformer and
+# scheduler are VENDORED (vendor/REVISION pins the upstream code SHA).
+id: omnigen2
+family: omnigen2
+name: OmniGen2
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-4
+  is_distilled: false
+  # Edit-tuned native sample defaults — upstream example_edit.sh:
+  # --num_inference_step 50 --text_guidance_scale 5.0
+  # --image_guidance_scale 2.0. (Pipeline __call__'s own T2I signature
+  # defaults are 28 steps / text 4.0 / image 1.0 — the sampler falls back
+  # to those only if these keys are removed.) guidance_scale maps to
+  # text_guidance_scale (driver.py §5).
+  guidance_scale: 5.0
+  num_inference_steps: 50
+  image_guidance_scale: 2.0
+components:
+  repo:
+    path: huggingface:OmniGen2/OmniGen2
+    type: diffusers
+    params: {}
+# Single control/reference image per pair (the transformer's ref pathway
+# supports up to 5 via image_index_embedding; the paired-dataset convention
+# mirrors qwen_image_edit/flux1-kontext/boogu-edit's control_inputs: 1).
+control_inputs: 1
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json, byte-cited; keys
+  #    map 1:1 onto the vendored class's __init__ signature) --
+  transformer._class_name: OmniGen2Transformer2DModel
+  transformer.patch_size: 2
+  transformer.in_channels: 16
+  transformer.out_channels:
+  transformer.hidden_size: 2520
+  transformer.num_layers: 32
+  transformer.num_refiner_layers: 2
+  transformer.num_attention_heads: 21
+  transformer.num_kv_heads: 7
+  transformer.multiple_of: 256
+  transformer.ffn_dim_multiplier:
+  transformer.norm_eps: 1.0e-05
+  transformer.axes_dim_rope:
+  - 40
+  - 40
+  - 40
+  transformer.axes_lens:
+  - 1024
+  - 1664
+  - 1664
+  # text_feat_dim MUST equal the Qwen2.5-VL-3B mllm's hidden_size (2048) —
+  # the caption embedder projects raw mllm hidden states directly.
+  transformer.text_feat_dim: 2048
+  # Applied INSIDE the transformer (Lumina2CombinedTimestepCaptionEmbedding
+  # Timesteps proj) — callers pass RAW [0, 1) timesteps; the transformer
+  # multiplies by 1000 internally (flow-match timestep-scale gotcha).
+  transformer.timestep_scale: 1000
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  # GQA: head_dim = 2520 / 21 = 120; to_k/to_v out width = 7 * 120 = 840;
+  # to_q/to_out width = 21 * 120 = 2520. head_dim == sum(axes_dim_rope).
+  transformer.attention_head_dim: 120
+  # Generic activation-estimate hints (widest/deepest path).
+  hidden_size: 2520
+  depth: 32
+  in_channels: 16
+  context_dim: 2048
+  num_heads: 21
+  # -- Text encoder (checkpoint mllm/config.json — Qwen2.5-VL-3B-Instruct
+  #    lineage; used TEXT-ONLY, the vision tower is never invoked. The
+  #    config's own torch_dtype is "float32" — raw shard dtype, not a load
+  #    restriction; loads bf16 like the other Tier-2 image families.) --
+  te.type: qwen2_5_vl
+  te.architectures:
+  - Qwen2_5_VLForConditionalGeneration
+  te.processor_class: Qwen2_5_VLProcessor
+  te.hidden_size: 2048
+  te.num_hidden_layers: 36
+  te.num_attention_heads: 16
+  te.num_key_value_heads: 2
+  te.vocab_size: 151936
+  te.torch_dtype: float32
+  # Chat-template encode + LAST-layer tap (hidden_states[-1], pipeline
+  # ~L324-328 == train.py's last_hidden_state tap).
+  te.hidden_state_tap_index: -1
+  # encode_prompt's default max_sequence_length (pipeline ~L363).
+  te.max_sequence_length: 256
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json:
+  #    {"dynamic_time_shift": true, "num_train_timesteps": 1000}) --
+  #    VENDORED class — REVERSED t direction (0=noise → 1=image) +
+  #    resolution-dependent num_tokens shift (m = sqrt(lat_H*lat_W)/40,
+  #    e.g. 3.2 @ 1024px); stock diffusers' same-named class is
+  #    incompatible in BOTH direction and config keys (see
+  #    vendor/schedulers/scheduling_flow_match_euler_discrete.py header).
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.dynamic_time_shift: true
+  # -- VAE (checkpoint vae/config.json — the FLUX.1-dev VAE verbatim) --
+  vae._class_name: AutoencoderKL
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 16
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+  vae.vae_scale_factor: 8
+# Real on-disk shard sizes (HF tree API, bytes/1e6 — no download):
+# transformer 2-shard 9995005752+5873701280 (fp32 → ~3.97B params), mllm
+# 4-shard 4972304384+4932949248+4932949336+180380208 (fp32 → ~3.75B), vae
+# 335306212.
+model_size_mb:
+  transformer: 15868.71
+  text_encoder: 15018.58
+  vae: 335.31
+# Short suffix patterns (lumina2 convention): all four block groups
+# (layers ×32, noise_refiner ×2, ref_image_refiner ×2, context_refiner ×2)
+# are the SAME OmniGen2TransformerBlock class with identical submodule
+# names, so these patterns cover every group. Upstream's own LoRA recipe
+# (train.py L262) targets attention only; feed-forward added per house
+# convention. 38 blocks × 7 = 266 modules = 532 lora_A/B keys.
+lora_targetable_modules:
+- attn.to_q
+- attn.to_k
+- attn.to_v
+- attn.to_out.0
+- feed_forward.linear_1
+- feed_forward.linear_2
+- feed_forward.linear_3
+block_topology:
+- name: layers
+  attr_path: layers
+  count: 32
+  approx_vram_mb: 250
+- name: noise_refiner
+  attr_path: noise_refiner
+  count: 2
+  approx_vram_mb: 250
+- name: ref_image_refiner
+  attr_path: ref_image_refiner
+  count: 2
+  approx_vram_mb: 250
+- name: context_refiner
+  attr_path: context_refiner
+  count: 2
+  approx_vram_mb: 250

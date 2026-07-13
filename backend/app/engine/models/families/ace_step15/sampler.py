@@ -220,6 +220,16 @@ class AceStep15Sampler(GenericSamplingPipeline):
         (hard anti-clip, then rescale to a consistent -1 dBFS peak) — without
         it, decoded previews are inconsistently loud relative to the
         reference model's inference output.
+
+        C3 DEPENDENCY — jobs-API visibility: the returned artifact is
+        persisted by ``GenericSamplingPipeline._persist_artifact`` as
+        ``samples/sample_XX_stepNNNNNN.wav``, but the jobs API does NOT
+        surface it yet: ``app/api/training/job_routes.py``'s
+        ``_SAMPLE_EXTENSIONS`` has no ``.wav`` entry, so ``list_job_samples``
+        silently skips every audio preview (the file IS on disk and correct).
+        Task C3 (frontend audio sample tile) owns extending
+        ``_SAMPLE_EXTENSIONS`` + the ``get_sample_image`` content-type
+        handling — deliberately NOT patched from this branch.
         """
         driver: AceStep15Driver = self.pipeline.driver
         vae = driver.vae

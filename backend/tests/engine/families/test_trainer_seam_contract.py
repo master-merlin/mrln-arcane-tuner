@@ -287,6 +287,17 @@ FAMILIES: list[FamilySpec] = [
         "transformer", "transformer",
         encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
     ),
+    # ── lumina2: flux1/chroma-lineage attrs (driver stores its model on
+    # ``.transformer``, not ``.model`` like ovis_image), ovis/chroma-style
+    # tuple2 encode_text (the transformer DOES consume an
+    # ``encoder_attention_mask``).
+    FamilySpec(
+        "lumina2",
+        "app.engine.models.families.lumina2.trainer:Lumina2Trainer",
+        "app.engine.models.families.lumina2.driver:Lumina2Driver",
+        "transformer", "transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
     FamilySpec(
         "qwen_image",
         "app.engine.models.families.qwen_image.trainer:QwenImageTrainer",

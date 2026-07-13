@@ -46,6 +46,7 @@ ALL_FAMILIES = (
     "krea2",
     "longcat_image",
     "ltx2",
+    "lumina2",
     "microsoft_lens",
     "ovis_image",
     "prx",

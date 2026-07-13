@@ -28,6 +28,23 @@ Correctness invariants enforced here:
        noise_pred = comb_pred * (cond_norm / noise_norm)
        noise_pred = -noise_pred   # final negation, AFTER the combine
 
+   CRITICAL GROUPING FACT: the pipeline performs this combine entirely in
+   PACKED space — ``prepare_latents`` packs to ``[B, seq, C*p*p]`` (line
+   356 calls ``_pack_latents``) and the ONLY unpack happens after the
+   whole loop (line 627), so the loop's ``noise_pred`` is ``[B, seq, 64]``
+   and its ``torch.norm(..., dim=-1)`` is a PER-SPATIAL-TOKEN norm over
+   the 64 packed channel values (16 latent channels x 2x2 patch). This
+   sampler's ``driver.forward_pass`` returns UNPACKED ``[B, 16, H, W]``
+   tensors, where a naive ``dim=-1`` norm would be over WIDTH — the wrong
+   grouping (that is ``lumina2``'s convention, whose pipeline does CFG
+   unpacked; copying it here was a real reviewed-and-fixed bug).
+   ``_combine_cfg`` therefore norms over the per-token
+   ``(C, patch_h, patch_w)`` element group of the unpacked tensor —
+   exactly the same 64-element set as the packed token vector
+   (``_pack_latents`` is a pure per-token permutation, and the Frobenius
+   norm is permutation-invariant), pinned by
+   ``test_nucleus_image_sampler.py``.
+
    Because ``driver.forward_pass`` ALREADY returns the per-call NEGATED
    velocity (module docstring §4 in ``driver.py``), combining +
    renormalizing the (already negated) ``v_cond``/``v_uncond`` here with the
@@ -108,19 +125,47 @@ def _calculate_shift(
     return image_seq_len * m + b
 
 
-def _combine_cfg(pos: Tensor, neg: Tensor, guidance_scale: float) -> Tensor:
+def _combine_cfg(
+    pos: Tensor,
+    neg: Tensor,
+    guidance_scale: float,
+    patch_size: int = 2,
+) -> Tensor:
     """Nucleus CFG combine + normalization (``pipeline_nucleusmoe_image.py``
     lines 594-597): ``velocity = neg + g*(pos - neg)``, then renormalize the
-    combined ``dim=-1`` norm back to the conditional prediction's norm.
+    combined prediction back to the conditional prediction's PER-PACKED-TOKEN
+    norm.
+
+    GROUPING (module docstring point 3): the real pipeline runs this in
+    PACKED space (``[B, seq, C*p*p]``), so its ``torch.norm(..., dim=-1)``
+    is per spatial token over the ``C*p*p`` (= 64 for the real checkpoint)
+    packed channel values. ``pos``/``neg`` here are UNPACKED
+    ``[B, C, H, W]`` driver outputs, so this function norms over each
+    token's ``(C, patch_h, patch_w)`` element group — the identical
+    64-element set (``_pack_latents`` is a pure per-token permutation;
+    the Frobenius norm is permutation-invariant). A naive ``dim=-1`` norm
+    on the unpacked tensor would norm over WIDTH — wrong grouping (that is
+    lumina2's convention, whose pipeline does CFG unpacked).
 
     ``pos``/``neg`` here are the driver's ALREADY-NEGATED velocity outputs
     (module docstring point 3) — see module docstring for why applying the
     identical formula to the negated values is exact.
     """
     noise_pred = neg + guidance_scale * (pos - neg)
-    cond_norm = torch.norm(pos, dim=-1, keepdim=True)
-    noise_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
-    return noise_pred * (cond_norm / noise_norm)
+
+    B, C, H, W = pos.shape
+    p = patch_size
+    # [B, C, H, W] -> [B, C, H/p, p, W/p, p]; per-token groups are dims
+    # (1, 3, 5) = (C, patch_h, patch_w) at each (H/p, W/p) location — the
+    # exact element set of one packed token vector.
+    pos_tokens = pos.reshape(B, C, H // p, p, W // p, p)
+    comb_tokens = noise_pred.reshape(B, C, H // p, p, W // p, p)
+    # vector_norm (L2) over the token group — identical to the packed-space
+    # torch.norm(x, dim=-1) 2-norm; torch.norm itself rejects >2-dim tuples.
+    cond_norm = torch.linalg.vector_norm(pos_tokens, dim=(1, 3, 5), keepdim=True)
+    noise_norm = torch.linalg.vector_norm(comb_tokens, dim=(1, 3, 5), keepdim=True)
+    scaled = comb_tokens * (cond_norm / noise_norm)
+    return scaled.reshape(B, C, H, W)
 
 
 class NucleusImageSampler(GenericSamplingPipeline):
@@ -347,7 +392,9 @@ class NucleusImageSampler(GenericSamplingPipeline):
                         batch={},
                     ).to(torch.float32)
 
-                    noise_pred = _combine_cfg(v_cond, v_uncond, guidance_scale)
+                    noise_pred = _combine_cfg(
+                        v_cond, v_uncond, guidance_scale, patch_size=patch_size,
+                    )
                 else:
                     noise_pred = v_cond
 

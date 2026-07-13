@@ -16,8 +16,6 @@ from __future__ import annotations
 import types
 from unittest.mock import patch
 
-import pytest
-
 
 def _fake_dataset(tmp_path):
     return types.SimpleNamespace(path=str(tmp_path))

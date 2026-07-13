@@ -37,6 +37,7 @@ WAN_IDS = [
     "wan2.1-t2v-1.3b",
     "wan2.1-t2v-14b",
     "wan2.1-i2v-14b-720p",
+    "wan2.1-i2v-14b-480p",
 ]
 
 
@@ -61,8 +62,11 @@ def test_t2v_definitions_have_t2v_mode(registry):
         assert defn.architecture_params["transformer.in_channels"] == 16
 
 
-def test_i2v_definition_has_i2v_mode_and_image_encoder(registry):
-    defn = registry.get_definition("wan2.1-i2v-14b-720p")
+@pytest.mark.parametrize(
+    "model_id", ["wan2.1-i2v-14b-720p", "wan2.1-i2v-14b-480p"]
+)
+def test_i2v_definition_has_i2v_mode_and_image_encoder(registry, model_id):
+    defn = registry.get_definition(model_id)
     arch = defn.architecture_params
     assert arch["mode"] == "i2v"
     # I2V transformer takes the 36-channel concat input.

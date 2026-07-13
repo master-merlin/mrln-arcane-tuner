@@ -23,7 +23,17 @@ from typing import Any
 import torch
 from torch import Tensor
 
-# Wan-VAE compression factors (constant across WAN 2.1 / 2.2).
+# Wan-VAE compression factors (constant across WAN 2.1 / 2.2 -- the A14B/
+# 1.3B/14B checkpoints all share this 8x-spatial / 16-channel VAE).
+#
+# NOT valid for the wan22_ti2v_5b family: its all-new higher-compression VAE
+# is spatial 16 / z_dim 48 (see families/wan22_ti2v_5b/definitions/
+# wan22_ti2v_5b.yaml's provenance header). That family does NOT import these
+# constants -- its bucket math reads `video.vae_spatial` from the definition
+# via the video contract, and its latent normalization reads the real VAE's
+# own `config.latents_mean`/`latents_std`. Do not import these constants
+# generically for wan22_ti2v_5b; add a family-aware lookup instead if a
+# future caller needs one.
 WAN_VAE_SPATIAL = 8
 WAN_VAE_TEMPORAL = 4
 WAN_VAE_Z_DIM = 16

@@ -400,6 +400,8 @@ CASES: list[_Case] = [
           "transformers.T5EncoderModel", "T5EncoderModel"),
     _Case("lumina2", _m("lumina2"), "Lumina2Loader", "text_encoder",
           "transformers.Gemma2Model", "Gemma2Model"),
+    _Case("omnigen2", _m("omnigen2"), "OmniGen2Loader", "text_encoder",
+          "transformers.Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLForConditionalGeneration"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

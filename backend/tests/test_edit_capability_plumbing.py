@@ -35,10 +35,14 @@ class TestControlInputsField:
 
     def test_shipped_definitions_control_inputs(self):
         # Standard T2I definitions are 0; edit definitions (Kontext, PR6) are >0.
+        # EDIT_FIRST_IDS: unified generate+edit models whose PRIMARY
+        # definition is edit-capable without "edit" in the id (OmniGen2's
+        # whole point is instruction edit; T2I is its no-control fallback).
+        edit_first_ids = {"omnigen2"}
         registry.initialize()
         for mid in registry.list_models():
             ci = registry.get_definition(mid).control_inputs
-            if "kontext" in mid or "edit" in mid:
+            if "kontext" in mid or "edit" in mid or mid in edit_first_ids:
                 assert ci >= 1, f"{mid} is an edit definition but control_inputs={ci}"
             else:
                 assert ci == 0, f"{mid} is standard but control_inputs={ci}"

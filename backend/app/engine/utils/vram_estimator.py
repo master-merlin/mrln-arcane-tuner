@@ -84,6 +84,16 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 4.0,  # Qwen3
         "vae": 0.08,
     },
+    "omnigen2": {
+        # fp32 shard totals (HF tree API, bytes/4, OmniGen2/OmniGen2):
+        # transformer 15.87 GB → ~3.97 B; mllm 15.02 GB → ~3.75 B. The
+        # definition ships concrete on-disk model_size_mb, so this table is
+        # the fallback-only path; the VAE is the FLUX.1-dev AutoencoderKL
+        # verbatim (same ~84M entry as flux1/lumina2).
+        "transformer": 4.0,
+        "text_encoder": 3.75,  # Qwen2.5-VL-3B-Instruct mllm (text-only use)
+        "vae": 0.08,
+    },
     "qwen_image": {
         "transformer": 20.4,
         "text_encoder": 8.3,  # Qwen2.5-VL

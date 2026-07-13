@@ -48,6 +48,7 @@ ALL_FAMILIES = (
     "ltx2",
     "lumina2",
     "microsoft_lens",
+    "omnigen2",
     "ovis_image",
     "prx",
     "prx_pixel",

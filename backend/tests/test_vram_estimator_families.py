@@ -167,6 +167,22 @@ def test_dreamlite_estimator_entry():
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
 
 
+def test_ace_step15_xl_base_ships_own_model_size_mb_beating_stale_fallback():
+    """Task C2: ``ace-step-1.5-xl-base`` ships real on-disk ``model_size_mb``
+    (transformer=7952 MB) specifically because
+    ``_FAMILY_PARAMS["ace_step15"]["transformer"]`` (1.575 B) is a KNOWN-
+    STALE fallback for this family (see that table entry's comment) — it
+    was derived from the wrong upstream config and understates the real
+    ~4.17 B-parameter DiT by ~2.6x. This definition's OWN model_size_mb must
+    drive the estimate, not the family fallback: 7952 MB bf16 far exceeds
+    what the stale 1.575 B fallback would produce (~3000 MB)."""
+    defn = registry.get_definition("ace-step-1.5-xl-base")
+    assert defn is not None
+    d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+    assert d["model_weights_mb"] == pytest.approx(7952, rel=0.01)
+    assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
+
+
 def test_microsoft_lens_fallback_matches_on_disk_sizes():
     """lens ships real model_size_mb (7600/40000/335) — its table entry is a
     true fallback, calibrated to those on-disk bf16 sizes (size_mb / 2)."""

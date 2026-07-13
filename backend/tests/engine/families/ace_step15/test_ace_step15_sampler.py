@@ -12,9 +12,17 @@ import os
 from types import SimpleNamespace
 
 import torch
+from diffusers.guiders.adaptive_projected_guidance import (
+    MomentumBuffer,
+    normalized_guidance,
+)
 
 from app.engine.core.sampling import AudioSampleArtifact
 from app.engine.models.families.ace_step15.sampler import (
+    ACE_STEP15_APG_ETA,
+    ACE_STEP15_APG_MOMENTUM,
+    ACE_STEP15_APG_NORM_DIM,
+    ACE_STEP15_APG_NORM_THRESHOLD,
     ACE_STEP15_DEFAULT_SHIFT,
     AceStep15Sampler,
 )
@@ -126,6 +134,148 @@ def test_denoise_turbo_ignores_cfg():
         out_cfg = sampler.denoise(noise, (eh, mask), num_steps=2, guidance_scale=7.0, seed=0)
         out_no_cfg = sampler.denoise(noise, (eh, mask), num_steps=2, guidance_scale=1.0, seed=0)
     assert torch.allclose(out_cfg, out_no_cfg)
+
+
+# ── CFG-path validation (task C2): real APG, not a plain linear blend ────
+
+
+def _manual_forward(driver, x_full, t01, cond, context_latents, model_dtype, b):
+    """Independent re-implementation of sampler._forward — used as the
+    ground truth for the APG cross-check tests below (deliberately NOT
+    calling into sampler.py's own helper, so a bug in both wouldn't
+    coincidentally cancel out)."""
+    t_tensor = t01.reshape(1).expand(b).to(model_dtype)
+    with torch.no_grad():
+        out = driver.transformer(
+            hidden_states=x_full.to(model_dtype),
+            timestep=t_tensor,
+            timestep_r=t_tensor,
+            encoder_hidden_states=cond.to(x_full.device, model_dtype),
+            context_latents=context_latents,
+            return_dict=False,
+        )
+    return out[0] if isinstance(out, (tuple, list)) else out
+
+
+def _manual_apg_denoise(sampler, driver, noise, encoder_hidden_states, num_steps, guidance_scale):
+    """Independently replicates the expected APG denoise loop (own
+    MomentumBuffer instance, own normalized_guidance calls) to cross-check
+    sampler.denoise()'s real implementation bit-for-bit."""
+    x = noise.to(torch.float32)
+    b, t_len, _ = x.shape
+    model_dtype = driver.transformer.dtype
+    context_latents = driver._build_context_latents(b, t_len, x.device, model_dtype)
+    null_emb = driver.condition_encoder.null_condition_emb.to(
+        x.device, model_dtype
+    ).expand_as(encoder_hidden_states)
+
+    momentum_buffer = MomentumBuffer(momentum=ACE_STEP15_APG_MOMENTUM)
+    sigmas = sampler._build_sigmas(num_steps)
+    for i in range(len(sigmas) - 1):
+        v_c = _manual_forward(
+            driver, x, sigmas[i], encoder_hidden_states, context_latents, model_dtype, b
+        ).to(torch.float32)
+        v_u = _manual_forward(
+            driver, x, sigmas[i], null_emb, context_latents, model_dtype, b
+        ).to(torch.float32)
+        v = normalized_guidance(
+            pred_cond=v_c,
+            pred_uncond=v_u,
+            guidance_scale=guidance_scale - 1.0,
+            momentum_buffer=momentum_buffer,
+            eta=ACE_STEP15_APG_ETA,
+            norm_threshold=ACE_STEP15_APG_NORM_THRESHOLD,
+            use_original_formulation=True,
+            norm_dim=ACE_STEP15_APG_NORM_DIM,
+        )
+        dt = sigmas[i + 1] - sigmas[i]
+        x = x + dt * v
+    return x
+
+
+def test_denoise_base_apg_matches_upstream_formula():
+    """is_turbo=False + guidance_scale>1.0 must run the REAL APG blend
+    (diffusers' own normalized_guidance/MomentumBuffer, momentum=-0.75,
+    eta=0, norm_threshold=2.5, use_original_formulation=True, norm_dim=(1,))
+    — byte-verified against `AceStepPipeline.__call__`'s own denoise loop
+    (task C2 recon) — not the simplified linear blend this sampler shipped
+    with initially. 3 steps so the STATEFUL momentum buffer's carry-over
+    is actually exercised (a per-step-reset buffer would diverge from this
+    reference by step 3)."""
+    driver = _make_driver(is_turbo=False)
+    assert driver.transformer.config.is_turbo is False
+    driver.transformer.eval()
+    sampler = _make_sampler(driver)
+    sampler._active_prompt_cfg = {"lyrics": "la la"}
+
+    eh, mask = driver.encode_condition(["x"], ["la la"], torch.float32, audio_duration=6.0)
+    noise = sampler._create_initial_noise(0, 0, torch.Generator().manual_seed(0))
+
+    with torch.no_grad():
+        actual = sampler.denoise(noise, (eh, mask), num_steps=3, guidance_scale=7.0, seed=0)
+        expected = _manual_apg_denoise(sampler, driver, noise, eh, num_steps=3, guidance_scale=7.0)
+    assert torch.allclose(actual, expected, atol=1e-6)
+
+
+def test_denoise_base_apg_differs_from_plain_cfg_blend():
+    """Proves the shipped implementation is NOT the old simplified
+    ``v_uncond + gs*(v_cond - v_uncond)`` blend — APG's norm-clamped,
+    direction-projected update must diverge from a plain linear blend for
+    a guidance_scale large enough to trigger the norm_threshold clamp."""
+    driver = _make_driver(is_turbo=False)
+    driver.transformer.eval()
+    sampler = _make_sampler(driver)
+    sampler._active_prompt_cfg = {"lyrics": "la la"}
+
+    eh, mask = driver.encode_condition(["x"], ["la la"], torch.float32, audio_duration=6.0)
+    noise = sampler._create_initial_noise(0, 0, torch.Generator().manual_seed(0))
+
+    with torch.no_grad():
+        actual = sampler.denoise(noise, (eh, mask), num_steps=2, guidance_scale=12.0, seed=0)
+
+        # Plain linear CFG blend, single momentum-free step-by-step loop —
+        # the OLD (pre-C2) behavior this sampler must no longer produce.
+        x = noise.to(torch.float32)
+        b, t_len, _ = x.shape
+        model_dtype = driver.transformer.dtype
+        context_latents = driver._build_context_latents(b, t_len, x.device, model_dtype)
+        null_emb = driver.condition_encoder.null_condition_emb.to(
+            x.device, model_dtype
+        ).expand_as(eh)
+        sigmas = sampler._build_sigmas(2)
+        for i in range(len(sigmas) - 1):
+            v_c = _manual_forward(driver, x, sigmas[i], eh, context_latents, model_dtype, b).to(torch.float32)
+            v_u = _manual_forward(driver, x, sigmas[i], null_emb, context_latents, model_dtype, b).to(torch.float32)
+            v = v_u + 12.0 * (v_c - v_u)
+            x = x + (sigmas[i + 1] - sigmas[i]) * v
+    assert not torch.allclose(actual, x)
+
+
+def test_denoise_base_guidance_scale_1_skips_apg():
+    """guidance_scale=1.0 on a non-turbo checkpoint must still skip CFG
+    entirely (matches `do_classifier_free_guidance`'s `gs > 1.0` gate) —
+    output must equal a plain single-forward Euler loop with no guidance
+    blend at all."""
+    driver = _make_driver(is_turbo=False)
+    driver.transformer.eval()
+    sampler = _make_sampler(driver)
+    sampler._active_prompt_cfg = {"lyrics": "la la"}
+
+    eh, mask = driver.encode_condition(["x"], ["la la"], torch.float32, audio_duration=6.0)
+    noise = sampler._create_initial_noise(0, 0, torch.Generator().manual_seed(0))
+
+    with torch.no_grad():
+        actual = sampler.denoise(noise, (eh, mask), num_steps=2, guidance_scale=1.0, seed=0)
+
+        x = noise.to(torch.float32)
+        b, t_len, _ = x.shape
+        model_dtype = driver.transformer.dtype
+        context_latents = driver._build_context_latents(b, t_len, x.device, model_dtype)
+        sigmas = sampler._build_sigmas(2)
+        for i in range(len(sigmas) - 1):
+            v = _manual_forward(driver, x, sigmas[i], eh, context_latents, model_dtype, b).to(torch.float32)
+            x = x + (sigmas[i + 1] - sigmas[i]) * v
+    assert torch.allclose(actual, x, atol=1e-6)
 
 
 # ── encode_prompt seam (lyrics reach the condition encoder) ──────────────

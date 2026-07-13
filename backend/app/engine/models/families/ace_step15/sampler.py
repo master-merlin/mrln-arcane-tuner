@@ -16,14 +16,30 @@ turbo (guidance-distilled, no CFG) checkpoint this family ships by default:
   full prompt config BEFORE ``encode_prompt`` runs (the base class sets
   ``_active_prompt_cfg`` too late for that call) so lyrics reach the
   condition encoder.
-- **CFG (base/sft only, NOT the shipped turbo default)**: a plain
-  ``v_uncond + gs*(v_cond - v_uncond)`` blend against the model's LEARNED
-  ``null_condition_emb`` (never a re-encoded empty string — the pipeline's
-  own comment: that's out-of-distribution). This is a DOCUMENTED
-  simplification of the pipeline's real APG (adaptive projected guidance)
-  formula — turbo (this family's shipped checkpoint) never exercises this
-  path since ``guidance_scale`` defaults to 1.0 and ``is_turbo`` disables CFG
-  outright, matching upstream's own guidance-distillation behavior.
+- **CFG (base/sft only, NOT the shipped turbo default)**: real APG (Adaptive
+  Projected Guidance — https://huggingface.co/papers/2410.02416), NOT plain
+  ``v_uncond + gs*(v_cond - v_uncond)``. Verified against the pipeline's own
+  denoise loop (``pipeline_ace_step.py`` lines ~1156-1193, diffusers 0.39.0,
+  read in full for task C2 / `ACE-Step/acestep-v15-xl-base-diffusers`'s
+  recon): base/SFT checkpoints run
+  ``diffusers.guiders.adaptive_projected_guidance.normalized_guidance(
+  pred_cond=v_cond, pred_uncond=v_uncond, guidance_scale=guidance_scale-1.0,
+  momentum_buffer=MomentumBuffer(momentum=-0.75), eta=0.0,
+  norm_threshold=2.5, use_original_formulation=True, norm_dim=(1,))`` — a
+  *stateful* (momentum carries across denoise steps), norm-clamped, direction-
+  projected guidance blend, not a plain linear one. Both ``normalized_guidance``
+  and ``MomentumBuffer`` are diffusers-native (already pinned, zero new
+  vendoring) — reused verbatim rather than re-derived, so this driver can
+  never silently drift from upstream's own formula. Against the model's
+  LEARNED ``null_condition_emb`` (never a re-encoded empty string — the
+  pipeline's own comment: that's out-of-distribution). Turbo (this family's
+  shipped default checkpoint, ``definitions/base.yaml``) never exercises this
+  path: ``guidance_scale`` defaults to 1.0 and ``is_turbo`` disables CFG
+  outright, matching upstream's own guidance-distillation behavior — pinned
+  by ``test_denoise_turbo_ignores_cfg`` (unchanged regression pin). The XL
+  base checkpoint (``definitions/xl_base.yaml``, task C2) is the first
+  shipped definition to actually exercise this branch, with
+  ``guidance_scale: 7.0`` matching the base model card's documented default.
 """
 
 from __future__ import annotations
@@ -34,6 +50,10 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 import torch
+from diffusers.guiders.adaptive_projected_guidance import (
+    MomentumBuffer,
+    normalized_guidance,
+)
 from torch import Tensor
 
 from app.engine.core.sampling import AudioSampleArtifact, GenericSamplingPipeline
@@ -48,6 +68,16 @@ logger = structlog.get_logger(__name__)
 # Repo scheduler config default (turbo checkpoint's recommended shift; see
 # recon report §7 / the diffusers pipeline's `shift: float = 3.0` default).
 ACE_STEP15_DEFAULT_SHIFT = 3.0
+
+# APG (Adaptive Projected Guidance) constants — byte-identical to the values
+# hard-coded in `AceStepPipeline.__call__`'s denoise loop (diffusers 0.39.0,
+# `pipeline_ace_step.py` lines ~1159/1184-1193): these are NOT exposed as
+# pipeline kwargs upstream either, so there is nothing to make user-facing
+# here — matching upstream means matching these exact constants.
+ACE_STEP15_APG_MOMENTUM = -0.75
+ACE_STEP15_APG_ETA = 0.0
+ACE_STEP15_APG_NORM_THRESHOLD = 2.5
+ACE_STEP15_APG_NORM_DIM: tuple[int, ...] = (1,)
 
 
 class AceStep15Sampler(GenericSamplingPipeline):
@@ -184,6 +214,10 @@ class AceStep15Sampler(GenericSamplingPipeline):
 
         encoder_hidden_states, _mask = prompt_embedding
         null_emb = None
+        # Momentum is STATEFUL across denoise steps (upstream instantiates
+        # ONE MomentumBuffer before the loop, not per-step) — see module
+        # docstring's "CFG (base/sft only...)" section.
+        momentum_buffer = MomentumBuffer(momentum=ACE_STEP15_APG_MOMENTUM) if cfg_on else None
         if cfg_on:
             null_emb = driver.condition_encoder.null_condition_emb.to(
                 x.device, model_dtype
@@ -208,7 +242,23 @@ class AceStep15Sampler(GenericSamplingPipeline):
                 return v_c
             v_c = v_c.to(torch.float32)
             v_u = _forward(x_full, sigma, null_emb).to(torch.float32)
-            return v_u + gs * (v_c - v_u)
+            # Real APG (not a plain linear CFG blend) — byte-identical call
+            # shape to `AceStepPipeline.__call__`'s own `normalized_guidance`
+            # invocation (module docstring). `guidance_scale - 1.0` is
+            # upstream's own offset convention for `use_original_formulation
+            # =True` (the "original formulation" CFG paper's `pred_cond +
+            # (w-1)*update`, not the diffusers-native `pred_uncond + w*update`
+            # convention).
+            return normalized_guidance(
+                pred_cond=v_c,
+                pred_uncond=v_u,
+                guidance_scale=gs - 1.0,
+                momentum_buffer=momentum_buffer,
+                eta=ACE_STEP15_APG_ETA,
+                norm_threshold=ACE_STEP15_APG_NORM_THRESHOLD,
+                use_original_formulation=True,
+                norm_dim=ACE_STEP15_APG_NORM_DIM,
+            )
 
         sigmas = self._build_sigmas(num_steps).to(x.device)
         return self.euler_integrate(x, sigmas, _velocity)

@@ -1,65 +1,49 @@
-"""Chroma LoRA saver — extract PEFT weights to a diffusers-portable format.
+"""Chroma LoRA saver — extract PEFT weights to ComfyUI-compatible format.
 
 Output format: ``transformer.{diffusers_module}.lora_A/B.weight``
 (raw PEFT lora_A/B, no Kohya conversion, no alpha keys) — the SAME
 ``transformer.`` convention as ``flux1``/``ovis_image``/``krea2``.
 
-ComfyUI route decision (evidence, fetched live from
-``github.com/comfyanonymous/ComfyUI`` main branch, 2026-07-13):
+ComfyUI route decision (evidence, verified against stock ComfyUI master,
+2026-07-13):
 
-1. ``comfy/model_detection.py`` detects a Chroma checkpoint by the presence
-   of ``distilled_guidance_layer.*`` keys and sets ``unet_config["image_model"]
-   = "chroma"``; ``comfy/supported_models.py``'s ``Chroma`` class then builds
-   a ``comfy.model_base.Chroma`` instance for it (a class DISTINCT from
-   ``comfy.model_base.Flux``).
-2. ``comfy/lora.py::model_lora_keys_unet`` — the function that builds the
-   LoRA ``key_map`` ComfyUI's loaders actually use — has bespoke
-   ``isinstance(model, comfy.model_base.X)`` branches for Flux, Ovis (via the
-   Flux branch), Krea2, QwenImage, Lumina2/Z-Image, Kandinsky5, ErnieImage,
-   HiDream, SD3, AuraFlow, PixArt, ... but **NO branch for
-   ``comfy.model_base.Chroma`` at all**. The unconditional top-of-function
-   ``comfy.utils.unet_to_diffusers(model.model_config.unet_config)`` call
-   also contributes NOTHING for Chroma — that helper only maps classic
-   UNet-style configs (it returns ``{}`` immediately when
-   ``"num_res_blocks" not in unet_config``, which is true for any DiT config
-   including Chroma's).
-3. Net effect: **stock ComfyUI has no diffusers-format LoRA key mapping for
-   Chroma at all.** The ONLY route that resolves is the function's generic
-   top-level direct match against ``diffusion_model.<key>`` where ``<key>``
-   is ComfyUI's OWN internal ``comfy.ldm.chroma.model`` module's parameter
-   name — which is BFL-NATIVE (``double_blocks.*``/``single_blocks.*``,
-   matching the community single-file ``Chroma1-HD.safetensors`` checkpoint
-   layout), NOT the diffusers ``transformer_blocks.*``/
-   ``single_transformer_blocks.*`` names our ``ChromaTransformer2DModel``-
-   trained LoRA uses.
+1. ``comfy/model_detection.py`` detects a Chroma checkpoint inside the Flux
+   detection block by the presence of ``distilled_guidance_layer.*`` keys
+   (line 291) and sets ``image_model = "chroma"`` — the surrounding Flux
+   block ALSO sets ``hidden_size`` / ``depth`` / ``depth_single_blocks``
+   (lines 272-289) from the checkpoint, so Chroma's ``unet_config`` carries
+   all three (3072 / 19 / 38 for the real checkpoints).
+2. ``comfy/model_base.py`` line 2134: ``class Chroma(Flux):`` — ComfyUI's
+   Chroma model class SUBCLASSES ``comfy.model_base.Flux``. Therefore the
+   ``isinstance(model, comfy.model_base.Flux)`` branch in
+   ``comfy/lora.py::model_lora_keys_unet`` FIRES for Chroma, runs
+   ``comfy.utils.flux_to_diffusers(unet_config)`` (which reads exactly the
+   depth/depth_single_blocks/hidden_size keys set above) and registers
+   ``key_map`` entries keyed ``transformer.<diffusers_module>`` (plus
+   lycoris/onetrainer/DiffSynth variants) — the same route that maps
+   flux1's and ovis_image's LoRAs.
+3. Net effect: our ``transformer.{diffusers_module}.lora_A/B.weight`` keys
+   are EXACTLY what stock ComfyUI's Chroma LoRA path maps — the file loads
+   and applies through the native UNETLoader + LoraLoader nodes, same as
+   flux1/ovis. As with those families, the ``diffusion_model.`` prefix is
+   paired only with BFL-native ``double_blocks.*``/``single_blocks.*``
+   names via the generic block — never emit it with diffusers names.
 
-Given that gap, we still emit the diffusers/PEFT ``transformer.`` convention
-(matching every other family in this codebase) rather than hand-rolling a
-BFL-native key/tensor remapper (fusing separate ``to_q``/``to_k``/``to_v``
-LoRA pairs into a single ``img_attn.qkv`` slice-compatible form is a much
-larger, easy-to-get-subtly-wrong undertaking with no reference checkpoint to
-verify against). This format IS verified to load: ``ChromaPipeline``
+The same file also loads in diffusers-native tooling: ``ChromaPipeline``
 subclasses ``FluxLoraLoaderMixin`` (``pipeline_chroma.py`` line 153), whose
-``load_lora_weights()`` expects exactly this ``transformer.<module>.lora_A/
-B.weight`` PEFT convention — so the saved file loads correctly via
-``pipe.load_lora_weights(...)`` in diffusers-native tooling (our own
-inference path included). **Stock ComfyUI's native UNETLoader + LoraLoader
-nodes will NOT auto-apply this file for Chroma** (no key_map entries exist)
-— unlike the flux1/ovis fix this saver's format does NOT resolve ComfyUI
-compatibility for Chroma; that would require either a BFL-native re-export
-(future work) or a ComfyUI-side ``comfy.model_base.Chroma`` branch in
-``model_lora_keys_unet`` (upstream fix, not ours to make). Pinned by
-``test_chroma_lora_portability.py``.
+``load_lora_weights()`` expects this ``transformer.<module>.lora_A/B.weight``
+PEFT convention. Pinned by ``test_chroma_lora_portability.py``.
 """
 
 from app.engine.core.pipeline.saver_base import GenericLoRASaver
 
 
 class ChromaSaver(GenericLoRASaver):
-    """Save Chroma LoRA weights in the diffusers/PEFT ``transformer.`` format.
+    """Save Chroma LoRA weights for ComfyUI + diffusers inference.
 
-    See module docstring for the ComfyUI-compatibility caveat (Chroma has no
-    diffusers-key mapping in stock ComfyUI today).
+    Overrides ``key_prefix`` to ``"transformer."`` so the shipped file loads
+    through stock ComfyUI's Flux LoRA path (Chroma subclasses Flux there —
+    see module docstring) and diffusers' ``FluxLoraLoaderMixin``.
     """
 
     architecture_name = "chroma"

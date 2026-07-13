@@ -1,4 +1,4 @@
-"""Chroma LoRA portability: canonical keys + pinned key count + ComfyUI gap.
+"""Chroma LoRA portability: canonical ComfyUI-mapped keys + pinned key count.
 
 Chroma's blocks reuse FLUX's own ``FluxAttention``/``FluxAttnProcessor``
 verbatim (``transformer_chroma.py`` line 33), so its module surface is
@@ -7,15 +7,18 @@ prefix, diffusers module names, NO top-level ``proj_out`` exclusion, unlike
 ovis_image's curated/excluded surface).
 
 ComfyUI route (see ``chroma/saver.py`` module docstring for the full,
-evidence-cited decision): stock ComfyUI's ``comfy/lora.py::
-model_lora_keys_unet`` has isinstance branches for Flux/Ovis/Krea2/QwenImage/
-Lumina2/Kandinsky5/ErnieImage/... but **NONE for ``comfy.model_base.Chroma``**
-— so unlike the flux1/ovis fix, this ``transformer.`` format is NOT
-guaranteed to auto-apply in stock ComfyUI's native Chroma loader today; it
-IS the format ``ChromaPipeline.load_lora_weights()`` (diffusers'
-``FluxLoraLoaderMixin``) consumes. This module pins OUR format + the
-round-trip guarantee, and separately documents (not asserts, since it is an
-upstream ComfyUI fact, not our code) the absence of a Chroma key_map branch.
+evidence-cited decision): ComfyUI's ``comfy/model_base.py`` line 2134
+declares ``class Chroma(Flux):`` — its Chroma model class SUBCLASSES
+``comfy.model_base.Flux``, so the ``isinstance(model, comfy.model_base.
+Flux)`` branch in ``comfy/lora.py::model_lora_keys_unet`` fires for Chroma
+and runs ``comfy.utils.flux_to_diffusers`` (the Chroma detection block in
+``comfy/model_detection.py`` sets the ``hidden_size``/``depth``/
+``depth_single_blocks`` keys it reads), registering ``key_map`` entries
+keyed ``transformer.<diffusers_module>`` — exactly the format this saver
+emits. So the shipped file auto-applies in stock ComfyUI's native Chroma
+loader through the SAME Flux route as flux1/ovis_image, AND loads via
+``ChromaPipeline.load_lora_weights()`` (diffusers' ``FluxLoraLoaderMixin``).
+This module pins the format + the round-trip guarantee.
 
 Pinned key math (tiny 1-double + 1-single-block model, NO exclusion):
 - double block:  12 attention + feed-forward modules
@@ -136,8 +139,10 @@ def test_saver_key_format_is_transformer_prefixed():
     for k in sd:
         assert k.startswith("transformer."), f"bad prefix: {k!r}"
         assert not k.startswith("diffusion_model."), (
-            f"diffusion_model. prefix matches NOTHING for Chroma in stock "
-            f"ComfyUI (no isinstance(model_base.Chroma) branch): {k!r}"
+            f"diffusion_model. prefix + diffusers module names matches NOTHING "
+            f"in ComfyUI's Flux key_map (that prefix is paired only with "
+            f"BFL-native double_blocks/single_blocks names — the historical "
+            f"flux1/ovis zero-effect-LoRA bug): {k!r}"
         )
         assert k.endswith(".weight"), f"bad suffix: {k!r}"
         assert ".lora_A." in k or ".lora_B." in k, f"not a LoRA key: {k!r}"

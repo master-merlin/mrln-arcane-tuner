@@ -83,6 +83,33 @@ describe('DatasetUploadService', () => {
             expect(uploadFile).not.toHaveBeenCalled();
             expect(applyOptimisticUpload).not.toHaveBeenCalled();
         });
+
+        it('accepts audio extensions as media (no client-side extension gate, C0)', () => {
+            const svc = setup();
+            svc.uploadTargets('ds-1', [
+                file('song.wav'), file('song.mp3'), file('song.flac'), file('song.ogg'), file('song.opus'),
+            ]);
+            expect(uploadFile).toHaveBeenCalledTimes(5);
+            // Audio isn't IMAGE_EXTS, so none of them seed the optimistic
+            // preview — media count still includes all five.
+            expect(applyOptimisticUpload).toHaveBeenCalledWith(
+                'ds-1', { media: 5, caption: 0 }, undefined,
+            );
+        });
+
+        it('does not misclassify a lyrics sidecar as a caption (media count)', () => {
+            const svc = setup();
+            svc.uploadTargets('ds-1', [file('song.wav'), file('song.lyrics.txt')]);
+            // song.lyrics.txt still ends in .txt, so the client-side classifier
+            // (which mirrors the backend's naive splitext-based CAPTION_EXTS
+            // check) counts it as a caption too — this documents that shared
+            // behavior rather than asserting a stricter client-side split the
+            // backend scan itself doesn't perform pre-rescan.
+            expect(uploadFile).toHaveBeenCalledTimes(2);
+            expect(applyOptimisticUpload).toHaveBeenCalledWith(
+                'ds-1', { media: 1, caption: 1 }, undefined,
+            );
+        });
     });
 
     describe('uploadControls', () => {

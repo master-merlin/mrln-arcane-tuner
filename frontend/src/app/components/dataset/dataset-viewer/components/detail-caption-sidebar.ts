@@ -97,6 +97,33 @@ import { StructuredCaptionModalComponent } from '../../../../modals/structured-c
                     }
                 </div>
 
+                <!-- Lyrics sidecar (audio files only, C0) — self-contained editor with
+                     its own load/save, independent of the caption save chain above
+                     (lyrics aren't a caption variant, see backend crud_routes.py). -->
+                @if (isCurrentMediaAudio()) {
+                    <div class="shrink-0 flex flex-col border-t border-surface-mid bg-surface-mid/20" style="max-height: 40%;">
+                        <div class="shrink-0 px-4 py-2 flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                                <h4 class="text-[11px] font-bold uppercase tracking-widest mb-0.5 text-text-subtle">Lyrics</h4>
+                                <p class="text-[10px] text-text-muted truncate font-mono">{{ lyricsFilename() || '(none)' }}</p>
+                            </div>
+                            <button type="button" data-testid="save-lyrics" (click)="saveLyrics()"
+                                    [disabled]="!lyricsDirty() || isSavingLyrics()"
+                                    [class.opacity-50]="!lyricsDirty() || isSavingLyrics()"
+                                    class="shrink-0 px-3 py-1.5 bg-brand hover:bg-brand/90 text-white rounded-theme-md text-[11px] font-bold transition-all active:scale-95">
+                                {{ isSavingLyrics() ? 'Saving…' : 'Save' }}
+                            </button>
+                        </div>
+                        <textarea
+                            data-testid="lyrics-textarea"
+                            [ngModel]="lyricsText()"
+                            (ngModelChange)="onLyricsChange($event)"
+                            class="flex-1 min-h-[80px] w-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none focus:bg-base font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
+                            placeholder="Enter lyrics for this track..."
+                        ></textarea>
+                    </div>
+                }
+
                 <!-- Dataset tags — pulled from the parent dataset (create/edit modal). Hidden when empty. -->
                 @if (visibleDatasetTags().length > 0) {
                     <div class="shrink-0 px-3 py-2 border-t border-surface-mid bg-surface-mid/30 flex flex-wrap gap-1 items-center">
@@ -242,7 +269,22 @@ export class DetailCaptionSidebarComponent {
     captionText = model<string>('');
     isDirty = input<boolean>(false);
     isCurrentMediaVideo = input<boolean>(false);
+    /** True for audio media rows — shows the Lyrics editor below the caption. */
+    isCurrentMediaAudio = input<boolean>(false);
     showMasked = input<boolean>(false);
+
+    // ── Lyrics sidecar (audio only) ─────────────────────────────────────
+    // Self-contained: its own load/save, independent of the caption dirty/
+    // save chain above (a lyrics sidecar isn't a caption variant).
+    protected lyricsText = signal('');
+    protected lyricsDirty = signal(false);
+    protected isSavingLyrics = signal(false);
+
+    /** `<stem>.lyrics.txt` for the active pair, or '' when there's no stem yet. */
+    protected lyricsFilename = computed(() => {
+        const stem = this.currentStem();
+        return stem ? `${stem}.lyrics.txt` : '';
+    });
 
     saveRequested = output<void>();
     captionChanged = output<void>();
@@ -359,6 +401,17 @@ export class DetailCaptionSidebarComponent {
             this.captionText.set(text);
             this.baseline.set(text);
             this.baselineChanged.emit(text);
+        });
+
+        // Reload the Lyrics editor whenever the active pair changes — mirrors
+        // the caption load effect above but is independent of it (lyrics has
+        // no variant/masked concept). Only reads currentPair(); writes go to
+        // lyricsText/lyricsDirty which this effect never reads, so it can't
+        // self-retrigger (no untracked() needed).
+        effect(() => {
+            const pair = this.currentPair();
+            this.lyricsText.set(pair?.lyrics_content ?? '');
+            this.lyricsDirty.set(false);
         });
 
         const tokenQuery = computed(() => ({
@@ -522,6 +575,29 @@ export class DetailCaptionSidebarComponent {
         } else {
             this.toast.error('Clipboard API unavailable in this browser.');
         }
+    }
+
+    protected onLyricsChange(value: string): void {
+        this.lyricsText.set(value);
+        this.lyricsDirty.set(true);
+    }
+
+    protected saveLyrics(): void {
+        const filename = this.lyricsFilename();
+        if (!filename) return;
+        this.isSavingLyrics.set(true);
+        this.datasetService.saveLyrics(this.datasetName(), filename, this.lyricsText()).subscribe({
+            next: () => {
+                this.isSavingLyrics.set(false);
+                this.lyricsDirty.set(false);
+                this.toast.success('Lyrics saved.');
+            },
+            error: (err: unknown) => {
+                this.isSavingLyrics.set(false);
+                const e = err as { error?: { detail?: string }; message?: string };
+                this.toast.error('Failed to save lyrics: ' + (e.error?.detail || e.message));
+            },
+        });
     }
 
     revertCaption(): void {

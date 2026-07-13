@@ -53,6 +53,10 @@ export interface MediaItem {
     size_bytes?: number;
     quality_score?: number | null;
     is_video?: boolean;
+    /** True for audio media rows (C0). Duration/sample_rate/channels/has_lyrics
+     *  flow through via the index signature below, same convention as the
+     *  video-only fields (fps, duration_s, ...) that aren't re-declared here. */
+    is_audio?: boolean;
     is_majority_ar?: boolean;
     /** Present once a mask exists; mirrors `PairMetadata.mask_info`. */
     mask_info?: { width?: number; height?: number; size_bytes?: number; [k: string]: unknown };

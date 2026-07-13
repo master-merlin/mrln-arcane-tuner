@@ -132,6 +132,17 @@ export interface PairMetadata {
   trim_end_s?: number;
   /** Per-category clip-health warnings (later-phase). */
   clip_warnings?: Record<string, string[]>;
+  // ── Per-file audio metadata (populated for audio files, C0) ─────────
+  /** True on audio entries — distinguishes from is_video/plain images. */
+  is_audio?: boolean;
+  /** Audio duration in seconds — reuses the `duration_s` field declared
+   *  above for video (same concept, same name, one field). */
+  /** Sample rate in Hz. */
+  sample_rate?: number;
+  /** Channel count (1 = mono, 2 = stereo). */
+  channels?: number;
+  /** Whether a `<stem>.lyrics.txt` sidecar exists and is non-empty. */
+  has_lyrics?: boolean;
   [extra: string]: unknown;
 }
 
@@ -144,13 +155,16 @@ export interface DatasetPair {
   stem: string;
   media_file: string;
   /** Always set on returned rows (results are filtered to those with media). */
-  media_type: 'image' | 'video';
+  media_type: 'image' | 'video' | 'audio';
   /** null (not absent) when the image has no caption sidecar. */
   caption_file: string | null;
   /** Present only for media rows. */
   size_bytes?: number;
   caption_content: string;
   masked_caption_content: string | null;
+  /** Lyrics sidecar (`<stem>.lyrics.txt`) — audio rows only. */
+  lyrics_file?: string | null;
+  lyrics_content?: string;
   metadata: PairMetadata | null;
   /** Physical control slot rel-paths in slot order (control/, control_2/,
    *  control_3/); empty for standard datasets. */
@@ -491,6 +505,16 @@ export class DatasetService {
 
   saveCaption(name: string, filename: string, content: string): Observable<CaptionSavedResponse> {
     return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${filename}`, { content });
+  }
+
+  /** Sibling to getCaption/saveCaption for the audio lyrics sidecar
+   *  (`<stem>.lyrics.txt`) — see backend `crud_routes.py` "Lyrics" section. */
+  getLyrics(name: string, filename: string): Observable<{ content: string }> {
+    return this.http.get<{ content: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/lyrics/${filename}`);
+  }
+
+  saveLyrics(name: string, filename: string, content: string): Observable<CaptionSavedResponse> {
+    return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/lyrics/${filename}`, { content });
   }
 
   deletePair(name: string, mediaFile: string): Observable<MediaPairDeletedResponse> {

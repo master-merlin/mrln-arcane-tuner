@@ -61,6 +61,7 @@ D:/AI/huggingface/hub, unless noted):
   hunyuan_video15   text_encoder     Qwen2_5_VLTextModel                  Qwen2_5_VLTextModel
   hunyuan_video15   text_encoder_2   T5EncoderModel                       T5EncoderModel
   prx               text_encoder     T5GemmaEncoder                       T5GemmaEncoder (flat t5_gemma_module cfg)
+  chroma            text_encoder     T5EncoderModel                       T5EncoderModel (T5-XXL, no CLIP at all)
 
   *  ideogram4 loads its TE from the SEPARATE repo ``Qwen/Qwen3-VL-8B-Instruct``
      (``separate_repo=True``), whose config declares
@@ -385,6 +386,8 @@ CASES: list[_Case] = [
     # by ``test_krea2_hand_loaded_te_contract`` (round-trip) + a source guard.
     _Case("krea2", _m("krea2"), "Krea2Loader", "text_encoder",
           "transformers.Qwen3VLModel", "Qwen3VLModel", in_manifest=False),
+    _Case("chroma", _m("chroma"), "ChromaLoader", "text_encoder",
+          "transformers.T5EncoderModel", "T5EncoderModel"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

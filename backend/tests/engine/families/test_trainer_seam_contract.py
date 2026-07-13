@@ -276,6 +276,17 @@ FAMILIES: list[FamilySpec] = [
         encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
         encode_extra={"_clip_pooled_cache": _seed_pooled_1d_batch},
     ),
+    # ── chroma: flux1-lineage attrs (driver stores its model on
+    # ``.transformer``, not ``.model`` like ovis_image), but ovis-style
+    # tuple2 encode_text (Chroma's transformer DOES consume an attention
+    # mask, unlike flux1) — a genuine hybrid of the two existing patterns.
+    FamilySpec(
+        "chroma",
+        "app.engine.models.families.chroma.trainer:ChromaTrainer",
+        "app.engine.models.families.chroma.driver:ChromaDriver",
+        "transformer", "transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
     FamilySpec(
         "qwen_image",
         "app.engine.models.families.qwen_image.trainer:QwenImageTrainer",

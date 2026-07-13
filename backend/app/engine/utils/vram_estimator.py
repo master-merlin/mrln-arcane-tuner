@@ -56,6 +56,19 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 24.0,  # Mistral3 (dev)
         "vae": 0.17,
     },
+    "chroma": {
+        # Meta-instantiated diffusers ChromaTransformer2DModel with its 0.39
+        # class defaults (== both chroma1-base's and chroma1-hd's real
+        # transformer/config.json: 19 double + 38 single blocks, inner dim
+        # 3072) → 8.899983424 B params (matches the "8.9B" community name).
+        # Both definitions ship concrete on-disk model_size_mb (from the HF
+        # tree API, no download needed), so this table is the fallback-only
+        # path — but T5-XXL (text_encoder) is identical to flux1's own T5
+        # entry, and the VAE is the FLUX.1-schnell AutoencoderKL verbatim.
+        "transformer": 8.9,
+        "text_encoder": 4.8,  # T5-XXL (google/t5-v1_1-xxl) — no CLIP at all
+        "vae": 0.08,  # FLUX.1-schnell AutoencoderKL (~84M params)
+    },
     "zimage": {
         "transformer": 6.2,
         "text_encoder": 4.0,  # Qwen3

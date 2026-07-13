@@ -1,0 +1,175 @@
+# Chroma1-Base — lodestones' primary Chroma training checkpoint (the
+# recommended base for LoRA training per the model card). All facts below
+# verified against the live HF repo (lodestones/Chroma1-Base, 2026-07-13):
+# model_index.json + transformer/vae/text_encoder/scheduler config.json +
+# tokenizer/tokenizer_config.json (fetched via HF resolve/API endpoints,
+# no local download needed). File sizes from the repo's tree API
+# (bytes/1e6) — identical shard sizes to chroma1-hd (same architecture).
+id: chroma1-base
+family: chroma
+name: Chroma1 Base
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-5
+  # ChromaPipeline.__call__ native defaults (pipeline_chroma.py signature,
+  # lines 649-651) — shared pipeline class, same code-level defaults as
+  # chroma1-hd regardless of this checkpoint's own (sparser) scheduler
+  # config. See the scheduler.* block below for how Base's sampling
+  # schedule actually differs (beta-sigma, not shifted-sigmoid).
+  num_inference_steps: 35
+  guidance_scale: 5.0
+components:
+  repo:
+    path: huggingface:lodestones/Chroma1-Base
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json — identical to
+  #    chroma1-hd's; same architecture, different trained weights) --
+  transformer._class_name: ChromaTransformer2DModel
+  transformer.patch_size: 1
+  transformer.in_channels: 64
+  transformer.out_channels:
+  transformer.num_layers: 19
+  transformer.num_single_layers: 38
+  transformer.attention_head_dim: 128
+  transformer.num_attention_heads: 24
+  transformer.joint_attention_dim: 4096
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.approximator_num_channels: 64
+  transformer.approximator_hidden_dim: 5120
+  transformer.approximator_layers: 5
+  # VESTIGIAL — see chroma1_hd.yaml's comment; unused by forward()/pipeline.
+  transformer.guidance_embeds: false
+  transformer.pooled_projection_dim: 768
+  transformer.supports_cfg: true
+  transformer.supports_negative_prompt: true
+  hidden_size: 3072
+  depth: 19
+  depth_single_blocks: 38
+  in_channels: 64
+  context_dim: 4096
+  # -- Text encoder (checkpoint text_encoder/config.json — same T5-XXL) --
+  te.type: t5
+  te.architectures:
+  - T5EncoderModel
+  te.d_ff: 10240
+  te.d_kv: 64
+  te.d_model: 4096
+  te.decoder_start_token_id: 0
+  te.dense_act_fn: gelu_new
+  te.dropout_rate: 0.1
+  te.eos_token_id: 1
+  te.feed_forward_proj: gated-gelu
+  te.is_encoder_decoder: true
+  te.is_gated_act: true
+  te.layer_norm_epsilon: 1.0e-06
+  te.model_type: t5
+  te.num_decoder_layers: 24
+  te.num_heads: 64
+  te.num_layers: 24
+  te.output_past: true
+  te.pad_token_id: 0
+  te.relative_attention_max_distance: 128
+  te.relative_attention_num_buckets: 32
+  te.tie_word_embeddings: false
+  te.torch_dtype: bfloat16
+  te.vocab_size: 32128
+  te.t5_max_length: 512
+  te.tokenizer_class: T5Tokenizer
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json) --
+  # Chroma1-Base's scheduler_config.json is MUCH sparser than HD's — only
+  # {"num_train_timesteps": 1000, "use_beta_sigmas": true} are actually set
+  # on disk; every other field below is the diffusers
+  # FlowMatchEulerDiscreteScheduler CLASS default (verified from the class
+  # __init__ signature, scheduling_flow_match_euler_discrete.py lines
+  # 92-107) — notably shift=1.0 (== no static shift at all, since
+  # use_dynamic_shifting is also False here) plus a Karras-style
+  # beta-resampled sigma schedule. This is a REAL per-checkpoint sampling
+  # difference from chroma1-hd, not a copy/paste oversight.
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 1.0
+  scheduler.use_dynamic_shifting: false
+  scheduler.base_shift: 0.5
+  scheduler.max_shift: 1.15
+  scheduler.base_image_seq_len: 256
+  scheduler.max_image_seq_len: 4096
+  scheduler.time_shift_type: exponential
+  scheduler.invert_sigmas: false
+  scheduler.shift_terminal:
+  scheduler.stochastic_sampling: false
+  scheduler.use_karras_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_beta_sigmas: true
+  # -- VAE (checkpoint vae/config.json — same FLUX.1-schnell VAE) --
+  vae._class_name: AutoencoderKL
+  vae.act_fn: silu
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 16
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.scaling_factor: 0.3611
+  vae.shift_factor: 0.1159
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: false
+  vae.use_quant_conv: false
+  vae.vae_scale_factor: 8
+# Real on-disk shard sizes (HF tree API, bytes/1e6 — no download needed);
+# identical to chroma1-hd's (same architecture/shard layout).
+model_size_mb:
+  transformer: 17800.09
+  text_encoder: 9524.65
+  vae: 167.67
+lora_targetable_modules:
+- to_q
+- to_k
+- to_v
+- to_out.0
+- add_q_proj
+- add_k_proj
+- add_v_proj
+- to_add_out
+- ff.net.0.proj
+- ff.net.2
+- ff_context.net.0.proj
+- ff_context.net.2
+- proj_mlp
+- proj_out
+block_topology:
+- name: double_blocks
+  attr_path: transformer_blocks
+  count: 19
+  approx_vram_mb: 640
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 38
+  approx_vram_mb: 320

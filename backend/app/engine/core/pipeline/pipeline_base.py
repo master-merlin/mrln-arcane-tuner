@@ -43,6 +43,23 @@ class PipelineBaseMixin(BaseTrainer):
         except Exception:
             return False
 
+    @property
+    def is_audio_family(self) -> bool:
+        """True when the selected model is an audio-generation family.
+
+        Drives the audio branch in :class:`PipelineDataMixin` (duration-window
+        items, no spatial bucketing) — the audio-modality sibling of
+        :attr:`is_video_family`. Derived from the model's declared
+        capabilities (``is_audio_family``, see ``core/archetypes.py``).
+        """
+        try:
+            from app.engine.core.archetypes import resolve_capabilities
+
+            caps = resolve_capabilities(self.definition)["capabilities"]
+            return bool(caps.get("is_audio_family", False))
+        except Exception:
+            return False
+
     # ── Auto-delegation of clobber-capable hooks ─────────────────────────
     #
     # STRUCTURAL CURE for the dead-dispatch (clobber) bug class (W5-1). The real

@@ -17,6 +17,14 @@ from app.engine.components.latents import LatentManager
 
 logger = structlog.get_logger(__name__)
 
+# Constant "spatial" dims stamped on every audio inventory item — audio has no
+# width/height, but `_iter_training_batches`' bucket key is
+# (target_w, target_h, target_frames); a fixed dummy pair keeps that machinery
+# working unmodified (bucket "volume" then varies with target_frames alone —
+# the audio duration-window length in latent frames — so the VRAM-safe warmup
+# still reserves the longest window first, exactly the video precedent).
+AUDIO_DUMMY_DIM = 8
+
 
 def _internal_api_headers() -> dict[str, str]:
     """Auth header for the trainer's own loopback API calls.
@@ -283,6 +291,76 @@ class PipelineDataMixin:
                 out.append(clone)
         return out
 
+    def _append_audio_item(
+        self,
+        inventory: list[dict[str, Any]],
+        *,
+        img_path: str,
+        img_rel: str,
+        caption: str,
+        meta: dict,
+        lyrics_content: str,
+        ds_path: str,
+        model_name: str,
+        ds_version: str,
+        prefix: str,
+        repeats: int,
+        ds_config: dict,
+        ds_use_captions: bool,
+        ds_use_model_aware: bool,
+    ) -> None:
+        """Build + append ``repeats`` audio inventory items for one pair.
+
+        Cache-keys on a duration-window res_str ``"{sample_rate}Hz-{window_s}s"``
+        (the audio analogue of video's ``WxHxNfFPS``) — rounded to a coarse
+        bucket (:func:`round_duration_bucket`) so same-length clips share a
+        cache dir / batch bucket. ``target_frames`` carries the window's LATENT
+        frame count (not a pixel frame count) purely so the existing
+        ``(target_w, target_h, target_frames)`` bucket-key machinery groups
+        same-duration items together for ``train_batch_size > 1``.
+        """
+        from app.engine.components.audio import round_duration_bucket
+        from app.engine.components.latents import LatentManager
+
+        duration_s = float(meta.get("duration_s") or 0.0)
+        sample_rate = int(meta.get("sample_rate") or 0) or self._audio_target_sample_rate
+        channels = int(meta.get("channels") or 0) or self._audio_target_channels
+
+        window_s = round_duration_bucket(duration_s, self._audio_duration_cap)
+        target_frames = max(round(window_s * self._audio_latent_hz), 1)
+        res_str = f"{self._audio_target_sample_rate}Hz-{window_s:g}s"
+        cache_dir = LatentManager.resolve_cache_dir(
+            ds_path, model_name, ds_version, res_str, "original"
+        )
+
+        item: dict[str, Any] = {
+            "path": img_path,
+            "id": img_rel,
+            "caption": caption,
+            "dataset_path": ds_path,
+            "prefix": prefix,
+            "dropout_rate": float(ds_config.get("caption_dropout_rate", 0.0)),
+            "use_captions": ds_use_captions,
+            "use_model_aware_captions": ds_use_model_aware,
+            "orig_w": 0,
+            "orig_h": 0,
+            "target_w": AUDIO_DUMMY_DIM,
+            "target_h": AUDIO_DUMMY_DIM,
+            "target_frames": target_frames,
+            "cache_dir": cache_dir,
+            "variant": "original",
+            "is_video": False,
+            "is_audio": True,
+            "has_masked": False,
+            "duration_s": duration_s,
+            "window_s": window_s,
+            "source_sample_rate": sample_rate,
+            "source_channels": channels,
+            "lyrics_content": lyrics_content,
+        }
+        for _ in range(repeats):
+            inventory.append(item)
+
     async def prepare_data(self):
         """Fetch datasets via API, build inventory with aspect-ratio bucketing."""
         self.logger.info("preparing_data")
@@ -358,6 +436,16 @@ class PipelineDataMixin:
             if self._temporal_coverage == "sliding"
             else None
         )
+
+        # ── Audio bucketing config (ace_step15 and future audio families) ──
+        # Read defensively — a non-audio family never sets these architecture
+        # params, so the defaults are inert (no audio items ever reach
+        # ``_append_audio_item`` on an image/video run).
+        arch_params = getattr(self.definition, "architecture_params", {}) or {}
+        self._audio_target_sample_rate = int(arch_params.get("audio.sample_rate", 48000))
+        self._audio_target_channels = int(arch_params.get("audio.channels", 2))
+        self._audio_latent_hz = float(arch_params.get("audio.latent_hz", 25.0))
+        self._audio_duration_cap = float(self.config.get("duration_s", 30.0) or 30.0)
 
         datasets_config = self.config.get("datasets", [])
         inventory: list[dict[str, Any]] = []
@@ -561,6 +649,35 @@ class PipelineDataMixin:
                                 else 0
                             )
                             vid_fps = vid_target_fps
+
+                        # ── Audio item detection + duration-window bucketing ──
+                        # Audio has no spatial dims — a dummy constant width/
+                        # height keeps it flowing through the SAME bucket-key
+                        # machinery `_iter_training_batches` already uses
+                        # (target_w, target_h, target_frames), with
+                        # target_frames repurposed as the item's LATENT
+                        # duration-window length (the audio analogue of a
+                        # video frame count). Built + appended here and the
+                        # pair skips every spatial/image code path below.
+                        is_audio = bool(meta.get("is_audio"))
+                        if is_audio:
+                            self._append_audio_item(
+                                inventory,
+                                img_path=img_path,
+                                img_rel=img_rel,
+                                caption=caption,
+                                meta=meta,
+                                lyrics_content=pair.get("lyrics_content", "") or "",
+                                ds_path=ds_path,
+                                model_name=model_name,
+                                ds_version=ds_version,
+                                prefix=prefix,
+                                repeats=repeats,
+                                ds_config=ds_config,
+                                ds_use_captions=ds_use_captions,
+                                ds_use_model_aware=ds_use_model_aware,
+                            )
+                            continue
 
                         if not w and not is_video:
                             try:
@@ -958,6 +1075,13 @@ class PipelineDataMixin:
         if items and items[0].get("is_video"):
             batch["target_fps"] = float(items[0].get("target_fps") or 0.0)
 
+        # Lyrics sidecar text, one per item (audio families only — the
+        # `<stem>.lyrics.txt` content the C0 dataset layer hydrates into
+        # `lyrics_content`). Empty string when an audio item has no lyrics
+        # sidecar; absent entirely for non-audio batches.
+        if items and items[0].get("is_audio"):
+            batch["lyrics"] = [it.get("lyrics_content", "") or "" for it in items]
+
         # ── Paired control images (edit runs) ──
         # All items in an edit batch carry the same control slot count
         # (partial pairs were skipped at inventory time), so we transpose into
@@ -985,6 +1109,16 @@ class PipelineDataMixin:
         so deferring/repeating the decode never perturbs training determinism.
         """
         tw, th = item["target_w"], item["target_h"]
+        if item.get("is_audio"):
+            from app.engine.components.audio import AudioClipLoader
+
+            return AudioClipLoader().load_clip(
+                img_path,
+                target_sample_rate=self._audio_target_sample_rate,
+                target_channels=self._audio_target_channels,
+                window_s=float(item.get("window_s") or self._audio_duration_cap),
+            )
+
         if item.get("is_video"):
             from app.engine.components.video import VideoFrameLoader
 

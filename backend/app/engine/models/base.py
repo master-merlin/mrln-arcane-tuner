@@ -88,6 +88,29 @@ class SamplePromptConfig(BaseModel):
             "video_only": True,
         },
     )
+    # ── Audio sampling (optional) ────────────────────────────────────────
+    # Per-prompt overrides for audio-generation families (ace_step15), mirroring
+    # the num_frames/fps per-prompt seam above. None = run default. Left None
+    # for every other family so existing configs are unaffected.
+    lyrics: str | None = Field(
+        None,
+        description="Lyrics text for this sample (audio models only; None = instrumental)",
+        json_schema_extra={"group": "SAMPLING", "audio_only": True},
+    )
+    duration_s: float | None = Field(
+        None,
+        description=(
+            "Duration in seconds for this sample on audio models. "
+            "None = run default (sample_duration_s)."
+        ),
+        json_schema_extra={
+            "group": "SAMPLING",
+            "min": 1.0,
+            "max": 240.0,
+            "step": 1.0,
+            "audio_only": True,
+        },
+    )
 
 
 class DatasetItem(BaseModel):
@@ -1186,6 +1209,29 @@ class BaseTrainingConfig(BaseModel):
             "video buckets for extra detail (Phase 3, live since 2026-07)."
         ),
         json_schema_extra={"group": "VIDEO"},
+    )
+    # [AUDIO] Audio-generation model training (optional; gated by family
+    # capability ``is_audio_family`` — hidden for every image/video family via
+    # ``core/archetypes.py``'s field-visibility rules).
+    duration_s: float = Field(
+        30.0,
+        description=(
+            "Training window length in seconds — clips longer than this are "
+            "trimmed, shorter clips are zero-padded (silence). Audio-capable "
+            "models only."
+        ),
+        json_schema_extra={"group": "AUDIO", "min": 1.0, "max": 240.0, "step": 1.0},
+    )
+    genre_ratio: float = Field(
+        0.15,
+        description=(
+            "Probability per training step of dropping the full text/lyric "
+            "condition to the model's learned null-condition embedding "
+            "(ACE-Step's upstream CFG-dropout mechanic, trained into the "
+            "shipped checkpoints at this same 0.15 default — mixes tag/genre- "
+            "only vs full-caption+lyrics conditioning)."
+        ),
+        json_schema_extra={"group": "AUDIO", "min": 0.0, "max": 1.0, "step": 0.05},
     )
     # [SAMPLING] Sample Generation During Training
     sample_every_n_steps: int = Field(

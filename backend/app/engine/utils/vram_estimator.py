@@ -94,6 +94,20 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 3.75,  # Qwen2.5-VL-3B-Instruct mllm (text-only use)
         "vae": 0.08,
     },
+    "nucleus_image": {
+        # bf16 shard totals (HF tree API, bytes/2, NucleusAI/Nucleus-Image,
+        # 2026-07-13): transformer 33845.43 MB -> ~16.9 B (17B-class MoE DiT,
+        # ~2B active per token via expert-choice routing — ALL 64 routed
+        # experts + shared expert stay resident regardless, since routing is
+        # data-dependent per token/batch); text_encoder 17534.34 MB -> ~8.8 B
+        # (Qwen3-VL, text-only use). The definition ships concrete on-disk
+        # model_size_mb, so this table is the fallback-only path; the VAE is
+        # AutoencoderKLQwenImage verbatim (same class/size as qwen_image's
+        # own VAE entry, ~127M params).
+        "transformer": 16.9,
+        "text_encoder": 8.8,  # Qwen3-VL (text-only; vision tower unused)
+        "vae": 0.13,
+    },
     "qwen_image": {
         "transformer": 20.4,
         "text_encoder": 8.3,  # Qwen2.5-VL

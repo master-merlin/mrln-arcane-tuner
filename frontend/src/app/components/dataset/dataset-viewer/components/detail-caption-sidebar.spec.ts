@@ -1,5 +1,6 @@
 // detail-caption-sidebar.spec.ts
 import { TestBed } from '@angular/core/testing';
+import { of } from 'rxjs';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
 import { DetailCaptionSidebarComponent } from './detail-caption-sidebar';
@@ -613,5 +614,124 @@ describe('DetailCaptionSidebar — expand-to-modal', () => {
             });
         }
         http.verify();
+    });
+});
+
+describe('DetailCaptionSidebar — Lyrics editor (audio files, C0)', () => {
+    function mountAudio(pairOverrides: Record<string, unknown> = {}) {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('isCurrentMediaAudio', true);
+        fixture.componentRef.setInput('currentPair', {
+            media_file: 'song.wav', caption_file: null, caption_content: '',
+            lyrics_file: 'song.lyrics.txt', lyrics_content: 'verse one',
+            ...pairOverrides,
+        });
+        return fixture;
+    }
+
+    afterEach(() => {
+        const http = TestBed.inject(HttpTestingController);
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.cancelled) return;
+                r.flush(r.request.url.includes('/templates') ? [] : { definition_id: null, items: [] });
+            });
+        }
+        http.verify();
+    });
+
+    it('renders the Lyrics textarea, seeded from the pair, only for audio pairs', () => {
+        const fixture = mountAudio();
+        fixture.detectChanges();
+        // Asserted on the signal, not the rendered DOM value — mirrors this
+        // file's own convention for effect-driven loads (see the
+        // `captionText()` checks in the "variant load" describe block above):
+        // an effect's write doesn't necessarily flush into a ngModel-bound
+        // DOM control within the same synchronous detectChanges() pass.
+        const cmp = fixture.componentInstance as unknown as { lyricsText: () => string };
+        expect(cmp.lyricsText()).toBe('verse one');
+        const textarea = fixture.nativeElement.querySelector('[data-testid="lyrics-textarea"]') as HTMLTextAreaElement;
+        expect(textarea).toBeTruthy();
+        expect(fixture.nativeElement.querySelector('[data-testid="save-lyrics"]').textContent.trim()).toBe('Save');
+    });
+
+    it('does not render the Lyrics textarea for non-audio pairs', () => {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('currentPair', { media_file: 'a.png', caption_file: 'a.txt', caption_content: '' });
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="lyrics-textarea"]')).toBeNull();
+        // Pending HTTP (AI-recaptioning panel's template list, etc.) is
+        // flushed by this describe block's shared afterEach.
+    });
+
+    it('the Save button starts disabled (no unsaved edits)', () => {
+        const fixture = mountAudio();
+        fixture.detectChanges();
+        const btn = fixture.nativeElement.querySelector('[data-testid="save-lyrics"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(true);
+    });
+
+    it('typing marks lyrics dirty and enables Save', () => {
+        const fixture = mountAudio();
+        fixture.detectChanges();
+        const textarea = fixture.nativeElement.querySelector('[data-testid="lyrics-textarea"]') as HTMLTextAreaElement;
+        textarea.value = 'verse one\nverse two';
+        textarea.dispatchEvent(new Event('input'));
+        fixture.detectChanges();
+        const btn = fixture.nativeElement.querySelector('[data-testid="save-lyrics"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(false);
+    });
+
+    it('Save calls DatasetService.saveLyrics with the <stem>.lyrics.txt filename and clears dirty', () => {
+        const fixture = mountAudio();
+        fixture.detectChanges();
+        const ds = TestBed.inject(DatasetService);
+        const spy = vi.spyOn(ds, 'saveLyrics').mockReturnValue(of({ status: 'saved' }));
+
+        const cmp = fixture.componentInstance as unknown as {
+            onLyricsChange: (v: string) => void; saveLyrics: () => void; lyricsDirty: () => boolean;
+        };
+        cmp.onLyricsChange('new lyrics text');
+        fixture.detectChanges();
+        cmp.saveLyrics();
+
+        expect(spy).toHaveBeenCalledWith('ds', 'song.lyrics.txt', 'new lyrics text');
+        expect(cmp.lyricsDirty()).toBe(false);
+    });
+
+    it('reloads lyrics text when the active pair changes (navigation)', () => {
+        const fixture = mountAudio();
+        fixture.detectChanges();
+        const cmp = fixture.componentInstance as unknown as { lyricsText: () => string };
+        expect(cmp.lyricsText()).toBe('verse one');
+
+        fixture.componentRef.setInput('currentPair', {
+            media_file: 'song2.wav', caption_file: null, caption_content: '',
+            lyrics_file: 'song2.lyrics.txt', lyrics_content: 'a different song',
+        });
+        fixture.detectChanges();
+        expect(cmp.lyricsText()).toBe('a different song');
     });
 });

@@ -2,6 +2,7 @@ import { Component, ElementRef, computed, effect, inject, input, output, signal,
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
 import { VideoTilePreviewComponent } from './video-tile-preview';
+import { AudioTilePreviewComponent } from './audio-tile-preview';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { detect, parse, serialize, normalize } from './caption/ideogram-format';
@@ -28,7 +29,7 @@ export interface GridCropRequest {
     selector: 'app-viewer-grid-view',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
-    imports: [FormsModule, StatePillsComponent, VideoTilePreviewComponent],
+    imports: [FormsModule, StatePillsComponent, VideoTilePreviewComponent, AudioTilePreviewComponent],
     host: { class: 'flex-1 flex flex-col overflow-hidden' },
     template: `
         <div #scrollHost class="w-full h-full overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent flex flex-col"
@@ -99,6 +100,13 @@ export interface GridCropRequest {
                                     (loaded)="onTileLoaded($event, pair)"
                                     class="w-full h-full transition-opacity relative z-[1]"
                                     [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"></app-video-tile-preview>
+                             } @else if (pair.media_type === 'audio') {
+                                <app-audio-tile-preview
+                                    [audioUrl]="getMediaUrl(pair.media_file)"
+                                    [metadata]="pair.metadata"
+                                    (loaded)="onTileLoaded($event, pair)"
+                                    class="w-full h-full transition-opacity relative z-[1]"
+                                    [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"></app-audio-tile-preview>
                              } @else {
                                 <img [src]="getDisplayUrl(pair)"
                                      (load)="onTileLoaded($event, pair)"
@@ -159,10 +167,12 @@ export interface GridCropRequest {
                              
                              <!-- Action Buttons (top-right): adjust + crop + eye toggle + delete — matches detail view order -->
                               <div [class]="'absolute top-2 right-2 flex gap-1 bg-transparent z-10 transition-all ' + (pair.metadata?.enabled === false ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')">
+                                 @if (pair.media_type !== 'audio') {
                                  <button (click)="onEditClick(pair, $event, i)" class="tile-action bg-surface-low/60 hover:bg-purple-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Adjust image">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
                                  </button>
-                                 @if (pair.metadata?.target_width && (pair.metadata!.target_width !== pair.metadata!.width || pair.metadata!.target_height !== pair.metadata!.height)) {
+                                 }
+                                 @if (pair.media_type !== 'audio' && pair.metadata?.target_width && (pair.metadata!.target_width !== pair.metadata!.width || pair.metadata!.target_height !== pair.metadata!.height)) {
                                      <button (click)="onCropClick(pair, $event)" class="tile-action bg-surface-low/60 hover:bg-orange-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Crop image (aspect ratio mismatch)">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"></path><path d="M18 22V8a2 2 0 0 0-2-2H2"></path></svg>
                                      </button>

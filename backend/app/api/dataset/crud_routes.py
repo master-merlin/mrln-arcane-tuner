@@ -354,6 +354,38 @@ async def save_caption(name: str, filename: str, request: CaptionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Lyrics (audio sidecar) ───────────────────────────────────────────────
+#
+# Sibling to the caption endpoints above rather than a caption "variant"
+# (see app.core.captioning.caption_variants): lyrics aren't another model's
+# rendering of the same caption text, they're a second, independent sidecar
+# per audio file (`<stem>.lyrics.txt`, empty/missing allowed). Reuses
+# `dataset_manager.read_caption` for reads (filename-driven, media-type
+# agnostic) and a dedicated `save_lyrics` for writes (flips `has_lyrics`,
+# not `has_caption`, on the matching media entry).
+
+
+@router.get("/datasets/{name}/lyrics/{filename:path}", response_model=CaptionContentResponse)
+async def get_lyrics(name: str, filename: str):
+    """Read a lyrics sidecar file's contents."""
+    try:
+        content = await asyncio.to_thread(dataset_manager.read_caption, name, filename)
+        return {"content": content}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.put("/datasets/{name}/lyrics/{filename:path}", response_model=CaptionSavedResponse)
+async def save_lyrics(name: str, filename: str, request: CaptionRequest):
+    """Save or update a lyrics sidecar file."""
+    try:
+        logger.info("saving_lyrics", dataset_name=name, filename=filename)
+        await asyncio.to_thread(dataset_manager.save_lyrics, name, filename, request.content)
+        return {"status": "saved"}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Image Enable/Disable ────────────────────────────────────────────────
 
 

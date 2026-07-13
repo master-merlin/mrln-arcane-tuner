@@ -20,7 +20,11 @@ from app.core.dataset.media_helpers import (
     invalidate_overlay_files,
     refresh_media_metadata_after_change,
 )
-from app.core.dataset.media_types import MULTIMEDIA_EXTENSIONS, VIDEO_EXTENSIONS
+from app.core.dataset.media_types import (
+    AUDIO_EXTENSIONS,
+    MULTIMEDIA_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 
 from app.core.events import event_manager
@@ -608,6 +612,7 @@ class DatasetManager:
         from app.core.dataset.scan_helpers import (
             extract_media_dimensions,
             build_media_entry,
+            build_audio_entry,
         )
 
         name = dataset.name
@@ -687,72 +692,95 @@ class DatasetManager:
                     )
 
                 try:
-                    # Always re-read dimensions from the actual file so
-                    # post-crop/resize changes are reflected on rescan.
-                    try:
-                        width, height = extract_media_dimensions(file_path, ext)
-                    except Exception:
-                        # Fallback to cached values if extraction fails
-                        width = existing_meta.get("width", 0)
-                        height = existing_meta.get("height", 0)
-
-                    if width > 0 and height > 0:
-                        ctx["aspect_ratios"].append(round(width / height, 5))
-
-                        mask_full = os.path.join(dataset.path, "masks", f"{stem}.png")
-                        if os.path.exists(mask_full):
-                            ctx["mask_stems"].add(stem)
-
-                        meta_entry = build_media_entry(
-                            file_path, stem, ext, dataset.path,
-                            existing_meta, width, height,
+                    if ext in AUDIO_EXTENSIONS:
+                        # Audio has no width/height/orientation concept (the
+                        # dims gate below is image/video-only), no perceptual
+                        # hash, no quality score, and no thumbnail — build a
+                        # dedicated leaner entry instead.
+                        meta_entry = build_audio_entry(
+                            file_path, stem, ext, dataset.path, existing_meta,
                         )
                         ctx["media_metadata"][rel_path] = meta_entry
+                    else:
+                        # Always re-read dimensions from the actual file so
+                        # post-crop/resize changes are reflected on rescan.
+                        try:
+                            width, height = extract_media_dimensions(file_path, ext)
+                        except Exception:
+                            # Fallback to cached values if extraction fails
+                            width = existing_meta.get("width", 0)
+                            height = existing_meta.get("height", 0)
 
-                        # ── Sub-step 2: Hash ──
-                        self._compute_hash_if_needed(
-                            meta_entry, rel_path, file_path, ext,
-                            existing_meta, name, f,
-                            current_progress_idx, total_for_progress,
-                        )
+                        if width > 0 and height > 0:
+                            ctx["aspect_ratios"].append(round(width / height, 5))
 
-                        # ── Sub-step 3: Score (if unscored) ──
-                        existing_score = existing_meta.get("quality_score")
-                        if existing_score is not None:
-                            meta_entry["quality_score"] = existing_score
-                        else:
-                            scoring_service = self._score_single_image(
-                                scoring_service, meta_entry, rel_path,
-                                file_path, dataset, name,
+                            mask_full = os.path.join(dataset.path, "masks", f"{stem}.png")
+                            if os.path.exists(mask_full):
+                                ctx["mask_stems"].add(stem)
+
+                            meta_entry = build_media_entry(
+                                file_path, stem, ext, dataset.path,
+                                existing_meta, width, height,
+                            )
+                            ctx["media_metadata"][rel_path] = meta_entry
+
+                            # ── Sub-step 2: Hash ──
+                            self._compute_hash_if_needed(
+                                meta_entry, rel_path, file_path, ext,
+                                existing_meta, name, f,
                                 current_progress_idx, total_for_progress,
                             )
-                            scored_count += 1
 
-                        # ── Sub-step 4: Thumbnail ──
-                        from app.core.dataset import thumbnails
+                            # ── Sub-step 3: Score (if unscored) ──
+                            existing_score = existing_meta.get("quality_score")
+                            if existing_score is not None:
+                                meta_entry["quality_score"] = existing_score
+                            else:
+                                scoring_service = self._score_single_image(
+                                    scoring_service, meta_entry, rel_path,
+                                    file_path, dataset, name,
+                                    current_progress_idx, total_for_progress,
+                                )
+                                scored_count += 1
 
-                        if self._loop and not self._loop.is_closed():
-                            asyncio.run_coroutine_threadsafe(
-                                event_manager.broadcast("scan_progress", {
-                                    "dataset": name,
-                                    "file": f,
-                                    "current": min(current_progress_idx, total_for_progress),
-                                    "total": total_for_progress,
-                                    "status": "Generating thumbnail...",
-                                }),
-                                self._loop,
-                            )
-                        thumbnails.ensure_thumbnail(dataset.path, rel_path)
+                            # ── Sub-step 4: Thumbnail ──
+                            from app.core.dataset import thumbnails
+
+                            if self._loop and not self._loop.is_closed():
+                                asyncio.run_coroutine_threadsafe(
+                                    event_manager.broadcast("scan_progress", {
+                                        "dataset": name,
+                                        "file": f,
+                                        "current": min(current_progress_idx, total_for_progress),
+                                        "total": total_for_progress,
+                                        "status": "Generating thumbnail...",
+                                    }),
+                                    self._loop,
+                                )
+                            thumbnails.ensure_thumbnail(dataset.path, rel_path)
 
                 except Exception as e:
                     logger.error("metadata_extraction_failed", path=rel_path, error=str(e))
 
                 if progress_cb is not None:
                     progress_cb(task_idx, task_total, f)
-                if not ctx["preview_candidate"]:
+                # Audio has no thumbnail — never elect it as the library
+                # card preview candidate (an image/video sibling, if any,
+                # wins instead; an audio-only dataset stays preview-less,
+                # which the frontend already handles for empty state).
+                if not ctx["preview_candidate"] and ext not in AUDIO_EXTENSIONS:
                     ctx["preview_candidate"] = rel_path
 
             elif ext in self.CAPTION_EXTS:
+                # Lyrics sidecars (`<stem>.lyrics.txt`) are a distinct
+                # concept from captions — tracked per-file via `has_lyrics`
+                # in `build_audio_entry` (disk-truth `os.path.exists` check),
+                # not via this stem set. Counting them here would inflate
+                # `caption_count` by one per audio file with lyrics (the
+                # `.lyrics.txt` stem never matches a `multimedia_stems`
+                # entry, since the real stem is `song`, not `song.lyrics`).
+                if lower_f.endswith(".lyrics.txt"):
+                    continue
                 ctx["caption_stems"].add(stem)
 
         # Unload scoring model after all files processed
@@ -827,7 +855,7 @@ class DatasetManager:
         total_est: int,
     ) -> None:
         """Compute solid hash for an image if not already cached."""
-        if ext in VIDEO_EXTENSIONS:
+        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS:
             return
         try:
             existing_hash = existing_meta.get("solid_hash")
@@ -1401,7 +1429,12 @@ class DatasetManager:
                 # Canonical video set (incl. .gif) drives grid rendering as a
                 # <video>/animated tile. Trainable-video probing is gated
                 # separately by is_probeable_video (which excludes .gif).
-                pairs[key]["media_type"] = "video" if ext in VIDEO_EXTENSIONS else "image"
+                if ext in VIDEO_EXTENSIONS:
+                    pairs[key]["media_type"] = "video"
+                elif ext in AUDIO_EXTENSIONS:
+                    pairs[key]["media_type"] = "audio"
+                else:
+                    pairs[key]["media_type"] = "image"
                 try:
                     pairs[key]["size_bytes"] = entry.stat().st_size
                 except OSError:
@@ -1430,6 +1463,7 @@ class DatasetManager:
         for p in result:
             p["caption_content"] = ""
             p["masked_caption_content"] = None
+            p["lyrics_content"] = ""
             p["metadata"] = None
 
             if p["caption_file"]:
@@ -1437,6 +1471,20 @@ class DatasetManager:
                     p["caption_content"] = self.read_caption(name, p["caption_file"])
                 except Exception:
                     p["caption_content"] = ""
+
+            # Hydrate lyrics sidecar (audio only — `<stem>.lyrics.txt`).
+            if p["media_type"] == "audio":
+                lyrics_stem = os.path.splitext(os.path.basename(p["media_file"]))[0]
+                lyrics_rel = f"{lyrics_stem}.lyrics.txt"
+                lyrics_path = os.path.join(dataset.path, lyrics_rel)
+                if os.path.isfile(lyrics_path):
+                    p["lyrics_file"] = lyrics_rel
+                    try:
+                        p["lyrics_content"] = self.read_caption(name, lyrics_rel)
+                    except Exception:
+                        p["lyrics_content"] = ""
+                else:
+                    p["lyrics_file"] = None
 
             # Hydrate masked caption if it exists in masked/
             stem = os.path.splitext(os.path.basename(p["media_file"]))[0]
@@ -1585,6 +1633,46 @@ class DatasetManager:
                     ),
                     loop,
                 )
+
+        return content
+
+    def save_lyrics(self, name: str, filename: str, content: str) -> str:
+        """Save a lyrics sidecar (``<stem>.lyrics.txt``) for an audio file.
+
+        Sibling to ``save_caption`` — same disk-write + path-traversal guard
+        — but flips ``has_lyrics`` (not ``has_caption``) on the matching
+        media entry, since lyrics are a distinct concept from captions (see
+        ``build_audio_entry``). Truthiness follows the same "non-empty
+        content" rule ``build_audio_entry`` uses on scan, so a save and a
+        rescan agree. Unlike captions, there's no dataset-level lyrics
+        count to reconcile — the contract only requires the per-item flag.
+        """
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+        dataset = self.datasets[name]
+
+        path = os.path.join(dataset.path, filename)
+        if not os.path.abspath(path).startswith(os.path.abspath(dataset.path)):
+            raise ValueError("Security violation: path traversal")
+
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        # "song.lyrics.txt" -> stem "song" (strip the fixed ".lyrics.txt"
+        # suffix, not a single splitext — splitext once would yield
+        # "song.lyrics").
+        lower_name = filename.lower()
+        if lower_name.endswith(".lyrics.txt"):
+            stem = filename[: -len(".lyrics.txt")]
+        else:
+            stem = os.path.splitext(filename)[0]
+
+        for key, meta in dataset.media_metadata.items():
+            media_stem = os.path.splitext(key)[0]
+            if media_stem == stem:
+                meta["has_lyrics"] = bool(content.strip())
+                self._persist_media_item(dataset, key)
+                break
 
         return content
 
@@ -1916,11 +2004,14 @@ class DatasetManager:
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
-        
+
         full_path = os.path.join(dataset.path, relative_path)
         if not os.path.exists(full_path):
              raise FileNotFoundError(f"File {relative_path} not found.")
-             
+
+        if os.path.splitext(relative_path)[1].lower() in AUDIO_EXTENSIONS:
+            raise ValueError("Crop is not supported for audio files.")
+
         # Load image
         try:
             with Image.open(full_path) as img:
@@ -2011,6 +2102,9 @@ class DatasetManager:
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"File {relative_path} not found.")
 
+        if os.path.splitext(relative_path)[1].lower() in AUDIO_EXTENSIONS:
+            raise ValueError("Adjustments are not supported for audio files.")
+
         try:
             with Image.open(full_path) as img:
                 result = apply_all(img, adjustments)
@@ -2065,8 +2159,14 @@ class DatasetManager:
         # Build base name: "Aston Martin Valkyrie" -> "aston_martin_valkyrie"
         base = re.sub(r'[^a-zA-Z0-9]+', '_', dataset.name).strip('_').lower()
 
-        # Gather all pairs (sorted by media_file for deterministic ordering)
-        pairs = self.get_dataset_pairs(name)
+        # Gather all pairs (sorted by media_file for deterministic ordering).
+        # Harmonize converts everything to JPG — meaningless (and destructive)
+        # for audio, so those pairs are left untouched on disk; the trailing
+        # rescan (below) re-populates their metadata unchanged.
+        pairs = [
+            p for p in self.get_dataset_pairs(name)
+            if p["media_type"] != "audio"
+        ]
         if not pairs:
             return {"processed": 0, "converted": 0, "renamed": 0}
 

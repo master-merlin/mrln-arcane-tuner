@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 
 from app.api._deps import dataset_or_404
+from app.api._path_guard import reject_audio_op
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.adjustment_schemas import (
@@ -152,6 +153,8 @@ async def color_match_preview(
             raise HTTPException(status_code=404, detail=f"Source not found: {request.source_path}")
         if not ref_path.exists():
             raise HTTPException(status_code=404, detail=f"Reference not found: {request.reference_path}")
+        reject_audio_op(request.source_path, "Color match")
+        reject_audio_op(request.reference_path, "Color match")
 
         def _preview() -> bytes:
             with Image.open(src_path) as src_img, Image.open(ref_path) as ref_img:
@@ -187,6 +190,7 @@ async def get_histogram(
     full_path = Path(dataset.path) / image_path
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    reject_audio_op(image_path, "Histogram")
 
     def _compute():
         from PIL import Image as PILImage

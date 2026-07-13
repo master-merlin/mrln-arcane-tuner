@@ -208,13 +208,17 @@ class DatasetPairResponse(BaseModel):
     that have a media file, so ``media_file``/``media_type`` are always set."""
     stem: str
     media_file: str
-    media_type: Literal["image", "video"]
+    media_type: Literal["image", "video", "audio"]
     # null (not absent) when the image has no caption sidecar.
     caption_file: str | None = None
     # Present only for media rows (which is all returned rows).
     size_bytes: int | None = None
     caption_content: str = ""
     masked_caption_content: str | None = None
+    # Lyrics sidecar (`<stem>.lyrics.txt`) — audio rows only. null filename
+    # when no sidecar exists yet; content is "" in that case too.
+    lyrics_file: str | None = None
+    lyrics_content: str = ""
     # Free-form per-item media_metadata; shape varies by enrichment state.
     metadata: dict | None = None
 

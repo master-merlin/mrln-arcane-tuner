@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import safe_remove
+from app.api._path_guard import reject_audio_op, safe_remove
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.upscale_schemas import (
@@ -89,6 +89,7 @@ async def upscale_media(
         raise HTTPException(status_code=404, detail="Image not found")
     if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
+    reject_audio_op(request.image_path, "Upscale")
 
     def _upscale():
         from PIL import Image as PILImage

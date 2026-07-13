@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import safe_remove
+from app.api._path_guard import reject_audio_op, safe_remove
 from app.core.dataset_manager import dataset_manager
 from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
@@ -107,6 +107,7 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
     img_path = dataset_root / request.image_path
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
+    reject_audio_op(request.image_path, "Render pipeline")
 
     def _render():
         from PIL import Image

@@ -383,7 +383,11 @@ export class MassEditModalComponent implements OnInit {
         return this.pairs().filter(p => {
             const mt = p.metadata?.['media_type'];
             const isVideo = typeof mt === 'string' && mt.includes('video');
-            return p.metadata && !isVideo && (!src || p.media_file !== src.media_file);
+            // Audio has no pixel pipeline (crop/adjust/render-pipeline all
+            // reject it server-side, see reject_audio_op) — exclude it from
+            // the mass-edit target list the same way video is meant to be.
+            const isAudio = p.media_type === 'audio';
+            return p.metadata && !isVideo && !isAudio && (!src || p.media_file !== src.media_file);
         });
     });
 

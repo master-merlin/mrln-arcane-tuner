@@ -87,6 +87,7 @@ import type { DatasetPair } from '../../services/dataset';
                             [fullscreen]="isFullscreen()"
                             (toggleFullscreen)="toggleFullscreen()"
                             (toggleOverlay)="toggleOverlay.emit()">
+                        @if (pair.media_type !== 'audio') {
                         <button type="button" class="footer-action violet" title="Adjust (open editor)"
                                 (click)="openEditor()">
                             <app-ico name="Sliders" [size]="14"/>
@@ -95,6 +96,7 @@ import type { DatasetPair } from '../../services/dataset';
                                 (click)="openCrop()">
                             <app-ico name="Crop" [size]="14"/>
                         </button>
+                        }
                         <button type="button" class="footer-action exclude"
                                 [class.is-excluded]="isExcluded()"
                                 [title]="isExcluded() ? 'Excluded — click to re-include' : 'Exclude from training'"
@@ -112,6 +114,7 @@ import type { DatasetPair } from '../../services/dataset';
                         [datasetName]="datasetName()"
                         [currentPair]="pair"
                         [isCurrentMediaVideo]="pair?.media_type === 'video'"
+                        [isCurrentMediaAudio]="pair?.media_type === 'audio'"
                         [showMasked]="showMasked()"
                         [isDirty]="isDirty()"
                         [(captionText)]="captionText"

@@ -253,6 +253,61 @@ def test_save_caption_dataset_not_found(mock_to_thread, mock_manager, client):
     assert response.status_code == 500  # ValueError → 500 in save_caption route
 
 
+# ── Lyrics (audio sidecar) ───────────────────────────────────────────────
+# Sibling routes to captions above — see crud_routes.py "Lyrics" section.
+
+
+@patch("app.api.dataset.crud_routes.dataset_manager")
+@patch("app.api.dataset.crud_routes.asyncio.to_thread")
+def test_get_lyrics_success(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_manager.read_caption.return_value = "la la la"
+    response = client.get("/api/datasets/myds/lyrics/song.lyrics.txt")
+    assert response.status_code == 200
+    assert response.json()["content"] == "la la la"
+    mock_manager.read_caption.assert_called_once_with("myds", "song.lyrics.txt")
+
+
+@patch("app.api.dataset.crud_routes.dataset_manager")
+@patch("app.api.dataset.crud_routes.asyncio.to_thread")
+def test_get_lyrics_dataset_not_found(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_manager.read_caption.side_effect = ValueError("not found")
+    response = client.get("/api/datasets/ghost/lyrics/song.lyrics.txt")
+    assert response.status_code == 404
+
+
+@patch("app.api.dataset.crud_routes.dataset_manager")
+@patch("app.api.dataset.crud_routes.asyncio.to_thread")
+def test_save_lyrics_success(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    response = client.put(
+        "/api/datasets/myds/lyrics/song.lyrics.txt", json={"content": "verse one"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "saved"
+    mock_manager.save_lyrics.assert_called_once_with("myds", "song.lyrics.txt", "verse one")
+
+
+@patch("app.api.dataset.crud_routes.dataset_manager")
+@patch("app.api.dataset.crud_routes.asyncio.to_thread")
+def test_save_lyrics_dataset_not_found(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_manager.save_lyrics.side_effect = ValueError("not found")
+    response = client.put(
+        "/api/datasets/ghost/lyrics/song.lyrics.txt", json={"content": "x"},
+    )
+    assert response.status_code == 500  # ValueError → 500, mirrors save_caption
+
+
 # ── Image Enable/Disable ────────────────────────────────────────────────
 
 

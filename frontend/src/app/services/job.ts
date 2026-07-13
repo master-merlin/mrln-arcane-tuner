@@ -107,6 +107,8 @@ export interface JobSample {
   created_at: number;
   /** Prompt that generated this sample (config.sample_prompts[index]), if known. */
   prompt?: string | null;
+  /** Lyrics for audio samples (config.sample_prompts[index].lyrics), null/absent otherwise. */
+  lyrics?: string | null;
 }
 
 @Injectable({

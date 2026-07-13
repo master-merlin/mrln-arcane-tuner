@@ -699,6 +699,13 @@
     border: 1px solid var(--color-border-subtle);
 }
 
+/* Audio sample player — a native <audio> bar has no intrinsic size, so give
+   it a fixed comfortable width instead of the image's max-width/max-height
+   contain sizing. */
+.lightbox-audio {
+    width: min(420px, 88vw);
+}
+
 /* Prompt that generated the opened sample, under the media. */
 .lightbox-prompt {
     margin: 8px 0 0;
@@ -706,6 +713,18 @@
     font-size: 11.5px;
     line-height: 1.45;
     color: var(--color-text-secondary);
+}
+
+/* Lyrics for the opened audio sample, under the prompt line. */
+.lightbox-lyrics {
+    margin: 4px 0 0;
+    max-width: 88vw;
+    max-height: 30vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--color-text-muted);
 }
 
 /* ── Responsive fallbacks ───────────────────────────────────────────

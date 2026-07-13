@@ -126,6 +126,34 @@ describe('JobsScreen.isVideoSample', () => {
     });
 });
 
+describe('JobsScreen.isAudioSample', () => {
+    let comp: JobsScreen;
+    beforeEach(() => {
+        comp = setup().comp;
+    });
+
+    it('is true for .wav/.flac/.ogg/.mp3/.opus (case-insensitive)', () => {
+        const c = comp as unknown as { isAudioSample: (f: string) => boolean };
+        expect(c.isAudioSample('sample_step42.wav')).toBe(true);
+        expect(c.isAudioSample('clip.WAV')).toBe(true);
+        expect(c.isAudioSample('out.flac')).toBe(true);
+        expect(c.isAudioSample('out.OGG')).toBe(true);
+        expect(c.isAudioSample('out.mp3')).toBe(true);
+        expect(c.isAudioSample('out.opus')).toBe(true);
+    });
+
+    it('is false for stills, video, and empty/missing', () => {
+        const c = comp as unknown as { isAudioSample: (f: string | null | undefined) => boolean };
+        expect(c.isAudioSample('sample.png')).toBe(false);
+        expect(c.isAudioSample('clip.mp4')).toBe(false);
+        expect(c.isAudioSample('clip.webm')).toBe(false);
+        expect(c.isAudioSample('wav-but-not-ext.png')).toBe(false);
+        expect(c.isAudioSample('')).toBe(false);
+        expect(c.isAudioSample(null)).toBe(false);
+        expect(c.isAudioSample(undefined)).toBe(false);
+    });
+});
+
 describe('JobsScreen.sampleMuted', () => {
     it('defaults muted and toggles', () => {
         const comp = setup().comp as unknown as {
@@ -195,6 +223,29 @@ describe('JobsScreen lightbox rendering', () => {
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('[data-testid="sample-video-thumb"]')).toBeTruthy();
     });
+
+    it('renders an <audio controls> (no mute toggle) for a wav sample', () => {
+        const el: HTMLElement = open('sample_step7.wav').nativeElement;
+        const audio = el.querySelector('[data-testid="lightbox-audio"]');
+        expect(audio).toBeTruthy();
+        expect(audio!.tagName.toLowerCase()).toBe('audio');
+        expect(audio!.hasAttribute('controls')).toBe(true);
+        expect(el.querySelector('[data-testid="lightbox-img"]')).toBeNull();
+        expect(el.querySelector('[data-testid="lightbox-video"]')).toBeNull();
+        expect(el.querySelector('[data-testid="lightbox-mute"]')).toBeNull();
+    });
+
+    it('strip shows an audio-thumb placeholder for audio samples', () => {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        (comp as unknown as { samplesByJob: { set: (m: Map<string, unknown>) => void } })
+            .samplesByJob.set(new Map([[JOB_ID, [{ filename: 'sample.wav', step: 7 }]]]));
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('[data-testid="sample-audio-thumb"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="sample-video-thumb"]')).toBeNull();
+    });
 });
 
 /**
@@ -248,6 +299,56 @@ describe('JobsScreen sample prompt attribution', () => {
         fixture.detectChanges();
         expect((fixture.nativeElement as HTMLElement)
             .querySelector('[data-testid="lightbox-prompt"]')).toBeNull();
+    });
+
+    it('prompt chip works identically for an audio (.wav) sample', () => {
+        const { fixture } = seed([{ filename: 'sample_01_step000050.wav', step: 50, index: 1, prompt: PROMPT }]);
+        const tag = (fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="sample-prompt-tag"]');
+        expect(tag).toBeTruthy();
+        expect(tag!.textContent).toContain('P1');
+        expect(tag!.getAttribute('title')).toBe(PROMPT);
+    });
+});
+
+/**
+ * Lyrics — audio samples (ace_step15) additionally carry `lyrics` alongside
+ * `prompt`. Shown in the lightbox under the prompt line when present.
+ */
+describe('JobsScreen sample lyrics attribution', () => {
+    const PROMPT = 'upbeat synth pop';
+    const LYRICS = 'verse one\nchorus';
+
+    function seed(samples: unknown[]): { fixture: ComponentFixture<JobsScreen>; comp: JobsScreen } {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        (comp as unknown as { samplesByJob: { set: (m: Map<string, unknown>) => void } })
+            .samplesByJob.set(new Map([[JOB_ID, samples]]));
+        fixture.detectChanges();
+        return { fixture, comp };
+    }
+
+    it('lightbox shows lyrics text under the prompt when present', () => {
+        const sample = { filename: 'sample_00_step000050.wav', step: 50, index: 0, prompt: PROMPT, lyrics: LYRICS };
+        const { fixture, comp } = seed([sample]);
+        (comp as unknown as { openSample: (s: unknown) => void }).openSample(sample);
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        const lyricsEl = el.querySelector('[data-testid="lightbox-lyrics"]');
+        expect(lyricsEl).toBeTruthy();
+        expect(lyricsEl!.textContent).toContain('verse one');
+        // Prompt line still renders alongside lyrics.
+        expect(el.querySelector('[data-testid="lightbox-prompt"]')!.textContent).toContain(PROMPT);
+    });
+
+    it('lightbox omits the lyrics element when absent (instrumental)', () => {
+        const sample = { filename: 'sample_00_step000050.wav', step: 50, index: 0, prompt: 'instrumental lo-fi' };
+        const { fixture, comp } = seed([sample]);
+        (comp as unknown as { openSample: (s: unknown) => void }).openSample(sample);
+        fixture.detectChanges();
+        expect((fixture.nativeElement as HTMLElement)
+            .querySelector('[data-testid="lightbox-lyrics"]')).toBeNull();
     });
 });
 
@@ -316,6 +417,24 @@ describe('JobsScreen sample grouping', () => {
         (el.querySelector('[data-testid="sample-group-by-step"]') as HTMLButtonElement).click();
         fixture.detectChanges();
         expect(el.querySelector('[data-testid="sample-prompt-group"]')).toBeNull();
+    });
+
+    it('by-prompt grouping works identically for audio (.wav) samples', () => {
+        const { fixture } = seed([
+            { filename: 'sample_00_step000100.wav', step: 100, index: 0, prompt: 'synth pop' },
+            { filename: 'sample_01_step000100.wav', step: 100, index: 1, prompt: 'lo-fi beat' },
+            { filename: 'sample_00_step000000.wav', step: 0, index: 0, prompt: 'synth pop' },
+            { filename: 'sample_01_step000000.wav', step: 0, index: 1, prompt: 'lo-fi beat' },
+        ]);
+        const el: HTMLElement = fixture.nativeElement;
+        (el.querySelector('[data-testid="sample-group-by-prompt"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+
+        const rows = el.querySelectorAll('[data-testid="sample-prompt-group"]');
+        expect(rows.length).toBe(2);
+        expect(rows[0].textContent).toContain('P0');
+        expect(rows[1].textContent).toContain('P1');
+        expect(el.querySelectorAll('[data-testid="sample-audio-thumb"]').length).toBe(4);
     });
 });
 

@@ -240,6 +240,14 @@
                                         class="sample-img"
                                         [src]="sampleImageUrl(j.id, s.filename)"
                                         data-testid="sample-video-thumb" />
+                                } @else if (isAudioSample(s.filename)) {
+                                    <!-- Audio sample: static waveform-glyph tile (no visual thumbnail
+                                         exists for audio) with a cheap duration badge. Clicking still
+                                         opens the lightbox, where the real <audio controls> player lives. -->
+                                    <app-sample-audio-preview
+                                        class="sample-img"
+                                        [src]="sampleImageUrl(j.id, s.filename)"
+                                        data-testid="sample-audio-thumb" />
                                 } @else {
                                     <img class="sample-img"
                                          [src]="sampleImageUrl(j.id, s.filename)"
@@ -467,11 +475,18 @@
                 </div>
                 @if (isVideoSample(modal.filename)) {
                     <video class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" controls loop autoplay [muted]="sampleMuted()" playsinline data-testid="lightbox-video"></video>
+                } @else if (isAudioSample(modal.filename)) {
+                    <!-- Audio sample: native controls, no mute-toggle affordance (that's a
+                         video-only concept — audio always plays with sound by design). -->
+                    <audio class="lightbox-audio" [src]="sampleImageUrl(j.id, modal.filename)" controls autoplay data-testid="lightbox-audio"></audio>
                 } @else {
                     <img class="lightbox-img" [src]="sampleImageUrl(j.id, modal.filename)" [alt]="'sample ' + (modal.step ?? '')" data-testid="lightbox-img"/>
                 }
                 @if (modal.prompt) {
                     <p class="lightbox-prompt mono" data-testid="lightbox-prompt">P{{ modal.index ?? 0 }} · {{ modal.prompt }}</p>
+                }
+                @if (modal.lyrics) {
+                    <p class="lightbox-lyrics mono" data-testid="lightbox-lyrics">{{ modal.lyrics }}</p>
                 }
             </div>
         </div>

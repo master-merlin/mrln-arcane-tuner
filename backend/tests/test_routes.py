@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # ── Plugin Routes ────────────────────────────────────────────────────────
 
@@ -527,6 +529,210 @@ def test_get_sample_image_serves_video_content_type(mock_to_thread, mock_jm, cli
     response = client.get("/api/jobs/job-1/samples/sample_00_step000000.mp4")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("video/mp4")
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_includes_audio(mock_to_thread, mock_jm, client, tmp_path):
+    """Audio (.wav) samples must be listed too — ace_step15 writes
+    sample_NN_stepNNNNNN.wav files that the old image/video-only filter
+    silently dropped (C1 handoff)."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ace-step15-turbo"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000000.wav").write_bytes(b"RIFF....WAVEfmt ")
+    (sdir / "sample_00_step000250.png").write_bytes(b"\x89PNG\r\n")
+    (sdir / "notes.txt").write_text("ignored")  # non-media is skipped
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    names = {s["filename"] for s in response.json()}
+    assert names == {"sample_00_step000000.wav", "sample_00_step000250.png"}
+
+
+@pytest.mark.parametrize(
+    "ext,fixture_bytes",
+    [
+        (".wav", b"RIFF....WAVEfmt "),
+        (".flac", b"fLaC\x00\x00\x00\x22"),
+        (".ogg", b"OggS\x00\x02\x00\x00"),
+        (".mp3", b"ID3\x03\x00\x00\x00"),
+        (".opus", b"OggS\x00\x02\x00\x00"),
+    ],
+)
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_includes_every_audio_extension(
+    mock_to_thread, mock_jm, client, tmp_path, ext, fixture_bytes
+):
+    """Every extension in the audio set (mirroring the C0 dataset layer's
+    AUDIO_EXTENSIONS: .wav/.flac/.ogg/.mp3/.opus) is listed, not just .wav —
+    samplers only emit .wav today but the filter future-proofs for later
+    output-format options."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ace-step15-turbo"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    filename = f"sample_00_step000000{ext}"
+    (sdir / filename).write_bytes(fixture_bytes)
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    names = {s["filename"] for s in response.json()}
+    assert filename in names
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_final_audio_sorts_first(mock_to_thread, mock_jm, client, tmp_path):
+    """The end-of-run final AUDIO sample (sample_NN_final.wav) must be listed
+    and parsed as final (step 999999 → sorts to the top), same as
+    image/video families' sample_NN_final.*."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ace-step15-turbo"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000050.wav").write_bytes(b"RIFF....WAVEfmt ")
+    (sdir / "sample_00_final.wav").write_bytes(b"RIFF....WAVEfmt ")
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    samples = response.json()
+    by_name = {s["filename"]: s for s in samples}
+    assert "sample_00_final.wav" in by_name
+    assert by_name["sample_00_final.wav"]["step"] == 999999  # final → sorts first
+    assert samples[0]["filename"] == "sample_00_final.wav"
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_carries_lyrics_by_index(mock_to_thread, mock_jm, client, tmp_path):
+    """Audio samples additionally carry the `lyrics` text from the matching
+    sample_prompts[index] entry (SamplePromptConfig.lyrics), alongside the
+    existing `prompt` attribution. Non-audio samples and prompts with no
+    lyrics set (instrumental) degrade to lyrics=None."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ace-step15-turbo"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000050.wav").write_bytes(b"RIFF....WAVEfmt ")
+    (sdir / "sample_01_step000050.wav").write_bytes(b"RIFF....WAVEfmt ")
+    (sdir / "sample_02_step000050.wav").write_bytes(b"RIFF....WAVEfmt ")
+
+    mock_job = MagicMock()
+    mock_job.config = {
+        "output_dir": str(tmp_path),
+        "lora_name": "test",
+        "definition_id": defn,
+        "sample_prompts": [
+            {"prompt": "upbeat synth pop", "lyrics": "verse one\nchorus"},
+            {"prompt": "instrumental lo-fi", "lyrics": None},
+            {"prompt": "ambient drone"},  # no lyrics key at all
+        ],
+    }
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    by_name = {s["filename"]: s for s in response.json()}
+    assert by_name["sample_00_step000050.wav"]["prompt"] == "upbeat synth pop"
+    assert by_name["sample_00_step000050.wav"]["lyrics"] == "verse one\nchorus"
+    assert by_name["sample_01_step000050.wav"]["lyrics"] is None
+    assert by_name["sample_02_step000050.wav"]["lyrics"] is None
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_list_job_samples_video_and_image_lyrics_always_none(mock_to_thread, mock_jm, client, tmp_path):
+    """Non-audio samples never surface lyrics even if a (malformed) config
+    somehow set one — lyrics is only meaningful for audio families."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ltx2-3-base"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+    (sdir / "sample_00_step000050.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    (sdir / "sample_00_step000050.png").write_bytes(b"\x89PNG\r\n")
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    response = client.get("/api/jobs/job-1/samples")
+    assert response.status_code == 200
+    for s in response.json():
+        assert s["lyrics"] is None
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_get_sample_image_serves_audio_content_type(mock_to_thread, mock_jm, client, tmp_path):
+    """Audio samples are served with an audio/* content-type (never the old
+    hard-coded image/png) so the frontend <audio> element can play them."""
+    from app.core.naming import model_part_from_definition_id
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+
+    defn = "ace-step15-turbo"
+    sdir = tmp_path / f"test_{model_part_from_definition_id(defn)}" / "samples"
+    sdir.mkdir(parents=True)
+
+    mock_job = MagicMock()
+    mock_job.config = {"output_dir": str(tmp_path), "lora_name": "test", "definition_id": defn}
+    mock_jm.get_job.return_value = mock_job
+
+    fixtures = {
+        "sample_00_step000000.wav": b"RIFF....WAVEfmt ",
+        "sample_00_step000001.flac": b"fLaC\x00\x00\x00\x22",
+        "sample_00_step000002.ogg": b"OggS\x00\x02\x00\x00",
+        "sample_00_step000003.mp3": b"ID3\x03\x00\x00\x00",
+    }
+    for filename, data in fixtures.items():
+        (sdir / filename).write_bytes(data)
+        response = client.get(f"/api/jobs/job-1/samples/{filename}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("audio/"), (
+            f"{filename} served as {response.headers['content-type']!r}"
+        )
 
 
 # ── Resumable checkpoint .zip download ──────────────────────────────────

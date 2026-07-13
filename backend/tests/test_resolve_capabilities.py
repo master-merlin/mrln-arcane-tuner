@@ -91,6 +91,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "chroma": (True, True),  # latent_diffusion MMDiT (FLUX.1-schnell VAE) + external T5-XXL TE (no TE training)
     "lumina2": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Gemma-2-2B TE (no TE training)
     "omnigen2": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen2.5-VL-3B mllm TE, text-only use (no TE training)
+    "nucleus_image": (True, True),  # latent_diffusion sparse-MoE DiT (AutoencoderKLQwenImage) + external Qwen3-VL TE, text-only use (no TE training)
 }
 
 

@@ -1,0 +1,197 @@
+# Nucleus-Image — NucleusAI's 17B sparse-MoE DiT (~2B active per token,
+# expert-choice routing, 64 routed experts + 1 shared expert per MoE block)
+# with a frozen Qwen3-VL text encoder (~8.8B). Apache-2.0.
+#
+# Model classes are NATIVE in diffusers 0.39.0 (no vendoring, no
+# trust_remote_code) — verified against the INSTALLED package:
+# diffusers/models/transformers/transformer_nucleusmoe_image.py +
+# diffusers/pipelines/nucleusmoe_image/pipeline_nucleusmoe_image.py.
+#
+# All facts below verified against the live HF repo (NucleusAI/Nucleus-Image,
+# 2026-07-13): model_index.json + transformer/text_encoder/scheduler/vae
+# config.json (fetched directly via the HF resolve/raw endpoints — no
+# download needed). File sizes from the HF tree API (bytes/1e6, actual
+# on-disk shard sizes, NOT downloaded weights).
+id: nucleus-image
+family: nucleus_image
+name: Nucleus-Image
+version: '1.0'
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-5
+  # NucleusMoEImagePipeline.__call__ native defaults
+  # (pipeline_nucleusmoe_image.py signature lines 381-403;
+  # default_sample_size=128, vae_scale_factor=8 -> 128*8=1024).
+  num_inference_steps: 50
+  guidance_scale: 4.0
+components:
+  repo:
+    path: huggingface:NucleusAI/Nucleus-Image
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # -- Transformer (checkpoint transformer/config.json) --
+  transformer._class_name: NucleusMoEImageTransformer2DModel
+  transformer.patch_size: 2
+  transformer.in_channels: 64
+  transformer.out_channels: 16
+  transformer.num_layers: 32
+  transformer.attention_head_dim: 128
+  transformer.num_attention_heads: 16
+  transformer.num_key_value_heads: 4
+  transformer.joint_attention_dim: 4096
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.mlp_ratio: 4.0
+  transformer.moe_enabled: true
+  # First 3 blocks (idx 0-2) dense, remaining 29 (idx 3-31) MoE — matches
+  # _is_moe_layer()'s "leave_first_three_blocks_dense" strategy exactly.
+  transformer.dense_moe_strategy: leave_first_three_blocks_dense
+  transformer.num_experts: 64
+  transformer.moe_intermediate_dim: 1344
+  # Per-layer expert-choice capacity factor — 0.0 for the 3 dense layers
+  # (unused there), 4.0 for the first 2 MoE layers (idx 3-4, 2x capacity),
+  # 2.0 for the remaining 27 MoE layers (idx 5-31).
+  transformer.capacity_factors:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 4.0
+  - 4.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  - 2.0
+  transformer.use_sigmoid: false
+  transformer.route_scale: 2.5
+  # Present in the shipped checkpoint config; NOT force-disabled by our
+  # driver/trainer (see driver.py module docstring §8) — the native class's
+  # own hasattr(F, "grouped_mm") dispatch decides at runtime, with a
+  # correctness-safe pure-Python fallback either way. Docker/cu126-fallback
+  # F.grouped_mm availability is a GPU/docker-UAT verification item, not a
+  # code-path decision baked into this YAML.
+  transformer.use_grouped_mm: true
+  # Generic activation-estimate hints
+  hidden_size: 2048
+  depth: 32
+  in_channels: 64
+  context_dim: 4096
+  # -- Text encoder (checkpoint text_encoder/config.json — Qwen3-VL,
+  #    text-only mode; the vision tower ships in the same checkpoint but is
+  #    unused for text-conditioning here, same pattern as krea2/dreamlite) --
+  te.type: qwen3_vl
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.hidden_size: 4096
+  te.num_hidden_layers: 36
+  te.num_attention_heads: 32
+  te.num_key_value_heads: 8
+  te.head_dim: 128
+  te.intermediate_size: 12288
+  te.vocab_size: 151936
+  te.torch_dtype: bfloat16
+  # NucleusMoEImagePipeline.__init__ default_return_index (line 176) —
+  # hidden_states[-8], NOT the last layer.
+  te.hidden_state_tap_index: -8
+  # NucleusMoEImagePipeline.__init__ default_max_sequence_length (line 175)
+  # — the __call__ docstring claims 512, but the ACTUAL runtime default
+  # (read from __init__) is 1024. See driver.py module docstring §2.
+  te.max_sequence_length: 1024
+  # processor/ ships a Qwen3-VL BPE tokenizer (tokenizer.json + merges.txt +
+  # vocab.json) plus chat_template.json — model_index.json pins
+  # Qwen3VLProcessor (NOT a bare tokenizer; apply_chat_template is required,
+  # see driver.py module docstring §1).
+  te.processor_class: Qwen3VLProcessor
+  # -- Scheduler (checkpoint scheduler/scheduler_config.json) --
+  # STATIC shift (use_dynamic_shifting=false, shift=1.0) — NOT lumina2's
+  # 6.0, NOT resolution-dependent dynamic shifting like flux1/ovis_image.
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 1.0
+  scheduler.use_dynamic_shifting: false
+  scheduler.base_shift: 0.5
+  scheduler.max_shift: 1.15
+  scheduler.base_image_seq_len: 256
+  scheduler.max_image_seq_len: 4096
+  scheduler.invert_sigmas: false
+  scheduler.shift_terminal:
+  scheduler.use_beta_sigmas: false
+  scheduler.use_karras_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.time_shift_type: exponential
+  # -- VAE (checkpoint vae/config.json — AutoencoderKLQwenImage, the SAME
+  #    3-D causal VAE class already resident for the qwen_image family) --
+  vae._class_name: AutoencoderKLQwenImage
+  vae.base_dim: 96
+  vae.dim_mult:
+  - 1
+  - 2
+  - 4
+  - 4
+  vae.num_res_blocks: 2
+  vae.temperal_downsample:
+  - false
+  - true
+  - true
+  vae.z_dim: 16
+  vae.latent_channels: 16
+  vae.vae_scale_factor: 8
+# Real on-disk shard sizes (HF tree API, bytes/1e6 — no download needed):
+# transformer 7-shard bf16 (33845.43MB total), text_encoder 4-shard bf16
+# (17534.34MB total), vae single-shard (253.81MB).
+model_size_mb:
+  transformer: 33845.43
+  text_encoder: 17534.34
+  vae: 253.81
+# CONTROLLER-PINNED scope: attention + shared/dense FFN nn.Linear modules
+# ONLY. The MoE router gate (NucleusMoELayer.gate) is deliberately EXCLUDED
+# — see driver.py module docstring §7 for the full rationale. This list
+# MUST match NucleusImageDriver.get_lora_targets() exactly (enforced by
+# test_definition_ships_curated_target_list_matching_driver).
+lora_targetable_modules:
+- attn.to_q
+- attn.to_k
+- attn.to_v
+- attn.to_out.0
+- attn.add_k_proj
+- attn.add_v_proj
+- img_mlp.net.0.proj
+- img_mlp.net.2
+- shared_expert.net.0.proj
+- shared_expert.net.2
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 32
+  approx_vram_mb: 900

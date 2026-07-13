@@ -52,6 +52,7 @@ D:/AI/huggingface/hub, unless noted):
   dreamlite         text_encoder     Qwen3VLForConditionalGeneration      Qwen3VLForConditionalGeneration
   ideogram4         text_encoder     Qwen3VLForConditionalGeneration      Qwen3VLForConditionalGeneration*
   boogu_image       text_encoder     Qwen3VLForConditionalGeneration      Qwen3VLForConditionalGeneration (mllm/)
+  nucleus_image     text_encoder     Qwen3VLForConditionalGeneration      Qwen3VLForConditionalGeneration
   krea2             text_encoder     Qwen3VLModel (hand-loaded, see below)Qwen3VLModel
   prx_pixel         text_encoder     Qwen3VLTextModel                     Qwen3VLTextModel
   qwen_image        text_encoder     Qwen2_5_VLForConditionalGeneration   Qwen2_5_VLForConditionalGeneration
@@ -402,6 +403,8 @@ CASES: list[_Case] = [
           "transformers.Gemma2Model", "Gemma2Model"),
     _Case("omnigen2", _m("omnigen2"), "OmniGen2Loader", "text_encoder",
           "transformers.Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLForConditionalGeneration"),
+    _Case("nucleus_image", _m("nucleus_image"), "NucleusImageLoader", "text_encoder",
+          "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

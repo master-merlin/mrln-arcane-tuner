@@ -280,36 +280,32 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "vae": 0.08,  # FLUX-style AutoencoderKL, ~84M params (fp32 on disk)
     },
     "ace_step15": {
-        # Meta-instantiated diffusers 0.39 AceStepTransformer1DModel +
-        # AceStepConditionEncoder + AutoencoderOobleck with the turbo
-        # checkpoint's verified config (see C1 report / definitions/base.yaml
-        # architecture_params): transformer 1.575B, condition_encoder 0.608B
-        # (counted into the text-encoder sum — it's part of the "text
-        # encoding" pipeline for offload purposes, see driver.py's
-        # get_text_encoders), vae 0.156B. text_encoder is the well-known
-        # Qwen3-Embedding-0.6B (0.6B params).
+        # Byte-verified against the REAL diffusers-native checkpoints via
+        # the HF tree API (tasks C2/C4a — see the C2/C4a report sections and
+        # definitions/base.yaml's transformer comment): the transformer figure
+        # is derived from the real on-disk bf16 shard bytes,
+        # (4,986,971,904 + 3,350,889,672) / 2 bytes-per-param = 4.169B —
+        # matching the real `transformer/config.json`
+        # (hidden_size=2560/num_hidden_layers=32/num_attention_heads=32),
+        # identical shapes on the turbo AND xl-base diffusers repos.
         #
-        # KNOWN ISSUE (found during task C2 recon, NOT fixed here — see the
-        # C2 report / definitions/xl_base.yaml's header comment): the
-        # "transformer" 1.575B figure above was derived from the WRONG
-        # upstream config (the legacy combined-wrapper `ACE-Step/Ace-Step1.5`
-        # repo's root config.json, which describes a differently-scoped
-        # `AceStepConditionGenerationModel`'s own hidden_size field). The
-        # REAL diffusers-native turbo transformer
-        # (`ACE-Step/acestep-v15-xl-turbo-diffusers/transformer/config.json`,
-        # byte-verified via the HF tree API) is hidden_size=2560/
-        # num_hidden_layers=32/num_attention_heads=32 — ~4.17B params, not
-        # 1.575B — so this fallback UNDERSTATES the turbo definition's real
-        # model_weights_mb by ~2.6x. `condition_encoder`/`text_encoder`/`vae`
-        # figures below are independently byte-verified correct (shared,
-        # byte-identical weights across turbo/base checkpoint variants).
-        # `definitions/xl_base.yaml` (task C2) sidesteps this by shipping
-        # its own `model_size_mb` rather than relying on this table. Left
-        # unfixed here because correcting it also changes the ALREADY-
-        # SHIPPED turbo definition's VRAM estimate, which is out of this
-        # task's scope (turbo definition + its established behavior must
-        # stay unchanged on this branch) — flag for a dedicated follow-up.
-        "transformer": 1.575,
+        # HISTORY (task C4a fix): C1 originally shipped "transformer": 1.575,
+        # meta-instantiated from the WRONG upstream config — the legacy
+        # combined-wrapper `ACE-Step/Ace-Step1.5` repo's root config.json,
+        # which describes the differently-scoped
+        # `AceStepConditionGenerationModel` wrapper (hidden_size=2048/24L),
+        # NOT the standalone diffusers DiT actually loaded at runtime. That
+        # understated the family's real DiT by ~2.6x. Both ace_step15
+        # definitions now also ship concrete `model_size_mb`, so this table
+        # entry is the true fallback-only path (same convention as
+        # microsoft_lens/boogu_image).
+        #
+        # condition_encoder is counted into the text-encoder sum — it's part
+        # of the "text encoding" pipeline for offload purposes (see
+        # driver.py's get_text_encoders): 1,218,676,312 bytes bf16 = 0.609B.
+        # text_encoder is the well-known Qwen3-Embedding-0.6B
+        # (1,191,586,416 bytes bf16 = 0.596B).
+        "transformer": 4.17,  # AceStepTransformer1DModel, ~4.169B (real DiT)
         "text_encoder": 0.6,  # Qwen3-Embedding-0.6B
         "text_encoder_condition": 0.608,  # AceStepConditionEncoder
         "vae": 0.156,  # AutoencoderOobleck

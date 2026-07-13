@@ -64,24 +64,33 @@ architecture_params:
   audio.acoustic_hidden_dim: 64
   audio.max_text_length: 256
   audio.max_lyric_length: 2048
-  # -- Transformer (AceStepTransformer1DModel config.json, verified via
-  # `ACE-Step/Ace-Step1.5`'s root config.json — recon report §6) --
+  # -- Transformer (AceStepTransformer1DModel — byte-verified against the
+  # REAL `ACE-Step/acestep-v15-xl-turbo-diffusers/transformer/config.json`
+  # via the HF tree/raw API, task C4a; corrects the C1 values that were
+  # sourced from the WRONG config: the legacy combined-wrapper
+  # `ACE-Step/Ace-Step1.5` repo's root config.json describes the
+  # differently-scoped `AceStepConditionGenerationModel` wrapper
+  # (hidden_size=2048/24L/16H), NOT the standalone diffusers DiT actually
+  # loaded at runtime. Same real shape as the XL base checkpoint's DiT
+  # (`definitions/xl_base.yaml`) — turbo/base share ONE architecture,
+  # different trained weights) --
   transformer._class_name: AceStepTransformer1DModel
-  transformer.hidden_size: 2048
-  transformer.intermediate_size: 6144
-  transformer.num_hidden_layers: 24
-  transformer.num_attention_heads: 16
+  transformer.hidden_size: 2560
+  transformer.intermediate_size: 9728
+  transformer.num_hidden_layers: 32
+  transformer.num_attention_heads: 32
   transformer.num_key_value_heads: 8
   transformer.head_dim: 128
   transformer.in_channels: 192
+  transformer.encoder_hidden_size: 2048
   transformer.patch_size: 2
   transformer.rope_theta: 1000000.0
   transformer.sliding_window: 128
   transformer.is_turbo: true
   transformer.model_version: turbo
   # Generic activation-estimate hints
-  hidden_size: 2048
-  depth: 24
+  hidden_size: 2560
+  depth: 32
   in_channels: 192
   # -- Condition encoder (text + lyric + timbre -> cross-attn sequence) --
   condition_encoder._class_name: AceStepConditionEncoder
@@ -109,21 +118,38 @@ architecture_params:
   # Sampling.md" citation: "shift is an inference-only parameter") --
   scheduler._class_name: FlowMatchEulerDiscreteScheduler
   scheduler.shift: 3.0
-# model_size_mb intentionally empty — the VRAM estimator falls back to the
-# meta-instantiated param counts in _FAMILY_PARAMS["ace_step15"].
-model_size_mb: {}
+# Real on-disk bf16 component sizes (HF tree API byte counts, task C4a —
+# same numbers `definitions/xl_base.yaml` ships; the two checkpoints'
+# shards are byte-identical in SIZE, different in content). Previously
+# intentionally empty, which routed the estimator to the
+# `_FAMILY_PARAMS["ace_step15"]` fallback — whose transformer figure was
+# derived from the same wrong config as the old architecture_params above
+# and understated the real DiT ~2.6x. Shipping concrete sizes here makes
+# the definition self-contained (the estimator prefers `model_size_mb`).
+#   - transformer: (4,986,971,904 + 3,350,889,672) bytes / 1024^2 ≈ 7951.6 MB
+#   - text_encoder: Qwen3-Embedding-0.6B (1,191,586,416 B ≈ 1136 MB) +
+#     AceStepConditionEncoder (1,218,676,312 B ≈ 1162 MB) summed into one
+#     "text_encoder" slot — both load together during TE caching
+#     (`driver.get_text_encoders()` returns both).
+#   - vae: 337,431,388 bytes ≈ 322 MB
+model_size_mb:
+  transformer: 7951.6
+  text_encoder: 2298
+  vae: 322
 block_topology:
 - name: layers
   attr_path: layers
-  count: 24
-  approx_vram_mb: 130
+  count: 32
+  approx_vram_mb: 249
 # Curated LoRA target surface — bare SUFFIX list (safe: `to_q`/`to_k`/`to_v`/
 # `to_out.0` are UNIQUE names within the transformer; unlike Kandinsky5 there
 # is no frozen sibling stack sharing them, so a suffix match cannot bleed
 # outside the DiT). PEFT suffix-matches this across BOTH self_attn AND
-# cross_attn in all 24 layers = 192 Linear modules = 384 lora_A/B keys.
-# Verified against the meta-instantiated real config (see recon report /
-# C1 report for the introspection transcript).
+# cross_attn in all 32 layers = 256 Linear modules = 512 lora_A/B keys
+# (corrected in C4a alongside the architecture_params above — the C1
+# comment's "24 layers = 192 modules = 384 keys" figures came from the
+# same wrong config; the suffix CONTRACT itself was and is correct, only
+# the counts change with the real 32-layer depth).
 # MUST stay non-empty: registry.enrich_definition only auto-fills an EMPTY
 # list, and the introspector's exhaustive Linear catalog (time embedders,
 # condition_embedder, ...) would otherwise replace this curated surface at

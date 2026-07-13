@@ -32,23 +32,17 @@
 #     and text_encoder/; condition_encoder/ is same shape+size, different
 #     trained weights) — a single condition/VAE tower shared across turbo/
 #     base checkpoints. Only the DiT (`transformer/`) differs in content.
-#   - IMPORTANT CORRECTION vs the ALREADY-SHIPPED turbo definition: this
-#     definition's `transformer.*` architecture_params below are the
-#     BYTE-VERIFIED real numbers (hidden_size=2560, layers=32, heads=32) —
-#     do NOT copy the turbo definition's transformer.* block, which
-#     documents a SMALLER architecture (hidden_size=2048/layers=24/heads=16)
-#     that was sourced from the wrong config (the legacy combined-wrapper
-#     `ACE-Step/Ace-Step1.5` repo's root `config.json`, which describes a
-#     different, larger `AceStepConditionGenerationModel` wrapper's own
-#     hidden_size field — NOT the standalone DiT's real shape). The turbo
-#     checkpoint's OWN `transformer/config.json` on
-#     `acestep-v15-xl-turbo-diffusers` is ALSO hidden_size=2560/layers=32/
-#     heads=32 (byte-verified same shapes as this base definition, just
-#     different trained weights) — turbo and base share ONE DiT
-#     architecture. This is a pre-existing documentation/VRAM-estimator-
-#     fallback bug in the shipped turbo definition, flagged in the C2
-#     report; NOT fixed here per the hard rule (turbo definition stays
-#     byte-unchanged on this branch).
+#   - The `transformer.*` architecture_params below are the BYTE-VERIFIED
+#     real numbers (hidden_size=2560, layers=32, heads=32). Turbo and base
+#     share ONE DiT architecture (byte-verified same shapes on both
+#     diffusers repos, different trained weights). Historical note: C1's
+#     turbo definition originally documented a smaller shape
+#     (hidden_size=2048/24L/16H) sourced from the wrong config — the legacy
+#     combined-wrapper `ACE-Step/Ace-Step1.5` repo's root `config.json`,
+#     which describes the differently-scoped
+#     `AceStepConditionGenerationModel` wrapper, not the standalone DiT.
+#     Fixed in task C4a (turbo's base.yaml + the VRAM-estimator fallback
+#     now carry the same corrected values as this file).
 #
 # Upstream inference defaults (`ACE-Step/acestep-v15-xl-base-diffusers`
 # model card, task C2 recon): "num_inference_steps=50, guidance_scale=7.0,
@@ -165,13 +159,11 @@ architecture_params:
   scheduler._class_name: FlowMatchEulerDiscreteScheduler
   scheduler.shift: 3.0
 # Real on-disk bf16 component sizes (HF tree API, task C2 recon — see header
-# comment). SHIPPED HERE (unlike the turbo definition's empty
-# `model_size_mb: {}`) specifically so this definition's VRAM estimate is
-# self-contained and does NOT fall back to
-# `_FAMILY_PARAMS["ace_step15"]["transformer"]` (1.575 B) — that fallback is
-# calibrated to the turbo definition's (incorrect, pre-existing, NOT fixed
-# here) smaller documented shape and would silently understate this
-# definition's real ~4.17 B-parameter DiT by ~2.6x.
+# comment). Shipped so this definition's VRAM estimate is self-contained
+# (the estimator prefers `model_size_mb` over the `_FAMILY_PARAMS`
+# fallback). Since the C4a fix, the family fallback (transformer ~4.17 B)
+# and the turbo definition's own `model_size_mb` agree with these numbers —
+# the shards are byte-size-identical across the two checkpoint variants.
 #   - transformer: (4,986,971,904 + 3,350,889,672) bytes / 1024^2 ≈ 7952 MB
 #   - text_encoder: Qwen3-Embedding-0.6B (1,191,586,416 B ≈ 1136 MB) +
 #     AceStepConditionEncoder (1,218,676,312 B ≈ 1162 MB) summed into one

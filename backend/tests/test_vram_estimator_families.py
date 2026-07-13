@@ -167,20 +167,34 @@ def test_dreamlite_estimator_entry():
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
 
 
-def test_ace_step15_xl_base_ships_own_model_size_mb_beating_stale_fallback():
-    """Task C2: ``ace-step-1.5-xl-base`` ships real on-disk ``model_size_mb``
-    (transformer=7952 MB) specifically because
-    ``_FAMILY_PARAMS["ace_step15"]["transformer"]`` (1.575 B) is a KNOWN-
-    STALE fallback for this family (see that table entry's comment) — it
-    was derived from the wrong upstream config and understates the real
-    ~4.17 B-parameter DiT by ~2.6x. This definition's OWN model_size_mb must
-    drive the estimate, not the family fallback: 7952 MB bf16 far exceeds
-    what the stale 1.575 B fallback would produce (~3000 MB)."""
-    defn = registry.get_definition("ace-step-1.5-xl-base")
-    assert defn is not None
-    d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
-    assert d["model_weights_mb"] == pytest.approx(7952, rel=0.01)
-    assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
+def test_ace_step15_corrected_entry_and_both_definitions_estimate_realistically():
+    """Task C4a: the ``_FAMILY_PARAMS["ace_step15"]["transformer"]`` fallback
+    is CORRECTED to the real ~4.17 B DiT (C1 shipped 1.575 B, derived from
+    the wrong upstream config — see the table entry's HISTORY comment), and
+    BOTH shipped definitions now carry concrete on-disk ``model_size_mb``
+    (transformer ≈ 7952 MB bf16), so the table entry is a true fallback-only
+    path. Pins: (1) the corrected fallback value; (2) each definition's own
+    model_size_mb drives its estimate (≈ 7952 MB — which now AGREES with
+    what the corrected fallback would produce, ~4.17 B × 2 bytes ≈ 7954 MB,
+    instead of contradicting it by ~2.6x); (3) TE fallback sums the
+    Qwen3-Embedding + condition-encoder entries."""
+    assert _get_primary_params("ace_step15", {}) == pytest.approx(4.17)
+    assert _get_te_params("ace_step15") == pytest.approx(1.208)
+    assert _get_vae_params("ace_step15") == pytest.approx(0.156)
+
+    for def_id in ("ace-step-1.5", "ace-step-1.5-xl-base"):
+        defn = registry.get_definition(def_id)
+        assert defn is not None, f"definition {def_id} not found"
+        assert defn.model_size_mb.get("transformer", 0) > 0, (
+            f"{def_id}: model_size_mb.transformer missing — the definition "
+            "must stay self-contained (estimator prefers model_size_mb)"
+        )
+        d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+        assert d["model_weights_mb"] == pytest.approx(7952, rel=0.01), (
+            def_id,
+            d["model_weights_mb"],
+        )
+        assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
 
 
 def test_microsoft_lens_fallback_matches_on_disk_sizes():

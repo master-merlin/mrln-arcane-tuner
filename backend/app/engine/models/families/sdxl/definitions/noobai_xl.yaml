@@ -7,9 +7,10 @@ defaults:
   # on a large Danbooru/e621-tagged corpus. This is the FINAL epsilon-
   # prediction release in the eps line (noobai-XL-0.6 -> 0.77 -> 1.0 -> 1.1);
   # Laxhar's parallel V-Pred line (noobai-XL-Vpred-1.0 et al) is a separately
-  # trained checkpoint family, NOT interchangeable with this one -- and see
-  # the A3b recon (backend/.agent report) for why this family's trainer/
-  # sampler cannot correctly run a v-pred checkpoint yet regardless.
+  # trained checkpoint family, NOT interchangeable with this one -- and
+  # regardless, this family cannot correctly run a v-pred checkpoint yet:
+  # SDXLTrainer.compute_target hardcodes the epsilon objective (no v-pred
+  # branch), so a v-pred definition would silently train the wrong target.
   # License: fair-ai-public-license-1.0-sd (repo tag `license:other`;
   # resolved via the model card/README on huggingface.co/Laxhar/noobai-XL-1.1).
   resolution: 1024

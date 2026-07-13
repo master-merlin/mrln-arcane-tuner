@@ -273,13 +273,11 @@ class AceStep15Sampler(GenericSamplingPipeline):
 
         C3 DEPENDENCY — jobs-API visibility: the returned artifact is
         persisted by ``GenericSamplingPipeline._persist_artifact`` as
-        ``samples/sample_XX_stepNNNNNN.wav``, but the jobs API does NOT
-        surface it yet: ``app/api/training/job_routes.py``'s
-        ``_SAMPLE_EXTENSIONS`` has no ``.wav`` entry, so ``list_job_samples``
-        silently skips every audio preview (the file IS on disk and correct).
-        Task C3 (frontend audio sample tile) owns extending
-        ``_SAMPLE_EXTENSIONS`` + the ``get_sample_image`` content-type
-        handling — deliberately NOT patched from this branch.
+        ``samples/sample_XX_stepNNNNNN.wav``. Since task C3
+        (``app/api/training/job_routes.py:339-345``), ``_SAMPLE_EXTENSIONS``
+        includes ``.wav``/``.flac``/``.ogg``/``.mp3``/``.opus``, so
+        ``list_job_samples`` (and the frontend's audio-sample tile) already
+        serves these previews — no further wiring is needed from this file.
         """
         driver: AceStep15Driver = self.pipeline.driver
         vae = driver.vae

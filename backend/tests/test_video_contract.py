@@ -28,6 +28,7 @@ def _loaded_registry():
 LTX2 = "ltx2-3-base"
 WAN21_T2V = "wan2.1-t2v-1.3b"
 WAN21_I2V = "wan2.1-i2v-14b-720p"
+WAN21_I2V_480P = "wan2.1-i2v-14b-480p"
 WAN22_T2V = "wan2.2-t2v-a14b"
 SDXL = "sdxl_base_1.0"
 
@@ -125,6 +126,7 @@ def test_reject_i2v_on_t2v_only_model():
 
 def test_allow_i2v_on_capable_models():
     assert validate_video_config(_defn(WAN21_I2V), {"video_mode": "i2v"}).ok
+    assert validate_video_config(_defn(WAN21_I2V_480P), {"video_mode": "i2v"}).ok
     assert validate_video_config(_defn(LTX2), {"video_mode": "i2v"}).ok
 
 

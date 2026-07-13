@@ -1,3 +1,46 @@
+# Provenance: Wan-AI/Wan2.2-TI2V-5B-Diffusers (HF raw configs, recon
+# 2026-07-12, A5 program item -- see .agent/workdir/a5-report.md).
+#
+# This is WAN 2.2's DENSE 5B checkpoint -- NOT a wan22 MoE delta and NOT a
+# wan21 variant (own family: wan22_ti2v_5b). model_index.json:
+# _class_name WanPipeline (t2v pipeline lineage), transformer_2: null (single
+# dense transformer, no expert routing/MoE), boundary_ratio: null,
+# expand_timesteps: true -- the checkpoint-level marker for the i2v
+# conditioning scheme described below.
+#
+# VAE is an all-new higher-compression design vs wan21/wan22's shared 8x-
+# spatial/16-channel VAE (see wan_shared/vae_utils.py's guard comment):
+# vae/config.json gives scale_factor_spatial 16 (was 8), z_dim 48 (was 16).
+# transformer.in_channels/out_channels are therefore BOTH 48 in every mode --
+# there is no separate 36-channel mask+cond concat like wan21/wan22 i2v use;
+# in_channels == z_dim always here. transformer.image_dim: null -- there is
+# no CLIP vision tower for this family, ever. Temporal compression stays 4x
+# (frame rule unchanged: 4n+1), so only the spatial/channel math differs.
+# vae.latents_mean / vae.latents_std below are the real 48-element arrays
+# from vae/config.json, embedded verbatim (NOT the wan21/wan22 16-element
+# versions).
+#
+# i2v conditioning ("expand_timesteps"): diffusers 0.39's
+# pipelines/wan/pipeline_wan_i2v.py substitutes the clean encoded condition
+# into frame 0 of the latent at every denoise step and builds a per-token
+# [B, F*gh*gw] timestep grid with frame-0 tokens pinned to 0
+# (transformer_wan.py's WanTransformer3DModel.forward branches on
+# timestep.ndim == 2). Training mirrors this: driver.add_noise pins frame-0
+# noise scale to 0 when i2v-engaged, driver.forward_pass builds the matching
+# per-token timestep grid, and trainer._compute_step_loss excludes frame 0
+# from the MSE (its target is unpredictable from an un-noised input). A
+# still (F=1) on an i2v run takes the plain t2v path instead (no pinned
+# frame) -- see driver._conditioning_engaged. Full detail in
+# families/wan22_ti2v_5b/driver.py + trainer.py.
+#
+# Config sources (HF raw, recon 2026-07-12): transformer/config.json,
+# vae/config.json, scheduler/scheduler_config.json, model_index.json.
+# Meta-instantiated with the real diffusers classes: transformer
+# 4,999,787,712 params (5.000B), VAE 0.671B params (vs the old Wan-VAE's
+# 0.127B). Model card: 720p native @ 24 fps, defaults num_frames=121,
+# num_inference_steps=50, guidance_scale=5.0; scheduler is the same
+# UniPC flow-match regime as wan21/wan22 (flow_shift 5.0 here, matching the
+# 5B's native 720p class).
 id: wan2.2-ti2v-5b
 family: wan22_ti2v_5b
 name: WAN 2.2 TI2V 5B (Dense)

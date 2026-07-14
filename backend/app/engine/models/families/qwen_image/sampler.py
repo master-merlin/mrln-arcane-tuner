@@ -7,8 +7,8 @@ Key differences from the previous (broken) sampler:
    reference ``_get_qwen_prompt_embeds``.
 *  **Packed latent space** — operates in ``[B, num_patches, C*4]`` space via
    ``_pack_latents`` / ``_unpack_latents``, matching the reference pipeline.
-*  **``txt_seq_lens``** — derived from attention mask (actual valid token count),
-   not the full padded length.
+*  **Prompt mask** — ``encoder_hidden_states_mask`` carries the valid-token
+   lengths (diffusers 0.39 removed the separate ``txt_seq_lens`` argument).
 *  **VAE decode normalization** — ``z / (1/std) + mean`` with 5D
    ``[B, C, 1, H, W]`` input, taking ``[:, :, 0]`` from the output.
 *  **guidance=None** — ``guidance_embeds: false`` in model config.
@@ -202,9 +202,6 @@ class QwenImageSampler(GenericSamplingPipeline):
         # img_shapes for RoPE
         img_shapes = [[(1, lat_h // 2, lat_w // 2)]]
 
-        # txt_seq_lens from attention mask (actual valid token count)
-        txt_seq_lens = prompt_mask.sum(dim=1).tolist()
-
         # Timestep schedule
         sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
         image_seq_len = latents.shape[1]
@@ -243,7 +240,6 @@ class QwenImageSampler(GenericSamplingPipeline):
                     encoder_hidden_states_mask=prompt_mask,
                     encoder_hidden_states=prompt_embeds,
                     img_shapes=img_shapes,
-                    txt_seq_lens=txt_seq_lens,
                     return_dict=False,
                 )[0]
 

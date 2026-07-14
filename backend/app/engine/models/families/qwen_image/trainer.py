@@ -283,7 +283,7 @@ class QwenImageTrainer(GenericTrainingPipeline):
         reassembly PADS to the batch max — embeddings zero-padded, masks
         zero-padded (mask=0 == ignored position). This is byte-equivalent to
         the direct encode path, which itself re-pads to the batch max and
-        derives ``txt_seq_lens`` from ``mask.sum(dim=1)``
+        passes the mask as ``encoder_hidden_states_mask``
         (``QwenImageDriver.forward_pass``). A plain ``torch.stack`` over ragged
         entries would raise on any real mixed-length batch (W3-4).
 

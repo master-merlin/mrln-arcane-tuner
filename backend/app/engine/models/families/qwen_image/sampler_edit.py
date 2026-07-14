@@ -112,8 +112,6 @@ class QwenImageEditSampler(QwenImageSampler):
             inner_shapes.append((1, lat_h // 2, lat_w // 2))
         img_shapes = [inner_shapes]
 
-        txt_seq_lens = prompt_mask.sum(dim=1).tolist()
-
         sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
         arch = getattr(self.pipeline.definition, "architecture_params", {}) or {}
         mu = _calculate_shift(
@@ -145,7 +143,6 @@ class QwenImageEditSampler(QwenImageSampler):
                     encoder_hidden_states_mask=prompt_mask,
                     encoder_hidden_states=prompt_embeds,
                     img_shapes=img_shapes,
-                    txt_seq_lens=txt_seq_lens,
                     return_dict=False,
                 )[0]
                 # Step the TARGET tokens only (drop the control tail).

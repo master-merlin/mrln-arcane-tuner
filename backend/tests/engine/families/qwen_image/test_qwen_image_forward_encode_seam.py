@@ -68,9 +68,12 @@ class _CaptureTransformer(torch.nn.Module):
         self.config.out_channels = out_channels
         self.seen_timestep: torch.Tensor | None = None
 
+    # Signature mirrors diffusers 0.39's QwenImageTransformer2DModel.forward:
+    # txt_seq_lens was REMOVED upstream (the mask carries the lengths); passing
+    # it crashed every qwen_image train/sample on 0.39 (GPU UAT 2026-07-14).
     def forward(self, *, hidden_states, encoder_hidden_states,
                 encoder_hidden_states_mask, timestep, img_shapes,
-                txt_seq_lens, return_dict):
+                return_dict):
         self.seen_timestep = timestep.detach().clone()
         b, seq, _ = hidden_states.shape
         pdim = self.config.out_channels * self.config.patch_size ** 2

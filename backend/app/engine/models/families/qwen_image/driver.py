@@ -299,18 +299,14 @@ class QwenImageDriver(IModelDriver):
         model_timesteps = timesteps / 1000.0
         img_shapes = [(1, pH, pW)] * B
 
-        if enc_mask is not None:
-            txt_seq_lens = enc_mask.sum(dim=1).tolist()
-        else:
-            txt_seq_lens = [enc_hs.shape[1]] * B
-
+        # diffusers 0.39 removed txt_seq_lens from the transformer forward —
+        # encoder_hidden_states_mask alone carries the valid-token lengths.
         output = model(
             hidden_states=x,
             encoder_hidden_states=enc_hs,
             encoder_hidden_states_mask=enc_mask,
             timestep=model_timesteps,
             img_shapes=img_shapes,
-            txt_seq_lens=txt_seq_lens,
             return_dict=False,
         )
 

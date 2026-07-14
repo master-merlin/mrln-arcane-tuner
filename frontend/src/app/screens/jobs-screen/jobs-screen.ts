@@ -515,6 +515,18 @@ export class JobsScreen {
     protected readonly hasMultiplePrompts = computed<boolean>(
         () => this.samplePromptGroups().length > 1);
 
+    /**
+     * Samples in the ORDER THE STRIP CURRENTLY SHOWS them — the lightbox
+     * arrows navigate this list so flipping matches what the user sees:
+     * by-prompt = each prompt's timeline (steps ascending) row by row,
+     * by-step = the flat newest-first strip. (The strip only renders prompt
+     * rows when ≥2 prompts exist, so the same gate applies here.)
+     */
+    protected readonly lightboxSamples = computed<JobSampleMeta[]>(() =>
+        this.sampleGrouping() === 'prompt' && this.hasMultiplePrompts()
+            ? this.samplePromptGroups().flatMap((g) => g.samples)
+            : this.currentSamples());
+
     /** LoRA `.safetensors` artifacts (checkpoints) discovered per job. */
     protected readonly checkpointsByJob = signal<Map<string, JobCheckpointMeta[]>>(new Map());
 
@@ -806,7 +818,7 @@ export class JobsScreen {
     }
     protected navSample(dir: -1 | 1): void {
         const cur = this.sampleModal();
-        const list = this.currentSamples();
+        const list = this.lightboxSamples();
         if (!cur || list.length === 0) return;
         const idx = list.findIndex((s) => s.filename === cur.filename);
         const next = idx + dir;

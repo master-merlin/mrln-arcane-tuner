@@ -48,7 +48,6 @@ class QwenImageEditSampler(QwenImageSampler):
         token counts line up.
         """
         vae = self.pipeline.vae
-        vae_dtype = next(vae.parameters()).dtype
         num_channels = self.pipeline.transformer.config.in_channels // 4
 
         img = Image.open(path).convert("RGB")
@@ -56,6 +55,12 @@ class QwenImageEditSampler(QwenImageSampler):
         arr = torch.from_numpy(np.asarray(img, dtype=np.float32) / 127.5 - 1.0)
         arr = arr.permute(2, 0, 1).unsqueeze(0).unsqueeze(2)  # [1, 3, 1, H, W]
 
+        # Bracket the VAE with the pipeline's phased GPU management (the base
+        # _sample_single does the same for Phase-3 decode). Step-0 baseline
+        # previews run right after pre-caching offloads the VAE to CPU, so an
+        # unmanaged encode fed CUDA pixels to CPU weights (GPU UAT 2026-07-14).
+        vae_moved = self._ensure_on_gpu(["vae"])
+        vae_dtype = next(vae.parameters()).dtype
         with torch.no_grad():
             posterior = vae.encode(arr.to(self.device, dtype=vae_dtype))
         latent = (
@@ -71,6 +76,7 @@ class QwenImageEditSampler(QwenImageSampler):
         std = torch.tensor(vae.config.latents_std, device=latent.device,
                            dtype=latent.dtype).view(1, -1, 1, 1)
         latent = (latent - mean) / std
+        self._offload_to_cpu(vae_moved)
 
         return self._pack_latents(latent, 1, num_channels, lat_h, lat_w)
 

@@ -213,3 +213,60 @@ def test_xl_base_and_turbo_share_condition_encoder_and_vae_config():
         "vae.decoder_input_channels",
     ):
         assert turbo.architecture_params[key] == base.architecture_params[key], key
+
+
+# ── enrichment pins (GPU UAT regression, 2026-07-14) ─────────────────────────
+
+
+def test_both_definitions_pin_scheduler_shift_against_enrichment():
+    """`scheduler.shift: 3.0` is the MODEL CARD's recommended value; the
+    repo's own scheduler_config.json ships shift=1.0. Enrichment's
+    "harvested wins" policy overwrote the pin during the first real load
+    (GPU UAT 2026-07-14) which silently degrades every preview. Both
+    definitions must declare the key pinned."""
+    ModelRegistry.initialize()
+    for def_id in ("ace-step-1.5", "ace-step-1.5-xl-base"):
+        defn = next(
+            d for d in ModelRegistry._definitions.values() if d.id == def_id
+        )
+        assert "scheduler.shift" in defn.enrich_pinned_keys, def_id
+        assert defn.architecture_params["scheduler.shift"] == 3.0, def_id
+
+
+def test_enrich_definition_respects_pinned_keys(tmp_path, monkeypatch):
+    """enrich_definition must keep the YAML value for keys listed in
+    `enrich_pinned_keys` even when the harvested checkpoint config
+    disagrees — the drift is still logged, the value is not clobbered."""
+    from app.engine.core.definitions import ModelDefinition
+
+    ModelRegistry.initialize()
+    defn = ModelDefinition(
+        id="pin-test", family="ace_step15", name="pin test",
+        architecture_params={"scheduler.shift": 3.0, "transformer.hidden_size": 1},
+        lora_targetable_modules=["q_proj"],
+        enrich_pinned_keys=["scheduler.shift"],
+    )
+    ModelRegistry._definitions["pin-test"] = defn
+
+    class _FakeResult:
+        detected_precision = {}
+        architecture_params = {
+            "scheduler.shift": 1.0,          # pinned — must NOT win
+            "transformer.hidden_size": 2560,  # unpinned — must win
+        }
+        lora_targetable_modules = []
+
+    class _FakeIntrospector:
+        def introspect(self, components):
+            return _FakeResult()
+
+    import app.engine.utils.introspection as intro_mod
+
+    monkeypatch.setattr(intro_mod, "ModelIntrospector", _FakeIntrospector)
+    try:
+        ModelRegistry.enrich_definition("pin-test", {})
+        arch = ModelRegistry.get_definition("pin-test").architecture_params
+        assert arch["scheduler.shift"] == 3.0
+        assert arch["transformer.hidden_size"] == 2560
+    finally:
+        ModelRegistry._definitions.pop("pin-test", None)

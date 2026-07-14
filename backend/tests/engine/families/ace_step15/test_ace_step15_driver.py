@@ -330,3 +330,55 @@ def test_get_save_metadata_and_saver():
 
     assert isinstance(driver.get_saver(), AceStep15Saver)
     assert AceStep15Saver.architecture_name == "ace_step15"
+
+
+# ── condition-encoder buffer survival (GPU UAT crash, 2026-07-14) ────────────
+
+
+def test_condition_buffers_survive_te_pop_and_reassign():
+    """The shared pipeline pops text encoders — including our
+    condition_encoder (exposed via get_text_encoders) — from
+    ``self.components`` after embedding caching, then ``prepare_for_training``
+    re-runs ``_assign_components()`` for the LoRA-wrap alias re-sync. The
+    driver must keep the tiny silence_latent/null_condition_emb buffers so
+    forward_pass (context latents + genre-drop) and the sampler keep working
+    after the encoder module itself is gone."""
+    driver = _make_driver()
+    comps = dict(driver.get_components())
+    comps["unet"] = driver.transformer  # what the re-assign actually carries
+    comps.pop("condition_encoder", None)
+    comps.pop("text_encoder", None)
+    driver.assign_components(comps)
+
+    assert driver.condition_encoder is None or comps.get("condition_encoder") is None
+    # Buffers survive as driver-owned stashes.
+    sl = driver.silence_latent
+    ne = driver.null_condition_emb
+    assert isinstance(sl, torch.Tensor) and isinstance(ne, torch.Tensor)
+
+    # Context latents (every training step + every sample) still build.
+    ctx = driver._build_context_latents(2, 6, torch.device("cpu"), torch.float32)
+    assert ctx.shape[0] == 2 and ctx.shape[1] == 6
+
+    # The genre-drop training path still finds the null embedding.
+    driver.transformer.train()
+    driver.genre_ratio = 1.0
+    eh = torch.randn(1, 5, 32)
+    mask = torch.ones(1, 5, dtype=torch.bool)
+    latents = torch.randn(1, 12, 8)
+    timesteps = torch.tensor([500.0])
+    out = driver.forward_pass(latents, timesteps, (eh, mask), {})
+    assert out.shape == latents.shape
+
+
+def test_condition_buffer_accessors_raise_before_assign():
+    """Before any condition_encoder was ever assigned the accessors must
+    raise a clear error instead of AttributeError-on-None."""
+    import pytest
+
+    definition = ModelDefinition(id="ace-step-1.5-test", family="ace_step15", name="test")
+    driver = AceStep15Driver(definition, torch.device("cpu"))
+    with pytest.raises(RuntimeError, match="condition_encoder"):
+        _ = driver.silence_latent
+    with pytest.raises(RuntimeError, match="condition_encoder"):
+        _ = driver.null_condition_emb

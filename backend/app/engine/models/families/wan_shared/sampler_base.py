@@ -26,6 +26,9 @@ from PIL import Image
 from torch import Tensor
 
 from app.engine.core.sampling import GenericSamplingPipeline, SampleArtifact
+from app.engine.models.families.wan_shared.i2v_conditioning import (
+    build_still_t2v_input,
+)
 from app.engine.models.families.wan_shared.vae_utils import (
     WAN_VAE_SPATIAL,
     WAN_VAE_TEMPORAL,
@@ -230,6 +233,16 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
             neg_text = str(self.config.get("sample_negative_prompt", "") or "")
             text_uncond = self.encode_prompt(neg_text)
 
+        # A14B i2v checkpoints have a 36-in-channel patch_embedding
+        # ([noisy16, mask4, cond16]); previews run the t2v path with NO pinned
+        # frame, so pad mask+cond with zeros — the same semantics as the
+        # training-side F=1 still guard (driver_base/build_still_t2v_input).
+        # T2V (16) and TI2V-5B (48-in-every-mode) checkpoints are untouched.
+        # Without this, step-0/final sampling on wan2.1-i2v crashed: "expected
+        # input ... to have 36 channels, but got 16" (GPU UAT 2026-07-14).
+        _tf_cfg = getattr(transformer, "config", None)
+        pad_to_36 = int(getattr(_tf_cfg, "in_channels", 16) or 16) == 36
+
         def _forward(x: Tensor, sigma: Tensor, cond: Any) -> Tensor:
             # The trajectory steps in sigma ∈ [0,1], but the transformer is
             # conditioned on the RAW [0,1000] timestep (sigma*1000) — the scale
@@ -240,11 +253,12 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
             # the training forward — and euler_integrate upcasts the result to
             # fp32 before accumulation (no autocast around the loop).
             t = (sigma * WAN_FLOWMATCH_SCALE).reshape(1).expand(x.shape[0])
+            x_in = build_still_t2v_input(x) if pad_to_36 and x.shape[1] == 16 else x
             with torch.no_grad(), torch.autocast(
                 device_type=device_type, dtype=autocast_dtype
             ):
                 out = transformer(
-                    hidden_states=x,
+                    hidden_states=x_in,
                     timestep=t,
                     encoder_hidden_states=cond,
                     encoder_hidden_states_image=None,

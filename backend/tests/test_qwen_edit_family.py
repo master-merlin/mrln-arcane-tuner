@@ -449,3 +449,62 @@ class TestEditLazyEncodeMovesTeToDevice:
                       {"control_paths": [[str(c1)]]})
 
         assert te.moved_to and te.moved_to[-1] == t.device
+
+
+class TestControlEncodeEnsuresVaeOnGpu:
+    def test_control_encode_wraps_vae_in_phased_gpu_management(self, monkeypatch, tmp_path):
+        """Step-0 baseline previews run right after the VAE is offloaded to
+        CPU (pre-cache → vae_offloaded_to_cpu), so the control-image encode
+        crashed with 'Input type (CUDABFloat16Type) and weight type
+        (CPUBFloat16Type)' (GPU UAT 2026-07-14, non-fatal step0_sampling_
+        failed). The control encode must bracket the VAE with the pipeline's
+        phased _ensure_on_gpu/_offload_to_cpu, like the base Phase-3 decode."""
+        from PIL import Image as PILImage
+
+        from app.engine.models.families.qwen_image.sampler_edit import (
+            QwenImageEditSampler,
+        )
+
+        s = object.__new__(QwenImageEditSampler)
+        s.device = torch.device("cpu")
+        s._sample_width = 32
+        s._sample_height = 32
+        calls = []
+        monkeypatch.setattr(
+            s, "_ensure_on_gpu", lambda names: calls.append(("ensure", tuple(names))) or ["vae"],
+        )
+        monkeypatch.setattr(
+            s, "_offload_to_cpu", lambda names: calls.append(("offload", tuple(names))),
+        )
+
+        class _VAE(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = types.SimpleNamespace(
+                    latents_mean=[0.0] * 16, latents_std=[1.0] * 16,
+                )
+                self._p = torch.nn.Parameter(torch.zeros(1))
+
+            def encode(self, x):
+                lat = torch.zeros(1, 16, x.shape[-2] // 8, x.shape[-1] // 8)
+                return types.SimpleNamespace(
+                    latent_dist=types.SimpleNamespace(mode=lambda: lat),
+                )
+
+        class _TF(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = types.SimpleNamespace(in_channels=64)
+
+        s.pipeline = types.SimpleNamespace(vae=_VAE(), transformer=_TF())
+        monkeypatch.setattr(
+            s, "_pack_latents",
+            lambda latent, b, c, h, w: torch.zeros(1, 4, 64),
+        )
+
+        img = tmp_path / "ctrl.png"
+        PILImage.new("RGB", (32, 32), (128, 128, 128)).save(img)
+        s._encode_control_latent(str(img), 4, 4)
+
+        assert ("ensure", ("vae",)) in calls, calls
+        assert ("offload", ("vae",)) in calls, calls

@@ -752,3 +752,60 @@ describe('JobsScreen failed-job affordances (T6)', () => {
         expect(writeText).toHaveBeenCalledWith('kaboom');
     });
 });
+
+/**
+ * Lightbox arrow navigation must follow the ORDER THE STRIP SHOWS: flat
+ * newest-first in "by step", per-prompt rows (steps ascending) in "by prompt".
+ * Regression (UAT 2026-07-14): nav always walked the flat step order, so in
+ * by-prompt view the arrows flipped between prompts instead of stepping
+ * through one prompt's timeline.
+ */
+describe('JobsScreen lightbox navigation follows grouping', () => {
+    const TWO_PROMPT_SAMPLES = [
+        { filename: 'sample_00_step000100.png', step: 100, index: 0, prompt: 'video prompt' },
+        { filename: 'sample_01_step000100.png', step: 100, index: 1, prompt: 'still prompt' },
+        { filename: 'sample_00_step000000.png', step: 0, index: 0, prompt: 'video prompt' },
+        { filename: 'sample_01_step000000.png', step: 0, index: 1, prompt: 'still prompt' },
+    ];
+
+    type Sample = { filename: string; step?: number };
+    type CompAccess = {
+        samplesByJob: { set: (m: Map<string, unknown>) => void };
+        sampleGrouping: { set: (v: 'step' | 'prompt') => void };
+        openSample: (s: Sample) => void;
+        navSample: (dir: -1 | 1) => void;
+        sampleModal: () => Sample | null;
+    };
+
+    function seed(): { comp: CompAccess } {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([makeJob()]);
+        view.selectedId.set(JOB_ID);
+        const c = comp as unknown as CompAccess;
+        c.samplesByJob.set(new Map([[JOB_ID, TWO_PROMPT_SAMPLES]]));
+        fixture.detectChanges();
+        return { comp: c };
+    }
+
+    it('by-prompt: arrows walk one prompt timeline (steps), not across prompts', () => {
+        const { comp } = seed();
+        comp.sampleGrouping.set('prompt');
+        comp.openSample(TWO_PROMPT_SAMPLES[2]); // p0 step 0
+        comp.navSample(1);
+        expect(comp.sampleModal()?.filename).toBe('sample_00_step000100.png'); // p0 step 100
+        comp.navSample(1);
+        expect(comp.sampleModal()?.filename).toBe('sample_01_step000000.png'); // next row: p1 step 0
+        comp.navSample(-1);
+        expect(comp.sampleModal()?.filename).toBe('sample_00_step000100.png');
+    });
+
+    it('by-step: arrows keep the flat strip order (regression pin)', () => {
+        const { comp } = seed();
+        comp.sampleGrouping.set('step');
+        comp.openSample(TWO_PROMPT_SAMPLES[0]); // first in flat order
+        comp.navSample(1);
+        expect(comp.sampleModal()?.filename).toBe('sample_01_step000100.png');
+        comp.navSample(1);
+        expect(comp.sampleModal()?.filename).toBe('sample_00_step000000.png');
+    });
+});

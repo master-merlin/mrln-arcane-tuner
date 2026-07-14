@@ -163,6 +163,8 @@ architecture_params:
 # transformer 2-shard 9995005752+5873701280 (fp32 → ~3.97B params), mllm
 # 4-shard 4972304384+4932949248+4932949336+180380208 (fp32 → ~3.75B), vae
 # 335306212.
+  vae.latents_mean:
+  vae.latents_std:
 model_size_mb:
   transformer: 15868.71
   text_encoder: 15018.58

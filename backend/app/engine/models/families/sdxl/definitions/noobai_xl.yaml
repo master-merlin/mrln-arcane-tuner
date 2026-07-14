@@ -197,6 +197,22 @@ architecture_params:
   - UpDecoderBlock2D
   - UpDecoderBlock2D
   - UpDecoderBlock2D
+  transformer.attention_type: default
+  transformer.dropout: 0.0
+  transformer.reverse_transformer_layers_per_block:
+  scheduler.final_sigmas_type: zero
+  scheduler.rescale_betas_zero_snr: false
+  scheduler.sigma_max:
+  scheduler.sigma_min:
+  scheduler.timestep_type: discrete
+  scheduler.use_beta_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  vae.latents_mean:
+  vae.latents_std:
+  vae.mid_block_add_attention: true
+  vae.shift_factor:
+  vae.use_post_quant_conv: true
+  vae.use_quant_conv: true
 model_size_mb:
   unet: 5135.0
   text_encoder: 3200.0
@@ -996,3 +1012,16 @@ lora_targetable_modules:
 - mid_block.resnets.1.time_emb_proj
 - mid_block.resnets.1.conv2
 - conv_out
+block_topology:
+- name: down_blocks
+  attr_path: down_blocks
+  count: 4
+  approx_vram_mb: 200
+- name: mid_block
+  attr_path: mid_block
+  count: 1
+  approx_vram_mb: 100
+- name: up_blocks
+  attr_path: up_blocks
+  count: 4
+  approx_vram_mb: 200

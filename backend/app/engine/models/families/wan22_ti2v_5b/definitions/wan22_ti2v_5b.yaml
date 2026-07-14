@@ -71,7 +71,7 @@ architecture_params:
   transformer.attention_head_dim: 128
   transformer.text_dim: 4096
   transformer.freq_dim: 256
-  transformer.image_dim: null
+  transformer.image_dim:
   transformer.ffn_dim: 14336
   transformer.patch_size:
   - 1
@@ -91,7 +91,7 @@ architecture_params:
   num_heads: 24
   depth: 30
   in_channels: 48
-  transformer.added_kv_proj_dim: null
+  transformer.added_kv_proj_dim:
   transformer.cross_attn_norm: true
   transformer.eps: 1.0e-06
   transformer.qk_norm: rms_norm_across_heads
@@ -138,13 +138,13 @@ architecture_params:
   scheduler.rescale_betas_zero_snr: false
   scheduler.sample_max_value: 1.0
   scheduler.solver_order: 2
-  scheduler.solver_p: null
+  scheduler.solver_p:
   scheduler.solver_type: bh2
   scheduler.steps_offset: 0
   scheduler.thresholding: false
   scheduler.time_shift_type: exponential
   scheduler.timestep_spacing: linspace
-  scheduler.trained_betas: null
+  scheduler.trained_betas:
   scheduler.use_beta_sigmas: false
   scheduler.use_dynamic_shifting: false
   scheduler.use_exponential_sigmas: false
@@ -266,6 +266,10 @@ architecture_params:
   - false
   - true
   - true
+  transformer.pos_embed_seq_len:
+  vae.in_channels: 12
+  vae.out_channels: 12
+  vae.patch_size: 2
 model_size_mb: {}
 lora_targetable_modules:
 - attn1.to_q

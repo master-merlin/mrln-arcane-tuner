@@ -152,6 +152,13 @@ architecture_params:
 # Real on-disk shard sizes (HF tree API, bytes/1e6 — no download needed):
 # transformer 2-shard 9946193392+7853894360, text_encoder 2-shard
 # 4994582224+4530066360, vae 167666902.
+  num_heads: 24
+  te.classifier_dropout: 0.0
+  te.initializer_factor: 1.0
+  te.use_cache: true
+  vae.latents_mean:
+  vae.latents_std:
+  transformer.hidden_size: 3072
 model_size_mb:
   transformer: 17800.09
   text_encoder: 9524.65

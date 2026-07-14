@@ -145,6 +145,13 @@ architecture_params:
   vae.vae_scale_factor: 8
 # Real on-disk shard sizes (HF tree API, bytes/1e6 — no download needed);
 # identical to chroma1-hd's (same architecture/shard layout).
+  num_heads: 24
+  te.classifier_dropout: 0.0
+  te.initializer_factor: 1.0
+  te.use_cache: true
+  vae.latents_mean:
+  vae.latents_std:
+  transformer.hidden_size: 3072
 model_size_mb:
   transformer: 17800.09
   text_encoder: 9524.65

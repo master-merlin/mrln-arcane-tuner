@@ -146,6 +146,26 @@ architecture_params:
 # Real on-disk shard sizes (HF tree API, bytes/1e6 — no download needed):
 # transformer 2-shard 9957078112+482046552, text_encoder 3-shard
 # 4992575568+4983442368+481381280, vae 335306212.
+  num_heads: 24
+  sample_size: 128
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.attn_logit_softcapping: 50.0
+  te.bos_token_id: 2
+  te.cache_implementation: hybrid
+  te.eos_token_id: 1
+  te.final_logit_softcapping: 30.0
+  te.hidden_act: gelu_pytorch_tanh
+  te.hidden_activation: gelu_pytorch_tanh
+  te.initializer_range: 0.02
+  te.model_type: gemma2
+  te.pad_token_id: 0
+  te.query_pre_attn_scalar: 256
+  te.rms_norm_eps: 1.0e-06
+  te.rope_theta: 10000.0
+  te.use_cache: true
+  vae.latents_mean:
+  vae.latents_std:
 model_size_mb:
   transformer: 10439.12
   text_encoder: 10457.4

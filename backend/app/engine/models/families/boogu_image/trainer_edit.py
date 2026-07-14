@@ -113,6 +113,18 @@ class BooguImageEditTrainer(BooguImageTrainer):
             reason="composite (caption, control) keys encode lazily",
         )
 
+    def _offload_text_encoders(self) -> None:
+        """Keep the VL text encoder resident — enforcement of the
+        "TE stays resident" contract above (mirrors ``QwenImageEditTrainer``;
+        GPU UAT 2026-07-14). The shared base offload would move the TE to CPU
+        and pop it from ``self.components``, stranding the first composite-key
+        cache miss mid-training on a CPU encoder with CUDA inputs."""
+        self.logger.info(
+            "te_offload_skipped_edit_lazy_encode",
+            reason="edit runs encode (caption, control) composites lazily "
+                   "all run — TE must stay resident",
+        )
+
     def encode_text(
         self, captions: list[str], dtype: torch.dtype, batch: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:

@@ -196,6 +196,20 @@ class QwenImageEditTrainer(QwenImageTrainer):
         self.logger.info("qwen_edit_te_precache_skipped",
                           reason="composite (caption, control) keys encode lazily")
 
+    def _offload_text_encoders(self) -> None:
+        """Keep the VL text encoder resident — enforcement of the
+        "TE stays resident" contract documented on
+        :meth:`_pre_cache_text_embeddings`. The shared base offload moves the
+        TE to CPU and pops it from ``self.components`` after the (no-op)
+        warmup, stranding the first composite-key cache miss mid-training on
+        a CPU encoder with CUDA inputs (GPU UAT 2026-07-14: "index is on
+        cuda:0 ... other tensors on cpu")."""
+        self.logger.info(
+            "te_offload_skipped_edit_lazy_encode",
+            reason="edit runs encode (caption, control) composites lazily "
+                   "all run — TE must stay resident",
+        )
+
     def encode_text(
         self, captions: list[str], dtype: torch.dtype, batch: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:

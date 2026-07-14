@@ -51,6 +51,14 @@ class ModelDefinition(BaseModel):
         default_factory=list,
         description="Block groups for VRAM management UI (populated by enrichment)"
     )
+    enrich_pinned_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "architecture_params keys whose hand-written YAML value must "
+            "survive enrichment (deliberate divergence from the checkpoint's "
+            "own config, e.g. a model card's recommended scheduler.shift)"
+        ),
+    )
 
 class ModelFamily(ABC):
     """

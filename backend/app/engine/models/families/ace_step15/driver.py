@@ -155,6 +155,15 @@ class AceStep15Driver(IModelDriver):
         self.text_encoder: nn.Module | None = None
         self.tokenizer: Any = None
         self.condition_encoder: nn.Module | None = None
+        # Driver-owned stashes of the condition encoder's two tiny buffers.
+        # The shared pipeline pops text encoders — including the condition
+        # encoder, which get_text_encoders() deliberately exposes — from
+        # `components` after embedding caching, and prepare_for_training's
+        # alias re-sync then re-runs assign_components() with that reduced
+        # dict. forward_pass needs these buffers on EVERY step (context
+        # latents + genre-drop null), so they must outlive the module.
+        self._silence_latent: torch.Tensor | None = None
+        self._null_condition_emb: torch.Tensor | None = None
         self._components: dict[str, Any] = {}
 
         arch = getattr(definition, "architecture_params", {}) or {}
@@ -186,6 +195,16 @@ class AceStep15Driver(IModelDriver):
         self.text_encoder = components.get("text_encoder")
         self.tokenizer = components.get("tokenizer")
         self.condition_encoder = components.get("condition_encoder")
+        if self.condition_encoder is not None:
+            # Stash the two tiny buffers driver-side (CPU clones) so the
+            # per-step forward keeps working after the pipeline pops the
+            # 0.61B encoder module from the components dict (see __init__).
+            self._silence_latent = (
+                self.condition_encoder.silence_latent.detach().to("cpu").clone()
+            )
+            self._null_condition_emb = (
+                self.condition_encoder.null_condition_emb.detach().to("cpu").clone()
+            )
 
         cfg = getattr(self.transformer, "config", None)
         if cfg is not None:
@@ -210,6 +229,26 @@ class AceStep15Driver(IModelDriver):
             latents_per_second=self.latents_per_second,
             timbre_fix_frame=self.timbre_fix_frame,
         )
+
+    @property
+    def silence_latent(self) -> torch.Tensor:
+        """The condition encoder's silence latent (driver-owned stash)."""
+        if self._silence_latent is None:
+            raise RuntimeError(
+                "silence_latent unavailable — no condition_encoder was ever "
+                "assigned to this driver"
+            )
+        return self._silence_latent
+
+    @property
+    def null_condition_emb(self) -> torch.Tensor:
+        """The learned null-condition embedding (driver-owned stash)."""
+        if self._null_condition_emb is None:
+            raise RuntimeError(
+                "null_condition_emb unavailable — no condition_encoder was "
+                "ever assigned to this driver"
+            )
+        return self._null_condition_emb
 
     def get_components(self) -> dict[str, Any]:
         return self._components
@@ -311,7 +350,7 @@ class AceStep15Driver(IModelDriver):
             embed_layer = self.text_encoder.get_input_embeddings()
             lyric_hidden_states = embed_layer(lyric_input_ids)
 
-            silence_latent = self.condition_encoder.silence_latent.to(
+            silence_latent = self.silence_latent.to(
                 device=self.device, dtype=dtype
             )
             refer_audio_acoustic = tile_to_length(
@@ -365,9 +404,7 @@ class AceStep15Driver(IModelDriver):
         """``cat([src_latents, chunk_mask], dim=-1)`` — the text2music default
         (silence-latent src + all-ones "generate everything" mask). See the
         module docstring's "Context latents" section."""
-        silence_latent = self.condition_encoder.silence_latent.to(
-            device=device, dtype=dtype
-        )
+        silence_latent = self.silence_latent.to(device=device, dtype=dtype)
         src_latents = tile_to_length(silence_latent, latent_length).expand(
             batch_size, -1, -1
         )
@@ -411,7 +448,7 @@ class AceStep15Driver(IModelDriver):
         if genre_ratio > 0.0 and self.transformer.training:
             drop_mask = torch.rand(b, device=device) < genre_ratio
             if bool(drop_mask.any()):
-                null_emb = self.condition_encoder.null_condition_emb.to(
+                null_emb = self.null_condition_emb.to(
                     device=device, dtype=dtype
                 )
                 null_expanded = null_emb.expand_as(encoder_hidden_states)

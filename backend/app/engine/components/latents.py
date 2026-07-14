@@ -632,13 +632,16 @@ class LatentManager:
             # 1. Primary Cache
             c_dir = cache_dirs[i] if cache_dirs else self.cache_dir
             if c_dir:
-                os.makedirs(c_dir, exist_ok=True)
                 path = os.path.join(c_dir, fname)
+                # makedirs on the FULL parent, not just c_dir: ids are
+                # dataset-relative paths, so control-slot items carry a
+                # "control/" segment inside fname itself.
+                os.makedirs(os.path.dirname(path), exist_ok=True)
                 save_file({"latents": latents_cpu[i]}, path)
 
             # 2. Mirror (Output) Cache
             if mirror_dir:
-                os.makedirs(mirror_dir, exist_ok=True)
                 m_path = os.path.join(mirror_dir, fname)
+                os.makedirs(os.path.dirname(m_path), exist_ok=True)
                 if not os.path.exists(m_path):
                     save_file({"latents": latents_cpu[i]}, m_path)

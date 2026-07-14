@@ -44,6 +44,11 @@ defaults:
   # AUDIO group (is_audio_family-gated — see core/archetypes.py)
   duration_s: 30.0
   genre_ratio: 0.15
+# scheduler.shift is a DELIBERATE model-card pin (3.0) — the repo's
+# scheduler_config.json ships 1.0 and enrichment must not clobber it
+# (it did, GPU UAT 2026-07-14).
+enrich_pinned_keys:
+- scheduler.shift
 components:
   repo:
     path: huggingface:ACE-Step/acestep-v15-xl-turbo-diffusers
@@ -132,6 +137,119 @@ architecture_params:
 #     "text_encoder" slot — both load together during TE caching
 #     (`driver.get_text_encoders()` returns both).
 #   - vae: 337,431,388 bytes ≈ 322 MB
+  num_heads: 32
+  transformer.attention_bias: false
+  transformer.attention_dropout: 0.0
+  transformer.audio_acoustic_hidden_dim: 64
+  transformer.layer_types:
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  - sliding_attention
+  - full_attention
+  transformer.rms_norm_eps: 1.0e-06
+  te.architectures:
+  - Qwen3Model
+  te.attention_bias: false
+  te.attention_dropout: 0.0
+  te.bos_token_id: 151643
+  te.dtype: bfloat16
+  te.eos_token_id: 151643
+  te.head_dim: 128
+  te.hidden_act: silu
+  te.initializer_range: 0.02
+  te.intermediate_size: 3072
+  te.layer_types:
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  - full_attention
+  te.max_position_embeddings: 32768
+  te.max_window_layers: 28
+  te.model_type: qwen3
+  te.num_attention_heads: 16
+  te.num_hidden_layers: 28
+  te.num_key_value_heads: 8
+  te.rms_norm_eps: 1.0e-06
+  te.rope_scaling:
+  te.rope_theta: 1000000
+  te.sliding_window:
+  te.tie_word_embeddings: true
+  te.use_cache: true
+  te.use_sliding_window: false
+  te.vocab_size: 151669
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.num_train_timesteps: 1
+  scheduler.shift_terminal:
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae.channel_multiples:
+  - 1
+  - 2
+  - 4
+  - 8
+  - 16
+  vae.decoder_channels: 128
+  vae.encoder_hidden_size: 128
 model_size_mb:
   transformer: 7951.6
   text_encoder: 2298

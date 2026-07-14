@@ -219,7 +219,7 @@ class AceStep15Sampler(GenericSamplingPipeline):
         # docstring's "CFG (base/sft only...)" section.
         momentum_buffer = MomentumBuffer(momentum=ACE_STEP15_APG_MOMENTUM) if cfg_on else None
         if cfg_on:
-            null_emb = driver.condition_encoder.null_condition_emb.to(
+            null_emb = driver.null_condition_emb.to(
                 x.device, model_dtype
             ).expand_as(encoder_hidden_states)
 

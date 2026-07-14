@@ -395,6 +395,30 @@ class NucleusImageDriver(IModelDriver):
         shard total bytes / param count is consistent with bf16)."""
         return torch.bfloat16
 
+    def get_precision_spec(
+        self, mixed_precision: str, *, is_adaptive_optimizer: bool = False,
+    ) -> Any:
+        """AMP is force-disabled for this family (GPU UAT crash, 2026-07-14).
+
+        Under ``torch.autocast(bf16)`` LayerNorm executes in fp32, so each
+        block's modulated hidden states reach the frozen (non-LoRA) MoE
+        experts as fp32 — and ``torch._grouped_mm`` is NOT on autocast's
+        cast-policy list, so it receives the raw fp32 activations against
+        bf16 expert weights and raises "expected mat1 and mat2 to have the
+        same dtype". The transformer manages its own precision islands
+        (router scores in fp32 with explicit casts back), and the sampler
+        already runs the native no-autocast bf16 regime on real weights, so
+        the trainer matches it: bf16 inputs, no autocast, no GradScaler
+        (ideogram4 precedent).
+        """
+        from app.engine.core.layer_manifest import PrecisionSpec  # noqa: PLC0415
+
+        return PrecisionSpec(
+            autocast_dtype=torch.bfloat16,
+            use_amp=False,
+            grad_scaler_enabled=False,
+        )
+
     def get_te_lora_targets(self) -> list[str]:
         """Text encoder LoRA not supported — Qwen3-VL stays frozen."""
         return []

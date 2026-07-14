@@ -305,8 +305,15 @@ class ModelRegistry:
             changes["detected_precision"] = result.detected_precision
         if result.architecture_params:
             if defn.architecture_params:
-                # Harvested values win over stale YAML
+                # Harvested values win over stale YAML — EXCEPT keys the
+                # definition explicitly pins (deliberate divergence from the
+                # checkpoint's own config, e.g. ace_step15's model-card
+                # scheduler.shift=3.0 vs the repo scheduler_config's 1.0).
+                pinned = set(defn.enrich_pinned_keys or [])
                 merged = {**defn.architecture_params, **result.architecture_params}
+                for key in pinned:
+                    if key in defn.architecture_params:
+                        merged[key] = defn.architecture_params[key]
 
                 # Log drift between YAML and harvested values
                 for key in result.architecture_params:
@@ -317,6 +324,7 @@ class ModelRegistry:
                             key=key,
                             yaml_value=yaml_val,
                             harvested_value=result.architecture_params[key],
+                            pinned=key in pinned,
                         )
 
                 if merged != defn.architecture_params:

@@ -578,3 +578,45 @@ class TestEditTeStaysResident:
 
         assert te.moved is False
         assert t.components.get("text_encoder") is te
+
+
+class TestEditLazyEncodeMovesTeToDevice:
+    def test_cache_miss_moves_te_to_trainer_device(self, tmp_path, monkeypatch):
+        """Mirror of the qwen_edit pin (GPU UAT 2026-07-14, second crash):
+        pre-caching is skipped, so the lazy cache-miss encode must itself
+        move the CPU-loaded TE to the trainer device before encoding."""
+        from app.engine.models.families.boogu_image.trainer_edit import (
+            BooguImageEditTrainer,
+        )
+
+        t = object.__new__(BooguImageEditTrainer)
+        t.text_cache = {}
+        t._ctrl_hash_memo = {}
+        t.device = torch.device("cpu")
+
+        class _TE:
+            def __init__(self):
+                self.moved_to = []
+
+            def parameters(self):
+                yield nn.Parameter(torch.zeros(1, device="meta"))
+
+            def to(self, dev, *a, **k):
+                self.moved_to.append(torch.device(dev))
+                return self
+
+        te = _TE()
+        t.driver = SimpleNamespace(text_encoder=te)
+
+        monkeypatch.setattr(
+            t, "_encode_text_with_control",
+            lambda cap, paths, dt: (torch.zeros(1, 3, 8),
+                                    torch.ones(1, 3, dtype=torch.long)),
+        )
+        monkeypatch.setattr(t, "_trim_entry", lambda e, m: (e, m))
+        c1 = tmp_path / "c1.png"
+        c1.write_bytes(b"ONE")
+        t.encode_text(["colorize"], torch.float32,
+                      {"control_paths": [[str(c1)]]})
+
+        assert te.moved_to and te.moved_to[-1] == t.device

@@ -409,3 +409,43 @@ class TestEditTeStaysResident:
 
         assert te.moved is False
         assert t.components.get("text_encoder") is te
+
+
+class TestEditLazyEncodeMovesTeToDevice:
+    def test_cache_miss_moves_te_to_trainer_device(self, tmp_path, monkeypatch):
+        """Companion to TestEditTeStaysResident (GPU UAT 2026-07-14, second
+        crash): with pre-caching skipped, NOTHING ever moves the CPU-loaded
+        TE to the GPU — the base pre-cache was the implicit mover. The lazy
+        cache-miss encode must ensure the TE is on the trainer device before
+        encoding, or the first miss feeds CUDA ids to a CPU encoder."""
+        t = object.__new__(QwenImageEditTrainer)
+        t.text_cache = {}
+        t._ctrl_hash_memo = {}
+        t.device = torch.device("cpu")
+
+        class _TE:
+            def __init__(self):
+                self.moved_to = []
+                self._dev = torch.device("meta")
+
+            def parameters(self):
+                yield torch.nn.Parameter(torch.zeros(1, device="meta"))
+
+            def to(self, dev, *a, **k):
+                self.moved_to.append(torch.device(dev))
+                return self
+
+        te = _TE()
+        t.driver = types.SimpleNamespace(text_encoder=te)
+
+        monkeypatch.setattr(
+            t, "_encode_text_with_control",
+            lambda cap, p, dt: (torch.zeros(1, 3, 8),
+                                torch.ones(1, 3, dtype=torch.long)),
+        )
+        c1 = tmp_path / "c1.png"
+        c1.write_bytes(b"ONE")
+        t.encode_text(["make it snow"], torch.float32,
+                      {"control_paths": [[str(c1)]]})
+
+        assert te.moved_to and te.moved_to[-1] == t.device

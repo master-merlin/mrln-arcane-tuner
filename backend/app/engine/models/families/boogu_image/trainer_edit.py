@@ -125,6 +125,22 @@ class BooguImageEditTrainer(BooguImageTrainer):
                    "all run — TE must stay resident",
         )
 
+    def _ensure_te_on_device(self) -> None:
+        """Move the (CPU-loaded) VL text encoder to the trainer device.
+
+        With pre-caching skipped, the base pre-cache — the implicit TE→GPU
+        mover for every other trainer — never runs, so the first lazy
+        cache-miss encode would feed CUDA input ids to a CPU encoder
+        (mirrors ``QwenImageEditTrainer``; GPU UAT 2026-07-14). Idempotent:
+        after the first move the encoder stays resident.
+        """
+        te = getattr(getattr(self, "driver", None), "text_encoder", None)
+        if te is None:
+            return
+        param = next(te.parameters(), None)
+        if param is not None and param.device != self.device:
+            te.to(self.device)
+
     def encode_text(
         self, captions: list[str], dtype: torch.dtype, batch: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -147,6 +163,7 @@ class BooguImageEditTrainer(BooguImageTrainer):
                 caption, control_files_hash(item_controls, self._ctrl_hash_memo),
             )
             if key not in self.text_cache:
+                self._ensure_te_on_device()
                 emb, mask = self._encode_text_with_control(
                     caption, item_controls, dtype,
                 )

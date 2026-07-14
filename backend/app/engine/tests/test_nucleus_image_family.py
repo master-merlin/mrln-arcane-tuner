@@ -784,3 +784,21 @@ def test_template_fingerprint_changes_if_prompt_text_changes():
         (NUCLEUS_SYSTEM_PROMPT + " mutated").encode("utf-8"),
     ).hexdigest()[:16]
     assert real_fp != mutated_fp
+
+
+def test_precision_spec_disables_amp_for_grouped_mm():
+    """AMP must be OFF for this family (GPU UAT crash, 2026-07-14).
+
+    Under ``torch.autocast(bf16)`` LayerNorm runs in fp32, so the block's
+    modulated hidden states reach the frozen (non-LoRA) MoE experts as fp32
+    — and ``torch._grouped_mm`` is NOT on autocast's cast-policy list, so it
+    receives the raw fp32 x against bf16 expert weights and raises
+    "expected mat1 and mat2 to have the same dtype". The sampler already
+    runs the native no-autocast bf16 regime (proven on real weights); the
+    trainer must match it. Ideogram4 precedent: PrecisionSpec(use_amp=False).
+    """
+    drv = _make_driver(None)
+    spec = drv.get_precision_spec("bf16")
+    assert spec.use_amp is False
+    assert spec.autocast_dtype == torch.bfloat16
+    assert spec.grad_scaler_enabled is False

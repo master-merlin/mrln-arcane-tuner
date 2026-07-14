@@ -379,3 +379,33 @@ class TestQwenEditSamplerContract:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestEditTeStaysResident:
+    def test_offload_text_encoders_is_suppressed(self):
+        """Edit runs encode lazily per (caption, control) for the WHOLE run
+        (_pre_cache_text_embeddings is a documented no-op), so the shared
+        offload must NOT move/pop the TE: the first composite-key cache miss
+        mid-training would hit a CPU encoder with CUDA inputs (GPU UAT
+        2026-07-14: 'index is on cuda:0 ... other tensors on cpu')."""
+        t = object.__new__(QwenImageEditTrainer)
+
+        class _TE:
+            moved = False
+
+            def to(self, *a, **k):
+                self.moved = True
+                return self
+
+        te = _TE()
+        t.components = {"text_encoder": te}
+        t.config = {"cache_text_embeddings": True, "unload_text_encoder": False}
+        t._te_unloaded = False
+
+        import structlog
+
+        t.logger = structlog.get_logger("test")
+        t._offload_text_encoders()
+
+        assert te.moved is False
+        assert t.components.get("text_encoder") is te

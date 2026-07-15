@@ -1180,22 +1180,132 @@ class PipelineDataMixin:
         img = img.crop((left, top, left + tw, top + th))
         return transform(img)
 
+    def _load_control_video_clip(
+        self,
+        path: str,
+        target_frames: int,
+        target_fps: float,
+        target_w: int,
+        target_h: int,
+    ) -> torch.Tensor:
+        """Decode a control clip trimmed/padded to the TARGET's frame count.
+
+        ``VideoFrameLoader.load_clip`` only raises ``VideoClipTooShort`` when
+        an explicit ``trim_end_s`` caps the usable window below what's asked
+        for; called here with ``trim_end_s=None`` (an open-ended window), a
+        control clip LONGER than the target's window is naturally trimmed
+        (only the first ``target_frames`` timestamps are ever sampled) and a
+        control clip SHORTER than the window is naturally padded (each
+        timestamp past the clip's last decoded frame resolves to that same
+        nearest frame — repeated, never an out-of-range error). Either way
+        the output is exactly ``target_frames`` long, so a control clip's
+        duration mismatching its paired target never aborts training, and
+        the encoded control latent's frame axis matches the target latent's
+        (same VAE, same temporal downscale).
+        """
+        from app.engine.components.video import VideoFrameLoader
+
+        clip = VideoFrameLoader().load_clip(
+            path,
+            target_frames=target_frames,
+            target_fps=target_fps,
+            trim_start_s=0.0,
+            trim_end_s=None,
+            target_w=target_w,
+            target_h=target_h,
+            h_flip=False,
+        )
+        # Cheap production-code invariant (previously only asserted in
+        # tests): the clip loader's own contract guarantees exactly
+        # `target_frames` out (trim/pad, never a short read). A control
+        # clip whose frame axis silently drifted from the target's own
+        # frame count would misalign every downstream tensor op, so fail
+        # loudly here rather than caching a mismatched control latent.
+        if clip.shape[1] != target_frames:
+            raise ValueError(
+                f"control video clip '{path}' decoded to {clip.shape[1]} "
+                f"frames, expected {target_frames} (the paired target's own "
+                "frame count)"
+            )
+        return clip
+
     def _attach_control_images(self, batch, items, transform) -> None:
-        """Transpose per-item control fields into per-slot batch tensors."""
+        """Transpose per-item control fields into per-slot batch tensors.
+
+        A control slot may be a video (Bernini-R edit datasets): decoded via
+        the VideoFrameLoader path into a ``[C, F, H, W]`` clip (F matches the
+        paired target's own frame count — see :meth:`_load_control_video_clip`)
+        instead of the still-image PIL round-trip. Per-slot video-ness is
+        read off ``items[0]`` (mirrors the batch-level ``is_video``/``is_audio``
+        flags elsewhere in this file); a batch with no video controls carries
+        no ``control_is_video`` key and every slot decodes as an image,
+        byte-identical to before this method learned about video.
+
+        Two combinations are refused up front with a diagnostic error rather
+        than reaching a confusing crash (or worse, a silent mismatch) deeper
+        in the stack:
+
+        * A video control slot paired with a still-image target (e.g. a
+          same-stem video accidentally dropped into ``control/`` of a
+          pre-existing image-edit dataset) — would otherwise die inside
+          ``VideoFrameLoader`` with a generic ``target_fps must be > 0``.
+        * A video control slot paired with a ``temporal_mode="sliding"``
+          target — the target's cached latent holds the FULL clip
+          (``cache_frames``) while the control decode targets the per-step
+          window (``target_frames``), a frame-axis mismatch downstream.
+          Unsupported in v1; not implemented here.
+        """
         n_slots = len(items[0]["control_paths"])
+        slot_is_video = items[0].get("control_is_video") or [False] * n_slots
         ctrl_images: list[torch.Tensor] = []
         ctrl_ids: list[list[str]] = []
         ctrl_paths: list[list[str]] = []
         ctrl_cache_dirs: list[list[str]] = []
+        ctrl_extra_keys: list[list[str]] = []
         for slot in range(n_slots):
+            is_video_slot = (
+                bool(slot_is_video[slot]) if slot < len(slot_is_video) else False
+            )
             slot_imgs: list[torch.Tensor] = []
             slot_ids: list[str] = []
             slot_paths: list[str] = []
             slot_cache: list[str] = []
+            slot_extra: list[str] = []
             for item in items:
                 path = item["control_paths"][slot]
                 cw, ch = item["control_dims"][slot]
-                slot_imgs.append(self._load_image_to(path, cw, ch, transform))
+                if is_video_slot:
+                    if not item.get("is_video"):
+                        control_rel = item["control_rel_paths"][slot]
+                        raise ValueError(
+                            f"control slot '{control_rel}': video control "
+                            "paired with a still-image target — video "
+                            "controls require a video target"
+                        )
+                    if item.get("temporal_mode") == "sliding":
+                        raise ValueError(
+                            f"item {item.get('id')!r}: video control pairs "
+                            "do not support temporal_coverage='sliding' yet"
+                        )
+                    tgt_f = int(item.get("target_frames") or 1)
+                    tgt_fps = float(item.get("target_fps") or 0.0)
+                    slot_imgs.append(
+                        self._load_control_video_clip(path, tgt_f, tgt_fps, cw, ch)
+                    )
+                    # Mirrors the target video's own t{start}-{end} cache-key
+                    # convention (:func:`video_trim_extra_key`) so a control
+                    # source re-used at a different target frame/fps window
+                    # (e.g. a different temporal bucket) never collides in the
+                    # cache — the window's END varies with target_frames/fps.
+                    end_s = (tgt_f / tgt_fps) if tgt_fps > 0 else None
+                    slot_extra.append(
+                        video_trim_extra_key(
+                            {"is_video": True, "trim_start_s": 0.0, "trim_end_s": end_s}
+                        )
+                    )
+                else:
+                    slot_imgs.append(self._load_image_to(path, cw, ch, transform))
+                    slot_extra.append("")
                 slot_ids.append(item["control_rel_paths"][slot])
                 slot_paths.append(path)
                 slot_cache.append(item["control_cache_dirs"][slot])
@@ -1203,10 +1313,16 @@ class PipelineDataMixin:
             ctrl_ids.append(slot_ids)
             ctrl_paths.append(slot_paths)
             ctrl_cache_dirs.append(slot_cache)
+            ctrl_extra_keys.append(slot_extra)
         batch["control_images"] = ctrl_images
         batch["control_ids"] = ctrl_ids
         batch["control_paths"] = ctrl_paths
         batch["control_cache_dirs"] = ctrl_cache_dirs
+        # Only attached when at least one slot carries a real discriminator —
+        # an all-image control batch stays byte-identical (no new batch key,
+        # no new kwarg reaching the latent manager in `_load_control_latents`).
+        if any(any(keys) for keys in ctrl_extra_keys):
+            batch["control_extra_keys"] = ctrl_extra_keys
 
     def _load_control_latents(self, batch: dict) -> None:
         """Encode/load clean control latents into ``batch['control_latents']``.
@@ -1214,22 +1330,34 @@ class PipelineDataMixin:
         Family-agnostic: runs in the train loop under ``no_grad`` when an edit
         batch carries control images. Control latents are NEVER noised or
         flipped — they're the clean conditioning the family forward concats
-        with the noisy target tokens. No-op for non-edit batches.
+        with the noisy target tokens. No-op for non-edit batches. A video
+        control slot yields a 5D latent (the VAE/LatentManager infer 5D
+        purely from the input tensor's rank — no special-casing needed here
+        beyond forwarding the per-slot cache-key discriminator).
         """
         slots_cache = batch.get("control_cache_dirs")
         if not slots_cache:
             return
         use_cache = self.config.get("cache_latents", True)
+        slots_extra_keys = batch.get("control_extra_keys")
         control_latents: list[torch.Tensor] = []
         for slot_idx, cache_dirs in enumerate(slots_cache):
             ids = batch["control_ids"][slot_idx]
             paths = batch["control_paths"][slot_idx]
+            extra_keys = slots_extra_keys[slot_idx] if slots_extra_keys else None
+            # Conditional kwarg: an image-only batch never passes `extra_keys`
+            # at all, so a latent-manager stub with the pre-BR1 signature
+            # (positional ids/cache_dirs + source_paths) keeps working.
+            key_kwargs = (
+                {"extra_keys": extra_keys} if extra_keys and any(extra_keys) else {}
+            )
             lat = None
             if use_cache:
                 lat = self.latent_manager.load_cached_latents(
                     ids,
                     cache_dirs,
                     source_paths=paths,
+                    **key_kwargs,
                 )
             if lat is None:
                 lat = self.latent_manager.encode_and_cache_batch(
@@ -1237,6 +1365,7 @@ class PipelineDataMixin:
                     ids=ids,
                     cache_dirs=cache_dirs if use_cache else None,
                     source_paths=paths,
+                    **key_kwargs,
                 )
             control_latents.append(lat.to(self.device, dtype=self.autocast_dtype))
         batch["control_latents"] = control_latents

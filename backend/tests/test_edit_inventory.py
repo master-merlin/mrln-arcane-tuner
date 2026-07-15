@@ -9,6 +9,7 @@ from app.engine.core.pipeline.edit_inventory import (
     build_control_fields,
     control_target_dims,
     control_variant,
+    is_video_control,
 )
 
 
@@ -40,6 +41,27 @@ class TestControlTargetDims:
         assert control_target_dims(768, 512, 1024) == (1024, 1024)
 
 
+class TestIsVideoControl:
+    def test_image_exts_are_not_video(self):
+        assert is_video_control("control/img1.jpg") is False
+        assert is_video_control("control/img1.png") is False
+        assert is_video_control("control/img1.webp") is False
+
+    def test_video_exts_are_video(self):
+        assert is_video_control("control/clip.mp4") is True
+        assert is_video_control("control/clip.webm") is True
+        assert is_video_control("control/clip.mkv") is True
+
+    def test_mov_is_video_despite_target_scanner_asymmetry(self):
+        # .mov is legal as a CONTROL ext but NOT in the target scanner's
+        # VIDEO_EXTENSIONS — the two ext-sets are not symmetric.
+        assert is_video_control("control/clip.mov") is True
+
+    def test_case_insensitive(self):
+        assert is_video_control("control/CLIP.MP4") is True
+        assert is_video_control("control/IMG.JPG") is False
+
+
 class TestBuildControlFields:
     def _cache_dir_for(self, res_str, variant):
         return f"/cache/{variant}/{res_str}"
@@ -54,6 +76,20 @@ class TestBuildControlFields:
         assert fields["control_variants"] == ["control"]
         assert fields["control_dims"] == [(512, 512)]
         assert fields["control_cache_dirs"] == ["/cache/control/512x512"]
+        assert fields["control_is_video"] == [False]
+
+    def test_video_control_flagged(self):
+        fields = build_control_fields(
+            ["control/clip.mp4"], "/ds", 1, 512, 512, 0, self._cache_dir_for,
+        )
+        assert fields["control_is_video"] == [True]
+
+    def test_mixed_slots_flagged_independently(self):
+        fields = build_control_fields(
+            ["control/a.jpg", "control_2/a.mp4"],
+            "/ds", 2, 512, 512, 0, self._cache_dir_for,
+        )
+        assert fields["control_is_video"] == [False, True]
 
     def test_partial_pair_returns_none(self):
         # Model wants 1 control, pair resolved zero.

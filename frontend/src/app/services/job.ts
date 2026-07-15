@@ -97,6 +97,33 @@ export interface JobCheckpointMeta {
 /** Echo ack for a job lifecycle action (mirrors backend JobActionResponse). */
 export interface JobActionResponse { status: string; job_id: string; }
 
+/** Aggregate cross-job statistics from `GET /jobs/history/stats`. */
+export interface ActivityWeek { week_start: string; completed: number; failed: number; stopped: number; other: number; }
+export interface FamilyStats { id: string | null; count: number; completed: number; success_rate: number; avg_step_time: number | null; best_loss: number | null; }
+export interface HyperparamCount { value: string; count: number; }
+export interface DatasetUseCount { name: string; count: number; }
+export interface JobRecord { job_id: string; lora_name: string; definition_id: string | null; value: number; }
+
+export interface TrainingStats {
+    total_jobs: number; completed: number; failed: number; stopped: number;
+    running: number; paused: number; success_rate: number;
+    total_steps: number; total_runtime_sec: number; total_training_sec: number;
+    avg_steps: number; avg_loss: number; avg_min_loss: number;
+    avg_step_time_sec: number; avg_runtime_sec: number;
+    optimizers: { name: string | null; count: number }[];
+    unique_datasets: number;
+    last_job: { lora_name: string | null; definition_id: string | null; status: string | null; created_at: number | null } | null;
+    activity: ActivityWeek[];
+    gpu_hours: number; overhead_pct: number;
+    lora_count: number; lora_bytes: number; checkpoint_count: number;
+    families: FamilyStats[];
+    loss_histogram: { edges: number[]; counts: number[] };
+    hyperparams: Record<string, HyperparamCount[]>;
+    resume_rate: number;
+    top_datasets: DatasetUseCount[];
+    records: { longest_run: JobRecord | null; most_steps: JobRecord | null; best_loss: JobRecord | null };
+}
+
 /** One sample image a job produced, from `GET /jobs/{id}/samples`. */
 export interface JobSample {
   filename: string;
@@ -144,6 +171,12 @@ export class JobService {
       url += `&project_id=${projectId}`;
     }
     return this.http.get<Job[]>(url);
+  }
+
+  /** Aggregate training statistics for the stats modal. */
+  getTrainingStats(projectId: string | null = null): Observable<TrainingStats> {
+    const q = projectId && projectId !== 'all' ? `?project_id=${encodeURIComponent(projectId)}` : '';
+    return this.http.get<TrainingStats>(`${this.apiUrl}/history/stats${q}`);
   }
 
   /**

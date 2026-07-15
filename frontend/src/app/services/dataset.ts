@@ -109,7 +109,11 @@ export interface PairMetadata {
   control_count?: number;
   /** Per-slot control file info + role_order + target_edited_at stamp. */
   control_info?: {
-    slots?: Record<string, { rel_path?: string; width?: number; height?: number }>;
+    slots?: Record<string, {
+      rel_path?: string; width?: number; height?: number;
+      /** Video controls only (Bernini-R): total frames + average fps. */
+      num_frames?: number; fps?: number;
+    }>;
     role_order?: string[];
     target_edited_at?: number;
     [k: string]: unknown;

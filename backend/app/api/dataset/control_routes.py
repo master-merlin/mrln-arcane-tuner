@@ -29,7 +29,7 @@ from app.api.schemas.dataset_schemas import (
 )
 from app.core.dataset.control_batch import run_control_batch
 from app.core.dataset.control_helpers import (
-    CONTROL_IMAGE_EXTS,
+    CONTROL_MEDIA_EXTS,
     CONTROL_SLOTS,
     compute_pair_health,
     control_slot_dir_name,
@@ -133,10 +133,10 @@ async def assign_control(
             detail="src_rel_path must be a control-slot file (e.g. control/foo.jpg)",
         )
     ext = os.path.splitext(src_parts[1])[1].lower()
-    if ext not in CONTROL_IMAGE_EXTS:
+    if ext not in CONTROL_MEDIA_EXTS:
         raise HTTPException(
             status_code=400,
-            detail=f"Control images must be one of {list(CONTROL_IMAGE_EXTS)}",
+            detail=f"Control files must be one of {list(CONTROL_MEDIA_EXTS)}",
         )
     src_abs = os.path.join(dataset_root, src_rel)
     if not os.path.isfile(src_abs):

@@ -194,7 +194,7 @@ async def upload_file(
     ``control_2/``, ``control_3/``) so the stem-pairing convention holds.
     """
     from app.core.dataset.control_helpers import (
-        CONTROL_IMAGE_EXTS,
+        CONTROL_MEDIA_EXTS,
         CONTROL_SLOTS,
     )
 
@@ -227,16 +227,16 @@ async def upload_file(
                 detail=f"No target image with stem '{target_stem}' in '{name}'",
             )
         ext = Path(safe_name).suffix.lower()
-        if ext not in CONTROL_IMAGE_EXTS:
+        if ext not in CONTROL_MEDIA_EXTS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Control images must be one of {list(CONTROL_IMAGE_EXTS)}",
+                detail=f"Control files must be one of {list(CONTROL_MEDIA_EXTS)}",
             )
         slot_dir = CONTROL_SLOTS[slot - 1]
         (dataset_root / slot_dir).mkdir(parents=True, exist_ok=True)
         # Purge same-stem siblings with other extensions so slot detection
         # (fixed ext priority) stays deterministic after replacement.
-        for other_ext in CONTROL_IMAGE_EXTS:
+        for other_ext in CONTROL_MEDIA_EXTS:
             if other_ext != ext:
                 (dataset_root / slot_dir / f"{target_stem}{other_ext}").unlink(
                     missing_ok=True,

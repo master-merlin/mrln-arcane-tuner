@@ -81,4 +81,28 @@ describe('TrainingStatsModalComponent', () => {
         fixture.detectChanges();
         expect(fixture.nativeElement.querySelector('[data-testid="stats-empty"]')).toBeTruthy();
     });
+
+    it('ignores a stale response that resolves after a newer filter change', () => {
+        const fixture = setup();
+        // initial (S1) request left pending — do not resolve yet
+
+        const stats2$ = new Subject<TrainingStats>();
+        getTrainingStats.mockReturnValue(stats2$.asObservable());
+        const sel: HTMLSelectElement = fixture.nativeElement.querySelector('[data-testid="stats-project-filter"]');
+        sel.value = sel.options[1].value; // 'p1'
+        sel.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        // newer request (S2) resolves first
+        stats2$.next(makeStats({ total_jobs: 7 }));
+        fixture.detectChanges();
+
+        // stale request (S1) resolves late
+        stats$.next(makeStats({ total_jobs: 5 }));
+        fixture.detectChanges();
+
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('[data-testid="stats-kpi-total"]')?.textContent).toContain('7');
+        expect(el.querySelector('[data-testid="stats-kpi-total"]')?.textContent).not.toContain('5');
+    });
 });

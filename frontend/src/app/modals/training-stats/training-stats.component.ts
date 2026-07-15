@@ -100,6 +100,8 @@ export class TrainingStatsModalComponent implements OnInit {
     protected stats = signal<TrainingStats | null>(null);
     protected projectFilter = signal<string>('all');
 
+    private reloadSeq = 0;
+
     ngOnInit(): void { this.reload(); }
 
     protected onFilterChange(ev: Event): void {
@@ -108,10 +110,11 @@ export class TrainingStatsModalComponent implements OnInit {
     }
 
     protected reload(): void {
+        const seq = ++this.reloadSeq;
         this.loading.set(true);
         this.jobService.getTrainingStats(this.projectFilter()).subscribe({
-            next: s => { this.stats.set(s); this.loading.set(false); },
-            error: () => { this.stats.set(null); this.loading.set(false); },
+            next: s => { if (seq !== this.reloadSeq) return; this.stats.set(s); this.loading.set(false); },
+            error: () => { if (seq !== this.reloadSeq) return; this.stats.set(null); this.loading.set(false); },
         });
     }
 

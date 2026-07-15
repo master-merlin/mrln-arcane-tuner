@@ -315,6 +315,88 @@ def _make_and_return(ds: str, stem: str, n_frames: int, fps: int) -> str:
     return path
 
 
+# ── Finding 2: 4n+1/invariant guard is enforced in production code ─────────
+
+
+class TestControlVideoFrameCountInvariant:
+    def test_control_clip_frame_count_mismatch_raises(self, monkeypatch, tmp_path):
+        """If the clip loader ever stops honoring ``target_frames`` exactly,
+        ``_load_control_video_clip`` must fail loudly instead of silently
+        caching a mismatched control latent (this invariant previously lived
+        only in test assertions, never in production code)."""
+        from app.engine.components import video as video_mod
+
+        def _bad_load_clip(
+            self,
+            path,
+            target_frames,
+            target_fps,
+            trim_start_s,
+            trim_end_s,
+            target_w,
+            target_h,
+            h_flip=False,
+        ):
+            return torch.zeros(3, target_frames + 2, target_h, target_w)
+
+        monkeypatch.setattr(video_mod.VideoFrameLoader, "load_clip", _bad_load_clip)
+
+        h = _Harness(LatentManager(FakeWanVAE(), device="cpu"))
+        ds = str(tmp_path / "ds")
+        path = _make_and_return(ds, "mismatch", n_frames=13, fps=8)
+
+        with pytest.raises(ValueError, match="frame"):
+            h._load_control_video_clip(
+                path, target_frames=13, target_fps=8.0, target_w=32, target_h=32
+            )
+
+
+# ── Finding 1: sliding temporal coverage + video control is unsupported ────
+
+
+class TestSlidingControlVideoGuard:
+    def test_sliding_target_with_video_control_raises(self, tmp_path):
+        """v1 scope: a target cached with ``temporal_mode="sliding"`` holds
+        the FULL clip while the control decode targets the per-step window
+        (``target_frames``) — a frame-axis mismatch downstream. Must fail
+        loudly instead of silently caching mismatched frames."""
+        ds = str(tmp_path / "ds")
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        h = _Harness(lm)
+        item = _video_edit_item(
+            ds,
+            "clip_slide",
+            target_frames=13,
+            target_fps=8.0,
+            control_frames=13,
+        )
+        item["temporal_mode"] = "sliding"
+        item["cache_frames"] = 61
+
+        with pytest.raises(ValueError, match="sliding"):
+            h._attach_control_images({}, [item], None)
+
+
+# ── Finding 3: still-image target + video control is a diagnostic error ────
+
+
+class TestStillTargetVideoControlGuard:
+    def test_image_target_with_video_control_raises(self, tmp_path):
+        """A still-image target paired with a video control slot (e.g. a
+        pre-existing image-edit dataset with a same-stem video accidentally
+        dropped into control/) must raise a diagnostic error naming the
+        dataset item, not die inside VideoFrameLoader with a generic
+        'target_fps must be > 0'."""
+        ds = str(tmp_path / "ds")
+        lm = LatentManager(MockImageVAE(), device="cpu")
+        h = _Harness(lm)
+        item = _image_edit_item(ds, "a")
+        item["control_is_video"] = [True]
+
+        with pytest.raises(ValueError, match="video target"):
+            h._attach_control_images({}, [item], None)
+
+
 # ── Image-control regression pin (byte-identical to pre-BR1) ──────────────
 
 

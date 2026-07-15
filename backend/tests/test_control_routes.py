@@ -13,6 +13,8 @@ Covers:
 import os
 import time
 
+import av
+import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -62,6 +64,25 @@ def manager(tmp_path, mock_settings):
 def _create_image(path: str, width: int = 64, height: int = 64, color: str = "red"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     Image.new("RGB", (width, height), color).save(path)
+
+
+def _create_video(
+    path: str, *, n_frames: int = 8, fps: int = 24, width: int = 32, height: int = 24
+):
+    """Tiny h264 mp4 — mirrors ``test_probe._write_clip`` (BR0 video controls)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with av.open(path, mode="w") as container:
+        vstream = container.add_stream("libx264", rate=fps)
+        vstream.width = width
+        vstream.height = height
+        vstream.pix_fmt = "yuv420p"
+        for i in range(n_frames):
+            arr = np.full((height, width, 3), (i * 20) % 255, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+            for packet in vstream.encode(frame):
+                container.mux(packet)
+        for packet in vstream.encode():
+            container.mux(packet)
 
 
 def _make_edit_dataset(manager, name: str = "editds", *, controls=("img1",),
@@ -144,6 +165,27 @@ class TestPairHealth:
         assert {"stem": "img1", "type": "target_edited_after_control"} in (
             health["warnings"]
         )
+
+    def test_video_control_pair_counted_in_mixed_dataset(self, manager):
+        """Task BR0: root/clip1.mp4 <-> control/clip1.mp4 pairs by stem just
+        like images, and a mixed image+video edit dataset is legal — both
+        pairs count toward paired_count."""
+        ds = manager.create_dataset("mixedset", kind="edit")
+        _create_image(os.path.join(ds.path, "img1.png"))
+        _create_image(os.path.join(ds.path, "control", "img1.jpg"), color="blue")
+        _create_video(os.path.join(ds.path, "clip1.mp4"))
+        _create_video(os.path.join(ds.path, "control", "clip1.mp4"))
+        manager.scan_dataset("mixedset")
+
+        health = compute_pair_health(manager.datasets["mixedset"])
+        assert health["target_count"] == 2
+        assert health["paired_count"] == 2
+        assert health["fully_paired"] is True
+
+        slot = ds.media_metadata["clip1.mp4"]["control_info"]["slots"]["control"]
+        assert slot["rel_path"] == "control/clip1.mp4"
+        assert slot["num_frames"] > 0
+        assert slot["fps"] > 0
 
 
 # ── Pair-order mutations ─────────────────────────────────────────────────

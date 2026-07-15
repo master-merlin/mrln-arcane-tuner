@@ -1959,15 +1959,15 @@ class DatasetManager:
                 except OSError:
                     pass
 
-        # Control slot images (paired edit datasets) — stem-matched
+        # Control slot images/videos (paired edit datasets) — stem-matched
         # sidecars like masks; orphaned controls would resurface as
         # pair-health warnings, so remove them with their target.
         from app.core.dataset.control_helpers import (
-            CONTROL_IMAGE_EXTS,
+            CONTROL_MEDIA_EXTS,
             CONTROL_SLOTS,
         )
         for slot in CONTROL_SLOTS:
-            for ctl_ext in CONTROL_IMAGE_EXTS:
+            for ctl_ext in CONTROL_MEDIA_EXTS:
                 ctl_path = os.path.join(dataset.path, slot, stem + ctl_ext)
                 if os.path.exists(ctl_path):
                     try:

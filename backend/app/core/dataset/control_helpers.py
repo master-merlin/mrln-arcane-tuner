@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import cv2
 from PIL import Image
 
 # Physical control slot directories, in slot order.
@@ -30,33 +31,79 @@ ROOT_SLOT = "root"
 # deterministically (first match wins).
 CONTROL_IMAGE_EXTS: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".webp")
 
+# Video containers a control slot may hold (Bernini-R video-edit datasets:
+# ``root/clipA.mp4`` <-> ``control/clipA.mp4``, stem-paired exactly like
+# images). Appended after the image exts so an image control still wins
+# ext-priority over a same-stem video control.
+CONTROL_MEDIA_EXTS: tuple[str, ...] = CONTROL_IMAGE_EXTS + (
+    ".mp4",
+    ".webm",
+    ".mkv",
+    ".mov",
+)
+
+
+def _probe_control_video(path: str) -> tuple[int, int, int, float]:
+    """Probe a control video's width/height/frame-count/fps via cv2.
+
+    Mirrors the scanner's existing cv2-based dimension probe
+    (``scan_helpers.extract_media_dimensions``) — lightweight and
+    best-effort. Returns ``(0, 0, 0, 0.0)`` on any failure; a bad control
+    clip must never raise (detection stays best-effort, same contract as
+    the image branch's ``(0, 0)`` fallback).
+    """
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return 0, 0, 0, 0.0
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        cap.release()
+        return w, h, num_frames, fps
+    except Exception:
+        return 0, 0, 0, 0.0
+
 
 def detect_control_slots(dataset_path: str, stem: str) -> dict[str, dict[str, Any]]:
-    """Find a stem's control images across all slot directories.
+    """Find a stem's control images/videos across all slot directories.
 
-    Returns an ordered ``{slot_dir: {rel_path, width, height}}`` mapping
-    containing only the slots that have a matching file. Dimensions are
-    (0, 0) when the file can't be read as an image.
+    Returns an ordered ``{slot_dir: {...}}`` mapping containing only the
+    slots that have a matching file. Image entries are
+    ``{rel_path, width, height}`` (dims are (0, 0) when unreadable) —
+    unchanged from before video support existed. Video entries additionally
+    carry ``num_frames``/``fps`` probed via cv2 (0/0.0 when unreadable).
     """
     slots: dict[str, dict[str, Any]] = {}
     for slot in CONTROL_SLOTS:
         slot_dir = os.path.join(dataset_path, slot)
         if not os.path.isdir(slot_dir):
             continue
-        for ext in CONTROL_IMAGE_EXTS:
+        for ext in CONTROL_MEDIA_EXTS:
             full = os.path.join(slot_dir, f"{stem}{ext}")
             if not os.path.exists(full):
                 continue
-            try:
-                with Image.open(full) as img:
-                    w, h = img.size
-            except Exception:
-                w, h = 0, 0
-            slots[slot] = {
-                "rel_path": f"{slot}/{stem}{ext}",
-                "width": w,
-                "height": h,
-            }
+            if ext in CONTROL_IMAGE_EXTS:
+                try:
+                    with Image.open(full) as img:
+                        w, h = img.size
+                except Exception:
+                    w, h = 0, 0
+                slots[slot] = {
+                    "rel_path": f"{slot}/{stem}{ext}",
+                    "width": w,
+                    "height": h,
+                }
+            else:
+                w, h, num_frames, fps = _probe_control_video(full)
+                slots[slot] = {
+                    "rel_path": f"{slot}/{stem}{ext}",
+                    "width": w,
+                    "height": h,
+                    "num_frames": num_frames,
+                    "fps": fps,
+                }
             break
     return slots
 
@@ -81,7 +128,7 @@ def prepare_control_slot_path(
     ext = ext.lower()
     slot_dir = os.path.join(dataset_path, control_slot_dir_name(slot_index))
     os.makedirs(slot_dir, exist_ok=True)
-    for other_ext in CONTROL_IMAGE_EXTS:
+    for other_ext in CONTROL_MEDIA_EXTS:
         if other_ext == ext:
             continue
         sibling = os.path.join(slot_dir, f"{stem}{other_ext}")
@@ -99,10 +146,10 @@ def list_control_stem_maps(dataset_path: str) -> dict[str, dict[str, str]]:
     Bulk variant of :func:`detect_control_slots` for the ``/pairs``
     endpoint — one ``scandir`` per slot instead of per-stem probing.
     Stems are lowercased to match the pairs keying; on duplicate stems
-    across extensions the :data:`CONTROL_IMAGE_EXTS` order wins.
+    across extensions the :data:`CONTROL_MEDIA_EXTS` order wins.
     """
     result: dict[str, dict[str, str]] = {}
-    ext_rank = {ext: i for i, ext in enumerate(CONTROL_IMAGE_EXTS)}
+    ext_rank = {ext: i for i, ext in enumerate(CONTROL_MEDIA_EXTS)}
     for slot in CONTROL_SLOTS:
         slot_dir = os.path.join(dataset_path, slot)
         if not os.path.isdir(slot_dir):

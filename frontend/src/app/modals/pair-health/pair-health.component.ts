@@ -12,6 +12,12 @@ import { DatasetUploadService } from '../../services/dataset-upload.service';
 import { MediaItemStore } from '../../state/media-item.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ToastService } from '../../services/toast';
+import { RuntimeConfigService } from '../../services/runtime-config.service';
+import { VideoTilePreviewComponent } from '../../components/dataset/dataset-viewer/components/video-tile-preview';
+
+/** Video containers a control slot may hold (mirrors the backend's
+ *  ``CONTROL_MEDIA_EXTS`` video half) — drives the orphan tray's video tile. */
+const CONTROL_VIDEO_EXTS = ['.mp4', '.webm', '.mkv', '.mov'];
 
 /**
  * Open with:
@@ -60,6 +66,7 @@ function stemOf(path: string): string {
     selector: 'app-modal-pair-health',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
+    imports: [VideoTilePreviewComponent],
     template: `
         <div class="modal-head">
             <div class="modal-title">Pairs</div>
@@ -203,6 +210,12 @@ function stemOf(path: string): string {
                     <ul class="ph-tray" data-testid="ph-orphan-tray">
                         @for (o of orphans(); track o.rel_path) {
                             <li class="ph-tray-row">
+                                @if (isVideoControl(o.rel_path)) {
+                                    <app-video-tile-preview
+                                        [posterUrl]="orphanPosterUrl(o)"
+                                        [videoUrl]="orphanVideoUrl(o)"
+                                        class="ph-tray-tile"></app-video-tile-preview>
+                                }
                                 <span class="ph-tray-name mono">{{ o.rel_path }}</span>
                                 <select class="select sm" [disabled]="acting()"
                                         [attr.data-testid]="'ph-orphan-' + o.rel_path"
@@ -247,6 +260,7 @@ function stemOf(path: string): string {
         .ph-help { font-size: 11.5px; color: var(--color-text-muted); margin: 8px 0 0; line-height: 1.5; }
         .ph-tray { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
         .ph-tray-row { display: flex; align-items: center; gap: 10px; }
+        .ph-tray-tile { position: relative; width: 40px; height: 40px; flex-shrink: 0; border-radius: var(--radius-theme-sm); overflow: hidden; }
         .ph-tray-name { flex: 1; min-width: 0; font-size: 11.5px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .select.sm { font-size: 12px; padding: 4px 6px; }
         .ph-loading { color: var(--color-text-muted); font-size: 13px; padding: 18px 0; }
@@ -271,6 +285,7 @@ export class PairHealthModalComponent {
     private mediaItems = inject(MediaItemStore);
     private sync = inject(DatasetSyncService);
     private toast = inject(ToastService);
+    private rtc = inject(RuntimeConfigService);
 
     protected readonly slots = Array.from({ length: SLOT_COUNT }, (_, i) => i + 1);
 
@@ -312,6 +327,25 @@ export class PairHealthModalComponent {
         if (d.slot) this.slot.set(d.slot);
         if (d.pendingControls?.length) this.pending.set([...d.pendingControls]);
         void this.reload();
+    }
+
+    /** True when a control's rel-path is a video container (mp4/webm/mkv/mov)
+     *  — gates the orphan tray's lazy video tile vs. plain filename text. */
+    protected isVideoControl(relPath: string): boolean {
+        const dot = relPath.lastIndexOf('.');
+        if (dot < 0) return false;
+        return CONTROL_VIDEO_EXTS.includes(relPath.slice(dot).toLowerCase());
+    }
+
+    /** Poster (first-frame thumbnail) URL for an orphan's video tile. */
+    protected orphanPosterUrl(orphan: OrphanControl): string {
+        return this.api.thumbnailUrl(this.data().datasetName, orphan.rel_path);
+    }
+
+    /** Full-clip URL for an orphan's video tile, mounted only on hover. */
+    protected orphanVideoUrl(orphan: OrphanControl): string {
+        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(this.data().datasetName)}`
+            + `/${encodeURIComponent(orphan.rel_path)}`;
     }
 
     protected slotLabel(slot: number): string {

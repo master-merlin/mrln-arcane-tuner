@@ -98,6 +98,82 @@ import { StatsUplotComponent } from './stats-uplot.component';
                             </div>
                         </div>
                     </div>
+
+                    <!-- ── Model families ──────────────────────────── -->
+                    <div class="card ts-section">
+                        <div class="card-head"><div class="card-title">Model families</div></div>
+                        <div class="card-body">
+                            <div class="ts-fam-grid ts-fam-head mono">
+                                <span>family</span><span>jobs</span><span>success</span><span>avg step</span><span>best loss</span>
+                            </div>
+                            @for (f of s.families; track f.id) {
+                                <div class="ts-fam-grid" data-testid="stats-family-row">
+                                    <span class="mono">{{ f.id || '—' }}</span>
+                                    <span class="mono">{{ f.count }}</span>
+                                    <span class="ts-rate">
+                                        <i class="ts-rate-bar"><b [style.width.%]="f.success_rate"></b></i>
+                                        <span class="mono">{{ f.success_rate }}%</span>
+                                    </span>
+                                    <span class="mono">{{ f.avg_step_time !== null ? f.avg_step_time + 's' : '—' }}</span>
+                                    <span class="mono">{{ f.best_loss ?? '—' }}</span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- ── Hyperparameters ─────────────────────────── -->
+                    @if (hpRows().length) {
+                        <div class="card ts-section">
+                            <div class="card-head"><div class="card-title">Hyperparameters</div>
+                                <span class="mono ts-sub">{{ s.resume_rate }}% of jobs resumed</span>
+                            </div>
+                            <div class="card-body">
+                                @for (row of hpRows(); track row.key) {
+                                    <div class="ts-hp" data-testid="stats-hp-row">
+                                        <span class="ts-hp-label">{{ row.label }}</span>
+                                        <div class="ts-hp-bar">
+                                            @for (seg of row.segments; track seg.value) {
+                                                <i [style.flex]="seg.count" [style.background]="toneColor(seg.tone)"
+                                                   [attr.title]="seg.value + ' · ' + seg.count"></i>
+                                            }
+                                        </div>
+                                        <span class="ts-hp-legend mono">
+                                            @for (seg of row.segments; track seg.value) {
+                                                <span><i class="dot" [style.background]="toneColor(seg.tone)"></i>{{ seg.value }} ({{ seg.count }})</span>
+                                            }
+                                        </span>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+
+                    <!-- ── Datasets & records ──────────────────────── -->
+                    <div class="card ts-section">
+                        <div class="card-head"><div class="card-title">Datasets &amp; records</div>
+                            <span class="mono ts-sub">{{ s.unique_datasets }} unique datasets</span>
+                        </div>
+                        <div class="card-body ts-bottom">
+                            <div data-testid="stats-datasets">
+                                <div class="ts-mini-title">Most trained on</div>
+                                @for (d of s.top_datasets; track d.name) {
+                                    <div class="ts-ds-row mono"><span>{{ d.name }}</span><span>{{ d.count }}</span></div>
+                                } @empty { <div class="ts-note">No dataset linkage yet.</div> }
+                            </div>
+                            <div data-testid="stats-records">
+                                <div class="ts-mini-title">Records</div>
+                                @if (s.records.longest_run; as r) {
+                                    <div class="ts-rec-row"><span>Longest run</span><span class="mono">{{ r.lora_name }} · {{ fmtDur(r.value) }}</span></div>
+                                }
+                                @if (s.records.most_steps; as r) {
+                                    <div class="ts-rec-row"><span>Most steps</span><span class="mono">{{ r.lora_name }} · {{ fmtCount(r.value) }}</span></div>
+                                }
+                                @if (s.records.best_loss; as r) {
+                                    <div class="ts-rec-row"><span>Best loss</span><span class="mono">{{ r.lora_name }} · {{ r.value }}</span></div>
+                                }
+                            </div>
+                        </div>
+                    </div>
                 }
             }
         </div>
@@ -135,6 +211,22 @@ import { StatsUplotComponent } from './stats-uplot.component';
         .ts-quality-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .ts-note { color: var(--color-text-muted); font-size: 12px; padding: 20px 0; }
         @media (max-width: 900px) { .ts-quality { grid-template-columns: 1fr; } }
+        .ts-fam-grid { display: grid; grid-template-columns: 1.4fr 0.5fr 1.4fr 0.7fr 0.7fr; gap: 8px; align-items: center; padding: 4px 0; font-size: 12px; }
+        .ts-fam-head { color: var(--color-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 6px; }
+        .ts-rate { display: flex; align-items: center; gap: 8px; }
+        .ts-rate-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--color-surface-mid); overflow: hidden; display: block; }
+        .ts-rate-bar b { display: block; height: 100%; background: var(--color-success); }
+        .ts-hp { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; margin-bottom: 10px; }
+        .ts-hp-label { font-size: 11px; color: var(--color-text-secondary); align-self: center; }
+        .ts-hp-bar { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--color-surface-mid); }
+        .ts-hp-bar i { display: block; height: 100%; }
+        .ts-hp-legend { grid-column: 2; display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--color-text-muted); }
+        .ts-hp-legend .dot { width: 7px; height: 7px; border-radius: 2px; display: inline-block; margin-right: 3px; }
+        .ts-sub { font-size: 11px; color: var(--color-text-muted); }
+        .ts-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+        .ts-mini-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); margin-bottom: 6px; }
+        .ts-ds-row, .ts-rec-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+        @media (max-width: 900px) { .ts-bottom { grid-template-columns: 1fr; } }
     `],
 })
 export class TrainingStatsModalComponent implements OnInit {
@@ -214,6 +306,36 @@ export class TrainingStatsModalComponent implements OnInit {
             error: () => { if (seq !== this.reloadSeq) return; this.stats.set(null); this.loading.set(false); },
         });
     }
+
+    /** Hyperparam dimensions in display order; only populated ones render. */
+    protected readonly HP_DIMS: { key: string; label: string }[] = [
+        { key: 'optimizer_type', label: 'Optimizer' },
+        { key: 'network_rank', label: 'Network rank' },
+        { key: 'lr_scheduler', label: 'LR scheduler' },
+        { key: 'timestep_sampling', label: 'Timestep sampling' },
+        { key: 'quantization', label: 'Quantization' },
+        { key: 'mixed_precision', label: 'Mixed precision' },
+        { key: 'ema_enabled', label: 'EMA' },
+        { key: 'batch_size', label: 'Batch size' },
+    ];
+    private readonly TONES = ['brand', 'success', 'violet', 'teal', 'warning'];
+
+    protected hpRows = computed(() => {
+        const s = this.stats();
+        if (!s) return [];
+        return this.HP_DIMS
+            .map(d => ({ ...d, counts: s.hyperparams[d.key] ?? [] }))
+            .filter(d => d.counts.length > 0)
+            .map(d => ({
+                ...d,
+                total: d.counts.reduce((a, c) => a + c.count, 0),
+                segments: d.counts.map((c, i) => ({
+                    ...c, tone: this.TONES[i % this.TONES.length],
+                })),
+            }));
+    });
+
+    protected toneColor(tone: string): string { return `var(--color-${tone})`; }
 
     protected fmtCount(n: number): string {
         return n >= 10_000 ? `${(n / 1000).toFixed(1)}k` : String(n);

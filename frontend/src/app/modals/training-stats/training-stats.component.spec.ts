@@ -115,4 +115,31 @@ describe('TrainingStatsModalComponent', () => {
         expect(el.querySelector('app-stats-uplot')).toBeTruthy();   // activity chart host
         expect(el.textContent).toContain('Not enough completed runs');
     });
+
+    it('renders the family table with success-rate bars', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const rows = fixture.nativeElement.querySelectorAll('[data-testid="stats-family-row"]');
+        expect(rows.length).toBe(1);
+        expect(rows[0].textContent).toContain('flux');
+        expect(rows[0].textContent).toContain('60');
+    });
+
+    it('renders hyperparameter bars only for populated dimensions', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const bars = fixture.nativeElement.querySelectorAll('[data-testid="stats-hp-row"]');
+        expect(bars.length).toBe(2); // optimizer_type + ema_enabled populated in makeStats
+    });
+
+    it('renders records and top datasets', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('[data-testid="stats-records"]')?.textContent).toContain('y'); // best-loss lora
+        expect(el.querySelector('[data-testid="stats-datasets"]')?.textContent).toContain('ds1');
+    });
 });

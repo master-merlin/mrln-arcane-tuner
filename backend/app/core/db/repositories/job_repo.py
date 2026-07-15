@@ -100,18 +100,24 @@ class JobHistoryRepository:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_stats(self) -> dict[str, Any]:
-        """Aggregate training statistics for the dashboard card.
+    def get_stats(self, project_id: str | None = None) -> dict[str, Any]:
+        """Aggregate training statistics for the stats modal.
 
-        Read-only: computes core counts, completed-run averages, model-family
-        and optimizer breakdowns, dataset usage and the most-recent job. Legacy
-        ``definition_id = 'standard'`` placeholder repair is handled once by the
-        v17 migration, NOT here — this method never writes.
+        Read-only. ``project_id`` narrows every aggregate to one project
+        (``None`` = global). Legacy ``definition_id = 'standard'`` placeholder
+        repair is handled once by the v17 migration, NOT here.
         """
         conn = get_db().connection()
 
+        # Filter fragments: appended to a WHERE clause that always exists
+        # (`WHERE 1=1`) so every query has one insertion point. `jflt` is the
+        # variant for queries joined through the job_history alias `j`.
+        flt = "" if project_id is None else "AND project_id = ?"
+        jflt = "" if project_id is None else "AND j.project_id = ?"
+        args: tuple[str, ...] = () if project_id is None else (project_id,)
+
         # ── Core counts ──────────────────────────────────────────
-        totals = conn.execute("""
+        totals = conn.execute(f"""
             SELECT
                 COUNT(*)                                              AS total_jobs,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
@@ -122,51 +128,53 @@ class JobHistoryRepository:
                 COALESCE(SUM(completed_steps), 0)                      AS total_steps,
                 COALESCE(SUM(duration_seconds), 0)                     AS total_runtime_sec,
                 COALESCE(SUM(training_seconds), 0)                     AS total_training_sec
-            FROM job_history
-        """).fetchone()
+            FROM job_history WHERE 1=1 {flt}
+        """, args).fetchone()
 
         total_jobs = totals["total_jobs"] or 0
         completed  = totals["completed"] or 0
 
         # ── Averages (completed only) ────────────────────────────
-        avgs = conn.execute("""
+        avgs = conn.execute(f"""
             SELECT
                 AVG(completed_steps) AS avg_steps,
                 AVG(avg_loss)        AS avg_loss,
                 AVG(min_loss)        AS avg_min_loss,
                 AVG(avg_step_time)   AS avg_step_time_sec,
                 AVG(duration_seconds) AS avg_runtime_sec
-            FROM job_history WHERE status = 'completed'
-        """).fetchone()
+            FROM job_history WHERE status = 'completed' {flt}
+        """, args).fetchone()
 
         # ── Model family breakdown ───────────────────────────────
-        families = conn.execute("""
+        families = conn.execute(f"""
             SELECT definition_id, COUNT(*) AS count
-            FROM job_history
+            FROM job_history WHERE 1=1 {flt}
             GROUP BY definition_id
             ORDER BY count DESC
-        """).fetchall()
+        """, args).fetchall()
 
         # ── Optimizer breakdown ──────────────────────────────────
-        optimizers = conn.execute("""
+        optimizers = conn.execute(f"""
             SELECT optimizer_type, COUNT(*) AS count
             FROM job_history
-            WHERE optimizer_type IS NOT NULL
+            WHERE optimizer_type IS NOT NULL {flt}
             GROUP BY optimizer_type
             ORDER BY count DESC
-        """).fetchall()
+        """, args).fetchall()
 
         # ── Dataset usage ────────────────────────────────────────
-        dataset_stats = conn.execute("""
-            SELECT COUNT(DISTINCT dataset_name) AS unique_datasets
-            FROM job_datasets
-        """).fetchone()
+        dataset_stats = conn.execute(f"""
+            SELECT COUNT(DISTINCT jd.dataset_name) AS unique_datasets
+            FROM job_datasets jd JOIN job_history j ON jd.job_id = j.id
+            WHERE 1=1 {jflt}
+        """, args).fetchone()
 
         # ── Most recent job ──────────────────────────────────────
-        last_job = conn.execute("""
+        last_job = conn.execute(f"""
             SELECT lora_name, definition_id, status, created_at
-            FROM job_history ORDER BY created_at DESC LIMIT 1
-        """).fetchone()
+            FROM job_history WHERE 1=1 {flt}
+            ORDER BY created_at DESC LIMIT 1
+        """, args).fetchone()
 
         return {
             "total_jobs": total_jobs,

@@ -367,3 +367,42 @@ def test_stats_get_is_write_free(client, tmp_path):
             response = client.get("/api/jobs/history/stats")
     assert response.status_code == 200
     assert response.json() == _EXPECTED_STATS
+
+
+def _tag_projects(eng) -> None:
+    """Assign seeded jobs to projects (jA, jC → p1; jB → p2)."""
+    with eng.write() as conn:
+        for pid, name in (("p1", "P1"), ("p2", "P2")):
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at, updated_at) "
+                "VALUES (?, ?, 0, 0)",
+                (pid, name),
+            )
+        conn.execute("UPDATE job_history SET project_id = 'p1' WHERE id IN ('jA','jC')")
+        conn.execute("UPDATE job_history SET project_id = 'p2' WHERE id = 'jB'")
+
+
+def test_stats_project_filter_narrows_every_aggregate(client, tmp_path):
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        _tag_projects(eng)
+        response = client.get("/api/jobs/history/stats?project_id=p1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_jobs"] == 2          # jA + jC
+    assert body["completed"] == 1           # jA only
+    assert body["failed"] == 1              # jC
+    assert body["success_rate"] == 50.0
+    assert body["total_steps"] == 100       # jA
+    assert body["unique_datasets"] == 1     # ds1 (jA); ds2 belongs to p2's jB
+    assert body["optimizers"] == [{"name": "adamw", "count": 1}]
+    assert body["last_job"]["lora_name"] == "c"  # jC is newest in p1
+
+
+def test_stats_project_filter_all_is_global(client, tmp_path):
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        _tag_projects(eng)
+        response = client.get("/api/jobs/history/stats?project_id=all")
+    assert response.status_code == 200
+    assert response.json()["total_jobs"] == 3

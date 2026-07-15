@@ -160,11 +160,12 @@ class JobHistoryDetail(JobHistoryRow):
 
 
 @router.get("/jobs/history/stats", response_model=JobStatsResponse)
-async def get_job_stats():
-    """Aggregate training statistics for the dashboard card (read-only)."""
+async def get_job_stats(project_id: str | None = None):
+    """Aggregate training statistics for the stats modal (read-only)."""
     from app.core.db.repositories.job_repo import JobHistoryRepository
 
-    return await asyncio.to_thread(JobHistoryRepository().get_stats)
+    pid = project_id if project_id and project_id != "all" else None
+    return await asyncio.to_thread(JobHistoryRepository().get_stats, pid)
 
 
 # ── Estimation-wall statistics ──────────────────────────────────────────

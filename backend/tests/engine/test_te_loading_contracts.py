@@ -43,6 +43,7 @@ D:/AI/huggingface/hub, unless noted):
   flux1             text_encoder_2   T5EncoderModel                       T5EncoderModel
   wan21             text_encoder     UMT5EncoderModel                     UMT5EncoderModel
   wan22             text_encoder     UMT5EncoderModel                     UMT5EncoderModel
+  bernini_r         text_encoder     UMT5EncoderModel                     UMT5EncoderModel
   ovis_image        text_encoder     Qwen3Model                           Qwen3Model
   flux2 (klein)     text_encoder     Qwen3ForCausalLM (pinned W2-B)       Qwen3ForCausalLM
   zimage            text_encoder     Qwen3ForCausalLM (pinned W2-B)       Qwen3ForCausalLM
@@ -365,6 +366,10 @@ CASES: list[_Case] = [
     _Case("wan22", _m("wan22"), "Wan22Loader", "text_encoder",
           "transformers.UMT5EncoderModel", "UMT5EncoderModel"),
     _Case("wan22_ti2v_5b", _m("wan22_ti2v_5b"), "Wan22Ti2v5bLoader", "text_encoder",
+          "transformers.UMT5EncoderModel", "UMT5EncoderModel"),
+    # Bernini-R shares the exact Wan text stack (UMT5-XXL, cached-text-encoder
+    # shape) — component-wise loader off the repo root (no model_index.json).
+    _Case("bernini_r", _m("bernini_r"), "BerniniRLoader", "text_encoder",
           "transformers.UMT5EncoderModel", "UMT5EncoderModel"),
     _Case("ovis_image", _m("ovis_image"), "OvisImageLoader", "text_encoder",
           "transformers.Qwen3Model", "Qwen3Model"),

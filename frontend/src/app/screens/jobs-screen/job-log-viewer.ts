@@ -164,7 +164,7 @@ const FOLLOW_THRESHOLD = 24;
             }
 
             .jlog-body {
-                background: oklch(0.05 0.01 265);
+                background: var(--color-terminal-bg);
                 border: 1px solid var(--color-border-subtle);
                 border-radius: var(--radius-theme-md);
                 font-size: 11px;

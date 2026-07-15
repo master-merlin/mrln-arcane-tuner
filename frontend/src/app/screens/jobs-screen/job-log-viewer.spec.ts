@@ -84,6 +84,19 @@ describe('JobLogViewerComponent follow toggle', () => {
     });
 });
 
+describe('JobLogViewerComponent theming', () => {
+    it('paints the log body with the theme terminal token, not a hardcoded dark color', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        // Angular injects component styles into <head>; find the rule block for the log body.
+        const styleText = Array.from(document.head.querySelectorAll('style'))
+            .map((s) => s.textContent ?? '')
+            .find((t) => t.includes('.jlog-body'));
+        expect(styleText).toBeDefined();
+        expect(styleText).toContain('var(--color-terminal-bg)');
+    });
+});
+
 describe('JobLogViewerComponent copy + download', () => {
     it('copies the (filtered) lines to the clipboard', () => {
         const writeText = vi.fn().mockResolvedValue(undefined);

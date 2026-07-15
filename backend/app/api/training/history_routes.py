@@ -28,11 +28,6 @@ def get_dataset_or_404(name: str):
 # ── Response schemas ─────────────────────────────────────────────────────
 
 
-class ModelFamilyCount(BaseModel):
-    id: str | None = None
-    count: int
-
-
 class OptimizerCount(BaseModel):
     name: str | None = None
     count: int
@@ -43,6 +38,51 @@ class LastJobSummary(BaseModel):
     definition_id: str | None = None
     status: str | None = None
     created_at: float | None = None
+
+
+class ActivityWeek(BaseModel):
+    week_start: str
+    completed: int
+    failed: int
+    stopped: int
+    other: int
+
+
+class FamilyStats(BaseModel):
+    id: str | None = None
+    count: int
+    completed: int
+    success_rate: float
+    avg_step_time: float | None = None
+    best_loss: float | None = None
+
+
+class HyperparamCount(BaseModel):
+    value: str
+    count: int
+
+
+class LossHistogram(BaseModel):
+    edges: list[float]
+    counts: list[int]
+
+
+class DatasetUseCount(BaseModel):
+    name: str
+    count: int
+
+
+class JobRecord(BaseModel):
+    job_id: str
+    lora_name: str
+    definition_id: str | None = None
+    value: float
+
+
+class JobRecords(BaseModel):
+    longest_run: JobRecord | None = None
+    most_steps: JobRecord | None = None
+    best_loss: JobRecord | None = None
 
 
 class JobStatsResponse(BaseModel):
@@ -61,10 +101,21 @@ class JobStatsResponse(BaseModel):
     avg_min_loss: float
     avg_step_time_sec: float
     avg_runtime_sec: float
-    model_families: list[ModelFamilyCount]
     optimizers: list[OptimizerCount]
     unique_datasets: int
     last_job: LastJobSummary | None = None
+    activity: list[ActivityWeek]
+    gpu_hours: float
+    overhead_pct: float
+    lora_count: int
+    lora_bytes: int
+    checkpoint_count: int
+    families: list[FamilyStats]
+    loss_histogram: LossHistogram
+    hyperparams: dict[str, list[HyperparamCount]]
+    resume_rate: float
+    top_datasets: list[DatasetUseCount]
+    records: JobRecords
 
 
 class BackfillResponse(BaseModel):

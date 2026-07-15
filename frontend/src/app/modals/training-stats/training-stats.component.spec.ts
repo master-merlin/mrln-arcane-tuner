@@ -105,4 +105,14 @@ describe('TrainingStatsModalComponent', () => {
         expect(el.querySelector('[data-testid="stats-kpi-total"]')?.textContent).toContain('7');
         expect(el.querySelector('[data-testid="stats-kpi-total"]')?.textContent).not.toContain('5');
     });
+
+    it('renders the activity section when there is activity, and the histogram fallback note when not', () => {
+        const fixture = setup();
+        stats$.next(makeStats({ loss_histogram: { edges: [], counts: [] } }));
+        stats$.complete();
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('app-stats-uplot')).toBeTruthy();   // activity chart host
+        expect(el.textContent).toContain('Not enough completed runs');
+    });
 });

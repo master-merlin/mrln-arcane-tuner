@@ -1,9 +1,12 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import uPlot from 'uplot';
 import { JobService, type TrainingStats } from '../../services/job';
 import { ProjectService } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { formatDuration } from '../../shared/job-metrics';
+import { buildActivityChart, buildHistogramChart } from './stats-charts';
+import { StatsUplotComponent } from './stats-uplot.component';
 
 /**
  * Cross-job training statistics modal — the redesign successor of the legacy
@@ -14,7 +17,7 @@ import { formatDuration } from '../../shared/job-metrics';
 @Component({
     selector: 'app-modal-training-stats',
     standalone: true,
-    imports: [KpiTileComponent],
+    imports: [KpiTileComponent, StatsUplotComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -61,7 +64,40 @@ import { formatDuration } from '../../shared/job-metrics';
                         <app-kpi-tile label="LoRAs produced" [value]="s.lora_count"
                                       [sub]="fmtGB(s.lora_bytes) + ' · ' + s.checkpoint_count + ' checkpoints'" accent="teal"/>
                     </div>
-                    <!-- Tasks 5 & 6 append sections here -->
+
+                    <!-- ── Activity ────────────────────────────────── -->
+                    @if (activityData(); as ad) {
+                        <div class="card ts-section">
+                            <div class="card-head"><div class="card-title">Activity · jobs per week</div>
+                                <div class="ts-legend">
+                                    <span><i class="dot success"></i> completed</span>
+                                    <span><i class="dot danger"></i> failed</span>
+                                    <span><i class="dot warning"></i> stopped/other</span>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <app-stats-uplot [data]="ad" [opts]="activityOpts" [height]="150"/>
+                            </div>
+                        </div>
+                    }
+
+                    <!-- ── Quality ─────────────────────────────────── -->
+                    <div class="card ts-section">
+                        <div class="card-head"><div class="card-title">Quality · completed runs</div></div>
+                        <div class="card-body ts-quality">
+                            @if (histData(); as hd) {
+                                <app-stats-uplot [data]="hd" [opts]="histOpts" [height]="130"/>
+                            } @else {
+                                <div class="ts-note">Not enough completed runs for a loss distribution.</div>
+                            }
+                            <div class="ts-quality-tiles">
+                                <app-kpi-tile label="Avg loss" [value]="stats()!.avg_loss" [compact]="true"/>
+                                <app-kpi-tile label="Best loss" [value]="stats()!.avg_min_loss" [compact]="true" accent="success"/>
+                                <app-kpi-tile label="Avg step time" [value]="stats()!.avg_step_time_sec" unit="s" [compact]="true"/>
+                                <app-kpi-tile label="Avg runtime" [value]="fmtDur(stats()!.avg_runtime_sec)" [compact]="true"/>
+                            </div>
+                        </div>
+                    </div>
                 }
             }
         </div>
@@ -89,6 +125,16 @@ import { formatDuration } from '../../shared/job-metrics';
             gap: 10px; margin-bottom: 16px;
         }
         @media (max-width: 900px) { .ts-kpis { grid-template-columns: repeat(2, 1fr); } }
+        .ts-section { margin-bottom: 14px; }
+        .ts-legend { display: flex; gap: 12px; font-size: 10.5px; color: var(--color-text-muted); }
+        .ts-legend .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+        .ts-legend .dot.success { background: var(--color-success); }
+        .ts-legend .dot.danger { background: var(--color-danger); }
+        .ts-legend .dot.warning { background: var(--color-warning); }
+        .ts-quality { display: grid; grid-template-columns: 1fr 220px; gap: 14px; align-items: start; }
+        .ts-quality-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .ts-note { color: var(--color-text-muted); font-size: 12px; padding: 20px 0; }
+        @media (max-width: 900px) { .ts-quality { grid-template-columns: 1fr; } }
     `],
 })
 export class TrainingStatsModalComponent implements OnInit {
@@ -101,6 +147,57 @@ export class TrainingStatsModalComponent implements OnInit {
     protected projectFilter = signal<string>('all');
 
     private reloadSeq = 0;
+
+    protected readonly activityChart = computed(() => {
+        const s = this.stats();
+        return s ? buildActivityChart(s.activity) : null;
+    });
+    protected readonly activityData = computed<uPlot.AlignedData | null>(() => {
+        const c = this.activityChart();
+        if (!c || !c.xs.length) return null;
+        return [c.xs, c.stoppedCum, c.failedCum, c.completedCum];
+    });
+    protected readonly activityOpts: Omit<uPlot.Options, 'width' | 'height'>;
+
+    protected readonly histData = computed<uPlot.AlignedData | null>(() => {
+        const s = this.stats();
+        const h = s ? buildHistogramChart(s.loss_histogram) : null;
+        return h ? [h.xs, h.counts] : null;
+    });
+    protected readonly histOpts: Omit<uPlot.Options, 'width' | 'height'>;
+
+    constructor() {
+        this.activityOpts = {
+            legend: { show: false },
+            cursor: { show: false },
+            scales: { x: { time: true } },
+            axes: [
+                {},
+                { size: 36, incrs: [1, 2, 5, 10, 25, 50, 100] },
+            ],
+            series: [
+                {},
+                // draw order bottom layer first: full cumulative in "stopped" color
+                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-warning'), stroke: 'transparent', points: { show: false } },
+                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-danger'), stroke: 'transparent', points: { show: false } },
+                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-success'), stroke: 'transparent', points: { show: false } },
+            ],
+        };
+        this.histOpts = {
+            legend: { show: false },
+            cursor: { show: false },
+            scales: { x: { time: false } },
+            axes: [{}, { size: 36 }],
+            series: [
+                {},
+                { paths: uPlot.paths.bars!({ size: [0.8, 100] }), fill: this.cssVar('--color-brand'), stroke: 'transparent', points: { show: false } },
+            ],
+        };
+    }
+
+    private cssVar(name: string): string {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
+    }
 
     ngOnInit(): void { this.reload(); }
 

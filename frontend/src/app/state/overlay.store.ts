@@ -28,7 +28,8 @@ export type ModalKind =
     | 'pair-role-chooser'
     | 'template-edit' | 'template-json' | 'job-config'
     | 'import-dataset' | 'export-options' | 'import-archive' | 'resume-job'
-    | 'config-help' | 'model-source-config' | 'scene-detect' | 'cutlist-import';
+    | 'config-help' | 'model-source-config' | 'scene-detect' | 'cutlist-import'
+    | 'training-stats';
 
 export interface ModalEntry {
     kind: ModalKind;

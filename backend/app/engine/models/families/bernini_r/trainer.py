@@ -84,6 +84,20 @@ class BerniniRTrainer(WanTextCacheMixin, GenericTrainingPipeline):
         self.components["unet"] = new_model
         self.driver.transformer = new_model
 
+    def _create_sampler(self):
+        """Bernini-R v2v in-training preview sampler (Task BR4).
+
+        Created only when sampling is configured (``sample_every_n_steps > 0``),
+        mirroring wan21/wan22. Lazily imported so family discovery / the BR2/BR3
+        tests never require the sampler module.
+        """
+        interval = int(self.config.get("sample_every_n_steps", 0))
+        if interval > 0:
+            from .sampler import BerniniRSampler
+
+            return BerniniRSampler(self)
+        return None
+
     # ── Timestep sampling (upstream NoiseScheduler, video tasks) ─────────
     def sample_timesteps(
         self, batch_size: int, latents: torch.Tensor | None = None

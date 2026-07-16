@@ -278,6 +278,16 @@ FAMILIES: list[FamilySpec] = [
         "transformer", "transformer",
         encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
     ),
+    # ── bernini_r: Wan-lineage trainer (WanTextCacheMixin → raw-tensor UMT5
+    # encode, driver stores its model on ``.transformer``); overrides
+    # _update_primary_model to sync the driver like wan21/wan22.
+    FamilySpec(
+        "bernini_r",
+        "app.engine.models.families.bernini_r.trainer:BerniniRTrainer",
+        "app.engine.models.families.bernini_r.driver:BerniniRDriver",
+        "transformer", "transformer",
+        encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
+    ),
     # ── P2a-delegated families (each overrides _update_primary_model itself
     # instead of inheriting the base no-op driver-sync — the exact bug class
     # this contract exists to pin) ─────────────────────────────────────────

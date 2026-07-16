@@ -34,6 +34,7 @@ from app.engine.models.registry import ModelRegistry
 # the live registry and fails if the two drift.
 ALL_FAMILIES = (
     "ace_step15",
+    "bernini_r",
     "boogu_image",
     "chroma",
     "dreamlite",

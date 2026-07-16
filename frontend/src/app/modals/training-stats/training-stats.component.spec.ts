@@ -53,6 +53,12 @@ describe('TrainingStatsModalComponent', () => {
         return fixture;
     }
 
+    function openTab(fixture: ReturnType<typeof setup>, index: number) {
+        const tabs = fixture.nativeElement.querySelectorAll('[data-testid="stats-tabs"] .tab');
+        (tabs[index] as HTMLButtonElement).click();
+        fixture.detectChanges();
+    }
+
     it('fetches global stats on open and renders KPI tiles', () => {
         const fixture = setup();
         expect(getTrainingStats).toHaveBeenCalledWith('all');
@@ -107,6 +113,34 @@ describe('TrainingStatsModalComponent', () => {
         expect(el.querySelector('[data-testid="stats-kpi-total"]')?.textContent).not.toContain('5');
     });
 
+    it('renders three tabs with Activity active by default; KPI row stays visible', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        const tabs = el.querySelectorAll('[data-testid="stats-tabs"] .tab');
+        expect(Array.from(tabs).map(t => t.textContent?.trim()))
+            .toEqual(['Activity', 'Quality & Families', 'Config & Data']);
+        expect(tabs[0].classList.contains('active')).toBe(true);
+        expect(el.querySelector('[data-testid="stats-kpi-total"]')).toBeTruthy();
+        expect(el.querySelector('app-stats-uplot')).toBeTruthy();           // activity chart
+        expect(el.querySelector('[data-testid="stats-family-row"]')).toBeFalsy(); // other tab
+    });
+
+    it('switches sections when a tab is clicked, keeping the KPI row', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 1);
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('[data-testid="stats-family-row"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="stats-kpi-total"]')).toBeTruthy();
+        openTab(fixture, 2);
+        expect(el.querySelector('[data-testid="stats-hp-row"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="stats-datasets"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="stats-family-row"]')).toBeFalsy();
+    });
+
     it('renders the activity section when there is activity, and the histogram fallback note when not', () => {
         const fixture = setup();
         stats$.next(makeStats({ loss_histogram: { edges: [], counts: [] } }));
@@ -114,6 +148,7 @@ describe('TrainingStatsModalComponent', () => {
         fixture.detectChanges();
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('app-stats-uplot')).toBeTruthy();   // activity chart host
+        openTab(fixture, 1);
         expect(el.textContent).toContain('Not enough completed runs');
     });
 
@@ -121,6 +156,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 1);
         const rows = fixture.nativeElement.querySelectorAll('[data-testid="stats-family-row"]');
         expect(rows.length).toBe(1);
         expect(rows[0].textContent).toContain('flux');
@@ -131,6 +167,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 2);
         const bars = fixture.nativeElement.querySelectorAll('[data-testid="stats-hp-row"]');
         expect(bars.length).toBe(2); // optimizer_type + ema_enabled populated in makeStats
     });
@@ -139,6 +176,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 1);
         const el: HTMLElement = fixture.nativeElement;
         const tile = el.querySelector('[data-testid="stats-kpi-best-loss"]');
         expect(tile?.textContent).toContain('0.08');
@@ -149,6 +187,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 2);
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('[data-testid="stats-records"]')?.textContent).toContain('y'); // best-loss lora
         expect(el.querySelector('[data-testid="stats-datasets"]')?.textContent).toContain('ds1');

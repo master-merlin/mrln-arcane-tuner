@@ -14,12 +14,13 @@ label (``bernini-r-*``) for provenance.
 from __future__ import annotations
 
 from app.engine.models.families.wan21.saver import Wan21Saver
+from app.engine.models.families.wan22.saver import Wan22Saver
 
-__all__ = ["BerniniRSaver"]
+__all__ = ["BerniniRSaver", "BerniniRDualSaver"]
 
 
 class BerniniRSaver(Wan21Saver):
-    """Bernini-R LoRA saver.
+    """Bernini-R single-expert (1.3B) LoRA saver.
 
     Identical export path to :class:`Wan21Saver` (tensor keys byte-for-byte the
     same); the only difference is the ``modelspec.architecture`` label, driven by
@@ -27,3 +28,19 @@ class BerniniRSaver(Wan21Saver):
     """
 
     ARCH_PREFIX = "bernini-r"
+
+
+class BerniniRDualSaver(Wan22Saver):
+    """Bernini-R dual-expert (14B MoE) LoRA saver — TWO ComfyUI-format files.
+
+    Bernini-R 14B is 100%-stock wan2.2-A14B-arch weights (recon §9), so the
+    dual-expert export IS the wan2.2 one: reuses :class:`Wan22Saver` verbatim for
+    the ``{stem}_high_noise`` / ``{stem}_low_noise`` filenames and the shared
+    ``diffusion_model.*`` key conversion, and only relabels
+    ``modelspec.architecture`` (``bernini-r-{mode}-{high,low}``) for provenance —
+    exactly as the single-expert :class:`BerniniRSaver` relabels wan21's export.
+    ComfyUI's official Bernini-R workflow loads stock wan2.2 per-expert LoRA keys,
+    so the tensor keys MUST NOT diverge from wan22's.
+    """
+
+    ARCH_FAMILY = "bernini-r"

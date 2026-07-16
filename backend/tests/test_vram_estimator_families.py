@@ -243,6 +243,34 @@ def test_bernini_r_entry_beats_generic_default_from_above():
     assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
 
 
+def test_bernini_r_14b_dual_expert_doubles_primary_weights():
+    """Bernini-R 14B is a wan2.2-A14B-arch MoE: the definition ships a per-expert
+    ``model_size_mb`` (transformer 27275 MB ≈ 14.3 B bf16) and resolves a
+    ``dual_expert`` capability, so the estimator's dual-expert branch DOUBLES the
+    primary-weight term (both experts resident under ``auto``) — far above the
+    1.3B family fallback (~1.4 B) and the generic 2.0 B default."""
+    defn = registry.get_definition("bernini-r-14b")
+    assert defn is not None
+    # The per-definition dual_expert capability must be True (family is shared
+    # with the single-expert 1.3B, which stays False).
+    from app.engine.core.archetypes import resolve_capabilities
+
+    assert resolve_capabilities(defn)["capabilities"]["dual_expert"] is True
+
+    d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+    # One 14.3 B expert ≈ 27275 MB; both resident ≈ 54550 MB.
+    assert d["model_weights_mb"] > 45_000, d["model_weights_mb"]
+    assert d["model_weights_mb"] < 70_000, d["model_weights_mb"]
+    assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
+
+    # ``swap`` mode holds one expert on GPU → no second-expert term (half).
+    d_swap = VRAMEstimator.estimate(
+        defn, {"quantization": "none", "expert_swap_mode": "swap"}
+    ).to_dict()
+    assert d_swap["model_weights_mb"] < d["model_weights_mb"]
+    assert d_swap["model_weights_mb"] == pytest.approx(27275, rel=0.02)
+
+
 def test_prx_pixel_has_te_but_no_vae_contribution():
     """prx_pixel is pixel-space (NO VAE) but keeps an EXTERNAL ~1.7B TE —
     unlike hidream_o1 the caching peak must contain a real TE term while

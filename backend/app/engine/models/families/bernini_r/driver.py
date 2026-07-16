@@ -88,12 +88,14 @@ class BerniniRDriver(WanDriverBase):
         return output[0] if isinstance(output, tuple) else output
 
     def get_saver(self) -> Any:
-        """Reuse the Wan 2.1 ComfyUI-format saver — Bernini-R weights are
-        stock-key Wan, so the ``diffusion_model.*`` mapping is identical.
+        """Bernini-R saver — wan-canonical ``diffusion_model.*`` keys (byte-equal
+        to wan21's export; Bernini-R weights are stock-key Wan) with a
+        ``bernini-r`` provenance label. This is the saver the real save path uses
+        (``pipeline_optimization`` reads ``driver.get_saver()``).
         """
-        from app.engine.models.families.wan21.saver import Wan21Saver
+        from app.engine.models.families.bernini_r.saver import BerniniRSaver
 
-        return Wan21Saver(mode="t2v")
+        return BerniniRSaver(mode="t2v")
 
     def get_block_topology(self) -> list[dict[str, Any]]:
         """Single stack of ``blocks`` (mirrors wan21)."""

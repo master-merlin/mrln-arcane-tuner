@@ -89,10 +89,17 @@ MIN_EXPECTED_FAMILIES = 21
 # mechanism is exactly what's relied on to route it onto the real training
 # path with no trainer wiring. Pinned by
 # test_wan22_ti2v_5b_i2v_conditioning.py.
+# bernini_r ``add_noise``: BerniniRDriver extends WanDriverBase and inherits its
+# flow-match lerp verbatim (raw [0,1000] space; ALGEBRAICALLY IDENTICAL to the
+# base NoiseInterpolation('linear') path, exactly as wan21/wan22). The trainer
+# overrides ``sample_timesteps`` (SD3-mode) but NOT ``add_noise``, so
+# auto-delegation is the only thing routing the wan lerp onto bernini_r's real
+# training path — and it changes zero training math vs the base default.
 AUTODELEGATED_FAMILY_HOOKS: set[tuple[str, str]] = {
     ("wan21", "add_noise"),
     ("wan22", "add_noise"),
     ("wan22_ti2v_5b", "add_noise"),
+    ("bernini_r", "add_noise"),
 }
 
 

@@ -32,6 +32,12 @@ __all__ = ["Wan21Saver", "_convert_diffusers_to_comfy"]
 class Wan21Saver(ModelSaver):
     """Save WAN 2.1 LoRA weights in ComfyUI-format safetensors."""
 
+    # ``modelspec.architecture`` label prefix. Subclasses whose weights share the
+    # stock-Wan key surface but want their own provenance label (e.g. Bernini-R)
+    # override this; the ComfyUI tensor KEYS are unchanged (they come from the
+    # shared converter), only the metadata label differs.
+    ARCH_PREFIX = "wan2.1"
+
     def __init__(self, mode: str = "t2v") -> None:
         self.mode = str(mode).lower() if mode else "t2v"
 
@@ -78,7 +84,7 @@ class Wan21Saver(ModelSaver):
             rank = int(getattr(peft_cfg, "r", 16))
             alpha = float(getattr(peft_cfg, "lora_alpha", rank))
 
-        arch = f"wan2.1-{self.mode}"
+        arch = f"{self.ARCH_PREFIX}-{self.mode}"
         save_metadata = {
             "format": "pt",
             "software": '{"name": "Arcane Tuner"}',

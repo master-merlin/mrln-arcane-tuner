@@ -927,6 +927,17 @@ class PipelineTrainMixin:
             logger.warning("job_history_init_failed", error=str(e))
             return None
 
+    def _current_lora_artifact(self) -> tuple[str | None, int | None]:
+        """(path, size) of the checkpoint manager's last saved LoRA, or
+        (None, None) when unknown/unstatable."""
+        path = getattr(self.checkpoint_manager, "last_lora_path", None)
+        if not path:
+            return None, None
+        try:
+            return path, os.path.getsize(path)
+        except OSError:
+            return None, None
+
     def _record_checkpoint(self, step: int, is_final: bool = False) -> None:
         """Record a checkpoint save in the DB."""
         if not getattr(self, "_job_history_id", None):
@@ -935,12 +946,15 @@ class PipelineTrainMixin:
             from app.core.db.repositories.checkpoint_repo import CheckpointRepository
 
             repo = CheckpointRepository()
+            lora_path, lora_size = self._current_lora_artifact()
             repo.add(
                 {
                     "job_id": self._job_history_id,
                     "step": step,
                     "path": self.checkpoint_manager.output_dir,
                     "is_final": is_final,
+                    "lora_file": lora_path,
+                    "lora_size_bytes": lora_size,
                     "loss_at_step": self.logger_component._loss_history[-1]["loss"]
                     if self.logger_component._loss_history
                     else None,
@@ -989,6 +1003,13 @@ class PipelineTrainMixin:
             if vram_measured:
                 self._write_vram_measured(vram_measured)
 
+            final_lora_path, final_lora_size = self._current_lora_artifact()
+            artifact_fields = (
+                {"final_lora_file": final_lora_path,
+                 "final_lora_size_bytes": final_lora_size}
+                if final_lora_path else {}
+            )
+
             repo.complete(
                 self._job_history_id,
                 completed_steps=max_steps,
@@ -1004,6 +1025,7 @@ class PipelineTrainMixin:
                 peak_vram_train_mb=peak_train,
                 peak_vram_cache_mb=peak_cache,
                 total_run_bytes=total_bytes,
+                **artifact_fields,
             )
             logger.info("job_history_completed", job_id=self._job_history_id)
 

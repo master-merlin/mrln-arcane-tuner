@@ -236,6 +236,9 @@ class CheckpointManager:
         self.output_dir = output_dir
         self.saver = saver_impl
         self.last_save_time = 0.0
+        # Absolute path of the most recently saved distribution LoRA (None
+        # until the first successful save, or when a save produced no LoRA).
+        self.last_lora_path: str | None = None
 
     # ── Save ─────────────────────────────────────────────────────────
 
@@ -270,6 +273,7 @@ class CheckpointManager:
             Path to the checkpoint directory.
         """
         config = config or {}
+        self.last_lora_path = None
 
         # Determine paths
         resolved_name = resolve_lora_name(config)
@@ -304,6 +308,7 @@ class CheckpointManager:
             dist_path = Path(self.output_dir) / lora_filename
             try:
                 self.saver.save(save_components, dist_path, metadata=metadata)
+                self.last_lora_path = str(dist_path)
                 logger.info("saved_distribution_lora", path=str(dist_path))
             except Exception as e:
                 # A LoRA save failure must never be a silent no-file

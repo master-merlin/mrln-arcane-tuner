@@ -57,12 +57,16 @@ import { StatsUplotComponent } from './stats-uplot.component';
                             <app-kpi-tile label="Success rate" [value]="s.success_rate" unit="%" [animate]="true"
                                           [accent]="s.success_rate >= 50 ? 'success' : 'warning'"/>
                         </div>
-                        <app-kpi-tile label="Total steps" [value]="fmtCount(s.total_steps)"
-                                      [sub]="'avg ' + fmtCount(s.avg_steps) + ' / run'"/>
+                        <div data-testid="stats-kpi-steps">
+                            <app-kpi-tile label="Total steps" [value]="fmtCount(s.total_steps)" accent="warning"
+                                          [sub]="'avg ' + fmtCount(s.avg_steps) + ' / run'"/>
+                        </div>
                         <app-kpi-tile label="GPU time" [value]="fmtHours(s.gpu_hours)" unit="h"
                                       [sub]="s.overhead_pct + '% overhead'" accent="violet"/>
-                        <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
-                                      [sub]="fmtGB(s.lora_bytes) + ' · ' + s.checkpoint_count + ' checkpoints'" accent="teal"/>
+                        <div data-testid="stats-kpi-loras">
+                            <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
+                                          [sub]="loraSub(s)" accent="teal"/>
+                        </div>
                     </div>
 
                     <!-- ── Activity ────────────────────────────────── -->
@@ -343,6 +347,13 @@ export class TrainingStatsModalComponent implements OnInit {
     }
     protected fmtHours(h: number): string { return h.toFixed(h >= 100 ? 0 : 1); }
     protected fmtGB(bytes: number): string { return (bytes / 1024 ** 3).toFixed(2) + ' GB'; }
+    /** "2 on disk · 2.79 GB · 12 checkpoints", flagging partial size coverage. */
+    protected loraSub(s: TrainingStats): string {
+        const gb = this.fmtGB(s.lora_bytes);
+        const sized = s.lora_size_known < s.lora_count
+            ? `${gb} (${s.lora_size_known}/${s.lora_count} sized)` : gb;
+        return `${s.lora_on_disk} on disk · ${sized} · ${s.checkpoint_count} checkpoints`;
+    }
     /**
      * `formatDuration(startedAtSec, endMs)` computes elapsed time between an
      * epoch-seconds start and an epoch-ms end (`Math.floor((endMs -

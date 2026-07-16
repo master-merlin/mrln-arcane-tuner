@@ -17,6 +17,7 @@ export function makeStats(over: Partial<TrainingStats> = {}): TrainingStats {
         last_job: { lora_name: 'x', definition_id: 'flux', status: 'completed', created_at: 1 },
         activity: [{ week_start: '2026-07-13', completed: 3, failed: 1, stopped: 1, other: 0 }],
         gpu_hours: 1.67, overhead_pct: 16.7, lora_count: 3, lora_bytes: 3_000_000_000,
+        lora_on_disk: 2, lora_size_known: 3,
         checkpoint_count: 12,
         families: [{ id: 'flux', count: 5, completed: 3, success_rate: 60.0, avg_step_time: 0.45, best_loss: 0.08 }],
         loss_histogram: { edges: [0.05, 0.1], counts: [3] },
@@ -151,5 +152,33 @@ describe('TrainingStatsModalComponent', () => {
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('[data-testid="stats-records"]')?.textContent).toContain('y'); // best-loss lora
         expect(el.querySelector('[data-testid="stats-datasets"]')?.textContent).toContain('ds1');
+    });
+
+    it('gives the Total steps tile a warning accent', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const steps = fixture.nativeElement.querySelector('[data-testid="stats-kpi-steps"]');
+        expect(steps?.querySelector('.kpi-accent.warning')).toBeTruthy();
+    });
+
+    it('LoRAs tile shows produced count, on-disk count and full-coverage size', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
+        expect(tile?.querySelector('[data-testid="kpi-tile-value"]')?.textContent).toContain('3');
+        expect(tile?.textContent).toContain('2 on disk');
+        expect(tile?.textContent).toContain('2.79 GB');       // 3e9 bytes
+        expect(tile?.textContent).not.toContain('sized');     // full coverage → no note
+    });
+
+    it('LoRAs tile flags partial size coverage', () => {
+        const fixture = setup();
+        stats$.next(makeStats({ lora_count: 10, lora_size_known: 4 }));
+        stats$.complete();
+        fixture.detectChanges();
+        const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
+        expect(tile?.textContent).toContain('(4/10 sized)');
     });
 });

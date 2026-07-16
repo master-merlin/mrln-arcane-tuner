@@ -13,6 +13,7 @@ import { ProjectService } from '../../../services/project.service';
 import { ModelService } from '../../../services/model.service';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 import { ResumeJobService } from '../../../services/resume-job.service';
+import { OverlayStore } from '../../../state/overlay.store';
 
 /**
  * Rendered-DOM sibling of training-job-queue.spec.ts (which is headless —
@@ -74,6 +75,7 @@ function setup(): {
             { provide: ModelService, useValue: {} },
             { provide: RuntimeConfigService, useValue: { apiUrl: 'http://test', wsUrl: 'ws://test' } },
             { provide: ResumeJobService, useValue: { open: vi.fn() } },
+            { provide: OverlayStore, useValue: { openModal: vi.fn(), topModal: () => undefined } },
         ],
     });
 
@@ -218,5 +220,28 @@ describe('TrainingJobQueueComponent — rendered DOM', () => {
         // Persisted exactly once, with no full reload on the success path.
         expect(api.reorderJob).toHaveBeenCalledWith('p2', 'up');
         expect(api.listJobs.mock.calls.length).toBe(listCallsBefore);
+    });
+
+    // ── T7: training-stats launcher ─────────────────────────────────────
+    it('opens the training-stats modal from the queue footer button', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="open-stats-btn"]');
+        expect(btn).toBeTruthy();
+        btn.click();
+        expect(overlay.openModal).toHaveBeenCalledWith('training-stats');
+    });
+
+    it('opens the training-stats modal from the expanded archive header button', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        fixture.componentInstance.toggleArchive();
+        fixture.detectChanges();
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="open-stats-btn-expanded"]');
+        expect(btn).toBeTruthy();
+        btn.click();
+        expect(overlay.openModal).toHaveBeenCalledWith('training-stats');
     });
 });

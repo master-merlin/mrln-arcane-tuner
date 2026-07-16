@@ -153,16 +153,26 @@
           <ng-container *ngTemplateOutlet="recentRow; context: { $implicit: job }"></ng-container>
         }
       }
-      <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
-        class="btn ghost sm w-full justify-center mt-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
-        Archive ({{ archivedJobs().length }})
-      </button>
+      <div class="flex gap-1.5 mt-2.5">
+        <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
+          class="btn ghost sm flex-1 justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+          Archive ({{ archivedJobs().length }})
+        </button>
+        <button (click)="openStats()" data-testid="open-stats-btn" title="Training statistics"
+          class="btn ghost sm justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+        </button>
+      </div>
     } @else {
       <div class="flex items-center justify-between gap-2 px-1 pt-3 pb-1.5">
         <button (click)="toggleArchive()" class="flex items-center gap-2" title="Collapse archive">
           <div class="eyebrow">ARCHIVE</div>
           <span class="font-mono text-[10px] text-text-muted">{{ archivedJobs().length }}</span>
+        </button>
+        <button (click)="openStats()" data-testid="open-stats-btn-expanded" title="Training statistics"
+          class="btn ghost sm ml-auto mr-1.5">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
         </button>
         <select [ngModel]="archiveProjectFilter()" (ngModelChange)="onArchiveScopeChange($event)"
           data-testid="archive-project-selector"

@@ -289,10 +289,10 @@ def _isolated_db(tmp_path):
 def _seed_stats_db(eng) -> None:
     jobs = [
         # id, lora, def_id, status, created_at, steps, dur, train, avg_loss,
-        # min_loss, step_time, optimizer
-        ("jA", "a", "flux", "completed", 100.0, 100, 60.0, 50.0, 0.2, 0.1, 0.5, "adamw"),
-        ("jB", "b", "flux", "completed", 200.0, 200, 120.0, 100.0, 0.4, 0.2, 0.7, "adamw"),
-        ("jC", "c", "sdxl", "failed", 300.0, 0, None, None, None, None, None, None),
+        # min_loss, step_time, optimizer, rank, lora_bytes, resumed_from
+        ("jA", "a", "flux", "completed", 100.0, 100, 60.0, 50.0, 0.2, 0.1, 0.5, "adamw", 16, 1000, None),
+        ("jB", "b", "flux", "completed", 200.0, 200, 120.0, 100.0, 0.4, 0.2, 0.7, "adamw", 32, 2000, "jA"),
+        ("jC", "c", "sdxl", "failed", 300.0, 0, None, None, None, None, None, None, None, None, None),
     ]
     with eng.write() as conn:
         for j in jobs:
@@ -300,8 +300,9 @@ def _seed_stats_db(eng) -> None:
                 "INSERT INTO job_history "
                 "(id, lora_name, definition_id, status, config, created_at, "
                 " completed_steps, duration_seconds, training_seconds, avg_loss, "
-                " min_loss, avg_step_time, optimizer_type) "
-                "VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?)",
+                " min_loss, avg_step_time, optimizer_type, network_rank, "
+                " final_lora_size_bytes, resumed_from) "
+                "VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 j,
             )
         conn.execute(
@@ -309,6 +310,14 @@ def _seed_stats_db(eng) -> None:
         )
         conn.execute(
             "INSERT INTO job_datasets (job_id, dataset_name) VALUES ('jB', 'ds2')"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints (job_id, step, path, created_at, is_final, is_deleted) "
+            "VALUES ('jA', 50, 'x/ckpt-50', 0, 0, 0)"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints (job_id, step, path, created_at, is_final, is_deleted) "
+            "VALUES ('jA', 60, 'x/ckpt-60', 0, 0, 1)"
         )
 
 
@@ -328,10 +337,6 @@ _EXPECTED_STATS = {
     "avg_min_loss": 0.15,
     "avg_step_time_sec": 0.6,
     "avg_runtime_sec": 90.0,
-    "model_families": [
-        {"id": "flux", "count": 2},
-        {"id": "sdxl", "count": 1},
-    ],
     "optimizers": [{"name": "adamw", "count": 2}],
     "unique_datasets": 2,
     "last_job": {
@@ -339,6 +344,42 @@ _EXPECTED_STATS = {
         "definition_id": "sdxl",
         "status": "failed",
         "created_at": 300.0,
+    },
+    "activity": [
+        {"week_start": "1969-12-29", "completed": 2, "failed": 1, "stopped": 0, "other": 0},
+    ],
+    "gpu_hours": 0.04,
+    "overhead_pct": 16.7,
+    "lora_count": 2,
+    "lora_bytes": 3000,
+    "checkpoint_count": 1,
+    "families": [
+        {"id": "flux", "count": 2, "completed": 2, "success_rate": 100.0,
+         "avg_step_time": 0.6, "best_loss": 0.1},
+        {"id": "sdxl", "count": 1, "completed": 0, "success_rate": 0.0,
+         "avg_step_time": None, "best_loss": None},
+    ],
+    "loss_histogram": {
+        "edges": [0.1, 0.108333, 0.116667, 0.125, 0.133333, 0.141667, 0.15,
+                  0.158333, 0.166667, 0.175, 0.183333, 0.191667, 0.2],
+        "counts": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    },
+    "hyperparams": {
+        "optimizer_type": [{"value": "adamw", "count": 2}],
+        "network_rank": [{"value": "16", "count": 1}, {"value": "32", "count": 1}],
+        "lr_scheduler": [],
+        "timestep_sampling": [],
+        "quantization": [],
+        "mixed_precision": [],
+        "ema_enabled": [{"value": "off", "count": 3}],
+        "batch_size": [],
+    },
+    "resume_rate": 33.3,
+    "top_datasets": [{"name": "ds1", "count": 1}, {"name": "ds2", "count": 1}],
+    "records": {
+        "longest_run": {"job_id": "jB", "lora_name": "b", "definition_id": "flux", "value": 120.0},
+        "most_steps": {"job_id": "jB", "lora_name": "b", "definition_id": "flux", "value": 200.0},
+        "best_loss": {"job_id": "jA", "lora_name": "a", "definition_id": "flux", "value": 0.1},
     },
 }
 
@@ -367,3 +408,86 @@ def test_stats_get_is_write_free(client, tmp_path):
             response = client.get("/api/jobs/history/stats")
     assert response.status_code == 200
     assert response.json() == _EXPECTED_STATS
+
+
+def test_stats_histogram_degenerate_cases(client, tmp_path):
+    """< 2 loss values → empty histogram; identical values → single bin."""
+    from app.core.db.repositories.job_repo import _histogram
+
+    assert _histogram([], bins=12) == {"edges": [], "counts": []}
+    assert _histogram([0.5], bins=12) == {"edges": [], "counts": []}
+    assert _histogram([0.5, 0.5, 0.5], bins=12) == {"edges": [0.5, 0.5], "counts": [3]}
+
+
+def test_stats_zero_jobs_shape(client, tmp_path):
+    """Empty DB returns the full shape with zeros/empties — never 404/500."""
+    with _isolated_db(tmp_path):
+        response = client.get("/api/jobs/history/stats")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_jobs"] == 0
+    assert body["activity"] == []
+    assert body["families"] == []
+    assert body["loss_histogram"] == {"edges": [], "counts": []}
+    assert body["records"] == {"longest_run": None, "most_steps": None, "best_loss": None}
+    assert body["gpu_hours"] == 0.0
+    assert body["overhead_pct"] == 0.0
+    assert body["resume_rate"] == 0.0
+
+
+def test_stats_project_filter_new_fields(client, tmp_path):
+    """The Task-1 filter also narrows the new aggregates."""
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        _tag_projects(eng)
+        response = client.get("/api/jobs/history/stats?project_id=p1")
+    body = response.json()
+    assert body["lora_count"] == 1            # jA only
+    assert body["checkpoint_count"] == 1      # jA's live ckpt
+    assert body["families"] == [
+        {"id": "flux", "count": 1, "completed": 1, "success_rate": 100.0,
+         "avg_step_time": 0.5, "best_loss": 0.1},
+        {"id": "sdxl", "count": 1, "completed": 0, "success_rate": 0.0,
+         "avg_step_time": None, "best_loss": None},
+    ]
+    assert body["resume_rate"] == 0.0         # jB (the resumed one) is in p2
+    assert body["top_datasets"] == [{"name": "ds1", "count": 1}]
+
+
+def _tag_projects(eng) -> None:
+    """Assign seeded jobs to projects (jA, jC → p1; jB → p2)."""
+    with eng.write() as conn:
+        for pid, name in (("p1", "P1"), ("p2", "P2")):
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at, updated_at) "
+                "VALUES (?, ?, 0, 0)",
+                (pid, name),
+            )
+        conn.execute("UPDATE job_history SET project_id = 'p1' WHERE id IN ('jA','jC')")
+        conn.execute("UPDATE job_history SET project_id = 'p2' WHERE id = 'jB'")
+
+
+def test_stats_project_filter_narrows_every_aggregate(client, tmp_path):
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        _tag_projects(eng)
+        response = client.get("/api/jobs/history/stats?project_id=p1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_jobs"] == 2          # jA + jC
+    assert body["completed"] == 1           # jA only
+    assert body["failed"] == 1              # jC
+    assert body["success_rate"] == 50.0
+    assert body["total_steps"] == 100       # jA
+    assert body["unique_datasets"] == 1     # ds1 (jA); ds2 belongs to p2's jB
+    assert body["optimizers"] == [{"name": "adamw", "count": 1}]
+    assert body["last_job"]["lora_name"] == "c"  # jC is newest in p1
+
+
+def test_stats_project_filter_all_is_global(client, tmp_path):
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        _tag_projects(eng)
+        response = client.get("/api/jobs/history/stats?project_id=all")
+    assert response.status_code == 200
+    assert response.json()["total_jobs"] == 3

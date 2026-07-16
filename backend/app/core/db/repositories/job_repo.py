@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -15,6 +16,33 @@ import structlog
 from app.core.db.engine import get_db
 
 logger = structlog.get_logger(__name__)
+
+
+_HYPERPARAM_COLUMNS = (
+    "optimizer_type", "network_rank", "lr_scheduler", "timestep_sampling",
+    "quantization", "mixed_precision", "ema_enabled", "batch_size",
+)
+
+
+def _histogram(values: list[float], bins: int = 12) -> dict[str, list]:
+    """Fixed-width histogram; degenerate inputs collapse gracefully."""
+    if len(values) < 2:
+        return {"edges": [], "counts": []}
+    lo, hi = min(values), max(values)
+    if lo == hi:
+        return {"edges": [round(lo, 6), round(hi, 6)], "counts": [len(values)]}
+    step = (hi - lo) / bins
+    edges = [round(lo + i * step, 6) for i in range(bins + 1)]
+    counts = [0] * bins
+    for v in values:
+        counts[min(int((v - lo) / step), bins - 1)] += 1
+    return {"edges": edges, "counts": counts}
+
+
+def _week_start(created_at: float) -> str:
+    """ISO-Monday of the UTC week containing the timestamp."""
+    d = datetime.fromtimestamp(created_at, tz=timezone.utc).date()
+    return (d - timedelta(days=d.weekday())).isoformat()
 
 
 class JobHistoryRepository:
@@ -100,18 +128,24 @@ class JobHistoryRepository:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_stats(self) -> dict[str, Any]:
-        """Aggregate training statistics for the dashboard card.
+    def get_stats(self, project_id: str | None = None) -> dict[str, Any]:
+        """Aggregate training statistics for the stats modal.
 
-        Read-only: computes core counts, completed-run averages, model-family
-        and optimizer breakdowns, dataset usage and the most-recent job. Legacy
-        ``definition_id = 'standard'`` placeholder repair is handled once by the
-        v17 migration, NOT here — this method never writes.
+        Read-only. ``project_id`` narrows every aggregate to one project
+        (``None`` = global). Legacy ``definition_id = 'standard'`` placeholder
+        repair is handled once by the v17 migration, NOT here.
         """
         conn = get_db().connection()
 
+        # Filter fragments: appended to a WHERE clause that always exists
+        # (`WHERE 1=1`) so every query has one insertion point. `jflt` is the
+        # variant for queries joined through the job_history alias `j`.
+        flt = "" if project_id is None else "AND project_id = ?"
+        jflt = "" if project_id is None else "AND j.project_id = ?"
+        args: tuple[str, ...] = () if project_id is None else (project_id,)
+
         # ── Core counts ──────────────────────────────────────────
-        totals = conn.execute("""
+        totals = conn.execute(f"""
             SELECT
                 COUNT(*)                                              AS total_jobs,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
@@ -122,51 +156,170 @@ class JobHistoryRepository:
                 COALESCE(SUM(completed_steps), 0)                      AS total_steps,
                 COALESCE(SUM(duration_seconds), 0)                     AS total_runtime_sec,
                 COALESCE(SUM(training_seconds), 0)                     AS total_training_sec
-            FROM job_history
-        """).fetchone()
+            FROM job_history WHERE 1=1 {flt}
+        """, args).fetchone()
 
         total_jobs = totals["total_jobs"] or 0
         completed  = totals["completed"] or 0
 
         # ── Averages (completed only) ────────────────────────────
-        avgs = conn.execute("""
+        avgs = conn.execute(f"""
             SELECT
                 AVG(completed_steps) AS avg_steps,
                 AVG(avg_loss)        AS avg_loss,
                 AVG(min_loss)        AS avg_min_loss,
                 AVG(avg_step_time)   AS avg_step_time_sec,
                 AVG(duration_seconds) AS avg_runtime_sec
-            FROM job_history WHERE status = 'completed'
-        """).fetchone()
-
-        # ── Model family breakdown ───────────────────────────────
-        families = conn.execute("""
-            SELECT definition_id, COUNT(*) AS count
-            FROM job_history
-            GROUP BY definition_id
-            ORDER BY count DESC
-        """).fetchall()
+            FROM job_history WHERE status = 'completed' {flt}
+        """, args).fetchone()
 
         # ── Optimizer breakdown ──────────────────────────────────
-        optimizers = conn.execute("""
+        optimizers = conn.execute(f"""
             SELECT optimizer_type, COUNT(*) AS count
             FROM job_history
-            WHERE optimizer_type IS NOT NULL
+            WHERE optimizer_type IS NOT NULL {flt}
             GROUP BY optimizer_type
             ORDER BY count DESC
-        """).fetchall()
+        """, args).fetchall()
 
         # ── Dataset usage ────────────────────────────────────────
-        dataset_stats = conn.execute("""
-            SELECT COUNT(DISTINCT dataset_name) AS unique_datasets
-            FROM job_datasets
-        """).fetchone()
+        dataset_stats = conn.execute(f"""
+            SELECT COUNT(DISTINCT jd.dataset_name) AS unique_datasets
+            FROM job_datasets jd JOIN job_history j ON jd.job_id = j.id
+            WHERE 1=1 {jflt}
+        """, args).fetchone()
 
         # ── Most recent job ──────────────────────────────────────
-        last_job = conn.execute("""
+        last_job = conn.execute(f"""
             SELECT lora_name, definition_id, status, created_at
-            FROM job_history ORDER BY created_at DESC LIMIT 1
-        """).fetchone()
+            FROM job_history WHERE 1=1 {flt}
+            ORDER BY created_at DESC LIMIT 1
+        """, args).fetchone()
+
+        # ── Activity: per-ISO-week outcome counts ────────────────
+        activity_rows = conn.execute(f"""
+            SELECT created_at, status FROM job_history WHERE 1=1 {flt}
+            ORDER BY created_at
+        """, args).fetchall()
+        weeks: dict[str, dict[str, int]] = {}
+        for r in activity_rows:
+            w = weeks.setdefault(
+                _week_start(r["created_at"]),
+                {"completed": 0, "failed": 0, "stopped": 0, "other": 0},
+            )
+            key = r["status"] if r["status"] in ("completed", "failed", "stopped") else "other"
+            w[key] += 1
+        activity = [
+            {"week_start": ws, **counts} for ws, counts in sorted(weeks.items())
+        ]
+
+        # ── Efficiency ───────────────────────────────────────────
+        eff = conn.execute(f"""
+            SELECT COALESCE(SUM(training_seconds), 0) AS train,
+                   COALESCE(SUM(duration_seconds), 0) AS wall
+            FROM job_history
+            WHERE training_seconds IS NOT NULL
+              AND duration_seconds IS NOT NULL {flt}
+        """, args).fetchone()
+        overhead_pct = (
+            round(max(0.0, 1 - eff["train"] / eff["wall"]) * 100, 1)
+            if eff["wall"] else 0.0
+        )
+
+        # ── Disk footprint ───────────────────────────────────────
+        lora = conn.execute(f"""
+            SELECT COUNT(*) AS n, COALESCE(SUM(final_lora_size_bytes), 0) AS b
+            FROM job_history
+            WHERE final_lora_size_bytes IS NOT NULL {flt}
+        """, args).fetchone()
+        ckpts = conn.execute(f"""
+            SELECT COUNT(*) AS n
+            FROM checkpoints c JOIN job_history j ON c.job_id = j.id
+            WHERE c.is_deleted = 0 {jflt}
+        """, args).fetchone()
+
+        # ── Per-family success/quality ───────────────────────────
+        family_rows = conn.execute(f"""
+            SELECT definition_id AS id, COUNT(*) AS count,
+                   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                   AVG(CASE WHEN status = 'completed' THEN avg_step_time END) AS avg_step_time,
+                   MIN(CASE WHEN status = 'completed' THEN min_loss END) AS best_loss
+            FROM job_history WHERE 1=1 {flt}
+            GROUP BY definition_id ORDER BY count DESC, definition_id ASC
+        """, args).fetchall()
+        family_stats = [{
+            "id": r["id"],
+            "count": r["count"],
+            "completed": r["completed"] or 0,
+            "success_rate": round((r["completed"] or 0) / r["count"] * 100, 1),
+            "avg_step_time": round(r["avg_step_time"], 3) if r["avg_step_time"] is not None else None,
+            "best_loss": round(r["best_loss"], 6) if r["best_loss"] is not None else None,
+        } for r in family_rows]
+
+        # ── Loss histogram (completed min_loss) ──────────────────
+        losses = [r["min_loss"] for r in conn.execute(f"""
+            SELECT min_loss FROM job_history
+            WHERE status = 'completed' AND min_loss IS NOT NULL {flt}
+        """, args).fetchall()]
+
+        # ── Hyperparameter usage ─────────────────────────────────
+        hyperparams: dict[str, list[dict[str, Any]]] = {}
+        for col in _HYPERPARAM_COLUMNS:
+            rows = conn.execute(f"""
+                SELECT {col} AS value, COUNT(*) AS count
+                FROM job_history WHERE {col} IS NOT NULL {flt}
+                GROUP BY {col} ORDER BY count DESC, value ASC
+            """, args).fetchall()
+            if col == "ema_enabled":
+                hyperparams[col] = [
+                    {"value": "on" if r["value"] else "off", "count": r["count"]}
+                    for r in rows
+                ]
+            else:
+                hyperparams[col] = [
+                    {"value": str(r["value"]), "count": r["count"]} for r in rows
+                ]
+
+        # ── Resume rate ──────────────────────────────────────────
+        resumed = conn.execute(f"""
+            SELECT COUNT(*) AS n FROM job_history
+            WHERE resumed_from IS NOT NULL {flt}
+        """, args).fetchone()
+
+        # ── Top datasets ─────────────────────────────────────────
+        top_ds = conn.execute(f"""
+            SELECT jd.dataset_name AS name, COUNT(DISTINCT jd.job_id) AS count
+            FROM job_datasets jd JOIN job_history j ON jd.job_id = j.id
+            WHERE 1=1 {jflt}
+            GROUP BY jd.dataset_name ORDER BY count DESC, name ASC LIMIT 5
+        """, args).fetchall()
+
+        # ── Records ──────────────────────────────────────────────
+        def _record(sql: str) -> dict[str, Any] | None:
+            row = conn.execute(sql, args).fetchone()
+            if row is None or row["value"] is None:
+                return None
+            return {
+                "job_id": row["id"], "lora_name": row["lora_name"],
+                "definition_id": row["definition_id"], "value": float(row["value"]),
+            }
+
+        longest_run = _record(f"""
+            SELECT id, lora_name, definition_id, duration_seconds AS value
+            FROM job_history WHERE duration_seconds IS NOT NULL {flt}
+            ORDER BY duration_seconds DESC LIMIT 1
+        """)
+        most_steps = _record(f"""
+            SELECT id, lora_name, definition_id, completed_steps AS value
+            FROM job_history WHERE completed_steps > 0 {flt}
+            ORDER BY completed_steps DESC LIMIT 1
+        """)
+        best_loss = _record(f"""
+            SELECT id, lora_name, definition_id, min_loss AS value
+            FROM job_history
+            WHERE status = 'completed' AND min_loss IS NOT NULL {flt}
+            ORDER BY min_loss ASC LIMIT 1
+        """)
 
         return {
             "total_jobs": total_jobs,
@@ -184,16 +337,28 @@ class JobHistoryRepository:
             "avg_min_loss": round(avgs["avg_min_loss"] or 0, 6),
             "avg_step_time_sec": round(avgs["avg_step_time_sec"] or 0, 3),
             "avg_runtime_sec": round(avgs["avg_runtime_sec"] or 0, 1),
-            "model_families": [
-                {"id": r["definition_id"], "count": r["count"]}
-                for r in families
-            ],
             "optimizers": [
                 {"name": r["optimizer_type"], "count": r["count"]}
                 for r in optimizers
             ],
             "unique_datasets": dataset_stats["unique_datasets"] or 0,
             "last_job": dict(last_job) if last_job else None,
+            "activity": activity,
+            "gpu_hours": round(totals["total_training_sec"] / 3600, 2) if totals["total_training_sec"] else 0.0,
+            "overhead_pct": overhead_pct,
+            "lora_count": lora["n"],
+            "lora_bytes": lora["b"],
+            "checkpoint_count": ckpts["n"],
+            "families": family_stats,
+            "loss_histogram": _histogram(losses),
+            "hyperparams": hyperparams,
+            "resume_rate": round(resumed["n"] / total_jobs * 100, 1) if total_jobs else 0.0,
+            "top_datasets": [{"name": r["name"], "count": r["count"]} for r in top_ds],
+            "records": {
+                "longest_run": longest_run,
+                "most_steps": most_steps,
+                "best_loss": best_loss,
+            },
         }
 
     # ── Writes ───────────────────────────────────────────────────────

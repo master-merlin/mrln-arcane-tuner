@@ -36,6 +36,7 @@ import { ConfigHelpModalComponent } from '../../modals/config-help/config-help.c
 import { ModelSourceConfigComponent } from '../../modals/model-source-config/model-source-config';
 import { SceneDetectModalComponent } from '../../modals/scene-detect/scene-detect-modal';
 import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist-import-modal';
+import { TrainingStatsModalComponent } from '../../modals/training-stats/training-stats.component';
 
 /**
  * Modal stack renderer.
@@ -83,6 +84,7 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
         ModelSourceConfigComponent,
         SceneDetectModalComponent,
         CutlistImportModalComponent,
+        TrainingStatsModalComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
@@ -93,7 +95,7 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
                          role="dialog"
                          aria-modal="true"
                          tabindex="-1"
-                         [class.modal-wide]="m.kind === 'analyze'"
+                         [class.modal-wide]="m.kind === 'analyze' || m.kind === 'training-stats'"
                          [class.modal-xl]="m.kind === 'crop-preview'"
                          [class.modal-compact]="m.kind === 'template-edit'"
                          [class.modal-md]="m.kind === 'template-json' || m.kind === 'job-config' || m.kind === 'config-help' || m.kind === 'model-source-config'"
@@ -207,6 +209,9 @@ import { CutlistImportModalComponent } from '../../modals/cutlist-import/cutlist
                             }
                             @case ('cutlist-import') {
                                 @defer (on immediate) { <app-cutlist-import-modal/> }
+                            }
+                            @case ('training-stats') {
+                                @defer { <app-modal-training-stats/> }
                             }
                             @default {
                                 <div class="modal-head">

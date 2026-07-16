@@ -129,6 +129,11 @@ export class TrainingJobQueueComponent implements OnInit {
     } satisfies JobConfigData);
   }
 
+  /** Open the training-stats modal (aggregate KPI/activity/family view). */
+  openStats() {
+    this.overlay.openModal('training-stats');
+  }
+
   // Tracks whether the JobStore has been seeded at least once. Until then,
   // the existing loadJobs/loadHistory subscribers are authoritative for first
   // render; after seeding, the effect below reconciles deletions from the

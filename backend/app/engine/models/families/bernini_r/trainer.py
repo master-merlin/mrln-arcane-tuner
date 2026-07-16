@@ -126,6 +126,75 @@ class BerniniRTrainer(WanTextCacheMixin, GenericTrainingPipeline):
         return sigmas * 1000.0
 
     # ── Text Encoding (UMT5-XXL via driver, with lazy cache) ─────────────
-    # encode_text / _get_cached_text_embeddings / _pre_cache_text_embeddings live
-    # in WanTextCacheMixin (shared verbatim with wan21/wan22 — UMT5, plain
-    # caption, frozen TE).
+    # encode_text / _get_cached_text_embeddings live in WanTextCacheMixin (shared
+    # verbatim with wan21/wan22 — UMT5, plain caption, frozen TE). The warm path
+    # (_pre_cache_text_embeddings) is extended below for Bernini's frozen-negative
+    # CFG regime.
+
+    def _pre_cache_text_embeddings(self) -> None:
+        """Warm the base set, then ALWAYS warm the pinned empty ("") negative.
+
+        Bernini-R's v2v CFG (#5) ALWAYS encodes the pinned empty-string negative,
+        regardless of any user-configured ``sample_negative_prompt`` (this
+        family's frozen-cond regime ignores it). The base
+        :meth:`WanTextCacheMixin._pre_cache_text_embeddings` warms only the
+        CONFIGURED negative (``config.sample_negative_prompt or ""``) — so with a
+        non-empty configured negative, ``""`` never enters the cache. The UMT5
+        encoder is then offloaded, and the first preview's uncond pass calls
+        ``encode_text([""])`` → a miss with no resident encoder →
+        ``RuntimeError`` ("Text encoder unavailable"), failing EVERY preview.
+
+        Fix: after the base warm, ensure ``""`` is cached (encoded + persisted via
+        the same disk cache convention), and warn-once that a configured
+        ``sample_negative_prompt`` is ignored by this family's CFG regime.
+        """
+        super()._pre_cache_text_embeddings()
+
+        configured_neg = str(self.config.get("sample_negative_prompt", "") or "")
+        if configured_neg:
+            self._warn_configured_negative_ignored(configured_neg)
+
+        if not self.config.get("cache_text_embeddings", True):
+            return
+        # Base already warms "" when no negative is configured (the common path).
+        if "" in self.text_cache:
+            return
+        if getattr(self.driver, "text_encoder", None) is None:
+            return
+
+        import os
+
+        from app.engine.components.text_embeddings import TextEmbeddingCache
+
+        te_cache_dirs = self._resolve_te_cache_dirs()
+        te_quant = self.config.get("te_quantization", "none")
+        te1_dir = (
+            os.path.join(te_cache_dirs[0], "embeddings", te_quant, "te1")
+            if te_cache_dirs
+            else ""
+        )
+        dtype = self._resolve_loading_dtype()
+
+        emb = TextEmbeddingCache.load("", te1_dir, "") if te1_dir else None
+        if emb is None:
+            with torch.no_grad():
+                out = self.driver.encode_text([""], dtype)
+            emb_t = out.embeddings if hasattr(out, "embeddings") else out
+            emb = emb_t[0:1].cpu()
+            if te1_dir:
+                TextEmbeddingCache.save("", emb, te1_dir, "")
+        self.text_cache[""] = emb
+
+    def _warn_configured_negative_ignored(self, configured_neg: str) -> None:
+        """Warn once that this family's CFG ignores a configured negative prompt."""
+        if getattr(self, "_warned_negative_ignored", False):
+            return
+        self._warned_negative_ignored = True
+        self.logger.warning(
+            "bernini_r_sample_negative_ignored",
+            configured=configured_neg[:80],
+            message=(
+                "Bernini-R's v2v CFG uses a frozen empty ('') negative prompt; "
+                "the configured sample_negative_prompt is ignored for previews."
+            ),
+        )

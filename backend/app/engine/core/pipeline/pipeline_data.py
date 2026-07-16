@@ -323,7 +323,9 @@ class PipelineDataMixin:
         from app.engine.components.latents import LatentManager
 
         duration_s = float(meta.get("duration_s") or 0.0)
-        sample_rate = int(meta.get("sample_rate") or 0) or self._audio_target_sample_rate
+        sample_rate = (
+            int(meta.get("sample_rate") or 0) or self._audio_target_sample_rate
+        )
         channels = int(meta.get("channels") or 0) or self._audio_target_channels
 
         window_s = round_duration_bucket(duration_s, self._audio_duration_cap)
@@ -392,9 +394,7 @@ class PipelineDataMixin:
         for _w in _vc.warnings:
             self.logger.warning("video_config_warning", message=_w)
         if not _vc.ok:
-            raise ValueError(
-                "Video configuration invalid: " + "; ".join(_vc.errors)
-            )
+            raise ValueError("Video configuration invalid: " + "; ".join(_vc.errors))
 
         # ── Video bucketing config (fields land fully in phase B6) ──
         # Read defensively: config may not carry video knobs yet. When a frame
@@ -442,7 +442,9 @@ class PipelineDataMixin:
         # params, so the defaults are inert (no audio items ever reach
         # ``_append_audio_item`` on an image/video run).
         arch_params = getattr(self.definition, "architecture_params", {}) or {}
-        self._audio_target_sample_rate = int(arch_params.get("audio.sample_rate", 48000))
+        self._audio_target_sample_rate = int(
+            arch_params.get("audio.sample_rate", 48000)
+        )
         self._audio_target_channels = int(arch_params.get("audio.channels", 2))
         self._audio_latent_hz = float(arch_params.get("audio.latent_hz", 25.0))
         self._audio_duration_cap = float(self.config.get("duration_s", 30.0) or 30.0)
@@ -741,10 +743,8 @@ class PipelineDataMixin:
                                 )
                                 buckets = [{**sbucket, "frames": vid_target_frames}]
                         elif bucketing_mode == "multi":
-                            buckets = (
-                                self.still_bucket_manager.get_buckets_for_all_resolutions(
-                                    w, h
-                                )
+                            buckets = self.still_bucket_manager.get_buckets_for_all_resolutions(
+                                w, h
                             )
                         else:
                             buckets = [self.still_bucket_manager.get_bucket(w, h)]
@@ -972,7 +972,9 @@ class PipelineDataMixin:
         cap = select_training_caption(item, _def_id)
         return item["path"], cap, item["cache_dir"]
 
-    def _get_batch(self, items: list[dict], decode_pixels: bool = True) -> dict[str, Any]:
+    def _get_batch(
+        self, items: list[dict], decode_pixels: bool = True
+    ) -> dict[str, Any]:
         """Build a training batch from inventory items.
 
         When augmentation is configured, applies per-sample variant
@@ -1147,9 +1149,7 @@ class PipelineDataMixin:
             still = still.unsqueeze(1)  # [C, 1, H, W]
         return still
 
-    def _decode_batch_images(
-        self, items: list[dict], paths: list[str]
-    ) -> torch.Tensor:
+    def _decode_batch_images(self, items: list[dict], paths: list[str]) -> torch.Tensor:
         """Decode pixels for a batch whose decode was deferred (cache miss).
 
         Uses the already variant-selected ``paths`` from :meth:`_get_batch` so
@@ -1187,21 +1187,28 @@ class PipelineDataMixin:
         target_fps: float,
         target_w: int,
         target_h: int,
+        trim_start_s: float = 0.0,
     ) -> torch.Tensor:
         """Decode a control clip trimmed/padded to the TARGET's frame count.
 
+        Decoding STARTS at ``trim_start_s`` — the paired target's own window
+        start — so a user-trimmed target, or a tiled sub-window k>0 (whose
+        ``trim_start_s`` is ``kΔ``), samples the temporally-aligned control
+        segment instead of always sampling from the clip head. Default 0.0
+        keeps the untrimmed head-window path byte-identical.
+
         ``VideoFrameLoader.load_clip`` only raises ``VideoClipTooShort`` when
         an explicit ``trim_end_s`` caps the usable window below what's asked
-        for; called here with ``trim_end_s=None`` (an open-ended window), a
-        control clip LONGER than the target's window is naturally trimmed
-        (only the first ``target_frames`` timestamps are ever sampled) and a
-        control clip SHORTER than the window is naturally padded (each
-        timestamp past the clip's last decoded frame resolves to that same
-        nearest frame — repeated, never an out-of-range error). Either way
-        the output is exactly ``target_frames`` long, so a control clip's
-        duration mismatching its paired target never aborts training, and
-        the encoded control latent's frame axis matches the target latent's
-        (same VAE, same temporal downscale).
+        for; called here with ``trim_end_s=None`` (an open-ended window from
+        ``trim_start_s``), a control clip LONGER than the target's window is
+        naturally trimmed (only ``target_frames`` timestamps from the start
+        offset are ever sampled) and a control clip SHORTER than the window is
+        naturally padded (each timestamp past the clip's last decoded frame
+        resolves to that same nearest frame — repeated, never an out-of-range
+        error). Either way the output is exactly ``target_frames`` long, so a
+        control clip's duration mismatching its paired target never aborts
+        training, and the encoded control latent's frame axis matches the
+        target latent's (same VAE, same temporal downscale).
         """
         from app.engine.components.video import VideoFrameLoader
 
@@ -1209,7 +1216,7 @@ class PipelineDataMixin:
             path,
             target_frames=target_frames,
             target_fps=target_fps,
-            trim_start_s=0.0,
+            trim_start_s=trim_start_s,
             trim_end_s=None,
             target_w=target_w,
             target_h=target_h,
@@ -1289,18 +1296,34 @@ class PipelineDataMixin:
                         )
                     tgt_f = int(item.get("target_frames") or 1)
                     tgt_fps = float(item.get("target_fps") or 0.0)
+                    # Honor the paired target's OWN temporal window: a
+                    # user-trimmed target, or a tiled sub-window k>0, carries a
+                    # nonzero trim_start_s (``_emit_temporal_items`` overwrites
+                    # it per window). Decode the control from the SAME start so
+                    # window k trains target segment [kΔ,(k+1)Δ] against control
+                    # segment [kΔ,(k+1)Δ] — not always the clip head.
+                    tgt_start = float(item.get("trim_start_s") or 0.0)
                     slot_imgs.append(
-                        self._load_control_video_clip(path, tgt_f, tgt_fps, cw, ch)
+                        self._load_control_video_clip(
+                            path, tgt_f, tgt_fps, cw, ch, trim_start_s=tgt_start
+                        )
                     )
                     # Mirrors the target video's own t{start}-{end} cache-key
-                    # convention (:func:`video_trim_extra_key`) so a control
-                    # source re-used at a different target frame/fps window
-                    # (e.g. a different temporal bucket) never collides in the
-                    # cache — the window's END varies with target_frames/fps.
-                    end_s = (tgt_f / tgt_fps) if tgt_fps > 0 else None
+                    # convention (:func:`video_trim_extra_key`) with the REAL
+                    # window folded in, so a control source re-used at a
+                    # different window (user trim, or a different tiled
+                    # sub-window / temporal bucket) never collides in the cache
+                    # — both the window START and END now discriminate. An
+                    # untrimmed head window (start 0.0) formats t0.0-{end},
+                    # byte-identical to before.
+                    end_s = (tgt_start + tgt_f / tgt_fps) if tgt_fps > 0 else None
                     slot_extra.append(
                         video_trim_extra_key(
-                            {"is_video": True, "trim_start_s": 0.0, "trim_end_s": end_s}
+                            {
+                                "is_video": True,
+                                "trim_start_s": tgt_start,
+                                "trim_end_s": end_s,
+                            }
                         )
                     )
                 else:

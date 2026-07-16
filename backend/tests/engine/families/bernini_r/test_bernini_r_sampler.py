@@ -21,6 +21,7 @@ import torch
 from diffusers import WanTransformer3DModel
 
 from app.engine.models.families.bernini_r.sampler import BerniniRSampler
+from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
 
 
 class _Defn:
@@ -255,3 +256,27 @@ class TestNoControlFallback:
         out = sampler.denoise(noise, emb, num_steps=2, guidance_scale=4.0, seed=0)
 
         assert out.shape == noise.shape
+
+
+# ── _create_sampler wiring (F7 — house convention) ────────────────────────
+
+
+class TestCreateSamplerWiring:
+    """The trainer builds a BerniniRSampler only when sampling is configured
+    (``sample_every_n_steps > 0``), mirroring wan21/wan22/chroma/boogu. The base
+    sampler __init__ reads only ``pipeline.config`` + ``pipeline.device``."""
+
+    @staticmethod
+    def _bare(config: dict) -> BerniniRTrainer:
+        t = BerniniRTrainer.__new__(BerniniRTrainer)
+        t.config = config
+        t.device = torch.device("cpu")
+        return t
+
+    def test_create_sampler_returns_bernini_sampler_when_enabled(self):
+        t = self._bare({"sample_every_n_steps": 50})
+        assert isinstance(t._create_sampler(), BerniniRSampler)
+
+    def test_create_sampler_returns_none_when_disabled(self):
+        t = self._bare({"sample_every_n_steps": 0})
+        assert t._create_sampler() is None

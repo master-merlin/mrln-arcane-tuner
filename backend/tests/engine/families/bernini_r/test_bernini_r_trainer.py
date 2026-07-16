@@ -243,6 +243,92 @@ class TestLossMasking:
 # ── Condition cleanliness: control latents reach the driver untouched ──────────
 
 
+class _RecordingLogger:
+    def __init__(self):
+        self.warnings: list[tuple[str, dict]] = []
+        self.infos: list[tuple[str, dict]] = []
+
+    def warning(self, event, **kw):
+        self.warnings.append((event, kw))
+
+    def info(self, event, **kw):
+        self.infos.append((event, kw))
+
+
+class _FakeUMT5Driver:
+    """Minimal driver exposing a resident TE + a tensor-returning encode_text."""
+
+    def __init__(self):
+        self.text_encoder = object()  # truthy → warm path is active
+        self.encoded: list[str] = []
+
+    def encode_text(self, chunk, dtype):
+        self.encoded.extend(chunk)
+        return torch.zeros(len(chunk), 3, 4)  # [B, L, D] raw tensor
+
+
+def _warm_trainer(config: dict) -> BerniniRTrainer:
+    """A BerniniRTrainer shell wired for the text-cache warm path only."""
+    t = object.__new__(BerniniRTrainer)
+    t.device = torch.device("cpu")
+    t.config = config
+    t.text_cache = {}
+    t.driver = _FakeUMT5Driver()
+    t.logger = _RecordingLogger()
+    # Stub the base-mixin collaborators so no disk / real model is touched.
+    t._resolve_te_cache_dirs = lambda: []  # te1_dir = "" → memory-only warm
+    t._resolve_loading_dtype = lambda: torch.float32
+    t._build_caption_hints = lambda: {}
+    t._sample_prompt_texts = lambda: ["a cat"]
+    return t
+
+
+class TestPreCacheAlwaysWarmsEmptyNegative:
+    """F5 — Bernini's CFG#5 always encodes the "" negative; the warm set must
+    include it even when the user configured a non-empty sample_negative_prompt
+    (else every preview's uncond pass hits the offloaded encoder → RuntimeError)."""
+
+    def test_configured_negative_still_warms_empty_string(self):
+        t = _warm_trainer(
+            {
+                "cache_text_embeddings": True,
+                "sample_negative_prompt": "worst quality, blurry",
+                "sample_prompts": [{"prompt": "a cat"}],
+            }
+        )
+        t._pre_cache_text_embeddings()
+
+        # The frozen "" negative is warmed …
+        assert "" in t.text_cache
+        # … alongside the configured one (warmed by the base under its own key) …
+        assert "worst quality, blurry" in t.text_cache
+        # … and a warn fired that the configured negative is ignored.
+        assert any("negative" in ev for ev, _ in t.logger.warnings)
+
+    def test_warn_is_once(self):
+        cfg = {
+            "cache_text_embeddings": True,
+            "sample_negative_prompt": "blurry",
+            "sample_prompts": [{"prompt": "a cat"}],
+        }
+        t = _warm_trainer(cfg)
+        t._pre_cache_text_embeddings()
+        t._pre_cache_text_embeddings()
+        neg_warns = [ev for ev, _ in t.logger.warnings if "negative" in ev]
+        assert len(neg_warns) == 1
+
+    def test_no_configured_negative_still_has_empty_and_no_warn(self):
+        t = _warm_trainer(
+            {
+                "cache_text_embeddings": True,
+                "sample_prompts": [{"prompt": "a cat"}],
+            }
+        )
+        t._pre_cache_text_embeddings()
+        assert "" in t.text_cache  # base already warms it; override is a no-op
+        assert not any("negative" in ev for ev, _ in t.logger.warnings)
+
+
 class TestConditionCleanliness:
     def test_control_latents_passed_bit_identical(self, monkeypatch):
         import app.engine.models.families.bernini_r.driver as drv_mod

@@ -50,18 +50,18 @@ import { StatsUplotComponent } from './stats-uplot.component';
                     <!-- ── KPI row ─────────────────────────────────── -->
                     <div class="ts-kpis">
                         <div data-testid="stats-kpi-total">
-                            <app-kpi-tile label="Total jobs" [value]="s.total_jobs" accent="brand"
+                            <app-kpi-tile label="Total jobs" [value]="s.total_jobs" accent="brand" [animate]="true"
                                           [sub]="s.completed + ' done · ' + s.failed + ' failed · ' + s.stopped + ' stopped'"/>
                         </div>
                         <div data-testid="stats-kpi-success">
-                            <app-kpi-tile label="Success rate" [value]="s.success_rate" unit="%"
+                            <app-kpi-tile label="Success rate" [value]="s.success_rate" unit="%" [animate]="true"
                                           [accent]="s.success_rate >= 50 ? 'success' : 'warning'"/>
                         </div>
                         <app-kpi-tile label="Total steps" [value]="fmtCount(s.total_steps)"
                                       [sub]="'avg ' + fmtCount(s.avg_steps) + ' / run'"/>
                         <app-kpi-tile label="GPU time" [value]="fmtHours(s.gpu_hours)" unit="h"
                                       [sub]="s.overhead_pct + '% overhead'" accent="violet"/>
-                        <app-kpi-tile label="LoRAs produced" [value]="s.lora_count"
+                        <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
                                       [sub]="fmtGB(s.lora_bytes) + ' · ' + s.checkpoint_count + ' checkpoints'" accent="teal"/>
                     </div>
 
@@ -92,7 +92,9 @@ import { StatsUplotComponent } from './stats-uplot.component';
                             }
                             <div class="ts-quality-tiles">
                                 <app-kpi-tile label="Avg loss" [value]="stats()!.avg_loss" [compact]="true"/>
-                                <app-kpi-tile label="Best loss" [value]="stats()!.avg_min_loss" [compact]="true" accent="success"/>
+                                <div data-testid="stats-kpi-best-loss">
+                                    <app-kpi-tile label="Best loss" [value]="s.records.best_loss?.value ?? '—'" [compact]="true" accent="success"/>
+                                </div>
                                 <app-kpi-tile label="Avg step time" [value]="stats()!.avg_step_time_sec" unit="s" [compact]="true"/>
                                 <app-kpi-tile label="Avg runtime" [value]="fmtDur(stats()!.avg_runtime_sec)" [compact]="true"/>
                             </div>
@@ -328,7 +330,6 @@ export class TrainingStatsModalComponent implements OnInit {
             .filter(d => d.counts.length > 0)
             .map(d => ({
                 ...d,
-                total: d.counts.reduce((a, c) => a + c.count, 0),
                 segments: d.counts.map((c, i) => ({
                     ...c, tone: this.TONES[i % this.TONES.length],
                 })),

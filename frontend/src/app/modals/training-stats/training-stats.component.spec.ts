@@ -11,7 +11,7 @@ export function makeStats(over: Partial<TrainingStats> = {}): TrainingStats {
     return {
         total_jobs: 5, completed: 3, failed: 1, stopped: 1, running: 0, paused: 0,
         success_rate: 60.0, total_steps: 5000, total_runtime_sec: 7200,
-        total_training_sec: 6000, avg_steps: 1666, avg_loss: 0.12, avg_min_loss: 0.08,
+        total_training_sec: 6000, avg_steps: 1666, avg_loss: 0.12, avg_min_loss: 0.09,
         avg_step_time_sec: 0.45, avg_runtime_sec: 2400,
         optimizers: [{ name: 'adamw', count: 5 }], unique_datasets: 3,
         last_job: { lora_name: 'x', definition_id: 'flux', status: 'completed', created_at: 1 },
@@ -132,6 +132,16 @@ describe('TrainingStatsModalComponent', () => {
         fixture.detectChanges();
         const bars = fixture.nativeElement.querySelectorAll('[data-testid="stats-hp-row"]');
         expect(bars.length).toBe(2); // optimizer_type + ema_enabled populated in makeStats
+    });
+
+    it('shows the true best loss (not the average of per-job minima) in the Quality tile', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        const tile = el.querySelector('[data-testid="stats-kpi-best-loss"]');
+        expect(tile?.textContent).toContain('0.08');
+        expect(tile?.textContent).not.toContain('0.09');
     });
 
     it('renders records and top datasets', () => {

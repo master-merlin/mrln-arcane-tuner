@@ -51,6 +51,7 @@
 
     /* ── Chart / data-vis ── */
     --color-chart-lr: oklch(0.72 0.12 185);
+    --color-teal: var(--color-chart-lr);
     --color-violet: oklch(0.65 0.18 295);
     --color-violet-soft: oklch(0.40 0.12 295);
 

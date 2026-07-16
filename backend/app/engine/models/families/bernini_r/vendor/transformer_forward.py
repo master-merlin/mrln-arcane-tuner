@@ -90,7 +90,9 @@ def source_id_rope(
     ``freqs_sin[..., 1::2]``). ``source_id`` may be fractional (upstream
     interpolates references into the trained id range).
     """
-    freqs_cos, freqs_sin = model.rope(latent)  # [1, seq, 1, head_dim], repeat-interleaved
+    freqs_cos, freqs_sin = model.rope(
+        latent
+    )  # [1, seq, 1, head_dim], repeat-interleaved
 
     # MRLN-PATCH: upstream multiplies a COMPLEX id-phase into COMPLEX base freqs
     # (``freqs = freqs * freqs_visual_id``). source_id=0 → phase exp(i*0)=1+0j is
@@ -112,8 +114,16 @@ def source_id_rope(
         repeat_interleave_real=False,
         freqs_dtype=torch.float64,
     )  # complex [1, head_dim // 2]
-    id_cos = id_freqs.real.to(freqs_cos.dtype).repeat_interleave(2, dim=1).view(1, 1, 1, head_dim)
-    id_sin = id_freqs.imag.to(freqs_sin.dtype).repeat_interleave(2, dim=1).view(1, 1, 1, head_dim)
+    id_cos = (
+        id_freqs.real.to(freqs_cos.dtype)
+        .repeat_interleave(2, dim=1)
+        .view(1, 1, 1, head_dim)
+    )
+    id_sin = (
+        id_freqs.imag.to(freqs_sin.dtype)
+        .repeat_interleave(2, dim=1)
+        .view(1, 1, 1, head_dim)
+    )
 
     # Real-domain complex multiply: (cos_b + i sin_b)(cos_id + i sin_id). The
     # repeat-interleaved layout makes this elementwise-correct for the pairs the
@@ -209,8 +219,33 @@ def bernini_packed_forward(
     #    full bidirectional attention over cond+target (recon risk #1); attn2 is
     #    text cross-attention. MRLN-PATCH: upstream's packed cu_seqlens/Ulysses
     #    forward is replaced by the stock block loop (batched SDPA).
-    for block in model.blocks:
-        hidden_states = block(hidden_states, enc_hs, timestep_proj, rotary_emb)
+    #
+    # MRLN-PATCH: this packed loop BYPASSES ``WanTransformer3DModel.forward``,
+    # which is the file where diffusers implements the gradient-checkpointing
+    # gate. A naive ``for block in model.blocks`` therefore made
+    # ``enable_gradient_checkpointing()`` silently INERT on the packed path —
+    # harmless for the 1.3B (~13.6 GB peak), fatal for the 14B (40 blocks × dim
+    # 5120 × ~13.8k packed tokens retained ~80-100 GB of activations → 189.9 GiB
+    # OOM at the first training forward on a 95.6 GiB card). We re-implement the
+    # STOCK gate verbatim (diffusers 0.39 transformer_wan.py:694-701): route each
+    # block through the model's OWN ``_gradient_checkpointing_func`` (installed by
+    # ``enable_gradient_checkpointing`` — modeling_utils.py:285-313) iff grad is
+    # enabled AND checkpointing is on. The ``torch.is_grad_enabled()`` half keeps
+    # sampling (which runs under ``torch.no_grad()``) on the plain, non-recompute
+    # path, so no-grad numerics are byte-unchanged.
+    grad_ckpt_func = getattr(model, "_gradient_checkpointing_func", None)
+    if (
+        torch.is_grad_enabled()
+        and getattr(model, "gradient_checkpointing", False)
+        and grad_ckpt_func is not None
+    ):
+        for block in model.blocks:
+            hidden_states = grad_ckpt_func(
+                block, hidden_states, enc_hs, timestep_proj, rotary_emb
+            )
+    else:
+        for block in model.blocks:
+            hidden_states = block(hidden_states, enc_hs, timestep_proj, rotary_emb)
 
     # 4. Output norm + projection (stock final head; temb is the per-sample
     #    [B, inner] embedding, broadcast over all tokens).
@@ -230,7 +265,9 @@ def bernini_packed_forward(
     target_tokens = hidden_states[:, cond_total:, :]
     target_tokens = target_tokens.reshape(b, ppf, pph, ppw, p_t, p_h, p_w, -1)
     target_tokens = target_tokens.permute(0, 7, 1, 4, 2, 5, 3, 6)
-    output = target_tokens.flatten(6, 7).flatten(4, 5).flatten(2, 3)  # [B, out_ch, F, H, W]
+    output = (
+        target_tokens.flatten(6, 7).flatten(4, 5).flatten(2, 3)
+    )  # [B, out_ch, F, H, W]
 
     if not return_dict:
         return (output,)

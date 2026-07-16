@@ -897,7 +897,7 @@ class PipelineTrainMixin:
                 "grad_accum": grad_accum,
                 "quantization": config.get("quantization"),
                 "mixed_precision": config.get("mixed_precision"),
-                "ema_enabled": bool(config.get("use_ema", False)),
+                "ema_enabled": bool(config.get("ema", False)),
                 "targeted_layers": config.get("targeted_layers"),
             }
 

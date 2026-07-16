@@ -49,6 +49,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v15,
         _migrate_v16,
         _migrate_v17,
+        _migrate_v18,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -981,5 +982,29 @@ def _migrate_v17(conn) -> None:
         WHERE definition_id = 'standard'
           AND json_extract(config, '$.definition_id') IS NOT NULL
           AND json_extract(config, '$.definition_id') != ''
+    """)
+
+
+# ── V18: Repair ema_enabled from the config snapshot ────────────────────
+
+def _migrate_v18(conn) -> None:
+    """One-time repair of ``job_history.ema_enabled`` from the ``config``
+    JSON snapshot.
+
+    The live writer populated the column from ``config['use_ema']`` — a key
+    that never existed (the real training-config key is ``ema``) — so every
+    pre-fix row carries ``ema_enabled = 0`` regardless of what the run used.
+    The config snapshot has the truth; recover it once. Rows whose snapshot
+    lacks the key keep their current value.
+
+    Idempotent: recomputes the same values on re-run.
+    """
+    conn.execute("""
+        UPDATE job_history
+        SET ema_enabled = CASE
+            WHEN json_extract(config, '$.ema') IN (1, '1', 'true') THEN 1
+            ELSE 0
+        END
+        WHERE json_extract(config, '$.ema') IS NOT NULL
     """)
 

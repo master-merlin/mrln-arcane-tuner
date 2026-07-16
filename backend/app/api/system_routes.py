@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 
 # ── Response Models ──────────────────────────────────────────────────────
 
+
 class MessageResponse(BaseModel):
     """Simple ``{"message": ...}`` acknowledgement."""
 
@@ -63,6 +64,7 @@ class UpdateCheckResponse(BaseModel):
     behind: int
     commits: list[str]
 
+
 _LOG_FILE = SERVER_LOG_PATH
 
 # Captured at import (≈ process start). A graceful restart spawns a fresh
@@ -86,6 +88,13 @@ async def _restart_server_logic() -> None:
             close_fds=True,
             cwd=os.getcwd(),
             env=restart_env,
+            # Never inherit our stdio: it may be a dead pipe (e.g. the IDE
+            # terminal that launched the original server is gone), and a full
+            # pipe blocks console logging while holding the logging lock —
+            # freezing the whole event loop. File/WS logging is unaffected.
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except OSError as e:
         logger.error("restart_spawn_failed", error=str(e))
@@ -105,6 +114,7 @@ async def restart_server(background_tasks: BackgroundTasks):
 @router.post("/logs/clear", response_model=MessageResponse)
 async def clear_logs():
     """Truncate the server log file."""
+
     def _truncate():
         with open(_LOG_FILE, "w") as f:
             f.truncate(0)

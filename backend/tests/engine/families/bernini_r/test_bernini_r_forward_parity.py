@@ -324,6 +324,116 @@ class TestPackedForwardParity:
         )
 
 
+# ── Test C: packed forward honors gradient checkpointing (14B OOM fix) ───────
+
+
+class TestPackedForwardGradientCheckpointing:
+    """The packed loop bypasses ``WanTransformer3DModel.forward`` — the file that
+    implements diffusers' gradient-checkpointing gate. Before the fix a naive
+    ``for block in model.blocks`` ran the blocks WITHOUT checkpointing even after
+    ``enable_gradient_checkpointing()``, so activations for all 40 blocks of the
+    14B were retained → 189.9 GiB at the first training forward on a 95.6 GiB
+    card. These pin the stock gate (transformer_wan.py:694-701).
+    """
+
+    @staticmethod
+    def _spy_checkpoint_func(model: WanTransformer3DModel) -> list[int]:
+        """Wrap the model's installed ``_gradient_checkpointing_func`` with a
+        call-counter that still delegates to the real checkpoint. Returns a
+        1-element list used as a mutable counter.
+        """
+        calls = [0]
+        real = model._gradient_checkpointing_func
+
+        def _counting(module, *args):
+            calls[0] += 1
+            return real(module, *args)
+
+        model._gradient_checkpointing_func = _counting
+        return calls
+
+    def test_checkpoint_func_called_once_per_block_under_grad(self):
+        """With grad enabled + checkpointing on, the packed forward must route
+        every block through ``_gradient_checkpointing_func`` (calls == num_layers).
+        """
+        model = _tiny_model()
+        model.enable_gradient_checkpointing()
+        calls = self._spy_checkpoint_func(model)
+
+        cond = _rand_latent(seed=50)
+        target = _rand_latent(seed=51).requires_grad_(True)
+        text = _rand_text(seed=52)
+        timestep = torch.tensor([500.0], dtype=torch.float32)
+
+        # Grad enabled (default) → checkpointing path.
+        out = bernini_packed_forward(
+            model, [cond], [1.0], target, timestep, text, return_dict=False
+        )[0]
+        assert out.requires_grad, "grad-enabled forward should build an autograd graph"
+        assert calls[0] == model.config.num_layers, (
+            f"expected {model.config.num_layers} checkpoint calls (one per block), "
+            f"got {calls[0]} — packed forward is not honoring gradient checkpointing"
+        )
+
+    def test_checkpoint_func_not_called_under_no_grad(self):
+        """Sampling runs under ``torch.no_grad()``; the ``torch.is_grad_enabled()``
+        half of the gate must keep it on the plain (non-checkpointed) path.
+        """
+        model = _tiny_model()
+        model.enable_gradient_checkpointing()
+        calls = self._spy_checkpoint_func(model)
+
+        cond = _rand_latent(seed=60)
+        target = _rand_latent(seed=61)
+        text = _rand_text(seed=62)
+        timestep = torch.tensor([500.0], dtype=torch.float32)
+
+        with torch.no_grad():
+            bernini_packed_forward(
+                model, [cond], [1.0], target, timestep, text, return_dict=False
+            )
+        assert calls[0] == 0, (
+            "checkpoint func was invoked under torch.no_grad() — the gate must "
+            "exclude the sampling (no-grad) path"
+        )
+
+    def test_checkpointed_forward_and_grads_match_plain(self):
+        """Checkpointing is math-neutral: the checkpointed packed forward output
+        AND the parameter gradients from a scalar loss must equal the plain
+        (non-checkpointed) run to fp32 tolerance.
+        """
+        cond = _rand_latent(seed=70)
+        text = _rand_text(seed=72)
+        timestep = torch.tensor([500.0], dtype=torch.float32)
+        param_name = "blocks.1.ffn.net.0.proj.weight"
+
+        def _run(gradient_checkpointing: bool) -> tuple[torch.Tensor, torch.Tensor]:
+            model = _tiny_model()  # deterministic seed → identical weights
+            if gradient_checkpointing:
+                model.enable_gradient_checkpointing()
+            target = _rand_latent(seed=71).requires_grad_(True)
+            out = bernini_packed_forward(
+                model, [cond], [1.0], target, timestep, text, return_dict=False
+            )[0]
+            loss = (out**2).sum()
+            loss.backward()
+            grad = dict(model.named_parameters())[param_name].grad
+            return out.detach().clone(), grad.detach().clone()
+
+        out_ckpt, grad_ckpt = _run(gradient_checkpointing=True)
+        out_plain, grad_plain = _run(gradient_checkpointing=False)
+
+        out_diff = (out_ckpt - out_plain).abs().max().item()
+        assert torch.allclose(out_ckpt, out_plain, atol=ATOL), (
+            f"checkpointed forward output diverges from plain; max|diff|={out_diff:.3e}"
+        )
+        grad_diff = (grad_ckpt - grad_plain).abs().max().item()
+        assert torch.allclose(grad_ckpt, grad_plain, atol=ATOL), (
+            f"checkpointed gradients diverge from plain on {param_name}; "
+            f"max|diff|={grad_diff:.3e}"
+        )
+
+
 # ── Test B: degenerate t2v collapses onto stock diffusers ────────────────────
 
 

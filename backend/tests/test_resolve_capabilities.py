@@ -72,27 +72,79 @@ FAMILY_HAS_VAE_AND_TE = {
     "qwen_image": (True, True),
     "zimage": (True, True),
     "ernie_image": (True, True),
-    "microsoft_lens": (True, True),  # latent_diffusion DiT (VAE) + decoupled external TE
+    "microsoft_lens": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (VAE) + decoupled external TE
     "ideogram4": (True, True),  # latent_diffusion DiT (custom 32ch VAE) + Qwen3-VL TE
     "wan21": (True, True),  # latent_diffusion DiT (Wan-VAE) + UMT5-XXL external TE
-    "wan22": (True, True),  # latent_diffusion dual-expert DiT (Wan-VAE) + UMT5-XXL external TE
-    "wan22_ti2v_5b": (True, True),  # latent_diffusion dense DiT (new high-compression Wan-VAE) + UMT5-XXL external TE
+    "bernini_r": (True, True),  # latent_diffusion DiT (Wan-VAE) + UMT5-XXL external TE
+    "wan22": (
+        True,
+        True,
+    ),  # latent_diffusion dual-expert DiT (Wan-VAE) + UMT5-XXL external TE
+    "wan22_ti2v_5b": (
+        True,
+        True,
+    ),  # latent_diffusion dense DiT (new high-compression Wan-VAE) + UMT5-XXL external TE
     "ltx2": (True, True),  # latent_diffusion DiT (LTX2 VAE) + Gemma3 external TE
-    "krea2": (True, True),  # latent_diffusion DiT + Qwen VAE + external stacked Qwen3-VL TE
-    "ovis_image": (True, True),  # latent_diffusion MMDiT (Flux VAE) + external Qwen3 TE (no TE training)
-    "longcat_image": (True, True),  # latent_diffusion DiT (16ch AutoencoderKL) + Qwen2.5-VL TE
-    "prx": (True, True),  # latent_diffusion DiT (Flux 16ch AutoencoderKL) + T5Gemma TE (no TE training)
-    "dreamlite": (True, True),  # latent_diffusion U-NET (AutoencoderTiny) + Qwen3-VL TE (no TE training)
-    "hunyuan_video15": (True, True),  # latent_diffusion video MMDiT (HV15 16x/4x VAE) + dual external TE (Qwen2.5-VL + ByT5)
-    "kandinsky5": (True, True),  # latent_diffusion video DiT (HunyuanVideo VAE) + dual Qwen2.5-VL/CLIP TE
-    "hidream_o1": (False, False),  # unified transformer: pixel-space, TE inside the model
+    "krea2": (
+        True,
+        True,
+    ),  # latent_diffusion DiT + Qwen VAE + external stacked Qwen3-VL TE
+    "ovis_image": (
+        True,
+        True,
+    ),  # latent_diffusion MMDiT (Flux VAE) + external Qwen3 TE (no TE training)
+    "longcat_image": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (16ch AutoencoderKL) + Qwen2.5-VL TE
+    "prx": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (Flux 16ch AutoencoderKL) + T5Gemma TE (no TE training)
+    "dreamlite": (
+        True,
+        True,
+    ),  # latent_diffusion U-NET (AutoencoderTiny) + Qwen3-VL TE (no TE training)
+    "hunyuan_video15": (
+        True,
+        True,
+    ),  # latent_diffusion video MMDiT (HV15 16x/4x VAE) + dual external TE (Qwen2.5-VL + ByT5)
+    "kandinsky5": (
+        True,
+        True,
+    ),  # latent_diffusion video DiT (HunyuanVideo VAE) + dual Qwen2.5-VL/CLIP TE
+    "hidream_o1": (
+        False,
+        False,
+    ),  # unified transformer: pixel-space, TE inside the model
     "prx_pixel": (False, True),  # pixel_transformer: NO VAE, external Qwen3-VL text TE
-    "boogu_image": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen3-VL mllm TE (no TE training)
-    "chroma": (True, True),  # latent_diffusion MMDiT (FLUX.1-schnell VAE) + external T5-XXL TE (no TE training)
-    "lumina2": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Gemma-2-2B TE (no TE training)
-    "omnigen2": (True, True),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen2.5-VL-3B mllm TE, text-only use (no TE training)
-    "nucleus_image": (True, True),  # latent_diffusion sparse-MoE DiT (AutoencoderKLQwenImage) + external Qwen3-VL TE, text-only use (no TE training)
-    "ace_step15": (True, True),  # latent_diffusion audio DiT (AutoencoderOobleck VAE) + external Qwen3-Embedding TE + condition encoder (no TE training)
+    "boogu_image": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen3-VL mllm TE (no TE training)
+    "chroma": (
+        True,
+        True,
+    ),  # latent_diffusion MMDiT (FLUX.1-schnell VAE) + external T5-XXL TE (no TE training)
+    "lumina2": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Gemma-2-2B TE (no TE training)
+    "omnigen2": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (FLUX.1-dev VAE) + external Qwen2.5-VL-3B mllm TE, text-only use (no TE training)
+    "nucleus_image": (
+        True,
+        True,
+    ),  # latent_diffusion sparse-MoE DiT (AutoencoderKLQwenImage) + external Qwen3-VL TE, text-only use (no TE training)
+    "ace_step15": (
+        True,
+        True,
+    ),  # latent_diffusion audio DiT (AutoencoderOobleck VAE) + external Qwen3-Embedding TE + condition encoder (no TE training)
 }
 
 

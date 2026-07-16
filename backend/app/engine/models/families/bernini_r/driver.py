@@ -46,8 +46,12 @@ class BerniniRDriver(WanDriverBase):
         ``source_id=0``), runs the full-bidirectional packed forward, and returns
         the velocity for the TARGET tokens only, shaped ``[B, 16, F, H, W]``.
 
-        With no condition latents this degenerates to a stock Wan t2v forward
-        (``source_id=0``, single stream), so mixed edit/plain batches are safe.
+        Batches are bucket-uniform and this packed forward applies ONE
+        condition-slot list to the whole batch, so every item in a batch must
+        carry the same control-slot structure — mixed edit/plain items in a
+        SINGLE batch are not supported. A batch with no condition latents at
+        all degenerates to a stock Wan t2v forward (``source_id=0``, single
+        stream).
 
         Args:
             noisy_input: noised target latent ``[B, 16, F, H, W]`` (or 4D still,

@@ -397,6 +397,95 @@ class TestStillTargetVideoControlGuard:
             h._attach_control_images({}, [item], None)
 
 
+# ── Final-review F3: control decode honors the target's temporal window ────
+
+
+class TestControlTrimWindowAlignment:
+    """A control clip must be decoded from the SAME temporal window as its
+    paired target — both a user-trimmed target (nonzero ``trim_start_s``) and
+    tiled sub-windows (``temporal_coverage='tiled'`` overwrites the per-window
+    bounds). Otherwise window k>0 trains target segment [kΔ,(k+1)Δ] against
+    control segment [0,Δ], and their cache keys collide."""
+
+    @staticmethod
+    def _spy_load_clip(seen: list):
+        def _spy(
+            self,
+            path,
+            target_frames,
+            target_fps,
+            trim_start_s,
+            trim_end_s,
+            target_w,
+            target_h,
+            h_flip=False,
+        ):
+            seen.append(trim_start_s)
+            return torch.zeros(3, target_frames, target_h, target_w)
+
+        return _spy
+
+    def test_target_trim_start_flows_to_control_and_varies_cache_key(
+        self, monkeypatch, tmp_path
+    ):
+        from app.engine.components import video as video_mod
+
+        seen: list = []
+        monkeypatch.setattr(
+            video_mod.VideoFrameLoader, "load_clip", self._spy_load_clip(seen)
+        )
+        ds = str(tmp_path / "ds")
+        h = _Harness(LatentManager(FakeWanVAE(), device="cpu"))
+
+        head = _video_edit_item(
+            ds, "clip_head", target_frames=13, target_fps=8.0, control_frames=13
+        )
+        trimmed = _video_edit_item(
+            ds, "clip_trim", target_frames=13, target_fps=8.0, control_frames=13
+        )
+        trimmed["trim_start_s"] = 0.5
+
+        batch_head: dict = {}
+        h._attach_control_images(batch_head, [head], None)
+        batch_trim: dict = {}
+        h._attach_control_images(batch_trim, [trimmed], None)
+
+        # The control decode honored each target's OWN start offset.
+        assert seen == [0.0, 0.5]
+        # ...and the cache-key discriminator differs so a trimmed window never
+        # collides with the head window of the same source.
+        assert batch_head["control_extra_keys"] != batch_trim["control_extra_keys"]
+
+    def test_two_tiled_windows_same_clip_differ(self, monkeypatch, tmp_path):
+        """Two tiled windows of the SAME control source get different decode
+        start offsets AND different cache keys (else they overwrite each other)."""
+        from app.engine.components import video as video_mod
+
+        seen: list = []
+        monkeypatch.setattr(
+            video_mod.VideoFrameLoader, "load_clip", self._spy_load_clip(seen)
+        )
+        ds = str(tmp_path / "ds")
+        h = _Harness(LatentManager(FakeWanVAE(), device="cpu"))
+
+        win0 = _video_edit_item(
+            ds, "tiled_src", target_frames=13, target_fps=8.0, control_frames=40
+        )
+        # Window k=1 reuses literally the same control source file.
+        win1 = dict(win0)
+        win1["id"] = "tiled_src_w1.mp4"
+        win1["trim_start_s"] = 1.625  # 13/8 s after window 0
+        win1["trim_end_s"] = 3.25
+
+        b0: dict = {}
+        h._attach_control_images(b0, [win0], None)
+        b1: dict = {}
+        h._attach_control_images(b1, [win1], None)
+
+        assert seen == [0.0, 1.625]  # distinct decode start offsets
+        assert b0["control_extra_keys"] != b1["control_extra_keys"]  # distinct keys
+
+
 # ── Image-control regression pin (byte-identical to pre-BR1) ──────────────
 
 

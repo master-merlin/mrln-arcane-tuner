@@ -229,6 +229,13 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 5.7,  # UMT5-XXL encoder
         "vae": 0.13,  # AutoencoderKLWan (127M params)
     },
+    "bernini_r": {
+        # 1.3B v2v edit DiT (same WanTransformer3DModel arch family as wan21's
+        # ≈1.4B variant). Shares wan21's TE (UMT5-XXL) and Wan VAE verbatim.
+        "transformer": 1.4,
+        "text_encoder": 5.7,  # UMT5-XXL encoder
+        "vae": 0.13,  # AutoencoderKLWan (127M params)
+    },
     "hunyuan_video15": {
         # Meta-instantiated diffusers-0.39 HunyuanVideo15Transformer3DModel
         # with the verified 480p checkpoint config (54 dual-stream blocks,
@@ -528,11 +535,7 @@ class VRAMEstimator:
 
         bucket_edges = [
             int(r) for r in (config.get("resolutions") or []) if int(r) > 0
-        ] + [
-            int(r)
-            for r in resolve_still_resolutions(config, is_video)
-            if int(r) > 0
-        ]
+        ] + [int(r) for r in resolve_still_resolutions(config, is_video) if int(r) > 0]
         if bucket_edges:
             resolution = max(int(resolution), max(bucket_edges))
         batch_size = config.get("batch_size", 1)
@@ -812,9 +815,7 @@ def _bytes_per_param(dtype_str: str) -> int:
     return _DTYPE_BYTES.get(dtype_str, 2)  # default bf16
 
 
-def _sane_calibration(
-    k: Any, field: str, report: VRAMReport
-) -> float | None:
+def _sane_calibration(k: Any, field: str, report: VRAMReport) -> float | None:
     """Validate a per-component calibration multiplier.
 
     Returns the multiplier when it is a positive number inside the plausible

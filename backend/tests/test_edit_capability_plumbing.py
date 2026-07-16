@@ -38,7 +38,10 @@ class TestControlInputsField:
         # EDIT_FIRST_IDS: unified generate+edit models whose PRIMARY
         # definition is edit-capable without "edit" in the id (OmniGen2's
         # whole point is instruction edit; T2I is its no-control fallback).
-        edit_first_ids = {"omnigen2"}
+        edit_first_ids = {
+            "omnigen2",
+            "bernini-r-1.3b",
+        }  # bernini = v2v edit-first renderer; control = source video
         registry.initialize()
         for mid in registry.list_models():
             ci = registry.get_definition(mid).control_inputs
@@ -67,8 +70,9 @@ class TestEditCapabilities:
 
     def test_edit_definition_gates_fields(self):
         # Synthesize an edit definition (no edit family ships until PR6).
-        defn = ModelDefinition(id="flux1-dev", family="flux1", name="Edit",
-                               control_inputs=1)
+        defn = ModelDefinition(
+            id="flux1-dev", family="flux1", name="Edit", control_inputs=1
+        )
         r = resolve_capabilities(defn)
         caps = r["capabilities"]
         assert caps["control_inputs"] == 1
@@ -80,10 +84,13 @@ class TestEditCapabilities:
         assert fv["control_resolution"]["supported"] is True
 
     def test_field_visibility_helper_with_derived_flags(self):
-        fv = build_field_visibility({
-            "is_edit": True, "supports_augmentation": False,
-            "supports_masking_variants": False,
-        })
+        fv = build_field_visibility(
+            {
+                "is_edit": True,
+                "supports_augmentation": False,
+                "supports_masking_variants": False,
+            }
+        )
         assert fv["h_flip"]["supported"] is False
         assert "reason" in fv["h_flip"]
         assert fv["control_resolution"]["supported"] is True
@@ -130,8 +137,9 @@ class TestEnrichSchemaEditMap:
 
 
 def _defn(control_inputs: int) -> ModelDefinition:
-    return ModelDefinition(id="x", family="flux1", name="X",
-                           control_inputs=control_inputs)
+    return ModelDefinition(
+        id="x", family="flux1", name="X", control_inputs=control_inputs
+    )
 
 
 class TestValidateEditConfig:

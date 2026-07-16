@@ -220,6 +220,29 @@ def test_prx_entry_beats_generic_default_from_above():
     assert d["model_weights_mb"] < 3_500, d["model_weights_mb"]
 
 
+def test_bernini_r_entry_beats_generic_default_from_above():
+    """Bernini-R's 1.3B v2v edit DiT is SMALLER than the generic 2.0 B fallback
+    (like prx), so the usual lower bound can't prove the entry is live — pin
+    exact table values AND an upper bound below the 2.0 B default's ~3.8 GB.
+    TE is wan21's UMT5-XXL (5.7 B); VAE is the Wan VAE (0.13). The definition
+    ships ``model_size_mb: {}`` so this table IS the live estimation path."""
+    assert "bernini_r" in _FAMILY_PARAMS, "bernini_r missing from _FAMILY_PARAMS"
+    entry = _FAMILY_PARAMS["bernini_r"]
+    assert any("text_encoder" in k for k in entry)
+    assert "vae" in entry
+
+    assert _get_primary_params("bernini_r", {}) == pytest.approx(1.4)
+    assert _get_te_params("bernini_r") == pytest.approx(5.7)
+    assert _get_vae_params("bernini_r") == pytest.approx(0.13)
+
+    defn = registry.get_definition("bernini-r-1.3b")
+    assert defn is not None
+    d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+    # 1.4 B bf16 ≈ 2.7 GB — a 2.0 B generic fallback would exceed 3.5 GB.
+    assert d["model_weights_mb"] < 3_500, d["model_weights_mb"]
+    assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0
+
+
 def test_prx_pixel_has_te_but_no_vae_contribution():
     """prx_pixel is pixel-space (NO VAE) but keeps an EXTERNAL ~1.7B TE —
     unlike hidream_o1 the caching peak must contain a real TE term while

@@ -71,11 +71,15 @@ def _recover_row(row) -> dict[str, Any]:
     updates: dict[str, Any] = {}
     tlog = _read_training_log(out_dir)
 
-    # Final LoRA size
-    if not _val(row, "final_lora_size_bytes"):
-        size = _recover_final_lora_bytes(row, out_dir, tlog)
-        if size:
+    # Final LoRA artifact (path + size)
+    have_size = _val(row, "final_lora_size_bytes")
+    have_file = _val(row, "final_lora_file")
+    if not have_size or not have_file:
+        path, size = _recover_final_lora(row, out_dir, tlog)
+        if size and not have_size:
             updates["final_lora_size_bytes"] = size
+        if path and not have_file:
+            updates["final_lora_file"] = path
 
     # Total on-disk footprint
     if "total_run_bytes" in keys and not _val(row, "total_run_bytes"):
@@ -92,12 +96,14 @@ def _recover_row(row) -> dict[str, Any]:
     return updates
 
 
-def _recover_final_lora_bytes(row, out_dir: str, tlog: dict | None) -> int | None:
+def _recover_final_lora(row, out_dir: str, tlog: dict | None) -> tuple[str | None, int | None]:
+    """Locate the run's final LoRA. Returns (path, size); path is None when
+    only a logged size survives (the file itself is gone)."""
     # Prefer an explicit final file path
     final_file = row["final_lora_file"] if "final_lora_file" in row.keys() else None
     if final_file and os.path.isfile(final_file):
         try:
-            return os.path.getsize(final_file)
+            return final_file, os.path.getsize(final_file)
         except OSError:
             pass
     # training_log records the saved filename + MB size
@@ -107,12 +113,12 @@ def _recover_final_lora_bytes(row, out_dir: str, tlog: dict | None) -> int | Non
             path = os.path.join(out_dir, name)
             if os.path.isfile(path):
                 try:
-                    return os.path.getsize(path)
+                    return path, os.path.getsize(path)
                 except OSError:
                     pass
         mb = tlog.get("lora_file_size_mb")
         if mb:
-            return int(float(mb) * 1024 * 1024)
+            return None, int(float(mb) * 1024 * 1024)
     # Fallback: largest *_final*.safetensors, else largest .safetensors
     return _largest_safetensors(out_dir)
 
@@ -141,21 +147,24 @@ def _read_training_log(out_dir: str) -> dict | None:
         return None
 
 
-def _largest_safetensors(out_dir: str) -> int | None:
-    best = 0
-    final_best = 0
+def _largest_safetensors(out_dir: str) -> tuple[str | None, int | None]:
+    best: tuple[str | None, int] = (None, 0)
+    final_best: tuple[str | None, int] = (None, 0)
     for root, _dirs, files in os.walk(out_dir):
         for f in files:
             if not f.endswith(".safetensors"):
                 continue
+            path = os.path.join(root, f)
             try:
-                size = os.path.getsize(os.path.join(root, f))
+                size = os.path.getsize(path)
             except OSError:
                 continue
-            best = max(best, size)
-            if "final" in f.lower():
-                final_best = max(final_best, size)
-    return (final_best or best) or None
+            if size > best[1]:
+                best = (path, size)
+            if "final" in f.lower() and size > final_best[1]:
+                final_best = (path, size)
+    chosen = final_best if final_best[0] else best
+    return chosen if chosen[0] else (None, None)
 
 
 def _dir_size(out_dir: str) -> int | None:

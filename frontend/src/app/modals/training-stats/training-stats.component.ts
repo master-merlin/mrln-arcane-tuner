@@ -5,7 +5,9 @@ import { ProjectService } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { formatDuration } from '../../shared/job-metrics';
-import { buildActivityChart, buildHistogramChart } from './stats-charts';
+import {
+    buildActivityChart, buildHistogramChart, readAxisTheme, buildActivityOpts, buildHistogramOpts,
+} from './stats-charts';
 import { StatsUplotComponent } from './stats-uplot.component';
 import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
 
@@ -78,18 +80,20 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                         @case ('activity') {
                             <!-- ── Activity ────────────────────────────────── -->
                             @if (activityData(); as ad) {
-                                <div class="card ts-section">
-                                    <div class="card-head"><div class="card-title">Activity · jobs per week</div>
-                                        <div class="ts-legend">
-                                            <span><i class="dot success"></i> completed</span>
-                                            <span><i class="dot danger"></i> failed</span>
-                                            <span><i class="dot warning"></i> stopped/other</span>
+                                @if (activityOpts(); as ao) {
+                                    <div class="card ts-section">
+                                        <div class="card-head"><div class="card-title">Activity · jobs per week</div>
+                                            <div class="ts-legend">
+                                                <span><i class="dot success"></i> completed</span>
+                                                <span><i class="dot danger"></i> failed</span>
+                                                <span><i class="dot warning"></i> stopped/other</span>
+                                            </div>
+                                        </div>
+                                        <div class="card-body">
+                                            <app-stats-uplot [data]="ad" [opts]="ao" [height]="150"/>
                                         </div>
                                     </div>
-                                    <div class="card-body">
-                                        <app-stats-uplot [data]="ad" [opts]="activityOpts" [height]="150"/>
-                                    </div>
-                                </div>
+                                }
                             }
                         }
                         @case ('quality') {
@@ -98,7 +102,9 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                 <div class="card-head"><div class="card-title">Quality · completed runs</div></div>
                                 <div class="card-body ts-quality">
                                     @if (histData(); as hd) {
-                                        <app-stats-uplot [data]="hd" [opts]="histOpts" [height]="130"/>
+                                        @if (histOpts(); as ho) {
+                                            <app-stats-uplot [data]="hd" [opts]="ho" [height]="130"/>
+                                        }
                                     } @else {
                                         <div class="ts-note">Not enough completed runs for a loss distribution.</div>
                                     }
@@ -274,43 +280,27 @@ export class TrainingStatsModalComponent implements OnInit {
         if (!c || !c.xs.length) return null;
         return [c.xs, c.stoppedCum, c.failedCum, c.completedCum];
     });
-    protected readonly activityOpts: Omit<uPlot.Options, 'width' | 'height'>;
+    protected readonly activityOpts = computed<Omit<uPlot.Options, 'width' | 'height'> | null>(() => {
+        const c = this.activityChart();
+        if (!c) return null;
+        return buildActivityOpts(readAxisTheme(), {
+            success: this.cssVar('--color-success'),
+            danger: this.cssVar('--color-danger'),
+            warning: this.cssVar('--color-warning'),
+            brand: this.cssVar('--color-brand'),
+        }, c);
+    });
 
     protected readonly histData = computed<uPlot.AlignedData | null>(() => {
         const s = this.stats();
         const h = s ? buildHistogramChart(s.loss_histogram) : null;
         return h ? [h.xs, h.counts] : null;
     });
-    protected readonly histOpts: Omit<uPlot.Options, 'width' | 'height'>;
-
-    constructor() {
-        this.activityOpts = {
-            legend: { show: false },
-            cursor: { show: false },
-            scales: { x: { time: true } },
-            axes: [
-                {},
-                { size: 36, incrs: [1, 2, 5, 10, 25, 50, 100] },
-            ],
-            series: [
-                {},
-                // draw order bottom layer first: full cumulative in "stopped" color
-                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-warning'), stroke: 'transparent', points: { show: false } },
-                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-danger'), stroke: 'transparent', points: { show: false } },
-                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-success'), stroke: 'transparent', points: { show: false } },
-            ],
-        };
-        this.histOpts = {
-            legend: { show: false },
-            cursor: { show: false },
-            scales: { x: { time: false } },
-            axes: [{}, { size: 36 }],
-            series: [
-                {},
-                { paths: uPlot.paths.bars!({ size: [0.8, 100] }), fill: this.cssVar('--color-brand'), stroke: 'transparent', points: { show: false } },
-            ],
-        };
-    }
+    protected readonly histOpts = computed<Omit<uPlot.Options, 'width' | 'height'> | null>(() => {
+        const s = this.stats();
+        if (!s || !s.loss_histogram.edges.length) return null;
+        return buildHistogramOpts(readAxisTheme(), this.cssVar('--color-brand'), s.loss_histogram.edges);
+    });
 
     private cssVar(name: string): string {
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';

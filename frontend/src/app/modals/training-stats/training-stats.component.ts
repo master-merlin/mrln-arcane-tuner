@@ -195,6 +195,17 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                     </div>
                                 </div>
                             </div>
+
+                            <div class="ts-reconcile">
+                                <button class="btn ghost" type="button" data-testid="stats-reconcile"
+                                        [disabled]="reconciling()" (click)="reconcile()">
+                                    {{ reconciling() ? 'Reconciling…' : 'Reconcile from disk' }}
+                                </button>
+                                <span class="ts-note">Recovers LoRA files &amp; sizes from run output folders for runs recorded before live persistence.</span>
+                                @if (reconcileError()) {
+                                    <span class="ts-reconcile-err" data-testid="stats-reconcile-error">Reconcile failed — see server logs.</span>
+                                }
+                            </div>
                         }
                     }
                 }
@@ -251,6 +262,9 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
         .ts-mini-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); margin-bottom: 6px; }
         .ts-ds-row, .ts-rec-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
         @media (max-width: 900px) { .ts-bottom { grid-template-columns: 1fr; } }
+        .ts-reconcile { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+        .ts-reconcile .ts-note { padding: 0; }
+        .ts-reconcile-err { color: var(--color-danger); font-size: 11px; }
     `],
 })
 export class TrainingStatsModalComponent implements OnInit {
@@ -261,6 +275,8 @@ export class TrainingStatsModalComponent implements OnInit {
     protected loading = signal(false);
     protected stats = signal<TrainingStats | null>(null);
     protected projectFilter = signal<string>('all');
+    protected reconciling = signal(false);
+    protected reconcileError = signal(false);
 
     protected readonly TAB_ITEMS: TabItem<'activity' | 'quality' | 'config'>[] = [
         { value: 'activity', label: 'Activity' },
@@ -319,6 +335,17 @@ export class TrainingStatsModalComponent implements OnInit {
         this.jobService.getTrainingStats(this.projectFilter()).subscribe({
             next: s => { if (seq !== this.reloadSeq) return; this.stats.set(s); this.loading.set(false); },
             error: () => { if (seq !== this.reloadSeq) return; this.stats.set(null); this.loading.set(false); },
+        });
+    }
+
+    /** Run the disk backfill (recovers legacy LoRA files/sizes), then refetch. */
+    protected reconcile(): void {
+        if (this.reconciling()) return;
+        this.reconciling.set(true);
+        this.reconcileError.set(false);
+        this.jobService.recomputeStats().subscribe({
+            next: () => { this.reconciling.set(false); this.reload(); },
+            error: () => { this.reconciling.set(false); this.reconcileError.set(true); },
         });
     }
 

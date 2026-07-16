@@ -36,14 +36,18 @@ export function makeStats(over: Partial<TrainingStats> = {}): TrainingStats {
 describe('TrainingStatsModalComponent', () => {
     let stats$: Subject<TrainingStats>;
     let getTrainingStats: ReturnType<typeof vi.fn>;
+    let recompute$: Subject<unknown>;
+    let recomputeStats: ReturnType<typeof vi.fn>;
 
     function setup() {
         stats$ = new Subject<TrainingStats>();
         getTrainingStats = vi.fn().mockReturnValue(stats$.asObservable());
+        recompute$ = new Subject<unknown>();
+        recomputeStats = vi.fn().mockReturnValue(recompute$.asObservable());
         TestBed.configureTestingModule({
             imports: [TrainingStatsModalComponent],
             providers: [
-                { provide: JobService, useValue: { getTrainingStats } },
+                { provide: JobService, useValue: { getTrainingStats, recomputeStats } },
                 { provide: ProjectService, useValue: { allProjects: signal([{ id: 'p1', name: 'P1' }]) } },
                 { provide: OverlayStore, useValue: { topModal: () => undefined, closeModal: vi.fn() } },
             ],
@@ -219,5 +223,35 @@ describe('TrainingStatsModalComponent', () => {
         fixture.detectChanges();
         const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
         expect(tile?.textContent).toContain('(4/10 sized)');
+    });
+
+    it('reconcile button triggers the disk backfill and refetches stats on success', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 2);
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="stats-reconcile"]');
+        btn.click();
+        fixture.detectChanges();
+        expect(recomputeStats).toHaveBeenCalledTimes(1);
+        expect(btn.disabled).toBe(true);            // busy while pending
+
+        stats$ = new Subject(); getTrainingStats.mockReturnValue(stats$.asObservable());
+        recompute$.next({ rows_updated: 5 }); recompute$.complete();
+        fixture.detectChanges();
+        expect(getTrainingStats).toHaveBeenCalledTimes(2);  // refetched
+    });
+
+    it('reconcile failure shows an inline error and re-enables the button', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 2);
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="stats-reconcile"]');
+        btn.click();
+        recompute$.error(new Error('boom'));
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="stats-reconcile-error"]')).toBeTruthy();
+        expect(btn.disabled).toBe(false);
     });
 });

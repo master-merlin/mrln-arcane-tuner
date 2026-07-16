@@ -109,6 +109,8 @@ class JobStatsResponse(BaseModel):
     overhead_pct: float
     lora_count: int
     lora_bytes: int
+    lora_on_disk: int
+    lora_size_known: int
     checkpoint_count: int
     families: list[FamilyStats]
     loss_histogram: LossHistogram

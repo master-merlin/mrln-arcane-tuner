@@ -352,6 +352,8 @@ _EXPECTED_STATS = {
     "overhead_pct": 16.7,
     "lora_count": 2,
     "lora_bytes": 3000,
+    "lora_on_disk": 0,
+    "lora_size_known": 2,
     "checkpoint_count": 1,
     "families": [
         {"id": "flux", "count": 2, "completed": 2, "success_rate": 100.0,
@@ -491,3 +493,32 @@ def test_stats_project_filter_all_is_global(client, tmp_path):
         response = client.get("/api/jobs/history/stats?project_id=all")
     assert response.status_code == 200
     assert response.json()["total_jobs"] == 3
+
+
+def test_stats_lora_semantics(client, tmp_path):
+    """lora_count = completed runs (produced), lora_on_disk = final files
+    verified present, lora_size_known = byte-sum coverage."""
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        real = tmp_path / "a_final.safetensors"
+        real.write_bytes(b"x" * 10)
+        with eng.write() as conn:
+            conn.execute(
+                "UPDATE job_history SET final_lora_file = ? WHERE id = 'jA'",
+                (str(real),),
+            )
+            conn.execute(
+                "UPDATE job_history SET final_lora_file = ? WHERE id = 'jB'",
+                (str(tmp_path / "deleted.safetensors"),),
+            )
+            # Completed run with NO recorded size/file still counts as produced.
+            conn.execute(
+                "INSERT INTO job_history "
+                "(id, lora_name, definition_id, status, config, created_at) "
+                "VALUES ('jD', 'd', 'flux', 'completed', '{}', 400.0)"
+            )
+        body = client.get("/api/jobs/history/stats").json()
+    assert body["lora_count"] == 3       # completed runs, sized or not
+    assert body["lora_on_disk"] == 1     # only jA's file exists on disk
+    assert body["lora_size_known"] == 2  # jA + jB carry sizes
+    assert body["lora_bytes"] == 3000

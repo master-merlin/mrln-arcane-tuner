@@ -1,0 +1,160 @@
+# Bernini-R 14B (ByteDance) — renderer-only VIDEO-EDIT (v2v) dual-expert (MoE).
+#
+# Recon: .agent/workdir/bernini-r-recon.md (upstream bytedance/Bernini @
+# d111e3546f40407ff5326259c87e2a0e1416e583). The 14B renderer is Wan2.2-T2V-A14B
+# geometry (40 layers / 40 heads × 128 / ffn 13824 / patch [1,2,2], in=out=16ch)
+# with TWO experts (transformer/ + transformer_2/), a UMT5-XXL text encoder and
+# the standard Wan2.1 16-ch VAE — Bernini adds ZERO new weight modules; its ONLY
+# novelty is data-side (token-concat of clean condition-video latents + a
+# per-stream ``source_id`` rope), identical to the 1.3B. So the shards load into
+# stock diffusers 0.39 ``WanTransformer3DModel`` and the LoRA key surface is
+# wan-canonical, per-expert (recon §1/§3/§9).
+#
+# DUAL-EXPERT (MoE):
+#  - root config: ``skip_transformer_2: false``, ``switch_dit_boundary: 0.875``.
+#  - HIGH-noise expert = ``transformer/`` — active for t >= 875 (early/noisy
+#    steps). LOW-noise expert = ``transformer_2/`` — active for t < 875.
+#    (recon §3: upstream ``model_id = "transformer_1" if t >= boundary_timestep
+#    else "transformer_2"``; §4: ``bernini_renderer_high.yaml`` = skip_transformer_2
+#    + noise_tmin 0.875/noise_tmax 1.0 → the ``transformer`` IS the high expert,
+#    trained on [0.875,1.0]; ``bernini_renderer_low.yaml`` = skip_transformer_1 +
+#    noise_tmin 0.0/noise_tmax 0.875.) This matches wan2.2's diffusers convention
+#    (transformer=high, transformer_2=low).
+#  - Range-split per-expert training: each expert samples ONLY its serving band
+#    (high [0.875,1.0]·1000, low [0,0.875)·1000) — see trainer.py. This is the
+#    deliberate divergence from wan22's marginal-full-range routing.
+#
+# NO model_index.json — the repo root is a transformers-style bernini_renderer
+# config; :class:`BerniniRLoader` loads components by subfolder (recon ops
+# footnote), both experts when ``dual_expert``.
+#
+# CONFIG PINS (deliberate divergences from the checkpoint's own config):
+#  - scheduler.flow_shift: 5.0 — the v2v sampling/training shift (upstream
+#    ``shift_config`` v2v = 5.0). The HF ``scheduler_config.json`` ships 3.0 (the
+#    t2v value), so enrichment-from-real-load would clobber 5.0 → pinned via
+#    ``enrich_pinned_keys``.
+#  - defaults.mode_scale: 1.29 / defaults.timestep_shift: 5.0 — the trainer's
+#    SD3-``mode`` timestep recipe (recon §4), same as the 1.3B.
+id: bernini-r-14b
+family: bernini_r
+name: Bernini-R 14B (Video Edit, MoE)
+version: '1.0'
+# Paired video-edit (v2v): trains on a control ("source") VIDEO + an instruction
+# caption; the control rides as a clean token stream (source_id=1), the target
+# video is the denoised stream (source_id=0).
+control_inputs: 1
+defaults:
+  resolution: 480
+  scheduler: flow_match_euler
+  learning_rate: 1.0e-4
+  # SD3 ``mode`` timestep weighting + per-task shift (v2v). The trainer's
+  # ``sample_timesteps`` reads both; pinned here so the generic ``mode_scale``
+  # default (1.5) can never override the bernini value.
+  timestep_sampling: mode
+  mode_scale: 1.29
+  timestep_shift: 5.0
+  # Dual-expert (MoE) training controls (mirrors wan22 T2V-A14B). ``both`` trains
+  # both experts in one run (two LoRA files); ``high``/``low`` train one expert.
+  expert_mode: both
+  expert_swap_mode: auto
+  expert_switch_interval: 1
+  # v2v inference defaults (upstream ``BerniniRendererPipeline.__call__`` /
+  # ``GEN_Wanx22.sample()`` — recon §5).
+  num_inference_steps: 40
+  guidance_scale: 4.0
+  num_frames: 81
+  fps: 16
+  height: 480
+  width: 832
+components:
+  repo:
+    path: huggingface:ByteDance/Bernini-R-Diffusers
+    type: diffusers
+    params: {}
+# scheduler.flow_shift is a DELIBERATE v2v pin (5.0) — the repo config ships 3.0
+# (the t2v value) and enrichment must not clobber it.
+enrich_pinned_keys:
+- scheduler.flow_shift
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+  unet_low: torch.bfloat16
+architecture_params:
+  mode: t2v
+  # -- Dual-expert / MoE boundary (recon §3) --
+  dual_expert: true
+  # skip_transformer_2 false ⇒ load BOTH experts (recon §1 14B root config).
+  skip_transformer_2: false
+  # switch_dit_boundary 0.875 → boundary_timestep = 0.875 * 1000 = 875. HIGH
+  # expert (transformer) serves t >= 875; LOW expert (transformer_2) t < 875.
+  switch_dit_boundary: 0.875
+  # ``moe.boundary_ratio`` mirrors switch_dit_boundary in wan22's driver
+  # convention (both keys carry the same 0.875 fraction) so the shared
+  # dual-expert seam reads a single, familiar key.
+  moe.boundary_ratio: 0.875
+  # -- Transformer (Wan2.2-A14B geometry; stock WanTransformer3DModel keys) --
+  transformer._class_name: WanTransformer3DModel
+  transformer.in_channels: 16
+  transformer.out_channels: 16
+  transformer.num_layers: 40
+  transformer.num_attention_heads: 40
+  transformer.attention_head_dim: 128
+  transformer.hidden_size: 5120
+  transformer.ffn_dim: 13824
+  transformer.text_dim: 4096
+  transformer.freq_dim: 256
+  transformer.cross_attn_norm: true
+  transformer.qk_norm: rms_norm_across_heads
+  transformer.eps: 1.0e-06
+  transformer.rope_max_seq_len: 1024
+  transformer.patch_size:
+  - 1
+  - 2
+  - 2
+  # -- Second expert (transformer_2) — identical stock geometry --
+  transformer_2._class_name: WanTransformer3DModel
+  transformer_2.in_channels: 16
+  transformer_2.out_channels: 16
+  # -- Text encoder (UMT5-XXL) --
+  te.model_type: umt5
+  te.max_length: 512
+  # -- VAE (Wan 2.1, z=16, 8× spatial / 4× temporal) --
+  vae._class_name: AutoencoderKLWan
+  vae.z_dim: 16
+  # -- Video contract (4n+1 frame rule, 16 fps native) --
+  video.frame_rule: 4n+1
+  video.native_fps: 16
+  video.vae_spatial: 8
+  video.vae_temporal: 4
+  # -- Scheduler (native UniPC, flow_prediction; flow_shift pinned to v2v 5.0) --
+  scheduler._class_name: UniPCMultistepScheduler
+  scheduler.prediction_type: flow_prediction
+  scheduler.use_flow_sigmas: true
+  scheduler.flow_shift: 5.0
+  scheduler.num_train_timesteps: 1000
+  # Generic activation-estimate hints (VRAM estimator).
+  hidden_size: 5120
+  num_heads: 40
+  depth: 40
+  in_channels: 16
+# Per-expert on-disk size (bf16-loaded MB) so the VRAM estimator prefers this
+# over the family fallback (which carries the 1.3B ≈1.4B numbers). 14.3B params
+# × 2 bytes ≈ 27275 MB per expert; the MoE second expert is added by the
+# estimator's ``dual_expert`` branch (mirrors wan22's per-expert entry).
+model_size_mb:
+  transformer: 27275
+# Bernini adds ZERO new weight modules → the wan2.1 T2V canonical target set
+# verbatim (recon §9), applied per-expert on 14B. MUST stay non-empty.
+lora_targetable_modules:
+- attn1.to_q
+- attn1.to_k
+- attn1.to_v
+- attn1.to_out.0
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+- ffn.net.0.proj
+- ffn.net.2
+block_topology: []

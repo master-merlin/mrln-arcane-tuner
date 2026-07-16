@@ -38,6 +38,11 @@ logger = structlog.get_logger(__name__)
 class Wan22Saver(ModelSaver):
     """Save WAN 2.2 dual-expert LoRA weights as two ComfyUI-format files."""
 
+    # ``modelspec.architecture`` family prefix — ``{ARCH_FAMILY}-{mode}-{expert}``.
+    # Subclasses (e.g. Bernini-R's dual saver, which is 100%-stock wan2.2-arch
+    # weights) override only this for provenance; the tensor keys stay identical.
+    ARCH_FAMILY = "wan2.2"
+
     def __init__(self, mode: str = "t2v") -> None:
         self.mode = str(mode).lower() if mode else "t2v"
 
@@ -116,7 +121,7 @@ class Wan22Saver(ModelSaver):
             rank = int(getattr(peft_cfg, "r", 16))
             alpha = float(getattr(peft_cfg, "lora_alpha", rank))
 
-        arch = f"wan2.2-{self.mode}-{expert}"
+        arch = f"{self.ARCH_FAMILY}-{self.mode}-{expert}"
         save_metadata: dict[str, str] = {
             "format": "pt",
             "software": '{"name": "Arcane Tuner"}',

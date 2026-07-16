@@ -191,8 +191,16 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     ("sliding_max_clip_seconds", "is_video", "image model — no temporal windows"),
     ("still_resolutions", "is_video", "image model — no still/video split"),
     # ── Spatial resolution/bucketing (hidden for audio families) ─────────
-    ("resolutions", "supports_spatial_resolution", "audio model — no spatial resolution/buckets"),
-    ("bucketing_mode", "supports_spatial_resolution", "audio model — no spatial resolution/buckets"),
+    (
+        "resolutions",
+        "supports_spatial_resolution",
+        "audio model — no spatial resolution/buckets",
+    ),
+    (
+        "bucketing_mode",
+        "supports_spatial_resolution",
+        "audio model — no spatial resolution/buckets",
+    ),
     # ── Audio fields (gated by is_audio_family; hidden on every other family) ──
     ("duration_s", "is_audio_family", "this model has no audio-generation modality"),
     ("genre_ratio", "is_audio_family", "this model has no audio-generation modality"),
@@ -242,6 +250,17 @@ def resolve_capabilities(definition) -> dict:
     arch = ARCHETYPES[family_cls.archetype]
     caps = {k: v for k, v in asdict(arch).items() if k not in ("id", "config_defaults")}
     caps.update(getattr(family_cls, "capability_overrides", {}))
+
+    # Per-DEFINITION ``dual_expert`` override. A family may ship BOTH a single-
+    # and a dual-expert definition (bernini_r's 1.3B single vs 14B MoE), which
+    # the family-level ``capability_overrides`` cannot distinguish. When a
+    # definition's ``architecture_params`` declares ``dual_expert`` it wins, so
+    # the MoE fields / VRAM second-expert term engage only for the MoE definition.
+    # (wan22's definitions already carry ``dual_expert: true`` agreeing with the
+    # family override, so this is a no-op there.)
+    defn_arch = getattr(definition, "architecture_params", {}) or {}
+    if "dual_expert" in defn_arch:
+        caps["dual_expert"] = bool(defn_arch["dual_expert"])
 
     # Paired edit conditioning (per-definition, not per-archetype). Surface
     # control_inputs + an ``is_edit`` flag and the derived gates the field

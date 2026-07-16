@@ -183,6 +183,25 @@ class BerniniRSampler(WanVideoSamplerBase):
             flow_shift=self._flow_shift(),
         )
 
+    # ── Expert selection (14B MoE boundary switch) ───────────────────────
+
+    def _select_expert(self, timestep: Any) -> Any:
+        """The transformer that serves this step.
+
+        Dual-expert (14B): route the RAW ``[0,1000]`` timestep to its expert
+        (``t >= boundary·1000`` → high ``transformer``; ``t < boundary`` → low
+        ``transformer_2``), so a descending UniPC schedule switches experts at the
+        boundary crossing (recon §3). Single-expert (1.3B) / any driver without a
+        low expert: the single primary model (byte-identical to v1).
+        """
+        driver = self.pipeline.driver
+        if (
+            getattr(driver, "is_dual", False)
+            and getattr(driver, "transformer_low", None) is not None
+        ):
+            return driver.transformer_for_timestep(timestep)
+        return driver.get_primary_model()
+
     # ── Forward + CFG ────────────────────────────────────────────────────
 
     def _packed_forward(
@@ -283,8 +302,17 @@ class BerniniRSampler(WanVideoSamplerBase):
         forward runs its degenerate stock-t2v path (source_id=0, single stream),
         so a preview never crashes for want of a control input.
         """
-        transformer = self.pipeline.driver.get_primary_model()
-        self._ensure_transformer_on_device(transformer)
+        driver = self.pipeline.driver
+        self._ensure_transformer_on_device(driver.get_primary_model())
+        # Dual-expert (14B): both experts must be resident for the boundary
+        # switch (a descending schedule crosses the boundary once). Idempotent.
+        if getattr(driver, "is_dual", False):
+            for m in (
+                getattr(driver, "transformer_high", None),
+                getattr(driver, "transformer_low", None),
+            ):
+                if m is not None:
+                    self._ensure_transformer_on_device(m)
 
         autocast_dtype = (
             getattr(self.pipeline, "autocast_dtype", None) or torch.bfloat16
@@ -316,6 +344,9 @@ class BerniniRSampler(WanVideoSamplerBase):
             # RAW [0, 1000] timestep (the scheduler's own value) shared by every
             # token, including the clean condition tokens (upstream t.expand(1)).
             ts = t.reshape(1).expand(target.shape[0]).to(torch.float32)
+            # Boundary switch (dual) — the raw scheduler timestep ``t`` picks the
+            # active expert; single-expert returns the one primary model.
+            transformer = self._select_expert(t)
             velocity = self._cfg_velocity(
                 transformer,
                 cond_latents,

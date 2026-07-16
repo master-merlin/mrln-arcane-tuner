@@ -41,6 +41,7 @@ class TestControlInputsField:
         edit_first_ids = {
             "omnigen2",
             "bernini-r-1.3b",
+            "bernini-r-14b",
         }  # bernini = v2v edit-first renderer; control = source video
         registry.initialize()
         for mid in registry.list_models():

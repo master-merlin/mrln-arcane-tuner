@@ -38,16 +38,20 @@ describe('TrainingStatsModalComponent', () => {
     let getTrainingStats: ReturnType<typeof vi.fn>;
     let recompute$: Subject<unknown>;
     let recomputeStats: ReturnType<typeof vi.fn>;
+    let runs$: Subject<unknown>;
+    let listFamilyRuns: ReturnType<typeof vi.fn>;
 
     function setup() {
         stats$ = new Subject<TrainingStats>();
         getTrainingStats = vi.fn().mockReturnValue(stats$.asObservable());
         recompute$ = new Subject<unknown>();
         recomputeStats = vi.fn().mockReturnValue(recompute$.asObservable());
+        runs$ = new Subject<unknown>();
+        listFamilyRuns = vi.fn().mockImplementation(() => runs$.asObservable());
         TestBed.configureTestingModule({
             imports: [TrainingStatsModalComponent],
             providers: [
-                { provide: JobService, useValue: { getTrainingStats, recomputeStats } },
+                { provide: JobService, useValue: { getTrainingStats, recomputeStats, listFamilyRuns } },
                 { provide: ProjectService, useValue: { allProjects: signal([{ id: 'p1', name: 'P1' }]) } },
                 { provide: OverlayStore, useValue: { topModal: () => undefined, closeModal: vi.fn() } },
             ],
@@ -235,6 +239,49 @@ describe('TrainingStatsModalComponent', () => {
         expect(tile?.textContent).toContain('3 done · 2 stopped');
         expect(tile?.textContent).not.toContain('failed');
         expect(tile?.getAttribute('title')).toBe('3 done · 0 failed · 2 stopped');
+    });
+
+    it('expands a family row into a per-run table with its own header (no avg columns)', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 1);
+        (fixture.nativeElement.querySelector('[data-testid="stats-family-row"]') as HTMLElement).click();
+        fixture.detectChanges();
+        expect(listFamilyRuns).toHaveBeenCalledWith('flux', 'all');
+
+        runs$.next([
+            { id: 'j1', lora_name: 'x_lora', status: 'completed', created_at: 1752624000,
+              completed_steps: 1500, avg_step_time: 1.70523, min_loss: 0.005319 },
+            { id: 'j2', lora_name: 'y_lora', status: 'failed', created_at: 1752537600, completed_steps: 0 },
+        ]);
+        runs$.complete();
+        fixture.detectChanges();
+
+        const head = fixture.nativeElement.querySelector('[data-testid="stats-run-head"]');
+        expect(head?.textContent).toContain('step time');
+        expect(head?.textContent?.toLowerCase()).not.toContain('avg'); // per-run values, not averages
+        const rows = fixture.nativeElement.querySelectorAll('[data-testid="stats-run-row"]');
+        expect(rows.length).toBe(2);
+        expect(rows[0].textContent).toContain('x_lora');
+        expect(rows[0].textContent).toContain('1.705s');
+        expect(rows[0].textContent).toContain('0.005319');
+        expect(rows[1].textContent).toContain('—'); // failed run: no step time / loss
+    });
+
+    it('collapses an expanded family on second click', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 1);
+        const row = fixture.nativeElement.querySelector('[data-testid="stats-family-row"]') as HTMLElement;
+        row.click();
+        runs$.next([]); runs$.complete();
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="stats-family-runs"]')).toBeTruthy();
+        row.click();
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="stats-family-runs"]')).toBeFalsy();
     });
 
     it('reconcile button triggers the disk backfill and refetches stats on success', () => {

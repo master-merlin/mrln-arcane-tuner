@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import uPlot from 'uplot';
-import { JobService, type TrainingStats } from '../../services/job';
+import { JobService, type Job, type TrainingStats } from '../../services/job';
 import { ProjectService } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
@@ -127,8 +127,13 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                         <span>family</span><span>jobs</span><span>success</span><span>avg step</span><span>best loss</span>
                                     </div>
                                     @for (f of s.families; track f.id) {
-                                        <div class="ts-fam-grid" data-testid="stats-family-row">
-                                            <span class="mono">{{ f.id || '—' }}</span>
+                                        <div class="ts-fam-grid" data-testid="stats-family-row"
+                                             [class.ts-fam-expandable]="!!f.id"
+                                             (click)="f.id && toggleFamily(f.id)">
+                                            <span class="mono">
+                                                @if (f.id) { <i class="ts-fam-caret">{{ expandedFamily() === f.id ? '▾' : '▸' }}</i> }
+                                                {{ f.id || '—' }}
+                                            </span>
                                             <span class="mono">{{ f.count }}</span>
                                             <span class="ts-rate">
                                                 <i class="ts-rate-bar"><b [style.width.%]="f.success_rate"></b></i>
@@ -137,6 +142,29 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                             <span class="mono">{{ f.avg_step_time !== null ? f.avg_step_time + 's' : '—' }}</span>
                                             <span class="mono">{{ f.best_loss ?? '—' }}</span>
                                         </div>
+                                        @if (f.id && expandedFamily() === f.id) {
+                                            <div class="ts-fam-runs" data-testid="stats-family-runs">
+                                                @if (familyRunsLoading()) {
+                                                    <div class="ts-note">Loading runs…</div>
+                                                } @else if (familyRuns(); as runs) {
+                                                    <!-- per-run header: single-run values, not averages -->
+                                                    <div class="ts-run-grid ts-fam-head mono" data-testid="stats-run-head">
+                                                        <span>run</span><span>date</span><span>status</span>
+                                                        <span>steps</span><span>step time</span><span>min loss</span>
+                                                    </div>
+                                                    @for (r of runs; track r.id) {
+                                                        <div class="ts-run-grid" data-testid="stats-run-row">
+                                                            <span class="mono ts-run-name" [title]="r.lora_name">{{ r.lora_name }}</span>
+                                                            <span class="mono">{{ fmtDate(r.created_at) }}</span>
+                                                            <span class="mono ts-run-status" [class]="'ts-run-status ' + r.status">{{ r.status }}</span>
+                                                            <span class="mono">{{ fmtCount(r.completed_steps ?? 0) }}</span>
+                                                            <span class="mono">{{ fmtStepTime(r.avg_step_time) }}</span>
+                                                            <span class="mono">{{ fmtLoss(r.min_loss) }}</span>
+                                                        </div>
+                                                    } @empty { <div class="ts-note">No runs found.</div> }
+                                                }
+                                            </div>
+                                        }
                                     }
                                 </div>
                             </div>
@@ -253,6 +281,14 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
         @media (max-width: 900px) { .ts-quality { grid-template-columns: 1fr; } }
         .ts-fam-grid { display: grid; grid-template-columns: 1.4fr 0.5fr 1.4fr 0.7fr 0.7fr; gap: 8px; align-items: center; padding: 4px 0; font-size: 12px; }
         .ts-fam-head { color: var(--color-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 6px; }
+        .ts-fam-expandable { cursor: pointer; }
+        .ts-fam-expandable:hover { background: var(--color-surface-high); }
+        .ts-fam-caret { font-style: normal; color: var(--color-text-muted); margin-right: 4px; }
+        .ts-fam-runs { margin: 2px 0 8px; padding: 4px 8px 6px 18px; border-left: 2px solid var(--color-border-subtle); }
+        .ts-run-grid { display: grid; grid-template-columns: 2fr 0.8fr 0.8fr 0.6fr 0.7fr 0.8fr; gap: 8px; align-items: center; padding: 3px 0; font-size: 11.5px; }
+        .ts-run-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ts-run-status.failed { color: var(--color-danger); }
+        .ts-run-status.stopped { color: var(--color-warning); }
         .ts-rate { display: flex; align-items: center; gap: 8px; }
         .ts-rate-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--color-surface-mid); overflow: hidden; display: block; }
         .ts-rate-bar b { display: block; height: 100%; background: var(--color-success); }
@@ -337,11 +373,35 @@ export class TrainingStatsModalComponent implements OnInit {
     protected reload(): void {
         const seq = ++this.reloadSeq;
         this.loading.set(true);
+        this.expandedFamily.set(null); // scope changed — stale run list must not survive
         this.jobService.getTrainingStats(this.projectFilter()).subscribe({
             next: s => { if (seq !== this.reloadSeq) return; this.stats.set(s); this.loading.set(false); },
             error: () => { if (seq !== this.reloadSeq) return; this.stats.set(null); this.loading.set(false); },
         });
     }
+
+    // ── Family drill-down ────────────────────────────────────────────
+    protected expandedFamily = signal<string | null>(null);
+    protected familyRuns = signal<Job[] | null>(null);
+    protected familyRunsLoading = signal(false);
+    private runsSeq = 0;
+
+    /** Expand one family into its per-run table (lazy fetch); click again collapses. */
+    protected toggleFamily(id: string): void {
+        if (this.expandedFamily() === id) { this.expandedFamily.set(null); return; }
+        this.expandedFamily.set(id);
+        const seq = ++this.runsSeq;
+        this.familyRuns.set(null);
+        this.familyRunsLoading.set(true);
+        this.jobService.listFamilyRuns(id, this.projectFilter()).subscribe({
+            next: runs => { if (seq !== this.runsSeq) return; this.familyRuns.set(runs); this.familyRunsLoading.set(false); },
+            error: () => { if (seq !== this.runsSeq) return; this.familyRuns.set([]); this.familyRunsLoading.set(false); },
+        });
+    }
+
+    protected fmtDate(sec: number): string { return new Date(sec * 1000).toISOString().slice(0, 10); }
+    protected fmtStepTime(v: number | undefined): string { return typeof v === 'number' ? v.toFixed(3) + 's' : '—'; }
+    protected fmtLoss(v: number | undefined): string { return typeof v === 'number' ? v.toFixed(6) : '—'; }
 
     /** Run the disk backfill (recovers legacy LoRA files/sizes), then refetch. */
     protected reconcile(): void {

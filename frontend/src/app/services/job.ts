@@ -174,6 +174,13 @@ export class JobService {
     return this.http.get<Job[]>(url);
   }
 
+  /** Terminal runs of one model family (definition), newest first — stats-modal drill-down. */
+  listFamilyRuns(definitionId: string, projectId: string | null = null, limit: number = 100): Observable<Job[]> {
+    let url = `${this.apiUrl}/history?limit=${limit}&definition_id=${encodeURIComponent(definitionId)}`;
+    if (projectId && projectId !== 'all') url += `&project_id=${encodeURIComponent(projectId)}`;
+    return this.http.get<Job[]>(url);
+  }
+
   /** Aggregate training statistics for the stats modal. */
   getTrainingStats(projectId: string | null = null): Observable<TrainingStats> {
     const q = projectId && projectId !== 'all' ? `?project_id=${encodeURIComponent(projectId)}` : '';

@@ -66,7 +66,7 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                         </div>
                         <app-kpi-tile label="GPU time" [value]="fmtHours(s.gpu_hours)" unit="h"
                                       [sub]="s.overhead_pct + '% overhead'" accent="violet"/>
-                        <div data-testid="stats-kpi-loras">
+                        <div data-testid="stats-kpi-loras" [title]="loraSub(s)">
                             <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
                                           [sub]="loraSub(s)" accent="teal"/>
                         </div>
@@ -231,10 +231,15 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
             padding: 48px; color: var(--color-text-muted); font-size: 13px;
         }
         .ts-kpis {
-            display: grid; grid-template-columns: repeat(5, 1fr);
+            display: grid;
+            /* minmax(0, 1fr): a plain 1fr track's min-content floor lets a
+               long nowrap sub-line (LoRAs tile) widen its column — pin the
+               floor to 0 so all five tiles stay equal and the sub ellipsizes
+               (global .kpi-sub already carries overflow/ellipsis). */
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 10px; margin-bottom: 16px;
         }
-        @media (max-width: 900px) { .ts-kpis { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 900px) { .ts-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         .ts-section { margin-bottom: 14px; }
         .ts-tabs { margin-bottom: 14px; }
         .ts-legend { display: flex; gap: 12px; font-size: 10.5px; color: var(--color-text-muted); }

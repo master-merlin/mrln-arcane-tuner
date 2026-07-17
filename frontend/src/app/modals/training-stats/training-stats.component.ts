@@ -5,8 +5,11 @@ import { ProjectService } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { formatDuration } from '../../shared/job-metrics';
-import { buildActivityChart, buildHistogramChart } from './stats-charts';
+import {
+    buildActivityChart, buildHistogramChart, readAxisTheme, buildActivityOpts, buildHistogramOpts,
+} from './stats-charts';
 import { StatsUplotComponent } from './stats-uplot.component';
+import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
 
 /**
  * Cross-job training statistics modal — the redesign successor of the legacy
@@ -17,7 +20,7 @@ import { StatsUplotComponent } from './stats-uplot.component';
 @Component({
     selector: 'app-modal-training-stats',
     standalone: true,
-    imports: [KpiTileComponent, StatsUplotComponent],
+    imports: [KpiTileComponent, StatsUplotComponent, TabsComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="modal-head">
@@ -57,125 +60,154 @@ import { StatsUplotComponent } from './stats-uplot.component';
                             <app-kpi-tile label="Success rate" [value]="s.success_rate" unit="%" [animate]="true"
                                           [accent]="s.success_rate >= 50 ? 'success' : 'warning'"/>
                         </div>
-                        <app-kpi-tile label="Total steps" [value]="fmtCount(s.total_steps)"
-                                      [sub]="'avg ' + fmtCount(s.avg_steps) + ' / run'"/>
+                        <div data-testid="stats-kpi-steps">
+                            <app-kpi-tile label="Total steps" [value]="fmtCount(s.total_steps)" accent="warning"
+                                          [sub]="'avg ' + fmtCount(s.avg_steps) + ' / run'"/>
+                        </div>
                         <app-kpi-tile label="GPU time" [value]="fmtHours(s.gpu_hours)" unit="h"
                                       [sub]="s.overhead_pct + '% overhead'" accent="violet"/>
-                        <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
-                                      [sub]="fmtGB(s.lora_bytes) + ' · ' + s.checkpoint_count + ' checkpoints'" accent="teal"/>
-                    </div>
-
-                    <!-- ── Activity ────────────────────────────────── -->
-                    @if (activityData(); as ad) {
-                        <div class="card ts-section">
-                            <div class="card-head"><div class="card-title">Activity · jobs per week</div>
-                                <div class="ts-legend">
-                                    <span><i class="dot success"></i> completed</span>
-                                    <span><i class="dot danger"></i> failed</span>
-                                    <span><i class="dot warning"></i> stopped/other</span>
-                                </div>
-                            </div>
-                            <div class="card-body">
-                                <app-stats-uplot [data]="ad" [opts]="activityOpts" [height]="150"/>
-                            </div>
-                        </div>
-                    }
-
-                    <!-- ── Quality ─────────────────────────────────── -->
-                    <div class="card ts-section">
-                        <div class="card-head"><div class="card-title">Quality · completed runs</div></div>
-                        <div class="card-body ts-quality">
-                            @if (histData(); as hd) {
-                                <app-stats-uplot [data]="hd" [opts]="histOpts" [height]="130"/>
-                            } @else {
-                                <div class="ts-note">Not enough completed runs for a loss distribution.</div>
-                            }
-                            <div class="ts-quality-tiles">
-                                <app-kpi-tile label="Avg loss" [value]="stats()!.avg_loss" [compact]="true"/>
-                                <div data-testid="stats-kpi-best-loss">
-                                    <app-kpi-tile label="Best loss" [value]="s.records.best_loss?.value ?? '—'" [compact]="true" accent="success"/>
-                                </div>
-                                <app-kpi-tile label="Avg step time" [value]="stats()!.avg_step_time_sec" unit="s" [compact]="true"/>
-                                <app-kpi-tile label="Avg runtime" [value]="fmtDur(stats()!.avg_runtime_sec)" [compact]="true"/>
-                            </div>
+                        <div data-testid="stats-kpi-loras">
+                            <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
+                                          [sub]="loraSub(s)" accent="teal"/>
                         </div>
                     </div>
 
-                    <!-- ── Model families ──────────────────────────── -->
-                    <div class="card ts-section">
-                        <div class="card-head"><div class="card-title">Model families</div></div>
-                        <div class="card-body">
-                            <div class="ts-fam-grid ts-fam-head mono">
-                                <span>family</span><span>jobs</span><span>success</span><span>avg step</span><span>best loss</span>
-                            </div>
-                            @for (f of s.families; track f.id) {
-                                <div class="ts-fam-grid" data-testid="stats-family-row">
-                                    <span class="mono">{{ f.id || '—' }}</span>
-                                    <span class="mono">{{ f.count }}</span>
-                                    <span class="ts-rate">
-                                        <i class="ts-rate-bar"><b [style.width.%]="f.success_rate"></b></i>
-                                        <span class="mono">{{ f.success_rate }}%</span>
-                                    </span>
-                                    <span class="mono">{{ f.avg_step_time !== null ? f.avg_step_time + 's' : '—' }}</span>
-                                    <span class="mono">{{ f.best_loss ?? '—' }}</span>
-                                </div>
-                            }
-                        </div>
+                    <div data-testid="stats-tabs" class="ts-tabs">
+                        <app-tabs [tabs]="TAB_ITEMS" [active]="activeTab()" (changed)="activeTab.set($event)"/>
                     </div>
 
-                    <!-- ── Hyperparameters ─────────────────────────── -->
-                    @if (hpRows().length) {
-                        <div class="card ts-section">
-                            <div class="card-head"><div class="card-title">Hyperparameters</div>
-                                <span class="mono ts-sub">{{ s.resume_rate }}% of jobs resumed</span>
-                            </div>
-                            <div class="card-body">
-                                @for (row of hpRows(); track row.key) {
-                                    <div class="ts-hp" data-testid="stats-hp-row">
-                                        <span class="ts-hp-label">{{ row.label }}</span>
-                                        <div class="ts-hp-bar">
-                                            @for (seg of row.segments; track seg.value) {
-                                                <i [style.flex]="seg.count" [style.background]="toneColor(seg.tone)"
-                                                   [attr.title]="seg.value + ' · ' + seg.count"></i>
-                                            }
+                    @switch (activeTab()) {
+                        @case ('activity') {
+                            <!-- ── Activity ────────────────────────────────── -->
+                            @if (activityData(); as ad) {
+                                @if (activityOpts(); as ao) {
+                                    <div class="card ts-section">
+                                        <div class="card-head"><div class="card-title">Activity · jobs per week</div>
+                                            <div class="ts-legend">
+                                                <span><i class="dot success"></i> completed</span>
+                                                <span><i class="dot danger"></i> failed</span>
+                                                <span><i class="dot warning"></i> stopped/other</span>
+                                            </div>
                                         </div>
-                                        <span class="ts-hp-legend mono">
-                                            @for (seg of row.segments; track seg.value) {
-                                                <span><i class="dot" [style.background]="toneColor(seg.tone)"></i>{{ seg.value }} ({{ seg.count }})</span>
-                                            }
-                                        </span>
+                                        <div class="card-body">
+                                            <app-stats-uplot [data]="ad" [opts]="ao" [height]="150"/>
+                                        </div>
                                     </div>
                                 }
+                            }
+                        }
+                        @case ('quality') {
+                            <!-- ── Quality ─────────────────────────────────── -->
+                            <div class="card ts-section">
+                                <div class="card-head"><div class="card-title">Quality · completed runs</div></div>
+                                <div class="card-body ts-quality">
+                                    @if (histData(); as hd) {
+                                        @if (histOpts(); as ho) {
+                                            <app-stats-uplot [data]="hd" [opts]="ho" [height]="130"/>
+                                        }
+                                    } @else {
+                                        <div class="ts-note">Not enough completed runs for a loss distribution.</div>
+                                    }
+                                    <div class="ts-quality-tiles">
+                                        <app-kpi-tile label="Avg loss" [value]="stats()!.avg_loss" [compact]="true"/>
+                                        <div data-testid="stats-kpi-best-loss">
+                                            <app-kpi-tile label="Best loss" [value]="s.records.best_loss?.value ?? '—'" [compact]="true" accent="success"/>
+                                        </div>
+                                        <app-kpi-tile label="Avg step time" [value]="stats()!.avg_step_time_sec" unit="s" [compact]="true"/>
+                                        <app-kpi-tile label="Avg runtime" [value]="fmtDur(stats()!.avg_runtime_sec)" [compact]="true"/>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    }
 
-                    <!-- ── Datasets & records ──────────────────────── -->
-                    <div class="card ts-section">
-                        <div class="card-head"><div class="card-title">Datasets &amp; records</div>
-                            <span class="mono ts-sub">{{ s.unique_datasets }} unique datasets</span>
-                        </div>
-                        <div class="card-body ts-bottom">
-                            <div data-testid="stats-datasets">
-                                <div class="ts-mini-title">Most trained on</div>
-                                @for (d of s.top_datasets; track d.name) {
-                                    <div class="ts-ds-row mono"><span>{{ d.name }}</span><span>{{ d.count }}</span></div>
-                                } @empty { <div class="ts-note">No dataset linkage yet.</div> }
+                            <!-- ── Model families ──────────────────────────── -->
+                            <div class="card ts-section">
+                                <div class="card-head"><div class="card-title">Model families</div></div>
+                                <div class="card-body">
+                                    <div class="ts-fam-grid ts-fam-head mono">
+                                        <span>family</span><span>jobs</span><span>success</span><span>avg step</span><span>best loss</span>
+                                    </div>
+                                    @for (f of s.families; track f.id) {
+                                        <div class="ts-fam-grid" data-testid="stats-family-row">
+                                            <span class="mono">{{ f.id || '—' }}</span>
+                                            <span class="mono">{{ f.count }}</span>
+                                            <span class="ts-rate">
+                                                <i class="ts-rate-bar"><b [style.width.%]="f.success_rate"></b></i>
+                                                <span class="mono">{{ f.success_rate }}%</span>
+                                            </span>
+                                            <span class="mono">{{ f.avg_step_time !== null ? f.avg_step_time + 's' : '—' }}</span>
+                                            <span class="mono">{{ f.best_loss ?? '—' }}</span>
+                                        </div>
+                                    }
+                                </div>
                             </div>
-                            <div data-testid="stats-records">
-                                <div class="ts-mini-title">Records</div>
-                                @if (s.records.longest_run; as r) {
-                                    <div class="ts-rec-row"><span>Longest run</span><span class="mono">{{ r.lora_name }} · {{ fmtDur(r.value) }}</span></div>
-                                }
-                                @if (s.records.most_steps; as r) {
-                                    <div class="ts-rec-row"><span>Most steps</span><span class="mono">{{ r.lora_name }} · {{ fmtCount(r.value) }}</span></div>
-                                }
-                                @if (s.records.best_loss; as r) {
-                                    <div class="ts-rec-row"><span>Best loss</span><span class="mono">{{ r.lora_name }} · {{ r.value }}</span></div>
+                        }
+                        @case ('config') {
+                            <!-- ── Hyperparameters ─────────────────────────── -->
+                            @if (hpRows().length) {
+                                <div class="card ts-section">
+                                    <div class="card-head"><div class="card-title">Hyperparameters</div>
+                                        <span class="mono ts-sub">{{ s.resume_rate }}% of jobs resumed</span>
+                                    </div>
+                                    <div class="card-body">
+                                        @for (row of hpRows(); track row.key) {
+                                            <div class="ts-hp" data-testid="stats-hp-row">
+                                                <span class="ts-hp-label">{{ row.label }}</span>
+                                                <div class="ts-hp-bar">
+                                                    @for (seg of row.segments; track seg.value) {
+                                                        <i [style.flex]="seg.count" [style.background]="toneColor(seg.tone)"
+                                                           [attr.title]="seg.value + ' · ' + seg.count"></i>
+                                                    }
+                                                </div>
+                                                <span class="ts-hp-legend mono">
+                                                    @for (seg of row.segments; track seg.value) {
+                                                        <span><i class="dot" [style.background]="toneColor(seg.tone)"></i>{{ seg.value }} ({{ seg.count }})</span>
+                                                    }
+                                                </span>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                            }
+
+                            <!-- ── Datasets & records ──────────────────────── -->
+                            <div class="card ts-section">
+                                <div class="card-head"><div class="card-title">Datasets &amp; records</div>
+                                    <span class="mono ts-sub">{{ s.unique_datasets }} unique datasets</span>
+                                </div>
+                                <div class="card-body ts-bottom">
+                                    <div data-testid="stats-datasets">
+                                        <div class="ts-mini-title">Most trained on</div>
+                                        @for (d of s.top_datasets; track d.name) {
+                                            <div class="ts-ds-row mono"><span>{{ d.name }}</span><span>{{ d.count }}</span></div>
+                                        } @empty { <div class="ts-note">No dataset linkage yet.</div> }
+                                    </div>
+                                    <div data-testid="stats-records">
+                                        <div class="ts-mini-title">Records</div>
+                                        @if (s.records.longest_run; as r) {
+                                            <div class="ts-rec-row"><span>Longest run</span><span class="mono">{{ r.lora_name }} · {{ fmtDur(r.value) }}</span></div>
+                                        }
+                                        @if (s.records.most_steps; as r) {
+                                            <div class="ts-rec-row"><span>Most steps</span><span class="mono">{{ r.lora_name }} · {{ fmtCount(r.value) }}</span></div>
+                                        }
+                                        @if (s.records.best_loss; as r) {
+                                            <div class="ts-rec-row"><span>Best loss</span><span class="mono">{{ r.lora_name }} · {{ r.value }}</span></div>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="ts-reconcile">
+                                <button class="btn ghost" type="button" data-testid="stats-reconcile"
+                                        [disabled]="reconciling()" (click)="reconcile()">
+                                    {{ reconciling() ? 'Reconciling…' : 'Reconcile from disk' }}
+                                </button>
+                                <span class="ts-note">Recovers LoRA files &amp; sizes from run output folders for runs recorded before live persistence.</span>
+                                @if (reconcileError()) {
+                                    <span class="ts-reconcile-err" data-testid="stats-reconcile-error">Reconcile failed — see server logs.</span>
                                 }
                             </div>
-                        </div>
-                    </div>
+                        }
+                    }
                 }
             }
         </div>
@@ -204,6 +236,7 @@ import { StatsUplotComponent } from './stats-uplot.component';
         }
         @media (max-width: 900px) { .ts-kpis { grid-template-columns: repeat(2, 1fr); } }
         .ts-section { margin-bottom: 14px; }
+        .ts-tabs { margin-bottom: 14px; }
         .ts-legend { display: flex; gap: 12px; font-size: 10.5px; color: var(--color-text-muted); }
         .ts-legend .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
         .ts-legend .dot.success { background: var(--color-success); }
@@ -229,6 +262,9 @@ import { StatsUplotComponent } from './stats-uplot.component';
         .ts-mini-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); margin-bottom: 6px; }
         .ts-ds-row, .ts-rec-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
         @media (max-width: 900px) { .ts-bottom { grid-template-columns: 1fr; } }
+        .ts-reconcile { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+        .ts-reconcile .ts-note { padding: 0; }
+        .ts-reconcile-err { color: var(--color-danger); font-size: 11px; }
     `],
 })
 export class TrainingStatsModalComponent implements OnInit {
@@ -239,6 +275,15 @@ export class TrainingStatsModalComponent implements OnInit {
     protected loading = signal(false);
     protected stats = signal<TrainingStats | null>(null);
     protected projectFilter = signal<string>('all');
+    protected reconciling = signal(false);
+    protected reconcileError = signal(false);
+
+    protected readonly TAB_ITEMS: TabItem<'activity' | 'quality' | 'config'>[] = [
+        { value: 'activity', label: 'Activity' },
+        { value: 'quality', label: 'Quality & Families' },
+        { value: 'config', label: 'Config & Data' },
+    ];
+    protected activeTab = signal<'activity' | 'quality' | 'config'>('activity');
 
     private reloadSeq = 0;
 
@@ -251,43 +296,27 @@ export class TrainingStatsModalComponent implements OnInit {
         if (!c || !c.xs.length) return null;
         return [c.xs, c.stoppedCum, c.failedCum, c.completedCum];
     });
-    protected readonly activityOpts: Omit<uPlot.Options, 'width' | 'height'>;
+    protected readonly activityOpts = computed<Omit<uPlot.Options, 'width' | 'height'> | null>(() => {
+        const c = this.activityChart();
+        if (!c) return null;
+        return buildActivityOpts(readAxisTheme(), {
+            success: this.cssVar('--color-success'),
+            danger: this.cssVar('--color-danger'),
+            warning: this.cssVar('--color-warning'),
+            brand: this.cssVar('--color-brand'),
+        }, c);
+    });
 
     protected readonly histData = computed<uPlot.AlignedData | null>(() => {
         const s = this.stats();
         const h = s ? buildHistogramChart(s.loss_histogram) : null;
         return h ? [h.xs, h.counts] : null;
     });
-    protected readonly histOpts: Omit<uPlot.Options, 'width' | 'height'>;
-
-    constructor() {
-        this.activityOpts = {
-            legend: { show: false },
-            cursor: { show: false },
-            scales: { x: { time: true } },
-            axes: [
-                {},
-                { size: 36, incrs: [1, 2, 5, 10, 25, 50, 100] },
-            ],
-            series: [
-                {},
-                // draw order bottom layer first: full cumulative in "stopped" color
-                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-warning'), stroke: 'transparent', points: { show: false } },
-                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-danger'), stroke: 'transparent', points: { show: false } },
-                { paths: uPlot.paths.bars!({ size: [0.6, 100] }), fill: this.cssVar('--color-success'), stroke: 'transparent', points: { show: false } },
-            ],
-        };
-        this.histOpts = {
-            legend: { show: false },
-            cursor: { show: false },
-            scales: { x: { time: false } },
-            axes: [{}, { size: 36 }],
-            series: [
-                {},
-                { paths: uPlot.paths.bars!({ size: [0.8, 100] }), fill: this.cssVar('--color-brand'), stroke: 'transparent', points: { show: false } },
-            ],
-        };
-    }
+    protected readonly histOpts = computed<Omit<uPlot.Options, 'width' | 'height'> | null>(() => {
+        const s = this.stats();
+        if (!s || !s.loss_histogram.edges.length) return null;
+        return buildHistogramOpts(readAxisTheme(), this.cssVar('--color-brand'), s.loss_histogram.edges);
+    });
 
     private cssVar(name: string): string {
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
@@ -306,6 +335,17 @@ export class TrainingStatsModalComponent implements OnInit {
         this.jobService.getTrainingStats(this.projectFilter()).subscribe({
             next: s => { if (seq !== this.reloadSeq) return; this.stats.set(s); this.loading.set(false); },
             error: () => { if (seq !== this.reloadSeq) return; this.stats.set(null); this.loading.set(false); },
+        });
+    }
+
+    /** Run the disk backfill (recovers legacy LoRA files/sizes), then refetch. */
+    protected reconcile(): void {
+        if (this.reconciling()) return;
+        this.reconciling.set(true);
+        this.reconcileError.set(false);
+        this.jobService.recomputeStats().subscribe({
+            next: () => { this.reconciling.set(false); this.reload(); },
+            error: () => { this.reconciling.set(false); this.reconcileError.set(true); },
         });
     }
 
@@ -343,6 +383,13 @@ export class TrainingStatsModalComponent implements OnInit {
     }
     protected fmtHours(h: number): string { return h.toFixed(h >= 100 ? 0 : 1); }
     protected fmtGB(bytes: number): string { return (bytes / 1024 ** 3).toFixed(2) + ' GB'; }
+    /** "2 on disk · 2.79 GB · 12 checkpoints", flagging partial size coverage. */
+    protected loraSub(s: TrainingStats): string {
+        const gb = this.fmtGB(s.lora_bytes);
+        const sized = s.lora_size_known < s.lora_count
+            ? `${gb} (${s.lora_size_known}/${s.lora_count} sized)` : gb;
+        return `${s.lora_on_disk} on disk · ${sized} · ${s.checkpoint_count} checkpoints`;
+    }
     /**
      * `formatDuration(startedAtSec, endMs)` computes elapsed time between an
      * epoch-seconds start and an epoch-ms end (`Math.floor((endMs -

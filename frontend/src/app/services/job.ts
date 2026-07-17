@@ -115,7 +115,8 @@ export interface TrainingStats {
     last_job: { lora_name: string | null; definition_id: string | null; status: string | null; created_at: number | null } | null;
     activity: ActivityWeek[];
     gpu_hours: number; overhead_pct: number;
-    lora_count: number; lora_bytes: number; checkpoint_count: number;
+    lora_count: number; lora_bytes: number; lora_on_disk: number;
+    lora_size_known: number; checkpoint_count: number;
     families: FamilyStats[];
     loss_histogram: { edges: number[]; counts: number[] };
     hyperparams: Record<string, HyperparamCount[]>;

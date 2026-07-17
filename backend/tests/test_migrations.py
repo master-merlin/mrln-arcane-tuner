@@ -83,3 +83,58 @@ def test_v17_repair_runs_once_per_db(tmp_path):
     assert val == "standard"
 
     eng.close()
+
+
+def test_v18_backfills_ema_from_config(tmp_path):
+    """v18 repairs ema_enabled from the config snapshot: the live writer read
+    config['use_ema'] (a key that never existed; real key is 'ema'), so every
+    pre-fix row carries ema_enabled=0 regardless of truth. Idempotent."""
+    eng = DatabaseEngine(db_path=str(tmp_path / "mig18.db"))
+    with eng.write() as conn:
+        migrations._migrate_v1(conn)  # create the schema
+
+    with eng.write() as conn:
+        # EMA actually on (JSON true) but recorded as 0 → repaired to 1.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, ema_enabled) "
+            "VALUES ('e1', 'flux', ?, 1.0, 0)",
+            ('{"ema": true}',),
+        )
+        # EMA off (JSON false) → stays/normalizes to 0.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, ema_enabled) "
+            "VALUES ('e2', 'flux', ?, 1.0, 0)",
+            ('{"ema": false}',),
+        )
+        # Config lacks the key → row untouched (keeps whatever it has).
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, ema_enabled) "
+            "VALUES ('e3', 'flux', '{}', 1.0, 1)",
+        )
+        # Integer-style snapshot value → treated as on.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, ema_enabled) "
+            "VALUES ('e4', 'flux', ?, 1.0, 0)",
+            ('{"ema": 1}',),
+        )
+
+    with eng.write() as conn:
+        migrations._migrate_v18(conn)
+
+    def ema_rows():
+        return {
+            r["id"]: r["ema_enabled"]
+            for r in eng.connection().execute(
+                "SELECT id, ema_enabled FROM job_history"
+            )
+        }
+
+    expected = {"e1": 1, "e2": 0, "e3": 1, "e4": 1}
+    assert ema_rows() == expected
+
+    # Idempotent: a second run changes nothing.
+    with eng.write() as conn:
+        migrations._migrate_v18(conn)
+    assert ema_rows() == expected
+
+    eng.close()

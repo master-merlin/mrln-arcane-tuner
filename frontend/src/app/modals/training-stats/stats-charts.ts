@@ -1,4 +1,6 @@
+import uPlot from 'uplot';
 import type { ActivityWeek } from '../../services/job';
+import { tooltipPlugin, type TooltipFormatter } from './stats-tooltip';
 
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
@@ -38,4 +40,94 @@ export function buildHistogramChart(
     if (!h.counts.length || h.edges.length < 2) return null;
     const xs = h.counts.map((_, i) => (h.edges[i] + h.edges[i + 1]) / 2);
     return { xs, counts: h.counts };
+}
+
+// ── Axis theming + chart options ─────────────────────────────────────────
+
+export interface AxisTheme { stroke: string; grid: string; font: string; }
+export interface SeriesColors { success: string; danger: string; warning: string; brand: string; }
+
+/** Resolve axis colors from the design tokens (jsdom-safe fallbacks). */
+export function readAxisTheme(): AxisTheme {
+    const css = getComputedStyle(document.documentElement);
+    return {
+        stroke: css.getPropertyValue('--color-text-muted').trim() || '#8a8f98',
+        grid: css.getPropertyValue('--color-border-subtle').trim() || 'rgba(128,128,128,0.18)',
+        font: '10px monospace',
+    };
+}
+
+/** uPlot axis with theme colors applied; `extra` merges on top. */
+export function themedAxis(theme: AxisTheme, extra: Partial<uPlot.Axis> = {}): uPlot.Axis {
+    return {
+        stroke: theme.stroke,
+        font: theme.font,
+        ticks: { stroke: theme.grid, width: 1 },
+        grid: { stroke: theme.grid, width: 1 },
+        ...extra,
+    };
+}
+
+const CURSOR: uPlot.Cursor = { points: { show: false }, drag: { x: false, y: false } };
+
+export function activityTooltip(chart: ActivityChart): TooltipFormatter {
+    return (_u, idx) => {
+        const done = chart.completedCum[idx] ?? 0;
+        const failed = (chart.failedCum[idx] ?? 0) - done;
+        const stopped = (chart.stoppedCum[idx] ?? 0) - (chart.failedCum[idx] ?? 0);
+        const label = chart.labels[idx];
+        if (label == null) return null;
+        return `week of ${label}: ${done} completed · ${failed} failed · ${stopped} stopped/other`;
+    };
+}
+
+export function histogramTooltip(edges: number[]): TooltipFormatter {
+    return (u, idx) => {
+        const count = u.data[1]?.[idx];
+        if (count == null) return null;
+        return `loss ${edges[idx].toFixed(3)}–${edges[idx + 1].toFixed(3)}: ${count} runs`;
+    };
+}
+
+export function buildActivityOpts(
+    theme: AxisTheme, colors: SeriesColors, chart: ActivityChart,
+): Omit<uPlot.Options, 'width' | 'height'> {
+    const bars = uPlot.paths.bars!({ size: [0.6, 100] });
+    return {
+        legend: { show: false },
+        cursor: CURSOR,
+        scales: { x: { time: true } },
+        axes: [
+            themedAxis(theme),
+            themedAxis(theme, { size: 36, incrs: [1, 2, 5, 10, 25, 50, 100] }),
+        ],
+        series: [
+            {},
+            // draw order bottom layer first: full cumulative in "stopped" color
+            { paths: bars, fill: colors.warning, stroke: 'transparent', points: { show: false } },
+            { paths: bars, fill: colors.danger, stroke: 'transparent', points: { show: false } },
+            { paths: bars, fill: colors.success, stroke: 'transparent', points: { show: false } },
+        ],
+        plugins: [tooltipPlugin(activityTooltip(chart))],
+    };
+}
+
+export function buildHistogramOpts(
+    theme: AxisTheme, barColor: string, edges: number[],
+): Omit<uPlot.Options, 'width' | 'height'> {
+    const bars = uPlot.paths.bars!({ size: [0.8, 100] });
+    return {
+        legend: { show: false },
+        cursor: CURSOR,
+        scales: { x: { time: false } },
+        axes: [
+            themedAxis(theme, { values: (_u, vals) => vals.map(v => Number(v).toFixed(3)) }),
+            themedAxis(theme, { size: 36 }),
+        ],
+        series: [
+            {},
+            { paths: bars, fill: barColor, stroke: 'transparent', points: { show: false } },
+        ],
+        plugins: [tooltipPlugin(histogramTooltip(edges))],
+    };
 }

@@ -7,6 +7,7 @@ metrics summaries, and dataset lineage tracking.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -226,12 +227,23 @@ class JobHistoryRepository:
             if eff["wall"] else 0.0
         )
 
-        # ── Disk footprint ───────────────────────────────────────
-        lora = conn.execute(f"""
+        # ── LoRA artifacts ───────────────────────────────────────
+        # Produced = every completed run writes a final LoRA. Size/on-disk
+        # are coverage-limited views: sizes only where recorded (legacy rows
+        # predate live persistence), on-disk only where the recorded file
+        # still exists.
+        lora_sizes = conn.execute(f"""
             SELECT COUNT(*) AS n, COALESCE(SUM(final_lora_size_bytes), 0) AS b
             FROM job_history
             WHERE final_lora_size_bytes IS NOT NULL {flt}
         """, args).fetchone()
+        lora_files = conn.execute(f"""
+            SELECT final_lora_file FROM job_history
+            WHERE status = 'completed' AND final_lora_file IS NOT NULL {flt}
+        """, args).fetchall()
+        lora_on_disk = sum(
+            1 for r in lora_files if os.path.isfile(r["final_lora_file"])
+        )
         ckpts = conn.execute(f"""
             SELECT COUNT(*) AS n
             FROM checkpoints c JOIN job_history j ON c.job_id = j.id
@@ -346,8 +358,10 @@ class JobHistoryRepository:
             "activity": activity,
             "gpu_hours": round(totals["total_training_sec"] / 3600, 2) if totals["total_training_sec"] else 0.0,
             "overhead_pct": overhead_pct,
-            "lora_count": lora["n"],
-            "lora_bytes": lora["b"],
+            "lora_count": completed,
+            "lora_bytes": lora_sizes["b"],
+            "lora_on_disk": lora_on_disk,
+            "lora_size_known": lora_sizes["n"],
             "checkpoint_count": ckpts["n"],
             "families": family_stats,
             "loss_histogram": _histogram(losses),

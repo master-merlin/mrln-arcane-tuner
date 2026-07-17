@@ -202,6 +202,56 @@ def test_backfill_skips_missing_output_dir():
     assert "completed_runs" in result
 
 
+def test_backfill_persists_final_lora_file(tmp_path):
+    """When the backfill locates the actual LoRA file it must persist the
+    path too (final_lora_file), not just the size — on-disk availability
+    in the stats modal depends on it."""
+    def_id = f"bff_{uuid.uuid4().hex[:8]}"
+    out_dir = tmp_path / "run_out"
+    out_dir.mkdir()
+    lora = out_dir / "my_lora_final.safetensors"
+    lora.write_bytes(b"x" * (10 * MB))
+    (out_dir / "training_log.json").write_text(json.dumps({
+        "lora_filename": "my_lora_final.safetensors",
+        "elapsed_seconds": 1500.0,
+        "step": 1000,
+    }))
+    job_id = _insert_job(def_id, output_dir=str(out_dir),
+                         completed_steps=1000, config=_ref_config())
+
+    backfill.run_backfill()
+
+    rec = get_db().connection().execute(
+        "SELECT final_lora_file, final_lora_size_bytes FROM job_history WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    assert rec["final_lora_file"] == str(lora)
+    assert rec["final_lora_size_bytes"] == 10 * MB
+
+
+def test_backfill_size_only_fallback_persists_no_path(tmp_path):
+    """The training_log mb-size fallback (file itself gone) records the size
+    but must NOT invent a path."""
+    def_id = f"bfmb_{uuid.uuid4().hex[:8]}"
+    out_dir = tmp_path / "run_out_mb"
+    out_dir.mkdir()
+    (out_dir / "training_log.json").write_text(json.dumps({
+        "lora_filename": "gone.safetensors",
+        "lora_file_size_mb": 10.0,
+    }))
+    job_id = _insert_job(def_id, output_dir=str(out_dir),
+                         completed_steps=1000, config=_ref_config())
+
+    backfill.run_backfill()
+
+    rec = get_db().connection().execute(
+        "SELECT final_lora_file, final_lora_size_bytes FROM job_history WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    assert rec["final_lora_file"] is None
+    assert rec["final_lora_size_bytes"] == 10 * MB
+
+
 # ── Stats getter ────────────────────────────────────────────────────────
 
 

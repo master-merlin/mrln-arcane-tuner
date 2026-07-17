@@ -17,6 +17,7 @@ export function makeStats(over: Partial<TrainingStats> = {}): TrainingStats {
         last_job: { lora_name: 'x', definition_id: 'flux', status: 'completed', created_at: 1 },
         activity: [{ week_start: '2026-07-13', completed: 3, failed: 1, stopped: 1, other: 0 }],
         gpu_hours: 1.67, overhead_pct: 16.7, lora_count: 3, lora_bytes: 3_000_000_000,
+        lora_on_disk: 2, lora_size_known: 3,
         checkpoint_count: 12,
         families: [{ id: 'flux', count: 5, completed: 3, success_rate: 60.0, avg_step_time: 0.45, best_loss: 0.08 }],
         loss_histogram: { edges: [0.05, 0.1], counts: [3] },
@@ -35,14 +36,18 @@ export function makeStats(over: Partial<TrainingStats> = {}): TrainingStats {
 describe('TrainingStatsModalComponent', () => {
     let stats$: Subject<TrainingStats>;
     let getTrainingStats: ReturnType<typeof vi.fn>;
+    let recompute$: Subject<unknown>;
+    let recomputeStats: ReturnType<typeof vi.fn>;
 
     function setup() {
         stats$ = new Subject<TrainingStats>();
         getTrainingStats = vi.fn().mockReturnValue(stats$.asObservable());
+        recompute$ = new Subject<unknown>();
+        recomputeStats = vi.fn().mockReturnValue(recompute$.asObservable());
         TestBed.configureTestingModule({
             imports: [TrainingStatsModalComponent],
             providers: [
-                { provide: JobService, useValue: { getTrainingStats } },
+                { provide: JobService, useValue: { getTrainingStats, recomputeStats } },
                 { provide: ProjectService, useValue: { allProjects: signal([{ id: 'p1', name: 'P1' }]) } },
                 { provide: OverlayStore, useValue: { topModal: () => undefined, closeModal: vi.fn() } },
             ],
@@ -50,6 +55,12 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = TestBed.createComponent(TrainingStatsModalComponent);
         fixture.detectChanges();
         return fixture;
+    }
+
+    function openTab(fixture: ReturnType<typeof setup>, index: number) {
+        const tabs = fixture.nativeElement.querySelectorAll('[data-testid="stats-tabs"] .tab');
+        (tabs[index] as HTMLButtonElement).click();
+        fixture.detectChanges();
     }
 
     it('fetches global stats on open and renders KPI tiles', () => {
@@ -106,6 +117,34 @@ describe('TrainingStatsModalComponent', () => {
         expect(el.querySelector('[data-testid="stats-kpi-total"]')?.textContent).not.toContain('5');
     });
 
+    it('renders three tabs with Activity active by default; KPI row stays visible', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const el: HTMLElement = fixture.nativeElement;
+        const tabs = el.querySelectorAll('[data-testid="stats-tabs"] .tab');
+        expect(Array.from(tabs).map(t => t.textContent?.trim()))
+            .toEqual(['Activity', 'Quality & Families', 'Config & Data']);
+        expect(tabs[0].classList.contains('active')).toBe(true);
+        expect(el.querySelector('[data-testid="stats-kpi-total"]')).toBeTruthy();
+        expect(el.querySelector('app-stats-uplot')).toBeTruthy();           // activity chart
+        expect(el.querySelector('[data-testid="stats-family-row"]')).toBeFalsy(); // other tab
+    });
+
+    it('switches sections when a tab is clicked, keeping the KPI row', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 1);
+        const el: HTMLElement = fixture.nativeElement;
+        expect(el.querySelector('[data-testid="stats-family-row"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="stats-kpi-total"]')).toBeTruthy();
+        openTab(fixture, 2);
+        expect(el.querySelector('[data-testid="stats-hp-row"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="stats-datasets"]')).toBeTruthy();
+        expect(el.querySelector('[data-testid="stats-family-row"]')).toBeFalsy();
+    });
+
     it('renders the activity section when there is activity, and the histogram fallback note when not', () => {
         const fixture = setup();
         stats$.next(makeStats({ loss_histogram: { edges: [], counts: [] } }));
@@ -113,6 +152,7 @@ describe('TrainingStatsModalComponent', () => {
         fixture.detectChanges();
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('app-stats-uplot')).toBeTruthy();   // activity chart host
+        openTab(fixture, 1);
         expect(el.textContent).toContain('Not enough completed runs');
     });
 
@@ -120,6 +160,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 1);
         const rows = fixture.nativeElement.querySelectorAll('[data-testid="stats-family-row"]');
         expect(rows.length).toBe(1);
         expect(rows[0].textContent).toContain('flux');
@@ -130,6 +171,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 2);
         const bars = fixture.nativeElement.querySelectorAll('[data-testid="stats-hp-row"]');
         expect(bars.length).toBe(2); // optimizer_type + ema_enabled populated in makeStats
     });
@@ -138,6 +180,7 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 1);
         const el: HTMLElement = fixture.nativeElement;
         const tile = el.querySelector('[data-testid="stats-kpi-best-loss"]');
         expect(tile?.textContent).toContain('0.08');
@@ -148,8 +191,67 @@ describe('TrainingStatsModalComponent', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
+        openTab(fixture, 2);
         const el: HTMLElement = fixture.nativeElement;
         expect(el.querySelector('[data-testid="stats-records"]')?.textContent).toContain('y'); // best-loss lora
         expect(el.querySelector('[data-testid="stats-datasets"]')?.textContent).toContain('ds1');
+    });
+
+    it('gives the Total steps tile a warning accent', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const steps = fixture.nativeElement.querySelector('[data-testid="stats-kpi-steps"]');
+        expect(steps?.querySelector('.kpi-accent.warning')).toBeTruthy();
+    });
+
+    it('LoRAs tile shows produced count, on-disk count and full-coverage size', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
+        expect(tile?.querySelector('[data-testid="kpi-tile-value"]')?.textContent).toContain('3');
+        expect(tile?.textContent).toContain('2 on disk');
+        expect(tile?.textContent).toContain('2.79 GB');       // 3e9 bytes
+        expect(tile?.textContent).not.toContain('sized');     // full coverage → no note
+    });
+
+    it('LoRAs tile flags partial size coverage', () => {
+        const fixture = setup();
+        stats$.next(makeStats({ lora_count: 10, lora_size_known: 4 }));
+        stats$.complete();
+        fixture.detectChanges();
+        const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
+        expect(tile?.textContent).toContain('(4/10 sized)');
+    });
+
+    it('reconcile button triggers the disk backfill and refetches stats on success', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 2);
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="stats-reconcile"]');
+        btn.click();
+        fixture.detectChanges();
+        expect(recomputeStats).toHaveBeenCalledTimes(1);
+        expect(btn.disabled).toBe(true);            // busy while pending
+
+        stats$ = new Subject(); getTrainingStats.mockReturnValue(stats$.asObservable());
+        recompute$.next({ rows_updated: 5 }); recompute$.complete();
+        fixture.detectChanges();
+        expect(getTrainingStats).toHaveBeenCalledTimes(2);  // refetched
+    });
+
+    it('reconcile failure shows an inline error and re-enables the button', () => {
+        const fixture = setup();
+        stats$.next(makeStats()); stats$.complete();
+        fixture.detectChanges();
+        openTab(fixture, 2);
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="stats-reconcile"]');
+        btn.click();
+        recompute$.error(new Error('boom'));
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="stats-reconcile-error"]')).toBeTruthy();
+        expect(btn.disabled).toBe(false);
     });
 });

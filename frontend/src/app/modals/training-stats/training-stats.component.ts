@@ -52,9 +52,9 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                 } @else {
                     <!-- ── KPI row ─────────────────────────────────── -->
                     <div class="ts-kpis">
-                        <div data-testid="stats-kpi-total">
+                        <div data-testid="stats-kpi-total" [title]="jobsSubFull(s)">
                             <app-kpi-tile label="Total jobs" [value]="s.total_jobs" accent="brand" [animate]="true"
-                                          [sub]="s.completed + ' done · ' + s.failed + ' failed · ' + s.stopped + ' stopped'"/>
+                                          [sub]="jobsSubShort(s)"/>
                         </div>
                         <div data-testid="stats-kpi-success">
                             <app-kpi-tile label="Success rate" [value]="s.success_rate" unit="%" [animate]="true"
@@ -68,7 +68,7 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                       [sub]="s.overhead_pct + '% overhead'" accent="violet"/>
                         <div data-testid="stats-kpi-loras" [title]="loraSub(s)">
                             <app-kpi-tile label="LoRAs produced" [value]="s.lora_count" [animate]="true"
-                                          [sub]="loraSub(s)" accent="teal"/>
+                                          [sub]="loraSubShort(s)" accent="teal"/>
                         </div>
                     </div>
 
@@ -388,12 +388,35 @@ export class TrainingStatsModalComponent implements OnInit {
     }
     protected fmtHours(h: number): string { return h.toFixed(h >= 100 ? 0 : 1); }
     protected fmtGB(bytes: number): string { return (bytes / 1024 ** 3).toFixed(2) + ' GB'; }
-    /** "2 on disk · 2.79 GB · 12 checkpoints", flagging partial size coverage. */
+    /**
+     * Full LoRA detail — "2 on disk · 2.79 GB (4/10 sized) · 12 checkpoints"
+     * — used as the tile's hover title; the visible sub-line is the compact
+     * variant below so the KPI rail never ellipsizes at normal widths.
+     */
     protected loraSub(s: TrainingStats): string {
         const gb = this.fmtGB(s.lora_bytes);
         const sized = s.lora_size_known < s.lora_count
             ? `${gb} (${s.lora_size_known}/${s.lora_count} sized)` : gb;
         return `${s.lora_on_disk} on disk · ${sized} · ${s.checkpoint_count} checkpoints`;
+    }
+    /**
+     * Compact visible variant: on-disk + 1-decimal size only — coverage and
+     * the checkpoint count live in the hover title (a ~160px tile fits about
+     * 22 chars of sub-line before the global .kpi-sub ellipsis kicks in).
+     */
+    protected loraSubShort(s: TrainingStats): string {
+        return `${s.lora_on_disk} on disk · ${(s.lora_bytes / 1024 ** 3).toFixed(1)} GB`;
+    }
+    /** Full outcome split for the Total-jobs hover title. */
+    protected jobsSubFull(s: TrainingStats): string {
+        return `${s.completed} done · ${s.failed} failed · ${s.stopped} stopped`;
+    }
+    /** Compact visible variant: zero-count outcomes are dropped. */
+    protected jobsSubShort(s: TrainingStats): string {
+        const parts = [`${s.completed} done`];
+        if (s.failed > 0) parts.push(`${s.failed} failed`);
+        if (s.stopped > 0) parts.push(`${s.stopped} stopped`);
+        return parts.join(' · ');
     }
     /**
      * `formatDuration(startedAtSec, endMs)` computes elapsed time between an

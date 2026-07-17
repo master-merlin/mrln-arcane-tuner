@@ -205,24 +205,36 @@ describe('TrainingStatsModalComponent', () => {
         expect(steps?.querySelector('.kpi-accent.warning')).toBeTruthy();
     });
 
-    it('LoRAs tile shows produced count, on-disk count and full-coverage size', () => {
+    it('LoRAs tile shows a compact sub-line with the full detail as hover title', () => {
         const fixture = setup();
         stats$.next(makeStats()); stats$.complete();
         fixture.detectChanges();
         const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
         expect(tile?.querySelector('[data-testid="kpi-tile-value"]')?.textContent).toContain('3');
-        expect(tile?.textContent).toContain('2 on disk');
-        expect(tile?.textContent).toContain('2.79 GB');       // 3e9 bytes
-        expect(tile?.textContent).not.toContain('sized');     // full coverage → no note
+        expect(tile?.textContent).toContain('2 on disk · 2.8 GB'); // 3e9 bytes, 1-decimal face
+        expect(tile?.textContent).not.toContain('sized');          // coverage lives in the title
+        expect(tile?.textContent).not.toContain('checkpoints');    // so does the ckpt count
+        expect(tile?.getAttribute('title')).toBe('2 on disk · 2.79 GB · 12 checkpoints');
     });
 
-    it('LoRAs tile flags partial size coverage', () => {
+    it('LoRAs tile keeps partial size coverage in the hover title only', () => {
         const fixture = setup();
         stats$.next(makeStats({ lora_count: 10, lora_size_known: 4 }));
         stats$.complete();
         fixture.detectChanges();
         const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-loras"]');
-        expect(tile?.textContent).toContain('(4/10 sized)');
+        expect(tile?.textContent).not.toContain('sized');
+        expect(tile?.getAttribute('title')).toBe('2 on disk · 2.79 GB (4/10 sized) · 12 checkpoints');
+    });
+
+    it('Total-jobs tile drops zero-count outcomes from the sub-line, full detail in title', () => {
+        const fixture = setup();
+        stats$.next(makeStats({ failed: 0, stopped: 2 })); stats$.complete();
+        fixture.detectChanges();
+        const tile = fixture.nativeElement.querySelector('[data-testid="stats-kpi-total"]');
+        expect(tile?.textContent).toContain('3 done · 2 stopped');
+        expect(tile?.textContent).not.toContain('failed');
+        expect(tile?.getAttribute('title')).toBe('3 done · 0 failed · 2 stopped');
     });
 
     it('reconcile button triggers the disk backfill and refetches stats on success', () => {

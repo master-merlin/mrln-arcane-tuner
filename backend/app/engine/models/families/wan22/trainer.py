@@ -29,7 +29,10 @@ import structlog
 import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
-from app.engine.models.families.wan_shared.trainer_base import WanTextCacheMixin
+from app.engine.models.families.wan_shared.trainer_base import (
+    DualExpertDeferredLoadMixin,
+    WanTextCacheMixin,
+)
 
 from .driver import Wan22Driver
 from .expert_router import ExpertRouter
@@ -39,12 +42,16 @@ from .saver import Wan22Saver
 logger = structlog.get_logger(__name__)
 
 
-class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
+class Wan22Trainer(
+    WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
+):
     """WAN 2.2 (T2V-A14B / I2V-A14B) dual-expert LoRA trainer.
 
     ``is_video_family`` is inherited from :class:`PipelineBaseMixin` (derived
     from the model's ``is_video`` capability) — no per-trainer flag needed.
     """
+
+    DEFERRED_EXPERT_LOG_EVENT = "wan22_deferred_low_expert_materialized"
 
     # ── Setup ────────────────────────────────────────────────────────────
 
@@ -227,57 +234,11 @@ class Wan22Trainer(WanTextCacheMixin, GenericTrainingPipeline):
         )
 
     # ── Deferred low-noise expert (host-RAM sequencing) ──────────────────
-
-    def _load_deferred_experts(self) -> None:
-        """Materialise the deferred low-noise expert onto CPU (dual-expert runs).
-
-        WAN 2.2 A14B holds TWO ~28 GB experts. To keep peak host RAM at ONE
-        expert, the loader leaves the low-noise expert out of Phase A; this
-        method loads it back on demand.
-
-        Call site: the TOP of :meth:`_configure_gradient_checkpointing` — the
-        earliest Phase-B hook run AFTER ``prepare_for_training`` has moved the
-        high expert to the GPU (``_move_component_to_gpu("unet")``) and BEFORE
-        anything touches the second expert (grad-checkpointing here, then
-        ``_apply_peft`` / optimizer). Sequencing so the high expert is on the GPU
-        before the low expert is materialised means host RAM never holds both at
-        once; from here the flow is byte-identical to eager loading (the low
-        expert is CPU-resident exactly as it would have been).
-
-        Idempotent, and a no-op unless the loader actually deferred an expert
-        (so fake-wired unit trainers, single-expert runs, and resumes are
-        unaffected).
-        """
-        if getattr(self, "_deferred_expert_loaded", False):
-            return
-        # Latch first: a genuine no-op path (no loader / not deferred / already
-        # present) should not be retried on every hook call.
-        self._deferred_expert_loaded = True
-
-        loader = getattr(self, "loader", None)
-        driver: Wan22Driver = self.driver  # type: ignore[assignment]
-        if (
-            loader is None
-            or not getattr(loader, "defer_second_expert", False)
-            or getattr(self, "expert_mode", "both") != "both"
-            or driver.transformer_low is not None
-        ):
-            return
-
-        try:
-            dtype = driver.resolve_loading_dtype()
-            low = loader.load_second_expert(
-                self.definition, torch_dtype=dtype, initial_device="cpu"
-            )
-        except Exception:
-            # Reset the latch so a hypothetical in-process retry re-attempts the
-            # load instead of silently degrading to single-expert training via
-            # _apply_peft's missing-expert warning path.
-            self._deferred_expert_loaded = False
-            raise
-        self.components["unet_low"] = low
-        driver.transformer_low = low
-        self.logger.info("wan22_deferred_low_expert_materialized", device="cpu")
+    # _load_deferred_experts lives in DualExpertDeferredLoadMixin (shared with
+    # bernini_r's 14B). Call sites here: the top of _apply_peft and
+    # _configure_gradient_checkpointing — the earliest Phase-B hooks run AFTER
+    # prepare_for_training has moved the high expert to the GPU and BEFORE
+    # anything touches the second expert.
 
     # ── Set BOTH experts to train mode + place on devices ────────────────
 

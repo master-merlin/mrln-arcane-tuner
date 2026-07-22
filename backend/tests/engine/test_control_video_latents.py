@@ -555,5 +555,104 @@ class TestImageControlRegressionPin:
         assert stub.encode_calls
 
 
+# ── Control decode deferral (warm cache skips the per-step clip decode) ────
+
+
+class TestControlDecodeDeferral:
+    """Video-family batches (``decode_pixels=False``) must not pay the control
+    clip decode + host→device upload when the control latent is served from the
+    warm cache — the same deferral the TARGET video path already has. The
+    pixels are re-decoded ONLY on a cache miss, via the stashed plain-data
+    decode specs."""
+
+    def test_deferred_batch_carries_specs_not_pixels(self, tmp_path):
+        ds = str(tmp_path / "ds")
+        h = _Harness(LatentManager(FakeWanVAE(), device="cpu"))
+        item = _video_edit_item(
+            ds, "defer_a", target_frames=13, target_fps=8.0, control_frames=13
+        )
+
+        batch = h._get_batch([item], decode_pixels=False)
+
+        assert batch["control_images"] is None
+        specs = batch["control_decode_specs"]
+        assert specs[0][0][0] == "video"  # slot 0, item 0 → a video recipe
+        # All metadata fields still present (cache lookups need them).
+        assert batch["control_ids"] and batch["control_cache_dirs"]
+        assert batch["control_extra_keys"]
+
+    def test_warm_cache_never_decodes_control_pixels(self, monkeypatch, tmp_path):
+        """THE per-step saving: once the control latent is cached, a deferred
+        batch must satisfy ``_load_control_latents`` without ever touching
+        the video decoder."""
+        ds = str(tmp_path / "ds")
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        h = _Harness(lm)
+        item = _video_edit_item(
+            ds, "defer_warm", target_frames=13, target_fps=8.0, control_frames=13
+        )
+
+        # Warm the cache with one deferred cold pass (decodes on the miss).
+        cold = h._get_batch([item], decode_pixels=False)
+        h._load_control_latents(cold)
+        assert cold["control_latents"][0].ndim == 5
+
+        # Now the decoder must be unreachable on the warm path.
+        from app.engine.components import video as video_mod
+
+        def _boom(self, *a, **k):  # pragma: no cover - the assertion itself
+            raise AssertionError("control clip decoded despite a warm cache")
+
+        monkeypatch.setattr(video_mod.VideoFrameLoader, "load_clip", _boom)
+
+        warm = h._get_batch([item], decode_pixels=False)
+        h._load_control_latents(warm)
+
+        assert warm["control_images"] is None
+        assert warm["control_latents"][0].ndim == 5
+        assert torch.equal(warm["control_latents"][0], cold["control_latents"][0])
+
+    def test_deferred_cold_miss_decodes_and_matches_eager_latent_shape(
+        self, tmp_path
+    ):
+        """A deferred cache miss decodes via the stashed specs and yields the
+        same 5D latent geometry as the eager path."""
+        ds = str(tmp_path / "ds")
+        lm = LatentManager(FakeWanVAE(), device="cpu")
+        h = _Harness(lm)
+        item = _video_edit_item(
+            ds, "defer_cold", target_frames=13, target_fps=8.0, control_frames=13
+        )
+
+        eager = h._get_batch([item])  # decode_pixels default True
+        h._load_control_latents(eager)
+
+        item2 = _video_edit_item(
+            ds, "defer_cold2", target_frames=13, target_fps=8.0, control_frames=13
+        )
+        deferred = h._get_batch([item2], decode_pixels=False)
+        h._load_control_latents(deferred)
+
+        assert deferred["control_latents"][0].shape == eager["control_latents"][0].shape
+
+    def test_guards_still_fire_when_decode_is_deferred(self, tmp_path):
+        """The still-target and sliding refusals are metadata checks and must
+        keep failing loudly at batch-build time even without a pixel decode."""
+        ds = str(tmp_path / "ds")
+        h = _Harness(LatentManager(FakeWanVAE(), device="cpu"))
+
+        item = _video_edit_item(
+            ds, "defer_guard", target_frames=13, target_fps=8.0, control_frames=13
+        )
+        item["temporal_mode"] = "sliding"
+        with pytest.raises(ValueError, match="sliding"):
+            h._attach_control_images({}, [item], None, decode_pixels=False)
+
+        img_item = _image_edit_item(ds, "defer_img")
+        img_item["control_is_video"] = [True]
+        with pytest.raises(ValueError, match="video target"):
+            h._attach_control_images({}, [img_item], None, decode_pixels=False)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

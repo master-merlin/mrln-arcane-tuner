@@ -72,7 +72,10 @@ import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
-from app.engine.models.families.wan_shared.trainer_base import WanTextCacheMixin
+from app.engine.models.families.wan_shared.trainer_base import (
+    DualExpertDeferredLoadMixin,
+    WanTextCacheMixin,
+)
 
 from .driver import BerniniRDriver
 from .loader import BerniniRLoader
@@ -86,12 +89,16 @@ logger = structlog.get_logger(__name__)
 _MAX_BAND_REDRAW_ROUNDS = 64
 
 
-class BerniniRTrainer(WanTextCacheMixin, GenericTrainingPipeline):
+class BerniniRTrainer(
+    WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
+):
     """Bernini-R (renderer-only video edit) LoRA trainer — 1.3B single / 14B MoE.
 
     ``is_video_family`` is inherited from :class:`PipelineBaseMixin` (derived from
     the model's ``is_video`` capability) — no per-trainer flag needed.
     """
+
+    DEFERRED_EXPERT_LOG_EVENT = "bernini_r_deferred_low_expert_materialized"
 
     # ── Timestep-sampling constants (upstream ``bernini/training/data.py``) ──
     # SD3 mode weighting scale. Recon §4 leaves ``mode_scale`` symbolic in the
@@ -110,7 +117,15 @@ class BerniniRTrainer(WanTextCacheMixin, GenericTrainingPipeline):
                 self.config.get("expert_mode", "both") or "both"
             ).lower()
             self.driver.configure_expert_mode(self.expert_mode)
-            self.loader = BerniniRLoader(self.device, expert_mode=self.expert_mode)
+            # Dual-expert runs DEFER the low expert out of Phase A (mirrors
+            # Wan22Trainer): both ~28 GB experts must never sit on CPU together
+            # through the TE/VAE caching stretch. The deferred expert is
+            # materialised by DualExpertDeferredLoadMixin once the high expert
+            # has moved to the GPU. Single-expert runs have nothing to defer.
+            defer = self.expert_mode == "both"
+            self.loader = BerniniRLoader(
+                self.device, expert_mode=self.expert_mode, defer_second_expert=defer
+            )
             self.saver = BerniniRDualSaver(mode=self.driver.mode)
             self._build_router()
         else:
@@ -291,6 +306,11 @@ class BerniniRTrainer(WanTextCacheMixin, GenericTrainingPipeline):
         """Inject LoRA into the active expert, and (14B ``both``) the other too."""
         from peft import LoraConfig, get_peft_model
 
+        # Safety net: guarantee the deferred low expert is present before we
+        # wrap it, independent of the grad-checkpointing hook order (idempotent;
+        # mirrors Wan22Trainer).
+        self._load_deferred_experts()
+
         # 1. Base PEFT on the active/primary expert (high by default on 14B).
         super()._apply_peft()
 
@@ -385,6 +405,9 @@ class BerniniRTrainer(WanTextCacheMixin, GenericTrainingPipeline):
 
     def _configure_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing on BOTH experts (14B ``both``)."""
+        # Bring the deferred low expert back BEFORE any per-expert work below —
+        # grad-checkpointing, then PEFT/optimizer, all expect both present.
+        self._load_deferred_experts()
         super()._configure_gradient_checkpointing()
         driver = getattr(self, "driver", None)
         if (

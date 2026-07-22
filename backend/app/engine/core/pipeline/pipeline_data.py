@@ -1090,7 +1090,14 @@ class PipelineDataMixin:
         # per-slot stacked tensors the family forward can concat with the
         # target latents. Controls are loaded clean here and never flipped.
         if items and items[0].get("control_paths"):
-            self._attach_control_images(batch, items, transform_norm)
+            # Controls share the caller's decode deferral: with a warm control-
+            # latent cache the decoded pixels are discarded (the same per-step
+            # waste the target-video path eliminates), so video-family batches
+            # skip the pixel decode here and _load_control_latents re-decodes
+            # only the slots that actually miss the cache.
+            self._attach_control_images(
+                batch, items, transform_norm, decode_pixels=decode_pixels
+            )
 
         # Let families add extra data (e.g. SDXL time_ids)
         batch.update(self.build_batch_extra(items))
@@ -1236,7 +1243,9 @@ class PipelineDataMixin:
             )
         return clip
 
-    def _attach_control_images(self, batch, items, transform) -> None:
+    def _attach_control_images(
+        self, batch, items, transform, decode_pixels: bool = True
+    ) -> None:
         """Transpose per-item control fields into per-slot batch tensors.
 
         A control slot may be a video (Bernini-R edit datasets): decoded via
@@ -1247,6 +1256,16 @@ class PipelineDataMixin:
         flags elsewhere in this file); a batch with no video controls carries
         no ``control_is_video`` key and every slot decodes as an image,
         byte-identical to before this method learned about video.
+
+        ``decode_pixels`` mirrors :meth:`_get_batch`'s deferral: with a warm
+        control-latent cache the decoded pixels are immediately discarded for
+        the cached latent, so video-family batches (``decode_pixels=False``)
+        skip the decode + host→device upload here — ``batch["control_images"]``
+        stays ``None`` and per-item decode specs (plain tuples, no tensors)
+        are stashed instead so :meth:`_load_control_latents` can decode ONLY
+        the slots that actually miss the cache. All metadata fields (ids,
+        paths, cache dirs, extra keys) and the up-front combination guards run
+        identically either way; image/pixel families keep the eager default.
 
         Two combinations are refused up front with a diagnostic error rather
         than reaching a confusing crash (or worse, a silent mismatch) deeper
@@ -1264,7 +1283,8 @@ class PipelineDataMixin:
         """
         n_slots = len(items[0]["control_paths"])
         slot_is_video = items[0].get("control_is_video") or [False] * n_slots
-        ctrl_images: list[torch.Tensor] = []
+        ctrl_images: list[torch.Tensor] | None = [] if decode_pixels else None
+        ctrl_decode_specs: list[list[tuple]] = []
         ctrl_ids: list[list[str]] = []
         ctrl_paths: list[list[str]] = []
         ctrl_cache_dirs: list[list[str]] = []
@@ -1274,6 +1294,7 @@ class PipelineDataMixin:
                 bool(slot_is_video[slot]) if slot < len(slot_is_video) else False
             )
             slot_imgs: list[torch.Tensor] = []
+            slot_specs: list[tuple] = []
             slot_ids: list[str] = []
             slot_paths: list[str] = []
             slot_cache: list[str] = []
@@ -1303,11 +1324,7 @@ class PipelineDataMixin:
                     # window k trains target segment [kΔ,(k+1)Δ] against control
                     # segment [kΔ,(k+1)Δ] — not always the clip head.
                     tgt_start = float(item.get("trim_start_s") or 0.0)
-                    slot_imgs.append(
-                        self._load_control_video_clip(
-                            path, tgt_f, tgt_fps, cw, ch, trim_start_s=tgt_start
-                        )
-                    )
+                    spec = ("video", path, cw, ch, tgt_f, tgt_fps, tgt_start)
                     # Mirrors the target video's own t{start}-{end} cache-key
                     # convention (:func:`video_trim_extra_key`) with the REAL
                     # window folded in, so a control source re-used at a
@@ -1327,17 +1344,26 @@ class PipelineDataMixin:
                         )
                     )
                 else:
-                    slot_imgs.append(self._load_image_to(path, cw, ch, transform))
+                    spec = ("image", path, cw, ch)
                     slot_extra.append("")
+                slot_specs.append(spec)
+                if ctrl_images is not None:
+                    slot_imgs.append(self._decode_control_spec(spec, transform))
                 slot_ids.append(item["control_rel_paths"][slot])
                 slot_paths.append(path)
                 slot_cache.append(item["control_cache_dirs"][slot])
-            ctrl_images.append(torch.stack(slot_imgs).to(self.device))
+            if ctrl_images is not None:
+                ctrl_images.append(torch.stack(slot_imgs).to(self.device))
+            ctrl_decode_specs.append(slot_specs)
             ctrl_ids.append(slot_ids)
             ctrl_paths.append(slot_paths)
             ctrl_cache_dirs.append(slot_cache)
             ctrl_extra_keys.append(slot_extra)
         batch["control_images"] = ctrl_images
+        if ctrl_images is None:
+            # Deferred decode: plain-data recipes (no tensors, no closures) so
+            # _load_control_latents can decode a single slot on a cache miss.
+            batch["control_decode_specs"] = ctrl_decode_specs
         batch["control_ids"] = ctrl_ids
         batch["control_paths"] = ctrl_paths
         batch["control_cache_dirs"] = ctrl_cache_dirs
@@ -1346,6 +1372,45 @@ class PipelineDataMixin:
         # no new kwarg reaching the latent manager in `_load_control_latents`).
         if any(any(keys) for keys in ctrl_extra_keys):
             batch["control_extra_keys"] = ctrl_extra_keys
+
+    def _decode_control_spec(self, spec: tuple, transform=None) -> torch.Tensor:
+        """Decode ONE control input from its plain-data recipe.
+
+        ``("video", path, cw, ch, tgt_f, tgt_fps, tgt_start)`` → the
+        VideoFrameLoader clip path; ``("image", path, cw, ch)`` → the still
+        PIL round-trip. Shared by the eager decode in
+        :meth:`_attach_control_images` and the deferred decode-on-miss in
+        :meth:`_decode_control_slot`, so the two can't drift.
+        """
+        if spec[0] == "video":
+            _, path, cw, ch, tgt_f, tgt_fps, tgt_start = spec
+            return self._load_control_video_clip(
+                path, tgt_f, tgt_fps, cw, ch, trim_start_s=tgt_start
+            )
+        _, path, cw, ch = spec
+        if transform is None:
+            transform = transforms.Compose(
+                [
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5]),
+                ]
+            )
+        return self._load_image_to(path, cw, ch, transform)
+
+    def _decode_control_slot(self, specs: list[tuple]) -> torch.Tensor:
+        """Decode a whole deferred control slot (cache miss) to a batch tensor.
+
+        Mirrors the eager in-loop decode byte-for-byte (same recipes, same
+        stack + device move) — only the timing differs.
+        """
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        imgs = [self._decode_control_spec(spec, transform) for spec in specs]
+        return torch.stack(imgs).to(self.device)
 
     def _load_control_latents(self, batch: dict) -> None:
         """Encode/load clean control latents into ``batch['control_latents']``.
@@ -1383,8 +1448,18 @@ class PipelineDataMixin:
                     **key_kwargs,
                 )
             if lat is None:
+                # Cache miss — decode the deferred slot now (video families);
+                # eager batches already carry the pixels.
+                images = batch.get("control_images")
+                slot_images = (
+                    images[slot_idx]
+                    if images is not None
+                    else self._decode_control_slot(
+                        batch["control_decode_specs"][slot_idx]
+                    )
+                )
                 lat = self.latent_manager.encode_and_cache_batch(
-                    batch["control_images"][slot_idx],
+                    slot_images,
                     ids=ids,
                     cache_dirs=cache_dirs if use_cache else None,
                     source_paths=paths,

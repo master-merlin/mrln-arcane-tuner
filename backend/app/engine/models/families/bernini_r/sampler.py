@@ -143,11 +143,25 @@ class BerniniRSampler(WanVideoSamplerBase):
         matching the driver's training-side assignment. The returned latents are
         the exact tensors reused (by reference) every denoise step — this is what
         keeps the condition tokens frozen across the trajectory.
+
+        Memoized ACROSS sampling rounds: a run's preview config is fixed, so the
+        same ``(path, target shape, fps)`` yields a bit-identical clean latent
+        every round — without the memo each round re-pays the full clip decode +
+        the fp32 Wan-VAE GPU round-trip for a known constant. Stored on CPU
+        (a ``[1, 16, F, h, w]`` latent, a few MB) and moved to the device per
+        round; keyed by shape/fps so a changed preview resolution or frame
+        count re-encodes rather than serving a stale latent.
         """
+        memo: dict[tuple, Tensor] = getattr(self, "_control_latent_memo", None) or {}
+        self._control_latent_memo = memo
         cond_latents: list[Tensor] = []
         cond_source_ids: list[float] = []
         for slot_idx, path in enumerate(self._resolve_control_paths()):
-            lat = self._encode_control_video(path, target)
+            key = (path, tuple(target.shape), float(self.output_fps))
+            lat = memo.get(key)
+            if lat is None:
+                lat = self._encode_control_video(path, target).cpu()
+                memo[key] = lat
             cond_latents.append(lat.to(device=target.device, dtype=target.dtype))
             cond_source_ids.append(float(slot_idx + 1))
         return cond_latents, cond_source_ids

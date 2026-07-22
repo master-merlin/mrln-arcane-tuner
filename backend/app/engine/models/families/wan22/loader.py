@@ -68,6 +68,10 @@ class Wan22Loader(GenericComponentLoader):
             the module docstring for the rationale.
     """
 
+    # Structured-log event for the deferred low-expert materialisation;
+    # subclasses (bernini_r) override so log parsing stays family-keyed.
+    SECOND_EXPERT_LOG_EVENT = "wan22_load_second_expert"
+
     def __init__(
         self, device, expert_mode: str = "both", defer_second_expert: bool = False
     ) -> None:
@@ -100,10 +104,12 @@ class Wan22Loader(GenericComponentLoader):
             fallback_to_root=True,
         )
 
-    def get_component_manifest(
-        self, definition: ModelDefinition
-    ) -> list[ComponentSpec]:
-        manifest: list[ComponentSpec] = [
+    @staticmethod
+    def _base_component_specs() -> list[ComponentSpec]:
+        """Tokenizer/TE/VAE specs shared by every stock-Wan-component family
+        (wan22 and the bernini_r subclass load identical non-transformer
+        components off the same subfolder layout)."""
+        return [
             # -- Tokenizer (UMT5) --
             ComponentSpec(
                 key="tokenizer",
@@ -131,6 +137,11 @@ class Wan22Loader(GenericComponentLoader):
                 fallback_to_root=True,
             ),
         ]
+
+    def get_component_manifest(
+        self, definition: ModelDefinition
+    ) -> list[ComponentSpec]:
+        manifest: list[ComponentSpec] = self._base_component_specs()
 
         # Transformer specs depend on expert_mode. Single-expert loads exactly
         # ONE transformer under "unet" (the generic loop's primary model); the
@@ -184,7 +195,7 @@ class Wan22Loader(GenericComponentLoader):
         spec = self._low_expert_spec()
         root_path = getattr(self, "_root_path", None) or self._resolve_root(definition)
         self.logger.info(
-            "wan22_load_second_expert",
+            self.SECOND_EXPERT_LOG_EVENT,
             subfolder=spec.subfolder,
             dtype=str(torch_dtype),
             device=str(initial_device),

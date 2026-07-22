@@ -206,3 +206,66 @@ class WanTextCacheMixin:
                 if expanded not in texts:
                     texts.append(expanded)
         return texts
+
+
+class DualExpertDeferredLoadMixin:
+    """Materialise a loader-deferred low-noise expert (dual-transformer runs).
+
+    Host-RAM sequencing shared by every dual-transformer family (wan22 A14B and
+    bernini_r 14B): two ~28 GB experts must never sit on CPU together through
+    the TE/VAE caching stretch (a naive eager ``both`` load peaks ~67 GB host
+    RAM and hangs a 64 GB box — see the wan22 loader module docstring). The
+    loader leaves the low-noise expert out of the Phase-A manifest
+    (``defer_second_expert``) and this mixin loads it back on demand — AFTER
+    the high expert has moved to the GPU, so host RAM holds at most one expert
+    at any instant. From there the flow is byte-identical to eager loading.
+
+    Expects the consuming trainer to provide ``self.loader`` (with
+    ``defer_second_expert`` + ``load_second_expert``), ``self.driver`` (with
+    ``transformer_low`` + ``resolve_loading_dtype``), ``self.components``,
+    ``self.definition``, ``self.expert_mode`` and ``self.logger``. Call
+    :meth:`_load_deferred_experts` at the top of ``_apply_peft`` and
+    ``_configure_gradient_checkpointing`` (the earliest Phase-B hooks that
+    touch the second expert).
+    """
+
+    # Structured-log event, overridden per family so log parsing stays keyed.
+    DEFERRED_EXPERT_LOG_EVENT = "deferred_low_expert_materialized"
+
+    def _load_deferred_experts(self) -> None:
+        """Materialise the deferred low-noise expert onto CPU (dual-expert runs).
+
+        Idempotent, and a no-op unless the loader actually deferred an expert
+        (so fake-wired unit trainers, single-expert runs, and resumes are
+        unaffected).
+        """
+        if getattr(self, "_deferred_expert_loaded", False):
+            return
+        # Latch first: a genuine no-op path (no loader / not deferred / already
+        # present) should not be retried on every hook call.
+        self._deferred_expert_loaded = True
+
+        loader = getattr(self, "loader", None)
+        driver = self.driver
+        if (
+            loader is None
+            or not getattr(loader, "defer_second_expert", False)
+            or getattr(self, "expert_mode", "both") != "both"
+            or driver.transformer_low is not None
+        ):
+            return
+
+        try:
+            dtype = driver.resolve_loading_dtype()
+            low = loader.load_second_expert(
+                self.definition, torch_dtype=dtype, initial_device="cpu"
+            )
+        except Exception:
+            # Reset the latch so a hypothetical in-process retry re-attempts the
+            # load instead of silently degrading to single-expert training via
+            # _apply_peft's missing-expert warning path.
+            self._deferred_expert_loaded = False
+            raise
+        self.components["unet_low"] = low
+        driver.transformer_low = low
+        self.logger.info(self.DEFERRED_EXPERT_LOG_EVENT, device="cpu")

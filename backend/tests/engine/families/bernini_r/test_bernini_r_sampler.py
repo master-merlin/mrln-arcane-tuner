@@ -258,6 +258,52 @@ class TestNoControlFallback:
         assert out.shape == noise.shape
 
 
+# ── Cross-round control-latent memo ──────────────────────────────────────────
+
+
+class TestControlLatentMemo:
+    """A run's preview config is fixed, so the clean control latent is
+    bit-identical across sampling rounds — the decode + fp32 Wan-VAE encode
+    must run ONCE per (path, target shape, fps), not once per round."""
+
+    @staticmethod
+    def _counting_encode(calls: dict):
+        def _fake(path, target):
+            calls["n"] += 1
+            return torch.randn(1, 16, 1, 8, 8)
+
+        return _fake
+
+    def test_encode_runs_once_across_rounds(self, monkeypatch):
+        sampler = _make_sampler(_tiny_model())
+        sampler._active_prompt_cfg = {"control_images": ["clip.mp4"]}
+        calls = {"n": 0}
+        monkeypatch.setattr(
+            sampler, "_encode_control_video", self._counting_encode(calls)
+        )
+
+        target = torch.randn(1, 16, 1, 8, 8)
+        round1, _ = sampler._build_condition_streams(target)
+        round2, _ = sampler._build_condition_streams(target)
+
+        assert calls["n"] == 1, "same path/shape/fps must be served from the memo"
+        assert torch.equal(round1[0], round2[0])
+
+    def test_changed_target_shape_reencodes(self, monkeypatch):
+        """A changed preview geometry must NOT be served a stale latent."""
+        sampler = _make_sampler(_tiny_model())
+        sampler._active_prompt_cfg = {"control_images": ["clip.mp4"]}
+        calls = {"n": 0}
+        monkeypatch.setattr(
+            sampler, "_encode_control_video", self._counting_encode(calls)
+        )
+
+        sampler._build_condition_streams(torch.randn(1, 16, 1, 8, 8))
+        sampler._build_condition_streams(torch.randn(1, 16, 2, 8, 8))
+
+        assert calls["n"] == 2
+
+
 # ── _create_sampler wiring (F7 — house convention) ────────────────────────
 
 

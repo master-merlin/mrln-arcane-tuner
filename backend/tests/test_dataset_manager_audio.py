@@ -15,6 +15,7 @@ import os
 import numpy as np
 import pytest
 import soundfile as sf
+from fastapi import HTTPException
 from PIL import Image
 from unittest.mock import patch, MagicMock
 
@@ -298,8 +299,12 @@ class TestLyricsRoundTrip:
         assert manager.datasets["lyricsvscap"].media_metadata["song.wav"]["has_caption"] is False
 
     def test_save_lyrics_rejects_path_traversal(self, manager):
+        """save_lyrics now resolves through the shared validate_path_within
+        containment guard (W1.T6), which raises HTTPException(403) instead
+        of the old ValueError("...traversal") — see test_caption_path_guard.py
+        for the full prefix-collision coverage this guard also closes."""
         manager.create_dataset("lyricstraversal")
-        with pytest.raises(ValueError, match="traversal"):
+        with pytest.raises(HTTPException):
             manager.save_lyrics("lyricstraversal", "../../evil.lyrics.txt", "x")
 
 

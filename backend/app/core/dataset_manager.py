@@ -3,6 +3,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 from pydantic import BaseModel, Field, computed_field, field_validator
 import shutil
@@ -27,6 +28,7 @@ from app.core.dataset.media_types import (
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 
+from app.api._path_guard import validate_path_within
 from app.core.events import event_manager
 from app.core.db import DatabaseEngine
 from app.core.db.repositories.dataset_repo import DatasetRepository
@@ -1558,11 +1560,13 @@ class DatasetManager:
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
-        
-        path = os.path.join(dataset.path, filename)
-        if not os.path.exists(path):
+
+        # filename is client-supplied; resolve through the shared containment
+        # guard before touching disk (raises HTTPException(403) on escape).
+        path = validate_path_within(Path(dataset.path) / filename, dataset.path)
+        if not path.exists():
             return ""
-            
+
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
 
@@ -1571,11 +1575,10 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
-        # Ensure we don't save outside dataset
-        path = os.path.join(dataset.path, filename)
-        # simplistic check
-        if not os.path.abspath(path).startswith(os.path.abspath(dataset.path)):
-             raise ValueError("Security violation: path traversal")
+        # filename is client-supplied; resolve through the shared containment
+        # guard (replaces the previous abspath().startswith() prefix check,
+        # which let a sibling directory like "foobar" pass for dataset "foo").
+        path = validate_path_within(Path(dataset.path) / filename, dataset.path)
 
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -1651,9 +1654,10 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
-        path = os.path.join(dataset.path, filename)
-        if not os.path.abspath(path).startswith(os.path.abspath(dataset.path)):
-            raise ValueError("Security violation: path traversal")
+        # filename is client-supplied; resolve through the shared containment
+        # guard (replaces the previous abspath().startswith() prefix check,
+        # which let a sibling directory like "foobar" pass for dataset "foo").
+        path = validate_path_within(Path(dataset.path) / filename, dataset.path)
 
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)

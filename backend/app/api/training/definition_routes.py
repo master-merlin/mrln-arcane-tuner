@@ -56,18 +56,30 @@ async def list_model_definitions():
 @router.post("/models/definitions", response_model=dict[str, Any])
 async def create_definition(request: CreateDefinitionRequest):
     """Create a new model definition YAML file."""
+    import re
+
     from app.engine.models.registry import registry
     import yaml
+
+    from app.api._path_guard import validate_path_within
 
     if registry.get_definition(request.id):
         raise HTTPException(
             status_code=409, detail=f"Definition '{request.id}' already exists."
         )
 
+    # request.family is client-supplied; sanitize before it's used as a path
+    # segment (mirrors the imported-template guard in
+    # template_routes.py::_install_definition) so "../../evil" can't escape
+    # the families directory, then confirm containment as a second layer.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", request.family):
+        raise HTTPException(status_code=400, detail="Invalid family name")
+
     families_dir = (
         Path(__file__).resolve().parents[2] / "engine" / "models" / "families"
     )
     family_def_dir = families_dir / request.family / "definitions"
+    validate_path_within(family_def_dir, families_dir)
 
     def _write_yaml():
         family_def_dir.mkdir(parents=True, exist_ok=True)

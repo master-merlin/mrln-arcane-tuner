@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import reject_audio_op, safe_remove
+from app.api._path_guard import reject_audio_op, safe_remove, validate_path_within
 from app.core.dataset_manager import dataset_manager
 from app.core.events import emit_entity_change, event_manager
 from app.core.logger import get_logger
@@ -104,7 +104,7 @@ def _overlay_id(dataset_name: str, image_path: str) -> str:
 async def render_pipeline(name: str, request: RenderPipelineRequest):
     """Execute the full pipeline on an image and save the overlay."""
     dataset, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
-    img_path = dataset_root / request.image_path
+    img_path = validate_path_within(dataset_root / request.image_path, dataset_root)
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     reject_audio_op(request.image_path, "Render pipeline")
@@ -355,7 +355,9 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
     dataset, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
     stem = Path(request.image_path).stem
     overlay_path = dataset_root / "overlays" / f"{stem}.png"
-    img_path = dataset_root / request.image_path
+    # WRITE primitive below (shutil.copy2 into img_path) — validate containment
+    # before anything else runs.
+    img_path = validate_path_within(dataset_root / request.image_path, dataset_root)
 
     if not overlay_path.exists():
         raise HTTPException(status_code=404, detail="No overlay to commit")

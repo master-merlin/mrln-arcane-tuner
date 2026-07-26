@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import reject_audio_op
+from app.api._path_guard import reject_audio_op, validate_path_within
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.adjustment_schemas import (
@@ -84,12 +84,26 @@ async def adjust_media(name: str, request: AdjustmentRequest):
         logger.info("adjusting_media", dataset_name=name, path=request.path)
         adjustments = _build_adjustments_dict(request)
 
-        # Resolve color match reference path to absolute
-        if request.color_match:
-            dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-            if dataset:
+        # dataset_manager.apply_adjustments opens `request.path` and overwrites
+        # it in place (WRITE primitive) — validate containment before it's
+        # ever handed a client-supplied relative path. Skip when the dataset
+        # itself can't be resolved; apply_adjustments raises its own
+        # ValueError("Dataset not found") in that case, unchanged.
+        dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+        if dataset:
+            dataset_root = Path(dataset.path)
+            validate_path_within(dataset_root / request.path, dataset_root)
+
+            # Resolve color match reference path to absolute
+            if request.color_match:
+                validate_path_within(
+                    dataset_root / request.color_match.reference_path,
+                    dataset_root,
+                )
                 adjustments["color_match"] = {
-                    "reference_path": str(Path(dataset.path) / request.color_match.reference_path),
+                    "reference_path": str(
+                        dataset_root / request.color_match.reference_path
+                    ),
                     "method": request.color_match.method,
                     "strength": request.color_match.strength,
                 }
@@ -115,10 +129,19 @@ async def adjust_media_batch(name: str, request: BatchAdjustmentRequest):
     """Apply adjustments to multiple images. Returns SSE progress stream."""
     adjustments = _build_adjustments_dict(request)
     total = len(request.paths)
+    # Resolved once, outside the loop; per-item validation below still
+    # 403-guards each path individually (a traversal is reported as a
+    # per-item error event — the 200 + SSE stream is already committed by
+    # the time any item is processed, so a raised HTTPException can't
+    # become the response status the way it does on the single-item route).
+    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+    dataset_root = Path(dataset.path) if dataset else None
 
     async def event_stream():
         for idx, path in enumerate(request.paths):
             try:
+                if dataset_root is not None:
+                    validate_path_within(dataset_root / path, dataset_root)
                 await asyncio.to_thread(
                     dataset_manager.apply_adjustments,
                     name,
@@ -126,6 +149,14 @@ async def adjust_media_batch(name: str, request: BatchAdjustmentRequest):
                     adjustments,
                 )
                 event = {"index": idx, "total": total, "file": path, "status": "ok"}
+            except HTTPException as e:
+                event = {
+                    "index": idx,
+                    "total": total,
+                    "file": path,
+                    "status": "error",
+                    "error": e.detail,
+                }
             except (ValueError, FileNotFoundError, OSError) as e:
                 event = {"index": idx, "total": total, "file": path, "status": "error", "error": str(e)}
             yield f"data: {json.dumps(event)}\n\n"
@@ -146,8 +177,12 @@ async def color_match_preview(
 
     try:
         dataset_root = Path(dataset.path)
-        src_path = dataset_root / request.source_path
-        ref_path = dataset_root / request.reference_path
+        src_path = validate_path_within(
+            dataset_root / request.source_path, dataset_root
+        )
+        ref_path = validate_path_within(
+            dataset_root / request.reference_path, dataset_root
+        )
 
         if not src_path.exists():
             raise HTTPException(status_code=404, detail=f"Source not found: {request.source_path}")
@@ -187,7 +222,8 @@ async def get_histogram(
     """Return per-channel histogram data for an image."""
     from app.core.image_adjustments import compute_histogram
 
-    full_path = Path(dataset.path) / image_path
+    dataset_root = Path(dataset.path)
+    full_path = validate_path_within(dataset_root / image_path, dataset_root)
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     reject_audio_op(image_path, "Histogram")

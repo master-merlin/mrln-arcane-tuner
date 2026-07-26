@@ -386,3 +386,59 @@ class TestMaskingTraversal:
             params={"image_rel_path": "../../outside.png"},
         )
         assert res.status_code == 403
+
+
+# ── worker-level containment (defence in depth) ───────────────────────────
+
+
+class TestPipelineBatchWorkerContainment:
+    """`_render_one` must contain its OWN path, not rely on its callers.
+
+    Both current callers (render_pipeline_batch / render_pipeline_task)
+    validate pre-enqueue, and tests pin that. But nothing pinned the worker
+    itself, so a third caller — a resume, a retry, a replay from a persisted
+    task record — would silently reopen an arbitrary-file-read primitive with
+    no test failing. This pins the guard at the point of IO.
+    """
+
+    def test_render_one_rejects_traversal_and_leaves_outside_file_untouched(
+        self, tmp_path, monkeypatch
+    ):
+        import types as _types
+
+        from fastapi import HTTPException
+        from PIL import Image
+
+        from app.core.image_processing import pipeline_batch
+
+        dataset_dir = tmp_path / "ds"
+        (dataset_dir / "overlays").mkdir(parents=True)
+        outside = tmp_path / "secret.png"
+        Image.new("RGB", (8, 8), "red").save(outside)
+        original_bytes = outside.read_bytes()
+
+        import app.core.dataset_manager as dm_mod
+
+        monkeypatch.setattr(
+            dm_mod.dataset_manager, "get_dataset",
+            lambda name: _types.SimpleNamespace(
+                path=str(dataset_dir), media_metadata={}
+            ),
+        )
+
+        try:
+            pipeline_batch._render_one(
+                dataset_name="ds",
+                image_path="../secret.png",
+                blocks=[],
+                tile_size=512,
+                tile_pad=32,
+                replace_recipe=True,
+            )
+            raise AssertionError("traversal was not blocked")
+        except HTTPException as exc:
+            assert exc.status_code == 403
+
+        # The out-of-dataset file was never read into an overlay, and is intact.
+        assert outside.read_bytes() == original_bytes
+        assert not (dataset_dir / "overlays" / "secret.png").exists()

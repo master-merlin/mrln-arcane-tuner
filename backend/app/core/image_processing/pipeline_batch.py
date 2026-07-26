@@ -54,7 +54,15 @@ def _render_one(
     if dataset is None:
         raise ValueError(f"Dataset '{dataset_name}' not found")
     dataset_root = Path(dataset.path)
-    img_path = dataset_root / image_path
+    # Containment lives HERE, co-located with the IO, not only in the callers.
+    # `image_path` is client-supplied; both current callers (render_pipeline_batch
+    # / render_pipeline_task) already validate pre-enqueue, but a third caller —
+    # a resume, a retry, a replay from a persisted task record — would otherwise
+    # silently reopen an arbitrary-file-read primitive with no test failing.
+    # Mirrors mask_generate_batch._full_path / caption_batch._full_path.
+    from app.api._path_guard import validate_path_within
+
+    img_path = validate_path_within(dataset_root / image_path, dataset_root)
     stem = Path(image_path).stem
 
     existing_overlay = _overlays_dir(dataset_root) / f"{stem}.png"

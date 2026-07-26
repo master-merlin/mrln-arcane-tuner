@@ -7,6 +7,18 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Memoizes hash_source_file()'s SHA-256 hex digest keyed on
+# (abspath, st_size, st_mtime_ns). load_cached_latents/load_cached_latent_windows
+# call it once per item (per control slot) EVERY training step purely to
+# rebuild a cache filename, even though the digest is invariant for the life
+# of a run — this turns that into an os.stat() after the first hit instead of
+# a full re-read + re-hash. Module-level (not per-instance) because a run
+# constructs more than one LatentManager and they must share warm entries.
+# Keyed on size+mtime (not path alone) so a file edited mid-run still gets a
+# fresh digest. Unbounded growth is acceptable: one entry per dataset file in
+# a single-process trainer — no TTL/LRU eviction (YAGNI).
+_HASH_MEMO: dict[tuple[str, int, int], str] = {}
+
 
 class LatentManager:
     """
@@ -246,12 +258,29 @@ class LatentManager:
         Used for content-addressed latent cache filenames so that
         replacing an image (same name, different pixels) invalidates
         the stale cache entry.
+
+        Memoized module-wide on ``(abspath, size, mtime_ns)`` (see
+        ``_HASH_MEMO``): the digest is invariant for the life of a run, so
+        repeated per-step lookups for an unchanged file are served without
+        re-reading it. A file that changes on disk (new size and/or mtime)
+        gets a fresh key and is re-hashed — the digest VALUE for a given
+        file's bytes is unchanged by this memoization.
         """
+        abspath = os.path.abspath(source_path)
+        st = os.stat(source_path)  # raises exactly as the old read did if gone
+        key = (abspath, st.st_size, st.st_mtime_ns)
+
+        cached = _HASH_MEMO.get(key)
+        if cached is not None:
+            return cached
+
         h = hashlib.sha256()
         with open(source_path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 16), b""):
                 h.update(chunk)
-        return h.hexdigest()
+        digest = h.hexdigest()
+        _HASH_MEMO[key] = digest
+        return digest
 
     @staticmethod
     def latent_filename(img_id: str, source_path: str, extra_key: str = "") -> str:

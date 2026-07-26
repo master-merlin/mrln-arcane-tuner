@@ -546,36 +546,44 @@ class CheckpointManager:
 
         # 1. Components (PEFT adapters + standard modules)
         for name, comp in components.items():
-            try:
-                if hasattr(comp, "save_pretrained"):
-                    # PEFT model → save adapter via save_pretrained
-                    comp_subfolder = os.path.join(path, name)
-                    os.makedirs(comp_subfolder, exist_ok=True)
-                    # Pre-clear existing safetensors to avoid mmap locks on resume
-                    for existing in os.listdir(comp_subfolder):
-                        if existing.endswith(".safetensors"):
-                            try:
-                                os.remove(os.path.join(comp_subfolder, existing))
-                            except OSError:
-                                pass  # locked — save_pretrained will overwrite
-                    comp.save_pretrained(comp_subfolder)
-                    # Record adapter files in manifest
-                    for f in os.listdir(comp_subfolder):
-                        fpath = os.path.join(comp_subfolder, f)
-                        if os.path.isfile(fpath):
-                            manifest[f"{name}/{f}"] = os.path.getsize(fpath)
-                    logger.info("saved_peft_component", component=name, path=comp_subfolder)
+            if hasattr(comp, "save_pretrained"):
+                # PEFT model → save adapter via save_pretrained.
+                #
+                # Deliberately UNGUARDED: a failed adapter save must not be
+                # logged-and-swallowed, because doing so let this function
+                # go on to write a "valid-looking" training_state.json for
+                # a checkpoint that actually holds zero adapter weights — a
+                # later resume from it would silently start training from
+                # fresh random adapters (lora_B zeroed) with no signal
+                # anything is wrong. Let the failure propagate out of
+                # save_checkpoint(); the caller decides fatality.
+                comp_subfolder = os.path.join(path, name)
+                os.makedirs(comp_subfolder, exist_ok=True)
+                # Pre-clear existing safetensors to avoid mmap locks on resume
+                for existing in os.listdir(comp_subfolder):
+                    if existing.endswith(".safetensors"):
+                        try:
+                            os.remove(os.path.join(comp_subfolder, existing))
+                        except OSError:
+                            pass  # locked — save_pretrained will overwrite
+                comp.save_pretrained(comp_subfolder)
+                # Record adapter files in manifest
+                for f in os.listdir(comp_subfolder):
+                    fpath = os.path.join(comp_subfolder, f)
+                    if os.path.isfile(fpath):
+                        manifest[f"{name}/{f}"] = os.path.getsize(fpath)
+                logger.info("saved_peft_component", component=name, path=comp_subfolder)
 
-                elif isinstance(comp, torch.nn.Module) or hasattr(comp, "state_dict"):
+            elif isinstance(comp, torch.nn.Module) or hasattr(comp, "state_dict"):
+                try:
                     comp_path = os.path.join(path, f"{name}.pt")
                     torch.save(comp.state_dict(), comp_path)
                     manifest[f"{name}.pt"] = os.path.getsize(comp_path)
+                except Exception as e:
+                    logger.error("failed_to_save_component", component=name, error=str(e))
 
-                else:
-                    logger.debug("skipping_component_no_state_dict", component=name)
-
-            except Exception as e:
-                logger.error("failed_to_save_component", component=name, error=str(e))
+            else:
+                logger.debug("skipping_component_no_state_dict", component=name)
 
         # 2. Optimizer
         if optimizer:
@@ -779,6 +787,23 @@ class CheckpointManager:
                     state.adapters_loaded.append(name)
                     logger.info("loaded_peft_adapter", component=name, path=adapter_dir)
 
+            if not state.adapters_loaded:
+                # PEFT components were REQUESTED but NOT ONE adapter was
+                # found on disk. A dual-expert (or any multi-adapter) run
+                # legitimately loads a SUBSET of requested components —
+                # that's fine and handled above. Zero loaded means either
+                # the checkpoint's adapter save silently failed (see
+                # _save_train_state) or resume is pointed at the wrong
+                # directory. Either way, continuing would silently train
+                # from fresh random adapters with no signal that anything
+                # is wrong — fail loud instead of a plausible-looking ruined
+                # run.
+                raise RuntimeError(
+                    f"Checkpoint {path} has no adapter weights for the "
+                    f"requested PEFT component(s) {sorted(peft_components)} — "
+                    "resuming would train from fresh random adapters."
+                )
+
             # Release mmap file locks from PEFT adapter safetensors
             # by cloning trainable parameters into regular memory
             for name, model in peft_components.items():
@@ -795,6 +820,13 @@ class CheckpointManager:
                 optimizer.load_state_dict(sd)
                 state.components_loaded.append("optimizer")
                 logger.debug("loaded_optimizer")
+            else:
+                # Legitimate but degraded: resume restarts momentum/Adam
+                # moments from scratch instead of crashing. Unlike a
+                # missing adapter this doesn't silently retrain from
+                # scratch, so it isn't fatal — but it must not be silent
+                # either.
+                logger.warning("optimizer_state_missing_on_resume", path=opt_path)
 
         # 6. Scheduler
         if scheduler and not skip_scheduler:

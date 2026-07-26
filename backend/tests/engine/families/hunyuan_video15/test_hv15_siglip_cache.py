@@ -267,3 +267,82 @@ def test_precache_aux_no_incomplete_warning_when_all_ok(tmp_path):
 
     warn_events = [ev for ev, _ in rec.warnings]
     assert "hv15_siglip_precache_incomplete" not in warn_events
+
+
+# ── corrupt cache file (poison-pill) handling ──────────────────────────────
+#
+# Task W2.T2 widened build_batch_extra's load-site catch from (OSError,
+# KeyError) to Exception, because safetensors 0.8.0's SafetensorError
+# subclasses Exception DIRECTLY (not OSError) — so a truncated/corrupt cache
+# file used to crash every subsequent run at the same step (os.path.exists
+# still counts the truncated file as "cached"). These tests write a REAL
+# corrupt .safetensors file (not a mock) at the exact lookup path and drive
+# the real load path.
+
+
+def _write_corrupt_cache_file(item: dict, name: str) -> str:
+    """A genuinely corrupt (truncated) .safetensors file at the exact path
+    ``build_batch_extra`` looks up — matches the real crash mode: a bad
+    header that raises ``safetensors.SafetensorError`` (NOT OSError/KeyError)."""
+    sdir = os.path.join(item["cache_dir"], "siglip")
+    os.makedirs(sdir, exist_ok=True)
+    path = os.path.join(sdir, f"{name}.safetensors")
+    with open(path, "wb") as f:
+        f.write(b"\x00" * 64)
+    return path
+
+
+def test_build_batch_extra_degrades_to_miss_on_corrupt_cache_file(tmp_path):
+    """A pre-existing corrupt cache file must degrade to a MISS, never raise
+    — the exact poison-pill regression this task guards against."""
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+
+    extra = t.build_batch_extra([item])  # must not raise
+
+    assert extra == {}  # nothing usable cached → driver falls back to zeros
+
+
+def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp_path):
+    """Mixed batch: "good" has a genuinely valid cached embed, "corrupt"'s
+    cache file is present-but-corrupt. The corrupt one must degrade exactly
+    like "missing" (zero-filled), "good" must be unaffected, and a visible
+    warning must name the corrupt path — never an unhandled raise."""
+    good = _still_item(tmp_path, "good")
+    corrupt = _still_item(tmp_path, "corrupt")
+    t = _make_trainer("i2v", tmp_path, [good, corrupt])
+    t._pre_cache_aux()  # only "good" gets a real cached embed
+    _write_corrupt_cache_file(corrupt, "corrupt")  # poison pill for "corrupt"
+
+    rec = _RecLogger()
+    t.logger = rec
+    extra = t.build_batch_extra([good, corrupt])  # must not raise
+
+    emb = extra[Hv15Driver.BATCH_IMAGE_EMBED]
+    assert emb.shape == (2, _TOKENS, _DIM)
+    assert torch.all(emb[0] == 3.0)  # good item keeps its real embedding
+    assert torch.all(emb[1] == 0.0)  # corrupt item degrades to zero-fill
+    warn = [kw for ev, kw in rec.warnings if ev == "hv15_siglip_cache_load_failed"]
+    assert warn and "corrupt.safetensors" in warn[0]["path"]
+
+
+def test_precache_aux_does_not_repair_a_pre_existing_corrupt_cache_file(tmp_path):
+    """Documents the ACTUAL contract (not something this task fixes):
+    ``_pre_cache_aux``'s skip check is a plain ``os.path.exists``, content-
+    blind. A pre-existing corrupt file is therefore counted as "skipped" and
+    is NEVER re-encoded/overwritten by a later precache pass — only
+    ``build_batch_extra``'s load-time catch prevents the crash. The poison
+    pill persists on disk and the item permanently zero-fills rather than
+    being repaired. Same content-blind exists-check pattern as
+    ``LatentManager`` (out of scope here); not a regression from db26b618."""
+    item = _still_item(tmp_path, "img1")
+    path = _write_corrupt_cache_file(item, "img1")
+    with open(path, "rb") as f:
+        corrupt_bytes = f.read()
+    t = _make_trainer("i2v", tmp_path, [item])
+
+    t._pre_cache_aux()  # must not raise
+
+    with open(path, "rb") as f:
+        assert f.read() == corrupt_bytes  # left untouched, never re-encoded

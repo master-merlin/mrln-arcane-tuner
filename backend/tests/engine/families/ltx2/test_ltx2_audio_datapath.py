@@ -398,3 +398,91 @@ def test_encode_audio_clean_colocates_vae_with_input():
     assert drv.audio_vae.moved_to, "audio VAE was never co-located with the input"
     assert torch.device(drv.audio_vae.moved_to[-1]) == drv.device
     assert out.shape[-1] == 128  # packed audio latent feature dim
+
+
+# ── corrupt cache file (poison-pill) handling ──────────────────────────────
+#
+# Task W2.T2 widened build_batch_extra's load-site catch from (OSError,
+# KeyError) to Exception, because safetensors 0.8.0's SafetensorError
+# subclasses Exception DIRECTLY (not OSError) — so a truncated/corrupt cache
+# file used to crash every subsequent run at the same step (os.path.exists
+# still counts the truncated file as "cached"). These tests write a REAL
+# corrupt .safetensors file (not a mock) at the exact lookup path and drive
+# the real load path.
+
+
+def _write_corrupt_audio_cache_file(t, item) -> str:
+    """A genuinely corrupt (truncated) .safetensors file at the exact path
+    ``build_batch_extra`` looks up — matches the real crash mode: a bad
+    header that raises ``safetensors.SafetensorError`` (NOT OSError/KeyError)."""
+    import os
+
+    adir = t._audio_cache_dir(item["cache_dir"])
+    os.makedirs(adir, exist_ok=True)
+    fname = t.latent_manager.latent_filename(item["id"], item["path"])
+    path = str(Path(adir) / fname)
+    with open(path, "wb") as f:
+        f.write(b"\x00" * 64)
+    return path
+
+
+def test_build_batch_extra_degrades_to_miss_on_corrupt_cache_file(tmp_path):
+    """A pre-existing corrupt audio-latent cache file must degrade to a MISS,
+    never raise — the exact poison-pill regression this task guards against."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+
+    extra = t.build_batch_extra([a])  # must not raise
+
+    assert extra == {}
+
+
+def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp_path):
+    """Mixed batch: clipGood has a genuinely valid cached latent, clipBad's
+    cache file is present-but-corrupt. clipBad must degrade exactly like
+    "absent" (zero latent, mask 0), clipGood must be unaffected, and a
+    visible warning must name the corrupt path — never an unhandled raise."""
+    t = _trainer()
+    good = _video_item(tmp_path, "clipGood")
+    bad = _video_item(tmp_path, "clipBad")
+    _seed_audio_cache(t, good, torch.full((L, 128), 3.0))
+    _write_corrupt_audio_cache_file(t, bad)
+
+    rec = _RecLogger()
+    t.logger = rec
+    extra = t.build_batch_extra([good, bad])  # must not raise
+
+    assert extra["audio_clean"].shape == (2, L, 128)
+    assert torch.equal(extra["audio_mask"], torch.tensor([1.0, 0.0]))
+    assert torch.equal(extra["audio_clean"][0], torch.full((L, 128), 3.0))
+    assert torch.count_nonzero(extra["audio_clean"][1]) == 0
+    warn = [kw for ev, kw in rec.warnings if ev == "ltx2_audio_cache_load_failed"]
+    assert warn and "clipBad" in warn[0]["path"]
+
+
+def test_precache_aux_does_not_repair_a_pre_existing_corrupt_cache_file(
+    tmp_path, monkeypatch
+):
+    """Documents the ACTUAL contract (not something this task fixes):
+    ``_pre_cache_aux``'s skip check is a plain ``os.path.exists``, content-
+    blind. A pre-existing corrupt file is therefore counted as "skipped" and
+    is NEVER re-encoded/overwritten by a later precache pass — only
+    ``build_batch_extra``'s load-time catch prevents the crash. The poison
+    pill persists on disk and the clip permanently degrades to
+    ``audio_mask=0`` rather than being repaired. Same content-blind
+    exists-check pattern as ``LatentManager`` (out of scope here); not a
+    regression from db26b618."""
+    _patch_decode(monkeypatch)
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    path = _write_corrupt_audio_cache_file(t, a)
+    with open(path, "rb") as f:
+        corrupt_bytes = f.read()
+    t.inventory = [a]
+
+    t._pre_cache_aux()  # must not raise
+
+    with open(path, "rb") as f:
+        assert f.read() == corrupt_bytes  # left untouched, never re-encoded
+    assert t.driver.encode_calls == 0  # never attempted a re-encode

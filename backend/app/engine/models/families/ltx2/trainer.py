@@ -537,9 +537,8 @@ class Ltx2Trainer(GenericTrainingPipeline):
         if not self.config.get("cache_latents", True):
             return
 
-        from safetensors.torch import save_file
-
         from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+        from app.engine.utils.safe_save import safe_save_file
 
         from .audio_io import load_audio_waveform
 
@@ -581,7 +580,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
                         waveform.unsqueeze(0).to(self.device), wav_sr,
                     )  # [1, L, 128]
                 os.makedirs(adir, exist_ok=True)
-                save_file({"audio_latents": latent[0].detach().cpu()}, path)
+                safe_save_file({"audio_latents": latent[0].detach().cpu()}, path)
                 encoded += 1
             except Exception as e:  # noqa: BLE001 — a bad clip must not kill the run
                 # Graceful path: leave this clip's audio uncached — build_batch_extra
@@ -672,7 +671,10 @@ class Ltx2Trainer(GenericTrainingPipeline):
                 if os.path.exists(path):
                     try:
                         lat = load_file(path)["audio_latents"]
-                    except (OSError, KeyError) as e:
+                    except Exception as e:
+                        # Broad by design — see hv15's matching Siglip-cache
+                        # catch: a bad cache file must degrade to absent,
+                        # never crash the run.
                         self.logger.warning(
                             "ltx2_audio_cache_load_failed", path=path, error=str(e)
                         )

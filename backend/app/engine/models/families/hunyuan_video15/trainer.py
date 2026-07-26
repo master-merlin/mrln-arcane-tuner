@@ -321,9 +321,8 @@ class Hv15Trainer(GenericTrainingPipeline):
         if not self.config.get("cache_latents", True):
             return
 
-        from safetensors.torch import save_file
-
         from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+        from app.engine.utils.safe_save import safe_save_file
 
         encoded = skipped = failed = 0
         for item in self.inventory:
@@ -356,7 +355,7 @@ class Hv15Trainer(GenericTrainingPipeline):
                         pixel_values=pixel_values
                     ).last_hidden_state  # [1, 729, 1152]
                 os.makedirs(sdir, exist_ok=True)
-                save_file({"image_embeds": emb[0].detach().cpu()}, path)
+                safe_save_file({"image_embeds": emb[0].detach().cpu()}, path)
                 encoded += 1
             except Exception as e:  # noqa: BLE001 — a bad item must not kill the run
                 # Graceful path: leave this item uncached — build_batch_extra
@@ -490,7 +489,10 @@ class Hv15Trainer(GenericTrainingPipeline):
             if os.path.exists(path):
                 try:
                     emb = load_file(path)["image_embeds"]
-                except (OSError, KeyError) as e:
+                except Exception as e:
+                    # Broad by design: a bad cache file (e.g. safetensors.
+                    # SafetensorError, which subclasses Exception directly,
+                    # NOT OSError) must degrade to absent, never crash the run.
                     self.logger.warning(
                         "hv15_siglip_cache_load_failed", path=path, error=str(e)
                     )

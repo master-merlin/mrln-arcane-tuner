@@ -20,7 +20,9 @@ import re
 
 import structlog
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
+
+from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)
 
@@ -128,7 +130,7 @@ class TextEmbeddingCache:
         os.makedirs(cache_dir, exist_ok=True)
         fname = TextEmbeddingCache.caption_to_filename(caption, source_hint)
         path = os.path.join(cache_dir, fname)
-        save_file({"emb": tensor.detach().cpu()}, path)
+        safe_save_file({"emb": tensor.detach().cpu()}, path)
         return path
 
     @staticmethod

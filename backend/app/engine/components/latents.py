@@ -2,8 +2,10 @@ import hashlib
 import os
 import torch
 
-from safetensors.torch import save_file, load_file
+from safetensors.torch import load_file
 import structlog
+
+from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)
 
@@ -576,7 +578,11 @@ class LatentManager:
             try:
                 data = load_file(path)
                 loaded.append(data["latents"])
-            except (OSError, KeyError) as e:
+            except Exception as e:
+                # Broad by design: OSError, KeyError, safetensors.SafetensorError
+                # (which subclasses Exception directly, NOT OSError) — a bad
+                # cache file must degrade to a MISS, never crash the run. The
+                # caller re-encodes and overwrites it via the atomic writer.
                 logger.warning("latent_cache_load_failed", path=path, error=str(e))
                 return None
 
@@ -614,7 +620,8 @@ class LatentManager:
                 return None
             try:
                 full = load_file(path)["latents"]  # [C, f, h, w]
-            except (OSError, KeyError) as e:
+            except Exception as e:
+                # Broad by design — see load_cached_latents' matching catch.
                 logger.warning("latent_cache_load_failed", path=path, error=str(e))
                 return None
 
@@ -706,11 +713,11 @@ class LatentManager:
                 # dataset-relative paths, so control-slot items carry a
                 # "control/" segment inside fname itself.
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                save_file({"latents": latents_cpu[i]}, path)
+                safe_save_file({"latents": latents_cpu[i]}, path)
 
             # 2. Mirror (Output) Cache
             if mirror_dir:
                 m_path = os.path.join(mirror_dir, fname)
                 os.makedirs(os.path.dirname(m_path), exist_ok=True)
                 if not os.path.exists(m_path):
-                    save_file({"latents": latents_cpu[i]}, m_path)
+                    safe_save_file({"latents": latents_cpu[i]}, m_path)

@@ -344,6 +344,33 @@ def test_rollback_backward_compat_without_import_id_falls_back_to_project_id(
     assert "p_legacy" not in project_routes._import_project_by_id.values()
 
 
+@patch(_DSMGR)
+@patch(_PROJECTS)
+def test_legacy_shape_still_filters_unreceipted_names(
+        MockProjects, mock_dsmgr, client):
+    """The receipt filter must apply on the BACKWARD-COMPAT path too.
+
+    The two guarantees were previously pinned separately — intersection was
+    only proven with `import_id` present, and the legacy no-`import_id` path
+    was only proven with a name list that already matched the receipt. This
+    combines them: the legacy shape carrying an injected unreceipted name is
+    the exact request an out-of-date client (or an attacker mimicking one)
+    would send to reach the delete, so it gets its own pin on this
+    destructive route."""
+    import_id = "seed-legacy-inject"
+    project_routes._import_receipts[import_id] = ["legacy_real"]
+    project_routes._import_definition_receipts[import_id] = []
+    project_routes._import_project_by_id[import_id] = "p_legacy_inject"
+
+    resp = client.post("/api/projects/import/rollback", json={
+        "project_id": "p_legacy_inject",
+        "imported_datasets": ["legacy_real", "evil-unrelated-dataset"],
+        "installed_definitions": []})
+    assert resp.status_code == 200
+    mock_dsmgr.delete_dataset.assert_called_once_with(
+        "legacy_real", delete_files=True)
+
+
 @patch("app.api.project_routes._uninstall_definition")
 @patch("app.api.training.template_routes._install_definition")
 @patch("app.core.db.repositories.training_template_repo.TrainingTemplateRepository")

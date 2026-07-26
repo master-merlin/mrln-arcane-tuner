@@ -66,6 +66,66 @@ class TestOverlayTraversal:
         )
         assert res.status_code == 403
 
+    def test_render_pipeline_batch_rejects_traversal_before_enqueue(
+        self, tmp_path, monkeypatch
+    ):
+        """``/render-pipeline/batch`` hands ``image_paths`` straight to a
+        background task (``run_pipeline_batch`` → ``_render_one``) with no
+        guard of its own — an escaping entry must be rejected before the
+        task is even enqueued, not discovered later inside the worker.
+        Fail-closed: a bad entry anywhere in the list rejects the WHOLE
+        request, even when a legitimate path precedes it."""
+        from app.api.dataset import overlay_routes
+
+        client = _client(overlay_routes)
+        monkeypatch.setattr(
+            overlay_routes.dataset_manager,
+            "get_dataset",
+            lambda name: _fake_dataset(tmp_path),
+        )
+        enqueued: list = []
+        monkeypatch.setattr(
+            overlay_routes.task_manager,
+            "enqueue",
+            lambda *a, **kw: enqueued.append((a, kw)),
+        )
+
+        res = client.post(
+            "/api/datasets/ds/render-pipeline/batch",
+            json={"image_paths": ["legit.png", "../../outside.png"], "blocks": []},
+        )
+        assert res.status_code == 403
+        assert enqueued == []
+
+    def test_render_pipeline_task_rejects_traversal_before_enqueue(
+        self, tmp_path, monkeypatch
+    ):
+        """``/render-pipeline/task`` is the single-image async twin of the
+        already-guarded synchronous ``/render-pipeline`` route — same
+        ``RenderPipelineRequest`` schema, same unguarded hand-off to
+        ``run_pipeline_batch`` pre-fix."""
+        from app.api.dataset import overlay_routes
+
+        client = _client(overlay_routes)
+        monkeypatch.setattr(
+            overlay_routes.dataset_manager,
+            "get_dataset",
+            lambda name: _fake_dataset(tmp_path),
+        )
+        enqueued: list = []
+        monkeypatch.setattr(
+            overlay_routes.task_manager,
+            "enqueue",
+            lambda *a, **kw: enqueued.append((a, kw)),
+        )
+
+        res = client.post(
+            "/api/datasets/ds/render-pipeline/task",
+            json={"image_path": "../../outside.png", "blocks": []},
+        )
+        assert res.status_code == 403
+        assert enqueued == []
+
 
 # ── adjustment_routes ─────────────────────────────────────────────────────
 
@@ -131,7 +191,7 @@ class TestAdjustmentTraversal:
 
         calls: list[str] = []
 
-        def _spy_apply(name, path, adjustments):
+        def _spy_apply(name, path, adjustments, resolved_path=None):
             calls.append(path)
             return True
 
@@ -155,6 +215,78 @@ class TestAdjustmentTraversal:
         assert events[0]["status"] == "error"
         assert events[1]["status"] == "ok"
         assert calls == ["legit.png"]
+
+    def test_adjust_media_threads_resolved_path_to_apply_adjustments(
+        self, tmp_path, monkeypatch
+    ):
+        """Guard-then-discard regression (review Finding 2): the route must
+        not validate request.path and then hand apply_adjustments the raw
+        client string, trusting it to independently re-derive the same
+        location — apply_adjustments has no containment check of its own
+        (os.path.join(dataset.path, relative_path)). The *resolved* Path
+        validate_path_within returned must be what actually reaches
+        apply_adjustments, so a future change to apply_adjustments can't
+        reopen the hole without this test catching it."""
+        from pathlib import Path
+
+        from app.api.dataset import adjustment_routes
+
+        captured = {}
+
+        def _spy_apply(name, path, adjustments, resolved_path=None):
+            captured["resolved_path"] = resolved_path
+            return True
+
+        client = _client(adjustment_routes)
+        monkeypatch.setattr(
+            adjustment_routes.dataset_manager,
+            "get_dataset",
+            lambda name: _fake_dataset(tmp_path),
+        )
+        monkeypatch.setattr(
+            adjustment_routes.dataset_manager, "apply_adjustments", _spy_apply
+        )
+
+        res = client.post(
+            "/api/datasets/ds/adjust",
+            json={"path": "sub/img.png"},
+        )
+        assert res.status_code == 200
+        expected = str((Path(tmp_path) / "sub" / "img.png").resolve())
+        assert captured["resolved_path"] == expected
+
+    def test_adjust_media_batch_threads_resolved_path_to_apply_adjustments(
+        self, tmp_path, monkeypatch
+    ):
+        """Same load-bearing-guard requirement as the single-item route,
+        applied per-item in the SSE batch loop."""
+        from pathlib import Path
+
+        from app.api.dataset import adjustment_routes
+
+        captured = {}
+
+        def _spy_apply(name, path, adjustments, resolved_path=None):
+            captured[path] = resolved_path
+            return True
+
+        client = _client(adjustment_routes)
+        monkeypatch.setattr(
+            adjustment_routes.dataset_manager,
+            "get_dataset",
+            lambda name: _fake_dataset(tmp_path),
+        )
+        monkeypatch.setattr(
+            adjustment_routes.dataset_manager, "apply_adjustments", _spy_apply
+        )
+
+        res = client.post(
+            "/api/datasets/ds/adjust-batch",
+            json={"paths": ["a.png"]},
+        )
+        assert res.status_code == 200
+        expected = str((Path(tmp_path) / "a.png").resolve())
+        assert captured["a.png"] == expected
 
     def test_color_match_preview_rejects_traversal_source(self, tmp_path, monkeypatch):
         from app.api.dataset import adjustment_routes

@@ -225,6 +225,16 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
 async def render_pipeline_batch(name: str, request: RenderPipelineBatchRequest):
     """Start a backend-owned task that applies one pipeline recipe to many
     images (mass-edit). Returns the task id immediately; monitored via TaskStore."""
+    _, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
+    # This route hands every path in image_paths straight to a background
+    # task (run_pipeline_batch -> _render_one), which does an unguarded
+    # READ + overlay WRITE per item. No response has started streaming yet,
+    # so validate containment for the WHOLE batch up front and reject the
+    # entire request (fail-closed) before anything is enqueued — a partial
+    # accept would still let one escaping entry through.
+    for image_path in request.image_paths:
+        validate_path_within(dataset_root / image_path, dataset_root)
+
     blocks = [b.model_dump() for b in request.blocks]
     task = task_manager.create(
         type="adjust_batch", title=f"Adjustments · {name}",
@@ -247,6 +257,12 @@ async def render_pipeline_task(name: str, request: RenderPipelineRequest):
     """Run a SINGLE-image pipeline render as a gpu-lane background task (used by
     the edit workspace when the pipeline contains a GPU op — denoise/upscale).
     Returns the task id immediately; the overlay updates via entity.changed."""
+    _, dataset_root = await asyncio.to_thread(_resolve_dataset, name)
+    # Same RenderPipelineRequest schema as the synchronous render_pipeline
+    # route above — validate containment before enqueueing the background
+    # task (run_pipeline_batch -> _render_one), which has no guard of its own.
+    validate_path_within(dataset_root / request.image_path, dataset_root)
+
     blocks = [b.model_dump() for b in request.blocks]
     task = task_manager.create(
         type="render_task", title=f"Render · {Path(request.image_path).stem}",

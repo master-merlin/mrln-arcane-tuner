@@ -86,24 +86,30 @@ async def adjust_media(name: str, request: AdjustmentRequest):
 
         # dataset_manager.apply_adjustments opens `request.path` and overwrites
         # it in place (WRITE primitive) — validate containment before it's
-        # ever handed a client-supplied relative path. Skip when the dataset
-        # itself can't be resolved; apply_adjustments raises its own
-        # ValueError("Dataset not found") in that case, unchanged.
+        # ever handed a client-supplied relative path, and thread the
+        # *resolved* Path through as `resolved_path` so apply_adjustments
+        # actually operates on the validated location instead of
+        # independently re-deriving it (apply_adjustments has no containment
+        # check of its own). Skip when the dataset itself can't be resolved;
+        # apply_adjustments raises its own ValueError("Dataset not found")
+        # in that case, unchanged.
         dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
+        resolved_path = None
         if dataset:
             dataset_root = Path(dataset.path)
-            validate_path_within(dataset_root / request.path, dataset_root)
+            resolved_path = validate_path_within(
+                dataset_root / request.path, dataset_root
+            )
 
-            # Resolve color match reference path to absolute
+            # Resolve color match reference path to absolute — reuse the
+            # guard's returned Path directly rather than re-joining.
             if request.color_match:
-                validate_path_within(
+                resolved_ref = validate_path_within(
                     dataset_root / request.color_match.reference_path,
                     dataset_root,
                 )
                 adjustments["color_match"] = {
-                    "reference_path": str(
-                        dataset_root / request.color_match.reference_path
-                    ),
+                    "reference_path": str(resolved_ref),
                     "method": request.color_match.method,
                     "strength": request.color_match.strength,
                 }
@@ -113,6 +119,7 @@ async def adjust_media(name: str, request: AdjustmentRequest):
             name,
             request.path,
             adjustments,
+            resolved_path=str(resolved_path) if resolved_path is not None else None,
         )
         return {"status": "adjusted", "file": request.path}
     except ValueError as e:
@@ -140,13 +147,19 @@ async def adjust_media_batch(name: str, request: BatchAdjustmentRequest):
     async def event_stream():
         for idx, path in enumerate(request.paths):
             try:
+                resolved_path = None
                 if dataset_root is not None:
-                    validate_path_within(dataset_root / path, dataset_root)
+                    resolved_path = validate_path_within(
+                        dataset_root / path, dataset_root
+                    )
                 await asyncio.to_thread(
                     dataset_manager.apply_adjustments,
                     name,
                     path,
                     adjustments,
+                    resolved_path=str(resolved_path)
+                    if resolved_path is not None
+                    else None,
                 )
                 event = {"index": idx, "total": total, "file": path, "status": "ok"}
             except HTTPException as e:

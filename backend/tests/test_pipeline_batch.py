@@ -114,10 +114,22 @@ def test_render_one_writes_overlay_and_sets_metadata(monkeypatch, tmp_path):
         dataset_manager.datasets.pop(ds_name, None)
 
 
-def test_render_pipeline_batch_route_enqueues(monkeypatch):
+def test_render_pipeline_batch_route_enqueues(monkeypatch, tmp_path):
+    """Route now resolves the dataset + validates every image_path (traversal
+    guard) before enqueueing — monkeypatch get_dataset so 'ds1' resolves to a
+    real tmp-rooted dataset instead of the unregistered name this test used
+    pre-fix (which relied on the route never looking the dataset up)."""
     from fastapi.testclient import TestClient
     from app.main import app
     from app.api.dataset import overlay_routes
+
+    monkeypatch.setattr(
+        overlay_routes.dataset_manager,
+        "get_dataset",
+        lambda name: type(
+            "_FakeDataset", (), {"path": str(tmp_path), "media_metadata": {}}
+        )(),
+    )
 
     captured = {}
 
@@ -137,10 +149,19 @@ def test_render_pipeline_batch_route_enqueues(monkeypatch):
     assert captured["lane"] == "gpu"
 
 
-def test_render_pipeline_task_route_enqueues(monkeypatch):
+def test_render_pipeline_task_route_enqueues(monkeypatch, tmp_path):
+    """Same dataset-resolution note as test_render_pipeline_batch_route_enqueues."""
     from fastapi.testclient import TestClient
     from app.main import app
     from app.api.dataset import overlay_routes
+
+    monkeypatch.setattr(
+        overlay_routes.dataset_manager,
+        "get_dataset",
+        lambda name: type(
+            "_FakeDataset", (), {"path": str(tmp_path), "media_metadata": {}}
+        )(),
+    )
 
     captured = {}
 

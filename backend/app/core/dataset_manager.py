@@ -2085,12 +2085,23 @@ class DatasetManager:
         name: str,
         relative_path: str,
         adjustments: dict,
+        resolved_path: str | None = None,
     ) -> bool:
         """Apply image adjustments (curves, hue/sat, contrast, sharpening).
 
         Follows the same pattern as ``crop_media``: opens the image,
         applies transformations via ``image_adjustments.apply_all``,
         overwrites the file, invalidates masks, and persists metadata.
+
+        ``resolved_path``: the route layer validates ``relative_path``
+        against the dataset root via ``validate_path_within`` (containment
+        check) BEFORE calling this method, and should pass the resolved
+        absolute path through here so that validated value is what the IO
+        actually targets. This method has no containment check of its own —
+        re-deriving the location via ``os.path.join`` instead of using
+        ``resolved_path`` would make the caller's guard decorative. When
+        omitted (only expected from callers that already resolved a trusted
+        path some other way), falls back to the original join.
         """
         from app.core.image_adjustments import apply_all
 
@@ -2098,7 +2109,11 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
-        full_path = os.path.join(dataset.path, relative_path)
+        full_path = (
+            resolved_path
+            if resolved_path is not None
+            else os.path.join(dataset.path, relative_path)
+        )
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"File {relative_path} not found.")
 

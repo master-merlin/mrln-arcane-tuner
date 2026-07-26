@@ -86,8 +86,13 @@ async def create_definition(request: CreateDefinitionRequest):
     families_dir = (
         Path(__file__).resolve().parents[2] / "engine" / "models" / "families"
     )
-    family_def_dir = families_dir / request.family / "definitions"
-    validate_path_within(family_def_dir, families_dir)
+    # Assign the guard's RESOLVED path back: _write_yaml below mkdirs and
+    # writes into this variable, so the containment check must be the thing
+    # that produced it (a discarded return gives false confidence if the
+    # charset above is ever loosened).
+    family_def_dir = validate_path_within(
+        families_dir / request.family / "definitions", families_dir
+    )
 
     def _write_yaml():
         family_def_dir.mkdir(parents=True, exist_ok=True)

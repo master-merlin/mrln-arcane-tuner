@@ -294,14 +294,17 @@ def _write_corrupt_cache_file(item: dict, name: str) -> str:
 
 def test_build_batch_extra_degrades_to_miss_on_corrupt_cache_file(tmp_path):
     """A pre-existing corrupt cache file must degrade to a MISS, never raise
-    — the exact poison-pill regression this task guards against."""
+    — the exact poison-pill regression this task guards against. The corrupt
+    file must also be DISCARDED (best-effort unlink) so the poison pill does
+    not persist across every future run — see the self-heal test below."""
     item = _still_item(tmp_path, "img1")
-    _write_corrupt_cache_file(item, "img1")
+    path = _write_corrupt_cache_file(item, "img1")
     t = _make_trainer("i2v", tmp_path, [item])
 
     extra = t.build_batch_extra([item])  # must not raise
 
     assert extra == {}  # nothing usable cached → driver falls back to zeros
+    assert not os.path.exists(path)  # corrupt file discarded, not left behind
 
 
 def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp_path):
@@ -325,24 +328,45 @@ def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp
     assert torch.all(emb[1] == 0.0)  # corrupt item degrades to zero-fill
     warn = [kw for ev, kw in rec.warnings if ev == "hv15_siglip_cache_load_failed"]
     assert warn and "corrupt.safetensors" in warn[0]["path"]
+    corrupt_path = os.path.join(corrupt["cache_dir"], "siglip", "corrupt.safetensors")
+    assert not os.path.exists(corrupt_path)  # discarded, not left as a poison pill
 
 
-def test_precache_aux_does_not_repair_a_pre_existing_corrupt_cache_file(tmp_path):
-    """Documents the ACTUAL contract (not something this task fixes):
-    ``_pre_cache_aux``'s skip check is a plain ``os.path.exists``, content-
-    blind. A pre-existing corrupt file is therefore counted as "skipped" and
-    is NEVER re-encoded/overwritten by a later precache pass — only
-    ``build_batch_extra``'s load-time catch prevents the crash. The poison
-    pill persists on disk and the item permanently zero-fills rather than
-    being repaired. Same content-blind exists-check pattern as
-    ``LatentManager`` (out of scope here); not a regression from db26b618."""
+def test_precache_aux_regenerates_after_build_batch_extra_discards_corrupt_file(
+    tmp_path,
+):
+    """CORRECTED contract (supersedes this test's original 6c87dea2 version,
+    which asserted the file was left "permanently" corrupt and the item
+    "permanently zero-fills"). ``_pre_cache_aux``'s skip check is STILL a
+    plain content-blind ``os.path.exists`` — it does not itself repair a
+    corrupt file sitting untouched on disk (that deeper content-aware-skip
+    fix is out of scope here, same as ``LatentManager``'s pattern). But that
+    is no longer the whole story: ``build_batch_extra``'s load-time catch now
+    discards the poison pill (best-effort unlink) the moment it is
+    encountered, so by the time the NEXT precache pass runs (e.g. the
+    following training run, or a later resume), the file is gone and the
+    content-blind exists-check correctly sees it absent and regenerates it.
+    The damage is bounded to the run that hit the corrupt file — not
+    permanent."""
     item = _still_item(tmp_path, "img1")
     path = _write_corrupt_cache_file(item, "img1")
-    with open(path, "rb") as f:
-        corrupt_bytes = f.read()
     t = _make_trainer("i2v", tmp_path, [item])
+    rec = _RecLogger()
+    t.logger = rec
 
-    t._pre_cache_aux()  # must not raise
+    # This run's load attempt hits the poison pill mid-training.
+    extra = t.build_batch_extra([item])  # must not raise
+    assert extra == {}  # this run's batch(es) still zero-fill for this item
+    assert not os.path.exists(path)  # corrupt file discarded, not left behind
+    warn = [kw for ev, kw in rec.warnings if ev == "hv15_siglip_cache_load_failed"]
+    assert warn  # degradation for this run was logged visibly
 
-    with open(path, "rb") as f:
-        assert f.read() == corrupt_bytes  # left untouched, never re-encoded
+    # Next precache pass (simulating the following run/resume) sees the file
+    # absent and regenerates it with a real embedding — poison pill cleared.
+    t._pre_cache_aux()
+
+    assert os.path.exists(path)
+    from safetensors.torch import load_file
+
+    emb = load_file(path)["image_embeds"]
+    assert torch.all(emb == 3.0)

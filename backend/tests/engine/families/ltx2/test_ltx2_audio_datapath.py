@@ -428,14 +428,18 @@ def _write_corrupt_audio_cache_file(t, item) -> str:
 
 def test_build_batch_extra_degrades_to_miss_on_corrupt_cache_file(tmp_path):
     """A pre-existing corrupt audio-latent cache file must degrade to a MISS,
-    never raise — the exact poison-pill regression this task guards against."""
+    never raise — the exact poison-pill regression this task guards against.
+    The corrupt file must also be DISCARDED (best-effort unlink) so the
+    poison pill does not persist across every future run — see the self-heal
+    test below."""
     t = _trainer()
     a = _video_item(tmp_path, "clipA")
-    _write_corrupt_audio_cache_file(t, a)
+    path = _write_corrupt_audio_cache_file(t, a)
 
     extra = t.build_batch_extra([a])  # must not raise
 
     assert extra == {}
+    assert not Path(path).exists()  # corrupt file discarded, not left behind
 
 
 def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp_path):
@@ -459,30 +463,45 @@ def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp
     assert torch.count_nonzero(extra["audio_clean"][1]) == 0
     warn = [kw for ev, kw in rec.warnings if ev == "ltx2_audio_cache_load_failed"]
     assert warn and "clipBad" in warn[0]["path"]
+    bad_path = Path(t._audio_cache_dir(bad["cache_dir"])) / "clipBad.safetensors"
+    assert not bad_path.exists()  # discarded, not left as a poison pill
 
 
-def test_precache_aux_does_not_repair_a_pre_existing_corrupt_cache_file(
+def test_precache_aux_regenerates_after_build_batch_extra_discards_corrupt_file(
     tmp_path, monkeypatch
 ):
-    """Documents the ACTUAL contract (not something this task fixes):
-    ``_pre_cache_aux``'s skip check is a plain ``os.path.exists``, content-
-    blind. A pre-existing corrupt file is therefore counted as "skipped" and
-    is NEVER re-encoded/overwritten by a later precache pass — only
-    ``build_batch_extra``'s load-time catch prevents the crash. The poison
-    pill persists on disk and the clip permanently degrades to
-    ``audio_mask=0`` rather than being repaired. Same content-blind
-    exists-check pattern as ``LatentManager`` (out of scope here); not a
-    regression from db26b618."""
+    """CORRECTED contract (supersedes this test's original 6c87dea2 version,
+    which asserted the file was left "permanently" corrupt and the clip
+    "permanently degrades to audio_mask=0"). ``_pre_cache_aux``'s skip check
+    is STILL a plain content-blind ``os.path.exists`` — it does not itself
+    repair a corrupt file sitting untouched on disk (that deeper
+    content-aware-skip fix is out of scope here, same as ``LatentManager``'s
+    pattern). But that is no longer the whole story: ``build_batch_extra``'s
+    load-time catch now discards the poison pill (best-effort unlink) the
+    moment it is encountered, so by the time the NEXT precache pass runs
+    (e.g. the following training run, or a later resume), the file is gone
+    and the content-blind exists-check correctly sees it absent and
+    regenerates it. The damage is bounded to the run that hit the corrupt
+    file — not permanent."""
     _patch_decode(monkeypatch)
     t = _trainer()
     a = _video_item(tmp_path, "clipA")
     path = _write_corrupt_audio_cache_file(t, a)
-    with open(path, "rb") as f:
-        corrupt_bytes = f.read()
+    rec = _RecLogger()
+    t.logger = rec
+
+    # This run's load attempt hits the poison pill mid-training.
+    extra = t.build_batch_extra([a])  # must not raise
+    assert extra == {}  # this run's batch(es) still degrade for this clip
+    assert not Path(path).exists()  # corrupt file discarded, not left behind
+    warn = [kw for ev, kw in rec.warnings if ev == "ltx2_audio_cache_load_failed"]
+    assert warn  # degradation for this run was logged visibly
+
+    # Next precache pass (simulating the following run/resume) sees the file
+    # absent and regenerates it with a real latent — poison pill cleared.
     t.inventory = [a]
+    t._pre_cache_aux()
 
-    t._pre_cache_aux()  # must not raise
-
-    with open(path, "rb") as f:
-        assert f.read() == corrupt_bytes  # left untouched, never re-encoded
-    assert t.driver.encode_calls == 0  # never attempted a re-encode
+    assert Path(path).exists()
+    assert load_file(path)["audio_latents"].shape == (L, 128)
+    assert t.driver.encode_calls == 1  # regenerated exactly once

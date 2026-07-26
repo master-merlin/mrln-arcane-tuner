@@ -493,9 +493,28 @@ class Hv15Trainer(GenericTrainingPipeline):
                     # Broad by design: a bad cache file (e.g. safetensors.
                     # SafetensorError, which subclasses Exception directly,
                     # NOT OSError) must degrade to absent, never crash the run.
+                    # The corrupt file is then discarded (best-effort): with
+                    # it gone, _pre_cache_aux's content-blind os.path.exists
+                    # skip-check sees it absent on the NEXT precache pass and
+                    # regenerates it — bounding the zero-fill degradation to
+                    # THIS run instead of poisoning every future run silently.
                     self.logger.warning(
-                        "hv15_siglip_cache_load_failed", path=path, error=str(e)
+                        "hv15_siglip_cache_load_failed",
+                        path=path,
+                        error=str(e),
+                        hint="image conditioning for this item is ZERO-FILLED "
+                        "for the remainder of this run; corrupt cache "
+                        "file discarded so the next precache pass "
+                        "regenerates it",
                     )
+                    try:
+                        os.remove(path)
+                    except OSError as unlink_err:
+                        self.logger.warning(
+                            "hv15_siglip_cache_unlink_failed",
+                            path=path,
+                            error=str(unlink_err),
+                        )
             embeds.append(emb)
 
         ref = next((e for e in embeds if e is not None), None)

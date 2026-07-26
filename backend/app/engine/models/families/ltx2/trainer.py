@@ -674,10 +674,30 @@ class Ltx2Trainer(GenericTrainingPipeline):
                     except Exception as e:
                         # Broad by design — see hv15's matching Siglip-cache
                         # catch: a bad cache file must degrade to absent,
-                        # never crash the run.
+                        # never crash the run. The corrupt file is then
+                        # discarded (best-effort): with it gone,
+                        # _pre_cache_aux's content-blind os.path.exists
+                        # skip-check sees it absent on the NEXT precache pass
+                        # and regenerates it — bounding the audio-mask=0
+                        # degradation to THIS run instead of poisoning every
+                        # future run silently.
                         self.logger.warning(
-                            "ltx2_audio_cache_load_failed", path=path, error=str(e)
+                            "ltx2_audio_cache_load_failed",
+                            path=path,
+                            error=str(e),
+                            hint="audio for this clip is DROPPED (mask=0) "
+                            "for the remainder of this run; corrupt "
+                            "cache file discarded so the next precache "
+                            "pass regenerates it",
                         )
+                        try:
+                            os.remove(path)
+                        except OSError as unlink_err:
+                            self.logger.warning(
+                                "ltx2_audio_cache_unlink_failed",
+                                path=path,
+                                error=str(unlink_err),
+                            )
             latents.append(lat)
 
         ref = next((latent for latent in latents if latent is not None), None)

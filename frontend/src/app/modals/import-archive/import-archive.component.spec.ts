@@ -196,6 +196,7 @@ describe('ImportArchiveModalComponent', () => {
             project_id: 'p1', project_name: 'Proj', imported_datasets: ['ds1'],
             linked_references: [], missing_references: [],
             templates: { created: [], skipped: [] }, installed_definitions: [],
+            import_id: 'imp-1', // W1.T7: server-side rollback receipt id
         };
         const { cmp, stubs } = mount({
             peek: vi.fn().mockReturnValue(of({ kind: 'project' })),
@@ -211,6 +212,34 @@ describe('ImportArchiveModalComponent', () => {
         expect(res.templates).toEqual({ '0': expect.objectContaining({ action: 'create' }) });
         expect(cmp.phase()).toBe('done');
         expect(cmp.projectResult()).toEqual(result);
+    });
+
+    // W1.T7: rollback() must thread the apply response's import_id through to
+    // rollbackImport so the backend can validate against its receipt instead
+    // of trusting the client-supplied name lists alone.
+    it('rollback sends the apply response import_id as the receipt id', async () => {
+        const plan = { project: { name: 'Proj', conflict: false }, templates: [], datasets: [] };
+        const result = {
+            project_id: 'p1', project_name: 'Proj', imported_datasets: ['ds1'],
+            linked_references: [], missing_references: ['missing1'],
+            templates: { created: [], skipped: [] }, installed_definitions: ['def1'],
+            import_id: 'imp-42',
+        };
+        const { cmp, stubs } = mount({
+            peek: vi.fn().mockReturnValue(of({ kind: 'project' })),
+            planProject: vi.fn().mockReturnValue(of(plan)),
+            applyProject: vi.fn().mockReturnValue(of(result)),
+            rollback: vi.fn().mockReturnValue(of({ status: 'rolled_back', project_id: 'p1' })),
+        });
+        await cmp.onFile(fileEvent(fakeFile()));
+        cmp.applyProject();
+        cmp.rollback();
+        expect(stubs.rollback).toHaveBeenCalledWith({
+            project_id: 'p1',
+            imported_datasets: ['ds1'],
+            installed_definitions: ['def1'],
+            import_id: 'imp-42',
+        });
     });
 
     it('peek dataset → 409 conflict surfaces, then overwrite finishes', async () => {

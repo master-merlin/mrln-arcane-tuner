@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api._path_guard import reject_audio_op, safe_remove
+from app.api._path_guard import reject_audio_op, safe_remove, validate_path_within
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.core.dataset_manager import dataset_manager
 from app.core.logger import get_logger
@@ -49,7 +49,9 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
     dataset_root = Path(dataset.path)
-    image_full_path = dataset_root / request.image_rel_path
+    image_full_path = validate_path_within(
+        dataset_root / request.image_rel_path, dataset_root
+    )
     if not image_full_path.exists():
         raise HTTPException(status_code=404, detail=f"Image file not found: {request.image_rel_path}")
     reject_audio_op(request.image_rel_path, "Mask generation")
@@ -112,7 +114,9 @@ async def apply_mask(name: str, request: ApplyMaskRequest):
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
     dataset_root = Path(dataset.path)
-    image_full_path = dataset_root / request.image_rel_path
+    image_full_path = validate_path_within(
+        dataset_root / request.image_rel_path, dataset_root
+    )
     original_stem = Path(request.image_rel_path).stem
     mask_full_path = dataset_root / "masks" / f"{original_stem}.png"
     reject_audio_op(request.image_rel_path, "Mask apply")
@@ -152,7 +156,7 @@ async def preview_mask(name: str, image_rel_path: str, opacity: float = 0.5):
         raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
 
     dataset_root = Path(dataset.path)
-    image_full_path = dataset_root / image_rel_path
+    image_full_path = validate_path_within(dataset_root / image_rel_path, dataset_root)
     original_stem = Path(image_rel_path).stem
     mask_full_path = dataset_root / "masks" / f"{original_stem}.png"
 

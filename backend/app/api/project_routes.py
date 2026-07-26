@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
+import uuid
 import zipfile
 from typing import Any
 
@@ -26,6 +28,21 @@ logger = get_logger(__name__)
 
 _projects = ProjectRepository()
 _prefs = PreferenceRepository()
+
+# ── Import rollback receipts (W1.T7) ────────────────────────────────────
+# In-memory only — single-process backend, no persistence/TTL needed.
+# `apply_project_import` records exactly what IT created (dataset names,
+# installed definition ids, the project id), keyed by a fresh `import_id`;
+# `rollback_project_import` may only ever delete/undo things present in the
+# matching receipt, and pops it so it can't be replayed. This guards the
+# destructive rollback route against unvalidated client input (stale
+# frontend state, a buggy client, or any local caller) — see W1.T7.
+_import_receipts: dict[str, list[str]] = {}  # import_id -> dataset names created
+_import_definition_receipts: dict[
+    str, list[str]
+] = {}  # import_id -> definition ids installed
+_import_project_by_id: dict[str, str] = {}  # import_id -> project id created
+_import_receipts_lock = threading.Lock()
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────
@@ -165,6 +182,7 @@ class ProjectImportApplyResponse(BaseModel):
     missing_references: list[str]
     templates: ProjectImportApplyTemplatesResult
     installed_definitions: list[str]
+    import_id: str
 
 
 class ProjectImportRollbackResponse(BaseModel):
@@ -593,6 +611,15 @@ async def apply_project_import(
                 if prefs:
                     _prefs.upsert(project_id, prefs)
 
+                # Record a server-side receipt of exactly what THIS apply call
+                # created, so a later rollback can be validated against it
+                # instead of trusting whatever names the client sends back.
+                import_id = uuid.uuid4().hex
+                with _import_receipts_lock:
+                    _import_receipts[import_id] = list(imported_datasets)
+                    _import_definition_receipts[import_id] = list(installed_defs)
+                    _import_project_by_id[import_id] = project_id
+
                 return {
                     "project_id": project_id,
                     "project_name": name,
@@ -601,6 +628,7 @@ async def apply_project_import(
                     "missing_references": missing_refs,
                     "templates": {"created": created_t, "skipped": skipped_t},
                     "installed_definitions": installed_defs,
+                    "import_id": import_id,
                 }
             except HTTPException:
                 _rollback(project_id, imported_datasets, installed_defs)
@@ -646,12 +674,71 @@ class RollbackImportRequest(BaseModel):
     project_id: str
     imported_datasets: list[str] = []
     installed_definitions: list[str] = []
+    import_id: str | None = None
+
+
+def _pop_import_receipt(req: RollbackImportRequest) -> tuple[str, list[str], list[str]]:
+    """Resolve + consume the server-side receipt for a rollback request.
+
+    Returns ``(project_id, dataset_names, definition_ids)`` — all three taken
+    from the receipt, never from the (unvalidated) request — and pops the
+    receipt so it cannot be replayed. Raises 404 if no matching receipt is
+    found, which also means nothing gets deleted.
+
+    Backward compatibility: a caller that doesn't send ``import_id`` (the old
+    body shape) is resolved by scanning for the receipt whose recorded
+    project_id matches ``req.project_id`` instead.
+    """
+    with _import_receipts_lock:
+        import_id = req.import_id
+        if import_id is None:
+            import_id = next(
+                (
+                    iid
+                    for iid, pid in _import_project_by_id.items()
+                    if pid == req.project_id
+                ),
+                None,
+            )
+        if import_id is None or import_id not in _import_receipts:
+            raise HTTPException(
+                404, "No import receipt found for this rollback request."
+            )
+        receipted_project_id = _import_project_by_id.pop(import_id)
+        datasets = _import_receipts.pop(import_id)
+        definitions = _import_definition_receipts.pop(import_id, [])
+        return receipted_project_id, datasets, definitions
 
 
 @router.post("/import/rollback", response_model=ProjectImportRollbackResponse)
 async def rollback_project_import(req: RollbackImportRequest) -> dict[str, str]:
     """User-triggered undo of a *successful* import the user decided not to keep
-    (e.g. after reviewing soft skips). Reverses defs → datasets → project."""
+    (e.g. after reviewing soft skips). Reverses defs → datasets → project.
+
+    Security (W1.T7): the request body is unauthenticated, unvalidated client
+    input and must never be trusted as the source of truth for what to
+    delete. ``apply_project_import`` records a receipt of exactly what it
+    created, keyed by ``import_id``; this route only ever acts on names
+    pulled from that receipt. Any client-supplied name list is at most an
+    additional filter (intersected with the receipt) — it can only narrow
+    what gets deleted, never widen it. Unknown/missing ``import_id`` (and no
+    resolvable legacy project_id match) → 404, deleting nothing.
+    """
+    receipted_project_id, receipted_datasets, receipted_defs = await asyncio.to_thread(
+        _pop_import_receipt, req
+    )
+
+    datasets_to_delete = receipted_datasets
+    if req.imported_datasets:
+        allowed = set(req.imported_datasets)
+        datasets_to_delete = [n for n in receipted_datasets if n in allowed]
+
+    defs_to_delete = receipted_defs
+    if req.installed_definitions:
+        allowed_defs = set(req.installed_definitions)
+        defs_to_delete = [d for d in receipted_defs if d in allowed_defs]
+
     await asyncio.to_thread(
-        _rollback, req.project_id, req.imported_datasets, req.installed_definitions)
-    return {"status": "rolled_back", "project_id": req.project_id}
+        _rollback, receipted_project_id, datasets_to_delete, defs_to_delete
+    )
+    return {"status": "rolled_back", "project_id": receipted_project_id}

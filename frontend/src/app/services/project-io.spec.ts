@@ -60,4 +60,18 @@ describe('ProjectService export/import', () => {
         expect(req.request.body).toEqual({ project_id: 'p1', imported_datasets: ['d'], installed_definitions: [] });
         req.flush({ status: 'rolled_back', project_id: 'p1' });
     });
+
+    // W1.T7: import_id is the server-side receipt id returned by apply — the
+    // component now threads it through so rollback can be validated against
+    // exactly what that apply call created.
+    it('POSTs a JSON rollback including the import_id receipt', () => {
+        svc.rollbackImport({
+            project_id: 'p1', imported_datasets: ['d'], installed_definitions: [], import_id: 'abc123',
+        }).subscribe();
+        const req = http.expectOne('http://test/api/projects/import/rollback');
+        expect(req.request.body).toEqual({
+            project_id: 'p1', imported_datasets: ['d'], installed_definitions: [], import_id: 'abc123',
+        });
+        req.flush({ status: 'rolled_back', project_id: 'p1' });
+    });
 });

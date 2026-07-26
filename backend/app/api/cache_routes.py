@@ -3,20 +3,77 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time as _time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import safe_rmtree
+from app.api._path_guard import safe_rmtree, validate_path_within
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\- ]*$")
+
+
+def _validate_cache_segment(name: str) -> str:
+    """A CLIENT-SUPPLIED purge segment must be a plain directory name — no
+    separators, no dot-navigation. Anything else 400s before any path is
+    built. This is the security boundary for values from the request body
+    (``PurgeCacheRequest.models`` / ``.types`` / ``.variants``) — invalid
+    input aborts the whole purge, since the caller can simply retry with a
+    corrected request."""
+    if not name or name in {".", ".."} or not _SEGMENT_RE.fullmatch(name):
+        raise HTTPException(status_code=400, detail=f"Invalid cache segment: {name!r}")
+    return name
+
+
+def _validate_discovered_segment(name: str) -> str | None:
+    """A SERVER-DISCOVERED purge segment (an on-disk name from ``iterdir()``)
+    that doesn't look like a plain segment is skipped, not fatal. Unlike a
+    client-supplied name, there is no "retry with corrected input" for a
+    directory that is already sitting on disk (legacy naming, a manual copy,
+    a future family-naming convention) — a destructive purge must not abort
+    after earlier siblings have already been deleted just because one
+    unrelated on-disk entry doesn't parse. Returns ``None`` (caller should
+    skip this entry) instead of raising."""
+    if not name or name in {".", ".."} or not _SEGMENT_RE.fullmatch(name):
+        logger.warning(
+            "cache_segment_skipped", name=name, reason="invalid_segment_name"
+        )
+        return None
+    return name
+
+
+def _require_segment_dir(parent: Path, name: str, cache_root: Path) -> Path:
+    """Join + validate a CLIENT-SUPPLIED segment onto *parent*. Fail-fast:
+    an invalid name (400) or a resolved path escaping *cache_root* (403)
+    aborts the whole purge — the security property for request-body input."""
+    segment_dir = parent / _validate_cache_segment(name)
+    return validate_path_within(segment_dir, cache_root)
+
+
+def _discover_segment_dir(parent: Path, name: str, cache_root: Path) -> Path | None:
+    """Join + validate a SERVER-DISCOVERED segment onto *parent*. Skip and
+    continue: an invalid name, or a resolved path escaping *cache_root*
+    (e.g. an on-disk symlink/junction), is logged and this entry is skipped
+    — never fatal. Returns ``None`` when the entry was skipped."""
+    segment = _validate_discovered_segment(name)
+    if segment is None:
+        return None
+    try:
+        return validate_path_within(parent / segment, cache_root)
+    except HTTPException:
+        logger.warning(
+            "cache_segment_skipped", name=name, reason="path_escapes_cache_root"
+        )
+        return None
 
 
 def get_dataset_or_404(name: str) -> Dataset:
@@ -164,7 +221,12 @@ def _purge_cache(
     ]
 
     for model_name in target_models:
-        model_dir = cache_root / model_name
+        if models:
+            model_dir = _require_segment_dir(cache_root, model_name, cache_root)
+        else:
+            model_dir = _discover_segment_dir(cache_root, model_name, cache_root)
+            if model_dir is None:
+                continue
         if not model_dir.is_dir():
             continue
 
@@ -184,7 +246,16 @@ def _purge_cache(
                 ]
 
             for cache_type in type_names:
-                type_dir = version_entry / cache_type
+                if types:
+                    type_dir = _require_segment_dir(
+                        version_entry, cache_type, cache_root
+                    )
+                else:
+                    type_dir = _discover_segment_dir(
+                        version_entry, cache_type, cache_root
+                    )
+                    if type_dir is None:
+                        continue
                 if not type_dir.is_dir():
                     continue
 
@@ -204,9 +275,14 @@ def _purge_cache(
                             freed_bytes=size,
                         )
                         continue
-                    # Delete specific variants only
+                    # Delete specific variants only — `variants` is only ever
+                    # populated from the client request (there is no on-disk
+                    # discovery branch for this filter), so it always stays
+                    # fail-fast via `_require_segment_dir`.
                     for variant in variants:
-                        variant_dir = type_dir / variant
+                        variant_dir = _require_segment_dir(
+                            type_dir, variant, cache_root
+                        )
                         if variant_dir.is_dir():
                             size = _dir_size(variant_dir)
                             safe_rmtree(variant_dir)

@@ -605,6 +605,7 @@ export class ImportArchiveModalComponent {
             project_id: r.project_id,
             imported_datasets: r.imported_datasets,
             installed_definitions: r.installed_definitions,
+            import_id: r.import_id,
         }).subscribe({
             next: () => {
                 this.toast.success('Import rolled back.');

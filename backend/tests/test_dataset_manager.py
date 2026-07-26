@@ -634,6 +634,60 @@ class TestThumbnailInvalidation:
         assert webps[0].name.endswith("_00001.webp")
 
 
+# ── apply_adjustments: validated-path threading (W1.T4 review Finding 2) ────
+
+
+class TestApplyAdjustmentsResolvedPath:
+    """The adjust route validates request.path via validate_path_within
+    (app/api/_path_guard.py) BEFORE calling apply_adjustments. If the route
+    discards that resolved Path and apply_adjustments independently
+    re-derives the location via os.path.join(dataset.path, relative_path),
+    the guard's result is decorative — it isn't what the IO actually uses.
+    apply_adjustments must use a caller-supplied resolved_path for its IO
+    when one is provided, so the validated value is load-bearing."""
+
+    def test_apply_adjustments_uses_resolved_path_when_provided(
+        self, manager, tmp_path
+    ):
+        ds_path = tmp_path / "datasets" / "adj_resolved"
+        ds_path.mkdir(parents=True)
+        manager.create_dataset("adj_resolved", path=str(ds_path))
+
+        # "img.png" does NOT exist at the naive join (dataset.path /
+        # relative_path) — it only exists at resolved_path, a distinct
+        # location standing in for "the Path validate_path_within already
+        # resolved". If apply_adjustments ignored resolved_path and
+        # recomputed the join itself, opening the naive path would raise
+        # FileNotFoundError.
+        real_dir = tmp_path / "actual_location"
+        real_dir.mkdir()
+        _create_image(str(real_dir / "img.png"))
+
+        manager.apply_adjustments(
+            "adj_resolved",
+            "img.png",
+            {"contrast": 1.5},
+            resolved_path=str(real_dir / "img.png"),
+        )
+
+        assert (real_dir / "img.png").exists()
+        assert not (ds_path / "img.png").exists()
+
+    def test_apply_adjustments_falls_back_to_join_without_resolved_path(
+        self, manager, tmp_path
+    ):
+        """Backward-compat: existing callers that don't pass resolved_path
+        (if any ever appear) still get the original os.path.join behavior."""
+        ds_path = tmp_path / "datasets" / "adj_fallback"
+        ds_path.mkdir(parents=True)
+        manager.create_dataset("adj_fallback", path=str(ds_path))
+        _create_image(str(ds_path / "img.png"))
+
+        manager.apply_adjustments("adj_fallback", "img.png", {"contrast": 1.5})
+
+        assert (ds_path / "img.png").exists()
+
+
 # ── progress_cb seam + count_multimedia_files ────────────────────────────
 
 

@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time as _time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import safe_rmtree
+from app.api._path_guard import safe_rmtree, validate_path_within
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\- ]*$")
+
+
+def _validate_cache_segment(name: str) -> str:
+    """A purge segment must be a plain directory name — no separators,
+    no dot-navigation. Anything else 400s before any path is built."""
+    if not name or name in {".", ".."} or not _SEGMENT_RE.fullmatch(name):
+        raise HTTPException(status_code=400, detail=f"Invalid cache segment: {name!r}")
+    return name
 
 
 def get_dataset_or_404(name: str) -> Dataset:
@@ -164,7 +175,8 @@ def _purge_cache(
     ]
 
     for model_name in target_models:
-        model_dir = cache_root / model_name
+        model_dir = cache_root / _validate_cache_segment(model_name)
+        model_dir = validate_path_within(model_dir, cache_root)
         if not model_dir.is_dir():
             continue
 
@@ -184,7 +196,8 @@ def _purge_cache(
                 ]
 
             for cache_type in type_names:
-                type_dir = version_entry / cache_type
+                type_dir = version_entry / _validate_cache_segment(cache_type)
+                type_dir = validate_path_within(type_dir, cache_root)
                 if not type_dir.is_dir():
                     continue
 
@@ -206,7 +219,8 @@ def _purge_cache(
                         continue
                     # Delete specific variants only
                     for variant in variants:
-                        variant_dir = type_dir / variant
+                        variant_dir = type_dir / _validate_cache_segment(variant)
+                        variant_dir = validate_path_within(variant_dir, cache_root)
                         if variant_dir.is_dir():
                             size = _dir_size(variant_dir)
                             safe_rmtree(variant_dir)

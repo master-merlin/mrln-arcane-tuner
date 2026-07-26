@@ -147,6 +147,38 @@ class TestCheckCacheCoverageContentAddressed:
         assert cached == 1
         assert missing == 0
 
+    def test_coverage_counts_each_extra_key_window(self, tmp_dir, sample_image):
+        """Tiled/trimmed video windows of ONE clip share (cache_dir, id) and
+        differ only in extra_key (t{start}-{end}). Window 1's cache file is
+        present, window 2's is absent — the coverage dedupe key must not
+        collapse the two windows into a single "seen" entry (which would
+        silently skip window 2 and report 0 missing)."""
+        cache_dir = os.path.join(tmp_dir, "cache")
+        os.makedirs(cache_dir)
+
+        ids = ["clip.mp4", "clip.mp4"]
+        cache_dirs = [cache_dir, cache_dir]
+        source_paths = [sample_image, sample_image]
+        extra_keys = ["t0.0-1.625", "t1.625-3.25"]
+
+        # Only window 0's cache file exists on disk.
+        fname0 = LatentManager.latent_filename(ids[0], source_paths[0], extra_keys[0])
+        from safetensors.torch import save_file
+        save_file({"latents": torch.zeros(4, 8, 8)}, os.path.join(cache_dir, fname0))
+
+        mgr = LatentManager.__new__(LatentManager)
+        mgr.cache_dir = None
+
+        cached, missing, missing_ids = mgr.check_cache_coverage(
+            ids=ids,
+            cache_dirs=cache_dirs,
+            source_paths=source_paths,
+            extra_keys=extra_keys,
+        )
+        assert cached == 1
+        assert missing == 1
+        assert missing_ids == ["clip.mp4"]
+
 
 # ── resolve_cache_dir ────────────────────────────────────────────────────
 

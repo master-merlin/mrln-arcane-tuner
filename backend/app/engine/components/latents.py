@@ -531,7 +531,14 @@ class LatentManager:
         seen: set[str] = set()
 
         for i, (img_id, c_dir) in enumerate(zip(ids, cache_dirs)):
-            key = f"{c_dir}/{img_id}"
+            # Fold the extra_key discriminator into the dedupe key: tiled/
+            # trimmed video windows of ONE clip share (cache_dir, id) and
+            # differ only in extra_key (t{start}-{end}). Without it, window
+            # 2..K would collapse into window 1's "seen" entry and never be
+            # checked. Mirrors the pre-cache work-item builder's own key
+            # (pipeline_caching.py's f"{cache_dir}/{id}/{extra_key}").
+            extra = extra_keys[i] if extra_keys else ""
+            key = f"{c_dir}/{img_id}/{extra}"
             if key in seen:
                 continue
             seen.add(key)

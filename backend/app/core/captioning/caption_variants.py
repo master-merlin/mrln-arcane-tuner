@@ -9,17 +9,31 @@ Layout mirrors the existing ``masked/{stem}.txt`` convention:
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+from app.api._path_guard import validate_path_within
 
 _VARIANTS_SUBDIR = "captions"
 
 
 def variant_dir(dataset_path: str, definition_id: str, masked: bool = False) -> str:
-    base = os.path.join(dataset_path, _VARIANTS_SUBDIR, definition_id)
-    return os.path.join(base, "masked") if masked else base
+    # definition_id is client-supplied (routed straight from the API request
+    # body/query in caption_variant_routes.py); resolve through the shared
+    # containment guard before it becomes a directory segment so a crafted
+    # "../../evil" can't escape the dataset (raises HTTPException(403)).
+    base = validate_path_within(
+        Path(dataset_path) / _VARIANTS_SUBDIR / definition_id, dataset_path
+    )
+    return str(base / "masked") if masked else str(base)
 
 
 def variant_path(dataset_path: str, definition_id: str, stem: str, masked: bool = False) -> str:
-    return os.path.join(variant_dir(dataset_path, definition_id, masked), f"{stem}.txt")
+    # stem is the second client-supplied segment; guard it independently of
+    # definition_id (already guarded by variant_dir above) — the resolved
+    # Path returned here is what every read_variant/write_variant/has_variant
+    # call actually opens.
+    candidate = Path(variant_dir(dataset_path, definition_id, masked)) / f"{stem}.txt"
+    return str(validate_path_within(candidate, dataset_path))
 
 
 def has_variant(dataset_path: str, definition_id: str, stem: str, masked: bool = False) -> bool:
@@ -42,17 +56,21 @@ def write_variant(dataset_path: str, definition_id: str, stem: str, text: str, m
 
 
 def _read_general(dataset_path: str, stem: str) -> str | None:
+    # stem reaches here client-supplied via resolve_caption <- get_caption_variant's
+    # ?stem= query param — guard the same as variant_path/suggestion_path.
     for ext in (".txt", ".caption"):
-        path = os.path.join(dataset_path, f"{stem}{ext}")
-        if os.path.exists(path):
+        path = validate_path_within(Path(dataset_path) / f"{stem}{ext}", dataset_path)
+        if path.exists():
             with open(path, "r", encoding="utf-8") as f:
                 return f.read()
     return None
 
 
 def _read_masked(dataset_path: str, stem: str) -> str | None:
-    path = os.path.join(dataset_path, "masked", f"{stem}.txt")
-    if os.path.exists(path):
+    path = validate_path_within(
+        Path(dataset_path) / "masked" / f"{stem}.txt", dataset_path
+    )
+    if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
     return None

@@ -10,19 +10,30 @@ from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
 
+from app.api._path_guard import validate_path_within
 from app.core.captioning import caption_variants as cv
 
 _SUGGESTIONS_SUBDIR = "suggestions"
 
 
 def suggestion_dir(dataset_path: str, definition_id: str, masked: bool = False) -> str:
-    base = os.path.join(dataset_path, _SUGGESTIONS_SUBDIR, definition_id)
-    return os.path.join(base, "masked") if masked else base
+    # definition_id is client-supplied, same shape as caption_variants.py's
+    # variant_dir — guard before it becomes a directory segment.
+    base = validate_path_within(
+        Path(dataset_path) / _SUGGESTIONS_SUBDIR / definition_id, dataset_path
+    )
+    return str(base / "masked") if masked else str(base)
 
 
 def suggestion_path(dataset_path: str, definition_id: str, stem: str, masked: bool = False) -> str:
-    return os.path.join(suggestion_dir(dataset_path, definition_id, masked), f"{stem}.txt")
+    # stem is the second client-supplied segment; guard independently of
+    # definition_id (already guarded by suggestion_dir above). This resolved
+    # Path is what read/write/reject_suggestion actually touch on disk.
+    d = suggestion_dir(dataset_path, definition_id, masked)
+    candidate = Path(d) / f"{stem}.txt"
+    return str(validate_path_within(candidate, dataset_path))
 
 
 def write_suggestion(dataset_path: str, definition_id: str, stem: str, text: str, masked: bool = False) -> None:

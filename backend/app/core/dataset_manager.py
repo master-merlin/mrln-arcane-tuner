@@ -1885,11 +1885,19 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
-        # Paths
-        full_media_path = os.path.join(dataset.path, media_file)
+        # media_file is client-supplied (arrives via
+        # DELETE /api/datasets/{name}/pairs/{filename:path} with a
+        # {filename:path} converter, so it can contain "/" and "..").
+        # Resolve through the shared containment guard before touching disk
+        # at all — raises HTTPException(403) on escape, so a crafted
+        # "../../secret.env" can never turn this method into an
+        # arbitrary-file-delete primitive.
+        full_media_path = validate_path_within(
+            Path(dataset.path) / media_file, dataset.path
+        )
 
         # Check if exists
-        if not os.path.exists(full_media_path):
+        if not full_media_path.exists():
              raise FileNotFoundError(f"Media file '{media_file}' not found in dataset '{name}'.")
 
         stem, _ = os.path.splitext(media_file)
@@ -1937,18 +1945,27 @@ class DatasetManager:
         except OSError as e:
             logger.warning("media_file_delete_failed", file=media_file, error=str(e))
 
+        # Every sidecar below is derived from `stem`, itself a substring of
+        # the already-validated `media_file` — but each target is still
+        # routed through the same guard individually (never a bare
+        # os.path.join) so this stays correct even if `stem`'s derivation
+        # ever changes independently of the top-of-method check.
         caption_exts = ['.txt', '.caption']
         for ext in caption_exts:
-            cap_path = os.path.join(dataset.path, stem + ext)
-            if os.path.exists(cap_path):
+            cap_path = validate_path_within(
+                Path(dataset.path) / (stem + ext), dataset.path
+            )
+            if cap_path.exists():
                 try:
                     os.remove(cap_path)
                 except OSError:
                     pass
 
         # Mask
-        mask_path = os.path.join(dataset.path, "masks", stem + ".png")
-        if os.path.exists(mask_path):
+        mask_path = validate_path_within(
+            Path(dataset.path) / "masks" / (stem + ".png"), dataset.path
+        )
+        if mask_path.exists():
             try:
                 os.remove(mask_path)
             except OSError:
@@ -1956,8 +1973,10 @@ class DatasetManager:
 
         # Masked image + caption
         for masked_ext in (".jpg", ".txt"):
-            masked_path = os.path.join(dataset.path, "masked", stem + masked_ext)
-            if os.path.exists(masked_path):
+            masked_path = validate_path_within(
+                Path(dataset.path) / "masked" / (stem + masked_ext), dataset.path
+            )
+            if masked_path.exists():
                 try:
                     os.remove(masked_path)
                 except OSError:
@@ -1972,8 +1991,10 @@ class DatasetManager:
         )
         for slot in CONTROL_SLOTS:
             for ctl_ext in CONTROL_MEDIA_EXTS:
-                ctl_path = os.path.join(dataset.path, slot, stem + ctl_ext)
-                if os.path.exists(ctl_path):
+                ctl_path = validate_path_within(
+                    Path(dataset.path) / slot / (stem + ctl_ext), dataset.path
+                )
+                if ctl_path.exists():
                     try:
                         os.remove(ctl_path)
                     except OSError:

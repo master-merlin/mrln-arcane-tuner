@@ -72,7 +72,15 @@ async def create_definition(request: CreateDefinitionRequest):
     # segment (mirrors the imported-template guard in
     # template_routes.py::_install_definition) so "../../evil" can't escape
     # the families directory, then confirm containment as a second layer.
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", request.family):
+    # The regex alone admits "." and ".." (both are valid runs of the
+    # allowed charset): ".." would only be caught by the containment check
+    # below (403 instead of a clean 400), and "." would pass containment
+    # entirely — pathlib silently collapses it, landing the definition
+    # directly in families_dir/definitions and bypassing the family folder.
+    # The explicit in (".", "..") check mirrors the exemplar exactly.
+    if request.family in (".", "..") or not re.fullmatch(
+        r"[A-Za-z0-9._-]+", request.family
+    ):
         raise HTTPException(status_code=400, detail="Invalid family name")
 
     families_dir = (

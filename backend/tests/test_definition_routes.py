@@ -83,6 +83,47 @@ def test_create_definition_rejects_family_traversal(
     assert not escaped_dir.exists(), f"traversal family must not create {escaped_dir}"
 
 
+@pytest.mark.parametrize("dot_family", [".", ".."])
+def test_create_definition_rejects_dot_only_family(
+    client, cleanup_definition_artifacts, dot_family
+):
+    """A dot-only ``family`` (".", "..") must 400 cleanly, mirroring the
+    exemplar guard in ``template_routes.py::_install_definition``.
+
+    Both segments pass the bare ``re.fullmatch(r"[A-Za-z0-9._-]+")`` charset
+    check (a run of dots is still a run of allowed characters), so without
+    the explicit ``in (".", "..")`` check:
+    - ".." is only caught two layers down by ``validate_path_within``,
+      surfacing as a 403 instead of a clean 400 for what is really a
+      malformed-input case.
+    - "." passes containment entirely — pathlib silently collapses the
+      segment, so the definition lands directly in
+      ``families_dir/definitions``, bypassing the family folder structure
+      (contained, but wrong) with a 200 and no error at all.
+    """
+    marker_id = f"__w1_dotfamily_test_{'dot' if dot_family == '.' else 'dotdot'}"
+    created_ids, _escaped_paths = cleanup_definition_artifacts
+    created_ids.append(marker_id)
+
+    resp = client.post(
+        "/api/models/definitions",
+        json={
+            "id": marker_id,
+            "family": dot_family,
+            "name": "W1 Dot Family Test",
+        },
+    )
+
+    assert resp.status_code == 400, (
+        f"expected 400 for family={dot_family!r}, got {resp.status_code}: "
+        f"{resp.text[:300]}"
+    )
+    # "." would have landed directly in families_dir/definitions/<id>.yaml
+    # (bypassing the family folder) — confirm it never got created.
+    bypass_path = FAMILIES_DIR / "definitions" / f"{marker_id}.yaml"
+    assert not bypass_path.exists()
+
+
 def test_create_definition_accepts_valid_family(client, cleanup_definition_artifacts):
     """Sanity check: a well-formed family is unaffected by the new guard."""
     created_ids, _escaped_paths = cleanup_definition_artifacts

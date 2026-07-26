@@ -73,6 +73,9 @@ export interface ProjectImportResult {
   missing_references: string[];
   templates: { created: ImportCreated[]; skipped: ImportSkip[] };
   installed_definitions: string[];
+  /** Server-side receipt id (W1.T7) — pass back to `rollbackImport` so it
+   *  can validate the rollback against exactly what this apply created. */
+  import_id: string;
 }
 
 @Injectable({
@@ -250,6 +253,9 @@ export class ProjectService {
     project_id: string;
     imported_datasets: string[];
     installed_definitions: string[];
+    /** Server-side receipt id (W1.T7); omit only for pre-existing callers —
+     *  the backend then falls back to a project_id-keyed lookup. */
+    import_id?: string;
   }): Observable<{ status: string; project_id: string }> {
     return this.http.post<{ status: string; project_id: string }>(
       `${this.apiUrl}/import/rollback`, body);

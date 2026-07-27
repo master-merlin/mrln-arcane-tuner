@@ -1101,6 +1101,98 @@ class TestStartJobClearsStaleSignal:
         assert os.path.exists(sig), "intentional pause signal must survive recovery launch"
 
 
+class TestStartJobLaunchFailureMarksFailed:
+    """Any exception during launch must reset the job to FAILED (T3).
+
+    Before the fix, only ``except (OSError, ValueError, RuntimeError)``
+    reset the job — a KeyError/TypeError from a bad config, or an OSError
+    raised by ``clear_stale_signal`` (which sat OUTSIDE the try), left the
+    job stuck RUNNING with ``pid=None``. ``_reconcile_active_jobs``
+    deliberately skips pid-less jobs ("possibly mid-launch"), so that phantom
+    blocks the single-GPU queue until a backend restart.
+    """
+
+    def _mgr_with_job(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job(
+            "standard", _make_config(output_dir=str(tmp_path), lora_name="boom")
+        )
+        return mgr, job
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_oserror_from_start_training_marks_failed(self, mock_pm, tmp_path):
+        """Regression guard: the pre-existing OSError handling must still
+        mark FAILED, persist, and re-raise exactly as before."""
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = OSError("boom")
+
+        with pytest.raises(OSError):
+            mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+        assert job.error == "boom"
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_keyerror_from_start_training_marks_failed(self, mock_pm, tmp_path):
+        """A non-OSError/ValueError/RuntimeError exception (e.g. a bad-config
+        KeyError) must ALSO reset the job to FAILED instead of stranding it
+        RUNNING with pid=None."""
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = KeyError("boom")
+
+        with pytest.raises(KeyError):
+            mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+        assert job.pid is None
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_typeerror_from_start_training_marks_failed(self, mock_pm, tmp_path):
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = TypeError("boom")
+
+        with pytest.raises(TypeError):
+            mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_launch_failure_does_not_block_the_single_gpu_guard(self, mock_pm, tmp_path):
+        """After a launch failure the job must NOT be counted as
+        RUNNING/PAUSED by the single-GPU guard — otherwise the queue is
+        wedged until a manual restart."""
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = KeyError("boom")
+
+        with pytest.raises(KeyError):
+            mgr.start_job(job.id)
+
+        # A fresh pending job must be claimable — proves the failed launch
+        # isn't still occupying the single-GPU slot.
+        other = mgr.create_job(
+            "standard", _make_config(output_dir=str(tmp_path), lora_name="next")
+        )
+        assert mgr._claim_next_pending() == other.id
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_clear_stale_signal_oserror_marks_failed(self, mock_pm, tmp_path):
+        """``clear_stale_signal`` now runs INSIDE the guarded try — an OSError
+        clearing a stale signal file must also reset the job to FAILED
+        instead of leaving it RUNNING with no trainer ever launched."""
+        mgr, job = self._mgr_with_job(tmp_path)
+
+        with patch(
+            "app.engine.components.signal_manager.TrainingSignalManager"
+        ) as mock_sig_mgr:
+            mock_sig_mgr.return_value.clear_signal.side_effect = OSError("disk full")
+
+            with pytest.raises(OSError):
+                mgr.start_job(job.id)  # clear_stale_signal=True by default
+
+        assert job.status == JobStatus.FAILED
+        mock_pm.get_plugin.return_value.start_training.assert_not_called()
+
+
 class TestStartJobPreflightDownload:
     """start_job pre-fetches the base model in-process before launching.
 

@@ -1283,11 +1283,12 @@ class JobManager:
                 )
             self._preflight_download(job)
 
-        if clear_stale_signal:
-            from app.engine.components.signal_manager import TrainingSignalManager
-            TrainingSignalManager(self._get_job_output_dir(job)).clear_signal()
-
         try:
+            if clear_stale_signal:
+                from app.engine.components.signal_manager import TrainingSignalManager
+
+                TrainingSignalManager(self._get_job_output_dir(job)).clear_signal()
+
             process = plugin.start_training(job.config)
 
             job.status = JobStatus.RUNNING
@@ -1326,7 +1327,14 @@ class JobManager:
                 # Start PID watchdog as safety net
                 self._start_pid_watchdog(job_id, process.pid)
 
-        except (OSError, ValueError, RuntimeError) as e:
+        except Exception as e:
+            # Broadened from (OSError, ValueError, RuntimeError): ANY launch
+            # failure (a KeyError/TypeError from a bad config, an OSError from
+            # clear_stale_signal, ...) must reset the job — otherwise it's
+            # stranded RUNNING with pid=None. _reconcile_active_jobs
+            # deliberately skips pid-less jobs ("possibly mid-launch"), so an
+            # uncaught exception type here phantom-blocks the single-GPU
+            # queue until a backend restart.
             job.status = JobStatus.FAILED
             job.error = str(e)
             self._persist_status(job_id, "failed", error=job.error)

@@ -126,13 +126,49 @@ def test_unload_models(mock_to_thread, mock_service_cls, client):
     mock_to_thread.side_effect = run_sync
 
     mock_service_instance = MagicMock()
+    mock_service_instance.unload_models.return_value = True
     mock_service_cls.get_instance.return_value = mock_service_instance
 
     response = client.delete("/api/captions/unload")
-    
+
     assert response.status_code == 200
     assert response.json()["status"] == "success"
-    mock_service_instance.unload_models.assert_called_once()
+    assert response.json()["message"] == "All models unloaded and VRAM cleared."
+    # W5.T10: the route no longer does its own task_manager.list() check —
+    # it delegates the atomic check-then-act to CaptionService itself.
+    mock_service_instance.unload_models.assert_called_once_with(
+        skip_if_batch_active=True
+    )
+
+
+@patch("app.api.caption_routes.CaptionService")
+@patch("app.api.caption_routes.asyncio.to_thread")
+def test_unload_models_skipped_when_batch_active(
+    mock_to_thread, mock_service_cls, client
+):
+    """CaptionService.unload_models(skip_if_batch_active=True) returning
+    False (a caption batch is active) surfaces as the same skipped-with-200
+    response the route always gave — now decided ATOMICALLY inside the
+    service instead of via a separate task_manager.list() check here."""
+
+    async def run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    mock_to_thread.side_effect = run_sync
+
+    mock_service_instance = MagicMock()
+    mock_service_instance.unload_models.return_value = False
+    mock_service_cls.get_instance.return_value = mock_service_instance
+
+    response = client.delete("/api/captions/unload")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert "skipped" in body["message"].lower()
+    mock_service_instance.unload_models.assert_called_once_with(
+        skip_if_batch_active=True
+    )
 
 
 @patch("app.api.caption_routes.CaptionService")

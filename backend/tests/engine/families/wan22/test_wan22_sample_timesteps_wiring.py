@@ -25,10 +25,21 @@ Every existing ``sample_timesteps`` test calls ``driver.sample_timesteps`` (or t
 router) directly — never through ``trainer.sample_timesteps`` — so the MRO gap was
 invisible to unit tests (the historical boogu/k5 bug shape).
 
-THE FIX (``trainer.py``): ``Wan22Trainer.sample_timesteps`` now overrides the
-``PipelineBaseMixin`` hook to delegate to ``self.driver.sample_timesteps(batch,
-self.device, self.config, latents=latents)`` — mirroring ``boogu_image``'s
-convention-delegation precedent (``families/boogu_image/trainer.py:222-238``).
+THE FIX, ORIGINALLY (``trainer.py``): ``Wan22Trainer.sample_timesteps`` overrode
+the ``PipelineBaseMixin`` hook to delegate to
+``self.driver.sample_timesteps(batch, self.device, self.config,
+latents=latents)`` — mirroring ``boogu_image``'s convention-delegation
+precedent.
+
+THE FIX, NOW (W5.T10): that per-family override was deleted as
+auto-delegation-identical — ``PipelineBaseMixin.sample_timesteps``
+(``pipeline_base.py:176-231``, ``_driver_hook_override`` /
+``core/hook_dispatch.py``) auto-delegates to ``driver.sample_timesteps`` with
+the EXACT SAME arguments whenever the driver meaningfully overrides the hook
+(``Wan22Driver.sample_timesteps`` does — router-truncated MoE sampling), so
+the redundant trainer method was pure duplication. ``Wan22Trainer`` no longer
+defines ``sample_timesteps`` at all; the structural mechanism is what wires
+this now, not a per-family method to keep in sync.
 
 These tests walk the REAL call ``pipeline_train.py`` makes on every step
 (``trainer.sample_timesteps(batch_size, latents)``) with a REAL driver + REAL
@@ -40,6 +51,7 @@ from __future__ import annotations
 
 import torch
 
+from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
 from app.engine.models.families.wan22.driver import Wan22Driver
 from app.engine.models.families.wan22.expert_router import ExpertRouter
 from app.engine.models.families.wan22.trainer import Wan22Trainer
@@ -81,8 +93,19 @@ def _trainer(pinned_expert: str) -> Wan22Trainer:
     return t
 
 
+def test_wan22_trainer_does_not_shadow_sample_timesteps() -> None:
+    """W5.T10: the per-family override is GONE — Wan22Trainer must resolve
+    ``sample_timesteps`` to PipelineBaseMixin (auto-delegation), not shadow
+    it with a redundant same-behavior method. If this ever fails, a future
+    edit reintroduced the exact duplication this task removed."""
+    assert "sample_timesteps" not in vars(Wan22Trainer)
+    assert Wan22Trainer.sample_timesteps is PipelineBaseMixin.sample_timesteps
+
+
 class TestRealPathExpertTimestepTruncation:
-    """Load-bearing regression — FAILS RED without the trainer override."""
+    """Load-bearing regression — FAILS RED without the driver override being
+    auto-delegated (``PipelineBaseMixin._driver_hook_override``,
+    ``pipeline_base.py:176-231``)."""
 
     def test_high_expert_timesteps_stay_in_high_range(self) -> None:
         t = _trainer("high")

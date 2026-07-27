@@ -438,6 +438,8 @@ class PipelineTrainMixin:
                                     batch["cache_dirs"],
                                     source_paths=batch["paths"],
                                     window_frames=window_lf,
+                                    device=self.device,
+                                    dtype=self.autocast_dtype,
                                     **ek_kwarg,
                                 )
                             )
@@ -446,6 +448,8 @@ class PipelineTrainMixin:
                                 batch["ids"],
                                 batch["cache_dirs"],
                                 source_paths=batch["paths"],
+                                device=self.device,
+                                dtype=self.autocast_dtype,
                                 **ek_kwarg,
                             )
                     if latents is None:
@@ -474,7 +478,10 @@ class PipelineTrainMixin:
                             source_paths=batch["paths"],
                             **ek_kwarg,
                         )
-                    latents = latents.to(self.device, dtype=self.autocast_dtype)
+                        # Cache-hit path above already lands on (device, dtype)
+                        # in one combined .to() inside the loader; only the
+                        # fresh-encode (miss) path still needs it here.
+                        latents = latents.to(self.device, dtype=self.autocast_dtype)
 
                     # ── Flip augmentation (applied on latent tensor) ──
                     if self._aug_h_flip and random.random() < 0.5:
@@ -1076,9 +1083,16 @@ class PipelineTrainMixin:
 
             final_lora_path, final_lora_size = self._current_lora_artifact()
             artifact_fields = (
-                {"final_lora_file": final_lora_path,
-                 "final_lora_size_bytes": final_lora_size}
-                if final_lora_path else {}
+                {
+                    "final_lora_file": final_lora_path,
+                    "final_lora_size_bytes": final_lora_size,
+                    # _current_lora_artifact() only returns a path when
+                    # os.path.getsize() just succeeded on it, so the file is
+                    # confirmed on disk at this exact moment.
+                    "lora_on_disk": 1,
+                }
+                if final_lora_path
+                else {}
             )
 
             repo.complete(

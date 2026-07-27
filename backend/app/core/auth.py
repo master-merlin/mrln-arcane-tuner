@@ -17,6 +17,8 @@ import hmac
 from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse
 
+from app.api.schemas.common_schemas import ErrorResponse
+
 COOKIE_NAME = "mrln_auth"
 
 LOGIN_HTML = """<!doctype html>
@@ -78,7 +80,12 @@ class TokenAuthMiddleware:
 
         path = scope.get("path", "")
         if path.startswith("/api") or path.startswith("/media"):
-            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            # This middleware runs as raw ASGI, BEFORE FastAPI's routing/
+            # exception-handling machinery — a 401 here never passes through
+            # main.py's http_exception_handler, so the standard envelope
+            # (docs/API_CONVENTIONS.md) is built by hand to match it exactly.
+            envelope = ErrorResponse(detail="unauthorized", error_code="UNAUTHORIZED")
+            response = JSONResponse(envelope.model_dump(), status_code=401)
         else:
             response = HTMLResponse(LOGIN_HTML, status_code=401)
         await response(scope, receive, send)

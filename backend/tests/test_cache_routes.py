@@ -25,6 +25,40 @@ def test_list_cache_404_unknown_dataset(client):
     assert response.json()["detail"] == "Dataset not found"
 
 
+def test_list_cache_returns_dynamic_tree_via_response_model(client, tmp_path):
+    """W5.T10: /cache/list now has a named CacheListResponse model wrapping
+    the {"dataset", "cache"} envelope. ``cache`` stays dict[str, Any] because
+    a "variant" leaf is EITHER a list of resolution strings (latents, which
+    have sub-dirs) OR a bare ``True`` (te1, files directly) — both shapes
+    must survive response_model serialization unchanged."""
+    ds_dir = tmp_path / "ds"
+    _write(
+        ds_dir
+        / ".cache"
+        / "sdxl"
+        / "1.0.0"
+        / "latents"
+        / "orig"
+        / "1024x1024"
+        / "a.npy",
+        b"L",
+    )
+    _write(ds_dir / ".cache" / "sdxl" / "1.0.0" / "te1" / "orig" / "a.npy", b"E")
+
+    ds = _make_dataset(ds_dir, name="ds")
+
+    with patch("app.api.cache_routes.dataset_manager") as mgr:
+        mgr.get_dataset.return_value = ds
+        response = client.get("/api/datasets/ds/cache/list")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataset"] == "ds"
+    types = body["cache"]["sdxl"]["1.0.0"]["types"]
+    assert types["latents"]["orig"] == ["1024x1024"]
+    assert types["te1"]["orig"] is True
+
+
 def test_purge_cache_404_unknown_dataset(client):
     response = client.post("/api/datasets/__ghost_ds__/cache/purge", json={})
     assert response.status_code == 404

@@ -196,17 +196,19 @@ class TestVideo5DEncode:
         src = tmp_path / "clip.mp4"
         src.write_bytes(b"abcdef-clip-bytes")
         cache_dir = str(tmp_path / "cache")
-        lm = LatentManager(FakeWanVAE(), device="cpu", cache_dir=cache_dir)
+        lm = LatentManager(FakeWanVAE(), device="cpu")
 
         clip = torch.randn(1, 3, 13, 64, 64)
         original = lm.encode_and_cache_batch(
             clip,
             ["clip"],
+            cache_dirs=[cache_dir],
             source_paths=[str(src)],
             extra_keys=["t0.0-1.0"],
         )
         loaded = lm.load_cached_latents(
             ["clip"],
+            cache_dirs=[cache_dir],
             source_paths=[str(src)],
             extra_keys=["t0.0-1.0"],
         )
@@ -265,11 +267,15 @@ class TestImageCachePathUnchanged:
     def test_image_latent_save_load_unchanged(self, tmp_path):
         """A still image round-trips with bare {id}.safetensors (no source_paths)."""
         cache_dir = str(tmp_path / "cache")
-        lm = LatentManager(MockImageVAE(), device="cpu", cache_dir=cache_dir)
+        lm = LatentManager(MockImageVAE(), device="cpu")
         images = torch.randn(2, 3, 256, 256)
-        original = lm.encode_and_cache_batch(images, ["img1", "img2"])
+        original = lm.encode_and_cache_batch(
+            images, ["img1", "img2"], cache_dirs=[cache_dir, cache_dir]
+        )
         assert os.path.exists(os.path.join(cache_dir, "img1.safetensors"))
-        loaded = lm.load_cached_latents(["img1", "img2"])
+        loaded = lm.load_cached_latents(
+            ["img1", "img2"], cache_dirs=[cache_dir, cache_dir]
+        )
         assert torch.allclose(original.cpu(), loaded.cpu())
 
 
@@ -293,13 +299,17 @@ class TestLoadCachedLatentWindows:
     def _cache_full_clip(self, tmp_path, frames):
         """Encode + cache a fake full-clip latent; return (lm, cache_dir, src)."""
         cache_dir = str(tmp_path / "cache")
-        lm = LatentManager(FakeWanVAE(), device="cpu", cache_dir=cache_dir)
+        lm = LatentManager(FakeWanVAE(), device="cpu")
         src = tmp_path / "clip.mp4"
         src.write_bytes(b"full-clip-bytes")
         # FakeWanVAE: latent_f = (F-1)//4 + 1. F=33 → 9 latent frames.
         clip = torch.randn(1, 3, frames, 64, 64)
         lm.encode_and_cache_batch(
-            clip, ["clip"], source_paths=[str(src)], extra_keys=["t0.0-None-slideF33"]
+            clip,
+            ["clip"],
+            cache_dirs=[cache_dir],
+            source_paths=[str(src)],
+            extra_keys=["t0.0-None-slideF33"],
         )
         return lm, cache_dir, str(src)
 

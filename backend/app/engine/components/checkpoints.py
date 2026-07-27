@@ -239,6 +239,12 @@ class CheckpointManager:
         # Absolute path of the most recently saved distribution LoRA (None
         # until the first successful save, or when a save produced no LoRA).
         self.last_lora_path: str | None = None
+        # weight_shapes is a static per-tensor snapshot — PEFT adapter
+        # shapes never change mid-run, so recomputing + re-serializing it
+        # into training_log.json on EVERY periodic save was thousands of
+        # identical JSON entries for a high-rank 14B LoRA. Only the first
+        # save (recorded at least once) and the final save need it.
+        self._weight_shapes_written = False
 
     # ── Save ─────────────────────────────────────────────────────────
 
@@ -465,27 +471,31 @@ class CheckpointManager:
                 log["parameter_counts"] = param_counts
 
             # ── Weight shape verification (per-tensor snapshot) ──
-            weight_shapes = {}
-            for name, comp in components.items():
-                if name == "config":
-                    continue
-                if hasattr(comp, "peft_config"):
-                    try:
-                        from peft import get_peft_model_state_dict
-                        sd = get_peft_model_state_dict(comp)
-                        shapes = {}
-                        for key, tensor in sd.items():
-                            if isinstance(tensor, torch.Tensor):
-                                shapes[key] = {
-                                    "shape": list(tensor.shape),
-                                    "dtype": str(tensor.dtype),
-                                    "numel": tensor.numel(),
-                                }
-                        weight_shapes[name] = shapes
-                    except (ImportError, RuntimeError) as e:
-                        weight_shapes[name] = {"error": str(e)}
-            if weight_shapes:
-                log["weight_shapes"] = weight_shapes
+            # Only the first save and the final save build this — see
+            # ``_weight_shapes_written`` docstring in __init__.
+            if not self._weight_shapes_written or is_final:
+                weight_shapes = {}
+                for name, comp in components.items():
+                    if name == "config":
+                        continue
+                    if hasattr(comp, "peft_config"):
+                        try:
+                            from peft import get_peft_model_state_dict
+                            sd = get_peft_model_state_dict(comp)
+                            shapes = {}
+                            for key, tensor in sd.items():
+                                if isinstance(tensor, torch.Tensor):
+                                    shapes[key] = {
+                                        "shape": list(tensor.shape),
+                                        "dtype": str(tensor.dtype),
+                                        "numel": tensor.numel(),
+                                    }
+                            weight_shapes[name] = shapes
+                        except (ImportError, RuntimeError) as e:
+                            weight_shapes[name] = {"error": str(e)}
+                if weight_shapes:
+                    log["weight_shapes"] = weight_shapes
+                self._weight_shapes_written = True
 
             # ── Optimizer info ──
             if optimizer:

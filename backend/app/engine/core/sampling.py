@@ -130,11 +130,35 @@ class GenericSamplingPipeline(ABC):
            g. restore training state
     """
 
+    #: Whether ``_sample_single`` must bracket the text encoder(s) to GPU
+    #: around ``encode_prompt``. ``False`` (default) for every cache-serving
+    #: family: with ``cache_text_embeddings=True`` (the default) prompts are
+    #: pre-warmed into ``text_cache`` and ``encode_prompt`` never touches the
+    #: TE, so the bracket was a redundant 8-16 GB PCIe round-trip per prompt
+    #: per sampling round. A genuine cache miss still self-brackets inside
+    #: ``_get_cached_text_embeddings`` (e.g. ``qwen_image/trainer.py``).
+    #: ``True`` only for samplers whose ``encode_prompt`` calls the driver's
+    #: encoder directly every round (``microsoft_lens``, ``ideogram4``).
+    needs_live_te: bool = False
+
+    #: How often (in training steps) ``should_sample`` re-polls the
+    #: ``sampling_cadence`` override file. Re-reading it every step was pure
+    #: waste — the file is a UI-driven, human-timescale signal, not
+    #: something that needs step-granular latency.
+    _CADENCE_POLL_INTERVAL_STEPS = 25
+
     def __init__(self, pipeline: GenericTrainingPipeline) -> None:
         self.pipeline = pipeline
         self.config: dict[str, Any] = pipeline.config
         self.device: torch.device = pipeline.device
         self.logger = structlog.get_logger(self.__class__.__name__)
+        # Memoized by _resolve_output_dir — the samples dir (and its
+        # checkpoint-manager-derived base) is fixed for the life of a
+        # sampler/run, so re-resolving + mkdir(exist_ok=True) every training
+        # step was a redundant syscall every step.
+        self._resolved_output_dir: Path | None = None
+        # Last step should_sample polled the cadence-override file at.
+        self._last_cadence_poll_step: int | None = None
 
     # ── Scheduling ───────────────────────────────────────────────────────
 
@@ -152,6 +176,9 @@ class GenericSamplingPipeline(ABC):
         - A ``sampling_cadence`` override file — if present, its value
           replaces the config interval **and** is persisted back into
           ``self.config`` so checkpoint saves capture the updated cadence.
+          Polled at most every ``_CADENCE_POLL_INTERVAL_STEPS`` steps (not
+          every step) — ``self.config`` already carries the last-seen
+          override forward across the steps this skips.
         - A ``sampling_paused`` flag file — if present, sampling is
           skipped entirely.
         """
@@ -159,27 +186,35 @@ class GenericSamplingPipeline(ABC):
         if interval <= 0:
             return False
 
-        # Resolve output base once (used for both cadence + pause checks)
+        # Resolve output base once (used for both cadence + pause checks) —
+        # memoized, so this costs a syscall on the first call only.
         output_base = self._resolve_output_dir().parent
 
-        # Runtime cadence override (file-based signal from UI)
-        cadence_path = os.path.join(output_base, "sampling_cadence")
-        if os.path.exists(cadence_path):
-            try:
-                with open(cadence_path) as f:
-                    override = int(f.read().strip())
-                if override > 0:
-                    if override != interval:
-                        self.logger.info(
-                            "sampling_cadence_override",
-                            old_interval=interval,
-                            new_interval=override,
-                        )
-                        # Persist into config so checkpoint saves capture it
-                        self.config["sample_every_n_steps"] = override
-                    interval = override
-            except (ValueError, OSError):
-                pass
+        # Runtime cadence override (file-based signal from UI), throttled to
+        # once every N steps — an os.path.exists + open/read on EVERY
+        # training step was pure waste for a human-timescale UI signal.
+        if (
+            self._last_cadence_poll_step is None
+            or step - self._last_cadence_poll_step >= self._CADENCE_POLL_INTERVAL_STEPS
+        ):
+            self._last_cadence_poll_step = step
+            cadence_path = os.path.join(output_base, "sampling_cadence")
+            if os.path.exists(cadence_path):
+                try:
+                    with open(cadence_path) as f:
+                        override = int(f.read().strip())
+                    if override > 0:
+                        if override != interval:
+                            self.logger.info(
+                                "sampling_cadence_override",
+                                old_interval=interval,
+                                new_interval=override,
+                            )
+                            # Persist into config so checkpoint saves capture it
+                            self.config["sample_every_n_steps"] = override
+                        interval = override
+                except (ValueError, OSError):
+                    pass
 
         displayed_step = step + 1  # UI shows 1-based steps
         skip_first = int(self.config.get("sample_skip_first_n_steps", 0))
@@ -467,7 +502,15 @@ class GenericSamplingPipeline(ABC):
 
         Uses the same base output directory as the checkpoint manager
         so samples sit alongside checkpoint folders.
+
+        Memoized: the checkpoint manager's ``output_dir`` (or the fallback
+        run-name path) is fixed for the life of a sampler/run, so this only
+        resolves the path and ``mkdir``s once — every call after the first
+        returns the cached :class:`Path` with no syscall.
         """
+        if self._resolved_output_dir is not None:
+            return self._resolved_output_dir
+
         # Prefer the resolved checkpoint path (includes model-part suffix)
         ckpt_mgr = getattr(self.pipeline, "checkpoint_manager", None)
         if ckpt_mgr and hasattr(ckpt_mgr, "output_dir"):
@@ -488,6 +531,7 @@ class GenericSamplingPipeline(ABC):
 
         sample_dir = base / "samples"
         sample_dir.mkdir(parents=True, exist_ok=True)
+        self._resolved_output_dir = sample_dir
         return sample_dir
 
     # ── VRAM headroom guard ────────────────────────────────────────────
@@ -618,17 +662,26 @@ class GenericSamplingPipeline(ABC):
         num_steps = int(prompt_cfg.get("num_inference_steps", 20))
         guidance = float(prompt_cfg.get("guidance_scale", 3.5))
 
-        # ── Phase 1: Encode prompt (TE on GPU) ──
-        # Prefer driver.get_text_encoders() (new interface) with fallback
-        # to pipeline._get_text_encoders() for backward compatibility.
-        driver = getattr(self.pipeline, "driver", None)
-        if driver is not None:
-            te_names = list(driver.get_text_encoders().keys())
-        else:
-            te_names = list(self.pipeline._get_text_encoders().keys())
-        te_moved = self._ensure_on_gpu(te_names)
+        # ── Phase 1: Encode prompt (TE on GPU only if needed) ──
+        # Only samplers that call the driver's encoder directly every round
+        # (``needs_live_te = True``) need this bracket. The default
+        # cache-serving path never touches the TE inside ``encode_prompt``
+        # (prompts are pre-warmed), so skipping it here avoids an 8-16 GB
+        # PCIe round-trip per prompt per sampling round. See
+        # ``needs_live_te`` docstring for the cache-miss safety net.
+        te_moved: list[str] = []
+        if self.needs_live_te:
+            # Prefer driver.get_text_encoders() (new interface) with fallback
+            # to pipeline._get_text_encoders() for backward compatibility.
+            driver = getattr(self.pipeline, "driver", None)
+            if driver is not None:
+                te_names = list(driver.get_text_encoders().keys())
+            else:
+                te_names = list(self.pipeline._get_text_encoders().keys())
+            te_moved = self._ensure_on_gpu(te_names)
         text_emb = self.encode_prompt(prompt)
-        self._offload_to_cpu(te_moved)
+        if self.needs_live_te:
+            self._offload_to_cpu(te_moved)
 
         # ── Phase 2: Denoise (only transformer on GPU) ──
         # Stash the full prompt config so edit/kontext samplers can read

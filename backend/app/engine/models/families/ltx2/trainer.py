@@ -27,7 +27,6 @@ from app.engine.core.text_encoding import TextEncoderOutput
 
 from .driver import Ltx2Driver
 from .loader import Ltx2Loader
-from .saver import Ltx2Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -67,7 +66,6 @@ class Ltx2Trainer(GenericTrainingPipeline):
         train_audio = self._resolve_train_audio()
         self.driver = Ltx2Driver(self.definition, self.device)
         self.loader = Ltx2Loader(self.device, train_audio=train_audio)
-        self.saver = Ltx2Saver()
         # Surface the resolved flag onto the driver so get_lora_targets,
         # compute_loss, etc. gate the audio sub-stream consistently even before
         # components are assigned (assign_components re-confirms it from arch).
@@ -311,12 +309,29 @@ class Ltx2Trainer(GenericTrainingPipeline):
         for cap in captions:
             entry = self.text_cache.get(cap)
             if entry is None:
-                if self.driver.text_encoder is None:
+                te = self.driver.text_encoder
+                if te is None:
                     raise RuntimeError(
                         "Text encoder offloaded and caption not pre-cached: "
                         f"{cap[:60]!r}"
                     )
+                # Guard: a cache miss can hit with the TE merely CPU-resident
+                # (unload_text_encoder: False only offloads — it doesn't null
+                # driver.text_encoder), not fully unloaded. Bracket to GPU for
+                # the encode, matching the canonical qwen_image miss path.
+                te_was_offloaded = False
+                if isinstance(te, torch.nn.Module):
+                    te_was_offloaded = next(te.parameters()).device != self.device
+                    if te_was_offloaded:
+                        self.logger.warning(
+                            "te_cache_miss_after_offload",
+                            hint="pre-caching should have covered all captions",
+                        )
+                        te.to(self.device)
                 out = self.driver.encode_text([cap], dtype)
+                if te_was_offloaded:
+                    te.to("cpu")
+                    torch.cuda.empty_cache()
                 entry = self._slice_te_output(out, 0)
                 self.text_cache[cap] = entry
             emb_c, pooled_c, mask_c = entry
@@ -372,43 +387,6 @@ class Ltx2Trainer(GenericTrainingPipeline):
             pooled[j : j + 1].cpu() if pooled is not None else None,
             mask[j : j + 1].cpu() if mask is not None else None,
         )
-
-    # ── Convention delegation (I2V frame-0 pin — real-path wiring) ───────
-
-    def add_noise(
-        self,
-        latents: torch.Tensor,
-        noise: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> torch.Tensor:
-        """Delegate to the driver's flow-match lerp + i2v frame-0-token pin.
-
-        The base ``PipelineBaseMixin.add_noise`` hardcodes
-        ``self.noise_interpolation.add_noise`` (:class:`NoiseInterpolation`,
-        mode ``"linear"``) — a component with NO knowledge of LTX-2's i2v
-        conditioning-frame pin. Left un-overridden, the REAL training loop
-        (``pipeline_train.py``'s ``self.add_noise(...)`` family-hook call for
-        the VIDEO stream) resolves to that generic component and noises the
-        conditioning frame's tokens even when i2v is engaged — directly
-        contradicting ``_compute_step_loss``'s frame-0-token exclusion below,
-        which assumes those tokens stay clean (kandinsky5/boogu_image
-        convention-delegation precedent).
-
-        Note ``Ltx2Driver.add_noise`` is NOT dead code in general — the
-        driver's OWN ``forward_pass`` calls ``self.add_noise(...)`` directly
-        for the AUDIO stream (a driver-internal call, unaffected by this
-        trainer-level MRO gap). Only the VIDEO stream's real-path dispatch
-        was broken.
-
-        SAFE for T2V / i2v-inactive steps: ``Ltx2Driver.add_noise``'s
-        un-engaged math (``frac = timesteps / _FLOWMATCH_SCALE; frac*noise +
-        (1-frac)*latents``) is algebraically identical to
-        ``NoiseInterpolation._linear``'s ``(1-t)*latents + t*noise`` — same
-        terms, commutative sum, same ``/1000`` scale — so this delegation
-        changes ZERO non-i2v training behavior (pinned by
-        ``test_ltx2_addnoise_wiring.py``'s bit-identity test).
-        """
-        return self.driver.add_noise(latents, noise, timesteps)
 
     # ── i2v first-frame conditioning gate ───────────────────────────────
 

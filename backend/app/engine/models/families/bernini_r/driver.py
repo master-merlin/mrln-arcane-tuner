@@ -347,10 +347,10 @@ class BerniniRDriver(WanDriverBase):
         if self.is_dual:
             from app.engine.models.families.bernini_r.saver import BerniniRDualSaver
 
-            return BerniniRDualSaver(mode="t2v")
+            return BerniniRDualSaver(mode=self.mode)
         from app.engine.models.families.bernini_r.saver import BerniniRSaver
 
-        return BerniniRSaver(mode="t2v")
+        return BerniniRSaver(mode=self.mode)
 
     def get_block_topology(self) -> list[dict[str, Any]]:
         """Single stack of ``blocks`` on the ACTIVE model (mirrors wan21/wan22)."""

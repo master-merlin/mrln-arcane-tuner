@@ -94,11 +94,61 @@ class TestCaptionServiceUnload:
         mock_a, mock_b = MagicMock(), MagicMock()
         svc.plugins = {"florence-2": mock_a, "joycaption": mock_b}
 
-        CaptionService.unload_models()
+        result = CaptionService.unload_models()
 
+        assert result is True
         mock_a.unload.assert_called_once()
         mock_b.unload.assert_called_once()
         assert "synchronize" in calls and "empty_cache" in calls
+        assert CaptionService._active_model_key is None
+        CaptionService._instance = None
+
+    def test_unload_models_skip_if_batch_active_noops_when_batch_running(
+        self, monkeypatch
+    ):
+        """W5.T10: skip_if_batch_active=True checks task_manager.list() AND
+        performs the unload under the SAME lock — a running caption_batch
+        task means the plugins are left untouched entirely."""
+        from app.core.captioning.caption_service import CaptionService
+        from app.core.tasks.task import TaskStatus
+        from app.core.tasks.task_manager import task_manager as tm_instance
+
+        fake_task = MagicMock(type="caption_batch", status=TaskStatus.RUNNING)
+        monkeypatch.setattr(tm_instance, "list", lambda: [fake_task])
+
+        CaptionService._instance = None
+        svc = CaptionService.get_instance()
+        CaptionService._active_model_key = "florence-2"
+        mock_a = MagicMock()
+        svc.plugins = {"florence-2": mock_a}
+
+        result = CaptionService.unload_models(skip_if_batch_active=True)
+
+        assert result is False
+        mock_a.unload.assert_not_called()
+        assert CaptionService._active_model_key == "florence-2"
+        CaptionService._instance = None
+
+    def test_unload_models_skip_if_batch_active_unloads_when_no_batch(
+        self, monkeypatch
+    ):
+        """The mirror case: no active caption_batch -> the unload proceeds
+        exactly as the unconditional call would."""
+        from app.core.captioning.caption_service import CaptionService
+        from app.core.tasks.task_manager import task_manager as tm_instance
+
+        monkeypatch.setattr(tm_instance, "list", lambda: [])
+
+        CaptionService._instance = None
+        svc = CaptionService.get_instance()
+        CaptionService._active_model_key = "florence-2"
+        mock_a = MagicMock()
+        svc.plugins = {"florence-2": mock_a}
+
+        result = CaptionService.unload_models(skip_if_batch_active=True)
+
+        assert result is True
+        mock_a.unload.assert_called_once()
         assert CaptionService._active_model_key is None
         CaptionService._instance = None
 

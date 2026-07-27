@@ -11,8 +11,10 @@ Covers:
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 
+import peft
 import pytest
 import torch
 
@@ -224,6 +226,97 @@ class TestCheckpointManagerSave:
             mgr.save_checkpoint(
                 step=1000, components={}, config={"lora_name": "t"}, is_final=True,
             )
+
+
+# ── W5.T3(c): weight_shapes written on first + final save only ──────────
+
+
+class TestTrainingLogWeightShapesOnceThenFinal:
+    """``weight_shapes`` is a static per-tensor snapshot — PEFT adapter
+    shapes never change mid-run — so building + serializing it into
+    ``training_log.json`` on EVERY periodic save was thousands of
+    identical JSON entries for a high-rank 14B LoRA. It must now appear
+    only on the FIRST save and again on the FINAL save, never on the
+    periodic saves in between.
+    """
+
+    @staticmethod
+    def _peft_component() -> SimpleNamespace:
+        """``hasattr(comp, "peft_config")`` gates both the peft_info AND
+        weight_shapes collection blocks in ``_write_training_log``."""
+        return SimpleNamespace(
+            peft_config={
+                "default": SimpleNamespace(
+                    peft_type="LORA",
+                    r=8,
+                    lora_alpha=8,
+                    lora_dropout=0.0,
+                    bias="none",
+                    target_modules={"q_proj"},
+                    modules_to_save=None,
+                )
+            }
+        )
+
+    def _write_and_read(
+        self, mgr: CheckpointManager, monkeypatch, step: int, is_final: bool = False,
+    ) -> dict:
+        monkeypatch.setattr(
+            peft,
+            "get_peft_model_state_dict",
+            lambda comp: {"lora_A.weight": torch.zeros(2, 2)},
+        )
+        mgr._write_training_log(
+            step=step,
+            components={"unet": self._peft_component()},
+            optimizer=None,
+            config={"lora_name": "t"},
+            is_final=is_final,
+            elapsed_time=1.0,
+            lora_filename="t.safetensors",
+        )
+        log_path = os.path.join(mgr.output_dir, "training_log.json")
+        with open(log_path) as f:
+            return json.load(f)
+
+    def test_weight_shapes_present_on_first_periodic_save_only(
+        self, tmp_path, monkeypatch
+    ):
+        mgr = CheckpointManager(str(tmp_path))
+
+        present = [
+            "weight_shapes" in self._write_and_read(mgr, monkeypatch, step=s)
+            for s in (10, 20, 30)
+        ]
+
+        assert present == [True, False, False]
+
+    def test_weight_shapes_present_on_final_save_even_after_periodic_saves(
+        self, tmp_path, monkeypatch
+    ):
+        mgr = CheckpointManager(str(tmp_path))
+        self._write_and_read(mgr, monkeypatch, step=10)
+        self._write_and_read(mgr, monkeypatch, step=20)
+
+        final_log = self._write_and_read(mgr, monkeypatch, step=30, is_final=True)
+
+        assert "weight_shapes" in final_log
+
+    def test_weight_shapes_content_matches_peft_state_dict_when_written(
+        self, tmp_path, monkeypatch
+    ):
+        """The FIRST-save write must still carry the real shape/dtype/numel
+        payload — the gating must not silently degrade what gets recorded
+        on the save that IS written."""
+        mgr = CheckpointManager(str(tmp_path))
+
+        log = self._write_and_read(mgr, monkeypatch, step=1)
+
+        assert log["weight_shapes"]["unet"]["lora_A.weight"] == {
+            "shape": [2, 2],
+            "dtype": "torch.float32",
+            "numel": 4,
+        }
 
 
 # ── CheckpointManager Load ──────────────────────────────────────────────
@@ -512,55 +605,3 @@ class TestCheckpointInspector:
         for name, size in result["files"].items():
             assert isinstance(size, int)
             assert size > 0, f"File {name} has zero size"
-
-
-# ── BaseTrainer State ────────────────────────────────────────────────────
-
-
-class TestBaseTrainerState:
-    """Tests for BaseTrainer save_state/load_state methods."""
-
-    def test_save_state_creates_file(self, tmp_path, mock_definition, mock_config):
-        """save_state creates a state file at the given path."""
-        from app.engine.core.interfaces import BaseTrainer
-
-        class TestTrainer(BaseTrainer):
-            async def setup(self): pass
-            async def load_model(self): pass
-            async def prepare_data(self): pass
-            async def train(self): pass
-
-        trainer = TestTrainer(mock_definition, mock_config)
-        trainer.epoch = 5
-        trainer.global_step = 500
-
-        state_path = str(tmp_path / "test_state.pt")
-        trainer.save_state(state_path)
-
-        assert os.path.exists(state_path), "State file not created"
-
-    def test_load_state_restores_values(self, tmp_path, mock_definition, mock_config):
-        """load_state restores epoch and global_step from saved state."""
-        from app.engine.core.interfaces import BaseTrainer
-
-        class TestTrainer(BaseTrainer):
-            async def setup(self): pass
-            async def load_model(self): pass
-            async def prepare_data(self): pass
-            async def train(self): pass
-
-        # Save
-        trainer = TestTrainer(mock_definition, mock_config)
-        trainer.epoch = 3
-        trainer.global_step = 300
-
-        state_path = str(tmp_path / "test_state.pt")
-        trainer.save_state(state_path)
-
-        # Load into fresh trainer
-        trainer2 = TestTrainer(mock_definition, mock_config)
-        assert trainer2.global_step == 0
-        trainer2.load_state(state_path)
-
-        assert trainer2.epoch == 3
-        assert trainer2.global_step == 300

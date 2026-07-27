@@ -12,10 +12,7 @@ mean — proven with fake latents/targets, no weights, no GPU.
 
 import torch
 
-from app.engine.models.families.ltx2.audio import (
-    build_audio_mask,
-    masked_audio_loss,
-)
+from app.engine.models.families.ltx2.audio import masked_audio_loss
 from app.engine.models.families.ltx2.driver import Ltx2Driver
 
 
@@ -70,11 +67,6 @@ def test_masked_audio_loss_all_absent_is_hard_zero():
     got = masked_audio_loss(pred, target, mask)
     assert float(got) == 0.0
     assert torch.isfinite(got)
-
-
-def test_build_audio_mask_from_flags():
-    mask = build_audio_mask([True, False, True, False])
-    assert torch.equal(mask, torch.tensor([1.0, 0.0, 1.0, 0.0]))
 
 
 # ── driver.compute_loss joint term ─────────────────────────────────────────

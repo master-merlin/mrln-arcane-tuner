@@ -8,6 +8,9 @@ hatch.
 
 from __future__ import annotations
 
+import os
+import types
+
 import pytest
 
 from app.core.self_update import SelfUpdateService
@@ -84,3 +87,73 @@ async def test_apply_impl_aborts_drain_on_timeout(monkeypatch):
     assert any(e["event"] == "self_update_drain_timeout" for e in drain_events)
     # Drain was activated then explicitly released (not left stuck True).
     assert draining_calls == [True, False]
+
+
+# ── _build_frontend: rename-swap (W5.T10) ─────────────────────────────────
+#
+# The served frontend dir used to be replaced via rmtree(served) THEN
+# copytree(built, served) — a copytree failure (disk full, permission error,
+# a crash mid-copy) left `served` either missing entirely or half-written,
+# with every page load 404ing/half-loading until the next successful update.
+# Building into a sibling `.new` dir first means a copy failure never
+# touches the live `served` dir at all; the swap itself is then just two
+# near-instant directory renames.
+
+
+def _write(path, text="x"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+@pytest.mark.asyncio
+async def test_build_frontend_swaps_in_new_build(tmp_path, monkeypatch):
+    fe = tmp_path / "frontend"
+    _write(fe / "dist" / "frontend" / "browser" / "index.html", "NEW BUILD")
+    _write(fe / "browser" / "index.html", "OLD BUILD")
+
+    monkeypatch.setattr(
+        "app.core.self_update.subprocess.run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    svc = SelfUpdateService(app_dir=str(tmp_path), branch="main", remote="")
+    await svc._build_frontend()
+
+    served = fe / "browser"
+    assert served.is_dir()
+    assert (served / "index.html").read_text() == "NEW BUILD"
+    # Temp swap dirs are cleaned up — nothing left behind.
+    assert not (fe / "browser.new").exists()
+    assert not (fe / "browser.old").exists()
+
+
+@pytest.mark.asyncio
+async def test_build_frontend_copy_failure_leaves_served_dir_untouched(
+    tmp_path, monkeypatch
+):
+    """A copytree failure while staging the new build must NEVER touch the
+    live `served` dir — the whole point of building into `.new` first."""
+    fe = tmp_path / "frontend"
+    _write(fe / "dist" / "frontend" / "browser" / "index.html", "NEW BUILD")
+    _write(fe / "browser" / "index.html", "OLD BUILD")
+
+    monkeypatch.setattr(
+        "app.core.self_update.subprocess.run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    import shutil
+
+    def _boom(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copytree", _boom)
+
+    svc = SelfUpdateService(app_dir=str(tmp_path), branch="main", remote="")
+    with pytest.raises(OSError, match="disk full"):
+        await svc._build_frontend()
+
+    served = fe / "browser"
+    assert served.is_dir()
+    assert (served / "index.html").read_text() == "OLD BUILD"

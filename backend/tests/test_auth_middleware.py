@@ -44,10 +44,17 @@ def test_no_token_allows_everything():
 
 
 def test_unauthenticated_api_returns_401_json():
+    """W5.T10: the middleware's 401 matches the standard ErrorResponse
+    envelope (docs/API_CONVENTIONS.md) — {"detail", "error_code", "context"} —
+    the same shape every other error response gets via main.py's
+    http_exception_handler, which this raw-ASGI middleware runs before."""
     client = TestClient(_make_app("s3cret"))
     r = client.get("/api/ping")
     assert r.status_code == 401
-    assert r.json()["error"] == "unauthorized"
+    body = r.json()
+    assert body["detail"] == "unauthorized"
+    assert body["error_code"] == "UNAUTHORIZED"
+    assert body["context"] == {}
 
 
 def test_unauthenticated_navigation_returns_login_page():

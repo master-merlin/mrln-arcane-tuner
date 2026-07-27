@@ -109,6 +109,22 @@ class PurgeCacheResponse(BaseModel):
     freed_bytes: int
 
 
+class CacheListResponse(BaseModel):
+    """The cache tree for one dataset (``GET /datasets/{name}/cache/list``).
+
+    ``cache`` stays ``dict[str, Any]`` rather than a fully-typed nested
+    model: its keys are discovered at scan time (model name -> version ->
+    cache-type name), and a "variant" value is EITHER a list of resolution
+    strings or a bare ``True`` depending on whether sub-directories exist
+    (see ``_scan_cache_tree``'s docstring) — a strict schema would either
+    reject one of those two shapes or have to model a union at every leaf,
+    for no real safety gain over documenting the outer envelope.
+    """
+
+    dataset: str
+    cache: dict[str, Any]
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _dir_size(path: Path) -> int:
@@ -430,7 +446,7 @@ async def cache_stats():
     return stats
 
 
-@router.get("/datasets/{name}/cache/list")
+@router.get("/datasets/{name}/cache/list", response_model=CacheListResponse)
 async def list_cache(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
     """List the cache tree for a dataset."""
     cache_root = Path(dataset.path) / ".cache"

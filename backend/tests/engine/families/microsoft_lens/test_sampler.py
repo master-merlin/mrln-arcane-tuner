@@ -63,24 +63,50 @@ def _make_sampler(device=torch.device("cpu")):
     drv = MicrosoftLensDriver(_defn(), device)
     drv.transformer = dit
     drv.vae = vae
+
+    # W5.T10: denoise() now encodes the CFG unconditional ("") embedding
+    # LAZILY, only when guidance_scale > 1 — via a real driver.encode_text()
+    # call, not a value threaded through prompt_embedding. Stub it so the
+    # do_cfg=True test path below doesn't need a real GPT-OSS text encoder.
+    def _stub_encode_text(captions, dtype, s_txt=5):
+        from app.engine.core.text_encoding import TextEncoderOutput
+
+        return TextEncoderOutput(
+            embeddings=torch.randn(
+                len(captions), 4, s_txt, 2880, dtype=dtype, device=device
+            ),
+            attention_mask=torch.ones(
+                len(captions), s_txt, dtype=torch.bool, device=device
+            ),
+        )
+
+    drv.encode_text = _stub_encode_text
     pipeline = SimpleNamespace(
         config={},
         device=device,
         driver=drv,
         transformer=dit,
         vae=vae,
+        components={},
         _block_swap_managers=None,
     )
     return MicrosoftLensSampler(pipeline)
 
 
 def _fake_prompt_embedding(device, dtype, s_txt=5):
-    """Build the dict encode_prompt would return (cond + uncond)."""
+    """Build the dict encode_prompt would return.
+
+    Only ``cond`` is needed — the CFG unconditional embedding is no longer
+    threaded through prompt_embedding; denoise() encodes it lazily itself
+    (via driver.encode_text, stubbed in _make_sampler above) only when
+    guidance_scale > 1 actually engages CFG."""
+
     def _pair():
         stacked = torch.randn(1, 4, s_txt, 2880, dtype=dtype, device=device)
         mask = torch.ones(1, s_txt, dtype=torch.bool, device=device)
         return stacked, mask
-    return {"cond": _pair(), "uncond": _pair()}
+
+    return {"cond": _pair()}
 
 
 # ── scheduler / shift math ───────────────────────────────────────────────
@@ -144,6 +170,198 @@ def test_denoise_without_cfg_runs():
     emb = _fake_prompt_embedding(s.device, torch.float32)
     out = s.denoise(noise, emb, num_steps=2, guidance_scale=1.0, seed=0)
     assert out.shape == (1, 32, 4, 4)
+
+
+def test_denoise_skips_uncond_encode_when_cfg_off():
+    """W5.T10: guidance_scale <= 1 (CFG off) must NOT pay for an
+    unconditional ("") text-encoder forward at all — it used to be encoded
+    unconditionally inside encode_prompt() every sampling round."""
+    s = _make_sampler()
+    calls: list[list[str]] = []
+    real_encode = s.pipeline.driver.encode_text
+
+    def _counting_encode_text(captions, dtype):
+        calls.append(list(captions))
+        return real_encode(captions, dtype)
+
+    s.pipeline.driver.encode_text = _counting_encode_text
+
+    gen = torch.Generator(device="cpu").manual_seed(0)
+    noise = s._create_initial_noise(32, 32, gen)
+    emb = _fake_prompt_embedding(s.device, torch.float32)
+    s.denoise(noise, emb, num_steps=2, guidance_scale=1.0, seed=0)
+
+    assert calls == []  # cond comes from prompt_embedding, no live encode at all
+
+
+def test_denoise_encodes_uncond_lazily_when_cfg_on():
+    """The mirror case: guidance_scale > 1 must trigger EXACTLY one
+    encode_text(['']) call for the unconditional pass — the lazy
+    counterpart of the old unconditional encode_prompt()-time call."""
+    s = _make_sampler()
+    calls: list[list[str]] = []
+    real_encode = s.pipeline.driver.encode_text
+
+    def _counting_encode_text(captions, dtype):
+        calls.append(list(captions))
+        return real_encode(captions, dtype)
+
+    s.pipeline.driver.encode_text = _counting_encode_text
+
+    gen = torch.Generator(device="cpu").manual_seed(0)
+    noise = s._create_initial_noise(32, 32, gen)
+    emb = _fake_prompt_embedding(s.device, torch.float32)
+    s.denoise(noise, emb, num_steps=2, guidance_scale=4.0, seed=0)
+
+    assert calls == [[""]]
+
+
+def test_denoise_uncond_encode_is_bracketed_around_real_encode_text():
+    """Regression for the W5 blocking bug: the T10 lazy uncond encode in
+    denoise() calls ``driver.encode_text`` DIRECTLY, exactly like
+    production. ``MicrosoftLensDriver.encode_text`` moves its inputs to
+    ``self.device`` and forwards ``self.text_encoder`` — if denoise() ever
+    calls it WITHOUT re-bracketing the text encoder to the sampling device
+    first, Phase 1 of ``_sample_single`` (``needs_live_te``) has already
+    offloaded the TE back to CPU by the time denoise() runs, and this call
+    raises a device-mismatch RuntimeError with guidance_scale > 1 (the
+    3.5 default) — silently swallowed by pipeline_train.py's per-round
+    try/except, producing zero preview images for the whole run.
+
+    Unlike every other sampler test in this file, this one does NOT stub
+    ``driver.encode_text`` — it runs the real driver method against a fake
+    (but real ``nn.Module``) text encoder + tokenizer, so a regression that
+    drops the bracket is caught by the bracket's ABSENCE, not hidden behind
+    a stub that never touches device residency at all. It doesn't need a
+    real CUDA device to catch the regression: it spies on
+    ``_ensure_on_gpu``/``_offload_to_cpu`` and asserts the real encode call
+    lands strictly between them.
+    """
+    device = torch.device("cpu")
+    defn = ModelDefinition(
+        id="microsoft-lens-base",
+        family="microsoft_lens",
+        name="Lens Base",
+        defaults={},
+        components={},
+        # Offset 0 so the fake tokenizer's short sequence isn't dropped to
+        # zero length by drop_txt_offset (irrelevant to the bug — keeps the
+        # DiT forward well-formed).
+        architecture_params={"te.txt_offset": 0},
+    )
+    drv = MicrosoftLensDriver(defn, device)
+    drv.transformer = _tiny_dit().eval()
+    drv.vae = _FakeVAE()
+
+    class _FakeTokenizer:
+        def apply_chat_template(
+            self,
+            conversation,
+            tokenize=False,
+            add_generation_prompt=False,
+        ):
+            return "rendered prompt<|return|>tail"
+
+        def __call__(
+            self,
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=None,
+            return_tensors="pt",
+            add_special_tokens=True,
+        ):
+            n, seq_len = len(texts), 5
+            return {
+                "input_ids": torch.zeros(n, seq_len, dtype=torch.long),
+                "attention_mask": torch.ones(n, seq_len, dtype=torch.long),
+            }
+
+    class _FakeTextEncoderModule(torch.nn.Module):
+        """A REAL nn.Module (unlike the stubs above) so encode_text's
+        ``next(self.text_encoder.parameters()).device`` residency check has
+        something genuine to inspect."""
+
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1), requires_grad=False)
+
+        def forward(
+            self,
+            input_ids,
+            attention_mask,
+            output_hidden_states=True,
+            use_cache=False,
+        ):
+            b, s_txt = input_ids.shape
+            hidden_states = tuple(torch.zeros(b, s_txt, 2880) for _ in range(25))
+            return SimpleNamespace(hidden_states=hidden_states)
+
+    drv.tokenizer = _FakeTokenizer()
+    drv.text_encoder = _FakeTextEncoderModule().eval()
+
+    pipeline = SimpleNamespace(
+        config={},
+        device=device,
+        driver=drv,
+        transformer=drv.transformer,
+        vae=drv.vae,
+        components={},
+        _block_swap_managers=None,
+    )
+    s = MicrosoftLensSampler(pipeline)
+
+    events: list[str] = []
+    real_ensure_on_gpu = s._ensure_on_gpu
+    real_offload_to_cpu = s._offload_to_cpu
+    real_encode_text = drv.encode_text
+
+    def _spy_ensure_on_gpu(names):
+        events.append(f"ensure:{names}")
+        return real_ensure_on_gpu(names)
+
+    def _spy_offload_to_cpu(names):
+        events.append(f"offload:{names}")
+        return real_offload_to_cpu(names)
+
+    def _spy_encode_text(captions, dtype):
+        events.append(f"encode:{captions}")
+        return real_encode_text(captions, dtype)
+
+    s._ensure_on_gpu = _spy_ensure_on_gpu
+    s._offload_to_cpu = _spy_offload_to_cpu
+    drv.encode_text = _spy_encode_text
+
+    gen = torch.Generator(device="cpu").manual_seed(0)
+    noise = s._create_initial_noise(32, 32, gen)
+    emb = _fake_prompt_embedding(s.device, torch.float32)
+
+    # guidance_scale > 1 -> do_cfg=True -> the lazy uncond encode fires.
+    s.denoise(noise, emb, num_steps=1, guidance_scale=4.0, seed=0)
+
+    assert "encode:['']" in events, (
+        f"the lazy uncond encode_text(['']) call never ran: {events}"
+    )
+    encode_idx = events.index("encode:['']")
+    # _ensure_on_gpu only reports a component as "moved" (and _offload_to_cpu
+    # only acts on it) when a real device move actually happened — on this
+    # CPU-only host the text encoder is already CPU-resident, so both calls
+    # fire with an empty moved-list. What must hold regardless of host is
+    # that the bracket METHODS were invoked, straddling the real encode.
+    ensure_calls = [i for i, e in enumerate(events) if e.startswith("ensure:")]
+    offload_calls = [i for i, e in enumerate(events) if e.startswith("offload:")]
+    assert ensure_calls, f"_ensure_on_gpu was never called around the encode: {events}"
+    assert offload_calls, (
+        f"_offload_to_cpu was never called around the encode: {events}"
+    )
+    assert ensure_calls[0] < encode_idx < offload_calls[-1], (
+        "the real driver.encode_text call must run strictly between "
+        f"_ensure_on_gpu and _offload_to_cpu — got order {events}"
+    )
+    # And it must have specifically requested the text encoder, not some
+    # other component — a bracket around the wrong name would still pass a
+    # bare "was something called" check.
+    assert any("text_encoder" in events[i] for i in ensure_calls)
 
 
 def test_denoise_bn_denormalizes_output():

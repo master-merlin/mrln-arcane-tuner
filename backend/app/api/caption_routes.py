@@ -16,7 +16,6 @@ from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.llm import provider_settings
 from app.core.logger import get_logger
-from app.core.tasks.task import TaskStatus
 from app.core.tasks.task_manager import task_manager
 
 router = APIRouter()
@@ -182,23 +181,26 @@ async def unload_models_api():
     the model once and frees it in its own ``finally`` after the last image,
     and an eager unload from the UI (model/variant/tab change) would force a
     per-image reload — or crash a generate in flight on the GPU lane.
+
+    The active-batch check and the unload itself run under ONE lock inside
+    ``CaptionService.unload_models(skip_if_batch_active=True)`` — closing the
+    check-then-act race a separate ``task_manager.list()`` check here used to
+    have (a batch could start in the window between the check and the
+    ``asyncio.to_thread``-dispatched unload actually running).
     """
-    active_batch = any(
-        t.type == "caption_batch"
-        and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
-        for t in task_manager.list()
-    )
-    if active_batch:
-        logger.info("unload_skipped_caption_batch_active")
-        return {
-            "status": "success",
-            "message": "Unload skipped — a captioning batch is in progress; "
-            "models are freed when it finishes.",
-        }
     try:
         logger.info("unloading_caption_models")
         service = CaptionService.get_instance()
-        await asyncio.to_thread(service.unload_models)
+        did_unload = await asyncio.to_thread(
+            service.unload_models, skip_if_batch_active=True
+        )
+        if not did_unload:
+            logger.info("unload_skipped_caption_batch_active")
+            return {
+                "status": "success",
+                "message": "Unload skipped — a captioning batch is in progress; "
+                "models are freed when it finishes.",
+            }
         return {"status": "success", "message": "All models unloaded and VRAM cleared."}
     except (OSError, RuntimeError) as e:
         logger.error("unload_failed", error=str(e))

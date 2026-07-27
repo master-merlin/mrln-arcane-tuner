@@ -130,11 +130,11 @@ def _make_edit_dataset(manager, name: str = "editds", slots: int = 2):
 
 class TestV15Migration:
     def test_run_migrations_reaches_latest(self, db_engine):
-        # V18 (ema_enabled backfill) is the current schema tip.
+        # V19 (lora_on_disk persisted + backfilled) is the current schema tip.
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 18
+            assert row["version"] == 19
 
     def test_dataset_kind_defaults_standard(self, migrated_engine):
         with migrated_engine.write() as conn:

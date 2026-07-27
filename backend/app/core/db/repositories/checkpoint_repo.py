@@ -14,6 +14,23 @@ from app.core.db.engine import get_db
 class CheckpointRepository:
     """Checkpoint tracking per training job."""
 
+    # Every column of the ``checkpoints`` table except the autoincrement
+    # ``id`` PK. Allowlist filter on dict-key column interpolation — the same
+    # guard as MediaItemRepository/_COLUMNS (media_item_repo.py) — so an
+    # unexpected dict key can never reach raw f-string SQL as a column name.
+    _COLUMNS = [
+        "job_id",
+        "step",
+        "path",
+        "lora_file",
+        "lora_size_bytes",
+        "created_at",
+        "loss_at_step",
+        "lr_at_step",
+        "is_final",
+        "is_deleted",
+    ]
+
     def add(self, data: dict[str, Any]) -> None:
         """Record a checkpoint save event."""
         data = dict(data)
@@ -23,7 +40,7 @@ class CheckpointRepository:
         for key in ("is_final", "is_deleted"):
             data[key] = int(bool(data[key]))
 
-        cols = [k for k in data if k != "id"]
+        cols = [c for c in self._COLUMNS if c in data]
         placeholders = ", ".join("?" for _ in cols)
         sql = f"INSERT INTO checkpoints ({', '.join(cols)}) VALUES ({placeholders})"
         with get_db().write() as conn:

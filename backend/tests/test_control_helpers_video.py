@@ -22,7 +22,10 @@ from app.core.dataset.control_helpers import (
     CONTROL_IMAGE_EXTS,
     CONTROL_MEDIA_EXTS,
     CONTROL_SLOTS,
+    CONTROL_VIDEO_EXTS,
+    _probe_control_video,
     detect_control_slots,
+    is_video_control,
     list_control_stem_maps,
 )
 
@@ -59,7 +62,8 @@ def _create_video(
 
 
 def test_control_media_exts_is_image_exts_plus_video_containers():
-    assert CONTROL_MEDIA_EXTS == CONTROL_IMAGE_EXTS + (".mp4", ".webm", ".mkv", ".mov")
+    assert CONTROL_MEDIA_EXTS == CONTROL_IMAGE_EXTS + CONTROL_VIDEO_EXTS
+    assert CONTROL_VIDEO_EXTS == (".mp4", ".webm", ".mkv", ".mov", ".avi")
 
 
 # ── Video control detection ──────────────────────────────────────────────
@@ -97,17 +101,35 @@ class TestVideoControlDetection:
 
     def test_multiple_video_containers_recognized(self, tmp_path):
         ds = str(tmp_path / "ds")
-        for stem, ext in (("a", ".webm"), ("b", ".mkv"), ("c", ".mov")):
-            # mkv/mov re-use the mp4 muxer's payload via a container rename —
-            # cheap enough for a probe smoke test; the extension drives detection.
+        exts = (("a", ".webm"), ("b", ".mkv"), ("c", ".mov"), ("d", ".avi"))
+        for stem, ext in exts:
+            # mkv/mov/avi re-use the mp4 muxer's payload via a container
+            # rename — cheap enough for a probe smoke test; the extension
+            # drives detection (the demuxer sniffs the real content).
             _create_video(os.path.join(ds, "control", f"{stem}.mp4"))
             os.rename(
                 os.path.join(ds, "control", f"{stem}.mp4"),
                 os.path.join(ds, "control", f"{stem}{ext}"),
             )
-        for stem, ext in (("a", ".webm"), ("b", ".mkv"), ("c", ".mov")):
+        for stem, ext in exts:
             slots = detect_control_slots(ds, stem)
             assert slots["control"]["rel_path"] == f"control/{stem}{ext}"
+
+    def test_avi_classified_as_video(self, tmp_path):
+        """``.avi`` is a member of CONTROL_VIDEO_EXTS (added alongside the
+        canonical PyAV probe swap) — is_video_control and detect_control_slots
+        both classify it as video, not silently as a non-image/non-video
+        orphan ext."""
+        ds = str(tmp_path / "ds")
+        _create_video(os.path.join(ds, "control", "clip.mp4"))
+        os.rename(
+            os.path.join(ds, "control", "clip.mp4"),
+            os.path.join(ds, "control", "clip.avi"),
+        )
+        assert is_video_control("control/clip.avi") is True
+        slots = detect_control_slots(ds, "clip")
+        assert slots["control"]["rel_path"] == "control/clip.avi"
+        assert "num_frames" in slots["control"]
 
     def test_image_control_wins_ext_priority_over_video(self, tmp_path):
         ds = str(tmp_path / "ds")
@@ -125,6 +147,85 @@ class TestVideoControlDetection:
         vid_slots = detect_control_slots(ds, "clip1")
         assert img_slots["control"]["rel_path"] == "control/img1.jpg"
         assert vid_slots["control"]["rel_path"] == "control/clip1.mp4"
+
+
+# ── Probe parity: cv2 vs the canonical PyAV probe ────────────────────────
+#
+# _probe_control_video switched from a parallel cv2-based probe to a thin
+# adapter over app.core.video.probe.probe_video (the SAME probe the
+# target-side video ingest uses) — the whole point being that two different
+# probe implementations reading the same file could disagree (phantom
+# pair-health width/height/frame-count/fps mismatches between a target
+# probed one way and a control probed the other). These tests pin that the
+# new PyAV-backed probe produces results consistent with what cv2 used to
+# report on the same fixture clips, so the swap is a no-observable-behavior-
+# change refactor for well-formed files.
+
+
+def _cv2_probe(path: str) -> tuple[int, int, int, float]:
+    """The RETIRED cv2-based probe, reproduced here only so these parity
+    tests have an independent oracle to compare the new probe against."""
+    import cv2
+
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        return 0, 0, 0, 0.0
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    cap.release()
+    return w, h, num_frames, fps
+
+
+class TestProbeParity:
+    def test_pyav_probe_matches_cv2_on_mp4(self, tmp_path):
+        path = os.path.join(str(tmp_path), "clip.mp4")
+        _create_video(path, n_frames=12, fps=24, width=32, height=24)
+
+        cv2_w, cv2_h, cv2_frames, cv2_fps = _cv2_probe(path)
+        av_w, av_h, av_frames, av_fps = _probe_control_video(path)
+
+        assert av_w == cv2_w
+        assert av_h == cv2_h
+        assert av_frames == cv2_frames
+        assert av_fps == pytest.approx(cv2_fps, abs=0.5)
+
+    def test_pyav_probe_matches_cv2_on_renamed_containers(self, tmp_path):
+        """Same parity check for the mkv/mov/avi rename fixtures used
+        elsewhere in this module (container sniffed from content, not ext)."""
+        for ext in (".mkv", ".mov", ".avi"):
+            path = os.path.join(str(tmp_path), f"clip{ext}")
+            _create_video(
+                os.path.join(str(tmp_path), "clip.mp4"),
+                n_frames=10,
+                fps=15,
+                width=48,
+                height=32,
+            )
+            os.rename(os.path.join(str(tmp_path), "clip.mp4"), path)
+
+            cv2_w, cv2_h, cv2_frames, cv2_fps = _cv2_probe(path)
+            av_w, av_h, av_frames, av_fps = _probe_control_video(path)
+
+            assert av_w == cv2_w, ext
+            assert av_h == cv2_h, ext
+            assert av_frames == cv2_frames, ext
+            assert av_fps == pytest.approx(cv2_fps, abs=0.5), ext
+
+    def test_pyav_probe_returns_zeros_on_unreadable_file(self, tmp_path):
+        """Same best-effort (0, 0, 0, 0.0) fallback contract as the retired
+        cv2 probe — a corrupt/missing control clip must never raise."""
+        bad = os.path.join(str(tmp_path), "not_a_video.mp4")
+        with open(bad, "wb") as f:
+            f.write(b"not a real video")
+        assert _probe_control_video(bad) == (0, 0, 0, 0.0)
+        assert _probe_control_video(os.path.join(str(tmp_path), "missing.mp4")) == (
+            0,
+            0,
+            0,
+            0.0,
+        )
 
 
 # ── Regression pin: image-only datasets are byte-identical ──────────────

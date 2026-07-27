@@ -37,7 +37,6 @@ from app.engine.models.families.wan_shared.trainer_base import (
 from .driver import Wan22Driver
 from .expert_router import ExpertRouter
 from .loader import Wan22Loader
-from .saver import Wan22Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -69,7 +68,6 @@ class Wan22Trainer(
         self.loader = Wan22Loader(
             self.device, expert_mode=self.expert_mode, defer_second_expert=defer
         )
-        self.saver = Wan22Saver(mode=self.driver.mode)
         self._build_router()
 
     def _build_router(self) -> ExpertRouter:
@@ -98,32 +96,6 @@ class Wan22Trainer(
         )
         self.driver.configure_swap_mode(swap)
         return router
-
-    # ── Convention delegation (load-bearing — dead-dispatch guard) ────────
-
-    def sample_timesteps(
-        self, batch_size: int, latents: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Delegate to the driver's expert-aware, router-truncated sampler.
-
-        WAN 2.2 is a Mixture-of-Experts: the high-noise expert must only ever
-        see timesteps ``>= boundary`` and the low-noise expert only ``< boundary``
-        (:class:`ExpertRouter`). ``Wan22Driver.sample_timesteps`` draws from the
-        configured distribution truncated to the *active* expert's range.
-
-        The base ``PipelineBaseMixin.sample_timesteps`` is the FULL-range
-        flow-match sampler with no knowledge of the expert boundary or the
-        router — using it un-overridden (as the real ``pipeline_train`` loop does
-        via ``self.sample_timesteps``) would train every expert across the whole
-        ``[0, 1000]`` range, defeating the MoE split (the router truncation would
-        be dead code on the real path). This override wires the driver's sampler
-        to the real training loop — mirrors ``boogu_image``'s convention
-        delegation (``families/boogu_image/trainer.py``). Pinned check:
-        ``test_wan22_sample_timesteps_wiring.py``.
-        """
-        return self.driver.sample_timesteps(
-            batch_size, self.device, self.config, latents=latents,
-        )
 
     # ── Dual LoRA injection ──────────────────────────────────────────────
 

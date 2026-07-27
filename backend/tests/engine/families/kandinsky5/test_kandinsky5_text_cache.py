@@ -283,7 +283,10 @@ def test_t2v_loss_keeps_all_frames():
 # ── Override trio wiring ───────────────────────────────────────────────────
 
 
-def test_setup_family_wires_loader_driver_saver():
+def test_setup_family_wires_loader_driver():
+    """``_setup_family`` wires loader + driver; the saver comes ONLY from
+    ``driver.get_saver()`` (the checkpoint path's single source of truth —
+    W5.T5), not a redundant trainer-level ``self.saver`` assignment."""
     from app.engine.models.families.kandinsky5.loader import Kandinsky5Loader
     from app.engine.models.families.kandinsky5.saver import Kandinsky5Saver
     from unittest.mock import MagicMock
@@ -297,7 +300,8 @@ def test_setup_family_wires_loader_driver_saver():
     t._setup_family()
     assert isinstance(t.driver, Kandinsky5Driver)
     assert isinstance(t.loader, Kandinsky5Loader)
-    assert isinstance(t.saver, Kandinsky5Saver)
+    assert not hasattr(t, "saver") or t.saver is None
+    assert isinstance(t.driver.get_saver(), Kandinsky5Saver)
 
 
 def test_update_primary_model_syncs_driver():

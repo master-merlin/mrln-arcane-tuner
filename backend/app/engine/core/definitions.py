@@ -59,6 +59,16 @@ class ModelDefinition(BaseModel):
             "own config, e.g. a model card's recommended scheduler.shift)"
         ),
     )
+    capability_overrides: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-definition capability flags merged into resolve_capabilities' "
+            "descriptor AFTER the family-level capability_overrides — for a "
+            "flag that varies BETWEEN a family's own definitions (e.g. "
+            "bernini_r's 1.3B single-expert vs 14B MoE dual_expert), which the "
+            "family-level mapping alone cannot distinguish."
+        ),
+    )
 
 class ModelFamily(ABC):
     """

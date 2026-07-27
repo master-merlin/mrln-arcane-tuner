@@ -7,7 +7,6 @@ metrics summaries, and dataset lineage tracking.
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -48,6 +47,65 @@ def _week_start(created_at: float) -> str:
 
 class JobHistoryRepository:
     """Persistent training run history."""
+
+    # Every column of the ``job_history`` table (v1 CREATE TABLE + every
+    # ALTER-added column since). Allowlist filter on dict-key column
+    # interpolation — same guard as MediaItemRepository/_COLUMNS
+    # (media_item_repo.py) — so an unexpected dict key in ``create()``'s or
+    # ``_update()``'s caller-supplied dict can never reach raw f-string SQL
+    # as a column name.
+    _COLUMNS = [
+        "id",
+        "lora_name",
+        "definition_id",
+        "status",
+        "config",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "duration_seconds",
+        "training_seconds",
+        "error",
+        "output_dir",
+        "final_checkpoint",
+        "final_lora_file",
+        "final_lora_size_bytes",
+        "total_steps",
+        "completed_steps",
+        "config_version",
+        "config_schema_version",
+        "resumed_from",
+        "datasets_used",
+        "network_rank",
+        "network_alpha",
+        "optimizer_type",
+        "learning_rate",
+        "lr_scheduler",
+        "timestep_sampling",
+        "batch_size",
+        "grad_accum",
+        "avg_loss",
+        "min_loss",
+        "loss_history",
+        "avg_step_time",
+        "avg_save_time",
+        "targeted_layers",
+        "tags",
+        "notes",
+        "parent_job_id",
+        "quantization",
+        "mixed_precision",
+        "ema_enabled",
+        # Added by later migrations (v4/v5/v6/v9/v10/v19).
+        "project_id",
+        "pid",
+        "completed_epochs",
+        "peak_vram_train_mb",
+        "peak_vram_cache_mb",
+        "total_run_bytes",
+        "priority",
+        "lora_on_disk",
+    ]
 
     # ── Reads ────────────────────────────────────────────────────────
 
@@ -257,13 +315,16 @@ class JobHistoryRepository:
             FROM job_history
             WHERE final_lora_size_bytes IS NOT NULL {flt}
         """, args).fetchone()
-        lora_files = conn.execute(f"""
-            SELECT final_lora_file FROM job_history
+        # lora_on_disk is persisted at write time (run completion, the
+        # backfill reconcile pass) — pure SQL here, no per-request
+        # filesystem sweep (was an os.path.isfile() call per completed job
+        # on every GET).
+        lora_on_disk_row = conn.execute(f"""
+            SELECT COALESCE(SUM(lora_on_disk), 0) AS n
+            FROM job_history
             WHERE status = 'completed' AND final_lora_file IS NOT NULL {flt}
-        """, args).fetchall()
-        lora_on_disk = sum(
-            1 for r in lora_files if os.path.isfile(r["final_lora_file"])
-        )
+        """, args).fetchone()
+        lora_on_disk = lora_on_disk_row["n"]
         ckpts = conn.execute(f"""
             SELECT COUNT(*) AS n
             FROM checkpoints c JOIN job_history j ON c.job_id = j.id
@@ -400,7 +461,7 @@ class JobHistoryRepository:
     def create(self, data: dict[str, Any]) -> None:
         """Insert a new job history record."""
         data = self._prepare(data)
-        cols = [k for k in data if k != "datasets_config"]
+        cols = [c for c in self._COLUMNS if c in data]
         placeholders = ", ".join("?" for _ in cols)
         sql = f"INSERT INTO job_history ({', '.join(cols)}) VALUES ({placeholders})"
 
@@ -493,8 +554,11 @@ class JobHistoryRepository:
 
     def _update(self, job_id: str, updates: dict[str, Any]) -> None:
         updates = self._prepare(updates)
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [job_id]
+        settable = {k: v for k, v in updates.items() if k in self._COLUMNS}
+        if not settable:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in settable)
+        values = list(settable.values()) + [job_id]
         with get_db().write() as conn:
             conn.execute(
                 f"UPDATE job_history SET {set_clause} WHERE id = ?", values

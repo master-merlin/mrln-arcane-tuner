@@ -295,6 +295,48 @@ class TestScanDataset:
             manager.scan_dataset("ghost")
 
     @patch("app.core.dataset_manager.solide_hash_robust", return_value="abcd1234" * 4)
+    def test_scan_crash_mid_enumeration_leaves_live_dataset_intact(
+        self, mock_hash, manager
+    ):
+        """W5.T10: a scan that crashes during enumeration (Stage 2) must NOT
+        leave the LIVE dataset zeroed/empty for concurrent readers.
+
+        _prepare_scan (Stage 1) used to reset dataset.file_count/
+        media_metadata/etc. to 0/{} immediately, before enumeration even
+        ran — counters+metadata are only reassigned from the accumulated
+        ctx in _compute_scan_statistics (Stage 3), which never runs if
+        Stage 2 raises. A crashed rescan would make a perfectly healthy,
+        previously-scanned dataset look totally empty until the NEXT
+        successful scan."""
+        ds = manager.create_dataset("crashy")
+        _create_image(os.path.join(ds.path, "img1.png"))
+        _create_caption(os.path.join(ds.path, "img1.txt"))
+
+        # First scan succeeds — establishes the "last-good" state.
+        good = manager.scan_dataset("crashy")
+        assert good.multimedia_count == 1
+        assert good.file_count == 2
+        assert good.media_metadata != {}
+        snapshot_metadata = dict(good.media_metadata)
+
+        # Second scan crashes mid-enumeration (Stage 2).
+        with patch.object(
+            DatasetManager,
+            "_enumerate_and_extract",
+            side_effect=RuntimeError("disk read exploded"),
+        ):
+            with pytest.raises(RuntimeError, match="disk read exploded"):
+                manager.scan_dataset("crashy")
+
+        # The LIVE dataset object (what every concurrent GET sees) must
+        # still reflect the last successful scan, not zeros.
+        live = manager.datasets["crashy"]
+        assert live.file_count == 2
+        assert live.multimedia_count == 1
+        assert live.caption_count == 1
+        assert live.media_metadata == snapshot_metadata
+
+    @patch("app.core.dataset_manager.solide_hash_robust", return_value="abcd1234" * 4)
     def test_scan_skips_hidden_files(self, mock_hash, manager):
         """Files starting with '.' or '~' should be ignored."""
         ds = manager.create_dataset("hidden")

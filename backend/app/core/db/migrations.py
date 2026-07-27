@@ -8,6 +8,7 @@ Uses a simple integer-versioned migration system:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import structlog
@@ -50,6 +51,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v16,
         _migrate_v17,
         _migrate_v18,
+        _migrate_v19,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -1008,3 +1010,38 @@ def _migrate_v18(conn) -> None:
         WHERE json_extract(config, '$.ema') IS NOT NULL
     """)
 
+
+# ── V19: Persist lora_on_disk (retires the per-request isfile() sweep) ──
+
+def _migrate_v19(conn) -> None:
+    """Add ``job_history.lora_on_disk``, backfilled by one disk sweep.
+
+    ``get_stats`` used to run an ``os.path.isfile()`` check over every
+    completed job's ``final_lora_file`` on EVERY request (a filesystem sweep
+    inside a read-only GET). Persisting the flag here — computed once, at
+    migration time — lets ``get_stats`` become pure SQL (``SUM(lora_on_disk)``).
+    Nullable: rows with no ``final_lora_file`` at all are left NULL (no file
+    to check), matching ``get_stats``'s existing ``final_lora_file IS NOT
+    NULL`` filter. Kept fresh afterward at the two points a job's on-disk
+    state actually changes: run completion (``pipeline_train.py``) and the
+    ``stats/backfill.py`` reconcile pass (which already walks the disk).
+
+    Idempotent: the ``ADD COLUMN`` is guarded (SQLite has no
+    ``IF NOT EXISTS`` for columns) and the backfill recomputes the same
+    values from disk on re-run.
+    """
+    try:
+        conn.execute("ALTER TABLE job_history ADD COLUMN lora_on_disk INTEGER")
+    except Exception:
+        pass  # Column already exists
+
+    rows = conn.execute("""
+        SELECT id, final_lora_file FROM job_history
+        WHERE status = 'completed' AND final_lora_file IS NOT NULL
+    """).fetchall()
+    for row in rows:
+        on_disk = 1 if os.path.isfile(row["final_lora_file"]) else 0
+        conn.execute(
+            "UPDATE job_history SET lora_on_disk = ? WHERE id = ?",
+            (on_disk, row["id"]),
+        )

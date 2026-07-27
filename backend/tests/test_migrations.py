@@ -138,3 +138,66 @@ def test_v18_backfills_ema_from_config(tmp_path):
     assert ema_rows() == expected
 
     eng.close()
+
+
+def test_v19_backfills_lora_on_disk(tmp_path):
+    """v19 adds job_history.lora_on_disk and backfills it from ONE disk sweep
+    (replacing the per-request os.path.isfile() sweep that used to live in
+    get_stats). Rows with no final_lora_file at all are left NULL — there is
+    no file to check, matching get_stats' own `IS NOT NULL` filter."""
+    eng = DatabaseEngine(db_path=str(tmp_path / "mig19.db"))
+    with eng.write() as conn:
+        migrations._migrate_v1(conn)  # create the schema
+
+    real_lora = tmp_path / "real.safetensors"
+    real_lora.write_bytes(b"fake-lora-bytes")
+    missing_lora = str(tmp_path / "gone.safetensors")  # never created
+
+    with eng.write() as conn:
+        # Completed, file still on disk -> 1.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, "
+            "status, final_lora_file) VALUES ('on_disk', 'flux', '{}', 1.0, "
+            "'completed', ?)",
+            (str(real_lora),),
+        )
+        # Completed, file recorded but deleted from disk -> 0.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, "
+            "status, final_lora_file) VALUES ('deleted', 'flux', '{}', 1.0, "
+            "'completed', ?)",
+            (missing_lora,),
+        )
+        # Completed, no final_lora_file recorded at all -> stays NULL.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, "
+            "status) VALUES ('no_file', 'flux', '{}', 1.0, 'completed')",
+        )
+        # Not completed (e.g. failed) -> irrelevant to lora_on_disk, stays NULL.
+        conn.execute(
+            "INSERT INTO job_history (id, definition_id, config, created_at, "
+            "status, final_lora_file) VALUES ('failed', 'flux', '{}', 1.0, "
+            "'failed', ?)",
+            (str(real_lora),),
+        )
+
+    with eng.write() as conn:
+        migrations._migrate_v19(conn)
+
+    def lora_on_disk_rows():
+        return {
+            r["id"]: r["lora_on_disk"]
+            for r in eng.connection().execute(
+                "SELECT id, lora_on_disk FROM job_history"
+            )
+        }
+
+    expected = {"on_disk": 1, "deleted": 0, "no_file": None, "failed": None}
+    assert lora_on_disk_rows() == expected
+
+    # Idempotent: a second run recomputes the same values.
+    with eng.write() as conn:
+        migrations._migrate_v19(conn)
+    assert lora_on_disk_rows() == expected
+
+    eng.close()

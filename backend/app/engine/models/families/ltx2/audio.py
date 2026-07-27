@@ -67,38 +67,6 @@ def extract_audio_latents(
     return sample if isinstance(sample, Tensor) else encoded
 
 
-def absent_audio_latent(like: Tensor) -> Tensor:
-    """Return a zero audio latent shaped like ``like`` (absent-audio item).
-
-    Used when a clip has no audio but the run trains audio: the item still
-    needs a same-shaped audio_latents slot so the batch collates, but its loss
-    is masked to zero.
-    """
-    return torch.zeros_like(like)
-
-
-def build_audio_mask(
-    has_audio_flags: list[bool] | Tensor,
-    *,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype = torch.float32,
-) -> Tensor:
-    """Build a ``[B]`` audio mask from per-item presence flags.
-
-    ``True`` → 1.0 (audio present, loss flows); ``False`` → 0.0 (absent audio
-    or image → masked out).
-    """
-    if isinstance(has_audio_flags, Tensor):
-        mask = has_audio_flags.to(dtype=dtype)
-    else:
-        mask = torch.tensor(
-            [1.0 if f else 0.0 for f in has_audio_flags], dtype=dtype,
-        )
-    if device is not None:
-        mask = mask.to(device)
-    return mask
-
-
 def masked_audio_loss(
     pred: Tensor,
     target: Tensor,

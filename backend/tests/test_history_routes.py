@@ -497,18 +497,24 @@ def test_stats_project_filter_all_is_global(client, tmp_path):
 
 def test_stats_lora_semantics(client, tmp_path):
     """lora_count = completed runs (produced), lora_on_disk = final files
-    verified present, lora_size_known = byte-sum coverage."""
+    verified present, lora_size_known = byte-sum coverage.
+
+    lora_on_disk is persisted at write time (run completion / the backfill
+    reconcile), NOT probed live by get_stats — so the seed here sets it
+    explicitly, exactly as those write paths would have."""
     with _isolated_db(tmp_path) as eng:
         _seed_stats_db(eng)
         real = tmp_path / "a_final.safetensors"
         real.write_bytes(b"x" * 10)
         with eng.write() as conn:
             conn.execute(
-                "UPDATE job_history SET final_lora_file = ? WHERE id = 'jA'",
+                "UPDATE job_history SET final_lora_file = ?, lora_on_disk = 1 "
+                "WHERE id = 'jA'",
                 (str(real),),
             )
             conn.execute(
-                "UPDATE job_history SET final_lora_file = ? WHERE id = 'jB'",
+                "UPDATE job_history SET final_lora_file = ?, lora_on_disk = 0 "
+                "WHERE id = 'jB'",
                 (str(tmp_path / "deleted.safetensors"),),
             )
             # Completed run with NO recorded size/file still counts as produced.
@@ -519,6 +525,29 @@ def test_stats_lora_semantics(client, tmp_path):
             )
         body = client.get("/api/jobs/history/stats").json()
     assert body["lora_count"] == 3       # completed runs, sized or not
-    assert body["lora_on_disk"] == 1     # only jA's file exists on disk
+    assert body["lora_on_disk"] == 1     # only jA's persisted flag is 1
     assert body["lora_size_known"] == 2  # jA + jB carry sizes
     assert body["lora_bytes"] == 3000
+
+
+def test_stats_get_never_touches_filesystem(client, tmp_path):
+    """GET /jobs/history/stats reads lora_on_disk from the DB — it must NOT
+    probe the filesystem at all. Poisoning os.path.isfile to raise proves
+    the per-request sweep this task retired is really gone."""
+    with _isolated_db(tmp_path) as eng:
+        _seed_stats_db(eng)
+        with eng.write() as conn:
+            conn.execute(
+                "UPDATE job_history SET final_lora_file = ?, lora_on_disk = 1 "
+                "WHERE id = 'jA'",
+                (str(tmp_path / "a_final.safetensors"),),
+            )
+        with patch(
+            "os.path.isfile",
+            side_effect=AssertionError(
+                "GET /jobs/history/stats must not touch the filesystem"
+            ),
+        ):
+            response = client.get("/api/jobs/history/stats")
+    assert response.status_code == 200
+    assert response.json()["lora_on_disk"] == 1

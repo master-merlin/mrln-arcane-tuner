@@ -144,7 +144,6 @@ class ZImageSampler(GenericSamplingPipeline):
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
         # Timestep schedule via scheduler
-        getattr(self.pipeline.definition, "architecture_params", {}) or {}
         mu = _calculate_shift(
             image_seq_len,
             scheduler.config.get("base_image_seq_len", 256),

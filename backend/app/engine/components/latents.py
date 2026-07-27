@@ -52,14 +52,12 @@ class LatentManager:
         self,
         vae,
         device: str | torch.device | None = None,
-        cache_dir=None,
         arch_params: dict | None = None,
     ):
         self.vae = vae
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        self.cache_dir = cache_dir
         arch = arch_params or {}
 
         # Scaling factor priority: arch_params → vae attribute → vae.config → 1.0
@@ -365,7 +363,6 @@ class LatentManager:
         image_batch: torch.Tensor,
         ids: list[str],
         cache_dirs: list[str] | None = None,
-        mirror_dir: str | None = None,
         source_paths: list[str] | None = None,
         extra_keys: list[str] | None = None,
     ) -> torch.Tensor:
@@ -376,8 +373,7 @@ class LatentManager:
             image_batch: Batch of images [B, C, H, W] (or 5D [B, C, F, H, W]
                 for video) in [-1, 1] range.
             ids: List of image identifiers for cache filenames.
-            cache_dirs: Per-item cache directories (overrides self.cache_dir).
-            mirror_dir: If provided, also save a copy here.
+            cache_dirs: Per-item cache directories.
             source_paths: Source media paths for content-addressed filenames.
             extra_keys: Per-item discriminators folded into the cache-file hash
                 (e.g. ``t{start}-{end}`` for videos). Empty/absent → legacy
@@ -474,12 +470,11 @@ class LatentManager:
         )
 
         # Cache to disk if configured
-        if cache_dirs or self.cache_dir or mirror_dir:
+        if cache_dirs:
             self._save_to_disk(
                 latents,
                 ids,
                 cache_dirs,
-                mirror_dir=mirror_dir,
                 source_paths=source_paths,
                 extra_keys=extra_keys,
             )
@@ -560,6 +555,8 @@ class LatentManager:
         cache_dirs: list[str] | None = None,
         source_paths: list[str] | None = None,
         extra_keys: list[str] | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor | None:
         """
         Try to load latents from disk. Returns None if any are missing.
@@ -567,13 +564,21 @@ class LatentManager:
         When *source_paths* is provided, uses content-addressed filenames.
         ``extra_keys`` (per-item) fold a discriminator (e.g. a video trim
         window) into the filename hash.
+
+        ``device``/``dtype`` (optional): when given, the stacked CPU tensor
+        is moved to both in ONE combined ``.to()`` call, instead of the
+        caller doing a bare device-move here and a separate dtype-cast
+        afterwards — two full-tensor allocations per step on this hot
+        per-step path (noticeable for 5D video/sliding latents). Omitting
+        either preserves the prior device-only behavior (``self.device``,
+        dtype unchanged).
         """
-        if not cache_dirs and not self.cache_dir:
+        if not cache_dirs:
             return None
 
         loaded = []
         for i, img_id in enumerate(ids):
-            c_dir = cache_dirs[i] if cache_dirs else self.cache_dir
+            c_dir = cache_dirs[i]
             if not c_dir:
                 return None
 
@@ -593,7 +598,8 @@ class LatentManager:
                 logger.warning("latent_cache_load_failed", path=path, error=str(e))
                 return None
 
-        return torch.stack(loaded).to(self.device)
+        target_device = device if device is not None else self.device
+        return torch.stack(loaded).to(device=target_device, dtype=dtype)
 
     def load_cached_latent_windows(
         self,
@@ -603,6 +609,8 @@ class LatentManager:
         extra_keys: list[str] | None = None,
         window_frames: int = 1,
         generator: torch.Generator | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor | None:
         """Load each FULL-CLIP latent, slice a random ``window_frames`` window, stack.
 
@@ -612,13 +620,18 @@ class LatentManager:
         the homogeneous ``(w,h,frames)`` grouping guarantees one ``window_frames``
         per batch. Returns ``None`` on ANY miss (same contract as
         :meth:`load_cached_latents`) so the caller falls back to a direct encode.
+
+        ``device``/``dtype`` (optional): see :meth:`load_cached_latents` — one
+        combined ``.to()`` instead of a device-move here plus a caller-side
+        dtype-cast (5D video window stacks make this the largest per-step
+        tensor in the loop).
         """
-        if not cache_dirs and not self.cache_dir:
+        if not cache_dirs:
             return None
 
         windows: list[torch.Tensor] = []
         for i, img_id in enumerate(ids):
-            c_dir = cache_dirs[i] if cache_dirs else self.cache_dir
+            c_dir = cache_dirs[i]
             if not c_dir:
                 return None
             fname = self._fname_for(i, img_id, source_paths, extra_keys)
@@ -643,7 +656,8 @@ class LatentManager:
                 start = 0
             windows.append(self.slice_latent_window(full, int(window_frames), start))
 
-        return torch.stack(windows).to(self.device)
+        target_device = device if device is not None else self.device
+        return torch.stack(windows).to(device=target_device, dtype=dtype)
 
     def _validate_shape(self, latents: torch.Tensor, input_shape: torch.Size):
         """
@@ -698,7 +712,6 @@ class LatentManager:
         latents: torch.Tensor,
         ids: list[str],
         cache_dirs: list[str] | None = None,
-        mirror_dir: str | None = None,
         source_paths: list[str] | None = None,
         extra_keys: list[str] | None = None,
     ):
@@ -712,8 +725,7 @@ class LatentManager:
         for i, img_id in enumerate(ids):
             fname = self._fname_for(i, img_id, source_paths, extra_keys)
 
-            # 1. Primary Cache
-            c_dir = cache_dirs[i] if cache_dirs else self.cache_dir
+            c_dir = cache_dirs[i] if cache_dirs else None
             if c_dir:
                 path = os.path.join(c_dir, fname)
                 # makedirs on the FULL parent, not just c_dir: ids are
@@ -721,10 +733,3 @@ class LatentManager:
                 # "control/" segment inside fname itself.
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 safe_save_file({"latents": latents_cpu[i]}, path)
-
-            # 2. Mirror (Output) Cache
-            if mirror_dir:
-                m_path = os.path.join(mirror_dir, fname)
-                os.makedirs(os.path.dirname(m_path), exist_ok=True)
-                if not os.path.exists(m_path):
-                    safe_save_file({"latents": latents_cpu[i]}, m_path)

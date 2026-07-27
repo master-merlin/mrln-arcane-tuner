@@ -32,7 +32,6 @@ from app.engine.models.families.wan_shared.trainer_base import WanTextCacheMixin
 
 from .driver import Wan22Ti2v5bDriver
 from .loader import Wan22Ti2v5bLoader
-from .saver import Wan22Ti2v5bSaver
 
 logger = structlog.get_logger(__name__)
 
@@ -45,7 +44,6 @@ class Wan22Ti2v5bTrainer(WanTextCacheMixin, GenericTrainingPipeline):
     def _setup_family(self) -> None:
         self.driver = Wan22Ti2v5bDriver(self.definition, self.device)
         self.loader = Wan22Ti2v5bLoader(self.device)
-        self.saver = Wan22Ti2v5bSaver()
 
     def _create_sampler(self):
         interval = int(self.config.get("sample_every_n_steps", 0))

@@ -185,3 +185,49 @@ class TestConditioningContract:
         """Bernini adds ZERO new weight modules → wan21's T2V target set verbatim."""
         drv = BerniniRDriver(_Defn(), torch.device("cpu"))
         assert drv.get_lora_targets() == WAN_T2V_LORA_TARGETS
+
+
+# ── get_saver() mode contract (W5.T5 — self.saver single source of truth) ────
+#
+# Trainer._setup_family() no longer constructs its own saver: driver.get_saver()
+# is the checkpoint path's ONLY consumer (pipeline_optimization.py). Before this
+# fix, get_saver() hardcoded mode="t2v" regardless of the driver's actual mode —
+# silently correct only because every shipped bernini_r definition happens to
+# set mode: t2v today. These tests pin get_saver() to self.mode directly so a
+# future i2v/other-mode definition can't silently regress the export label.
+
+
+class _I2VDefn:
+    """Single-expert definition stand-in with a non-t2v mode."""
+
+    architecture_params = {"mode": "i2v", "te.max_length": 512}
+    lora_targetable_modules: list[str] = []
+
+
+class _DualI2VDefn:
+    """Dual-expert (14B MoE) definition stand-in with a non-t2v mode."""
+
+    architecture_params = {
+        "mode": "i2v",
+        "dual_expert": True,
+        "te.max_length": 512,
+    }
+    lora_targetable_modules: list[str] = []
+
+
+class TestGetSaverModeMatchesDriverMode:
+    def test_single_expert_get_saver_mode_matches_driver_mode(self):
+        drv = BerniniRDriver(_Defn(), torch.device("cpu"))  # mode: t2v
+        assert drv.mode == "t2v"
+        assert drv.get_saver().mode == drv.mode
+
+    def test_single_expert_get_saver_mode_matches_driver_mode_i2v(self):
+        drv = BerniniRDriver(_I2VDefn(), torch.device("cpu"))
+        assert drv.mode == "i2v"
+        assert drv.get_saver().mode == drv.mode == "i2v"
+
+    def test_dual_expert_get_saver_mode_matches_driver_mode_i2v(self):
+        drv = BerniniRDriver(_DualI2VDefn(), torch.device("cpu"))
+        assert drv.is_dual
+        assert drv.mode == "i2v"
+        assert drv.get_saver().mode == drv.mode == "i2v"

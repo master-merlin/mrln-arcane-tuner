@@ -19,14 +19,40 @@ def test_update_settings(mock_settings_manager_cls, client):
     # SettingsStore receives an entity.changed broadcast.
     mock_instance = MagicMock()
     mock_instance.update_module_settings_async = AsyncMock(return_value=None)
+    payload = {"theme": "light", "notifications": False}
+    # No pre-existing keys in this fixture, so the merged read-back happens
+    # to equal the raw payload — see test_update_settings_returns_merged_dict
+    # below for the case where it does NOT.
+    mock_instance.get_module_settings.return_value = payload
     mock_settings_manager_cls.get_instance.return_value = mock_instance
 
-    payload = {"theme": "light", "notifications": False}
     response = client.put("/api/settings/ui", json=payload)
 
     assert response.status_code == 200
     assert response.json() == payload
     mock_instance.update_module_settings_async.assert_awaited_once_with("ui", payload)
+
+
+@patch("app.api.settings_routes.SettingsManager")
+def test_update_settings_returns_merged_dict(mock_settings_manager_cls, client):
+    """W5.T10: PUT returns the ACTUAL persisted state, not an echo of the
+    request body — SettingsManager.update_module_settings MERGES the payload
+    into the module's existing dict, so a partial update's response must
+    reflect the full merged result (pre-existing keys included), not just
+    what this request sent."""
+    mock_instance = MagicMock()
+    mock_instance.update_module_settings_async = AsyncMock(return_value=None)
+    # The module already had `theme` persisted; this PUT only sends
+    # `notifications`, but the merged (persisted) state carries BOTH.
+    merged = {"theme": "dark", "notifications": False}
+    mock_instance.get_module_settings.return_value = merged
+    mock_settings_manager_cls.get_instance.return_value = mock_instance
+
+    response = client.put("/api/settings/ui", json={"notifications": False})
+
+    assert response.status_code == 200
+    assert response.json() == merged
+    mock_instance.get_module_settings.assert_called_with("ui")
 
 
 # ── B-CLEAN-5: the 410 migration-guard is gone; former + unknown modules ──
@@ -52,6 +78,7 @@ def test_get_settings_no_longer_410s_formerly_migrated_modules(mock_settings_man
 def test_put_settings_no_longer_410s_formerly_migrated_modules(mock_settings_manager_cls, client):
     mock_instance = MagicMock()
     mock_instance.update_module_settings_async = AsyncMock(return_value=None)
+    mock_instance.get_module_settings.return_value = {"x": 1}
     mock_settings_manager_cls.get_instance.return_value = mock_instance
 
     for module in ("training", "captioning", "masking"):

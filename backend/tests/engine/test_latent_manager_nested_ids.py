@@ -50,24 +50,6 @@ def test_save_to_disk_creates_nested_dirs_for_slash_ids(tmp_path):
     assert os.sep + "control" + os.sep in written[0]
 
 
-def test_save_to_disk_mirror_also_handles_nested_ids(tmp_path):
-    lm = LatentManager(_VAE(), device="cpu")
-    _write(
-        lm,
-        tmp_path,
-        "control/img02",
-        "control/img02.jpg",
-        mirror_dir=str(tmp_path / "mirror"),
-    )
-
-    mirrored = [
-        os.path.join(r, f)
-        for r, _, fs in os.walk(tmp_path / "mirror")
-        for f in fs
-    ]
-    assert len(mirrored) == 1, f"expected exactly one mirror file, got {mirrored}"
-
-
 def test_save_to_disk_flat_ids_unchanged(tmp_path):
     """Plain stem ids keep writing directly into the bucket dir (no nesting)."""
     lm = LatentManager(_VAE(), device="cpu")

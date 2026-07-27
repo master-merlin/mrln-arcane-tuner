@@ -63,6 +63,19 @@ class _ProbeDriver:
         )
         return torch.zeros_like(latents)
 
+    def encode_text(self, captions, dtype, s_txt=5):
+        """W5.T10: denoise() now encodes the CFG unconditional ("")
+        embedding lazily via a real driver.encode_text() call (only when
+        guidance_scale > 1) instead of receiving it pre-built through
+        prompt_embedding — stub it so the default guidance_scale=4.0 tests
+        below don't need a real text encoder."""
+        from app.engine.core.text_encoding import TextEncoderOutput
+
+        return TextEncoderOutput(
+            embeddings=torch.randn(len(captions), 4, s_txt, 2880, dtype=dtype),
+            attention_mask=torch.ones(len(captions), s_txt, dtype=torch.bool),
+        )
+
 
 class _FakeBN:
     running_mean = torch.zeros(128)
@@ -90,6 +103,7 @@ def _make_sampler(*, use_amp, autocast_dtype=torch.bfloat16, dtype=torch.float32
         driver=driver,
         transformer=transformer,
         vae=_FakeVAE(),
+        components={},
         autocast_dtype=autocast_dtype,
         use_amp=use_amp,
         _block_swap_managers=None,
@@ -98,13 +112,16 @@ def _make_sampler(*, use_amp, autocast_dtype=torch.bfloat16, dtype=torch.float32
 
 
 def _prompt_embedding(dtype=torch.float32, s_txt=5):
+    """Only ``cond`` is needed — denoise() now encodes the CFG
+    unconditional embedding lazily itself (see _ProbeDriver.encode_text)."""
+
     def _pair():
         return (
             torch.randn(1, 4, s_txt, 2880, dtype=dtype),
             torch.ones(1, s_txt, dtype=torch.bool),
         )
 
-    return {"cond": _pair(), "uncond": _pair()}
+    return {"cond": _pair()}
 
 
 def _run_denoise(sampler, guidance_scale=4.0, num_steps=2):

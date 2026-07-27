@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,9 +15,6 @@ from app.api._path_guard import reject_audio_op, validate_path_within
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.adjustment_schemas import (
-    AdjustmentRequest,
-    AdjustResponse,
-    BatchAdjustmentRequest,
     ColorMatchRequest,
     CurvePointModel,
     ExportCubeRequest,
@@ -32,150 +28,6 @@ logger = get_logger(__name__)
 def get_dataset_or_404(name: str) -> Dataset:
     """Path-operation dependency: resolve a dataset by name or 404."""
     return dataset_or_404(dataset_manager.get_dataset(name))
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-
-def _build_adjustments_dict(request: AdjustmentRequest | BatchAdjustmentRequest) -> dict:
-    """Convert Pydantic request models into the dict format expected by apply_all."""
-    adjustments: dict = {}
-    if hasattr(request, 'cube_lut') and request.cube_lut:
-        adjustments["cube_lut"] = request.cube_lut
-        adjustments["cube_lut_strength"] = getattr(request, 'cube_lut_strength', 1.0)
-    if hasattr(request, 'curves') and request.curves:
-        adjustments["curves"] = {
-            "master": [p.model_dump() for p in request.curves.master],
-            "r": [p.model_dump() for p in request.curves.r],
-            "g": [p.model_dump() for p in request.curves.g],
-            "b": [p.model_dump() for p in request.curves.b],
-        }
-    if request.hue_shift != 0.0:
-        adjustments["hue_shift"] = request.hue_shift
-    if request.saturation != 1.0:
-        adjustments["saturation"] = request.saturation
-    if request.contrast != 1.0:
-        adjustments["contrast"] = request.contrast
-    if request.sharpening:
-        adjustments["sharpening"] = {
-            "method": request.sharpening.method,
-            "params": request.sharpening.params,
-        }
-    if request.white_balance:
-        adjustments["white_balance"] = request.white_balance.model_dump()
-    if request.vignette:
-        adjustments["vignette"] = request.vignette.model_dump()
-    if request.lens_correction:
-        adjustments["lens_correction"] = request.lens_correction.model_dump()
-    if request.hsl_selective:
-        adjustments["hsl_selective"] = {
-            k: v.model_dump() for k, v in request.hsl_selective.items()
-        }
-    return adjustments
-
-
-# ── Single Image Adjustment ─────────────────────────────────────────────
-
-
-@router.post("/datasets/{name}/adjust", response_model=AdjustResponse)
-async def adjust_media(name: str, request: AdjustmentRequest):
-    """Apply image adjustments."""
-    try:
-        logger.info("adjusting_media", dataset_name=name, path=request.path)
-        adjustments = _build_adjustments_dict(request)
-
-        # dataset_manager.apply_adjustments opens `request.path` and overwrites
-        # it in place (WRITE primitive) — validate containment before it's
-        # ever handed a client-supplied relative path, and thread the
-        # *resolved* Path through as `resolved_path` so apply_adjustments
-        # actually operates on the validated location instead of
-        # independently re-deriving it (apply_adjustments has no containment
-        # check of its own). Skip when the dataset itself can't be resolved;
-        # apply_adjustments raises its own ValueError("Dataset not found")
-        # in that case, unchanged.
-        dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-        resolved_path = None
-        if dataset:
-            dataset_root = Path(dataset.path)
-            resolved_path = validate_path_within(
-                dataset_root / request.path, dataset_root
-            )
-
-            # Resolve color match reference path to absolute — reuse the
-            # guard's returned Path directly rather than re-joining.
-            if request.color_match:
-                resolved_ref = validate_path_within(
-                    dataset_root / request.color_match.reference_path,
-                    dataset_root,
-                )
-                adjustments["color_match"] = {
-                    "reference_path": str(resolved_ref),
-                    "method": request.color_match.method,
-                    "strength": request.color_match.strength,
-                }
-
-        await asyncio.to_thread(
-            dataset_manager.apply_adjustments,
-            name,
-            request.path,
-            adjustments,
-            resolved_path=str(resolved_path) if resolved_path is not None else None,
-        )
-        return {"status": "adjusted", "file": request.path}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-# ── Batch Adjustment ────────────────────────────────────────────────────
-
-
-@router.post("/datasets/{name}/adjust-batch")
-async def adjust_media_batch(name: str, request: BatchAdjustmentRequest):
-    """Apply adjustments to multiple images. Returns SSE progress stream."""
-    adjustments = _build_adjustments_dict(request)
-    total = len(request.paths)
-    # Resolved once, outside the loop; per-item validation below still
-    # 403-guards each path individually (a traversal is reported as a
-    # per-item error event — the 200 + SSE stream is already committed by
-    # the time any item is processed, so a raised HTTPException can't
-    # become the response status the way it does on the single-item route).
-    dataset = await asyncio.to_thread(dataset_manager.get_dataset, name)
-    dataset_root = Path(dataset.path) if dataset else None
-
-    async def event_stream():
-        for idx, path in enumerate(request.paths):
-            try:
-                resolved_path = None
-                if dataset_root is not None:
-                    resolved_path = validate_path_within(
-                        dataset_root / path, dataset_root
-                    )
-                await asyncio.to_thread(
-                    dataset_manager.apply_adjustments,
-                    name,
-                    path,
-                    adjustments,
-                    resolved_path=str(resolved_path)
-                    if resolved_path is not None
-                    else None,
-                )
-                event = {"index": idx, "total": total, "file": path, "status": "ok"}
-            except HTTPException as e:
-                event = {
-                    "index": idx,
-                    "total": total,
-                    "file": path,
-                    "status": "error",
-                    "error": e.detail,
-                }
-            except (ValueError, FileNotFoundError, OSError) as e:
-                event = {"index": idx, "total": total, "file": path, "status": "error", "error": str(e)}
-            yield f"data: {json.dumps(event)}\n\n"
-        yield f"data: {json.dumps({'done': True, 'total': total})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # ── Color Match Preview ─────────────────────────────────────────────────

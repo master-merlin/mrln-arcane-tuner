@@ -81,6 +81,17 @@ def _recover_row(row) -> dict[str, Any]:
         if path and not have_file:
             updates["final_lora_file"] = path
 
+    # LoRA on-disk flag: refreshed on EVERY reconcile pass (unlike the
+    # fields above, not gated behind "missing") so it self-heals if the
+    # file is deleted outside the app after the job completed. Only set
+    # when a final_lora_file is actually known (this pass or already on
+    # the row) — mirrors get_stats' own `final_lora_file IS NOT NULL` gate.
+    final_file = updates.get("final_lora_file") or have_file
+    if final_file:
+        on_disk = 1 if os.path.isfile(final_file) else 0
+        if on_disk != (_val(row, "lora_on_disk") or 0):
+            updates["lora_on_disk"] = on_disk
+
     # Total on-disk footprint
     if "total_run_bytes" in keys and not _val(row, "total_run_bytes"):
         total = _dir_size(out_dir)
@@ -183,6 +194,15 @@ def _val(row, key: str):
 
 
 def _persist(job_id: str, updates: dict[str, Any]) -> None:
+    # Allowlist filter on dict-key column interpolation — same guard as
+    # MediaItemRepository/_COLUMNS (media_item_repo.py) and
+    # JobHistoryRepository/_COLUMNS (job_repo.py, which owns the canonical
+    # job_history column list — reused here rather than duplicated).
+    from app.core.db.repositories.job_repo import JobHistoryRepository
+
+    updates = {k: v for k, v in updates.items() if k in JobHistoryRepository._COLUMNS}
+    if not updates:
+        return
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [job_id]
     with get_db().write() as conn:

@@ -16,9 +16,9 @@ latent caches keyed by physical slot stay valid.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
-import cv2
 from PIL import Image
 
 # Physical control slot directories, in slot order.
@@ -33,37 +33,50 @@ CONTROL_IMAGE_EXTS: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".webp")
 
 # Video containers a control slot may hold (Bernini-R video-edit datasets:
 # ``root/clipA.mp4`` <-> ``control/clipA.mp4``, stem-paired exactly like
-# images). Appended after the image exts so an image control still wins
-# ext-priority over a same-stem video control.
-CONTROL_MEDIA_EXTS: tuple[str, ...] = CONTROL_IMAGE_EXTS + (
-    ".mp4",
-    ".webm",
-    ".mkv",
-    ".mov",
-)
+# images). Declared once — ``is_video_control`` and ``CONTROL_MEDIA_EXTS``
+# both derive from this, so the two can't drift out of sync. Not identical
+# to the target scanner's ``VIDEO_EXTENSIONS`` (media_types.py): this set
+# carries ``.mov`` (which the scanner doesn't) for the same reason it now
+# also carries ``.avi`` (which the scanner does) — control videos are
+# stem-paired independently of the target-side container allowlist.
+CONTROL_VIDEO_EXTS: tuple[str, ...] = (".mp4", ".webm", ".mkv", ".mov", ".avi")
+
+# Appended after the image exts so an image control still wins ext-priority
+# over a same-stem video control.
+CONTROL_MEDIA_EXTS: tuple[str, ...] = CONTROL_IMAGE_EXTS + CONTROL_VIDEO_EXTS
+
+
+def is_video_control(rel_path: str) -> bool:
+    """Is a control slot's file a video container (vs. a still image)?
+
+    Positive membership against :data:`CONTROL_VIDEO_EXTS` — the single
+    declared set of video containers a control slot may hold. Previously
+    derived negatively (``ext not in CONTROL_IMAGE_EXTS``) in
+    ``edit_inventory.py``, which meant any future non-image, non-video
+    extension reaching ``CONTROL_MEDIA_EXTS`` would silently misclassify as
+    video; positive membership fails closed instead.
+    """
+    ext = os.path.splitext(rel_path)[1].lower()
+    return ext in CONTROL_VIDEO_EXTS
 
 
 def _probe_control_video(path: str) -> tuple[int, int, int, float]:
-    """Probe a control video's width/height/frame-count/fps via cv2.
+    """Probe a control video's width/height/frame-count/fps via PyAV.
 
-    Mirrors the scanner's existing cv2-based dimension probe
-    (``scan_helpers.extract_media_dimensions``) — lightweight and
-    best-effort. Returns ``(0, 0, 0, 0.0)`` on any failure; a bad control
-    clip must never raise (detection stays best-effort, same contract as
-    the image branch's ``(0, 0)`` fallback).
+    Thin adapter over the canonical :func:`app.core.video.probe.probe_video`
+    (the same probe the target-side video ingest uses), replacing a
+    parallel cv2-based probe that could disagree with it on the same file
+    (phantom pair-health mismatches). Returns ``(0, 0, 0, 0.0)`` on any
+    failure; a bad control clip must never raise (detection stays
+    best-effort, same contract as the image branch's ``(0, 0)`` fallback).
     """
+    from app.core.video.probe import VideoProbeError, probe_video
+
     try:
-        cap = cv2.VideoCapture(path)
-        if not cap.isOpened():
-            return 0, 0, 0, 0.0
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = float(cap.get(cv2.CAP_PROP_FPS))
-        cap.release()
-        return w, h, num_frames, fps
-    except Exception:
+        p = probe_video(Path(path))
+    except VideoProbeError:
         return 0, 0, 0, 0.0
+    return p.width, p.height, p.frame_count, p.fps
 
 
 def detect_control_slots(dataset_path: str, stem: str) -> dict[str, dict[str, Any]]:
@@ -73,7 +86,7 @@ def detect_control_slots(dataset_path: str, stem: str) -> dict[str, dict[str, An
     slots that have a matching file. Image entries are
     ``{rel_path, width, height}`` (dims are (0, 0) when unreadable) —
     unchanged from before video support existed. Video entries additionally
-    carry ``num_frames``/``fps`` probed via cv2 (0/0.0 when unreadable).
+    carry ``num_frames``/``fps`` probed via PyAV (0/0.0 when unreadable).
     """
     slots: dict[str, dict[str, Any]] = {}
     for slot in CONTROL_SLOTS:
@@ -248,7 +261,15 @@ def compute_pair_health(dataset) -> dict[str, Any]:
             missing_by_slot[slot] = missing
 
     orphans = [
-        {"slot": slot, "rel_path": f"{slot}/{fname}"}
+        {
+            "slot": slot,
+            "rel_path": f"{slot}/{fname}",
+            # Backend half of the frontend ext-sniff removal: the frontend
+            # currently re-derives video-ness from the rel_path extension
+            # itself; carrying the flag here lets that client-side sniff be
+            # deleted (follow-up, not in this change).
+            "is_video": is_video_control(fname),
+        }
         for slot, stem_map in control_maps.items()
         for s, fname in sorted(stem_map.items())
         if s not in targets

@@ -79,7 +79,6 @@ from app.engine.models.families.wan_shared.trainer_base import (
 
 from .driver import BerniniRDriver
 from .loader import BerniniRLoader
-from .saver import BerniniRDualSaver, BerniniRSaver
 
 logger = structlog.get_logger(__name__)
 
@@ -126,12 +125,10 @@ class BerniniRTrainer(
             self.loader = BerniniRLoader(
                 self.device, expert_mode=self.expert_mode, defer_second_expert=defer
             )
-            self.saver = BerniniRDualSaver(mode=self.driver.mode)
             self._build_router()
         else:
             # 1.3B single expert — byte-identical to the v1 path.
             self.loader = BerniniRLoader(self.device)
-            self.saver = BerniniRSaver(mode=self.driver.mode)
 
     def _build_router(self) -> ExpertRouter:
         """Construct + attach the ExpertRouter from config + driver boundary.

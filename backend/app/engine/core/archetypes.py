@@ -251,16 +251,14 @@ def resolve_capabilities(definition) -> dict:
     caps = {k: v for k, v in asdict(arch).items() if k not in ("id", "config_defaults")}
     caps.update(getattr(family_cls, "capability_overrides", {}))
 
-    # Per-DEFINITION ``dual_expert`` override. A family may ship BOTH a single-
-    # and a dual-expert definition (bernini_r's 1.3B single vs 14B MoE), which
-    # the family-level ``capability_overrides`` cannot distinguish. When a
-    # definition's ``architecture_params`` declares ``dual_expert`` it wins, so
-    # the MoE fields / VRAM second-expert term engage only for the MoE definition.
-    # (wan22's definitions already carry ``dual_expert: true`` agreeing with the
-    # family override, so this is a no-op there.)
-    defn_arch = getattr(definition, "architecture_params", {}) or {}
-    if "dual_expert" in defn_arch:
-        caps["dual_expert"] = bool(defn_arch["dual_expert"])
+    # Per-DEFINITION capability overrides, merged after the family-level ones.
+    # A family may ship definitions that disagree on a flag the family-level
+    # mapping can't distinguish (e.g. bernini_r's 1.3B single-expert vs 14B
+    # MoE ``dual_expert``) — the definition's own ``capability_overrides``
+    # (a plain dict, same shape as the family-level one) wins. Generic merge:
+    # no special-case key knowledge lives here, unlike the dual_expert-only
+    # promotion this replaced.
+    caps.update(getattr(definition, "capability_overrides", None) or {})
 
     # Paired edit conditioning (per-definition, not per-archetype). Surface
     # control_inputs + an ``is_edit`` flag and the derived gates the field

@@ -661,7 +661,17 @@ class DatasetManager:
     def _prepare_scan(
         self, name: str, force_full: bool
     ) -> tuple["Dataset", dict]:
-        """Stage 1: Validate, snapshot old state, reset counters."""
+        """Stage 1: Validate, snapshot old state.
+
+        Deliberately does NOT touch the live dataset's counters/
+        media_metadata — those stay at their last-good values until Stage 3
+        (``_compute_scan_statistics``) assigns the freshly accumulated
+        ``ctx`` values, all at once, only after enumeration has actually
+        succeeded. Zeroing them here used to make a scan that crashed
+        mid-enumeration (Stage 2) or mid-statistics (Stage 3) leave the LIVE
+        dataset looking empty (0 files, {} media_metadata) to every
+        concurrent reader, even though nothing on disk was touched.
+        """
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
 
@@ -690,14 +700,6 @@ class DatasetManager:
             "preview_candidate": None,
             "aspect_ratios": [],
         }
-
-        # Reset all counters to ensure no stale data
-        dataset.file_count = 0
-        dataset.total_size_bytes = 0
-        dataset.multimedia_count = 0
-        dataset.caption_count = 0
-        dataset.mask_count = 0
-        dataset.media_metadata = {}
 
         return dataset, ctx
 
@@ -1029,98 +1031,6 @@ class DatasetManager:
         # harmonize that renamed everything before re-scanning). Tell every
         # client to reconcile so stale filenames/captions don't linger.
         self._emit_dataset_invalidated(dataset.name)
-
-    def _score_new_images(self, dataset: "Dataset", ctx: dict) -> None:
-        """Stage 4: Score unscored images for quality using HPSv2.
-
-        Only scores images that don't already have a ``quality_score``.
-        Uses paired caption text (if available) for text-image alignment.
-        Unloads the scoring model after completion to free VRAM.
-        """
-        media_metadata = ctx["media_metadata"]
-        old_metadata = ctx["old_metadata"]
-
-        # Collect unscored images
-        unscored: list[tuple[str, str]] = []  # (rel_path, full_path)
-        for rel_path in media_metadata:
-            existing_score = old_metadata.get(rel_path, {}).get("quality_score")
-            current_score = media_metadata[rel_path].get("quality_score")
-            if existing_score is not None:
-                # Carry forward existing score
-                media_metadata[rel_path]["quality_score"] = existing_score
-            elif current_score is None:
-                full_path = os.path.join(dataset.path, rel_path)
-                if os.path.exists(full_path):
-                    unscored.append((rel_path, full_path))
-
-        if not unscored:
-            return
-
-        logger.info(
-            "scoring_unscored_images",
-            dataset=dataset.name,
-            count=len(unscored),
-        )
-
-        try:
-            from app.core.scoring.scoring_service import ScoringService
-
-            service = ScoringService.get_instance()
-            score_count = len(unscored)
-
-            # Keep total/current from enumerate — show scoring sub-progress in status text only
-            final_current = ctx.get("progress_current", 0)
-            final_total = ctx.get("progress_total", final_current)
-
-            for i, (rel_path, full_path) in enumerate(unscored):
-                # Broadcast progress (total stays fixed, status shows sub-progress)
-                if self._loop and not self._loop.is_closed():
-                    asyncio.run_coroutine_threadsafe(
-                        event_manager.broadcast("scan_progress", {
-                            "dataset": dataset.name,
-                            "file": os.path.basename(rel_path),
-                            "current": final_current,
-                            "total": final_total,
-                            "status": f"Scoring quality... {i + 1}/{score_count}",
-                        }),
-                        self._loop,
-                    )
-
-                # Read paired caption if available
-                stem = os.path.splitext(rel_path)[0]
-                caption_path = os.path.join(dataset.path, f"{stem}.txt")
-                prompt = ""
-                if os.path.exists(caption_path):
-                    try:
-                        with open(caption_path, "r", encoding="utf-8") as fh:
-                            prompt = fh.read().strip()
-                    except OSError:
-                        pass
-
-                try:
-                    score = service.score_image(
-                        full_path, "hpsv2", {"hps_version": "v2.1", "prompt": prompt}
-                    )
-                    media_metadata[rel_path]["quality_score"] = score
-                except Exception as e:
-                    logger.warning(
-                        "scoring_image_failed",
-                        file=rel_path,
-                        error=str(e),
-                    )
-
-            # Unload scoring model to free VRAM for training
-            service.unload_models()
-
-            logger.info(
-                "scoring_complete",
-                dataset=dataset.name,
-                scored=len(unscored),
-            )
-        except ImportError:
-            logger.debug("scoring_skipped_hpsv2_not_available")
-        except Exception as e:
-            logger.error("scoring_stage_failed", error=str(e))
 
     def analyze_harmonization(self, name: str, similarity_threshold: float = 0.9) -> dict[str, Any]:
         if name not in self.datasets:

@@ -84,6 +84,10 @@ def test_complete_job_history_persists_final_lora(tmp_path):
     kwargs = done.call_args.kwargs
     assert kwargs["final_lora_file"] == str(lora)
     assert kwargs["final_lora_size_bytes"] == 456
+    # W5.T9: lora_on_disk is persisted here (run completion) — the ONE point
+    # _current_lora_artifact() just confirmed the file via os.path.getsize(),
+    # so get_stats' SUM(lora_on_disk) never needs to re-probe the filesystem.
+    assert kwargs["lora_on_disk"] == 1
 
 
 def test_complete_job_history_omits_artifact_when_unknown(tmp_path):
@@ -96,6 +100,7 @@ def test_complete_job_history_omits_artifact_when_unknown(tmp_path):
     kwargs = done.call_args.kwargs
     assert "final_lora_file" not in kwargs
     assert "final_lora_size_bytes" not in kwargs
+    assert "lora_on_disk" not in kwargs
 
 
 def test_checkpoint_manager_tracks_last_lora_path(tmp_path):

@@ -492,24 +492,6 @@ class IModelDriver(ABC):
 
 
 # ---------------------------------------------------------------------------
-# IDataPipeline — Data pipeline contract (pre-cacher and training)
-# ---------------------------------------------------------------------------
-
-class IDataPipeline(ABC):
-    """Data pipeline contract for pre-caching and training.
-
-    Provides the inventory of images/captions and creates
-    DataLoader instances for iteration.
-    """
-
-    inventory: list[dict[str, Any]]
-
-    @abstractmethod
-    def create_dataloader(self) -> Any:
-        """Create and return a DataLoader for the current dataset."""
-
-
-# ---------------------------------------------------------------------------
 # Backward-compatibility alias
 # ---------------------------------------------------------------------------
 # Existing savers use ``ModelSaver`` — keep working.
@@ -559,56 +541,3 @@ class BaseTrainer(ABC):
     @abstractmethod
     async def train(self):
         """Execute the main training loop."""
-
-    def save_state(self, path: str):
-        """Save full training state for checkpoint resume."""
-        import os
-        import traceback
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-
-            comp_states = {}
-            for name, comp in self.components.items():
-                if isinstance(comp, nn.Module):
-                    comp_states[name] = comp.state_dict()
-
-            state = {
-                "epoch": self.epoch,
-                "global_step": self.global_step,
-                "config": self.config,
-                "components": comp_states,
-            }
-            if self.optimizer:
-                state["optimizer"] = self.optimizer.state_dict()
-
-            torch.save(state, path)
-            self.logger.info("state_saved", path=path)
-        except (OSError, RuntimeError) as e:
-            self.logger.error(
-                "state_save_failed", path=path, error=str(e),
-                traceback=traceback.format_exc(),
-            )
-
-    def load_state(self, path: str):
-        """Load full training state from a checkpoint."""
-        try:
-            state = torch.load(path, map_location=self.device)
-
-            self.epoch = state.get("epoch", 0)
-            self.global_step = state.get("global_step", 0)
-
-            for name, comp_state in state.get("components", {}).items():
-                if name in self.components and isinstance(
-                    self.components[name], nn.Module,
-                ):
-                    self.components[name].load_state_dict(comp_state)
-
-            if "optimizer" in state and self.optimizer:
-                self.optimizer.load_state_dict(state["optimizer"])
-
-            self.logger.info(
-                "state_loaded", path=path, step=self.global_step,
-                epoch=self.epoch,
-            )
-        except (FileNotFoundError, RuntimeError) as e:
-            self.logger.error("state_load_failed", path=path, error=str(e))

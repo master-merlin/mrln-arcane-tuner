@@ -379,6 +379,39 @@ def test_delete_job(mock_to_thread, mock_jm, client):
     response = client.delete("/api/jobs/job-1")
     assert response.status_code == 200
     assert response.json()["status"] == "deleted"
+    # Default (no ?force=) must be False, so an active job isn't silently
+    # force-killed by a caller unaware of the flag.
+    mock_jm.delete_job.assert_called_once_with("job-1", False)
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_delete_running_job_without_force_returns_409(mock_to_thread, mock_jm, client):
+    """Deleting a RUNNING job without ?force=true must 409, not silently
+    orphan the trainer subprocess."""
+    from app.core.job_manager import JobConflictError
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.delete_job.side_effect = JobConflictError(
+        "Job job-1 is running; stop it first or pass force=true"
+    )
+    response = client.delete("/api/jobs/job-1")
+    assert response.status_code == 409
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_delete_running_job_with_force_query_param_passes_through(
+    mock_to_thread, mock_jm, client
+):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    response = client.delete("/api/jobs/job-1?force=true")
+    assert response.status_code == 200
+    mock_jm.delete_job.assert_called_once_with("job-1", True)
 
 
 # ── Sample Image Routes ─────────────────────────────────────────────────

@@ -29,6 +29,12 @@ from app.core.plugin_manager import plugin_manager
 logger = structlog.get_logger(__name__)
 
 
+class JobConflictError(Exception):
+    """Raised when an operation refuses to act on a job in its current state
+    without an explicit override (e.g. deleting a RUNNING/PAUSED job without
+    ``force=True``). Routes translate this to HTTP 409."""
+
+
 def _parse_persisted_log_lines(log_path: str, limit: int = 1000) -> list[str]:
     """Reconstruct a job's display log tail from its persisted ``job_log.jsonl``.
 
@@ -715,8 +721,33 @@ class JobManager:
             return True
         return False
 
-    def delete_job(self, job_id: str) -> None:
-        """Remove a job from the registry and the database. Broadcasts entity.changed."""
+    def delete_job(self, job_id: str, force: bool = False) -> None:
+        """Remove a job from the registry and the database. Broadcasts entity.changed.
+
+        A RUNNING/PAUSED job has a live trainer subprocess holding VRAM.
+        Deleting its registry entry without stopping it first would orphan a
+        GPU-zombie trainer that the single-GPU guard (``_claim_next_pending``)
+        can no longer see — auto-queue would then launch a second trainer on
+        top of it. Refuses with :class:`JobConflictError` unless
+        ``force=True``, which kills the process tree first (the same kill
+        :meth:`stop_job` performs) before removing the job.
+        """
+        job = self.get_job(job_id)
+        if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+            if not force:
+                raise JobConflictError(
+                    f"Job {job_id} is {job.status.value}; stop it first or pass force=true"
+                )
+            if job.pid:
+                killed = self._terminate_process_tree(job.pid)
+                logger.info(
+                    "delete_job_force_killed_tree",
+                    job_id=job_id,
+                    root_pid=job.pid,
+                    killed_pids=killed,
+                )
+
+        self._auto_resume_state.pop(job_id, None)
         self._stop_tailer(job_id)
         with self._lock:
             if job_id in self._jobs:

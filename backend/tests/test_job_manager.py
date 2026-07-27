@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.core.job import Job, JobStatus
-from app.core.job_manager import JobManager
+from app.core.job_manager import JobManager, JobConflictError
 from app.engine.core.definitions import ModelDefinition
 from app.engine.models.registry import registry
 
@@ -90,6 +90,60 @@ class TestJobCRUD:
         """delete_job for unknown ID should not raise."""
         mgr = JobManager()
         mgr.delete_job("nonexistent")  # Should not raise
+
+    def test_delete_running_job_without_force_raises_conflict(self):
+        """delete_job on a RUNNING job with force=False must refuse — the job
+        survives and its trainer subprocess is left alone (no GPU zombie)."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+
+        with pytest.raises(JobConflictError):
+            mgr.delete_job(job.id)
+
+        assert mgr.get_job(job.id) is not None
+        assert mgr.get_job(job.id).status == JobStatus.RUNNING
+
+    def test_delete_paused_job_without_force_raises_conflict(self):
+        """A PAUSED job still holds VRAM — same guard as RUNNING."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.PAUSED
+        job.pid = 12345
+
+        with pytest.raises(JobConflictError):
+            mgr.delete_job(job.id)
+
+        assert mgr.get_job(job.id) is not None
+
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345, 67890])
+    def test_delete_running_job_with_force_kills_tree_first(self, mock_tree):
+        """force=True kills the process tree (the exact zombie stop_job kills)
+        BEFORE removing the job, and drops any auto-resume bookkeeping —
+        otherwise an unowned trainer keeps holding VRAM and the single-GPU
+        guard sees the GPU as free, letting auto-queue double-launch."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+        mgr._auto_resume_state[job.id] = {"total": 1}
+
+        mgr.delete_job(job.id, force=True)
+
+        mock_tree.assert_called_once_with(12345)
+        assert mgr.get_job(job.id) is None
+        assert job.id not in mgr._auto_resume_state
+
+    @patch.object(JobManager, "_terminate_process_tree")
+    def test_delete_pending_job_needs_no_force(self, mock_tree):
+        """A PENDING (not yet launched) job has no process to kill — delete
+        must succeed without force and must not attempt a kill."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        mgr.delete_job(job.id)
+        assert mgr.get_job(job.id) is None
+        mock_tree.assert_not_called()
 
 
 # ── Set Loop ─────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from app.core.dataset.control_helpers import CONTROL_IMAGE_EXTS
+from app.core.dataset.control_helpers import is_video_control
 
 # Latent-cache variant for a root image that is acting as a control (role
 # flip). Distinct from the target's "original" variant so the same file
@@ -54,22 +54,6 @@ def control_target_dims(
         return control_resolution, control_resolution
     b = bucket_for(target_w, target_h, control_resolution)
     return int(b["width"]), int(b["height"])
-
-
-def is_video_control(rel_path: str) -> bool:
-    """Is a control slot's file a video container (vs. a still image)?
-
-    Bernini-R control files are stem-paired like image controls, but through
-    ``CONTROL_MEDIA_EXTS`` (``CONTROL_IMAGE_EXTS`` + video containers,
-    including ``.mov`` which the target scanner's ``VIDEO_EXTENSIONS`` does
-    NOT recognize — the two ext-sets are not symmetric, so this checks
-    against the control-specific image set rather than the scanner's). Any
-    non-image ext reaching here is one of the video containers by
-    construction (disk-scanned control files are always members of
-    ``CONTROL_MEDIA_EXTS``).
-    """
-    ext = os.path.splitext(rel_path)[1].lower()
-    return ext not in CONTROL_IMAGE_EXTS
 
 
 def build_control_fields(

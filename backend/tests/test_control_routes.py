@@ -122,7 +122,11 @@ class TestPairHealth:
         ds = _make_edit_dataset(manager, controls=("img1", "ghost"),
                                 targets=("img1",))
         health = compute_pair_health(ds)
-        assert {"slot": "control", "rel_path": "control/ghost.jpg"} in health["orphans"]
+        assert {
+            "slot": "control",
+            "rel_path": "control/ghost.jpg",
+            "is_video": False,
+        } in health["orphans"]
 
     def test_edit_dataset_without_any_controls(self, manager):
         ds = _make_edit_dataset(manager, controls=(), targets=("img1", "img2"))

@@ -376,7 +376,9 @@ async def save_caption(name: str, filename: str, request: CaptionRequest):
         await asyncio.to_thread(dataset_manager.save_caption, name, filename, request.content)
         return {"status": "saved"}
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Matches the GET twin (get_caption) — an unknown dataset is a client
+        # error (404), not an INTERNAL_ERROR (was 500).
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── Lyrics (audio sidecar) ───────────────────────────────────────────────
@@ -408,7 +410,9 @@ async def save_lyrics(name: str, filename: str, request: CaptionRequest):
         await asyncio.to_thread(dataset_manager.save_lyrics, name, filename, request.content)
         return {"status": "saved"}
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Matches the GET twin (get_lyrics) — an unknown dataset is a client
+        # error (404), not an INTERNAL_ERROR (was 500).
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── Image Enable/Disable ────────────────────────────────────────────────

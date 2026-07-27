@@ -300,7 +300,9 @@ def test_save_caption_dataset_not_found(mock_to_thread, mock_manager, client):
     mock_to_thread.side_effect = run_sync
     mock_manager.save_caption.side_effect = ValueError("not found")
     response = client.put("/api/datasets/ghost/captions/img.txt", json={"content": "text"})
-    assert response.status_code == 500  # ValueError → 500 in save_caption route
+    # W4.T13: matches the GET twin (test_get_caption_dataset_not_found) — an
+    # unknown dataset is a 404, not an INTERNAL_ERROR 500.
+    assert response.status_code == 404
 
 
 # ── Lyrics (audio sidecar) ───────────────────────────────────────────────
@@ -355,7 +357,9 @@ def test_save_lyrics_dataset_not_found(mock_to_thread, mock_manager, client):
     response = client.put(
         "/api/datasets/ghost/lyrics/song.lyrics.txt", json={"content": "x"},
     )
-    assert response.status_code == 500  # ValueError → 500, mirrors save_caption
+    # W4.T13: matches the GET twin (test_get_lyrics_dataset_not_found) — an
+    # unknown dataset is a 404, not an INTERNAL_ERROR 500.
+    assert response.status_code == 404
 
 
 # ── Image Enable/Disable ────────────────────────────────────────────────

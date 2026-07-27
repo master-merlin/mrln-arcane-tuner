@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Any, Callable
 
 import structlog
@@ -24,6 +25,15 @@ logger = structlog.get_logger(__name__)
 
 LOG_FILENAME = "job_log.jsonl"
 OFFSET_SUFFIX = ".offset"
+
+# Batching thresholds for offset persistence: save every N dispatched lines
+# OR every S seconds, whichever comes first. Per-step trainer logging at high
+# rates made a full open/write/close per dispatched line constant WDDM-disk
+# churn alongside training I/O; this bounds it without meaningfully widening
+# the re-dispatch window on an unclean shutdown. stop() always force-saves
+# regardless of these thresholds.
+_SAVE_EVERY_N_LINES = 20
+_SAVE_INTERVAL_S = 1.0
 
 
 class LogTailer:
@@ -55,6 +65,8 @@ class LogTailer:
         self._stop_event = threading.Event()
         self._offset: int = self._load_offset()
         self._thread: threading.Thread | None = None
+        self._lines_since_save = 0
+        self._last_save_monotonic = time.monotonic()
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -90,7 +102,7 @@ class LogTailer:
         ):
             self._thread.join(timeout=2.0)
         try:
-            self._save_offset()
+            self._save_offset(force=True)
         except Exception:
             pass
 
@@ -143,14 +155,20 @@ class LogTailer:
                     line = line.strip()
                     if not line:
                         continue
-                        
+
+                    # Advance the tracked offset BEFORE dispatching: a
+                    # handler that calls stop() synchronously from inside
+                    # the callback (e.g. JobManager's exit-message path)
+                    # must see the post-line offset when stop()'s forced
+                    # save runs, not the pre-line one.
+                    self._offset = f.tell()
                     try:
                         entry = json.loads(line)
                         self.dispatcher(self.job_id, entry)
                     except json.JSONDecodeError:
                         logger.debug("log_tailer_bad_json", job_id=self.job_id)
-                        
-                    self._offset = f.tell()
+
+                    self._lines_since_save += 1
                     self._save_offset()
 
         except Exception as exc:
@@ -168,10 +186,38 @@ class LogTailer:
                 pass
         return 0
 
-    def _save_offset(self) -> None:
-        """Persist the current byte offset to disk."""
+    def _save_offset(self, *, force: bool = False) -> None:
+        """Persist the current byte offset to disk, batched.
+
+        A full open/write/close per dispatched line is constant disk churn
+        at high-rate per-step trainer logging. Unless *force* (used by
+        stop() so a shutdown never loses more than the current in-flight
+        batch), this only actually writes every _SAVE_EVERY_N_LINES lines
+        or _SAVE_INTERVAL_S seconds, whichever comes first.
+
+        The write itself goes through a sibling ``.tmp`` file + os.replace
+        so a crash mid-write can never leave a partial int on disk — a
+        truncated value would fail ``int()`` in _load_offset and reset to
+        0, re-dispatching the entire log on reattach.
+        """
+        if not force:
+            elapsed = time.monotonic() - self._last_save_monotonic
+            if (
+                self._lines_since_save < _SAVE_EVERY_N_LINES
+                and elapsed < _SAVE_INTERVAL_S
+            ):
+                return
+
+        self._lines_since_save = 0
+        self._last_save_monotonic = time.monotonic()
+        tmp_path = self.offset_path + ".tmp"
         try:
-            with open(self.offset_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(str(self._offset))
+            os.replace(tmp_path, self.offset_path)
         except OSError:
-            pass
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass

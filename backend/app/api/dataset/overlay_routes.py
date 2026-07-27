@@ -8,6 +8,7 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -183,11 +184,13 @@ async def render_pipeline(name: str, request: RenderPipelineRequest):
     overlay_hash = await asyncio.to_thread(_compute_file_hash, overlay_path)
     lookup_key = request.image_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
-        dataset.media_metadata[lookup_key]["has_overlay"] = True
-        dataset.media_metadata[lookup_key]["overlay_hash"] = overlay_hash
-        dataset.media_metadata[lookup_key]["overlay_score_stale"] = True
-        dataset.media_metadata[lookup_key]["overlay_dimensions"] = list(dimensions)
-        await dataset_manager._persist_media_item_async(dataset, request.image_path)
+        await dataset_manager.update_media_flags_async(
+            name, request.image_path,
+            has_overlay=True,
+            overlay_hash=overlay_hash,
+            overlay_score_stale=True,
+            overlay_dimensions=list(dimensions),
+        )
 
     logger.info(f"Overlay saved for {request.image_path} in dataset '{name}'")
 
@@ -341,11 +344,14 @@ async def delete_overlay(name: str, image_path: str):
     # Clear overlay metadata
     lookup_key = image_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
-        dataset.media_metadata[lookup_key].pop("has_overlay", None)
-        dataset.media_metadata[lookup_key].pop("overlay_hash", None)
-        dataset.media_metadata[lookup_key].pop("overlay_score_stale", None)
-        dataset.media_metadata[lookup_key].pop("overlay_dimensions", None)
-        await dataset_manager._persist_media_item_async(dataset, image_path)
+        remove = dataset_manager.REMOVE_FIELD
+        await dataset_manager.update_media_flags_async(
+            name, image_path,
+            has_overlay=remove,
+            overlay_hash=remove,
+            overlay_score_stale=remove,
+            overlay_dimensions=remove,
+        )
 
     logger.info(f"Overlay reverted for {image_path} in dataset '{name}'")
 
@@ -434,28 +440,39 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
     # Update metadata: overlay is now the original
     lookup_key = request.image_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
-        # Carry over overlay dimensions as the new original dimensions
-        overlay_dims = dataset.media_metadata[lookup_key].pop("overlay_dimensions", None)
-        if overlay_dims:
-            dataset.media_metadata[lookup_key]["width"] = overlay_dims[0]
-            dataset.media_metadata[lookup_key]["height"] = overlay_dims[1]
-        # Clear overlay fields
-        dataset.media_metadata[lookup_key].pop("has_overlay", None)
-        dataset.media_metadata[lookup_key].pop("overlay_hash", None)
-        dataset.media_metadata[lookup_key].pop("overlay_score_stale", None)
+        remove = dataset_manager.REMOVE_FIELD
+        # Carry over overlay dimensions as the new original dimensions (a
+        # plain read here — the live dict isn't touched until the atomic
+        # update_media_flags call below applies every field together).
+        overlay_dims = dataset.media_metadata[lookup_key].get("overlay_dimensions")
+
         # Recalculate size (paired exists+stat in one thread hop)
         def _size_if_exists(p: Path) -> int | None:
             return p.stat().st_size if p.exists() else None
 
         new_size = await asyncio.to_thread(_size_if_exists, img_path)
+
+        changes: dict[str, Any] = {
+            # Clear overlay fields — the overlay is now the original.
+            "overlay_dimensions": remove,
+            "has_overlay": remove,
+            "overlay_hash": remove,
+            "overlay_score_stale": remove,
+            # Invalidate masks (dimensions may have changed)
+            "has_mask": False,
+            "has_masked": False,
+            "has_masked_caption": False,
+            "mask_info": remove,
+        }
+        if overlay_dims:
+            changes["width"] = overlay_dims[0]
+            changes["height"] = overlay_dims[1]
         if new_size is not None:
-            dataset.media_metadata[lookup_key]["size_bytes"] = new_size
-        # Invalidate masks (dimensions may have changed)
-        dataset.media_metadata[lookup_key]["has_mask"] = False
-        dataset.media_metadata[lookup_key]["has_masked"] = False
-        dataset.media_metadata[lookup_key]["has_masked_caption"] = False
-        dataset.media_metadata[lookup_key].pop("mask_info", None)
-        await dataset_manager._persist_media_item_async(dataset, request.image_path)
+            changes["size_bytes"] = new_size
+
+        await dataset_manager.update_media_flags_async(
+            name, request.image_path, **changes,
+        )
 
     # Bump version
     await asyncio.to_thread(dataset_manager.bump_dataset_version, name, "patch")
@@ -466,7 +483,7 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
     # overlay file, so from the OverlayStore's perspective the overlay
     # is gone — emit `deleted`. The underlying media item's mutations
     # (new size/dims, mask invalidation) are broadcast separately by
-    # _persist_media_item_async above.
+    # update_media_flags_async above.
     await emit_entity_change(
         event_manager.broadcast,
         entity="overlay",

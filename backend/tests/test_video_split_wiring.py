@@ -352,13 +352,20 @@ def test_trim_route_updates_and_returns_warnings(monkeypatch, client):
 
     ds = _DS()
     monkeypatch.setattr(video_routes, "_resolve_dataset", lambda name: ds)
+    # W4.T14: update_media_flags looks the dataset up by NAME in the
+    # manager's own registry (not the object the route already resolved via
+    # _resolve_dataset) — register the stand-in so that lookup succeeds.
+    monkeypatch.setitem(dataset_manager.datasets, "ds", ds)
 
     persisted = []
 
-    async def fake_persist(dataset, rel):
+    def fake_persist(dataset, rel):
         persisted.append(rel)
 
-    monkeypatch.setattr(dataset_manager, "_persist_media_item_async", fake_persist)
+    # update_media_flags calls the SYNC _persist_media_item directly (it
+    # runs the whole mutate+persist critical section in one worker thread
+    # via update_media_flags_async), not _persist_media_item_async.
+    monkeypatch.setattr(dataset_manager, "_persist_media_item", fake_persist)
 
     events = []
 

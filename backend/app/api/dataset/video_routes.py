@@ -243,16 +243,23 @@ async def video_trim(name: str, request: TrimRequest):
     if meta is None:
         raise HTTPException(status_code=404, detail="Media file not found")
 
-    # Apply trim bounds (None clears the bound back to the clip edge).
-    meta["trim_start_s"] = request.trim_start_s
-    meta["trim_end_s"] = request.trim_end_s
+    # Recompute clip-health from a prospective post-trim view (a local copy —
+    # the None clears the bound back to the clip edge). The live dict isn't
+    # touched until update_media_flags applies all three fields atomically.
+    prospective = {
+        **meta,
+        "trim_start_s": request.trim_start_s,
+        "trim_end_s": request.trim_end_s,
+    }
+    warnings = clip_health.compute_clip_warnings(prospective)
 
-    # Recompute clip-health from the post-trim metadata.
-    warnings = clip_health.compute_clip_warnings(meta)
-    meta["clip_warnings"] = warnings
-
-    # Persist the single row (also emits media_item entity.changed).
-    await dataset_manager._persist_media_item_async(dataset, request.media_file)
+    # Persist the single row atomically (also emits media_item entity.changed).
+    await dataset_manager.update_media_flags_async(
+        name, request.media_file,
+        trim_start_s=request.trim_start_s,
+        trim_end_s=request.trim_end_s,
+        clip_warnings=warnings,
+    )
 
     # Structural reconcile signal — same coarse broadcast DatasetManager uses.
     await event_manager.broadcast("dataset.invalidated", {"name": name})

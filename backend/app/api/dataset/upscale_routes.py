@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -157,20 +158,25 @@ async def upscale_media(
         # Update cached metadata so /pairs returns correct dimensions
         lookup_key = request.image_path.replace("\\", "/")
         if lookup_key in dataset.media_metadata:
-            dataset.media_metadata[lookup_key]["width"] = result["new_size"][0]
-            dataset.media_metadata[lookup_key]["height"] = result["new_size"][1]
-            dataset.media_metadata[lookup_key]["has_mask"] = False
-            dataset.media_metadata[lookup_key]["has_masked"] = False
-            dataset.media_metadata[lookup_key]["has_masked_caption"] = False
-            dataset.media_metadata[lookup_key].pop("mask_info", None)
             def _size_if_exists(p: Path) -> int | None:
                 return p.stat().st_size if p.exists() else None
 
             new_size = await asyncio.to_thread(_size_if_exists, img_path)
+
+            changes: dict[str, Any] = {
+                "width": result["new_size"][0],
+                "height": result["new_size"][1],
+                "has_mask": False,
+                "has_masked": False,
+                "has_masked_caption": False,
+                "mask_info": dataset_manager.REMOVE_FIELD,
+            }
             if new_size is not None:
-                dataset.media_metadata[lookup_key]["size_bytes"] = new_size
-            # Persist to DB (previously in-memory only — lost on restart)
-            await dataset_manager._persist_media_item_async(dataset, request.image_path)
+                changes["size_bytes"] = new_size
+            # Persist to DB atomically (previously in-memory only — lost on restart)
+            await dataset_manager.update_media_flags_async(
+                name, request.image_path, **changes,
+            )
 
         # Source pixels were overwritten — refresh thumbnail.
         from app.core.dataset import thumbnails

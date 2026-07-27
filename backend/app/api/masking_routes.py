@@ -82,8 +82,9 @@ async def generate_mask(name: str, request: MaskGenerationRequest):
     # Targeted metadata update (replaces full scan_dataset)
     lookup_key = request.image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
-        dataset.media_metadata[lookup_key]["has_mask"] = True
-        await dataset_manager._persist_media_item_async(dataset, request.image_rel_path)
+        await dataset_manager.update_media_flags_async(
+            name, request.image_rel_path, has_mask=True,
+        )
 
     return MaskGenerationResponse(
         mask_path=f"masks/{mask_filename}",
@@ -138,8 +139,9 @@ async def apply_mask(name: str, request: ApplyMaskRequest):
     # Targeted metadata update (replaces full scan_dataset)
     lookup_key = request.image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
-        dataset.media_metadata[lookup_key]["has_masked"] = True
-        await dataset_manager._persist_media_item_async(dataset, request.image_rel_path)
+        await dataset_manager.update_media_flags_async(
+            name, request.image_rel_path, has_masked=True,
+        )
 
     return {
         "status": "success",
@@ -207,11 +209,11 @@ async def delete_mask(name: str, image_rel_path: str):
     # Targeted metadata update (replaces full scan_dataset)
     lookup_key = image_rel_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
-        dataset.media_metadata[lookup_key]["has_mask"] = False
-        dataset.media_metadata[lookup_key]["has_masked"] = False
-        dataset.media_metadata[lookup_key]["has_masked_caption"] = False
-        dataset.media_metadata[lookup_key].pop("mask_info", None)
-        await dataset_manager._persist_media_item_async(dataset, image_rel_path)
+        await dataset_manager.update_media_flags_async(
+            name, image_rel_path,
+            has_mask=False, has_masked=False, has_masked_caption=False,
+            mask_info=dataset_manager.REMOVE_FIELD,
+        )
 
     return {"status": "deleted", "message": "Mask deleted successfully"}
 

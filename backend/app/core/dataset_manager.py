@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -133,6 +134,11 @@ class DatasetManager:
         self.settings_manager = get_settings_manager()
         self.datasets: dict[str, Dataset] = {}
         self._loop = None
+        # Guards update_media_flags' mutate+persist critical section (W4.T14)
+        # — held across BOTH the in-memory media_metadata edit and the SQLite
+        # write so two concurrent updates to the SAME item (e.g. a mask
+        # delete racing an upscale) can never interleave field-by-field.
+        self._media_mutation_lock = threading.Lock()
 
         # Initialize SQLite DB + repos
         self._db = DatabaseEngine.get_instance()
@@ -345,6 +351,56 @@ class DatasetManager:
     ) -> None:
         """Async variant of :meth:`_persist_media_item`."""
         await asyncio.to_thread(self._persist_media_item, dataset, rel_path)
+
+    # Sentinel for update_media_flags: pass as a field's value to pop that
+    # key from media_metadata entirely, instead of setting it (mirrors the
+    # `dict.pop(field, None)` calls the route-side mutation blocks used to
+    # do inline, e.g. clearing `mask_info` on mask delete/upscale).
+    REMOVE_FIELD = object()
+
+    def update_media_flags(
+        self, dataset_name: str, rel_path: str, **changes: Any,
+    ) -> None:
+        """Atomically apply field updates to one media item and persist (W4.T14).
+
+        Replaces the ~10 route-side copies of "hand-edit
+        ``dataset.media_metadata[key]`` in place, then call
+        ``_persist_media_item_async``" (overlay/masking/caption/video/upscale
+        routes) — each site mutated the shared in-memory dict on the event
+        loop with no lock, so two concurrent requests touching the SAME item
+        (e.g. a mask delete racing an upscale) could interleave field-by-field
+        and persist a torn snapshot, silently losing whichever update's
+        SQLite write happened to finish first.
+
+        Takes :attr:`_media_mutation_lock` across the WHOLE mutate+persist
+        sequence, so one call's changes are fully applied and written to
+        SQLite (and the ``entity.changed`` event broadcast) before the next
+        call — on any thread — can start. Pass :attr:`REMOVE_FIELD` as a
+        field's value to pop that key instead of setting it.
+
+        Raises ``ValueError`` for an unknown dataset or media item (mirrors
+        the manager's other by-name lookups).
+        """
+        lookup_key = rel_path.replace(os.sep, "/").replace("\\", "/")
+        with self._media_mutation_lock:
+            dataset = self.datasets.get(dataset_name)
+            if dataset is None:
+                raise ValueError(f"Dataset not found: {dataset_name}")
+            meta = dataset.media_metadata.get(lookup_key)
+            if meta is None:
+                raise ValueError(f"Media item not found: {lookup_key}")
+            for field, value in changes.items():
+                if value is self.REMOVE_FIELD:
+                    meta.pop(field, None)
+                else:
+                    meta[field] = value
+            self._persist_media_item(dataset, lookup_key)
+
+    async def update_media_flags_async(
+        self, dataset_name: str, rel_path: str, **changes: Any,
+    ) -> None:
+        """Async variant of :meth:`update_media_flags` for FastAPI routes."""
+        await asyncio.to_thread(self.update_media_flags, dataset_name, rel_path, **changes)
 
     def list_datasets(self) -> list[Dataset]:
         return list(self.datasets.values())

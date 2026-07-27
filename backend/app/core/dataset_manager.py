@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from pydantic import BaseModel, Field, computed_field, field_validator
 import shutil
 from PIL import Image
@@ -359,7 +359,12 @@ class DatasetManager:
     REMOVE_FIELD = object()
 
     def update_media_flags(
-        self, dataset_name: str, rel_path: str, **changes: Any,
+        self,
+        dataset_name: str,
+        rel_path: str,
+        *,
+        derive: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        **changes: Any,
     ) -> None:
         """Atomically apply field updates to one media item and persist (W4.T14).
 
@@ -378,6 +383,21 @@ class DatasetManager:
         call — on any thread — can start. Pass :attr:`REMOVE_FIELD` as a
         field's value to pop that key instead of setting it.
 
+        ``derive``: some callers need to compute a field's new value FROM
+        the item's own current state (e.g. commit_overlay carrying
+        ``overlay_dimensions`` over into ``width``/``height``). Reading
+        that state before calling this method — outside the lock — reopens
+        exactly the race this method exists to close: a concurrent call
+        for the SAME item can change that state in between, and the
+        caller's pre-read value then overwrites it. Pass a callable
+        instead; it is invoked with the item's live ``meta`` dict AFTER
+        the lock is held and BEFORE ``changes`` are applied, and its
+        returned dict is merged as additional changes (``changes`` values
+        win on key collision, since they're the caller's explicit,
+        non-derived intent). Keeps the derive-from-existing-state need out
+        of every other caller's signature — only overlay commit uses it
+        today.
+
         Raises ``ValueError`` for an unknown dataset or media item (mirrors
         the manager's other by-name lookups).
         """
@@ -389,7 +409,12 @@ class DatasetManager:
             meta = dataset.media_metadata.get(lookup_key)
             if meta is None:
                 raise ValueError(f"Media item not found: {lookup_key}")
-            for field, value in changes.items():
+            all_changes = changes
+            if derive is not None:
+                derived_changes = derive(meta)
+                if derived_changes:
+                    all_changes = {**derived_changes, **changes}
+            for field, value in all_changes.items():
                 if value is self.REMOVE_FIELD:
                     meta.pop(field, None)
                 else:
@@ -397,10 +422,21 @@ class DatasetManager:
             self._persist_media_item(dataset, lookup_key)
 
     async def update_media_flags_async(
-        self, dataset_name: str, rel_path: str, **changes: Any,
+        self,
+        dataset_name: str,
+        rel_path: str,
+        *,
+        derive: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        **changes: Any,
     ) -> None:
         """Async variant of :meth:`update_media_flags` for FastAPI routes."""
-        await asyncio.to_thread(self.update_media_flags, dataset_name, rel_path, **changes)
+        await asyncio.to_thread(
+            self.update_media_flags,
+            dataset_name,
+            rel_path,
+            derive=derive,
+            **changes,
+        )
 
     def list_datasets(self) -> list[Dataset]:
         return list(self.datasets.values())

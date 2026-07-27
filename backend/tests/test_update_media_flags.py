@@ -92,6 +92,59 @@ async def test_update_media_flags_async_delegates_to_sync(seeded_dataset, monkey
     assert seeded_dataset.media_metadata["a.jpg"]["field_a"] == 42
 
 
+def test_update_media_flags_derive_reads_meta_under_the_lock(seeded_dataset, monkeypatch):
+    """``derive`` (W4 Finding 2 fix) must be invoked with the item's LIVE
+    meta dict, evaluated after the lock is acquired — a caller that needs
+    to seed a field's value from the item's own current state (e.g.
+    commit_overlay carrying overlay_dimensions into width/height) must not
+    have to read that state itself before calling this method, since that
+    reopens the exact race this method exists to close.
+    """
+    monkeypatch.setattr(dataset_manager, "_persist_media_item", lambda dataset, rel_path: None)
+    seeded_dataset.media_metadata["a.jpg"]["field_a"] = 7
+
+    seen_meta = {}
+
+    def _derive(meta):
+        seen_meta.update(meta)
+        return {"field_b": meta["field_a"] * 10}
+
+    dataset_manager.update_media_flags("umf-test", "a.jpg", derive=_derive)
+
+    assert seen_meta["field_a"] == 7
+    assert seeded_dataset.media_metadata["a.jpg"]["field_b"] == 70
+
+
+def test_update_media_flags_explicit_changes_win_over_derived(seeded_dataset, monkeypatch):
+    """Explicit kwargs are the caller's non-derived intent — they must not
+    be silently overridden by a same-named field the derive callable also
+    produces."""
+    monkeypatch.setattr(dataset_manager, "_persist_media_item", lambda dataset, rel_path: None)
+
+    dataset_manager.update_media_flags(
+        "umf-test", "a.jpg",
+        derive=lambda meta: {"field_a": 999},
+        field_a=5,
+    )
+
+    assert seeded_dataset.media_metadata["a.jpg"]["field_a"] == 5
+
+
+def test_update_media_flags_derive_returning_empty_dict_is_a_noop(seeded_dataset, monkeypatch):
+    """A derive callable that finds nothing to contribute (e.g.
+    commit_overlay's ``overlay_dimensions`` already cleared) must not
+    clobber unrelated explicit changes or error."""
+    monkeypatch.setattr(dataset_manager, "_persist_media_item", lambda dataset, rel_path: None)
+
+    dataset_manager.update_media_flags(
+        "umf-test", "a.jpg",
+        derive=lambda meta: {},
+        field_a=3,
+    )
+
+    assert seeded_dataset.media_metadata["a.jpg"]["field_a"] == 3
+
+
 def test_update_media_flags_second_caller_blocks_until_first_fully_persists(
     seeded_dataset, monkeypatch,
 ):

@@ -156,17 +156,57 @@ class LogTailer:
                     if not line:
                         continue
 
-                    # Advance the tracked offset BEFORE dispatching: a
-                    # handler that calls stop() synchronously from inside
-                    # the callback (e.g. JobManager's exit-message path)
-                    # must see the post-line offset when stop()'s forced
-                    # save runs, not the pre-line one.
-                    self._offset = f.tell()
+                    end_pos = f.tell()
                     try:
                         entry = json.loads(line)
-                        self.dispatcher(self.job_id, entry)
                     except json.JSONDecodeError:
                         logger.debug("log_tailer_bad_json", job_id=self.job_id)
+                        # Unparseable line: there is nothing a redelivery
+                        # could fix, so advance past it like a dispatched
+                        # line.
+                        self._offset = end_pos
+                    else:
+                        # Offset-commit semantics (two DIFFERENT failure
+                        # modes need opposite answers to "did this line
+                        # finish?"):
+                        #
+                        # 1. A handler calls stop() synchronously from
+                        #    inside the callback (e.g. JobManager's
+                        #    exit-message path). stop() does
+                        #    ``Thread.join(self)`` when called off-thread,
+                        #    which would raise and abort the loop before
+                        #    any AFTER-dispatch advance could run — so the
+                        #    offset must already reflect this line by the
+                        #    time stop()'s forced save executes. Advancing
+                        #    before dispatch satisfies this (W4.T8).
+                        #
+                        # 2. The dispatcher instead raises a genuine
+                        #    exception (a handler bug, not
+                        #    JSONDecodeError). That propagates to the
+                        #    `except Exception` below, which ends _run()
+                        #    with NO forced save — but job_manager's
+                        #    cleanup unconditionally calls tailer.stop()
+                        #    afterward regardless of why the thread died,
+                        #    and ITS forced save would persist whatever
+                        #    `self._offset` holds. If we left it advanced
+                        #    past the line that just failed to dispatch,
+                        #    that line is skipped forever on the next
+                        #    re-attach — silent at-most-once data loss.
+                        #
+                        # Case 1 needs "advance before"; case 2 needs
+                        # "advance only after success". Reconciled here by
+                        # advancing before the call (for case 1) and
+                        # rolling back to the pre-line offset if the call
+                        # raises (for case 2), before letting the
+                        # exception propagate — restoring at-least-once
+                        # redelivery for a failed dispatch while keeping
+                        # the stop()-from-dispatcher fix intact.
+                        self._offset = end_pos
+                        try:
+                            self.dispatcher(self.job_id, entry)
+                        except Exception:
+                            self._offset = current_pos
+                            raise
 
                     self._lines_since_save += 1
                     self._save_offset()

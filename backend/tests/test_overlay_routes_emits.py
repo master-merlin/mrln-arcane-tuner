@@ -14,6 +14,7 @@ emission check.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
@@ -156,6 +157,71 @@ async def test_commit_overlay_broadcasts_deleted(overlay_dataset):
 
     # Overlay PNG should be gone (flattened into the original).
     assert not (Path(ds.path) / "overlays" / "image.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_commit_overlay_does_not_revert_concurrent_overlay_dims_race(
+    overlay_dataset, monkeypatch,
+):
+    """Regression: ``commit_overlay`` used to read
+    ``dataset.media_metadata[key]["overlay_dimensions"]`` via a plain,
+    unlocked dict access to seed the width/height it writes through the
+    atomic ``update_media_flags``. If a concurrent request (e.g. another
+    overlay render, or a mask delete — precisely T14's own docstring
+    scenario) updated ``overlay_dimensions`` in the window between that
+    stale read and commit's own ``update_media_flags`` call, the OLD
+    value would still get written under the lock — silently reverting the
+    concurrent request's newer state.
+
+    This fires a same-shaped concurrent update (via the same atomic
+    ``update_media_flags`` a real racer would use) at the exact point the
+    OLD code's plain read preceded: the ``_size_if_exists`` ``to_thread``
+    hop, the only ``await`` between the old unlocked read and commit's
+    lock call. Asserts the FINAL width/height reflect the concurrent
+    update's dimensions, not the ones present when the request started —
+    provable only if the derivation happens atomically with the write,
+    not via an earlier unlocked read.
+    """
+    ds, rel_path = overlay_dataset
+    assert ds.media_metadata[rel_path]["overlay_dimensions"] == [512, 512]
+
+    real_to_thread = asyncio.to_thread
+    fired = {"done": False}
+
+    async def _to_thread_with_race(func, *args, **kwargs):
+        if not fired["done"] and getattr(func, "__name__", "") == "_size_if_exists":
+            fired["done"] = True
+            # Simulate a second, concurrent request (e.g. another overlay
+            # render) updating this item's overlay dimensions via the SAME
+            # atomic path a real racer would use — landing strictly
+            # between commit_overlay's old stale read and its own
+            # update_media_flags call.
+            dataset_manager.update_media_flags(
+                ds.name, rel_path, overlay_dimensions=[1024, 768],
+            )
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread_with_race)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post(
+            f"/api/datasets/{ds.name}/overlay/commit",
+            json={"image_path": rel_path},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert fired["done"], "race hook never fired — test setup is stale"
+
+    meta = ds.media_metadata[rel_path]
+    assert meta["width"] == 1024, (
+        f"width must reflect the CONCURRENT update (1024), not a value "
+        f"read before it landed; got {meta.get('width')}"
+    )
+    assert meta["height"] == 768, (
+        f"height must reflect the CONCURRENT update (768), not a value "
+        f"read before it landed; got {meta.get('height')}"
+    )
 
 
 @pytest.mark.asyncio

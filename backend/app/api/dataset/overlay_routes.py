@@ -441,10 +441,6 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
     lookup_key = request.image_path.replace("\\", "/")
     if lookup_key in dataset.media_metadata:
         remove = dataset_manager.REMOVE_FIELD
-        # Carry over overlay dimensions as the new original dimensions (a
-        # plain read here — the live dict isn't touched until the atomic
-        # update_media_flags call below applies every field together).
-        overlay_dims = dataset.media_metadata[lookup_key].get("overlay_dimensions")
 
         # Recalculate size (paired exists+stat in one thread hop)
         def _size_if_exists(p: Path) -> int | None:
@@ -464,14 +460,28 @@ async def commit_overlay(name: str, request: OverlayCommitRequest):
             "has_masked_caption": False,
             "mask_info": remove,
         }
-        if overlay_dims:
-            changes["width"] = overlay_dims[0]
-            changes["height"] = overlay_dims[1]
         if new_size is not None:
             changes["size_bytes"] = new_size
 
+        def _derive_dims_from_overlay(meta: dict[str, Any]) -> dict[str, Any]:
+            # Carry over overlay dimensions as the new original dimensions.
+            # Evaluated by update_media_flags AFTER it takes the mutation
+            # lock — reading the live dict here (instead of before this
+            # call) closes the race where a concurrent request (e.g.
+            # another overlay render) changes overlay_dimensions between a
+            # pre-lock read and this call's own lock acquisition, which
+            # would otherwise let this call silently revert the concurrent
+            # update with a stale width/height.
+            dims = meta.get("overlay_dimensions")
+            if not dims:
+                return {}
+            return {"width": dims[0], "height": dims[1]}
+
         await dataset_manager.update_media_flags_async(
-            name, request.image_path, **changes,
+            name,
+            request.image_path,
+            derive=_derive_dims_from_overlay,
+            **changes,
         )
 
     # Bump version

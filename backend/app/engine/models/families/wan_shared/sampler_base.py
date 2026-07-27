@@ -135,6 +135,36 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
 
     # ── Scheduler / sigma schedule ─────────────────────────────────────────
 
+    def _maybe_pad_i2v(self, x: Tensor) -> Tensor:
+        """Zero-pad a 16-channel latent to 36 for A14B i2v checkpoints.
+
+        A14B i2v checkpoints train with ``[noisy16, mask4, cond16]``
+        concatenated along channels (a 36-in-channel ``patch_embedding``);
+        previews run the plain t2v path with no pinned first frame, so
+        mask+cond are zeroed via :func:`build_still_t2v_input` — the same
+        semantics as the training-side F=1 still guard
+        (``driver_base``/``build_still_t2v_input``). T2V (16-in-channel) and
+        TI2V-5B (48-in-every-mode) checkpoints pass ``x`` through unchanged —
+        this is a NO-OP whenever the active transformer's ``in_channels`` is
+        not 36.
+
+        This is the SHARED seam both the base ``denoise`` (wan21/TI2V-5B) and
+        :class:`Wan22Sampler` (which fully overrides ``denoise`` for the
+        dual-expert boundary switch) must call — a wan22-i2v run pins
+        ``transformer.in_channels: 36`` for both experts but the base's inline
+        pad guard lived only in this class's ``denoise``, so the wan22
+        override never inherited it and every wan22-i2v preview crashed
+        ("expected input ... to have 36 channels, but got 16", wave-3 audit
+        2026-07-26 — the sibling of the wan2.1-i2v crash this guard originally
+        fixed, GPU UAT 2026-07-14).
+        """
+        transformer = self.pipeline.driver.get_primary_model()
+        tf_cfg = getattr(transformer, "config", None)
+        pad_to_36 = int(getattr(tf_cfg, "in_channels", 16) or 16) == 36
+        if pad_to_36 and x.shape[1] == 16:
+            return build_still_t2v_input(x)
+        return x
+
     def _build_sigmas(self, num_steps: int) -> Tensor:
         """Resolution-shifted FlowMatchEuler sigma schedule, descending 1 → 0.
 
@@ -235,13 +265,10 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
 
         # A14B i2v checkpoints have a 36-in-channel patch_embedding
         # ([noisy16, mask4, cond16]); previews run the t2v path with NO pinned
-        # frame, so pad mask+cond with zeros — the same semantics as the
-        # training-side F=1 still guard (driver_base/build_still_t2v_input).
-        # T2V (16) and TI2V-5B (48-in-every-mode) checkpoints are untouched.
-        # Without this, step-0/final sampling on wan2.1-i2v crashed: "expected
-        # input ... to have 36 channels, but got 16" (GPU UAT 2026-07-14).
-        _tf_cfg = getattr(transformer, "config", None)
-        pad_to_36 = int(getattr(_tf_cfg, "in_channels", 16) or 16) == 36
+        # frame, so pad mask+cond with zeros — see _maybe_pad_i2v (a no-op for
+        # T2V/TI2V-5B). Without this, step-0/final sampling on wan2.1-i2v
+        # crashed: "expected input ... to have 36 channels, but got 16"
+        # (GPU UAT 2026-07-14).
 
         def _forward(x: Tensor, sigma: Tensor, cond: Any) -> Tensor:
             # The trajectory steps in sigma ∈ [0,1], but the transformer is
@@ -253,7 +280,7 @@ class WanVideoSamplerBase(GenericSamplingPipeline):
             # the training forward — and euler_integrate upcasts the result to
             # fp32 before accumulation (no autocast around the loop).
             t = (sigma * WAN_FLOWMATCH_SCALE).reshape(1).expand(x.shape[0])
-            x_in = build_still_t2v_input(x) if pad_to_36 and x.shape[1] == 16 else x
+            x_in = self._maybe_pad_i2v(x)
             with torch.no_grad(), torch.autocast(
                 device_type=device_type, dtype=autocast_dtype
             ):

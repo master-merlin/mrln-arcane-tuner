@@ -489,6 +489,30 @@ class PipelineOptimizationMixin:
                 if isinstance(te, PeftModel):
                     peft_comps[name] = te
 
+            # Dual-expert families (wan22 A14B / bernini_r 14B `both` mode)
+            # train a SECOND PEFT expert that the saver writes independently
+            # under its own key — see e.g. Wan22Trainer._build_trainable_components
+            # (`unet_high` / `unet_low`, alongside `unet` = whichever expert is
+            # currently active). Requesting only "unet" above restores the
+            # ACTIVE expert; the INACTIVE one would silently keep its
+            # freshly-initialized adapter with no signal anything is wrong —
+            # the same failure class the zero-adapter guard in
+            # CheckpointManager.load_checkpoint closes, except THAT guard never
+            # trips here because "unet" WAS requested and found (only the
+            # partial gap is missed). Mirror whatever the family's save side
+            # exposes — pull in any additional PEFT component from
+            # _build_trainable_components not already covered by IDENTITY
+            # ("unet" always aliases one of unet_high/unet_low, so the same
+            # object would otherwise be requested twice under different names).
+            seen_ids = {id(comp) for comp in peft_comps.values()}
+            for name, comp in self._build_trainable_components().items():
+                if name == "unet" or not isinstance(comp, PeftModel):
+                    continue
+                if id(comp) in seen_ids:
+                    continue
+                peft_comps[name] = comp
+                seen_ids.add(id(comp))
+
             checkpoint_state = self.checkpoint_manager.load_checkpoint(
                 resume_path,
                 peft_components=peft_comps,
@@ -522,6 +546,29 @@ class PipelineOptimizationMixin:
                 adapters=checkpoint_state.adapters_loaded,
                 components=checkpoint_state.components_loaded,
             )
+
+            # Partial-adapter-restore signal: SOME but not all requested PEFT
+            # components were found on disk (the all-missing case already
+            # raised inside load_checkpoint). A hard raise here would be wrong
+            # — a checkpoint saved before a second expert existed (or from a
+            # single-expert run now resumed by a dual-expert config) is a
+            # legitimate, if degraded, resume — but it must not be silent:
+            # the missing component(s) continue from FRESH random adapters.
+            missing_adapters = sorted(
+                set(peft_comps) - set(checkpoint_state.adapters_loaded)
+            )
+            if missing_adapters:
+                self.logger.warning(
+                    "resume_partial_adapter_restore",
+                    missing=missing_adapters,
+                    restored=checkpoint_state.adapters_loaded,
+                    message=(
+                        "Checkpoint has no adapter weights for the above "
+                        "requested PEFT component(s) — they resume from FRESH "
+                        "(randomly-initialized) adapters instead of the "
+                        "checkpoint's trained weights."
+                    ),
+                )
 
             # Recreate LR scheduler for remaining steps so cosine/linear
             # decay correctly over the remaining training period.

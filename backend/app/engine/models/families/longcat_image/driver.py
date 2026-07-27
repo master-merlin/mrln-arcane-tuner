@@ -14,6 +14,7 @@ replicated: training captions are ground truth.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -39,6 +40,33 @@ PROMPT_TEMPLATE_PREFIX = (
 )
 PROMPT_TEMPLATE_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
 
+# Quotation pairs ``split_quotation`` treats as glyph-preserving spans — a
+# module constant (rather than inline in the function default) so
+# ``te_template_fingerprint`` can hash the SAME list ``split_quotation``
+# actually uses, instead of a second hand-maintained copy silently drifting
+# out of sync.
+QUOTE_PAIRS: list[tuple[str, str]] = [("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")]
+
+
+def te_template_fingerprint() -> str:
+    """Fingerprint of every constant that transforms a caption before encoding.
+
+    Covers the prefix/suffix chat-template wrapper (``PROMPT_TEMPLATE_PREFIX``
+    / ``_SUFFIX``) and the quotation-aware tokenization pairs (``QUOTE_PAIRS``)
+    that ``split_quotation`` uses to decide which spans get per-character
+    tokenization. Computed FRESH on every call (reads the current module
+    globals rather than freezing a value at import time) so a future edit —
+    or a test monkeypatching one of these constants — is picked up
+    immediately.
+
+    Used by ``LongCatImageTrainer`` to version its disk-cache key
+    (``_disk_cache_key`` in trainer.py — the qwen_image/boogu_image
+    precedent) so a template change can never silently reuse embeddings
+    encoded under the OLD template.
+    """
+    src = "|".join([PROMPT_TEMPLATE_PREFIX, PROMPT_TEMPLATE_SUFFIX, repr(QUOTE_PAIRS)])
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
+
 
 def split_quotation(prompt: str, quote_pairs=None) -> list[tuple[str, bool]]:
     """Split *prompt* on single/double quote pairs (pipeline-verbatim).
@@ -57,7 +85,7 @@ def split_quotation(prompt: str, quote_pairs=None) -> list[tuple[str, bool]]:
         mapping_word_internal.append([word_src, word_tgt])
 
     if quote_pairs is None:
-        quote_pairs = [("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")]
+        quote_pairs = QUOTE_PAIRS
     pattern = "|".join(
         re.escape(q1) + r"[^" + re.escape(q1 + q2) + r"]*?" + re.escape(q2)
         for q1, q2 in quote_pairs

@@ -26,6 +26,7 @@ DreamLite specifics:
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import structlog
@@ -58,6 +59,34 @@ _DEFAULT_MAX_SEQUENCE_LENGTH = 200
 # The pipeline's generate-mode prompt prefix (applied by __call__, NOT by
 # encode_prompt — negatives stay un-prefixed). Exposed for trainer/sampler.
 GENERATE_PREFIX = "[Generate]: "
+
+
+def te_template_fingerprint() -> str:
+    """Fingerprint of every constant that transforms a caption before encoding.
+
+    Covers the pinned chat template (``DREAMLITE_PROMPT_TEMPLATE``) and the
+    default template-prefix drop index / max sequence length (the values
+    ``self.drop_idx`` / ``self.max_sequence_length`` fall back to when a
+    definition does not override ``te.drop_idx`` / ``te.max_sequence_length``).
+    Computed FRESH on every call (reads the current module globals rather
+    than freezing a value at import time) so a future edit — or a test
+    monkeypatching one of these constants — is picked up immediately.
+
+    Used by ``DreamLiteTrainer`` to version its disk-cache key
+    (``_disk_cache_key`` in trainer.py — the qwen_image/boogu_image
+    precedent) so a template or drop-idx change can never silently reuse
+    embeddings encoded under the OLD template (the poisoned-cache incident
+    class this closes: only the ``"[Generate]: "`` prefix previously reached
+    the hashed key, not the chat template or drop-idx it wraps).
+    """
+    src = "|".join(
+        [
+            DREAMLITE_PROMPT_TEMPLATE,
+            str(_DEFAULT_DROP_IDX),
+            str(_DEFAULT_MAX_SEQUENCE_LENGTH),
+        ]
+    )
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
 
 
 class DreamLiteDriver(IModelDriver):

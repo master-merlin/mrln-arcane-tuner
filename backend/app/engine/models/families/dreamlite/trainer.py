@@ -114,6 +114,31 @@ class DreamLiteTrainer(GenericTrainingPipeline):
 
         return f"{GENERATE_PREFIX}{text}"
 
+    # -- Disk-cache key template identity --
+    #
+    # ``TextEmbeddingCache.caption_to_filename`` hashes ONLY the string it is
+    # given. Before this fix, that string was the (optionally
+    # ``"[Generate]: "``-prefixed) caption alone — a future edit to the
+    # driver's pinned chat template or ``drop_idx`` would silently reuse
+    # embeddings encoded under the OLD template, since the on-disk filename
+    # for the SAME caption text wouldn't change (the poisoned-cache incident
+    # class this closes; see ``te_template_fingerprint`` in driver.py).
+
+    @staticmethod
+    def _disk_cache_key(key: str) -> str:
+        """Compose the string hashed by ``TextEmbeddingCache.caption_to_filename``.
+
+        Baking the driver's TE template fingerprint into the hashed string
+        (instead of the raw, already-prefixed key) means a future template
+        or drop-idx change produces a DIFFERENT on-disk filename for the
+        same text, instead of silently reusing a stale embedding encoded
+        under the old template.
+        """
+        from .driver import te_template_fingerprint  # noqa: PLC0415
+
+        template_id = f"dreamlite/qwen3vl_chat_template/v1/{te_template_fingerprint()}"
+        return f"{template_id}::{key}"
+
     # -- Disk-backed TE Pre-caching --
 
     def _sample_prompt_texts(self) -> list[str]:
@@ -189,8 +214,12 @@ class DreamLiteTrainer(GenericTrainingPipeline):
             if key in self.text_cache:
                 continue
             if te1_dir and te2_dir:
-                emb_tensor = TextEmbeddingCache.load(key, te1_dir, hint)
-                mask_tensor = TextEmbeddingCache.load(key, te2_dir, hint)
+                emb_tensor = TextEmbeddingCache.load(
+                    self._disk_cache_key(key), te1_dir, hint
+                )
+                mask_tensor = TextEmbeddingCache.load(
+                    self._disk_cache_key(key), te2_dir, hint
+                )
                 if emb_tensor is not None and mask_tensor is not None:
                     self.text_cache[key] = (emb_tensor, mask_tensor)
                     disk_loaded += 1
@@ -252,9 +281,13 @@ class DreamLiteTrainer(GenericTrainingPipeline):
                     mask_cpu = mask_batch[j].cpu()
                     self.text_cache[key] = (emb_cpu, mask_cpu)
                     if te1_dir:
-                        TextEmbeddingCache.save(key, emb_cpu, te1_dir, hint)
+                        TextEmbeddingCache.save(
+                            self._disk_cache_key(key), emb_cpu, te1_dir, hint
+                        )
                     if te2_dir:
-                        TextEmbeddingCache.save(key, mask_cpu, te2_dir, hint)
+                        TextEmbeddingCache.save(
+                            self._disk_cache_key(key), mask_cpu, te2_dir, hint
+                        )
 
                 pct = int(
                     min(i + batch_size, encode_total) / encode_total * 100,

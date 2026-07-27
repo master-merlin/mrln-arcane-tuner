@@ -120,3 +120,69 @@ def test_negative_is_idempotent_within_the_same_trainer_instance(tmp_path):
     t.driver.encoded.clear()
     t._pre_cache_text_embeddings()
     assert "ugly" not in t.driver.encoded  # already cached — not re-encoded
+
+
+# ── W3.T8: disk-cache key carries the TE template fingerprint ──────────────
+#
+# ``TextEmbeddingCache.caption_to_filename`` hashes ONLY the string it is
+# given. Before this fix, that string was the raw caption alone — a future
+# edit to the driver's prefix/suffix chat template or its quotation-aware
+# tokenization quote pairs would silently reuse embeddings encoded under the
+# OLD template (the same poisoned-cache incident class the qwen_image /
+# boogu_image families already guard against). ``_disk_cache_key`` now bakes
+# ``te_template_fingerprint()`` (driver.py) into the hashed string.
+
+
+def test_disk_cache_key_changes_when_chat_template_changes(monkeypatch):
+    from app.engine.models.families.longcat_image import driver as longcat_driver
+    from app.engine.models.families.longcat_image.trainer import _disk_cache_key
+
+    original = _disk_cache_key("a cat")
+    monkeypatch.setattr(
+        longcat_driver,
+        "PROMPT_TEMPLATE_SUFFIX",
+        "<|im_end|>\n<|im_start|>assistant\nCHANGED\n",
+    )
+    changed = _disk_cache_key("a cat")
+
+    assert original != changed
+
+
+def test_disk_cache_key_changes_when_quote_pairs_change(monkeypatch):
+    from app.engine.models.families.longcat_image import driver as longcat_driver
+    from app.engine.models.families.longcat_image.trainer import _disk_cache_key
+
+    original = _disk_cache_key("a cat")
+    monkeypatch.setattr(longcat_driver, "QUOTE_PAIRS", [("'", "'")])
+    changed = _disk_cache_key("a cat")
+
+    assert original != changed
+
+
+def test_disk_cache_key_stable_for_the_same_template():
+    from app.engine.models.families.longcat_image.trainer import _disk_cache_key
+
+    assert _disk_cache_key("a cat") == _disk_cache_key("a cat")
+
+
+def test_template_change_invalidates_disk_cache(tmp_path, monkeypatch):
+    """End-to-end: a template edit must force a re-encode, not a stale hit."""
+    from app.engine.models.families.longcat_image import driver as longcat_driver
+
+    cold = _trainer(tmp_path, captions={"a cat": ""})
+    cold._pre_cache_text_embeddings()
+    assert cold.driver.encoded == ["a cat"]
+
+    # Simulate a future template edit.
+    monkeypatch.setattr(
+        longcat_driver,
+        "PROMPT_TEMPLATE_SUFFIX",
+        "<|im_end|>\n<|im_start|>assistant\nCHANGED\n",
+    )
+
+    warm = _trainer(tmp_path, captions={"a cat": ""})
+    warm._pre_cache_text_embeddings()
+
+    # Re-encoded — NOT silently served from the disk entry written under
+    # the old template.
+    assert warm.driver.encoded == ["a cat"]

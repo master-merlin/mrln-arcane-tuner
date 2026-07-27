@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
+import shutil
+import tempfile
 import threading
 import uuid
 import zipfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict
 
 from app.api.training.template_routes import (
@@ -365,63 +370,93 @@ async def update_preferences(
 
 
 @router.post("/{project_id}/export")
-async def export_project(project_id: str, req: ExportProjectRequest) -> StreamingResponse:
+async def export_project(project_id: str, req: ExportProjectRequest) -> FileResponse:
     """Assemble a kind='project' archive: metadata + preferences + selected
-    templates (nested template archives) + datasets (embed/reference/exclude)."""
-    from pathlib import Path
+    templates (nested template archives) + datasets (embed/reference/exclude).
 
+    W4.T11: an embedded dataset can carry multi-GB video media, so each
+    embedded dataset is streamed straight to its own temp file
+    (``write_export_zip_to_path``) and the outer bundle is streamed straight
+    to a temp file too (``write_bundle_zip_to_path``, copying the nested
+    dataset zips in via ``zf.write`` rather than holding them as in-memory
+    bytes) — the response is served from that temp file and never fully
+    buffered in RAM. Per-dataset temp files are cleaned up once the bundle is
+    built; the bundle's own temp file is cleaned up after the response is
+    sent (``BackgroundTask``).
+    """
     from app import __version__ as APP_VERSION
     from app.api.training.template_routes import export_template_archive_bytes
     from app.core.dataset import portable as dportable
     from app.core.dataset_manager import dataset_manager
-    from app.core.portable.archive import write_bundle_zip
+    from app.core.portable import archive as parchive
     from app.core.project import portable as pportable
 
-    def _build() -> StreamingResponse:
+    def _build() -> tuple[str, str]:
         project = _projects.get_by_id(project_id)
         if not project:
             raise HTTPException(404, "Project not found")
         prefs = _prefs.get(project_id)
 
-        entries: dict[str, bytes] = {}
+        entries: dict[str, bytes | Path] = {}
         seen_arcnames: set[str] = set()
+        dataset_tmp_paths: list[Path] = []
         template_refs: list[dict[str, Any]] = []
-        for t in req.templates:
-            payload = export_template_archive_bytes(t.domain, t.id)
-            if payload is None:
-                raise HTTPException(404, f"Template not found: {t.domain}/{t.id}")
-            arcname = pportable.unique_arcname(
-                f"templates/{t.domain}-{pportable.slugify(t.id)}.zip", seen_arcnames)
-            entries[arcname] = payload
-            template_refs.append({"domain": t.domain, "archive": arcname})
+        out_tmp: str | None = None
+        try:
+            for t in req.templates:
+                payload = export_template_archive_bytes(t.domain, t.id)
+                if payload is None:
+                    raise HTTPException(404, f"Template not found: {t.domain}/{t.id}")
+                arcname = pportable.unique_arcname(
+                    f"templates/{t.domain}-{pportable.slugify(t.id)}.zip", seen_arcnames)
+                entries[arcname] = payload
+                template_refs.append({"domain": t.domain, "archive": arcname})
 
-        dataset_refs: list[dict[str, Any]] = []
-        for d in req.datasets:
-            if d.mode == "exclude":
-                continue
-            if d.mode == "reference":
-                dataset_refs.append({"mode": "reference", "name": d.name})
-                continue
-            # embed
-            ds = dataset_manager.get_dataset(d.name)
-            if ds is None:
-                raise HTTPException(404, f"Dataset not found: {d.name}")
-            manifest_d = dportable.build_manifest(ds, app_version=APP_VERSION)
-            payload = dportable.write_export_zip(Path(ds.path), manifest_d).getvalue()
-            arcname = pportable.unique_arcname(
-                f"datasets/{pportable.slugify(d.name)}.zip", seen_arcnames)
-            entries[arcname] = payload
-            dataset_refs.append({"mode": "embed", "name": d.name, "archive": arcname})
+            dataset_refs: list[dict[str, Any]] = []
+            for d in req.datasets:
+                if d.mode == "exclude":
+                    continue
+                if d.mode == "reference":
+                    dataset_refs.append({"mode": "reference", "name": d.name})
+                    continue
+                # embed
+                ds = dataset_manager.get_dataset(d.name)
+                if ds is None:
+                    raise HTTPException(404, f"Dataset not found: {d.name}")
+                manifest_d = dportable.build_manifest(ds, app_version=APP_VERSION)
+                arcname = pportable.unique_arcname(
+                    f"datasets/{pportable.slugify(d.name)}.zip", seen_arcnames)
+                fd, ds_tmp = tempfile.mkstemp(suffix=".zip", prefix="dsexport_")
+                os.close(fd)
+                ds_tmp_path = Path(ds_tmp)
+                dataset_tmp_paths.append(ds_tmp_path)
+                dportable.write_export_zip_to_path(ds_tmp_path, Path(ds.path), manifest_d)
+                entries[arcname] = ds_tmp_path
+                dataset_refs.append({"mode": "embed", "name": d.name, "archive": arcname})
 
-        manifest = pportable.build_project_manifest(
-            project, prefs, template_refs, dataset_refs, APP_VERSION)
-        buf = write_bundle_zip(manifest, entries)
+            manifest = pportable.build_project_manifest(
+                project, prefs, template_refs, dataset_refs, APP_VERSION)
+            fd, out_tmp = tempfile.mkstemp(suffix=".zip", prefix="projexport_")
+            os.close(fd)
+            parchive.write_bundle_zip_to_path(Path(out_tmp), manifest, entries)
+        except Exception:
+            if out_tmp:
+                Path(out_tmp).unlink(missing_ok=True)
+            raise
+        finally:
+            for p in dataset_tmp_paths:
+                p.unlink(missing_ok=True)
+
         filename = f"{pportable.slugify(project.get('name'))}.project.zip"
-        return StreamingResponse(
-            buf, media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        return out_tmp, filename
 
-    return await asyncio.to_thread(_build)
+    tmp_path, filename = await asyncio.to_thread(_build)
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(os.remove, tmp_path),
+    )
 
 
 # ── Import: plan ─────────────────────────────────────────────────────────
@@ -436,44 +471,52 @@ async def plan_project_import(file: UploadFile = File(...)) -> dict[str, Any]:
     from app.core.project import portable as pportable
     from app.core.template import portable as tportable
 
-    data = await file.read()
+    # Stream the upload to a temp file — never buffer a whole project archive
+    # in RAM (it can embed multi-GB video datasets).
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+        tmp.close()
 
-    def _plan() -> dict[str, Any]:
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                manifest = pportable.read_project_manifest(zf)
-                proj = manifest["project"]
+        def _plan() -> dict[str, Any]:
+            try:
+                with zipfile.ZipFile(tmp.name) as zf:
+                    manifest = pportable.read_project_manifest(zf)
+                    proj = manifest["project"]
 
-                templates: list[dict[str, Any]] = []
-                for tref in manifest["templates"]:
-                    nested = zf.read(tref["archive"])
-                    with zipfile.ZipFile(io.BytesIO(nested)) as nzf:
-                        tmanifest = tportable.read_template_manifest(nzf)
-                    templates.extend(plan_template_entries(tmanifest, None))
+                    templates: list[dict[str, Any]] = []
+                    for tref in manifest["templates"]:
+                        nested = zf.read(tref["archive"])
+                        with zipfile.ZipFile(io.BytesIO(nested)) as nzf:
+                            tmanifest = tportable.read_template_manifest(nzf)
+                        templates.extend(plan_template_entries(tmanifest, None))
 
-                datasets: list[dict[str, Any]] = []
-                for dref in manifest["datasets"]:
-                    item = {"name": dref["name"], "mode": dref["mode"]}
-                    if dref["mode"] == "reference":
-                        item["reference_present"] = (
-                            dataset_manager.get_dataset(dref["name"]) is not None)
-                    elif dref["mode"] == "embed":
-                        item["embed_conflict"] = (
-                            dataset_manager.get_dataset(dref["name"]) is not None)
-                    datasets.append(item)
-        except ManifestError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except zipfile.BadZipFile as exc:
-            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+                    datasets: list[dict[str, Any]] = []
+                    for dref in manifest["datasets"]:
+                        item = {"name": dref["name"], "mode": dref["mode"]}
+                        if dref["mode"] == "reference":
+                            item["reference_present"] = (
+                                dataset_manager.get_dataset(dref["name"]) is not None)
+                        elif dref["mode"] == "embed":
+                            item["embed_conflict"] = (
+                                dataset_manager.get_dataset(dref["name"]) is not None)
+                        datasets.append(item)
+            except ManifestError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(400, "Archive is not a valid zip file.") from exc
 
-        return {
-            "project": {"name": proj.get("name"),
-                        "conflict": _projects.get_by_name(proj.get("name")) is not None},
-            "templates": templates,
-            "datasets": datasets,
-        }
+            return {
+                "project": {"name": proj.get("name"),
+                            "conflict": _projects.get_by_name(proj.get("name")) is not None},
+                "templates": templates,
+                "datasets": datasets,
+            }
 
-    return await asyncio.to_thread(_plan)
+        return await asyncio.to_thread(_plan)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 # ── Import: apply + rollback ─────────────────────────────────────────────
@@ -520,8 +563,6 @@ async def apply_project_import(
     *old* project is already gone (mirrors the dataset-import overwrite).
     """
     import json
-    import tempfile
-    from pathlib import Path
 
     from app.api.dataset.crud_routes import _import_from_zip_path
     from app.api.training.template_routes import import_template_entries
@@ -530,7 +571,6 @@ async def apply_project_import(
     from app.core.project import portable as pportable
     from app.core.template import portable as tportable
 
-    data = await file.read()
     try:
         res = json.loads(resolutions or "{}")
     except json.JSONDecodeError as exc:
@@ -539,105 +579,125 @@ async def apply_project_import(
     ds_res = res.get("datasets") or {}
     tpl_res = res.get("templates") or {}
 
-    def _apply() -> dict[str, Any]:
-        try:
-            outer = zipfile.ZipFile(io.BytesIO(data))
-            manifest = pportable.read_project_manifest(outer)
-        except ManifestError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except zipfile.BadZipFile as exc:
-            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+    # Stream the upload to a temp file — never buffer a whole project archive
+    # in RAM (it can embed multi-GB video datasets). `outer` is opened
+    # directly from this path (zipfile reads lazily from disk) and the temp
+    # file is cleaned up once `_apply` (run in a thread, below) returns.
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+        tmp.close()
+        archive_path = tmp.name
 
-        with outer:
-            proj = manifest["project"]
-            name = proj_res.get("name") or proj.get("name") or "Imported Project"
-            on_conflict = proj_res.get("on_conflict")
-            if _projects.get_by_name(name) is not None:
-                if on_conflict == "overwrite":
-                    _projects.delete(_projects.get_by_name(name)["id"])
-                elif on_conflict == "rename":
-                    name = _unique_project_name(name)
-                else:
-                    raise HTTPException(
-                        409, {"conflict": True, "name": name,
-                              "message": f"A project named '{name}' already exists."})
-
-            project_id: str | None = None
-            imported_datasets: list[str] = []
-            installed_defs: list[str] = []
+        def _apply() -> dict[str, Any]:
             try:
-                created = _projects.create({
-                    "name": name,
-                    "description": proj.get("description", ""),
-                    "color": proj.get("color") or "#6366f1"})
-                project_id = created["id"]
+                outer = zipfile.ZipFile(archive_path)
+                manifest = pportable.read_project_manifest(outer)
+            except ManifestError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(400, "Archive is not a valid zip file.") from exc
 
-                linked_refs: list[str] = []
-                missing_refs: list[str] = []
-                for dref in manifest["datasets"]:
-                    if dref["mode"] == "reference":
-                        ds = dataset_manager.get_dataset(dref["name"])
-                        if ds is not None:
+            with outer:
+                proj = manifest["project"]
+                name = proj_res.get("name") or proj.get("name") or "Imported Project"
+                on_conflict = proj_res.get("on_conflict")
+                if _projects.get_by_name(name) is not None:
+                    if on_conflict == "overwrite":
+                        _projects.delete(_projects.get_by_name(name)["id"])
+                    elif on_conflict == "rename":
+                        name = _unique_project_name(name)
+                    else:
+                        raise HTTPException(
+                            409, {"conflict": True, "name": name,
+                                  "message": f"A project named '{name}' already exists."})
+
+                project_id: str | None = None
+                imported_datasets: list[str] = []
+                installed_defs: list[str] = []
+                try:
+                    created = _projects.create({
+                        "name": name,
+                        "description": proj.get("description", ""),
+                        "color": proj.get("color") or "#6366f1"})
+                    project_id = created["id"]
+
+                    linked_refs: list[str] = []
+                    missing_refs: list[str] = []
+                    for dref in manifest["datasets"]:
+                        if dref["mode"] == "reference":
+                            ds = dataset_manager.get_dataset(dref["name"])
+                            if ds is not None:
+                                _projects.add_dataset(project_id, ds.id)
+                                linked_refs.append(dref["name"])
+                            else:
+                                missing_refs.append(dref["name"])
+                        elif dref["mode"] == "embed":
+                            # Stream the nested dataset archive straight to a
+                            # temp file via the zip member's file handle
+                            # (outer.open) rather than outer.read(), which
+                            # would pull the whole nested archive (a dataset
+                            # can carry multi-GB video media) into memory.
+                            ds_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+                            try:
+                                with outer.open(dref["archive"]) as src:
+                                    shutil.copyfileobj(src, ds_tmp)
+                                ds_tmp.close()
+                                oc = (ds_res.get(dref["name"]) or {}).get("on_conflict") or "rename"
+                                ds = _import_from_zip_path(Path(ds_tmp.name), oc, None)
+                            finally:
+                                Path(ds_tmp.name).unlink(missing_ok=True)
+                            imported_datasets.append(ds.name)
                             _projects.add_dataset(project_id, ds.id)
-                            linked_refs.append(dref["name"])
-                        else:
-                            missing_refs.append(dref["name"])
-                    elif dref["mode"] == "embed":
-                        nested = outer.read(dref["archive"])
-                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-                        try:
-                            tmp.write(nested)
-                            tmp.close()
-                            oc = (ds_res.get(dref["name"]) or {}).get("on_conflict") or "rename"
-                            ds = _import_from_zip_path(Path(tmp.name), oc, None)
-                        finally:
-                            Path(tmp.name).unlink(missing_ok=True)
-                        imported_datasets.append(ds.name)
-                        _projects.add_dataset(project_id, ds.id)
 
-                created_t: list[dict[str, Any]] = []
-                skipped_t: list[dict[str, Any]] = []
-                for i, tref in enumerate(manifest["templates"]):
-                    nested = outer.read(tref["archive"])
-                    with zipfile.ZipFile(io.BytesIO(nested)) as nzf:
-                        tmanifest = tportable.read_template_manifest(nzf)
-                    r = import_template_entries(
-                        tmanifest, {"0": tpl_res.get(str(i)) or {}}, project_id)
-                    created_t.extend(r["created"])
-                    skipped_t.extend(r["skipped"])
-                    installed_defs.extend(r["installed_definitions"])
+                    created_t: list[dict[str, Any]] = []
+                    skipped_t: list[dict[str, Any]] = []
+                    for i, tref in enumerate(manifest["templates"]):
+                        nested = outer.read(tref["archive"])
+                        with zipfile.ZipFile(io.BytesIO(nested)) as nzf:
+                            tmanifest = tportable.read_template_manifest(nzf)
+                        r = import_template_entries(
+                            tmanifest, {"0": tpl_res.get(str(i)) or {}}, project_id)
+                        created_t.extend(r["created"])
+                        skipped_t.extend(r["skipped"])
+                        installed_defs.extend(r["installed_definitions"])
 
-                prefs = proj.get("preferences") or {}
-                if prefs:
-                    _prefs.upsert(project_id, prefs)
+                    prefs = proj.get("preferences") or {}
+                    if prefs:
+                        _prefs.upsert(project_id, prefs)
 
-                # Record a server-side receipt of exactly what THIS apply call
-                # created, so a later rollback can be validated against it
-                # instead of trusting whatever names the client sends back.
-                import_id = uuid.uuid4().hex
-                with _import_receipts_lock:
-                    _import_receipts[import_id] = list(imported_datasets)
-                    _import_definition_receipts[import_id] = list(installed_defs)
-                    _import_project_by_id[import_id] = project_id
+                    # Record a server-side receipt of exactly what THIS apply
+                    # call created, so a later rollback can be validated
+                    # against it instead of trusting whatever names the
+                    # client sends back.
+                    import_id = uuid.uuid4().hex
+                    with _import_receipts_lock:
+                        _import_receipts[import_id] = list(imported_datasets)
+                        _import_definition_receipts[import_id] = list(installed_defs)
+                        _import_project_by_id[import_id] = project_id
 
-                return {
-                    "project_id": project_id,
-                    "project_name": name,
-                    "imported_datasets": imported_datasets,
-                    "linked_references": linked_refs,
-                    "missing_references": missing_refs,
-                    "templates": {"created": created_t, "skipped": skipped_t},
-                    "installed_definitions": installed_defs,
-                    "import_id": import_id,
-                }
-            except HTTPException:
-                _rollback(project_id, imported_datasets, installed_defs)
-                raise
-            except Exception as exc:  # noqa: BLE001
-                _rollback(project_id, imported_datasets, installed_defs)
-                raise HTTPException(500, f"Project import failed and was rolled back: {exc}") from exc
+                    return {
+                        "project_id": project_id,
+                        "project_name": name,
+                        "imported_datasets": imported_datasets,
+                        "linked_references": linked_refs,
+                        "missing_references": missing_refs,
+                        "templates": {"created": created_t, "skipped": skipped_t},
+                        "installed_definitions": installed_defs,
+                        "import_id": import_id,
+                    }
+                except HTTPException:
+                    _rollback(project_id, imported_datasets, installed_defs)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _rollback(project_id, imported_datasets, installed_defs)
+                    raise HTTPException(
+                        500, f"Project import failed and was rolled back: {exc}") from exc
 
-    return await asyncio.to_thread(_apply)
+        return await asyncio.to_thread(_apply)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 def _rollback(

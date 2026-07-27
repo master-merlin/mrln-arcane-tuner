@@ -489,6 +489,87 @@ def test_calc_crop_targets_success(mock_manager, client):
     assert "target_height" in data
 
 
+# ── Download Dataset ─────────────────────────────────────────────────────
+
+
+class TestDownloadDatasetEndpoint:
+    """W4.T11: download streams via a temp file (FileResponse + BackgroundTask
+    cleanup) instead of building the whole zip in an in-memory BytesIO."""
+
+    def test_download_dataset_returns_zip_excludes_caches_and_cleans_up_temp_file(
+        self, client, tmp_path, monkeypatch,
+    ):
+        import io
+        import zipfile
+        from pathlib import Path
+
+        from app.core.dataset_manager import dataset_manager
+        import app.api.dataset.crud_routes as crud_mod
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "dl_ds"
+        ds_path.mkdir()
+        (ds_path / "a.jpg").write_bytes(b"img-a")
+        (ds_path / ".cache").mkdir()
+        (ds_path / ".cache" / "latents.bin").write_bytes(b"NOPE")
+
+        dataset_manager.create_dataset("dl_ds", path=str(ds_path))
+
+        # Spy on the temp path handed to zipfile so we can assert it's gone
+        # (BackgroundTask cleanup) once the response has been fully sent.
+        recorded: dict[str, str] = {}
+        orig_mkstemp = crud_mod.tempfile.mkstemp
+
+        def _spy_mkstemp(*a, **k):
+            fd, p = orig_mkstemp(*a, **k)
+            recorded["path"] = p
+            return fd, p
+
+        monkeypatch.setattr(crud_mod.tempfile, "mkstemp", _spy_mkstemp)
+
+        try:
+            response = client.get("/api/datasets/dl_ds/download")
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "application/zip"
+            assert ".zip" in response.headers.get("content-disposition", "")
+
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                names = set(zf.namelist())
+            assert "a.jpg" in names
+            assert not any(n.startswith(".cache/") for n in names)
+
+            assert "path" in recorded, "route never built a temp-file zip"
+            assert not Path(recorded["path"]).exists(), (
+                "temp zip was not cleaned up after the response was sent"
+            )
+        finally:
+            dataset_manager.delete_dataset("dl_ds", delete_files=True)
+
+    def test_download_dataset_404_when_directory_missing(
+        self, client, tmp_path, monkeypatch,
+    ):
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "dl_missing"
+        ds_path.mkdir()
+        dataset_manager.create_dataset("dl_missing", path=str(ds_path))
+        import shutil
+        shutil.rmtree(ds_path)
+
+        try:
+            response = client.get("/api/datasets/dl_missing/download")
+            assert response.status_code == 404
+        finally:
+            dataset_manager.delete_dataset("dl_missing", delete_files=True)
+
+
 # ── Bump Version ─────────────────────────────────────────────────────────
 
 

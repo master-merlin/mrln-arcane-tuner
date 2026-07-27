@@ -11,6 +11,7 @@ from app.core.dataset.portable import (
     ManifestError,
     build_manifest,
     write_export_zip,
+    write_export_zip_to_path,
     read_manifest,
     safe_extract,
 )
@@ -84,6 +85,32 @@ def test_write_export_zip_includes_manifest_and_files_excludes_caches(tmp_path):
         assert not any(n.startswith(".thumbnails/") for n in names)
         loaded = json.loads(zf.read("manifest.json"))
         assert loaded["dataset"]["name"] == "Portraits"
+
+
+def test_write_export_zip_to_path_matches_in_memory_and_excludes_caches(tmp_path):
+    """W4.T11: the disk-streaming variant (used to embed a dataset into a
+    project bundle without RAM-buffering it) must exclude caches exactly like
+    the in-memory write_export_zip."""
+    root = tmp_path / "Portraits"
+    (root / "masks").mkdir(parents=True)
+    (root / ".cache").mkdir()
+    (root / "a.jpg").write_bytes(b"img-a")
+    (root / "masks" / "a.png").write_bytes(b"mask-a")
+    (root / ".cache" / "latents.bin").write_bytes(b"NOPE")
+
+    manifest = build_manifest(_make_dataset(), app_version="0.4.0-alpha")
+    dest = tmp_path / "out.zip"
+    write_export_zip_to_path(dest, root, manifest)
+
+    assert dest.is_file()
+    with zipfile.ZipFile(dest) as zf:
+        names = set(zf.namelist())
+        assert "manifest.json" in names
+        assert "a.jpg" in names
+        assert "masks/a.png" in names
+        assert not any(n.startswith(".cache/") for n in names)
+        loaded = json.loads(zf.read("manifest.json"))
+    assert loaded["dataset"]["name"] == "Portraits"
 
 
 def test_read_manifest_rejects_missing_and_future_version(tmp_path):

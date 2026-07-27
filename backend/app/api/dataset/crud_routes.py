@@ -14,6 +14,7 @@ import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.api._deps import dataset_or_404
 from app.api._path_guard import sanitize_filename, validate_path_within
@@ -446,7 +447,12 @@ async def enable_all_images(name: str):
 
 @router.get("/datasets/{name}/download")
 async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
-    """Download a dataset as a zip file (DatasetName_Version.zip)."""
+    """Download a dataset as a zip file (DatasetName_Version.zip).
+
+    W4.T11: streams straight to a temp file (a dataset can be multi-GB of
+    video media) instead of building the archive in an in-memory BytesIO —
+    mirrors the checkpoint-zip download pattern (job_routes.download_checkpoint_zip).
+    """
     dataset_root = Path(dataset.path)
     if not dataset_root.is_dir():
         raise HTTPException(status_code=404, detail="Dataset directory not found on disk")
@@ -454,9 +460,10 @@ async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_
     zip_filename = f"{dataset.name}_{dataset.version}.zip"
     logger.info("downloading_dataset", dataset_name=name, zip_filename=zip_filename)
 
-    def _build_zip() -> io.BytesIO:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    def _build_zip() -> str:
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="dsdownload_")
+        os.close(fd)
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path in dataset_root.rglob("*"):
                 # Skip derived/cache subdirectories
                 if ".cache" in file_path.parts or ".thumbnails" in file_path.parts:
@@ -464,14 +471,14 @@ async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_
                 if file_path.is_file():
                     arc_name = file_path.relative_to(dataset_root)
                     zf.write(file_path, arc_name)
-        buf.seek(0)
-        return buf
+        return tmp_path
 
-    buf = await asyncio.to_thread(_build_zip)
-    return StreamingResponse(
-        buf,
+    tmp_path = await asyncio.to_thread(_build_zip)
+    return FileResponse(
+        tmp_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+        filename=zip_filename,
+        background=BackgroundTask(os.remove, tmp_path),
     )
 
 

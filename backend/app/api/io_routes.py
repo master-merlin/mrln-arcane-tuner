@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import io
+import tempfile
 import zipfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -31,15 +32,24 @@ async def peek_archive(file: UploadFile = File(...)) -> dict[str, Any]:
     can route it to the correct importer."""
     from app.core.portable.envelope import ManifestError, peek_manifest
 
-    data = await file.read()
+    # Stream the upload to a temp file — never buffer a whole archive in RAM
+    # just to read its manifest header (archives can embed multi-GB video
+    # datasets).
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+        tmp.close()
 
-    def _peek() -> dict[str, Any]:
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                return peek_manifest(zf)
-        except ManifestError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except zipfile.BadZipFile as exc:
-            raise HTTPException(400, "Archive is not a valid zip file.") from exc
+        def _peek() -> dict[str, Any]:
+            try:
+                with zipfile.ZipFile(tmp.name) as zf:
+                    return peek_manifest(zf)
+            except ManifestError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(400, "Archive is not a valid zip file.") from exc
 
-    return await asyncio.to_thread(_peek)
+        return await asyncio.to_thread(_peek)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)

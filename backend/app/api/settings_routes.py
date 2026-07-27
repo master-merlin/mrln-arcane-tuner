@@ -71,13 +71,18 @@ async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, An
     # method — sync callers in engine subprocesses don't have a loop).
     await manager.update_module_settings_async(module, settings)
 
+    # update_module_settings MERGES the payload into the module's existing
+    # dict (settings[module].update(settings)), so the persisted state can
+    # differ from the raw request body on a partial update — re-read it so
+    # the response reflects what was actually saved, not just what was sent.
+    merged = manager.get_module_settings(module)
+
     # Rewrite runtime config when port settings change
     if module == "application":
         from app.core.runtime_config import write_runtime_config
-        merged = manager.get_module_settings("application")
         write_runtime_config(
             merged.get("backend_port", 8000),
             merged.get("frontend_port", 4200),
         )
 
-    return settings
+    return merged

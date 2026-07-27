@@ -53,6 +53,27 @@ class QwenImageSampler(GenericSamplingPipeline):
     def __init__(self, pipeline: QwenImageTrainer) -> None:
         super().__init__(pipeline)
         self._scheduler = None
+        # One-time-per-instance guard for _warn_cfg_ignored_once (see below;
+        # mirrors boogu_image/sampler.py's _warn_negative_prompt_ignored_once).
+        self._cfg_ignored_warned = False
+
+    def _warn_cfg_ignored_once(self, guidance_scale: float) -> None:
+        """Warn (once per sampler instance) when ``guidance_scale > 1`` or a
+        non-empty ``sample_negative_prompt`` is configured for qwen_image —
+        this sampler always runs a single unconditional forward
+        (``guidance=None``, matching the model's ``guidance_embeds: false``
+        config) with no true-CFG second pass, so both knobs are silently
+        ignored today. Instance-scoped (not module-global) since one
+        ``QwenImageSampler`` is created per training run."""
+        if self._cfg_ignored_warned:
+            return
+        self._cfg_ignored_warned = True
+        logger.warning(
+            "qwen_image preview ignores guidance_scale/sample_negative_prompt; "
+            "sampling always runs a single unconditional forward "
+            "(guidance_embeds: false)",
+            guidance_scale=guidance_scale,
+        )
 
     # ── Lazy scheduler ───────────────────────────────────────────────────
 
@@ -220,7 +241,12 @@ class QwenImageSampler(GenericSamplingPipeline):
         )
         timesteps = scheduler.timesteps
 
-        # guidance=None (guidance_embeds: false)
+        # guidance=None (guidance_embeds: false) — this family has no true-CFG
+        # second forward, so a configured guidance_scale/negative prompt is a
+        # silent no-op; warn once so a misconfigured run doesn't look broken.
+        configured_negative = str(self.config.get("sample_negative_prompt", "") or "")
+        if float(guidance_scale) > 1.0 or configured_negative:
+            self._warn_cfg_ignored_once(guidance_scale)
         guidance = None
 
         # Denoising loop

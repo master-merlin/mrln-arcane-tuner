@@ -319,9 +319,28 @@ class SelfUpdateService:
             )
             built = os.path.join(fe, "dist", "frontend", "browser")
             served = os.path.join(fe, "browser")
-            if os.path.isdir(built):
-                shutil.rmtree(served, ignore_errors=True)
-                shutil.copytree(built, served)
+            if not os.path.isdir(built):
+                return
+
+            # Rename-swap instead of rmtree-then-copytree: the old rmtree()
+            # deleted `served` FIRST, so a copytree() failure (disk full,
+            # permission error, a crash mid-copy) left the live, currently-
+            # served frontend dir either missing entirely or half-written —
+            # every page load 404s/half-loads until the NEXT successful
+            # update. Building into a sibling `.new` dir means a copy
+            # failure never touches `served` at all (still serving the old,
+            # working build the whole time); the actual swap is then just
+            # two directory renames (near-instant, not a full tree copy).
+            served_new = served + ".new"
+            served_old = served + ".old"
+            shutil.rmtree(served_new, ignore_errors=True)
+            shutil.copytree(built, served_new)
+
+            shutil.rmtree(served_old, ignore_errors=True)
+            if os.path.isdir(served):
+                os.rename(served, served_old)
+            os.rename(served_new, served)
+            shutil.rmtree(served_old, ignore_errors=True)
 
         await asyncio.to_thread(_build)
 

@@ -661,7 +661,17 @@ class DatasetManager:
     def _prepare_scan(
         self, name: str, force_full: bool
     ) -> tuple["Dataset", dict]:
-        """Stage 1: Validate, snapshot old state, reset counters."""
+        """Stage 1: Validate, snapshot old state.
+
+        Deliberately does NOT touch the live dataset's counters/
+        media_metadata — those stay at their last-good values until Stage 3
+        (``_compute_scan_statistics``) assigns the freshly accumulated
+        ``ctx`` values, all at once, only after enumeration has actually
+        succeeded. Zeroing them here used to make a scan that crashed
+        mid-enumeration (Stage 2) or mid-statistics (Stage 3) leave the LIVE
+        dataset looking empty (0 files, {} media_metadata) to every
+        concurrent reader, even though nothing on disk was touched.
+        """
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
 
@@ -690,14 +700,6 @@ class DatasetManager:
             "preview_candidate": None,
             "aspect_ratios": [],
         }
-
-        # Reset all counters to ensure no stale data
-        dataset.file_count = 0
-        dataset.total_size_bytes = 0
-        dataset.multimedia_count = 0
-        dataset.caption_count = 0
-        dataset.mask_count = 0
-        dataset.media_metadata = {}
 
         return dataset, ctx
 

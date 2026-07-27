@@ -23,15 +23,24 @@ MRO-resolution gap was invisible to unit tests (the historical krea2/boogu
 bug class: "only the real path — or here, its exact call sequence —
 surfaces it").
 
-THE FIX (``trainer.py``): ``Kandinsky5Trainer.add_noise`` now overrides the
-``PipelineBaseMixin`` hook to delegate to ``self.driver.add_noise`` — mirrors
-``boogu_image``'s convention-delegation precedent
+THE FIX, ORIGINALLY (``trainer.py``): ``Kandinsky5Trainer.add_noise`` overrode
+the ``PipelineBaseMixin`` hook to delegate to ``self.driver.add_noise`` —
+mirrors ``boogu_image``'s convention-delegation precedent
 (``families/boogu_image/trainer.py:239-254``). Verified SAFE for T2V: the
 driver's T2V math (``t*noise + (1-t)*latents``, RAW ``[0,1000]`` scale) is
 algebraically IDENTICAL to ``NoiseInterpolation._linear``'s
 ``(1-t)*latents + t*noise`` (same terms, commutative sum) — the delegation
 changes ZERO T2V training behavior, only wires the I2V pin that was already
 dead code on the real path.
+
+THE FIX, NOW (W5.T10): that per-family override was deleted as
+auto-delegation-identical — ``PipelineBaseMixin.add_noise``
+(``pipeline_base.py:176-231``, ``_driver_hook_override`` /
+``core/hook_dispatch.py``) auto-delegates to ``driver.add_noise`` with the
+EXACT SAME arguments whenever the driver meaningfully overrides the hook
+(``Kandinsky5Driver.add_noise`` does — the I2V frame-0 pin), so the redundant
+trainer method was pure duplication. ``Kandinsky5Trainer`` no longer defines
+``add_noise`` at all.
 
 This test walks the REAL sequence ``pipeline_train.py`` executes on every
 training step: ``trainer._attach_conditioning(batch, latents)`` (sets the
@@ -49,12 +58,22 @@ from unittest.mock import MagicMock
 
 import torch
 
+from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
 from app.engine.models.families.kandinsky5.driver import (
     FLOWMATCH_SCALE,
     Kandinsky5Driver,
 )
 from app.engine.models.families.kandinsky5.trainer import Kandinsky5Trainer
 from app.engine.strategies.noise_interpolation import NoiseInterpolation
+
+
+def test_kandinsky5_trainer_does_not_shadow_add_noise() -> None:
+    """W5.T10: the per-family override is GONE — Kandinsky5Trainer must
+    resolve ``add_noise`` to PipelineBaseMixin (auto-delegation), not shadow
+    it with a redundant same-behavior method. If this ever fails, a future
+    edit reintroduced the exact duplication this task removed."""
+    assert "add_noise" not in vars(Kandinsky5Trainer)
+    assert Kandinsky5Trainer.add_noise is PipelineBaseMixin.add_noise
 
 
 def _i2v_trainer(prob: float = 1.0) -> Kandinsky5Trainer:
@@ -94,7 +113,9 @@ def _t2v_trainer() -> Kandinsky5Trainer:
 
 
 class TestRealPathI2VFrame0Wiring:
-    """Load-bearing regression test — FAILS RED without the trainer override."""
+    """Load-bearing regression test — FAILS RED without the driver override
+    being auto-delegated (``PipelineBaseMixin._driver_hook_override``,
+    ``pipeline_base.py:176-231``)."""
 
     def test_engaged_i2v_real_step_sequence_keeps_frame0_clean(self) -> None:
         t = _i2v_trainer(prob=1.0)

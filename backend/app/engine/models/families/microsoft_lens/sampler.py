@@ -128,25 +128,27 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
     # ── Text encoding ────────────────────────────────────────────────────
 
     def encode_prompt(self, prompt: str) -> dict[str, Any]:
-        """Encode the prompt and an empty negative prompt for CFG.
+        """Encode the prompt for CFG.
 
         Calls the driver directly (not the trainer's cached path) so sample
         prompts never pollute the training text cache. The base sampler has
         already moved the text encoder to the sampling device.
+
+        The empty-string unconditional embedding is encoded LAZILY in
+        ``denoise()`` — only when ``guidance_scale > 1`` actually engages
+        the two-pass CFG combine — instead of unconditionally here, which
+        used to pay a full extra text-encoder forward every sampling round
+        even when CFG was off (``guidance_scale <= 1``, e.g. distilled/
+        turbo-style sampling with no negative pass at all).
         """
         driver = self.pipeline.driver
         dtype = next(self.pipeline.transformer.parameters()).dtype
 
         cond = driver.encode_text([prompt], dtype)
-        uncond = driver.encode_text([""], dtype)
         return {
             "cond": (
                 cond.embeddings.to(self.device),
                 cond.attention_mask.to(self.device),
-            ),
-            "uncond": (
-                uncond.embeddings.to(self.device),
-                uncond.attention_mask.to(self.device),
             ),
         }
 
@@ -208,8 +210,12 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
         use_amp = getattr(self.pipeline, "use_amp", device.type == "cuda")
 
         cond_stacked, cond_mask = prompt_embedding["cond"]
-        uncond_stacked, uncond_mask = prompt_embedding["uncond"]
         do_cfg = guidance_scale > 1.0
+        uncond_stacked = uncond_mask = None
+        if do_cfg:
+            uncond = driver.encode_text([""], dtype)
+            uncond_stacked = uncond.embeddings.to(device)
+            uncond_mask = uncond.attention_mask.to(device)
 
         latents = noise.to(device=device, dtype=dtype)
         batch = {"latent_h": self._latent_h, "latent_w": self._latent_w}

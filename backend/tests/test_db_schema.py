@@ -589,3 +589,31 @@ class TestDatasetRepoUpsert:
         ds2["id"] = str(uuid.uuid4())  # different ID, same name
         # Should not raise — INSERT OR REPLACE handles this
         dataset_repo.upsert(ds2)
+
+
+# ── W5.T10: per-connection pragmas ─────────────────────────────────────
+#
+# synchronous=NORMAL / busy_timeout=5000 used to be set only on initialize()'s
+# own throwaway connection (closed immediately after) — every REAL connection
+# the app uses (thread-local reads via .connection(), writes via .write())
+# ran with SQLite's defaults instead. Moved into _make_connection() so every
+# connection this factory produces carries them.
+
+
+class TestConnectionPragmas:
+    def test_read_connection_has_pragmas(self, db_engine):
+        conn = db_engine.connection()
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    def test_write_connection_has_pragmas(self, db_engine):
+        with db_engine.write() as conn:
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    def test_initialize_still_sets_wal_mode(self, db_engine):
+        db_engine.initialize()
+        conn = db_engine.connection()
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"

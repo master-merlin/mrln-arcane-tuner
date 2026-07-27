@@ -24,6 +24,60 @@ class VersionResponse(BaseModel):
     version: str
 
 
+class SimilarImageInfo(BaseModel):
+    """One near-duplicate match within the dataset."""
+
+    path: str
+    score: float
+    width: int
+    height: int
+
+
+class BucketPreviewInfo(BaseModel):
+    """One bucket assignment an image would land in (``?resolutions=`` preview)."""
+
+    width: int
+    height: int
+    target_resolution: int
+
+
+class HarmonizationImageInfo(BaseModel):
+    """Per-image harmonization + optional bucket-preview annotations."""
+
+    path: str
+    width: int
+    height: int
+    aspect_ratio: float
+    target_width: int
+    target_height: int
+    similar_count: int
+    similar_images: list[SimilarImageInfo]
+    # Only present when ``?resolutions=`` was supplied.
+    buckets: list[BucketPreviewInfo] | None = None
+
+
+class OrientationAnalysis(BaseModel):
+    """Harmonization analysis for one orientation group (landscape/portrait/squared)."""
+
+    majority_ar: float
+    majority_ar_display: str
+    max_long_side_found: int
+    target_resolution: tuple[int, int]
+    count_total: int
+    count_majority: int
+    images: list[HarmonizationImageInfo]
+
+
+class DatasetAnalysisResponse(BaseModel):
+    """``GET /datasets/{name}/analysis`` — one entry per orientation group that
+    has at least one image; a group with none is omitted entirely (matches
+    ``DatasetManager.analyze_harmonization``'s per-group skip)."""
+
+    landscape: OrientationAnalysis | None = None
+    portrait: OrientationAnalysis | None = None
+    squared: OrientationAnalysis | None = None
+
+
 class TagCount(BaseModel):
     tag: str
     count: int
@@ -51,7 +105,34 @@ class TagAnalyticsResponse(BaseModel):
     contradictions: list[Contradiction]
 
 
-@router.get("/datasets/{name}/analysis")
+def _parse_resolutions(resolutions: str | None) -> list[int]:
+    """Parse ``?resolutions=1024,768`` into positive ints, or 400 on garbage.
+
+    Validated up front (before the harmonization analysis runs) so a
+    malformed value fails fast instead of paying for a full similarity scan
+    only to discard the result on a parse error afterward.
+    """
+    if not resolutions:
+        return []
+    try:
+        res_list = [int(r.strip()) for r in resolutions.split(",") if r.strip()]
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid resolutions {resolutions!r}: expected comma-separated "
+                "integers (e.g. '1024,768')"
+            ),
+        )
+    if any(r <= 0 for r in res_list):
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolutions must be positive integers, got {resolutions!r}",
+        )
+    return res_list
+
+
+@router.get("/datasets/{name}/analysis", response_model=DatasetAnalysisResponse)
 async def analyze_dataset(
     name: str,
     similarity_threshold: float = 0.9,
@@ -59,6 +140,7 @@ async def analyze_dataset(
     bucketing_mode: str = "kohya",
 ):
     """Analyze dataset for aspect ratio harmonization opportunities."""
+    res_list = _parse_resolutions(resolutions)
     try:
         logger.info(
             "analyzing_dataset",
@@ -71,14 +153,14 @@ async def analyze_dataset(
             dataset_manager.analyze_harmonization, name, similarity_threshold,
         )
 
-        if resolutions:
+        if res_list:
             from app.core.bucket_preview import preview_buckets
 
-            res_list = [int(r.strip()) for r in resolutions.split(",") if r.strip()]
-            if res_list:
-                for orientation_data in result.values():
-                    if "images" in orientation_data:
-                        preview_buckets(orientation_data["images"], res_list, bucketing_mode)
+            for orientation_data in result.values():
+                if "images" in orientation_data:
+                    preview_buckets(
+                        orientation_data["images"], res_list, bucketing_mode
+                    )
 
         # Ensure majority_ar_display is populated (fallback for hot-reload)
         for ori_key, orientation_data in result.items():

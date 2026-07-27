@@ -63,6 +63,24 @@ def _make_sampler(device=torch.device("cpu")):
     drv = MicrosoftLensDriver(_defn(), device)
     drv.transformer = dit
     drv.vae = vae
+
+    # W5.T10: denoise() now encodes the CFG unconditional ("") embedding
+    # LAZILY, only when guidance_scale > 1 — via a real driver.encode_text()
+    # call, not a value threaded through prompt_embedding. Stub it so the
+    # do_cfg=True test path below doesn't need a real GPT-OSS text encoder.
+    def _stub_encode_text(captions, dtype, s_txt=5):
+        from app.engine.core.text_encoding import TextEncoderOutput
+
+        return TextEncoderOutput(
+            embeddings=torch.randn(
+                len(captions), 4, s_txt, 2880, dtype=dtype, device=device
+            ),
+            attention_mask=torch.ones(
+                len(captions), s_txt, dtype=torch.bool, device=device
+            ),
+        )
+
+    drv.encode_text = _stub_encode_text
     pipeline = SimpleNamespace(
         config={},
         device=device,
@@ -75,12 +93,19 @@ def _make_sampler(device=torch.device("cpu")):
 
 
 def _fake_prompt_embedding(device, dtype, s_txt=5):
-    """Build the dict encode_prompt would return (cond + uncond)."""
+    """Build the dict encode_prompt would return.
+
+    Only ``cond`` is needed — the CFG unconditional embedding is no longer
+    threaded through prompt_embedding; denoise() encodes it lazily itself
+    (via driver.encode_text, stubbed in _make_sampler above) only when
+    guidance_scale > 1 actually engages CFG."""
+
     def _pair():
         stacked = torch.randn(1, 4, s_txt, 2880, dtype=dtype, device=device)
         mask = torch.ones(1, s_txt, dtype=torch.bool, device=device)
         return stacked, mask
-    return {"cond": _pair(), "uncond": _pair()}
+
+    return {"cond": _pair()}
 
 
 # ── scheduler / shift math ───────────────────────────────────────────────
@@ -144,6 +169,50 @@ def test_denoise_without_cfg_runs():
     emb = _fake_prompt_embedding(s.device, torch.float32)
     out = s.denoise(noise, emb, num_steps=2, guidance_scale=1.0, seed=0)
     assert out.shape == (1, 32, 4, 4)
+
+
+def test_denoise_skips_uncond_encode_when_cfg_off():
+    """W5.T10: guidance_scale <= 1 (CFG off) must NOT pay for an
+    unconditional ("") text-encoder forward at all — it used to be encoded
+    unconditionally inside encode_prompt() every sampling round."""
+    s = _make_sampler()
+    calls: list[list[str]] = []
+    real_encode = s.pipeline.driver.encode_text
+
+    def _counting_encode_text(captions, dtype):
+        calls.append(list(captions))
+        return real_encode(captions, dtype)
+
+    s.pipeline.driver.encode_text = _counting_encode_text
+
+    gen = torch.Generator(device="cpu").manual_seed(0)
+    noise = s._create_initial_noise(32, 32, gen)
+    emb = _fake_prompt_embedding(s.device, torch.float32)
+    s.denoise(noise, emb, num_steps=2, guidance_scale=1.0, seed=0)
+
+    assert calls == []  # cond comes from prompt_embedding, no live encode at all
+
+
+def test_denoise_encodes_uncond_lazily_when_cfg_on():
+    """The mirror case: guidance_scale > 1 must trigger EXACTLY one
+    encode_text(['']) call for the unconditional pass — the lazy
+    counterpart of the old unconditional encode_prompt()-time call."""
+    s = _make_sampler()
+    calls: list[list[str]] = []
+    real_encode = s.pipeline.driver.encode_text
+
+    def _counting_encode_text(captions, dtype):
+        calls.append(list(captions))
+        return real_encode(captions, dtype)
+
+    s.pipeline.driver.encode_text = _counting_encode_text
+
+    gen = torch.Generator(device="cpu").manual_seed(0)
+    noise = s._create_initial_noise(32, 32, gen)
+    emb = _fake_prompt_embedding(s.device, torch.float32)
+    s.denoise(noise, emb, num_steps=2, guidance_scale=4.0, seed=0)
+
+    assert calls == [[""]]
 
 
 def test_denoise_bn_denormalizes_output():

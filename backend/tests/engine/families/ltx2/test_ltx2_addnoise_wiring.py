@@ -31,7 +31,7 @@ is the driver, not the trainer) and resolves correctly regardless of this
 bug. Only the VIDEO stream's noising — driven by the trainer-level hook the
 train loop actually calls — was dead.
 
-THE FIX (``trainer.py``): ``Ltx2Trainer.add_noise`` now overrides the
+THE FIX, ORIGINALLY (``trainer.py``): ``Ltx2Trainer.add_noise`` overrode the
 ``PipelineBaseMixin`` hook to delegate to ``self.driver.add_noise`` — mirrors
 the ``kandinsky5``/``boogu_image`` convention-delegation precedent. Verified
 SAFE for T2V (and i2v-inactive steps): the driver's un-engaged math (``frac =
@@ -40,6 +40,15 @@ algebraically IDENTICAL to ``NoiseInterpolation._linear``'s
 ``(1-t)*latents + t*noise`` (same terms, commutative sum, same ``/1000``
 scale) — the delegation changes ZERO non-i2v training behavior, only wires
 the i2v pin that was already dead code on the real path.
+
+THE FIX, NOW (W5.T10): that per-family override was deleted as
+auto-delegation-identical — ``PipelineBaseMixin.add_noise``
+(``pipeline_base.py:176-231``, ``_driver_hook_override`` /
+``core/hook_dispatch.py``) auto-delegates to ``driver.add_noise`` with the
+EXACT SAME arguments whenever the driver meaningfully overrides the hook
+(``Ltx2Driver.add_noise`` does — the i2v frame-0 pin), so the redundant
+trainer method was pure duplication. ``Ltx2Trainer`` no longer defines
+``add_noise`` at all.
 
 This test walks the REAL sequence ``pipeline_train.py`` executes on every
 training step: ``trainer._attach_conditioning(batch, latents)`` (sets the
@@ -54,6 +63,7 @@ from __future__ import annotations
 
 import torch
 
+from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
 from app.engine.models.families.ltx2.driver import Ltx2Driver, _FLOWMATCH_SCALE
 from app.engine.models.families.ltx2.trainer import Ltx2Trainer
 from app.engine.strategies.noise_interpolation import NoiseInterpolation
@@ -95,8 +105,19 @@ def _t2v_trainer() -> Ltx2Trainer:
     return t
 
 
+def test_ltx2_trainer_does_not_shadow_add_noise() -> None:
+    """W5.T10: the per-family override is GONE — Ltx2Trainer must resolve
+    ``add_noise`` to PipelineBaseMixin (auto-delegation), not shadow it with
+    a redundant same-behavior method. If this ever fails, a future edit
+    reintroduced the exact duplication this task removed."""
+    assert "add_noise" not in vars(Ltx2Trainer)
+    assert Ltx2Trainer.add_noise is PipelineBaseMixin.add_noise
+
+
 class TestRealPathI2VFrame0Wiring:
-    """Load-bearing regression test — FAILS RED without the trainer override."""
+    """Load-bearing regression test — FAILS RED without the driver override
+    being auto-delegated (``PipelineBaseMixin._driver_hook_override``,
+    ``pipeline_base.py:176-231``)."""
 
     def test_engaged_i2v_real_step_sequence_keeps_frame0_clean(self) -> None:
         t = _i2v_trainer(prob=1.0)

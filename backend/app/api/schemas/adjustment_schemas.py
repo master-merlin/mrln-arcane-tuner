@@ -19,80 +19,6 @@ class CurvesConfig(BaseModel):
     b: list[CurvePointModel] = []
 
 
-class SharpeningConfig(BaseModel):
-    """Sharpening method and parameters."""
-    method: str = "unsharp_mask"
-    params: dict[str, float] = {}
-
-
-class WhiteBalanceConfig(BaseModel):
-    """White balance configuration."""
-    temperature: float = 6500.0
-    tint: float = 0.0
-
-
-class VignetteConfig(BaseModel):
-    """Vignette configuration."""
-    amount: float = 0.0
-    midpoint: float = 0.5
-    feather: float = 0.5
-
-
-class LensCorrectionConfig(BaseModel):
-    """Lens correction configuration."""
-    barrel: float = 0.0
-    vertical_keystone: float = 0.0
-    horizontal_keystone: float = 0.0
-
-
-class HSLRangeConfig(BaseModel):
-    """Per-hue-range HSL adjustment."""
-    hue_shift: float = 0.0
-    saturation: float = 0.0
-    luminance: float = 0.0
-
-
-class ColorMatchConfig(BaseModel):
-    """Color match configuration (embedded in adjustment requests)."""
-    reference_path: str
-    method: str = "cdf"
-    strength: float = 1.0
-
-
-class AdjustmentRequest(BaseModel):
-    """Request body for single-image adjustments."""
-    path: str
-    color_match: ColorMatchConfig | None = None
-    curves: CurvesConfig | None = None
-    cube_lut: str | None = None
-    cube_lut_strength: float = 1.0
-    hue_shift: float = 0.0
-    saturation: float = 1.0
-    contrast: float = 1.0
-    sharpening: SharpeningConfig | None = None
-    white_balance: WhiteBalanceConfig | None = None
-    vignette: VignetteConfig | None = None
-    lens_correction: LensCorrectionConfig | None = None
-    hsl_selective: dict[str, HSLRangeConfig] | None = None
-
-
-class BatchAdjustmentRequest(BaseModel):
-    """Request body for batch image adjustments."""
-    paths: list[str]
-    color_match: ColorMatchConfig | None = None
-    curves: CurvesConfig | None = None
-    cube_lut: str | None = None
-    cube_lut_strength: float = 1.0
-    hue_shift: float = 0.0
-    saturation: float = 1.0
-    contrast: float = 1.0
-    sharpening: SharpeningConfig | None = None
-    white_balance: WhiteBalanceConfig | None = None
-    vignette: VignetteConfig | None = None
-    lens_correction: LensCorrectionConfig | None = None
-    hsl_selective: dict[str, HSLRangeConfig] | None = None
-
-
 class ColorMatchRequest(BaseModel):
     """Request body for standalone color match preview."""
     source_path: str
@@ -108,12 +34,6 @@ class ExportCubeRequest(BaseModel):
 
 
 # ── Response models ──────────────────────────────────────────────────────
-
-
-class AdjustResponse(BaseModel):
-    """Ack for a single-image adjustment apply."""
-    status: str = "adjusted"
-    file: str
 
 
 class HistogramResponse(BaseModel):

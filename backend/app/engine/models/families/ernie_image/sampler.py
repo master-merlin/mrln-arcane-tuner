@@ -115,6 +115,11 @@ class ErnieImageSampler(GenericSamplingPipeline):
         Combined scale factor = VAE downscale (8) × patchify (2) = 16,
         so the model sees a ``H/16 × W/16`` grid with
         ``in_channels = 4 × vae_latent_channels`` channels.
+
+        fp32 (house contract — see ``denoise()``'s docstring): the Euler
+        trajectory is stored/accumulated in fp32 for the life of the loop,
+        cast to the model's native dtype only for the duration of each
+        transformer forward call.
         """
         transformer = self.pipeline.transformer
         in_channels = int(getattr(transformer.config, "in_channels", 128))
@@ -125,7 +130,7 @@ class ErnieImageSampler(GenericSamplingPipeline):
             (1, in_channels, latent_h, latent_w),
             generator=generator,
             device=self.device,
-            dtype=self._model_dtype(),
+            dtype=torch.float32,
         )
 
     # ── Core sampling methods ────────────────────────────────────────────
@@ -183,6 +188,17 @@ class ErnieImageSampler(GenericSamplingPipeline):
           the pretrained checkpoint expects the full ``[0, 1000]``
           range.
 
+        Precision contract (house-wide — matches zimage/qwen_image/boogu_image):
+        the Euler trajectory (``latents``) is stored/accumulated in fp32 for
+        the ENTIRE loop; only the per-step transformer INPUT is cast to the
+        model's native dtype (``dtype``), and the raw prediction is cast back
+        to fp32 before the CFG combine + ``scheduler.step``. Sampling a
+        trained LoRA in a reduced-precision trajectory (bf16/fp16
+        accumulation across steps) can collapse the denoising trajectory
+        toward the conditional mean — see
+        ``docs/.../autocast-sampler-collapse-gotcha`` prior art (qwen_image,
+        boogu_image, zimage all hit and fixed this).
+
         Returns the un-denormalized patched latents
         ``[1, in_channels, H/16, W/16]``; BN-denormalize + unpatchify +
         VAE decode happen in :meth:`decode_latents`.
@@ -201,7 +217,9 @@ class ErnieImageSampler(GenericSamplingPipeline):
         cond_lens = cond_mask.sum(dim=1).to(dtype=torch.long, device=device)
         uncond_lens = uncond_mask.sum(dim=1).to(dtype=torch.long, device=device)
 
-        latents = noise.to(device=device, dtype=dtype)
+        # fp32 trajectory — cast to the model's native dtype per forward call
+        # below, never persisted across steps (house precision contract).
+        latents = noise.to(device=device, dtype=torch.float32)
         batch_size = latents.shape[0]
 
         # Build the (possibly concatenated) text tensors once — outside the
@@ -227,14 +245,21 @@ class ErnieImageSampler(GenericSamplingPipeline):
                 if getattr(self, "_log_writer", None):
                     self._log_writer.status(f"Sampling {step_i}/{total_steps}")
 
+                # Cast the fp32 trajectory to the model's native dtype for
+                # THIS forward call only — `latents` itself is never
+                # reassigned to a reduced-precision dtype.
+                latents_model_dtype = latents.to(dtype)
                 if do_cfg:
-                    latent_model_input = torch.cat([latents, latents], dim=0)
+                    latent_model_input = torch.cat(
+                        [latents_model_dtype, latents_model_dtype],
+                        dim=0,
+                    )
                     t_batch = torch.full(
                         (batch_size * 2,), t.item(),
                         device=device, dtype=dtype,
                     )
                 else:
-                    latent_model_input = latents
+                    latent_model_input = latents_model_dtype
                     t_batch = torch.full(
                         (batch_size,), t.item(),
                         device=device, dtype=dtype,
@@ -246,7 +271,7 @@ class ErnieImageSampler(GenericSamplingPipeline):
                     text_bth=text_bth,
                     text_lens=text_lens,
                     return_dict=False,
-                )[0]
+                )[0].float()
 
                 if do_cfg:
                     pred_uncond, pred_cond = pred.chunk(2, dim=0)

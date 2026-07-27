@@ -4,6 +4,8 @@ Captioning Service for generating image captions using AI models.
 Uses a plugin architecture where each model is implemented as a separate class.
 """
 
+import threading
+
 from PIL import Image
 
 from app.core.captioning.models import (
@@ -32,6 +34,14 @@ class CaptionService:
     _instance = None
     _model_instances: dict[str, CaptionModel] = {}
     _active_model_key = None
+    # Guards unload_models(skip_if_batch_active=True)'s check-then-act: the
+    # batch-active check and the actual unload now happen under this ONE
+    # lock, instead of the /unload route checking task_manager.list() and
+    # THEN separately calling unload_models() — a caption batch could start
+    # in the window between those two steps (the unload runs in a thread
+    # pool via asyncio.to_thread, so the event loop keeps serving other
+    # requests, including a new POST /batch, while it's in flight).
+    _unload_lock = threading.Lock()
 
     def __init__(self):
         # Register available models
@@ -61,14 +71,40 @@ class CaptionService:
         cls._instance = None
 
     @classmethod
-    def unload_models(cls):
-        """Unload all models from memory and clear CUDA cache."""
-        unload_gpu_plugins(
-            cls,
-            plugins=cls._instance.plugins if cls._instance else {},
-            active_attr="_active_model_key",
-            service_label="caption",
-        )
+    def unload_models(cls, *, skip_if_batch_active: bool = False) -> bool:
+        """Unload all models from memory and clear CUDA cache.
+
+        ``skip_if_batch_active=True`` (the ``/unload`` API route's mode) —
+        the whole check for a pending/running ``caption_batch`` task PLUS
+        the unload itself run under ``_unload_lock``, atomically. This is
+        the ONLY mode that can no-op; internal callers (``generate_caption``
+        switching models mid-batch, the batch worker's own ``finally``
+        unload) always call with the default ``False`` and unload
+        unconditionally, unaffected by whether a batch happens to be active
+        (a batch calling this on itself is expected, not a race).
+
+        Returns ``True`` if the unload actually ran, ``False`` if skipped.
+        """
+        with cls._unload_lock:
+            if skip_if_batch_active:
+                from app.core.tasks.task import TaskStatus
+                from app.core.tasks.task_manager import task_manager
+
+                active_batch = any(
+                    t.type == "caption_batch"
+                    and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                    for t in task_manager.list()
+                )
+                if active_batch:
+                    return False
+
+            unload_gpu_plugins(
+                cls,
+                plugins=cls._instance.plugins if cls._instance else {},
+                active_attr="_active_model_key",
+                service_label="caption",
+            )
+            return True
 
     def supports_multi_image(self, model_id: str) -> bool:
         """Whether *model_id* can caption from multiple images (edit captions)."""

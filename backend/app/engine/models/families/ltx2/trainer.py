@@ -371,43 +371,6 @@ class Ltx2Trainer(GenericTrainingPipeline):
             mask[j : j + 1].cpu() if mask is not None else None,
         )
 
-    # ── Convention delegation (I2V frame-0 pin — real-path wiring) ───────
-
-    def add_noise(
-        self,
-        latents: torch.Tensor,
-        noise: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> torch.Tensor:
-        """Delegate to the driver's flow-match lerp + i2v frame-0-token pin.
-
-        The base ``PipelineBaseMixin.add_noise`` hardcodes
-        ``self.noise_interpolation.add_noise`` (:class:`NoiseInterpolation`,
-        mode ``"linear"``) — a component with NO knowledge of LTX-2's i2v
-        conditioning-frame pin. Left un-overridden, the REAL training loop
-        (``pipeline_train.py``'s ``self.add_noise(...)`` family-hook call for
-        the VIDEO stream) resolves to that generic component and noises the
-        conditioning frame's tokens even when i2v is engaged — directly
-        contradicting ``_compute_step_loss``'s frame-0-token exclusion below,
-        which assumes those tokens stay clean (kandinsky5/boogu_image
-        convention-delegation precedent).
-
-        Note ``Ltx2Driver.add_noise`` is NOT dead code in general — the
-        driver's OWN ``forward_pass`` calls ``self.add_noise(...)`` directly
-        for the AUDIO stream (a driver-internal call, unaffected by this
-        trainer-level MRO gap). Only the VIDEO stream's real-path dispatch
-        was broken.
-
-        SAFE for T2V / i2v-inactive steps: ``Ltx2Driver.add_noise``'s
-        un-engaged math (``frac = timesteps / _FLOWMATCH_SCALE; frac*noise +
-        (1-frac)*latents``) is algebraically identical to
-        ``NoiseInterpolation._linear``'s ``(1-t)*latents + t*noise`` — same
-        terms, commutative sum, same ``/1000`` scale — so this delegation
-        changes ZERO non-i2v training behavior (pinned by
-        ``test_ltx2_addnoise_wiring.py``'s bit-identity test).
-        """
-        return self.driver.add_noise(latents, noise, timesteps)
-
     # ── i2v first-frame conditioning gate ───────────────────────────────
 
     def _attach_conditioning(self, batch: dict, latents: object) -> None:

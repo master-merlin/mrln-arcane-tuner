@@ -194,6 +194,15 @@ def _val(row, key: str):
 
 
 def _persist(job_id: str, updates: dict[str, Any]) -> None:
+    # Allowlist filter on dict-key column interpolation — same guard as
+    # MediaItemRepository/_COLUMNS (media_item_repo.py) and
+    # JobHistoryRepository/_COLUMNS (job_repo.py, which owns the canonical
+    # job_history column list — reused here rather than duplicated).
+    from app.core.db.repositories.job_repo import JobHistoryRepository
+
+    updates = {k: v for k, v in updates.items() if k in JobHistoryRepository._COLUMNS}
+    if not updates:
+        return
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [job_id]
     with get_db().write() as conn:

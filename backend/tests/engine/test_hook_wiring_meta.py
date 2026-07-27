@@ -95,11 +95,36 @@ MIN_EXPECTED_FAMILIES = 21
 # overrides ``sample_timesteps`` (SD3-mode) but NOT ``add_noise``, so
 # auto-delegation is the only thing routing the wan lerp onto bernini_r's real
 # training path — and it changes zero training math vs the base default.
+#
+# W5.T10 — the following three entries were ADDED by deleting redundant
+# trainer-level overrides that did nothing but forward to the driver method
+# with the exact same arguments the base auto-delegation mechanism already
+# supplies (pure duplication of the structural mechanism, not new behavior):
+#
+# wan22 ``sample_timesteps``: Wan22Driver.sample_timesteps routes through
+# ExpertRouter for the dual-expert MoE boundary truncation. The (now-deleted)
+# trainer override called ``self.driver.sample_timesteps(batch, self.device,
+# self.config, latents=latents)`` — byte-identical to what
+# PipelineBaseMixin.sample_timesteps's auto-delegation already calls. Pinned
+# by test_wan22_sample_timesteps_wiring.py.
+#
+# ltx2 ``add_noise``: Ltx2Driver.add_noise carries the i2v frame-0-clean
+# token pin. The (now-deleted) trainer override called
+# ``self.driver.add_noise(latents, noise, timesteps)`` — byte-identical to
+# the auto-delegation call. Pinned by test_ltx2_addnoise_wiring.py.
+#
+# kandinsky5 ``add_noise``: Kandinsky5Driver.add_noise carries the i2v
+# frame-0-clean pin. The (now-deleted) trainer override called
+# ``self.driver.add_noise(latents, noise, timesteps)`` — byte-identical to
+# the auto-delegation call. Pinned by test_kandinsky5_addnoise_wiring.py.
 AUTODELEGATED_FAMILY_HOOKS: set[tuple[str, str]] = {
     ("wan21", "add_noise"),
     ("wan22", "add_noise"),
+    ("wan22", "sample_timesteps"),
     ("wan22_ti2v_5b", "add_noise"),
     ("bernini_r", "add_noise"),
+    ("ltx2", "add_noise"),
+    ("kandinsky5", "add_noise"),
 }
 
 

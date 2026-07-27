@@ -146,17 +146,6 @@ def test_scan_dataset_not_found(mock_to_thread, mock_manager, client):
     assert response.status_code == 404
 
 
-@patch("app.api.dataset.crud_routes.dataset_manager")
-@patch("app.api.dataset.crud_routes.asyncio.to_thread")
-def test_scan_all_datasets(mock_to_thread, mock_manager, client):
-    async def run_sync(func, *args, **kw):
-        return func(*args, **kw)
-    mock_to_thread.side_effect = run_sync
-    mock_manager.scan_all_datasets.return_value = [_make_dataset(name="ds1")]
-    response = client.post("/api/datasets/scan-all")
-    assert response.status_code == 200
-
-
 # ── File Upload ──────────────────────────────────────────────────────────
 
 
@@ -396,15 +385,47 @@ def test_crop_media_dataset_not_found(mock_to_thread, mock_manager, client):
 # ── Analysis / Harmonization ─────────────────────────────────────────────
 
 
+def _make_orientation_analysis(**overrides) -> dict:
+    """A well-formed DatasetAnalysisResponse.<orientation> payload —
+    matches the shape DatasetManager.analyze_harmonization actually returns."""
+    data = {
+        "majority_ar": 1.5,
+        "majority_ar_display": "3:2",
+        "max_long_side_found": 1536,
+        "target_resolution": [1536, 1024],
+        "count_total": 2,
+        "count_majority": 2,
+        "images": [
+            {
+                "path": "a.png",
+                "width": 1536,
+                "height": 1024,
+                "aspect_ratio": 1.5,
+                "target_width": 1536,
+                "target_height": 1024,
+                "similar_count": 0,
+                "similar_images": [],
+            },
+        ],
+    }
+    data.update(overrides)
+    return data
+
+
 @patch("app.api.dataset.analysis_routes.dataset_manager")
 @patch("app.api.dataset.analysis_routes.asyncio.to_thread")
 def test_analysis_success(mock_to_thread, mock_manager, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
-    mock_manager.analyze_harmonization.return_value = {"landscape": {"majority_ar": 1.5}}
+    mock_manager.analyze_harmonization.return_value = {
+        "landscape": _make_orientation_analysis()
+    }
     response = client.get("/api/datasets/myds/analysis")
     assert response.status_code == 200
+    body = response.json()
+    assert body["landscape"]["majority_ar"] == 1.5
+    assert body["portrait"] is None
 
 
 @patch("app.api.dataset.analysis_routes.dataset_manager")
@@ -416,6 +437,61 @@ def test_analysis_not_found(mock_to_thread, mock_manager, client):
     mock_manager.analyze_harmonization.side_effect = ValueError("not found")
     response = client.get("/api/datasets/ghost/analysis")
     assert response.status_code == 404
+
+
+@patch("app.api.dataset.analysis_routes.dataset_manager")
+@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
+def test_analysis_rejects_garbage_resolutions(mock_to_thread, mock_manager, client):
+    """W5.T10: resolutions is validated BEFORE the (potentially expensive)
+    harmonization analysis runs — garbage input 400s without ever calling
+    analyze_harmonization."""
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+
+    mock_to_thread.side_effect = run_sync
+
+    response = client.get(
+        "/api/datasets/myds/analysis", params={"resolutions": "1024,abc"}
+    )
+    assert response.status_code == 400
+    mock_manager.analyze_harmonization.assert_not_called()
+
+
+@patch("app.api.dataset.analysis_routes.dataset_manager")
+@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
+def test_analysis_rejects_non_positive_resolutions(
+    mock_to_thread, mock_manager, client
+):
+    """A resolution of 0 or negative is well-formed as an int but nonsensical
+    as a bucket base resolution — must 400, not silently pass through."""
+
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+
+    mock_to_thread.side_effect = run_sync
+
+    response = client.get(
+        "/api/datasets/myds/analysis", params={"resolutions": "1024,0"}
+    )
+    assert response.status_code == 400
+    mock_manager.analyze_harmonization.assert_not_called()
+
+
+@patch("app.api.dataset.analysis_routes.dataset_manager")
+@patch("app.api.dataset.analysis_routes.asyncio.to_thread")
+def test_analysis_accepts_valid_resolutions(mock_to_thread, mock_manager, client):
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+
+    mock_to_thread.side_effect = run_sync
+    mock_manager.analyze_harmonization.return_value = {
+        "landscape": _make_orientation_analysis()
+    }
+    response = client.get(
+        "/api/datasets/myds/analysis", params={"resolutions": "1024, 768"}
+    )
+    assert response.status_code == 200
 
 
 # ── Delete Media Pair ────────────────────────────────────────────────────

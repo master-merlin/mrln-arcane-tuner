@@ -66,11 +66,10 @@ class DatabaseEngine:
             os.makedirs(db_dir, exist_ok=True)
         conn = self._make_connection()
 
-        # Pragmas for performance + safety
+        # journal_mode=WAL is persisted in the database file itself (not
+        # per-connection like the pragmas _make_connection already sets on
+        # every connection), so it only needs setting once here.
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
         conn.close()
 
         # Run schema migrations
@@ -90,7 +89,16 @@ class DatabaseEngine:
     # ── Connections ──────────────────────────────────────────────────
 
     def _make_connection(self) -> sqlite3.Connection:
-        """Create a new connection with standard settings."""
+        """Create a new connection with standard settings.
+
+        Pragmas are per-connection in SQLite — ``initialize()`` used to set
+        ``synchronous``/``busy_timeout`` only on its own throwaway init
+        connection (closed immediately after), so every REAL connection the
+        app actually uses (every thread-local read via ``connection()``,
+        every write via ``write()``) ran with SQLite's defaults instead.
+        Setting them here applies them to every connection this factory
+        produces.
+        """
         conn = sqlite3.connect(
             self.db_path,
             check_same_thread=False,
@@ -98,6 +106,8 @@ class DatabaseEngine:
         )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def connection(self) -> sqlite3.Connection:

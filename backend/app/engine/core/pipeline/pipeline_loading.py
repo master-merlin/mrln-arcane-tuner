@@ -313,6 +313,13 @@ class PipelineLoadingMixin:
                 encoders=list(te_dict.keys()),
                 cached_embeddings=cache_count,
             )
+            # Move to CPU FIRST — at this point the TE is still GPU-resident
+            # (run_trainer.py moves it there before caching); dropping every
+            # reference below without this step frees nothing until whatever
+            # else holds the module happens to move or collect it.
+            for te in te_dict.values():
+                if te is not None:
+                    te.to("cpu")
             # Remove from components dict — prevents stale refs & GC leak
             for name in te_dict:
                 self.components.pop(name, None)
@@ -321,6 +328,14 @@ class PipelineLoadingMixin:
                 # SDXL, Flux2; Flux1 overrides for its custom names)
                 if hasattr(self, name):
                     setattr(self, name, None)
+            # Release the DRIVER's own references too. assign_components()
+            # makes the driver the single owner of component state, and
+            # get_text_encoders() reads directly off driver attributes — the
+            # two loops above only clear the pipeline/trainer's copies, so
+            # without this the driver (and its consumers, e.g. sampling.py's
+            # driver-fallback _resolve_component) would keep reporting the
+            # TE as loaded after "unload".
+            self.driver.release_text_encoders()
             self._te_unloaded = True
         else:
             self.logger.info(

@@ -135,6 +135,15 @@ class WanDriverBase(IModelDriver):
             result["text_encoder"] = self.text_encoder
         return result
 
+    def release_text_encoders(self) -> None:
+        """Null the attr get_text_encoders() reads.
+
+        Shared by WAN 2.1, WAN 2.2 (dual-expert), WAN 2.2 TI2V-5B, and
+        Bernini-R — none of them override ``get_text_encoders`` (single
+        UMT5 ``text_encoder``), so this one override covers all four.
+        """
+        self.text_encoder = None
+
     def get_lora_targets(self) -> list[str]:
         """WAN LoRA targets — definition enrichment overrides at runtime."""
         definition_targets = getattr(self.definition, "lora_targetable_modules", None)

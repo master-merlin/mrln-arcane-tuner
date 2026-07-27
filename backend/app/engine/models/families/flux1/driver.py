@@ -88,6 +88,11 @@ class Flux1Driver(IModelDriver):
             result["text_encoder_2"] = self.t5_encoder
         return result
 
+    def release_text_encoders(self) -> None:
+        """Null CLIP + T5 — the exact attrs get_text_encoders() reads."""
+        self.clip_encoder = None
+        self.t5_encoder = None
+
     def get_lora_targets(self) -> list[str]:
         """FLUX.1 LoRA targets — diffusers FluxTransformerBlock modules."""
         return [

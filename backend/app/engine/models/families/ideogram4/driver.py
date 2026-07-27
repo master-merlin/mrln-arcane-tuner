@@ -109,6 +109,10 @@ class IdeogramV4Driver(IModelDriver):
     def get_text_encoders(self) -> dict[str, nn.Module]:
         return {"text_encoder": self.text_encoder} if self.text_encoder else {}
 
+    def release_text_encoders(self) -> None:
+        """Null the attr get_text_encoders() reads."""
+        self.text_encoder = None
+
     def get_lora_targets(self) -> list[str]:
         defn_targets = getattr(self.definition, "lora_targetable_modules", None)
         if defn_targets:

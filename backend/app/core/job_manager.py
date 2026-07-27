@@ -157,85 +157,115 @@ class JobManager:
         restarts.  Jobs that were ``running`` or ``paused`` at shutdown are
         demoted to ``stopped`` because the training subprocess is no longer
         alive.
+
+        Two passes: ``list_by_statuses`` fetches EVERY pending/running/paused
+        row unbounded first, then ``list_recent(limit=200)`` tops up with
+        recent terminal rows (skipping ids already hydrated). Active rows
+        must never depend on the recency window — a pending job older than
+        the 200 most-recent records would otherwise never load into
+        ``_jobs``: invisible to the queue, the UI, and ``advance_queue``,
+        permanently stranded until someone notices and manually intervenes.
         """
         try:
             from app.core.db.repositories.job_repo import JobHistoryRepository
 
             repo = JobHistoryRepository()
-            rows = repo.list_recent(limit=200, include_active=True)
+            active_rows = repo.list_by_statuses(["pending", "running", "paused"])
+            recent_rows = repo.list_recent(limit=200, include_active=True)
 
             loaded = 0
+            hydrated_ids: set[str] = set()
             with self._lock:
-                for row in rows:
-                    if row["id"] in self._jobs:
-                        continue  # Don't overwrite live jobs
+                for row in active_rows:
+                    if self._hydrate_row(row, repo):
+                        loaded += 1
+                    hydrated_ids.add(row["id"])
 
-                    status_str = row.get("status", "pending")
-                    stored_pid = row.get("pid")
-
-                    # For running/paused jobs, check if OUR trainer subprocess
-                    # survived. Identity-match (not bare pid_exists) so a reused
-                    # PID — or an unrelated orphan — can't masquerade as a live
-                    # trainer and keep the job RUNNING, wedging the queue.
-                    if status_str in ("running", "paused"):
-                        if self._is_trainer_process(stored_pid, row["id"]):
-                            # Process survived the restart — keep status
-                            logger.info(
-                                "job_process_still_alive",
-                                job_id=row["id"],
-                                pid=stored_pid,
-                                status=status_str,
-                            )
-                            # Store for post-load re-attachment of LogTailer + watchdog
-                            self._recovery_jobs.append({
-                                "id": row["id"],
-                                "status": status_str,
-                                "pid": stored_pid,
-                            })
-                        else:
-                            # Process is dead
-                            if status_str == "paused":
-                                # Paused jobs should be re-launched and re-paused
-                                logger.info(
-                                    "paused_job_process_dead_will_relaunch",
-                                    job_id=row["id"],
-                                    pid=stored_pid,
-                                )
-                                self._recovery_jobs.append({
-                                    "id": row["id"],
-                                    "status": "relaunch_paused",
-                                })
-                                status_str = "pending"  # Load as pending, will re-launch later
-                            else:
-                                # Running job whose process died → stopped
-                                status_str = "stopped"
-                                try:
-                                    repo.update_status(row["id"], status="stopped", error="Interrupted by system restart")
-                                except Exception as e:
-                                    logger.warning("failed_to_update_interrupted_job_status", error=str(e))
-
-                    # Resolve plugin_id: DB stores definition_id which may
-                    # be the HF model path (legacy) or 'standard' (correct).
-                    raw_def_id = row.get("definition_id", "")
-                    resolved_plugin_id = raw_def_id if raw_def_id in ("standard",) else "standard"
-
-                    self._jobs[row["id"]] = Job(
-                        id=row["id"],
-                        plugin_id=resolved_plugin_id,
-                        config=row.get("config") or {},
-                        status=JobStatus(status_str),
-                        created_at=row.get("created_at", 0),
-                        started_at=row.get("started_at"),
-                        finished_at=row.get("finished_at"),
-                        error=row.get("error"),
-                        pid=stored_pid,
-                        priority=row.get("priority") or 0,
-                    )
-                    loaded += 1
+                for row in recent_rows:
+                    if row["id"] in hydrated_ids:
+                        continue  # already hydrated by the active-status pass
+                    if self._hydrate_row(row, repo):
+                        loaded += 1
+                    hydrated_ids.add(row["id"])
 
             logger.info("jobs_loaded_from_db", count=loaded)
         except Exception as e:
             logger.warning("jobs_load_from_db_failed", error=str(e))
+
+    def _hydrate_row(self, row: dict, repo: Any) -> bool:
+        """Build one ``Job`` from a persisted row and register it in ``_jobs``.
+
+        Shared by both passes of :meth:`load_from_db` (the active-status
+        hydration and the recency top-up). Must be called with ``self._lock``
+        already held. Returns ``False`` (no-op) if the id is already
+        registered — either a live in-memory job predating this call, or a
+        row already hydrated by the other pass.
+        """
+        if row["id"] in self._jobs:
+            return False  # Don't overwrite live jobs
+
+        status_str = row.get("status", "pending")
+        stored_pid = row.get("pid")
+
+        # For running/paused jobs, check if OUR trainer subprocess survived.
+        # Identity-match (not bare pid_exists) so a reused PID — or an
+        # unrelated orphan — can't masquerade as a live trainer and keep the
+        # job RUNNING, wedging the queue.
+        if status_str in ("running", "paused"):
+            if self._is_trainer_process(stored_pid, row["id"]):
+                # Process survived the restart — keep status
+                logger.info(
+                    "job_process_still_alive",
+                    job_id=row["id"],
+                    pid=stored_pid,
+                    status=status_str,
+                )
+                # Store for post-load re-attachment of LogTailer + watchdog
+                self._recovery_jobs.append({
+                    "id": row["id"],
+                    "status": status_str,
+                    "pid": stored_pid,
+                })
+            else:
+                # Process is dead
+                if status_str == "paused":
+                    # Paused jobs should be re-launched and re-paused
+                    logger.info(
+                        "paused_job_process_dead_will_relaunch",
+                        job_id=row["id"],
+                        pid=stored_pid,
+                    )
+                    self._recovery_jobs.append({
+                        "id": row["id"],
+                        "status": "relaunch_paused",
+                    })
+                    status_str = "pending"  # Load as pending, will re-launch later
+                else:
+                    # Running job whose process died → stopped
+                    status_str = "stopped"
+                    try:
+                        repo.update_status(row["id"], status="stopped", error="Interrupted by system restart")
+                    except Exception as e:
+                        logger.warning("failed_to_update_interrupted_job_status", error=str(e))
+
+        # Resolve plugin_id: DB stores definition_id which may be the HF
+        # model path (legacy) or 'standard' (correct).
+        raw_def_id = row.get("definition_id", "")
+        resolved_plugin_id = raw_def_id if raw_def_id in ("standard",) else "standard"
+
+        self._jobs[row["id"]] = Job(
+            id=row["id"],
+            plugin_id=resolved_plugin_id,
+            config=row.get("config") or {},
+            status=JobStatus(status_str),
+            created_at=row.get("created_at", 0),
+            started_at=row.get("started_at"),
+            finished_at=row.get("finished_at"),
+            error=row.get("error"),
+            pid=stored_pid,
+            priority=row.get("priority") or 0,
+        )
+        return True
 
     def recover_jobs(self) -> None:
         """Post-startup recovery for jobs whose state needs action.

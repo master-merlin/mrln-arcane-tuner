@@ -849,6 +849,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_populates_jobs(self, MockRepo):
         """load_from_db should hydrate _jobs from DB rows."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-1",
@@ -874,6 +875,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_running_demoted_to_stopped(self, MockRepo):
         """Jobs that were running at shutdown should be marked stopped."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-run",
@@ -896,6 +898,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_paused_queued_for_relaunch(self, MockRepo):
         """Paused jobs whose process is dead are loaded as PENDING and queued for relaunch."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-paused",
@@ -920,6 +923,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_existing_jobs_not_overwritten(self, MockRepo):
         """Live in-memory jobs should not be replaced by DB rows."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "live-job",
@@ -947,11 +951,81 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_handles_exception_gracefully(self, MockRepo):
         """load_from_db should not crash if the DB is unavailable."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.side_effect = Exception("DB locked")
         mgr = JobManager()
         mgr.load_from_db()  # Should not raise
 
         assert mgr.list_jobs() == []
+
+
+class TestLoadFromDbActiveStatusHydration:
+    """T4: restart hydration must never strand an active job outside the
+    ``list_recent`` 200-row recency window.
+
+    Uses a REAL, isolated DatabaseEngine/JobHistoryRepository (not mocked) so
+    the actual ``ORDER BY created_at DESC LIMIT 200`` semantics are exercised
+    — the bug is specifically about that SQL window dropping an old row, so a
+    mock-only test wouldn't prove the fix.
+    """
+
+    @pytest.fixture()
+    def isolated_db(self, tmp_path):
+        """Swap the DatabaseEngine singleton for a private tmp-file DB for the
+        duration of one test, so this test's rows never mix with the shared
+        session-scoped test DB (``conftest.py::_isolate_test_db``) that other
+        tests' ``create_job`` calls also write into."""
+        from app.core.db.engine import DatabaseEngine
+
+        old_instance = DatabaseEngine._instance
+        engine = DatabaseEngine(db_path=str(tmp_path / "t4_isolated.db"))
+        engine.initialize()
+        DatabaseEngine._instance = engine
+        yield engine
+        engine.close()
+        DatabaseEngine._instance = old_instance
+
+    def test_old_pending_job_survives_the_200_row_recency_window(self, isolated_db):
+        from app.core.db.repositories.job_repo import JobHistoryRepository
+
+        repo = JobHistoryRepository()
+
+        old_pending_id = "old-pending-job"
+        repo.create(
+            {
+                "id": old_pending_id,
+                "lora_name": "old",
+                "definition_id": "flux/dev",
+                "status": "pending",
+                "config": {},
+                "created_at": 1.0,  # the oldest row in the table
+            }
+        )
+
+        # 201 terminal rows, ALL newer than the pending job — guarantees a
+        # plain `list_recent(limit=200)` window excludes it (only 200 slots,
+        # 201 newer candidates).
+        for i in range(201):
+            repo.create(
+                {
+                    "id": f"terminal-{i}",
+                    "lora_name": f"t{i}",
+                    "definition_id": "flux/dev",
+                    "status": "completed",
+                    "config": {},
+                    "created_at": 1000.0 + i,
+                }
+            )
+
+        mgr = JobManager()
+        mgr.load_from_db()
+
+        hydrated = mgr.get_job(old_pending_id)
+        assert hydrated is not None, (
+            "a pending job older than the 200-row recency window must still "
+            "be hydrated — otherwise it's invisible to the queue forever"
+        )
+        assert hydrated.status == JobStatus.PENDING
 
 
 class TestFreshRestart:
@@ -1713,6 +1787,7 @@ class TestPriorityPersistence:
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_from_db_hydrates_priority(self, MockRepo):
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "j-pri", "definition_id": "flux/dev", "config": {},
@@ -1726,6 +1801,7 @@ class TestPriorityPersistence:
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_from_db_priority_defaults_zero(self, MockRepo):
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "j-nopri", "definition_id": "flux/dev", "config": {},
@@ -1949,6 +2025,7 @@ class TestStaleActiveReconciliation:
     def test_load_demotes_running_with_reused_pid(self, MockRepo):
         """A running job whose stored PID is alive but is NOT our trainer (PID
         reuse / an unrelated orphan) must be demoted, not kept RUNNING."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [{
             "id": "db-reused", "definition_id": "flux/dev", "config": {},
             "status": "running", "created_at": 1.0, "started_at": 1.0,
@@ -1963,6 +2040,7 @@ class TestStaleActiveReconciliation:
     def test_load_keeps_running_when_pid_is_our_trainer(self, MockRepo):
         """An orphaned-but-alive trainer (our run_trainer for this job) is kept
         RUNNING and queued for re-attach — training survives a server restart."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [{
             "id": "db-live", "definition_id": "flux/dev", "config": {},
             "status": "running", "created_at": 1.0, "started_at": 1.0,

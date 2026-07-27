@@ -745,6 +745,26 @@ class PipelineTrainMixin:
             # single integer update — cheap enough to run every step.
             self._update_job_progress(step)
 
+            # Drop this step's batch-sized GPU tensors before checkpoint save
+            # (clones components for the EMA swap) and sampling (its own
+            # forward passes) below — both are VRAM-transient hot spots, and
+            # `empty_cache()` (called inside sampling) can only reclaim
+            # UNREFERENCED blocks. Every name here is unconditionally
+            # rebuilt at the top of the next accumulation loop and is not
+            # read again past this point in the current step (`batch` and
+            # `timesteps` were last read just above, for logging).
+            del (
+                latents,
+                noise,
+                prepared_latents,
+                prepared_noise,
+                noisy_input,
+                pred,
+                target,
+                text_emb,
+                batch,
+            )
+
             # 8. Periodic save
             save_every = int(self.config.get("save_every_n_steps", 0))
             if save_every > 0 and step > 0 and step % save_every == 0:

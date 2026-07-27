@@ -74,12 +74,42 @@ class LongCatImageTrainer(GenericTrainingPipeline):
 
     # -- Disk-backed TE Pre-caching --
 
+    def _sample_prompt_texts(self) -> list[str]:
+        """Expanded sample-prompt strings to pre-cache.
+
+        Mirrors the sampler's wildcard expansion (GenericSamplingPipeline
+        calls ``_expand_wildcards`` → ``expand_prompt_wildcards`` before
+        ``encode_prompt``) so the cache key matches the exact string the
+        sampler requests via :meth:`encode_text`.
+        """
+        from app.engine.core.sampling import (  # noqa: PLC0415
+            expand_prompt_wildcards,
+        )
+
+        texts: list[str] = []
+        for sp in self.config.get("sample_prompts", []) or []:
+            raw = (
+                sp.get("prompt", "")
+                if isinstance(sp, dict)
+                else getattr(sp, "prompt", "")
+            )
+            if raw:
+                expanded = expand_prompt_wildcards(raw, self.config)
+                if expanded not in texts:
+                    texts.append(expanded)
+        return texts
+
     def _pre_cache_text_embeddings(self) -> None:
         """Warm text embedding cache from disk + encode missing.
 
         LongCat-Image caches (embedding, mask) tuples:
         - embeddings/{te_quant}/te1/ stores embedding tensors
         - embeddings/{te_quant}/te2/ stores attention mask tensors
+
+        The expanded SAMPLE prompts and negative prompt are also warmed
+        here: the sampler runs after the TE is offloaded, so it must serve
+        all prompts from ``self.text_cache`` — without this, sampling
+        causes a VRAM spike (offload) or a hard error (unload).
         """
         if not self.config.get("cache_text_embeddings", True):
             return
@@ -112,6 +142,20 @@ class LongCatImageTrainer(GenericTrainingPipeline):
                     disk_loaded += 1
                     continue
             need_encode.append((caption, hint))
+
+        # Warm sample + negative prompts so the TE stays offloaded during
+        # sampling. The sampler expands wildcards identically before calling
+        # encode_text, so the key produced by _sample_prompt_texts matches.
+        sample_texts = self._sample_prompt_texts()
+        queued = {cap for cap, _ in need_encode}
+        for sp in sample_texts:
+            if sp not in self.text_cache and sp not in queued:
+                need_encode.append((sp, ""))
+                queued.add(sp)
+        if sample_texts:
+            neg = str(self.config.get("sample_negative_prompt", "") or "")
+            if neg not in self.text_cache and neg not in queued:
+                need_encode.append((neg, ""))
 
         total = len(caption_hints)
         self.logger.info(

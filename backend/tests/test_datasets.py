@@ -1,5 +1,8 @@
 import time
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from app.core.dataset_manager import Dataset
 
 
@@ -158,20 +161,67 @@ def test_scan_all_datasets(mock_to_thread, mock_manager, client):
 
 
 @patch("app.api.dataset.crud_routes.dataset_manager")
-def test_upload_file(mock_manager, client):
+def test_upload_file(mock_manager, client, tmp_path):
+    """Happy path against a REAL temp directory (not a mocked open()) so this
+    also exercises the tmp-write + os.replace path end-to-end (W4.T7)."""
     mock_dataset = MagicMock()
-    mock_dataset.path = "/tmp/test"
+    mock_dataset.path = str(tmp_path)
     mock_manager.get_dataset.return_value = mock_dataset
 
-    with patch("app.api.dataset.crud_routes.open", create=True):
-        with patch("app.api.dataset.crud_routes.shutil.copyfileobj"):
-            response = client.post(
-                "/api/datasets/test/upload",
-                files={"file": ("test.txt", b"hello world")}
-            )
-            assert response.status_code == 200
-            assert response.json()["filename"] == "test.txt"
-            assert response.json()["status"] == "uploaded"
+    response = client.post(
+        "/api/datasets/test/upload",
+        files={"file": ("test.txt", b"hello world")}
+    )
+    assert response.status_code == 200
+    assert response.json()["filename"] == "test.txt"
+    assert response.json()["status"] == "uploaded"
+
+    saved = tmp_path / "test.txt"
+    assert saved.read_bytes() == b"hello world"
+    # No leftover .tmp file after a successful upload.
+    assert not (tmp_path / "test.txt.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_disconnect_leaves_no_partial_file(tmp_path):
+    """W4.T7: a client disconnect mid-upload (UploadFile.read raising after
+    delivering some bytes) must NOT leave a truncated file at the final path
+    — the next dataset scan would index it as real media."""
+    from app.api.dataset.crud_routes import upload_file
+
+    class _DisconnectingUpload:
+        filename = "photo.png"
+
+        def __init__(self):
+            self._served_first = False
+
+        async def read(self, size: int = -1) -> bytes:
+            if not self._served_first:
+                self._served_first = True
+                return b"partial-bytes-before-disconnect"
+            raise ConnectionResetError("client disconnected mid-upload")
+
+    mock_dataset = MagicMock()
+    mock_dataset.path = str(tmp_path)
+
+    # ConnectionResetError is an OSError subclass, so the route converts it
+    # to a clean 500 rather than crashing the worker — either way, no
+    # partial file must land on disk.
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        await upload_file(
+            name="ds",
+            file=_DisconnectingUpload(),
+            slot=0,
+            target_stem=None,
+            dataset=mock_dataset,
+        )
+
+    final_path = tmp_path / "photo.png"
+    assert not final_path.exists()
+    # No orphaned .tmp file left behind either.
+    assert list(tmp_path.iterdir()) == []
 
 
 @patch("app.api.dataset.crud_routes.dataset_manager")

@@ -246,22 +246,47 @@ async def upload_file(
 
     logger.info("uploading_file", dataset_name=name, filename=rel_name, slot=slot)
 
+    # Stream to a sibling .tmp file and only os.replace() it onto the final
+    # path once the whole body has arrived (mirrors the chunked-read
+    # exemplar at crud_routes.py's import_dataset_upload route, and the
+    # tmp+replace pattern at dataset/thumbnails.py:88-89). Without this, a
+    # client disconnect mid-upload left a truncated file AT the final path —
+    # which the next scan indexed as real media — and a re-upload of an
+    # existing name truncated the original in place before the copy finished.
+    tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
     try:
-        def save_upload():
-            with open(save_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+        with open(tmp_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                buffer.write(chunk)
+        os.replace(tmp_path, save_path)
+    except OSError as e:
+        tmp_path.unlink(missing_ok=True)
+        logger.error(
+            "upload_failed", dataset_name=name, filename=rel_name, error=str(e)
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+    except BaseException:
+        # Anything else (e.g. the client disconnecting mid-read) still must
+        # not leave a truncated file behind — clean up and let it propagate.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
-        await asyncio.to_thread(save_upload)
-        if slot:
+    if slot:
+        try:
             # Targeted refresh: control flags/dims on the paired media item
             # (no full rescan), emits the media_item entity.changed event.
             await asyncio.to_thread(
-                dataset_manager.refresh_control_metadata, name, target_stem,
+                dataset_manager.refresh_control_metadata,
+                name,
+                target_stem,
             )
-        return {"filename": rel_name, "status": "uploaded"}
-    except OSError as e:
-        logger.error("upload_failed", dataset_name=name, filename=rel_name, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        except OSError as e:
+            logger.error(
+                "upload_failed", dataset_name=name, filename=rel_name, error=str(e)
+            )
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return {"filename": rel_name, "status": "uploaded"}
 
 
 # ── Pairs & Media ────────────────────────────────────────────────────────

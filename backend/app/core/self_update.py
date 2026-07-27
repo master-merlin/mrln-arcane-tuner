@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from enum import Enum
 
 from app.core.drain import set_draining
@@ -206,7 +207,21 @@ class SelfUpdateService:
 
             self._set_state(UpdateState.PENDING_RESTART)
             set_draining(True)
-            await self._wait_for_idle()
+            if not await self._wait_for_idle():
+                # One in-process task never left RUNNING (e.g. a GPU stall) —
+                # don't hang the drain forever. Abort the update, re-open the
+                # GPU lane, and surface an ERROR so an operator can retry
+                # after the stuck task is dealt with.
+                logger.error(
+                    "self_update_drain_timeout",
+                    active=self.active_task_count(),
+                )
+                set_draining(False)
+                self._set_state(
+                    UpdateState.ERROR,
+                    error="Update paused: in-process tasks never finished draining.",
+                )
+                return
 
             self._set_state(UpdateState.RESTARTING)
             set_draining(False)
@@ -310,12 +325,21 @@ class SelfUpdateService:
 
         await asyncio.to_thread(_build)
 
-    async def _wait_for_idle(self) -> None:
-        """Wait until no in-process task is RUNNING. Training jobs are NOT
-        awaited — they are restart-safe subprocesses."""
+    async def _wait_for_idle(self, timeout_s: float = 1800) -> bool:
+        """Wait until no in-process task is RUNNING, or *timeout_s* elapses.
+
+        Training jobs are NOT awaited — they are restart-safe subprocesses.
+        Returns True once idle, False if the timeout was hit (a single
+        permanently-RUNNING task — e.g. a GPU stall — must not wedge
+        PENDING_RESTART forever with no operator escape hatch)."""
+        deadline = time.monotonic() + timeout_s
         while self.active_task_count() > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
             self._broadcast()
-            await asyncio.sleep(_IDLE_POLL_S)
+            await asyncio.sleep(min(_IDLE_POLL_S, remaining))
+        return True
 
     async def _do_restart(self) -> None:
         from app.api.system_routes import _restart_server_logic

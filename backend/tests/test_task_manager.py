@@ -161,3 +161,41 @@ def test_create_defaults_user_visible_true(tm):
 def test_create_silent_task(tm):
     t = tm.create(type="x", title="x", user_visible=False)
     assert t.user_visible is False
+
+
+def test_terminal_records_pruned_beyond_max(tm):
+    """Unbounded growth guard (W4.T5): _tasks/_cancels/_last_emit only ever
+    grew before this — a long session of batch ops (caption batches, rescan
+    batches, etc.) would leak memory and bloat every GET /tasks poll forever.
+    Terminal (finished) records must be capped at the newest 500."""
+    ids: list[str] = []
+    for i in range(600):
+        t = tm.create(type="caption_batch", title=f"t{i}", total=1)
+        tm.start(t.id)
+        tm.complete(t.id)
+        ids.append(t.id)
+
+    assert len(tm.list()) <= 500
+    assert len(tm._cancels) <= 500
+    assert len(tm._last_emit) <= 500
+
+    # Oldest pruned, newest retained.
+    assert tm.get(ids[0]) is None
+    assert ids[0] not in tm._cancels
+    assert tm.get(ids[-1]) is not None
+    assert ids[-1] in tm._cancels
+
+
+def test_terminal_pruning_never_drops_active_tasks(tm):
+    """A still-RUNNING/PENDING task must never be pruned, even once 500+
+    OTHER tasks have finished after it."""
+    active = tm.create(type="caption_batch", title="active", total=1)
+    tm.start(active.id)
+
+    for i in range(600):
+        t = tm.create(type="caption_batch", title=f"t{i}", total=1)
+        tm.start(t.id)
+        tm.complete(t.id)
+
+    assert tm.get(active.id) is not None
+    assert tm.get(active.id).status == TaskStatus.RUNNING

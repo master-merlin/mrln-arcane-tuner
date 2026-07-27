@@ -560,6 +560,8 @@ class LatentManager:
         cache_dirs: list[str] | None = None,
         source_paths: list[str] | None = None,
         extra_keys: list[str] | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor | None:
         """
         Try to load latents from disk. Returns None if any are missing.
@@ -567,6 +569,14 @@ class LatentManager:
         When *source_paths* is provided, uses content-addressed filenames.
         ``extra_keys`` (per-item) fold a discriminator (e.g. a video trim
         window) into the filename hash.
+
+        ``device``/``dtype`` (optional): when given, the stacked CPU tensor
+        is moved to both in ONE combined ``.to()`` call, instead of the
+        caller doing a bare device-move here and a separate dtype-cast
+        afterwards — two full-tensor allocations per step on this hot
+        per-step path (noticeable for 5D video/sliding latents). Omitting
+        either preserves the prior device-only behavior (``self.device``,
+        dtype unchanged).
         """
         if not cache_dirs and not self.cache_dir:
             return None
@@ -593,7 +603,8 @@ class LatentManager:
                 logger.warning("latent_cache_load_failed", path=path, error=str(e))
                 return None
 
-        return torch.stack(loaded).to(self.device)
+        target_device = device if device is not None else self.device
+        return torch.stack(loaded).to(device=target_device, dtype=dtype)
 
     def load_cached_latent_windows(
         self,
@@ -603,6 +614,8 @@ class LatentManager:
         extra_keys: list[str] | None = None,
         window_frames: int = 1,
         generator: torch.Generator | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor | None:
         """Load each FULL-CLIP latent, slice a random ``window_frames`` window, stack.
 
@@ -612,6 +625,11 @@ class LatentManager:
         the homogeneous ``(w,h,frames)`` grouping guarantees one ``window_frames``
         per batch. Returns ``None`` on ANY miss (same contract as
         :meth:`load_cached_latents`) so the caller falls back to a direct encode.
+
+        ``device``/``dtype`` (optional): see :meth:`load_cached_latents` — one
+        combined ``.to()`` instead of a device-move here plus a caller-side
+        dtype-cast (5D video window stacks make this the largest per-step
+        tensor in the loop).
         """
         if not cache_dirs and not self.cache_dir:
             return None
@@ -643,7 +661,8 @@ class LatentManager:
                 start = 0
             windows.append(self.slice_latent_window(full, int(window_frames), start))
 
-        return torch.stack(windows).to(self.device)
+        target_device = device if device is not None else self.device
+        return torch.stack(windows).to(device=target_device, dtype=dtype)
 
     def _validate_shape(self, latents: torch.Tensor, input_shape: torch.Size):
         """

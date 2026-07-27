@@ -39,6 +39,8 @@ class PixelPassthroughLatentManager:
         cache_dirs: list[str] | None = None,
         source_paths: list[str] | None = None,
         extra_keys: list[str] | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor | None:
         """Always report a cache miss — pixel-space has no latent cache.
 
@@ -46,6 +48,10 @@ class PixelPassthroughLatentManager:
         which returns the actual 4D ``batch["images"]`` tensor. The base loop
         later does ``latents.shape[1]`` for noise-offset shaping — that only
         works on the 4D image tensor, not on a length-N sentinel.
+
+        ``device``/``dtype`` accepted (unused) for drop-in signature parity
+        with ``LatentManager.load_cached_latents`` — the base training loop
+        calls this polymorphically and passes them unconditionally.
         """
         return None
 

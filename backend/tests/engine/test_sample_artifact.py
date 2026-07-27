@@ -16,6 +16,8 @@ persistence/broadcast logic runs on CPU without any model weights.
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import av
@@ -371,3 +373,88 @@ def test_generate_samples_reclaims_between_images(tmp_path, monkeypatch):
     assert s.singled == 2
     # One reclaim per image (2) + the existing single reclaim in the finally (1)
     assert calls["empty"] >= 3
+
+
+# ── W5.T3(a): should_sample per-step micro-waste ──────────────────────────
+#
+# ``should_sample`` used to re-resolve + mkdir the samples output dir AND
+# re-poll the sampling_cadence override file on EVERY training step. Neither
+# needs step-granular freshness: the output dir is fixed for a run, and the
+# cadence file is a human-timescale UI signal. Pinned here: the resolved
+# dir is memoized (mkdir fires once), and the cadence file is polled at
+# most once every `_CADENCE_POLL_INTERVAL_STEPS` steps.
+
+
+def _make_cadence_sampler(tmp_path):
+    pipeline = SimpleNamespace(
+        # A huge interval keeps should_sample from ever returning True across
+        # the small step ranges these tests loop over — isolates the
+        # dir-resolution / cadence-poll cost from the sampling decision itself.
+        config={"sample_every_n_steps": 1_000_000},
+        device=torch.device("cpu"),
+        checkpoint_manager=SimpleNamespace(output_dir=str(tmp_path)),
+    )
+    return _MinimalSampler(pipeline)
+
+
+def test_resolve_output_dir_mkdir_fires_once_across_many_should_sample_calls(
+    tmp_path, monkeypatch
+):
+    calls = {"n": 0}
+    real_mkdir = Path.mkdir
+
+    def counting_mkdir(self, *a, **k):
+        calls["n"] += 1
+        return real_mkdir(self, *a, **k)
+
+    monkeypatch.setattr(Path, "mkdir", counting_mkdir)
+
+    s = _make_cadence_sampler(tmp_path)
+    for step in range(50):
+        s.should_sample(step)
+
+    assert calls["n"] == 1
+
+
+def test_resolve_output_dir_returns_same_path_object_repeatedly(tmp_path):
+    s = _make_cadence_sampler(tmp_path)
+    first = s._resolve_output_dir()
+    second = s._resolve_output_dir()
+    assert first == second
+    assert first is second  # memoized — not just equal, the SAME object
+
+
+def test_cadence_file_polled_at_most_every_n_steps(tmp_path, monkeypatch):
+    cadence_path = tmp_path / "sampling_cadence"
+    cadence_path.write_text("7")
+
+    s = _make_cadence_sampler(tmp_path)
+
+    read_calls = {"n": 0}
+    real_open = open
+
+    def counting_open(path, *a, **k):
+        if os.fspath(path) == str(cadence_path):
+            read_calls["n"] += 1
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+
+    for step in range(60):
+        s.should_sample(step)
+
+    # Throttled to every 25 steps: polls fire at step 0, 25, 50 → 3 reads
+    # across 60 calls, never one read per call (which would be 60).
+    assert read_calls["n"] == 3
+    assert read_calls["n"] < 60
+
+
+def test_cadence_override_still_applies_after_throttled_poll(tmp_path):
+    """The throttle must not break correctness: an override present from
+    the start is still picked up and persisted into config."""
+    (tmp_path / "sampling_cadence").write_text("5")
+    s = _make_cadence_sampler(tmp_path)
+
+    s.should_sample(0)  # first call always polls
+
+    assert s.config["sample_every_n_steps"] == 5

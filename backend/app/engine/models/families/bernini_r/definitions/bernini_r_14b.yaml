@@ -43,6 +43,14 @@ version: '1.0'
 # caption; the control rides as a clean token stream (source_id=1), the target
 # video is the denoised stream (source_id=0).
 control_inputs: 1
+# Capability-descriptor override (Training UI): the 14B is the ONLY bernini_r
+# definition that's dual-expert MoE (1.3B is single-expert), which the
+# family-level capability_overrides can't distinguish. Merged after the
+# family-level mapping by resolve_capabilities (core/archetypes.py). Distinct
+# from architecture_params.dual_expert below, which the loader/driver read
+# for actual MoE wiring — this key only drives the capabilities descriptor.
+capability_overrides:
+  dual_expert: true
 defaults:
   resolution: 480
   scheduler: flow_match_euler

@@ -247,3 +247,62 @@ def test_all_definitions_resolve(model_id):
         "unified_transformer",
         "pixel_transformer",
     )
+
+
+# ── Definition-level capability_overrides (W5.T6) ─────────────────────────
+#
+# archetypes.py used to hard-code a single dual_expert promotion from
+# architecture_params. Generalized to a definition-level `capability_overrides`
+# mapping (same shape/merge-order as the family-level one) so ANY flag — not
+# just dual_expert — can vary between a family's own definitions with zero
+# special-case key knowledge in resolve_capabilities.
+
+
+class _StubDefinitionNoOverrides:
+    """A definition stand-in with no capability_overrides at all."""
+
+    family = "sdxl"
+    defaults: dict = {}
+    control_inputs = 0
+
+
+class _StubDefinitionWithOverrides:
+    """A definition stand-in declaring an ARBITRARY capability override —
+    not dual_expert — proving resolve_capabilities merges it generically."""
+
+    family = "sdxl"
+    defaults: dict = {}
+    control_inputs = 0
+    capability_overrides = {"has_audio": True}
+
+
+def test_definition_capability_overrides_merge_generically():
+    """A definition-level override for ANY key (has_audio here, not
+    dual_expert) wins — resolve_capabilities has no special-case key
+    knowledge, just a generic dict merge after the family-level one."""
+    stub = _StubDefinitionWithOverrides()
+    caps = resolve_capabilities(stub)["capabilities"]
+    assert caps["has_audio"] is True
+
+
+def test_definition_without_capability_overrides_is_unaffected():
+    """A definition with no capability_overrides field at all (getattr
+    default) resolves byte-identical to before — sdxl's own family override
+    (supports_train_te) still applies, nothing extra is injected."""
+    stub = _StubDefinitionNoOverrides()
+    caps = resolve_capabilities(stub)["capabilities"]
+    assert caps["supports_train_te"] is True
+    assert caps.get("has_audio", False) is False
+
+
+def test_bernini_14b_dual_expert_via_definition_capability_overrides():
+    """The bernini_r 14B definition still resolves dual_expert True — now
+    via its YAML's top-level `capability_overrides: {dual_expert: true}`
+    instead of a promoted `architecture_params.dual_expert` special case.
+    `architecture_params.dual_expert` stays (the loader/driver still read it
+    for MoE wiring) — this is the capabilities-descriptor mechanism only."""
+    defn = registry.get_definition("bernini-r-14b")
+    assert defn.architecture_params.get("dual_expert") is True
+    assert defn.capability_overrides.get("dual_expert") is True
+    caps = resolve_capabilities(defn)["capabilities"]
+    assert caps["dual_expert"] is True

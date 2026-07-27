@@ -5,6 +5,7 @@ Defines the family-specific hooks that subclasses must implement
 and the shared setup / component access helpers.
 """
 
+import functools
 import random
 from abc import abstractmethod
 from typing import Any
@@ -27,7 +28,7 @@ logger = structlog.get_logger(__name__)
 class PipelineBaseMixin(BaseTrainer):
     """Abstract hooks + component wiring for the training pipeline."""
 
-    @property
+    @functools.cached_property
     def is_video_family(self) -> bool:
         """True when the selected model is a video family.
 
@@ -36,15 +37,23 @@ class PipelineBaseMixin(BaseTrainer):
         capabilities (``is_video``) so a new video family inherits the behavior
         by declaration alone — no per-trainer flag to remember (LTX-2 used to
         lack one, silently breaking its single-image path).
+
+        A ``cached_property``: resolved (registry lookup + capability merge)
+        ONCE per trainer instance instead of on every access (2-4x per
+        accumulation step) — the value is fixed for the whole run. A
+        misconfigured registry/definition now RAISES instead of silently
+        masquerading as an image family (which would mis-collate 4D and
+        mis-train). The only tolerated non-error case is a bare object with
+        no ``definition`` at all (dispatch-test shells) — that legitimately
+        means "not a video family", not a resolver failure.
         """
-        try:
-            from app.engine.core.video_contract import resolve_video_profile
-
-            return resolve_video_profile(self.definition).is_video
-        except Exception:
+        if getattr(self, "definition", None) is None:
             return False
+        from app.engine.core.video_contract import resolve_video_profile
 
-    @property
+        return bool(resolve_video_profile(self.definition).is_video)
+
+    @functools.cached_property
     def is_audio_family(self) -> bool:
         """True when the selected model is an audio-generation family.
 
@@ -52,14 +61,16 @@ class PipelineBaseMixin(BaseTrainer):
         items, no spatial bucketing) — the audio-modality sibling of
         :attr:`is_video_family`. Derived from the model's declared
         capabilities (``is_audio_family``, see ``core/archetypes.py``).
-        """
-        try:
-            from app.engine.core.archetypes import resolve_capabilities
 
-            caps = resolve_capabilities(self.definition)["capabilities"]
-            return bool(caps.get("is_audio_family", False))
-        except Exception:
+        See :attr:`is_video_family` for why this is a ``cached_property``
+        that lets resolver errors propagate (bare-harness early-out only).
+        """
+        if getattr(self, "definition", None) is None:
             return False
+        from app.engine.core.archetypes import resolve_capabilities
+
+        caps = resolve_capabilities(self.definition)["capabilities"]
+        return bool(caps.get("is_audio_family", False))
 
     # ── Auto-delegation of clobber-capable hooks ─────────────────────────
     #

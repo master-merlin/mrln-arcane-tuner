@@ -112,6 +112,10 @@ class ErnieImageDriver(IModelDriver):
             result["text_encoder"] = self.text_encoder
         return result
 
+    def release_text_encoders(self) -> None:
+        """Null the attr get_text_encoders() reads."""
+        self.text_encoder = None
+
     def get_lora_targets(self) -> list[str]:
         """ERNIE-Image LoRA targets -- attn + MLP (comprehensive).
 

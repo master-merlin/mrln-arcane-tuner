@@ -23,6 +23,8 @@ import torch.nn as nn
 
 from app.engine.core.definitions import ModelDefinition
 
+logger = structlog.get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # IModelLoader — Weight I/O, path resolution, from_pretrained
@@ -146,6 +148,30 @@ class IModelDriver(ABC):
         Returns an empty dict if the family has no text encoders
         (e.g. after offloading).
         """
+
+    def release_text_encoders(self) -> None:
+        """Drop every reference ``get_text_encoders()`` would report.
+
+        Called by the unload branch of ``_offload_text_encoders``
+        (``unload_text_encoder=True``) AFTER the encoder(s) have already
+        been moved to CPU — this only needs to null attributes, no device
+        work. The driver is the single owner of component state
+        (``assign_components``), so this is the ONLY place that actually
+        frees the family's TE for GC; nulling trainer-level aliases alone
+        (the pre-fix behavior) leaves the driver holding it forever.
+
+        Families override this to null EXACTLY the concrete attribute(s)
+        their own ``get_text_encoders()`` reads — no more, no less.  The
+        base implementation is a safety net, not a real cleanup: it WARNS
+        when ``get_text_encoders()`` is still non-empty, so a new family
+        that forgets to override this is visible in logs rather than
+        silently leaking VRAM.
+        """
+        if self.get_text_encoders():
+            logger.warning(
+                "release_text_encoders_not_overridden",
+                driver=type(self).__name__,
+            )
 
     @abstractmethod
     def get_lora_targets(self) -> list[str]:

@@ -164,6 +164,16 @@ class Ltx2Driver(IModelDriver):
             result["text_encoder"] = self.text_encoder
         return result
 
+    def release_text_encoders(self) -> None:
+        """Null the Gemma3 attr get_text_encoders() reads.
+
+        Deliberately does NOT touch ``self.connectors`` — the second
+        text-encoding stage is excluded from ``get_text_encoders()`` by
+        design (must not be quantized/LoRA'd as a text encoder) and is
+        offloaded separately by ``Ltx2Trainer._offload_text_encoders``.
+        """
+        self.text_encoder = None
+
     def get_lora_targets(self) -> list[str]:
         """LoRA targets — video stream always; audio + cross-modal when on.
 

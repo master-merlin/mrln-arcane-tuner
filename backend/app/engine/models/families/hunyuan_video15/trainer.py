@@ -321,9 +321,8 @@ class Hv15Trainer(GenericTrainingPipeline):
         if not self.config.get("cache_latents", True):
             return
 
-        from safetensors.torch import save_file
-
         from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+        from app.engine.utils.safe_save import safe_save_file
 
         encoded = skipped = failed = 0
         for item in self.inventory:
@@ -356,7 +355,7 @@ class Hv15Trainer(GenericTrainingPipeline):
                         pixel_values=pixel_values
                     ).last_hidden_state  # [1, 729, 1152]
                 os.makedirs(sdir, exist_ok=True)
-                save_file({"image_embeds": emb[0].detach().cpu()}, path)
+                safe_save_file({"image_embeds": emb[0].detach().cpu()}, path)
                 encoded += 1
             except Exception as e:  # noqa: BLE001 — a bad item must not kill the run
                 # Graceful path: leave this item uncached — build_batch_extra
@@ -490,10 +489,54 @@ class Hv15Trainer(GenericTrainingPipeline):
             if os.path.exists(path):
                 try:
                     emb = load_file(path)["image_embeds"]
-                except (OSError, KeyError) as e:
+                except Exception as e:
+                    # Broad by design: a bad cache file (e.g. safetensors.
+                    # SafetensorError, which subclasses Exception directly,
+                    # NOT OSError) must degrade to absent, never crash the run.
+                    # The corrupt file is then discarded (best-effort): with
+                    # it gone, _pre_cache_aux's content-blind os.path.exists
+                    # skip-check sees it absent on the NEXT precache pass and
+                    # regenerates it — bounding the zero-fill degradation to
+                    # THIS run instead of poisoning every future run silently.
                     self.logger.warning(
-                        "hv15_siglip_cache_load_failed", path=path, error=str(e)
+                        "hv15_siglip_cache_load_failed",
+                        path=path,
+                        error=str(e),
+                        hint="image conditioning for this item is ZERO-FILLED "
+                        "for the remainder of this run; corrupt cache "
+                        "file discarded so the next precache pass "
+                        "regenerates it",
                     )
+                    try:
+                        os.remove(path)
+                    except OSError as unlink_err:
+                        self.logger.warning(
+                            "hv15_siglip_cache_unlink_failed",
+                            path=path,
+                            error=str(unlink_err),
+                        )
+                    # The structured self.logger.warning above never reaches
+                    # job_log.jsonl / the Jobs screen (see pipeline_train.py's
+                    # nan_window_skipped comment) — without this, a run whose
+                    # Siglip conditioning silently zero-fills would complete
+                    # looking perfectly healthy. Emit once per affected item
+                    # per run (build_batch_extra runs every step; a per-step
+                    # flood would be its own problem), keyed on the resolved
+                    # cache path so repeated hits on the SAME item this run
+                    # dedupe even if it is re-corrupted mid-run.
+                    warned = getattr(self, "_hv15_siglip_corrupt_warned", None)
+                    if warned is None:
+                        warned = set()
+                        self._hv15_siglip_corrupt_warned = warned
+                    if path not in warned:
+                        warned.add(path)
+                        self._emit_warning(
+                            f"Image-conditioning cache for '{item['id']}' is "
+                            "corrupt: this item trained with ZEROED image "
+                            "conditioning for the remainder of this run. "
+                            "The corrupt cache file was discarded, so the "
+                            "next pre-cache pass will regenerate it."
+                        )
             embeds.append(emb)
 
         ref = next((e for e in embeds if e is not None), None)

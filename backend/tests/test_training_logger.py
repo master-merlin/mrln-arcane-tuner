@@ -47,6 +47,57 @@ class TestLogStep:
         assert len(tl.loss_history) == 1
 
 
+class TestLogStepNoneLoss:
+    """W2.T6 fix-wave: ``loss=None`` marks a step with no usable loss (an
+    all-NaN accumulation window). It must still emit progress/step/ETA
+    telemetry but must NOT leave a fake data point in the loss chart, loss
+    history, or DB metrics buffer."""
+
+    def test_none_loss_not_added_to_history(self):
+        tl = TrainingLogger(max_steps=10)
+        tl.log_step(0, loss=None)
+        assert tl.loss_history == []
+
+    def test_none_loss_not_buffered_for_db(self):
+        tl = TrainingLogger(max_steps=10)
+        tl._job_id = "job-1"
+        tl.log_step(0, loss=None)
+        assert tl._metrics_buffer == []
+
+    def test_none_loss_still_writes_step_ipc_without_loss_key(self):
+        """The Jobs screen's live step counter/ETA comes from the IPC
+        ``step`` message — it must still fire, but without a ``loss`` key
+        (so the frontend's `typeof m.loss === 'number'` chart filter and
+        the current-loss KPI both correctly treat it as "no loss this
+        step" instead of a fabricated 0.0)."""
+        writer = MagicMock()
+        tl = TrainingLogger(max_steps=10, log_writer=writer)
+        tl.log_step(5, loss=None, lr=1e-4, extra={"nan_window_skipped": True})
+        writer.step.assert_called_once()
+        (payload,), _ = writer.step.call_args
+        assert "loss" not in payload
+        assert payload["step"] == 6
+        assert payload["nan_window_skipped"] is True
+
+    def test_none_loss_does_not_crash_on_missing_extra_grad_norm(self):
+        """Regression guard: the metrics-buffer branch used to read
+        ``extra.get(...)`` unconditionally — must stay skipped for
+        loss=None even when extra is provided."""
+        tl = TrainingLogger(max_steps=10)
+        tl._job_id = "job-1"
+        tl.log_step(0, loss=None, extra={"nan_window_skipped": True})
+        assert tl._metrics_buffer == []
+
+    def test_real_loss_after_none_marker_still_recorded(self):
+        """loss=None must not disturb bookkeeping for subsequent real
+        steps."""
+        tl = TrainingLogger(max_steps=10)
+        tl.log_step(0, loss=None)
+        tl.log_step(1, loss=0.5)
+        assert len(tl.loss_history) == 1
+        assert tl.loss_history[0]["step"] == 2
+
+
 class TestElapsedAndETA:
     def test_total_elapsed_includes_offset(self):
         tl = TrainingLogger(max_steps=100, elapsed_offset=3600.0)

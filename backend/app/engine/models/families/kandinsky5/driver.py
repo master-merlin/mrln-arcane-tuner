@@ -275,6 +275,11 @@ class Kandinsky5Driver(IModelDriver):
             result["text_encoder_2"] = self.text_encoder_2
         return result
 
+    def release_text_encoders(self) -> None:
+        """Null the Qwen2.5-VL + CLIP attrs get_text_encoders() reads."""
+        self.text_encoder = None
+        self.text_encoder_2 = None
+
     def get_lora_targets(self) -> list[str]:
         """Fully-indexed visual-block LoRA targets.
 

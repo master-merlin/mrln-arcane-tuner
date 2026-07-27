@@ -398,3 +398,186 @@ def test_encode_audio_clean_colocates_vae_with_input():
     assert drv.audio_vae.moved_to, "audio VAE was never co-located with the input"
     assert torch.device(drv.audio_vae.moved_to[-1]) == drv.device
     assert out.shape[-1] == 128  # packed audio latent feature dim
+
+
+# ── corrupt cache file (poison-pill) handling ──────────────────────────────
+#
+# Task W2.T2 widened build_batch_extra's load-site catch from (OSError,
+# KeyError) to Exception, because safetensors 0.8.0's SafetensorError
+# subclasses Exception DIRECTLY (not OSError) — so a truncated/corrupt cache
+# file used to crash every subsequent run at the same step (os.path.exists
+# still counts the truncated file as "cached"). These tests write a REAL
+# corrupt .safetensors file (not a mock) at the exact lookup path and drive
+# the real load path.
+
+
+def _write_corrupt_audio_cache_file(t, item) -> str:
+    """A genuinely corrupt (truncated) .safetensors file at the exact path
+    ``build_batch_extra`` looks up — matches the real crash mode: a bad
+    header that raises ``safetensors.SafetensorError`` (NOT OSError/KeyError)."""
+    import os
+
+    adir = t._audio_cache_dir(item["cache_dir"])
+    os.makedirs(adir, exist_ok=True)
+    fname = t.latent_manager.latent_filename(item["id"], item["path"])
+    path = str(Path(adir) / fname)
+    with open(path, "wb") as f:
+        f.write(b"\x00" * 64)
+    return path
+
+
+def test_build_batch_extra_degrades_to_miss_on_corrupt_cache_file(tmp_path):
+    """A pre-existing corrupt audio-latent cache file must degrade to a MISS,
+    never raise — the exact poison-pill regression this task guards against.
+    The corrupt file must also be DISCARDED (best-effort unlink) so the
+    poison pill does not persist across every future run — see the self-heal
+    test below."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    path = _write_corrupt_audio_cache_file(t, a)
+
+    extra = t.build_batch_extra([a])  # must not raise
+
+    assert extra == {}
+    assert not Path(path).exists()  # corrupt file discarded, not left behind
+
+
+def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp_path):
+    """Mixed batch: clipGood has a genuinely valid cached latent, clipBad's
+    cache file is present-but-corrupt. clipBad must degrade exactly like
+    "absent" (zero latent, mask 0), clipGood must be unaffected, and a
+    visible warning must name the corrupt path — never an unhandled raise."""
+    t = _trainer()
+    good = _video_item(tmp_path, "clipGood")
+    bad = _video_item(tmp_path, "clipBad")
+    _seed_audio_cache(t, good, torch.full((L, 128), 3.0))
+    _write_corrupt_audio_cache_file(t, bad)
+
+    rec = _RecLogger()
+    t.logger = rec
+    extra = t.build_batch_extra([good, bad])  # must not raise
+
+    assert extra["audio_clean"].shape == (2, L, 128)
+    assert torch.equal(extra["audio_mask"], torch.tensor([1.0, 0.0]))
+    assert torch.equal(extra["audio_clean"][0], torch.full((L, 128), 3.0))
+    assert torch.count_nonzero(extra["audio_clean"][1]) == 0
+    warn = [kw for ev, kw in rec.warnings if ev == "ltx2_audio_cache_load_failed"]
+    assert warn and "clipBad" in warn[0]["path"]
+    bad_path = Path(t._audio_cache_dir(bad["cache_dir"])) / "clipBad.safetensors"
+    assert not bad_path.exists()  # discarded, not left as a poison pill
+
+
+def test_precache_aux_regenerates_after_build_batch_extra_discards_corrupt_file(
+    tmp_path, monkeypatch
+):
+    """CORRECTED contract (supersedes this test's original 6c87dea2 version,
+    which asserted the file was left "permanently" corrupt and the clip
+    "permanently degrades to audio_mask=0"). ``_pre_cache_aux``'s skip check
+    is STILL a plain content-blind ``os.path.exists`` — it does not itself
+    repair a corrupt file sitting untouched on disk (that deeper
+    content-aware-skip fix is out of scope here, same as ``LatentManager``'s
+    pattern). But that is no longer the whole story: ``build_batch_extra``'s
+    load-time catch now discards the poison pill (best-effort unlink) the
+    moment it is encountered, so by the time the NEXT precache pass runs
+    (e.g. the following training run, or a later resume), the file is gone
+    and the content-blind exists-check correctly sees it absent and
+    regenerates it. The damage is bounded to the run that hit the corrupt
+    file — not permanent."""
+    _patch_decode(monkeypatch)
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    path = _write_corrupt_audio_cache_file(t, a)
+    rec = _RecLogger()
+    t.logger = rec
+
+    # This run's load attempt hits the poison pill mid-training.
+    extra = t.build_batch_extra([a])  # must not raise
+    assert extra == {}  # this run's batch(es) still degrade for this clip
+    assert not Path(path).exists()  # corrupt file discarded, not left behind
+    warn = [kw for ev, kw in rec.warnings if ev == "ltx2_audio_cache_load_failed"]
+    assert warn  # degradation for this run was logged visibly
+
+    # Next precache pass (simulating the following run/resume) sees the file
+    # absent and regenerates it with a real latent — poison pill cleared.
+    t.inventory = [a]
+    t._pre_cache_aux()
+
+    assert Path(path).exists()
+    assert load_file(path)["audio_latents"].shape == (L, 128)
+    assert t.driver.encode_calls == 1  # regenerated exactly once
+
+
+# ── corrupt cache → user-visible warning (W2 pre-merge finding) ────────────
+#
+# self.logger.warning goes to the structured backend logger and never reaches
+# job_log.jsonl / the Jobs screen (see pipeline_train.py's nan_window_skipped
+# handling). Without ALSO emitting through self._emit_warning (the JobLogWriter
+# IPC seam sampling failures already use), an LTX-2 run whose audio stream
+# silently drops to mask=0 completes looking perfectly healthy. These tests
+# assert against a fake ``_log_writer`` — the real seam ``_emit_warning``
+# writes through — not against the structured logger mock used above.
+
+
+class _WarningRecorder:
+    """JobLogWriter stand-in recording every warning(...) call."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def status(self, label: str) -> None:  # pragma: no cover - unused here
+        pass
+
+
+def test_build_batch_extra_corrupt_cache_emits_user_visible_warning(tmp_path):
+    """The corrupt-cache degrade must ALSO surface via _emit_warning (→
+    job_log.jsonl / Jobs screen), naming the clip and stating plainly that it
+    trained with no audio and that the cache will regenerate."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    extra = t.build_batch_extra([a])  # must not raise
+
+    assert extra == {}
+    assert len(lw.warnings) == 1
+    msg = lw.warnings[0]
+    assert "clipA" in msg
+    assert "audio" in msg.lower()
+    assert "regenerate" in msg.lower() or "next pre-cache" in msg.lower()
+
+
+def test_build_batch_extra_corrupt_cache_warns_user_once_per_item(tmp_path):
+    """build_batch_extra runs once per training step — repeated calls for the
+    SAME corrupt clip must not flood job_log.jsonl with a duplicate warning
+    per step."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    t.build_batch_extra([a])
+    # The corrupt file was discarded after the first call — recreate it so
+    # the SECOND call hits the load-failure branch again (simulating the
+    # cache still being absent/corrupt for this same run/step).
+    _write_corrupt_audio_cache_file(t, a)
+    t.build_batch_extra([a])
+    t.build_batch_extra([a])
+
+    assert len(lw.warnings) == 1
+
+
+def test_build_batch_extra_without_log_writer_is_safe(tmp_path):
+    """No _log_writer attached (e.g. other unit tests) → no crash."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+
+    extra = t.build_batch_extra([a])  # must not raise
+
+    assert extra == {}

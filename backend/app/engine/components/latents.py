@@ -2,10 +2,44 @@ import hashlib
 import os
 import torch
 
-from safetensors.torch import save_file, load_file
+from safetensors.torch import load_file
 import structlog
 
+from app.engine.utils.safe_save import safe_save_file
+
 logger = structlog.get_logger(__name__)
+
+# Memoizes a SHA-256 hasher already PRIMED with a source file's full bytes,
+# keyed on (abspath, st_size, st_mtime_ns). load_cached_latents /
+# load_cached_latent_windows call hash_source_file / latent_filename once per
+# item (per control slot) EVERY training step purely to rebuild a cache
+# filename, even though the file's digest is invariant for the life of a run
+# — this turns repeat lookups into an os.stat() after the first hit instead
+# of a full re-read + re-hash.
+#
+# Stores the PRIMED HASHER OBJECT rather than just the hex digest string
+# because latent_filename's extra_key branch needs to extend the SAME
+# file-bytes prefix with a per-call discriminator (e.g. a video trim window,
+# ``t{start}-{end}``) and still land on sha256(file_bytes + extra_key)
+# without re-reading the file. hashlib hash objects support ``.copy()``:
+# SHA-256 (Merkle-Damgard) processes input incrementally, so
+# ``sha256(file_bytes).copy().update(extra_key).hexdigest()`` is bit-identical
+# to ``sha256(file_bytes + extra_key).hexdigest()`` regardless of how the
+# input is split across update() calls — the memoization changes ZERO digest
+# values, only which calls touch the disk.
+#
+# Access is funneled exclusively through ``LatentManager._primed_hash_for``,
+# which NEVER hands out the stored object itself — only ``.copy()``s of it —
+# so a caller updating its copy (to fold in extra_key bytes) can never
+# corrupt the memo for the next caller.
+#
+# Module-level (not per-instance) because a run constructs more than one
+# LatentManager and they must share warm entries. Keyed on size+mtime (not
+# path alone) so a file edited mid-run still gets a fresh digest. Unbounded
+# growth is acceptable: one entry per dataset file in a single-process
+# trainer — no TTL/LRU eviction (YAGNI). A primed sha256 object is tiny
+# (~200 bytes of internal state) — no file content is ever stored.
+_PRIMED_HASH_MEMO: dict[tuple[str, int, int], "hashlib._Hash"] = {}
 
 
 class LatentManager:
@@ -240,18 +274,50 @@ class LatentManager:
         )
 
     @staticmethod
+    def _primed_hash_for(source_path: str) -> "hashlib._Hash":
+        """Return a SHA-256 hasher already fed *source_path*'s full bytes.
+
+        The single access point for ``_PRIMED_HASH_MEMO`` — always returns a
+        fresh ``.copy()``, NEVER the memoized object itself, so callers may
+        freely ``.update()`` the return value (e.g. to fold in an
+        ``extra_key``) without corrupting the memo for the next caller. This
+        is what lets both ``hash_source_file`` and ``latent_filename``'s
+        ``extra_key`` branch share one memo without one poisoning the other.
+
+        Keyed on ``(abspath, st_size, st_mtime_ns)``: a file edited on disk
+        (new size and/or mtime) misses the memo and is re-read.
+        """
+        abspath = os.path.abspath(source_path)
+        st = os.stat(source_path)  # raises exactly as the old read did if gone
+        key = (abspath, st.st_size, st.st_mtime_ns)
+
+        cached = _PRIMED_HASH_MEMO.get(key)
+        if cached is not None:
+            return cached.copy()
+
+        h = hashlib.sha256()
+        with open(source_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+        _PRIMED_HASH_MEMO[key] = h
+        return h.copy()
+
+    @staticmethod
     def hash_source_file(source_path: str) -> str:
         """Compute SHA-256 hex digest of a source image file.
 
         Used for content-addressed latent cache filenames so that
         replacing an image (same name, different pixels) invalidates
         the stale cache entry.
+
+        Memoized module-wide via ``_primed_hash_for`` on
+        ``(abspath, size, mtime_ns)``: the digest is invariant for the life
+        of a run, so repeated per-step lookups for an unchanged file are
+        served without re-reading it. A file that changes on disk (new size
+        and/or mtime) gets a fresh key and is re-hashed — the digest VALUE
+        for a given file's bytes is unchanged by this memoization.
         """
-        h = hashlib.sha256()
-        with open(source_path, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 16), b""):
-                h.update(chunk)
-        return h.hexdigest()
+        return LatentManager._primed_hash_for(source_path).hexdigest()
 
     @staticmethod
     def latent_filename(img_id: str, source_path: str, extra_key: str = "") -> str:
@@ -268,6 +334,12 @@ class LatentManager:
         from the source bytes ALONE — byte-identical to the pre-video
         behavior, so image cache filenames are unchanged.
 
+        Both branches share the same ``_primed_hash_for`` memo (see
+        ``_PRIMED_HASH_MEMO``), so a video/edit run's non-empty ``extra_key``
+        calls — the actual per-step hot path this memoization targets — no
+        longer re-read and re-hash the full source clip on every lookup; only
+        the first reference to a given ``(path, size, mtime)`` pays the read.
+
         Args:
             img_id: Image identifier (typically the relative path stem).
             source_path: Absolute path to the source media file.
@@ -277,10 +349,9 @@ class LatentManager:
             Filename string (without directory).
         """
         if extra_key:
-            h = hashlib.sha256()
-            with open(source_path, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 16), b""):
-                    h.update(chunk)
+            # .copy() (never the memoized object itself) so folding in
+            # extra_key here can't leak into another caller's digest.
+            h = LatentManager._primed_hash_for(source_path)
             h.update(extra_key.encode("utf-8"))
             file_hash = h.hexdigest()
         else:
@@ -460,7 +531,14 @@ class LatentManager:
         seen: set[str] = set()
 
         for i, (img_id, c_dir) in enumerate(zip(ids, cache_dirs)):
-            key = f"{c_dir}/{img_id}"
+            # Fold the extra_key discriminator into the dedupe key: tiled/
+            # trimmed video windows of ONE clip share (cache_dir, id) and
+            # differ only in extra_key (t{start}-{end}). Without it, window
+            # 2..K would collapse into window 1's "seen" entry and never be
+            # checked. Mirrors the pre-cache work-item builder's own key
+            # (pipeline_caching.py's f"{cache_dir}/{id}/{extra_key}").
+            extra = extra_keys[i] if extra_keys else ""
+            key = f"{c_dir}/{img_id}/{extra}"
             if key in seen:
                 continue
             seen.add(key)
@@ -507,7 +585,11 @@ class LatentManager:
             try:
                 data = load_file(path)
                 loaded.append(data["latents"])
-            except (OSError, KeyError) as e:
+            except Exception as e:
+                # Broad by design: OSError, KeyError, safetensors.SafetensorError
+                # (which subclasses Exception directly, NOT OSError) — a bad
+                # cache file must degrade to a MISS, never crash the run. The
+                # caller re-encodes and overwrites it via the atomic writer.
                 logger.warning("latent_cache_load_failed", path=path, error=str(e))
                 return None
 
@@ -545,7 +627,8 @@ class LatentManager:
                 return None
             try:
                 full = load_file(path)["latents"]  # [C, f, h, w]
-            except (OSError, KeyError) as e:
+            except Exception as e:
+                # Broad by design — see load_cached_latents' matching catch.
                 logger.warning("latent_cache_load_failed", path=path, error=str(e))
                 return None
 
@@ -637,11 +720,11 @@ class LatentManager:
                 # dataset-relative paths, so control-slot items carry a
                 # "control/" segment inside fname itself.
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                save_file({"latents": latents_cpu[i]}, path)
+                safe_save_file({"latents": latents_cpu[i]}, path)
 
             # 2. Mirror (Output) Cache
             if mirror_dir:
                 m_path = os.path.join(mirror_dir, fname)
                 os.makedirs(os.path.dirname(m_path), exist_ok=True)
                 if not os.path.exists(m_path):
-                    save_file({"latents": latents_cpu[i]}, m_path)
+                    safe_save_file({"latents": latents_cpu[i]}, m_path)

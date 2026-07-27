@@ -267,3 +267,183 @@ def test_precache_aux_no_incomplete_warning_when_all_ok(tmp_path):
 
     warn_events = [ev for ev, _ in rec.warnings]
     assert "hv15_siglip_precache_incomplete" not in warn_events
+
+
+# ── corrupt cache file (poison-pill) handling ──────────────────────────────
+#
+# Task W2.T2 widened build_batch_extra's load-site catch from (OSError,
+# KeyError) to Exception, because safetensors 0.8.0's SafetensorError
+# subclasses Exception DIRECTLY (not OSError) — so a truncated/corrupt cache
+# file used to crash every subsequent run at the same step (os.path.exists
+# still counts the truncated file as "cached"). These tests write a REAL
+# corrupt .safetensors file (not a mock) at the exact lookup path and drive
+# the real load path.
+
+
+def _write_corrupt_cache_file(item: dict, name: str) -> str:
+    """A genuinely corrupt (truncated) .safetensors file at the exact path
+    ``build_batch_extra`` looks up — matches the real crash mode: a bad
+    header that raises ``safetensors.SafetensorError`` (NOT OSError/KeyError)."""
+    sdir = os.path.join(item["cache_dir"], "siglip")
+    os.makedirs(sdir, exist_ok=True)
+    path = os.path.join(sdir, f"{name}.safetensors")
+    with open(path, "wb") as f:
+        f.write(b"\x00" * 64)
+    return path
+
+
+def test_build_batch_extra_degrades_to_miss_on_corrupt_cache_file(tmp_path):
+    """A pre-existing corrupt cache file must degrade to a MISS, never raise
+    — the exact poison-pill regression this task guards against. The corrupt
+    file must also be DISCARDED (best-effort unlink) so the poison pill does
+    not persist across every future run — see the self-heal test below."""
+    item = _still_item(tmp_path, "img1")
+    path = _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+
+    extra = t.build_batch_extra([item])  # must not raise
+
+    assert extra == {}  # nothing usable cached → driver falls back to zeros
+    assert not os.path.exists(path)  # corrupt file discarded, not left behind
+
+
+def test_build_batch_extra_zero_fills_item_with_corrupt_cache_alongside_good(tmp_path):
+    """Mixed batch: "good" has a genuinely valid cached embed, "corrupt"'s
+    cache file is present-but-corrupt. The corrupt one must degrade exactly
+    like "missing" (zero-filled), "good" must be unaffected, and a visible
+    warning must name the corrupt path — never an unhandled raise."""
+    good = _still_item(tmp_path, "good")
+    corrupt = _still_item(tmp_path, "corrupt")
+    t = _make_trainer("i2v", tmp_path, [good, corrupt])
+    t._pre_cache_aux()  # only "good" gets a real cached embed
+    _write_corrupt_cache_file(corrupt, "corrupt")  # poison pill for "corrupt"
+
+    rec = _RecLogger()
+    t.logger = rec
+    extra = t.build_batch_extra([good, corrupt])  # must not raise
+
+    emb = extra[Hv15Driver.BATCH_IMAGE_EMBED]
+    assert emb.shape == (2, _TOKENS, _DIM)
+    assert torch.all(emb[0] == 3.0)  # good item keeps its real embedding
+    assert torch.all(emb[1] == 0.0)  # corrupt item degrades to zero-fill
+    warn = [kw for ev, kw in rec.warnings if ev == "hv15_siglip_cache_load_failed"]
+    assert warn and "corrupt.safetensors" in warn[0]["path"]
+    corrupt_path = os.path.join(corrupt["cache_dir"], "siglip", "corrupt.safetensors")
+    assert not os.path.exists(corrupt_path)  # discarded, not left as a poison pill
+
+
+def test_precache_aux_regenerates_after_build_batch_extra_discards_corrupt_file(
+    tmp_path,
+):
+    """CORRECTED contract (supersedes this test's original 6c87dea2 version,
+    which asserted the file was left "permanently" corrupt and the item
+    "permanently zero-fills"). ``_pre_cache_aux``'s skip check is STILL a
+    plain content-blind ``os.path.exists`` — it does not itself repair a
+    corrupt file sitting untouched on disk (that deeper content-aware-skip
+    fix is out of scope here, same as ``LatentManager``'s pattern). But that
+    is no longer the whole story: ``build_batch_extra``'s load-time catch now
+    discards the poison pill (best-effort unlink) the moment it is
+    encountered, so by the time the NEXT precache pass runs (e.g. the
+    following training run, or a later resume), the file is gone and the
+    content-blind exists-check correctly sees it absent and regenerates it.
+    The damage is bounded to the run that hit the corrupt file — not
+    permanent."""
+    item = _still_item(tmp_path, "img1")
+    path = _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+    rec = _RecLogger()
+    t.logger = rec
+
+    # This run's load attempt hits the poison pill mid-training.
+    extra = t.build_batch_extra([item])  # must not raise
+    assert extra == {}  # this run's batch(es) still zero-fill for this item
+    assert not os.path.exists(path)  # corrupt file discarded, not left behind
+    warn = [kw for ev, kw in rec.warnings if ev == "hv15_siglip_cache_load_failed"]
+    assert warn  # degradation for this run was logged visibly
+
+    # Next precache pass (simulating the following run/resume) sees the file
+    # absent and regenerates it with a real embedding — poison pill cleared.
+    t._pre_cache_aux()
+
+    assert os.path.exists(path)
+    from safetensors.torch import load_file
+
+    emb = load_file(path)["image_embeds"]
+    assert torch.all(emb == 3.0)
+
+
+# ── corrupt cache → user-visible warning (W2 pre-merge finding) ────────────
+#
+# self.logger.warning goes to the structured backend logger and never reaches
+# job_log.jsonl / the Jobs screen (see pipeline_train.py's nan_window_skipped
+# handling). Without ALSO emitting through self._emit_warning (the JobLogWriter
+# IPC seam sampling failures already use), an i2v run whose Siglip conditioning
+# silently zero-fills completes looking perfectly healthy. These tests assert
+# against a fake ``_log_writer`` — the real seam ``_emit_warning`` writes
+# through — not against the structured logger mock used above.
+
+
+class _WarningRecorder:
+    """JobLogWriter stand-in recording every warning(...) call."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def status(self, label: str) -> None:  # pragma: no cover - unused here
+        pass
+
+
+def test_build_batch_extra_corrupt_cache_emits_user_visible_warning(tmp_path):
+    """The corrupt-cache degrade must ALSO surface via _emit_warning (→
+    job_log.jsonl / Jobs screen), naming the item and stating plainly that it
+    trained with zeroed image conditioning and that the cache will regenerate.
+    """
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    extra = t.build_batch_extra([item])  # must not raise
+
+    assert extra == {}
+    assert len(lw.warnings) == 1
+    msg = lw.warnings[0]
+    assert "img1" in msg
+    assert "zero" in msg.lower()
+    assert "regenerate" in msg.lower() or "next pre-cache" in msg.lower()
+
+
+def test_build_batch_extra_corrupt_cache_warns_user_once_per_item(tmp_path):
+    """build_batch_extra runs once per training step — repeated calls for the
+    SAME corrupt item must not flood job_log.jsonl with a duplicate warning
+    per step."""
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    t.build_batch_extra([item])
+    # The corrupt file was discarded after the first call — recreate it so
+    # the SECOND call hits the load-failure branch again (simulating the
+    # cache still being absent/corrupt for this same run/step).
+    _write_corrupt_cache_file(item, "img1")
+    t.build_batch_extra([item])
+    t.build_batch_extra([item])
+
+    assert len(lw.warnings) == 1
+
+
+def test_build_batch_extra_without_log_writer_is_safe(tmp_path):
+    """No _log_writer attached (e.g. other unit tests) → no crash."""
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+
+    extra = t.build_batch_extra([item])  # must not raise
+
+    assert extra == {}

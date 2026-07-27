@@ -275,6 +275,19 @@ class AceStep15Driver(IModelDriver):
             result["condition_encoder"] = self.condition_encoder
         return result
 
+    def release_text_encoders(self) -> None:
+        """Null the Qwen3 + condition-encoder attrs get_text_encoders() reads.
+
+        Deliberately does NOT touch ``_silence_latent`` /
+        ``_null_condition_emb`` — those are driver-owned CPU clones of the
+        condition encoder's buffers (stashed in ``assign_components``
+        precisely so ``forward_pass`` keeps working every step after the
+        live module is released here); they are NOT part of
+        ``get_text_encoders()`` and must survive this call.
+        """
+        self.text_encoder = None
+        self.condition_encoder = None
+
     def get_lora_targets(self) -> list[str]:
         entries = list(getattr(self.definition, "lora_targetable_modules", None) or [])
         return entries or list(ACE_STEP15_LORA_SUFFIXES)

@@ -396,6 +396,7 @@ class PipelineTrainMixin:
             self.optimizer.zero_grad()
             accumulated_loss = 0.0
             grad_norm = torch.tensor(0.0)
+            did_backward = 0  # count of micro-steps that actually ran backward()
 
             for accum_idx in range(grad_accum):
                 batch_items = next(data_iter)
@@ -589,6 +590,56 @@ class PipelineTrainMixin:
                             self.scaler.scale(loss).backward()
                         else:
                             loss.backward()
+                    did_backward += 1
+
+            # 4a. Every micro-step in this accumulation window was NaN/Inf and
+            #     skipped: there are no gradients to step on. Stepping anyway
+            #     would still shrink weights (AdamW decoupled weight decay),
+            #     advance adaptive d-estimates (Prodigy), advance the LR
+            #     scheduler, and decay EMA toward unchanged params — all with
+            #     zero signal. Zero the (empty) grad buffer for the next
+            #     window and skip optimizer/scaler/scheduler/EMA entirely.
+            if did_backward == 0:
+                self.logger.warning("nan_window_skipped", step=step)
+                self.optimizer.zero_grad(set_to_none=True)
+
+                # Observability only — must NOT affect training math (the
+                # optimizer/scheduler/EMA skip above is untouched). Before
+                # this, the ONLY trace of a fully-skipped window was the
+                # structured-logger warning above, which never reaches
+                # job_log.jsonl. From the Jobs screen this looked
+                # indistinguishable from a hung process: the step counter,
+                # loss chart, ETA and log tail all froze at the last good
+                # step until nan_count hit 10 and the run aborted (W2.T6
+                # review finding). Advance the DB step counter and emit a
+                # marker-only step event so the counter/ETA/log tail keep
+                # ticking while the loss chart stays honest.
+                #
+                # loss=None — not the raw NaN and not a fabricated 0.0.
+                # Piping the NaN through would be silently sanitized to 0.0
+                # by log_step's own NaN-guard, which would read on the
+                # chart as "loss dropped to zero": actively misleading for
+                # a step where no gradient was ever computed. `loss=None`
+                # tells log_step to skip the chart/history/DB-metrics
+                # entirely (see its docstring) while still emitting
+                # progress/step/ETA telemetry.
+                raw_lr = 0.0
+                if (
+                    hasattr(self.optimizer, "param_groups")
+                    and self.optimizer.param_groups
+                ):
+                    raw_lr = self.optimizer.param_groups[0].get("lr") or 0.0
+                self.logger_component.log_step(
+                    step,
+                    None,
+                    float(raw_lr),
+                    extra={
+                        "nan_window_skipped": True,
+                        "nan_count": self.nan_count,
+                    },
+                )
+                self._update_job_progress(step)
+                continue
 
             # 5. Optimizer step (after all accumulation steps)
             #    Profiler region "optimizer": unscale + grad-norm clip + step.
@@ -730,6 +781,26 @@ class PipelineTrainMixin:
             # up to `save_every_n_steps - 1` steps. The actual write is a
             # single integer update — cheap enough to run every step.
             self._update_job_progress(step)
+
+            # Drop this step's batch-sized GPU tensors before checkpoint save
+            # (clones components for the EMA swap) and sampling (its own
+            # forward passes) below — both are VRAM-transient hot spots, and
+            # `empty_cache()` (called inside sampling) can only reclaim
+            # UNREFERENCED blocks. Every name here is unconditionally
+            # rebuilt at the top of the next accumulation loop and is not
+            # read again past this point in the current step (`batch` and
+            # `timesteps` were last read just above, for logging).
+            del (
+                latents,
+                noise,
+                prepared_latents,
+                prepared_noise,
+                noisy_input,
+                pred,
+                target,
+                text_emb,
+                batch,
+            )
 
             # 8. Periodic save
             save_every = int(self.config.get("save_every_n_steps", 0))

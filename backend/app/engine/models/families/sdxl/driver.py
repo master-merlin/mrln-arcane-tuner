@@ -83,9 +83,18 @@ class SDXLDriver(IModelDriver):
 
     def get_text_encoders(self) -> dict[str, nn.Module]:
         return {
-            "text_encoder_1": self.text_encoder_1,
-            "text_encoder_2": self.text_encoder_2,
+            k: v
+            for k, v in {
+                "text_encoder_1": self.text_encoder_1,
+                "text_encoder_2": self.text_encoder_2,
+            }.items()
+            if v is not None
         }
+
+    def release_text_encoders(self) -> None:
+        """Null both CLIP text encoders — the exact attrs get_text_encoders() reads."""
+        self.text_encoder_1 = None
+        self.text_encoder_2 = None
 
     def get_lora_targets(self) -> list[str]:
         """UNet LoRA targets: from definition YAML or comprehensive defaults."""

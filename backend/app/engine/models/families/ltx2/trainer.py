@@ -537,9 +537,8 @@ class Ltx2Trainer(GenericTrainingPipeline):
         if not self.config.get("cache_latents", True):
             return
 
-        from safetensors.torch import save_file
-
         from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+        from app.engine.utils.safe_save import safe_save_file
 
         from .audio_io import load_audio_waveform
 
@@ -581,7 +580,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
                         waveform.unsqueeze(0).to(self.device), wav_sr,
                     )  # [1, L, 128]
                 os.makedirs(adir, exist_ok=True)
-                save_file({"audio_latents": latent[0].detach().cpu()}, path)
+                safe_save_file({"audio_latents": latent[0].detach().cpu()}, path)
                 encoded += 1
             except Exception as e:  # noqa: BLE001 — a bad clip must not kill the run
                 # Graceful path: leave this clip's audio uncached — build_batch_extra
@@ -672,10 +671,57 @@ class Ltx2Trainer(GenericTrainingPipeline):
                 if os.path.exists(path):
                     try:
                         lat = load_file(path)["audio_latents"]
-                    except (OSError, KeyError) as e:
+                    except Exception as e:
+                        # Broad by design — see hv15's matching Siglip-cache
+                        # catch: a bad cache file must degrade to absent,
+                        # never crash the run. The corrupt file is then
+                        # discarded (best-effort): with it gone,
+                        # _pre_cache_aux's content-blind os.path.exists
+                        # skip-check sees it absent on the NEXT precache pass
+                        # and regenerates it — bounding the audio-mask=0
+                        # degradation to THIS run instead of poisoning every
+                        # future run silently.
                         self.logger.warning(
-                            "ltx2_audio_cache_load_failed", path=path, error=str(e)
+                            "ltx2_audio_cache_load_failed",
+                            path=path,
+                            error=str(e),
+                            hint="audio for this clip is DROPPED (mask=0) "
+                            "for the remainder of this run; corrupt "
+                            "cache file discarded so the next precache "
+                            "pass regenerates it",
                         )
+                        try:
+                            os.remove(path)
+                        except OSError as unlink_err:
+                            self.logger.warning(
+                                "ltx2_audio_cache_unlink_failed",
+                                path=path,
+                                error=str(unlink_err),
+                            )
+                        # The structured self.logger.warning above never
+                        # reaches job_log.jsonl / the Jobs screen (see
+                        # pipeline_train.py's nan_window_skipped comment) —
+                        # without this, a run whose audio stream silently
+                        # drops to mask=0 would complete looking perfectly
+                        # healthy. Emit once per affected clip per run
+                        # (build_batch_extra runs every step; a per-step
+                        # flood would be its own problem), keyed on the
+                        # resolved cache path so repeated hits on the SAME
+                        # clip this run dedupe even if it is re-corrupted
+                        # mid-run.
+                        warned = getattr(self, "_ltx2_audio_corrupt_warned", None)
+                        if warned is None:
+                            warned = set()
+                            self._ltx2_audio_corrupt_warned = warned
+                        if path not in warned:
+                            warned.add(path)
+                            self._emit_warning(
+                                f"Audio-latent cache for '{item['id']}' is "
+                                "corrupt: this clip trained with NO AUDIO "
+                                "(mask=0) for the remainder of this run. "
+                                "The corrupt cache file was discarded, so "
+                                "the next pre-cache pass will regenerate it."
+                            )
             latents.append(lat)
 
         ref = next((latent for latent in latents if latent is not None), None)

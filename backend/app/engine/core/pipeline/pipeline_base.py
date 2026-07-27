@@ -5,6 +5,7 @@ Defines the family-specific hooks that subclasses must implement
 and the shared setup / component access helpers.
 """
 
+import random
 from abc import abstractmethod
 from typing import Any
 
@@ -377,8 +378,31 @@ class PipelineBaseMixin(BaseTrainer):
 
     # ── Setup ────────────────────────────────────────────────────────────
 
+    def _apply_run_seed(self) -> None:
+        """config['seed'] (when set) seeds python/torch/CUDA so runs are
+        reproducible — ss_seed metadata already advertises it (saver_base
+        :149). Unset seed keeps the current nondeterministic behavior.
+
+        OPT-IN: called first thing in :meth:`setup`, before any RNG
+        consumer runs (inventory shuffle / bucket order in the train loop,
+        caption-dropout draws in ``prepare_data``) — this is Phase A, the
+        very first trainer method the orchestrator awaits (``run_trainer.py``
+        calls ``setup()`` before ``load_model()``/``prepare_data()``), so
+        seeding here reaches every downstream ``random``/``torch`` draw for
+        the run. Absent/empty seed must NOT raise and must NOT touch global
+        RNG state — existing unseeded configs keep today's behavior exactly.
+        """
+        seed = self.config.get("seed")
+        if seed in (None, ""):
+            return
+        seed = int(seed)
+        random.seed(seed)
+        torch.manual_seed(seed)  # also seeds CUDA (torch.cuda.manual_seed_all)
+        self.logger.info("run_seed_applied", seed=seed)
+
     async def setup(self):
         """Initialize loader, saver, and family state."""
+        self._apply_run_seed()
         self.logger.info("setting_up_pipeline", family=self.__class__.__name__)
         self.ema_handler: EMAHandler | None = None
         self.text_cache: dict[str, torch.Tensor] = {}

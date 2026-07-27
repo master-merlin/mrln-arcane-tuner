@@ -142,17 +142,36 @@ class BerniniRTrainer(
         transformer is loaded, so there is nothing to swap). NOTE: bernini uses
         the router for STEP SELECTION + swap/state only; the actual per-step
         timesteps come from :meth:`sample_timesteps` (range-split band sampling).
+
+        Task W3.T3: the reused :class:`ExpertRouter`'s ``p_high`` Monte-Carlo
+        estimate defaults to the GENERIC ``TimestepSampler`` formula for
+        ``config["timestep_sampling"]`` — but bernini's ACTUAL per-step
+        timesteps (:meth:`sample_timesteps` / :meth:`_sample_band`) come from
+        ITS OWN SD3-``mode`` + per-task shift-warp transform
+        (:meth:`_mode_shift_timesteps`), which the generic ``"mode"`` formula
+        does not include (no shift warp at all). Under the 14B v2v defaults
+        (``mode_scale=1.29``, ``shift=5.0``) that mismatch estimates
+        ``p_high ≈ 0.16`` against the real ``≈ 0.29`` — the high expert was
+        step-selected for a step-frequency far below the timestep-mass its
+        band actually carries, under-training it roughly 2×. Passing
+        ``timestep_draw`` fixes the estimate to the REAL distribution; it is
+        harmless (never invoked) for a pinned single-expert router, which
+        skips the Monte-Carlo estimate entirely.
         """
         switch_interval = int(self.config.get("expert_switch_interval", 1))
         seed = int(self.config.get("seed", 0) or 0)
         mode = getattr(self, "expert_mode", "both")
         pinned = None if mode == "both" else mode
+        mode_scale, shift = self._timestep_params()
         router = ExpertRouter(
             boundary=self.driver.boundary,
             switch_interval=switch_interval,
             timestep_cfg=self.config,
             seed=seed,
             pinned_expert=pinned,
+            timestep_draw=lambda n: self._mode_shift_timesteps(
+                torch.rand(n), mode_scale, shift
+            ),
         )
         self.expert_router = router
         self.driver.set_router(router)

@@ -234,12 +234,24 @@ class Wan22Trainer(
         # used to be a pure side effect of the step-0 baseline SAMPLER's
         # device-ensure loop, which is skipped whenever sampling is disabled
         # (sample_every_n_steps=0), declined (sample_before_training=False),
-        # raises (swallowed at the call site), or block-swapping is active —
-        # any of which left the deferred low expert CPU-resident until the
-        # first router flip hit it mid-forward (wave-3 audit 2026-07-26).
-        # Single-expert runs are unaffected: place_experts_for_start() no-ops
-        # on the missing expert.
+        # or raises (swallowed at the call site) — any of which left the
+        # deferred low expert CPU-resident until the first router flip hit it
+        # mid-forward (wave-3 audit 2026-07-26). Single-expert runs are
+        # unaffected: place_experts_for_start() no-ops on the missing expert.
+        #
+        # Block-swapping is a SEPARATE hazard, fixed in the same wave-3 review
+        # round: ``_configure_block_swapping()`` (pipeline_optimization.py,
+        # step 6b) runs BEFORE this method and may have handed the active
+        # expert's deep blocks to a ``BlockSwappingManager``, which owns their
+        # CPU<->GPU placement via forward hooks — a bulk ``.to(device)`` on
+        # that expert would force every swapped block onto GPU at once,
+        # defeating the swap. The driver can't see ``self._block_swap_managers``
+        # (it lives here, on the trainer/pipeline), so we hand off explicitly:
+        # ``block_swap_active_expert`` tells ``place_experts_for_start()`` (and
+        # the ``_set_active`` guard) which expert, if any, to leave alone.
         driver: Wan22Driver = self.driver  # type: ignore[assignment]
+        if getattr(self, "_block_swap_managers", None):
+            driver.block_swap_active_expert = driver.active_expert
         driver.place_experts_for_start()
 
         self.logger.info(

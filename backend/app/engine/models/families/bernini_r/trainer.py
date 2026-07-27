@@ -425,6 +425,17 @@ class BerniniRTrainer(
         # training loop starts, independent of whether the step-0 baseline
         # sampler runs (previously the ONLY thing that placed the deferred low
         # expert).
+        #
+        # Block-swapping is a SEPARATE hazard (wave-3 review, mirrors
+        # Wan22Trainer): ``_configure_block_swapping()`` (step 6b) runs
+        # BEFORE this method and may have handed the active expert's deep
+        # blocks to a ``BlockSwappingManager``; a bulk ``.to(device)`` on that
+        # expert would defeat the swap. The driver can't see
+        # ``self._block_swap_managers`` (lives here), so we hand off
+        # explicitly which expert (if any) ``place_experts_for_start()`` /
+        # ``_set_active`` must leave alone.
+        if getattr(self, "_block_swap_managers", None):
+            driver.block_swap_active_expert = driver.active_expert
         driver.place_experts_for_start()
 
         self.logger.info(

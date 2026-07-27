@@ -75,6 +75,14 @@ class BerniniRDriver(WanDriverBase):
         # "both" (dual) | "high" | "low" — set by the trainer before loading.
         self.expert_mode: str = "both"
         self.swap_mode: str = "resident"
+        # Name (HIGH/LOW) of the expert whose deep blocks are under ACTIVE
+        # ``BlockSwappingManager`` management, or ``None`` (mirrors
+        # :class:`Wan22Driver`). Set by the trainer once it knows (see
+        # ``BerniniRTrainer._configure_optimization``) — the driver has no
+        # visibility into ``self._block_swap_managers`` (lives on the
+        # pipeline/trainer). Read by :meth:`place_experts_for_start` and
+        # :meth:`_set_active`.
+        self.block_swap_active_expert: str | None = None
 
     # ── Component wiring ──────────────────────────────────────────────────
 
@@ -146,13 +154,26 @@ class BerniniRDriver(WanDriverBase):
         via :meth:`place_experts_for_start`; this catches anything that
         reaches here without that having run first, before it turns into a
         device-mismatch ``RuntimeError`` mid-forward.
+
+        Skipped when ``expert`` is under active block-swap management
+        (``self.block_swap_active_expert``) — its blocks are cycled between
+        pinned CPU shadow buffers and GPU by ``BlockSwappingManager``'s
+        forward hooks, so a bulk ``model.to(device)`` here would defeat the
+        swap (mirrors :class:`Wan22Driver._set_active`).
         """
         self._active_expert = expert
         model = self._expert_model(expert)
         if model is not None and self.swap_mode == "resident":
-            p = next(model.parameters(), None)
-            if p is not None and p.device != self.device:
-                model.to(self.device)
+            if expert == self.block_swap_active_expert:
+                self.logger.info(
+                    "expert_block_swap_placement_skipped",
+                    expert=expert,
+                    call_site="_set_active",
+                )
+            else:
+                p = next(model.parameters(), None)
+                if p is not None and p.device != self.device:
+                    model.to(self.device)
         self.transformer = model
 
     @property
@@ -217,7 +238,16 @@ class BerniniRDriver(WanDriverBase):
         self.logger.info("bernini_r_expert_swapped", active=expert, mode=self.swap_mode)
 
     def place_experts_for_start(self) -> None:
-        """Place experts on devices per ``swap_mode`` before the loop starts."""
+        """Place experts on devices per ``swap_mode`` before the loop starts.
+
+        Mirrors :class:`Wan22Driver.place_experts_for_start`: in
+        ``resident``/``auto`` mode, an expert under active block-swap
+        management (``self.block_swap_active_expert``) is left alone —
+        ``BlockSwappingManager``'s forward hooks own its placement, and a
+        bulk ``.to(device)`` would defeat the swap. The other expert is
+        still placed, preserving the original fix (first router flip must
+        not land on a CPU-resident model).
+        """
         if not self.is_dual:
             return
         high, low = self.transformer_high, self.transformer_low
@@ -229,9 +259,17 @@ class BerniniRDriver(WanDriverBase):
             if inactive is not None:
                 inactive.to("cpu")
             return
-        for m in (high, low):
-            if m is not None:
-                m.to(self.device)
+        for name, m in ((HIGH, high), (LOW, low)):
+            if m is None:
+                continue
+            if name == self.block_swap_active_expert:
+                self.logger.info(
+                    "expert_block_swap_placement_skipped",
+                    expert=name,
+                    call_site="place_experts_for_start",
+                )
+                continue
+            m.to(self.device)
 
     def get_primary_model(self) -> nn.Module:
         """Return the ACTIVE model. For 1.3B this is the single transformer; for

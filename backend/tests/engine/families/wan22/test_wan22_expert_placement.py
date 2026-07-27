@@ -217,12 +217,13 @@ class TestBothExpertsPlacedWithoutSampling:
 class _RecordingLogger:
     def __init__(self):
         self.warnings: list[tuple[str, dict]] = []
+        self.infos: list[tuple[str, dict]] = []
 
     def warning(self, event, **kw):
         self.warnings.append((event, kw))
 
-    def info(self, *a, **kw):
-        pass
+    def info(self, event=None, **kw):
+        self.infos.append((event, kw))
 
 
 class TestAutoSwapModeStopsLying:
@@ -295,3 +296,117 @@ class TestSetActiveDeviceGuard:
         driver._set_active(LOW)  # low's real param is already on "cpu"
 
         assert low.to_calls == [], "guard fired even though device matched"
+
+
+# ── (d) Block-swap-aware placement (Wave-3 review finding) ────────────────
+#
+# `place_experts_for_start()` / `_set_active`'s bulk `.to(device)` must NOT
+# fire for an expert whose blocks are under active `BlockSwappingManager`
+# management (`driver.block_swap_active_expert`) — that would force every
+# swapped block back onto GPU at once, defeating the swap. The OTHER
+# (non-swapped) expert must still be placed, preserving the original W3.T2
+# fix for the non-block-swap case.
+
+
+class TestBlockSwapAwareStartPlacement:
+    def test_place_experts_for_start_skips_the_block_swapped_expert(self):
+        driver = Wan22Driver(_Defn(), torch.device("cuda:0"))
+        driver.configure_swap_mode("resident")
+        high, low = _DeviceRecorder(), _DeviceRecorder()
+        driver.transformer_high = high
+        driver.transformer_low = low
+        driver._active_expert = HIGH
+        driver.block_swap_active_expert = HIGH
+        rec = _RecordingLogger()
+        driver.logger = rec
+
+        driver.place_experts_for_start()
+
+        assert high.to_calls == [], "block-swap-managed expert must not be bulk-moved"
+        assert low.to_calls and low.to_calls[-1] == str(driver.device), (
+            "the non-swapped expert must still be placed"
+        )
+        events = [ev for ev, _ in rec.infos]
+        assert "expert_block_swap_placement_skipped" in events
+
+    def test_place_experts_for_start_places_both_when_block_swap_inactive(self):
+        """Regression: default (``block_swap_active_expert is None``) is
+        byte-identical to the original W3.T2 fix — both experts placed."""
+        driver = Wan22Driver(_Defn(), torch.device("cuda:0"))
+        driver.configure_swap_mode("resident")
+        high, low = _DeviceRecorder(), _DeviceRecorder()
+        driver.transformer_high = high
+        driver.transformer_low = low
+        driver._active_expert = HIGH
+        assert driver.block_swap_active_expert is None
+
+        driver.place_experts_for_start()
+
+        assert high.to_calls and high.to_calls[-1] == str(driver.device)
+        assert low.to_calls and low.to_calls[-1] == str(driver.device)
+
+    def test_set_active_guard_skips_the_block_swapped_expert(self):
+        driver = Wan22Driver(_Defn(), torch.device("cuda:0"))
+        driver.configure_swap_mode("resident")
+        high, low = _DeviceRecorder(), _DeviceRecorder()
+        driver.transformer_high = high
+        driver.transformer_low = low
+        driver._active_expert = HIGH
+        driver.block_swap_active_expert = LOW
+        rec = _RecordingLogger()
+        driver.logger = rec
+
+        driver._set_active(LOW)
+
+        assert low.to_calls == [], (
+            "the _set_active guard must not bulk-move a block-swap-managed "
+            "expert even when it becomes active mid-run"
+        )
+        events = [ev for ev, _ in rec.infos]
+        assert "expert_block_swap_placement_skipped" in events
+
+    def test_set_active_guard_unaffected_when_a_different_expert_is_swapped(self):
+        driver = Wan22Driver(_Defn(), torch.device("cuda:0"))
+        driver.configure_swap_mode("resident")
+        high, low = _DeviceRecorder(), _DeviceRecorder()
+        driver.transformer_high = high
+        driver.transformer_low = low
+        driver._active_expert = HIGH
+        driver.block_swap_active_expert = HIGH  # LOW is unaffected
+
+        driver._set_active(LOW)
+
+        assert low.to_calls and low.to_calls[-1] == str(driver.device)
+
+
+class TestConfigureOptimizationBlockSwapHandoff:
+    """The trainer is the only thing that can see ``_block_swap_managers``
+    (it lives on the pipeline/trainer, set by the generic
+    ``_configure_block_swapping()`` mixin BEFORE ``_configure_optimization``
+    runs) — it must hand the ACTIVE expert's name to the driver so placement
+    can skip it."""
+
+    def test_hands_off_active_expert_when_block_swap_managers_exist(self):
+        t, high, low = _make_recorder_trainer()
+        # Simulate _configure_block_swapping() having swapped some blocks of
+        # the (currently active) primary model.
+        t._block_swap_managers = [object()]
+
+        t._configure_optimization(max_train_steps=10)
+
+        assert t.driver.block_swap_active_expert == HIGH
+        assert high.to_calls == [], (
+            "block-swap-managed HIGH expert must not be bulk-moved by "
+            "_configure_optimization's placement call"
+        )
+        assert low.to_calls and low.to_calls[-1] == str(t.device), (
+            "the deferred low expert must still be placed"
+        )
+
+    def test_no_managers_leaves_flag_none_and_places_both(self):
+        t, high, low = _make_recorder_trainer()
+
+        t._configure_optimization(max_train_steps=10)
+
+        assert t.driver.block_swap_active_expert is None
+        assert high.to_calls and low.to_calls

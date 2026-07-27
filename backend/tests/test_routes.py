@@ -961,6 +961,111 @@ def test_resize_lora_server_error(mock_to_thread, mock_resize, mock_check, clien
     assert response.status_code == 500
 
 
+# ── Filesystem Pick-Folder (single-flight, W4.T12) ──────────────────────
+
+
+def test_pick_folder_returns_selected_path(client):
+    import app.api.filesystem_routes as fs_mod
+
+    orig = fs_mod._ask_for_folder
+    fs_mod._ask_for_folder = lambda initial_dir, title: "/some/chosen/dir"
+    try:
+        response = client.post("/api/filesystem/pick-folder", json={})
+    finally:
+        fs_mod._ask_for_folder = orig
+    assert response.status_code == 200
+    assert response.json() == {"path": "/some/chosen/dir"}
+
+
+def test_pick_folder_second_call_409_while_first_dialog_open():
+    """W4.T12 RED/GREEN: a dialog already open must reject a concurrent call
+    with 409 immediately, rather than pinning a second thread behind it.
+
+    Drives the route function directly (bypassing the HTTP client) so the
+    second call's lock-check is asserted deterministically: it must return
+    before the first call's (threading.Event-stubbed) dialog ever closes.
+    """
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    import app.api.filesystem_routes as fs_mod
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_ask_for_folder(initial_dir, title):
+        started.set()
+        release.wait(timeout=5)
+        return "/chosen/path"
+
+    orig = fs_mod._ask_for_folder
+    fs_mod._ask_for_folder = fake_ask_for_folder
+    results = {}
+    try:
+        def call_first():
+            results["first"] = asyncio.run(fs_mod.pick_folder(None))
+
+        t = threading.Thread(target=call_first)
+        t.start()
+        assert started.wait(timeout=5), "first call never reached the dialog"
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(fs_mod.pick_folder(None))
+        assert exc_info.value.status_code == 409
+
+        release.set()
+        t.join(timeout=5)
+        assert not t.is_alive(), "first call's dialog thread never finished"
+    finally:
+        fs_mod._ask_for_folder = orig
+        release.set()  # in case an assertion above failed mid-way
+
+    assert results["first"] == {"path": "/chosen/path"}
+
+
+def test_pick_folder_succeeds_again_after_previous_dialog_closes(client):
+    """Regression guard: the lock must release after a normal completion, not
+    just stay held (that would wedge every future pick-folder call)."""
+    import app.api.filesystem_routes as fs_mod
+
+    orig = fs_mod._ask_for_folder
+    try:
+        fs_mod._ask_for_folder = lambda initial_dir, title: "/first"
+        r1 = client.post("/api/filesystem/pick-folder", json={})
+        assert r1.status_code == 200
+
+        fs_mod._ask_for_folder = lambda initial_dir, title: "/second"
+        r2 = client.post("/api/filesystem/pick-folder", json={})
+        assert r2.status_code == 200
+        assert r2.json() == {"path": "/second"}
+    finally:
+        fs_mod._ask_for_folder = orig
+
+
+def test_pick_folder_lock_released_even_if_dialog_raises(client):
+    """The lock is released in a `finally` inside the worker thread — even a
+    dialog that blows up must not leave the route permanently 409ing."""
+    import app.api.filesystem_routes as fs_mod
+
+    orig = fs_mod._ask_for_folder
+
+    def boom(initial_dir, title):
+        raise RuntimeError("dialog crashed")
+
+    try:
+        fs_mod._ask_for_folder = boom
+        with pytest.raises(RuntimeError):
+            client.post("/api/filesystem/pick-folder", json={})
+
+        fs_mod._ask_for_folder = lambda initial_dir, title: "/ok"
+        resp = client.post("/api/filesystem/pick-folder", json={})
+        assert resp.status_code == 200
+    finally:
+        fs_mod._ask_for_folder = orig
+
+
 # ── Filesystem Browse ────────────────────────────────────────────────────
 
 

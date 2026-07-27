@@ -61,6 +61,16 @@ class Wan22Driver(WanDriverBase):
         default_boundary = DEFAULT_BOUNDARY_I2V if self.is_i2v else DEFAULT_BOUNDARY_T2V
         self.boundary: float = float(arch.get("moe.boundary_ratio", default_boundary))
         self.swap_mode: str = "resident"
+        # Name (HIGH/LOW) of the expert whose deep blocks are under ACTIVE
+        # ``BlockSwappingManager`` management, or ``None`` if block swapping
+        # isn't configured. The driver has no visibility into
+        # ``self._block_swap_managers`` (that lives on the pipeline/trainer,
+        # set by the generic ``_configure_block_swapping()`` mixin) — the
+        # trainer hands this off explicitly once it knows (see
+        # ``Wan22Trainer._configure_optimization``). Read by
+        # :meth:`place_experts_for_start` and :meth:`_set_active` so neither
+        # bulk-``.to(device)``-moves an expert the swap manager owns.
+        self.block_swap_active_expert: str | None = None
 
     # ── Component wiring ──────────────────────────────────────────────────
 
@@ -104,9 +114,41 @@ class Wan22Driver(WanDriverBase):
         return self.transformer_high if expert == HIGH else self.transformer_low
 
     def _set_active(self, expert: str) -> None:
-        """Point ``self.transformer`` (the primary model) at ``expert``."""
+        """Point ``self.transformer`` (the primary model) at ``expert``.
+
+        Placement safety net: in ``resident`` mode BOTH experts are supposed to
+        already be on ``self.device`` (via :meth:`place_experts_for_start`), but
+        anything that reaches this method without that having run first (a
+        future call site, a test, a code path we haven't audited) would
+        otherwise hand back a CPU-resident expert as the new primary model —
+        the first forward/backward on it raises a device-mismatch
+        ``RuntimeError`` deep in the loop instead of failing where the mistake
+        was made. One cheap parameter-device check closes that gap.
+
+        Skipped entirely when ``expert`` is under active block-swap
+        management (``self.block_swap_active_expert``): that model's blocks
+        are cycled between pinned CPU shadow buffers and GPU by
+        ``BlockSwappingManager``'s forward hooks, so a bulk ``model.to(device)``
+        here — even a "just this once" safety-net move — would force every
+        swapped block onto GPU at once, defeating the swap (same hazard
+        :func:`app.engine.core.sampling._ensure_transformer_on_device` guards
+        against). If a swapped expert becomes active mid-run, its blocks page
+        in on demand via the hooks; nothing here needs to force them.
+        """
         self._active_expert = expert
-        self.transformer = self._expert_model(expert)
+        model = self._expert_model(expert)
+        if model is not None and self.swap_mode == "resident":
+            if expert == self.block_swap_active_expert:
+                self.logger.info(
+                    "expert_block_swap_placement_skipped",
+                    expert=expert,
+                    call_site="_set_active",
+                )
+            else:
+                p = next(model.parameters(), None)
+                if p is not None and p.device != self.device:
+                    model.to(self.device)
+        self.transformer = model
 
     @property
     def active_expert(self) -> str:
@@ -124,8 +166,26 @@ class Wan22Driver(WanDriverBase):
         self._set_active(router.choose_expert(0))
 
     def configure_swap_mode(self, mode: str) -> None:
-        """Set ``expert_swap_mode`` (``auto``/``swap``/``resident``)."""
-        self.swap_mode = str(mode or "resident").lower()
+        """Set ``expert_swap_mode`` (``auto``/``swap``/``resident``).
+
+        ``auto`` was documented as a resident-vs-swap VRAM probe, but no such
+        probe exists anywhere in this driver — it has always silently resolved
+        to ``resident`` with no signal that the "auto" choice was never
+        actually evaluated. Rather than keep lying, resolve it explicitly and
+        say so once.
+        """
+        resolved = str(mode or "resident").lower()
+        if resolved == "auto":
+            self.logger.warning(
+                "expert_swap_auto_unimplemented",
+                message=(
+                    "expert_swap_mode='auto' has no resident-vs-swap VRAM "
+                    "probe implemented; resolving to 'resident' (both experts "
+                    "on GPU)."
+                ),
+            )
+            resolved = "resident"
+        self.swap_mode = resolved
 
     # ── Timestep sampling (delegates to the router for the active expert) ─
 
@@ -193,7 +253,19 @@ class Wan22Driver(WanDriverBase):
     def place_experts_for_start(self) -> None:
         """Place experts on devices per ``swap_mode`` before the loop starts.
 
-        - ``resident``/``auto`` → both experts on ``self.device``.
+        - ``resident``/``auto`` → both experts on ``self.device`` — EXCEPT an
+          expert under active block-swap management
+          (``self.block_swap_active_expert``): its deep blocks are owned by
+          ``BlockSwappingManager``'s forward hooks, which cycle them between
+          pinned CPU shadow buffers and GPU on demand. A bulk
+          ``module.to(device)`` here would force every swapped block onto GPU
+          at once — defeating the swap and bloating peak VRAM by the full
+          expert size (the exact hazard
+          :func:`app.engine.core.sampling._ensure_transformer_on_device`
+          guards against for the single-transformer sampler). The OTHER
+          (non-swapped) expert is unaffected and still gets placed here, so
+          the original bug this method fixes — the first router flip landing
+          on a CPU-resident model — stays fixed for it.
         - ``swap`` → active expert on device, inactive on CPU.
 
         The ``auto`` resident-vs-swap decision is a GPU-memory probe that only
@@ -212,10 +284,18 @@ class Wan22Driver(WanDriverBase):
             if inactive is not None:
                 inactive.to("cpu")
             return
-        # resident / auto → both resident.
-        for m in (high, low):
-            if m is not None:
-                m.to(self.device)
+        # resident / auto → both resident, except the block-swap-managed one.
+        for name, m in ((HIGH, high), (LOW, low)):
+            if m is None:
+                continue
+            if name == self.block_swap_active_expert:
+                self.logger.info(
+                    "expert_block_swap_placement_skipped",
+                    expert=name,
+                    call_site="place_experts_for_start",
+                )
+                continue
+            m.to(self.device)
 
     # ── Saver ─────────────────────────────────────────────────────────────
 

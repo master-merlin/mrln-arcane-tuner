@@ -5,7 +5,23 @@ Tests for EMAHandler — covers init, step, store_and_swap, restore, state_dict.
 import torch
 import torch.nn as nn
 
+import app.engine.strategies.ema as ema_module
 from app.engine.strategies.ema import EMAHandler
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, dict]] = []
+        self.debugs: list[tuple[str, dict]] = []
+
+    def warning(self, event, **kw):
+        self.warnings.append((event, kw))
+
+    def debug(self, event, **kw):
+        self.debugs.append((event, kw))
+
+    def info(self, event, **kw):
+        pass
 
 
 def _make_model():
@@ -177,3 +193,198 @@ class TestStateDictRoundTrip:
         assert ema.shadow["weight"].device.type == "cuda"
         # Real-world reproduction: step() must not raise device mismatch
         ema.step()
+
+
+class TestDictParamsConstruction:
+    """EMAHandler bound to an explicit ``{name: Parameter}`` mapping (W3.T10 —
+    the dual-expert seam) instead of an ``nn.Module``. This is what
+    ``Wan22Trainer``/``BerniniRTrainer``'s ``_ema_parameters()`` hands
+    ``_configure_ema`` on a ``both``-mode run: the union of BOTH experts'
+    trainable params, name-prefixed (``high.``/``low.``) so keys stay unique.
+    Every method (init/step/swap/restore/state_dict round-trip) must behave
+    identically to the ``nn.Module`` path, just sourced from the dict instead
+    of re-querying a single model.
+    """
+
+    @staticmethod
+    def _prefixed_params():
+        """A dual-expert-shaped params dict: two DISTINCT Linear layers whose
+        param names are IDENTICAL ("weight") except for the high./low. prefix
+        — exactly the collision the prefixing exists to avoid."""
+        high = nn.Linear(4, 2, bias=False)
+        low = nn.Linear(4, 2, bias=False)
+        nn.init.ones_(high.weight)
+        nn.init.constant_(low.weight, 2.0)
+        return (
+            {
+                "high.weight": high.weight,
+                "low.weight": low.weight,
+            },
+            high,
+            low,
+        )
+
+    def test_shadow_clones_both_prefixed_params(self):
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.99)
+        assert set(ema.shadow) == {"high.weight", "low.weight"}
+        assert torch.allclose(ema.shadow["high.weight"], high.weight.data)
+        assert torch.allclose(ema.shadow["low.weight"], low.weight.data)
+        assert ema.model is None
+
+    def test_step_updates_both_prefixed_shadows_independently(self):
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.5)
+        high.weight.data.fill_(0.0)
+        low.weight.data.fill_(0.0)
+        ema.step()
+        # high shadow: 0.5*0 + 0.5*1 = 0.5 ; low shadow: 0.5*0 + 0.5*2 = 1.0
+        assert torch.allclose(
+            ema.shadow["high.weight"], torch.full_like(high.weight, 0.5)
+        )
+        assert torch.allclose(
+            ema.shadow["low.weight"], torch.full_like(low.weight, 1.0)
+        )
+
+    def test_store_and_swap_and_restore_round_trip(self):
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.5)
+        high.weight.data.fill_(0.0)
+        low.weight.data.fill_(0.0)
+        ema.step()  # shadows now 0.5 / 1.0
+
+        ema.store_and_swap()
+        assert torch.allclose(high.weight.data, ema.shadow["high.weight"])
+        assert torch.allclose(low.weight.data, ema.shadow["low.weight"])
+
+        ema.restore()
+        assert torch.allclose(high.weight.data, torch.zeros_like(high.weight))
+        assert torch.allclose(low.weight.data, torch.zeros_like(low.weight))
+
+    def test_zero_overlap_keeps_fresh_shadow_and_warns(self, monkeypatch):
+        """Wave-3 regression: resuming a dual-expert (``both``) run whose
+        live shadow keys are ``high.``/``low.``-prefixed (T10) from a
+        checkpoint saved BEFORE that prefixing existed (plain un-prefixed
+        keys) must NOT silently adopt the stale, zero-overlap dict — that
+        would make step()/store_and_swap()/restore() no-op forever and both
+        experts' saved LoRA would silently revert to raw weights (the exact
+        defect T10 fixed, now doubled and silent)."""
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.9)
+        fresh_high = ema.shadow["high.weight"].clone()
+        fresh_low = ema.shadow["low.weight"].clone()
+
+        rec = _RecordingLogger()
+        monkeypatch.setattr(ema_module, "logger", rec)
+
+        stale_unprefixed = {
+            "weight": torch.full((2, 4), 99.0),  # pre-wave, un-prefixed key
+        }
+        ema.load_state_dict(stale_unprefixed)
+
+        assert torch.allclose(ema.shadow["high.weight"], fresh_high), (
+            "zero-overlap checkpoint must NOT clobber the freshly-initialized shadow"
+        )
+        assert torch.allclose(ema.shadow["low.weight"], fresh_low)
+        assert set(ema.shadow) == {"high.weight", "low.weight"}, (
+            "the stale foreign key must not be adopted into the shadow at all"
+        )
+
+        events = [ev for ev, _ in rec.warnings]
+        assert "ema_shadow_key_mismatch" in events
+        kw = dict(rec.warnings)["ema_shadow_key_mismatch"]
+        assert kw["reason"] == "no_overlap"
+        assert kw["overlap"] == 0
+        assert kw["live_params"] == 2
+        assert kw["loaded_keys"] == 1
+
+    def test_partial_overlap_adopts_covered_subset_and_warns(self, monkeypatch):
+        """``expert_mode`` flipped ``high`` -> ``both`` between save and
+        resume: the checkpoint only ever shadowed the high expert. The
+        overlapping ``high.*`` history is real and worth keeping; the new
+        ``low.*`` param (never in the checkpoint) must keep its own
+        freshly-initialized shadow rather than vanish — and the partial
+        coverage must be logged, not silent."""
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.9)
+        fresh_low = ema.shadow["low.weight"].clone()
+
+        rec = _RecordingLogger()
+        monkeypatch.setattr(ema_module, "logger", rec)
+
+        high_only_checkpoint = {"high.weight": torch.full((2, 4), 42.0)}
+        ema.load_state_dict(high_only_checkpoint)
+
+        assert torch.allclose(ema.shadow["high.weight"], torch.full((2, 4), 42.0)), (
+            "the covered high.* history must be adopted"
+        )
+        assert torch.allclose(ema.shadow["low.weight"], fresh_low), (
+            "the uncovered low.* param must keep its freshly-initialized shadow"
+        )
+
+        events = [ev for ev, _ in rec.warnings]
+        assert "ema_shadow_key_mismatch" in events
+        kw = dict(rec.warnings)["ema_shadow_key_mismatch"]
+        assert kw["reason"] == "partial_overlap"
+        assert kw["overlap"] == 1
+        assert kw["live_params"] == 2
+        assert "low.weight" in kw["sample_missing_live"]
+
+    def test_full_live_coverage_drops_dead_keys_silently(self, monkeypatch):
+        """``expert_mode`` flipped ``both`` -> ``high``: the checkpoint still
+        carries ``low.*`` keys for an expert that no longer exists in this
+        run's live params. Every live param IS covered, so the dead
+        ``low.*`` entry is just dropped — no warning (nothing was left
+        uncovered)."""
+        high = nn.Linear(4, 2, bias=False)
+        nn.init.ones_(high.weight)
+        ema = EMAHandler({"high.weight": high.weight}, decay=0.9)
+
+        rec = _RecordingLogger()
+        monkeypatch.setattr(ema_module, "logger", rec)
+
+        both_checkpoint = {
+            "high.weight": torch.full((2, 4), 7.0),
+            "low.weight": torch.full((2, 4), 13.0),  # dead — no live low expert
+        }
+        ema.load_state_dict(both_checkpoint)
+
+        assert torch.allclose(ema.shadow["high.weight"], torch.full((2, 4), 7.0))
+        assert set(ema.shadow) == {"high.weight"}, (
+            "the dead low.* key must not be adopted into the shadow"
+        )
+        assert rec.warnings == [], (
+            "full live-parameter coverage must not warn, even with dropped dead keys"
+        )
+
+    def test_state_dict_round_trips_through_checkpoint_save_restore(self):
+        """The EMA shadow must round-trip through checkpoint save/restore
+        with the prefixed names — CheckpointManager just ``torch.save``s
+        ``ema_handler.state_dict()`` and later ``ema_handler.load_state_dict``s
+        it back (``app/engine/components/checkpoints.py``); this is
+        source-agnostic (model vs. dict-bound), so a save/load cycle must
+        preserve every prefixed key byte-for-byte."""
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.9)
+        high.weight.data.fill_(3.0)
+        low.weight.data.fill_(4.0)
+        ema.step()
+        saved = {k: v.clone() for k, v in ema.state_dict().items()}
+
+        # A FRESH handler (as on resume — new process, new Parameter objects,
+        # SAME prefixed names) loads the saved shadow back.
+        new_high = nn.Linear(4, 2, bias=False)
+        new_low = nn.Linear(4, 2, bias=False)
+        restored = EMAHandler(
+            {"high.weight": new_high.weight, "low.weight": new_low.weight},
+            decay=0.9,
+        )
+        restored.load_state_dict(saved)
+
+        assert set(restored.shadow) == {"high.weight", "low.weight"}
+        assert torch.allclose(restored.shadow["high.weight"], saved["high.weight"])
+        assert torch.allclose(restored.shadow["low.weight"], saved["low.weight"])
+        # Round-tripped shadow must still be independently steppable/swappable.
+        restored.store_and_swap()
+        assert torch.allclose(new_high.weight.data, saved["high.weight"])
+        assert torch.allclose(new_low.weight.data, saved["low.weight"])

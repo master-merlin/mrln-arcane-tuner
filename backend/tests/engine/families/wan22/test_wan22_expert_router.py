@@ -16,9 +16,11 @@ These pin the routing math that makes single-run dual-expert training UNBIASED:
 
 import math
 
+import pytest
 import torch
 
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
+from app.engine.strategies.timestep_sampling import TimestepSampler
 
 CPU = torch.device("cpu")
 
@@ -220,3 +222,64 @@ def test_marginal_timestep_distribution_is_unbiased():
         cdf_full = float((full <= t).float().mean())
         cdf_mix = float((mix <= t).float().mean())
         assert abs(cdf_full - cdf_mix) < 0.02, (t.item(), cdf_full, cdf_mix)
+
+
+# ── 7. optional `timestep_draw` override (Task W3.T3) is a no-op unless ──
+#      supplied — wan22 never passes it, so its p_high estimate must stay
+#      byte-identical to the pre-T3 TimestepSampler-only computation.
+
+
+def test_phigh_byte_identical_without_timestep_draw():
+    """wan22's ExpertRouter never passes `timestep_draw` — adding the optional
+    parameter (for bernini_r's real per-step distribution, see
+    BerniniRTrainer._build_router) must not perturb wan22's own estimate by
+    even a float ULP. Reproduces the internal RNG-seeding convention
+    independently and compares exactly."""
+    cfg = {"timestep_sampling": "logit_normal"}
+    seed = 55
+    router = ExpertRouter(
+        boundary=0.875,
+        switch_interval=1,
+        timestep_cfg=cfg,
+        seed=seed,
+        mc_samples=80_000,
+    )
+
+    prev_state = torch.random.get_rng_state()
+    try:
+        torch.random.manual_seed(seed + 1)
+        ref = TimestepSampler.sample_scaled(
+            "logit_normal",
+            80_000,
+            CPU,
+            cfg,
+            scale=1000.0,
+        )
+    finally:
+        torch.random.set_rng_state(prev_state)
+    ref_p = min(max(float((ref >= 875.0).float().mean().item()), 1e-6), 1.0 - 1e-6)
+
+    assert router.p_high == ref_p
+
+
+def test_timestep_draw_overrides_the_estimate_when_supplied():
+    """When `timestep_draw` IS supplied, the estimate must come from it, not
+    the generic TimestepSampler — a directly-observable contract check
+    independent of any specific family's formula."""
+    calls: list[int] = []
+
+    def _all_high(n: int) -> torch.Tensor:
+        calls.append(n)
+        return torch.full((n,), 999.0)
+
+    router = ExpertRouter(
+        boundary=0.875,
+        switch_interval=1,
+        timestep_cfg={"timestep_sampling": "uniform"},  # would give p_high≈0.125
+        seed=0,
+        mc_samples=1000,
+        timestep_draw=_all_high,
+    )
+    assert calls == [1000]
+    # All draws are >= boundary → p_high clamps to the "never 1.0" guard.
+    assert router.p_high == pytest.approx(1.0 - 1e-6)

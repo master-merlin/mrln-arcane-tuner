@@ -65,12 +65,6 @@ WAN_T2V_LORA_TARGETS: list[str] = [
     "ffn.net.2",
 ]
 
-# I2V adds the image cross-attention key/value projections.
-WAN_I2V_EXTRA_LORA_TARGETS: list[str] = [
-    "attn2.add_k_proj",
-    "attn2.add_v_proj",
-]
-
 
 class WanDriverBase(IModelDriver):
     """Family-agnostic WAN driver (shared by WAN 2.1 + WAN 2.2).
@@ -145,7 +139,17 @@ class WanDriverBase(IModelDriver):
         self.text_encoder = None
 
     def get_lora_targets(self) -> list[str]:
-        """WAN LoRA targets — definition enrichment overrides at runtime."""
+        """WAN LoRA targets — definition enrichment overrides at runtime.
+
+        T2V and I2V share the exact same pattern-default surface (W3.T9): I2V
+        used to also target the image cross-attention projections
+        (``add_k_proj``/``add_v_proj``), but nothing ever computes a CLIP
+        image embedding to feed them (see ``BATCH_IMAGE_EMBED``'s docstring
+        below) — those adapters trained nothing but zero-delta tensors and
+        wasted optimizer slots. Definitions still SHIP their own curated list
+        in the YAML (``lora_targetable_modules``), which always wins over
+        this fallback.
+        """
         definition_targets = getattr(self.definition, "lora_targetable_modules", None)
         if definition_targets:
             self.logger.info(
@@ -154,8 +158,6 @@ class WanDriverBase(IModelDriver):
             return list(definition_targets)
 
         targets = list(WAN_T2V_LORA_TARGETS)
-        if self.is_i2v:
-            targets += list(WAN_I2V_EXTRA_LORA_TARGETS)
         self.logger.info("lora_targets_pattern_defaults", count=len(targets))
         return targets
 

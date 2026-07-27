@@ -207,6 +207,38 @@ class Wan22Trainer(
                     params.append(p)
         return params
 
+    # ── Dual-expert EMA (W3.T10) ──────────────────────────────────────────
+
+    def _ema_parameters(self) -> dict[str, torch.nn.Parameter] | None:
+        """EMA-shadow BOTH experts' trainable params on a ``both``-mode run.
+
+        Without this override, ``_configure_ema`` binds ``EMAHandler`` to
+        ``_get_primary_model()`` — the single ACTIVE expert — so only that
+        expert's LoRA gets an EMA shadow; the other expert's saved file is
+        raw (un-EMA'd) weights. Names are prefixed ``high.``/``low.`` so the
+        two experts' identically-named parameters (e.g. both have a
+        ``blocks.0.attn1.to_q.lora_A.weight``) don't collide in one shadow
+        dict.
+
+        Single-expert runs (``expert_mode`` high/low) fall back to ``None``
+        (base primary-model behavior) — there is only one transformer to
+        shadow, byte-identical to the un-overridden path.
+        """
+        driver: Wan22Driver = self.driver  # type: ignore[assignment]
+        if getattr(self, "expert_mode", "both") != "both":
+            return None
+        out: dict[str, torch.nn.Parameter] = {}
+        for prefix, model in (
+            ("high", driver.transformer_high),
+            ("low", driver.transformer_low),
+        ):
+            if model is None:
+                continue
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    out[f"{prefix}.{name}"] = param
+        return out
+
     def _configure_optimization(self, max_train_steps: int) -> None:
         """Configure optimizer over BOTH experts' params, then base scheduler.
 
@@ -227,6 +259,32 @@ class Wan22Trainer(
             super()._configure_optimization(max_train_steps)
         finally:
             primary.parameters = original_parameters  # type: ignore[method-assign]
+
+        # Explicit start placement (Task W3.T2): both experts now carry PEFT
+        # adapters and the optimizer holds both experts' params — place them
+        # on their configured devices BEFORE the training loop starts. This
+        # used to be a pure side effect of the step-0 baseline SAMPLER's
+        # device-ensure loop, which is skipped whenever sampling is disabled
+        # (sample_every_n_steps=0), declined (sample_before_training=False),
+        # or raises (swallowed at the call site) — any of which left the
+        # deferred low expert CPU-resident until the first router flip hit it
+        # mid-forward (wave-3 audit 2026-07-26). Single-expert runs are
+        # unaffected: place_experts_for_start() no-ops on the missing expert.
+        #
+        # Block-swapping is a SEPARATE hazard, fixed in the same wave-3 review
+        # round: ``_configure_block_swapping()`` (pipeline_optimization.py,
+        # step 6b) runs BEFORE this method and may have handed the active
+        # expert's deep blocks to a ``BlockSwappingManager``, which owns their
+        # CPU<->GPU placement via forward hooks — a bulk ``.to(device)`` on
+        # that expert would force every swapped block onto GPU at once,
+        # defeating the swap. The driver can't see ``self._block_swap_managers``
+        # (it lives here, on the trainer/pipeline), so we hand off explicitly:
+        # ``block_swap_active_expert`` tells ``place_experts_for_start()`` (and
+        # the ``_set_active`` guard) which expert, if any, to leave alone.
+        driver: Wan22Driver = self.driver  # type: ignore[assignment]
+        if getattr(self, "_block_swap_managers", None):
+            driver.block_swap_active_expert = driver.active_expert
+        driver.place_experts_for_start()
 
         self.logger.info(
             "wan22_optimizer_configured_dual",

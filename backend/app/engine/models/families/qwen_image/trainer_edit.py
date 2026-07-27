@@ -345,7 +345,13 @@ class QwenImageEditTrainer(QwenImageTrainer):
                 output_hidden_states=True,
             )
         hidden_states = outputs.hidden_states[-1]
-        split = self._extract_masked_hidden(hidden_states, model_inputs["attention_mask"])
+        # ``_extract_masked_hidden`` is a @staticmethod on QwenImageDriver, not
+        # on the trainer's MRO — go through the driver (one source of truth,
+        # mirrors boogu_image/trainer_edit.py delegating to the driver) rather
+        # than duplicating the extraction logic here.
+        split = self.driver._extract_masked_hidden(
+            hidden_states, model_inputs["attention_mask"]
+        )
         split = [e[EDIT_PROMPT_DROP_IDX:] for e in split]
         mask_list = [
             torch.ones(e.size(0), dtype=torch.long, device=self.device) for e in split

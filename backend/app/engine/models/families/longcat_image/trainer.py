@@ -19,11 +19,33 @@ import structlog
 import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
-from .driver import TOKENIZER_MAX_LENGTH, LongCatImageDriver
+from .driver import TOKENIZER_MAX_LENGTH, LongCatImageDriver, te_template_fingerprint
 from .loader import LongCatImageLoader
 from .saver import LongCatImageSaver
 
 logger = structlog.get_logger(__name__)
+
+# Disk-cache key template identity (the qwen_image/boogu_image precedent).
+# ``TextEmbeddingCache.caption_to_filename`` hashes ONLY the string it is
+# given; passing the raw caption meant a future edit to the driver's prefix/
+# suffix chat template, quotation-aware tokenization, OR effective
+# ``te.max_length`` (truncation/padding length) would silently reuse
+# embeddings encoded under the OLD template/length. Baking
+# ``te_template_fingerprint()`` into the hashed string makes any of those
+# changes always produce a fresh on-disk filename. The IN-MEMORY
+# ``self.text_cache`` stays keyed by the raw caption (the krea2/ernie/
+# ideogram4 convention the cross-family seam contract expects).
+#
+# ``_disk_cache_key`` is a TRAINER INSTANCE METHOD (not a module-level
+# function, and not a ``@staticmethod``) because it must fold in
+# ``self.max_length`` — the EFFECTIVE, possibly per-definition-overridden
+# ``te.max_length`` for this run (kept in lock-step with the driver by
+# ``_assign_components``) — which by definition cannot be known by a
+# function with no access to instance state. This is the same shape chosen
+# for ``DreamLiteTrainer._disk_cache_key`` (dropped from ``@staticmethod``
+# for the identical reason), normalizing the convention across both
+# families.
+_TE_TEMPLATE_VERSION = "v1"
 
 
 class LongCatImageTrainer(GenericTrainingPipeline):
@@ -72,7 +94,51 @@ class LongCatImageTrainer(GenericTrainingPipeline):
         """Alias for sampler compatibility (sampler accesses .transformer)."""
         return self.model
 
+    def _disk_cache_key(self, caption: str) -> str:
+        """Compose the string hashed by ``TextEmbeddingCache.caption_to_filename``.
+
+        Baking the template fingerprint into the hashed string (instead of
+        the raw caption) means a future template OR effective-max_length
+        change produces a DIFFERENT on-disk filename for the same caption
+        text, instead of silently reusing a stale embedding encoded under
+        the old template/length. Passes ``self.max_length`` — the EFFECTIVE
+        ``te.max_length`` resolved for this run (synced from the driver in
+        ``_assign_components``, which itself resolves any per-definition
+        ``te.max_length`` override) — into ``te_template_fingerprint`` so a
+        definition override is captured, not just the module default.
+        """
+        template_id = (
+            f"longcat_image/quotation_chat_template/"
+            f"{_TE_TEMPLATE_VERSION}/{te_template_fingerprint(self.max_length)}"
+        )
+        return f"{template_id}::{caption}"
+
     # -- Disk-backed TE Pre-caching --
+
+    def _sample_prompt_texts(self) -> list[str]:
+        """Expanded sample-prompt strings to pre-cache.
+
+        Mirrors the sampler's wildcard expansion (GenericSamplingPipeline
+        calls ``_expand_wildcards`` → ``expand_prompt_wildcards`` before
+        ``encode_prompt``) so the cache key matches the exact string the
+        sampler requests via :meth:`encode_text`.
+        """
+        from app.engine.core.sampling import (  # noqa: PLC0415
+            expand_prompt_wildcards,
+        )
+
+        texts: list[str] = []
+        for sp in self.config.get("sample_prompts", []) or []:
+            raw = (
+                sp.get("prompt", "")
+                if isinstance(sp, dict)
+                else getattr(sp, "prompt", "")
+            )
+            if raw:
+                expanded = expand_prompt_wildcards(raw, self.config)
+                if expanded not in texts:
+                    texts.append(expanded)
+        return texts
 
     def _pre_cache_text_embeddings(self) -> None:
         """Warm text embedding cache from disk + encode missing.
@@ -80,6 +146,11 @@ class LongCatImageTrainer(GenericTrainingPipeline):
         LongCat-Image caches (embedding, mask) tuples:
         - embeddings/{te_quant}/te1/ stores embedding tensors
         - embeddings/{te_quant}/te2/ stores attention mask tensors
+
+        The expanded SAMPLE prompts and negative prompt are also warmed
+        here: the sampler runs after the TE is offloaded, so it must serve
+        all prompts from ``self.text_cache`` — without this, sampling
+        causes a VRAM spike (offload) or a hard error (unload).
         """
         if not self.config.get("cache_text_embeddings", True):
             return
@@ -105,13 +176,31 @@ class LongCatImageTrainer(GenericTrainingPipeline):
             if caption in self.text_cache:
                 continue
             if te1_dir and te2_dir:
-                emb_tensor = TextEmbeddingCache.load(caption, te1_dir, hint)
-                mask_tensor = TextEmbeddingCache.load(caption, te2_dir, hint)
+                emb_tensor = TextEmbeddingCache.load(
+                    self._disk_cache_key(caption), te1_dir, hint
+                )
+                mask_tensor = TextEmbeddingCache.load(
+                    self._disk_cache_key(caption), te2_dir, hint
+                )
                 if emb_tensor is not None and mask_tensor is not None:
                     self.text_cache[caption] = (emb_tensor, mask_tensor)
                     disk_loaded += 1
                     continue
             need_encode.append((caption, hint))
+
+        # Warm sample + negative prompts so the TE stays offloaded during
+        # sampling. The sampler expands wildcards identically before calling
+        # encode_text, so the key produced by _sample_prompt_texts matches.
+        sample_texts = self._sample_prompt_texts()
+        queued = {cap for cap, _ in need_encode}
+        for sp in sample_texts:
+            if sp not in self.text_cache and sp not in queued:
+                need_encode.append((sp, ""))
+                queued.add(sp)
+        if sample_texts:
+            neg = str(self.config.get("sample_negative_prompt", "") or "")
+            if neg not in self.text_cache and neg not in queued:
+                need_encode.append((neg, ""))
 
         total = len(caption_hints)
         self.logger.info(
@@ -151,9 +240,13 @@ class LongCatImageTrainer(GenericTrainingPipeline):
                     mask_cpu = mask_batch[j].cpu()
                     self.text_cache[cap] = (emb_cpu, mask_cpu)
                     if te1_dir:
-                        TextEmbeddingCache.save(cap, emb_cpu, te1_dir, hint)
+                        TextEmbeddingCache.save(
+                            self._disk_cache_key(cap), emb_cpu, te1_dir, hint
+                        )
                     if te2_dir:
-                        TextEmbeddingCache.save(cap, mask_cpu, te2_dir, hint)
+                        TextEmbeddingCache.save(
+                            self._disk_cache_key(cap), mask_cpu, te2_dir, hint
+                        )
 
                 pct = int(min(i + batch_size, encode_total) / encode_total * 100)
                 if pct % 10 == 0 or (i + batch_size) >= encode_total:

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 
+import structlog
 import torch
 import torch.nn.functional as F
 from diffusers import WanTransformer3DModel
@@ -361,3 +362,93 @@ class TestConditionCleanliness:
         assert len(captured["cond"]) == 1
         # No noise, no warp — the condition stream is the clean control latent.
         assert torch.equal(captured["cond"][0], control)
+
+
+# ── Router p_high under the REAL band distribution (Task W3.T3) ──────────────
+
+
+class _DualDefn:
+    """Minimal 14B dual-expert definition stand-in (no weights, no YAML)."""
+
+    architecture_params = {
+        "mode": "t2v",
+        "te.max_length": 512,
+        "dual_expert": True,
+        "switch_dit_boundary": 0.875,
+        "moe.boundary_ratio": 0.875,
+        "scheduler.num_train_timesteps": 1000,
+    }
+    lora_targetable_modules: list[str] = []
+
+
+def _dual_trainer(mode_scale: float = 1.29, shift: float = 5.0) -> BerniniRTrainer:
+    """A bare ``BerniniRTrainer`` wired with a REAL dual driver + a router built
+    via the real ``_build_router`` — exercises the ``p_high`` estimate exactly
+    as production setup does, with no weights / loader touched (mirrors
+    ``_bare_trainer``/``_band_trainer`` above)."""
+    t = object.__new__(BerniniRTrainer)
+    t.logger = structlog.get_logger("test")
+    t.device = torch.device("cpu")
+    t.config = {
+        # The REAL bernini_r_14b.yaml definition pins this — without it the
+        # reused router's un-fixed default estimate falls back to
+        # "logit_normal" (its own generic default), not even the unwarped
+        # "mode" formula the brief compares against. Must match production.
+        "timestep_sampling": "mode",
+        "mode_scale": mode_scale,
+        "timestep_shift": shift,
+        "expert_switch_interval": 1,
+        "expert_swap_mode": "resident",
+        "expert_mode": "both",
+        "seed": 0,
+    }
+    t.driver = BerniniRDriver(_DualDefn(), t.device)
+    t.expert_mode = "both"
+    t._build_router()
+    return t
+
+
+class TestRouterPHighUnderRealBandDistribution:
+    def test_router_p_high_uses_bernini_shift_warp(self):
+        """The reused wan22 ExpertRouter's step-selection ``p_high`` must
+        reflect BERNINI's REAL per-step distribution (SD3 mode + shift-5
+        warp) — not the generic ``TimestepSampler`` 'mode' formula (no shift
+        warp at all), which estimates ``p_high ≈ 0.16`` against the real
+        ``≈ 0.29`` and under-trains the high expert roughly 2x. Analytic
+        check (see the module-level MC verification): P(t >= 875) ≈ 0.29
+        under mode+shift5; ≈ 0.16 unwarped.
+        """
+        t = _dual_trainer(mode_scale=1.29, shift=5.0)
+        router = t.expert_router
+        assert 0.25 <= router.p_high <= 0.34, router.p_high
+
+    def test_router_receives_bernini_own_sampler_not_generic(self):
+        """Directly observe that the router's estimate is driven by
+        `_mode_shift_timesteps`, not the generic TimestepSampler 'mode'
+        formula — a different (config-driven) mode_scale/shift must move
+        `p_high` even though `config['timestep_sampling']` never changes."""
+        low_shift = _dual_trainer(mode_scale=1.29, shift=1.0).expert_router.p_high
+        high_shift = _dual_trainer(mode_scale=1.29, shift=5.0).expert_router.p_high
+        # A bigger shift pushes more mass toward high noise -> bigger p_high.
+        assert high_shift > low_shift + 0.05, (low_shift, high_shift)
+
+    def test_pinned_single_expert_router_unaffected(self):
+        """Single-expert (`high`/`low`) runs build a PINNED router that skips
+        the Monte-Carlo estimate entirely — passing `timestep_draw` must stay
+        harmless (never invoked) for them."""
+        t = object.__new__(BerniniRTrainer)
+        t.logger = structlog.get_logger("test")
+        t.device = torch.device("cpu")
+        t.config = {
+            "mode_scale": 1.29,
+            "timestep_shift": 5.0,
+            "expert_switch_interval": 1,
+            "expert_swap_mode": "resident",
+            "expert_mode": "high",
+            "seed": 0,
+        }
+        t.driver = BerniniRDriver(_DualDefn(), t.device)
+        t.expert_mode = "high"
+        router = t._build_router()
+        assert router.pinned_expert == "high"
+        assert router.p_high == 1.0

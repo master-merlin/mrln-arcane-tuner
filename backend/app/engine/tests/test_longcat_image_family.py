@@ -541,9 +541,18 @@ def test_trainer_peft_model_sync():
 
 def test_trainer_te_disk_cache_layout(tmp_path):
     """TE disk cache must be keyed under embeddings/{te_quant}/te1|te2
-    (te1 = embeddings, te2 = attention masks) — qwen_image layout."""
+    (te1 = embeddings, te2 = attention masks) — qwen_image layout.
+
+    ``_disk_cache_key`` is a real ``LongCatImageTrainer`` instance method
+    (W3 fix-wave) — a bare ``MagicMock(spec=LongCatImageTrainer)`` would
+    silently auto-mock it (returning a ``MagicMock`` instead of a string and
+    crashing ``TextEmbeddingCache``'s sha256 hash), so it must be explicitly
+    bound to THIS mock via ``types.MethodType``.
+    """
     import os
+    import types
     import torch
+    from app.engine.models.families.longcat_image.driver import TOKENIZER_MAX_LENGTH
     from app.engine.models.families.longcat_image.trainer import LongCatImageTrainer
 
     trainer = MagicMock(spec=LongCatImageTrainer)
@@ -559,6 +568,14 @@ def test_trainer_te_disk_cache_layout(tmp_path):
     trainer._build_caption_hints.return_value = {"a caption": "hint0"}
     trainer._resolve_te_cache_dirs.return_value = [str(tmp_path)]
     trainer._resolve_loading_dtype.return_value = torch.float32
+    # The resolved (module-default) te.max_length `_assign_components` would
+    # have synced onto the trainer — `_disk_cache_key` reads this for the
+    # EFFECTIVE per-run fingerprint.
+    trainer.max_length = TOKENIZER_MAX_LENGTH
+    trainer._disk_cache_key = types.MethodType(
+        LongCatImageTrainer._disk_cache_key,
+        trainer,
+    )
 
     def _fake_encode(captions, dtype):
         B = len(captions)

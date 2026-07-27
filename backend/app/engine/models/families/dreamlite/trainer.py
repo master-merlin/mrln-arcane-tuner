@@ -114,6 +114,48 @@ class DreamLiteTrainer(GenericTrainingPipeline):
 
         return f"{GENERATE_PREFIX}{text}"
 
+    # -- Disk-cache key template identity --
+    #
+    # ``TextEmbeddingCache.caption_to_filename`` hashes ONLY the string it is
+    # given. Before this fix, that string was the (optionally
+    # ``"[Generate]: "``-prefixed) caption alone — a future edit to the
+    # driver's pinned chat template, ``drop_idx``, or ``max_sequence_length``
+    # would silently reuse embeddings encoded under the OLD template/config,
+    # since the on-disk filename for the SAME caption text wouldn't change
+    # (the poisoned-cache incident class this closes; see
+    # ``te_template_fingerprint`` in driver.py).
+    #
+    # ``_disk_cache_key`` is a PLAIN INSTANCE METHOD (not ``@staticmethod``)
+    # because it must fold in ``self.driver.drop_idx`` /
+    # ``self.driver.max_sequence_length`` — the EFFECTIVE, possibly
+    # per-definition-overridden values for this run — which by definition
+    # cannot be known by a function with no access to instance state. This
+    # is the same shape chosen for ``LongCatImageTrainer._disk_cache_key``
+    # (moved off a bare module-level function for the identical reason),
+    # normalizing the convention across both families.
+
+    def _disk_cache_key(self, key: str) -> str:
+        """Compose the string hashed by ``TextEmbeddingCache.caption_to_filename``.
+
+        Baking the driver's TE template fingerprint into the hashed string
+        (instead of the raw, already-prefixed key) means a future template,
+        drop-idx, or max-sequence-length change produces a DIFFERENT on-disk
+        filename for the same text, instead of silently reusing a stale
+        embedding encoded under the old template/config. Passes
+        ``self.driver.max_sequence_length`` / ``self.driver.drop_idx`` — the
+        EFFECTIVE values resolved from ``architecture_params`` in
+        ``DreamLiteDriver.__init__`` (covers a ``te.max_sequence_length`` /
+        ``te.drop_idx`` definition override, not just the module default).
+        """
+        from .driver import te_template_fingerprint  # noqa: PLC0415
+
+        fp = te_template_fingerprint(
+            self.driver.max_sequence_length,
+            self.driver.drop_idx,
+        )
+        template_id = f"dreamlite/qwen3vl_chat_template/v1/{fp}"
+        return f"{template_id}::{key}"
+
     # -- Disk-backed TE Pre-caching --
 
     def _sample_prompt_texts(self) -> list[str]:
@@ -189,8 +231,12 @@ class DreamLiteTrainer(GenericTrainingPipeline):
             if key in self.text_cache:
                 continue
             if te1_dir and te2_dir:
-                emb_tensor = TextEmbeddingCache.load(key, te1_dir, hint)
-                mask_tensor = TextEmbeddingCache.load(key, te2_dir, hint)
+                emb_tensor = TextEmbeddingCache.load(
+                    self._disk_cache_key(key), te1_dir, hint
+                )
+                mask_tensor = TextEmbeddingCache.load(
+                    self._disk_cache_key(key), te2_dir, hint
+                )
                 if emb_tensor is not None and mask_tensor is not None:
                     self.text_cache[key] = (emb_tensor, mask_tensor)
                     disk_loaded += 1
@@ -252,9 +298,13 @@ class DreamLiteTrainer(GenericTrainingPipeline):
                     mask_cpu = mask_batch[j].cpu()
                     self.text_cache[key] = (emb_cpu, mask_cpu)
                     if te1_dir:
-                        TextEmbeddingCache.save(key, emb_cpu, te1_dir, hint)
+                        TextEmbeddingCache.save(
+                            self._disk_cache_key(key), emb_cpu, te1_dir, hint
+                        )
                     if te2_dir:
-                        TextEmbeddingCache.save(key, mask_cpu, te2_dir, hint)
+                        TextEmbeddingCache.save(
+                            self._disk_cache_key(key), mask_cpu, te2_dir, hint
+                        )
 
                 pct = int(
                     min(i + batch_size, encode_total) / encode_total * 100,

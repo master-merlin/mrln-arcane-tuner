@@ -32,7 +32,7 @@ Everything here is weight-free and unit-tests with a seeded RNG + tiny tensors.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 import torch
@@ -70,6 +70,17 @@ class ExpertRouter:
             truncated to that expert's boundary range. Bernoulli step-selection
             and the ``p_high`` Monte-Carlo estimate are skipped entirely (there
             is nothing to switch). ``None`` (default) = dual-expert routing.
+        timestep_draw: Optional override for the ``p_high`` Monte-Carlo draw —
+            a callable ``(n) -> Tensor`` returning ``n`` RAW ``[0, scale]``
+            timesteps from the family's ACTUAL per-step distribution. When
+            ``None`` (default, wan22's usage), the estimate draws from the
+            generic :class:`TimestepSampler` per ``timestep_cfg`` — correct
+            whenever the per-step timesteps ARE that same generic draw. A
+            family whose per-step timesteps come from its OWN transform
+            (e.g. bernini_r's mode+shift-warp band sampling) must pass its own
+            sampler here, or the step-selection frequency and the actual
+            per-band timestep mass silently stop composing to the intended
+            marginal (see :meth:`BerniniRTrainer._build_router`).
     """
 
     def __init__(
@@ -82,6 +93,7 @@ class ExpertRouter:
         mc_samples: int = 100_000,
         scale: float = 1000.0,
         pinned_expert: str | None = None,
+        timestep_draw: Callable[[int], torch.Tensor] | None = None,
     ) -> None:
         self.boundary_frac = float(boundary)
         self.scale = float(scale)
@@ -90,6 +102,7 @@ class ExpertRouter:
         self.config: dict[str, Any] = dict(timestep_cfg or {})
         self.mode: str = str(self.config.get("timestep_sampling", "logit_normal"))
         self.mc_samples = int(mc_samples)
+        self._timestep_draw = timestep_draw
         self.logger = structlog.get_logger(self.__class__.__name__)
 
         pinned = pinned_expert.lower() if pinned_expert else None
@@ -132,29 +145,33 @@ class ExpertRouter:
     # ── p_high estimation (Monte-Carlo, cached once) ──────────────────────
 
     def _estimate_p_high(self) -> float:
-        """Estimate ``P(t >= boundary)`` under the configured distribution.
+        """Estimate ``P(t >= boundary)`` under the REAL per-step distribution.
 
-        Draws ``mc_samples`` timesteps from the REAL :class:`TimestepSampler`
-        (same mode + params the trainer uses) and returns the empirical fraction
-        ``>= boundary``. Computed on CPU with a fixed generator so the estimate
-        is reproducible.
+        Draws ``mc_samples`` timesteps and returns the empirical fraction
+        ``>= boundary``, computed on CPU with the default RNG seeded so the
+        estimate is reproducible (does not touch the step-selection
+        generator). By default draws from the generic :class:`TimestepSampler`
+        (same mode + params the trainer uses) — correct whenever the per-step
+        timesteps ARE that same generic draw. When ``timestep_draw`` was
+        supplied at construction, that callable draws instead — for a family
+        whose ACTUAL per-step timesteps come from its own transform (see the
+        constructor docstring).
         """
-        gen = torch.Generator(device="cpu").manual_seed(self._seed + 1)
-        # TimestepSampler reads torch's default RNG; seed it for reproducibility
-        # of the estimate (does not touch the step-selection generator).
         prev_state = torch.random.get_rng_state()
         try:
             torch.random.manual_seed(self._seed + 1)
-            samples = TimestepSampler.sample_scaled(
-                self.mode,
-                self.mc_samples,
-                torch.device("cpu"),
-                self.config,
-                scale=self.scale,
-            )
+            if self._timestep_draw is not None:
+                samples = self._timestep_draw(self.mc_samples)
+            else:
+                samples = TimestepSampler.sample_scaled(
+                    self.mode,
+                    self.mc_samples,
+                    torch.device("cpu"),
+                    self.config,
+                    scale=self.scale,
+                )
         finally:
             torch.random.set_rng_state(prev_state)
-        del gen
         p = float((samples >= self.boundary_scaled).float().mean().item())
         # Guard against degenerate 0/1 (would make one expert never train).
         return min(max(p, 1e-6), 1.0 - 1e-6)

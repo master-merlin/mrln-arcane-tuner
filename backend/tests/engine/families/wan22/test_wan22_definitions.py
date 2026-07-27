@@ -71,9 +71,10 @@ def test_i2v_boundary_channels_and_no_clip(registry):
     # WAN 2.2 I2V has NO CLIP image encoder.
     assert arch["i2v.has_clip_image_encoder"] is False
     assert "image_encoder._class_name" not in arch
-    # i2v LoRA targets include the image cross-attn projections.
-    assert "attn2.add_k_proj" in defn.lora_targetable_modules
-    assert "attn2.add_v_proj" in defn.lora_targetable_modules
+    # W3.T9: the image cross-attn LoRA targets matched NOTHING on WAN 2.2
+    # (no CLIP cross-attention at all) and are no longer shipped.
+    assert "attn2.add_k_proj" not in defn.lora_targetable_modules
+    assert "attn2.add_v_proj" not in defn.lora_targetable_modules
 
 
 @pytest.mark.parametrize("model_id", WAN22_IDS)

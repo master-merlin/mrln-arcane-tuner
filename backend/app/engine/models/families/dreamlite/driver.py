@@ -26,6 +26,7 @@ DreamLite specifics:
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import structlog
@@ -58,6 +59,60 @@ _DEFAULT_MAX_SEQUENCE_LENGTH = 200
 # The pipeline's generate-mode prompt prefix (applied by __call__, NOT by
 # encode_prompt — negatives stay un-prefixed). Exposed for trainer/sampler.
 GENERATE_PREFIX = "[Generate]: "
+
+
+def te_template_fingerprint(
+    max_sequence_length: int | None = None,
+    drop_idx: int | None = None,
+) -> str:
+    """Fingerprint of every input that transforms a caption before encoding.
+
+    Covers, EXHAUSTIVELY:
+    - the pinned chat template (``DREAMLITE_PROMPT_TEMPLATE``);
+    - the EFFECTIVE template-prefix drop index (``drop_idx`` — governs the
+      ``[drop_idx:]`` slice in ``encode_text`` that removes the chat-template
+      prefix tokens from the hidden states);
+    - the EFFECTIVE max sequence length (``max_sequence_length`` — governs
+      the fixed-length zero re-pad in ``encode_text``).
+
+    Both axes are per-definition overridable via the ``te.drop_idx`` /
+    ``te.max_sequence_length`` architecture params (``base.yaml`` and
+    ``mobile.yaml`` currently both pin them to the module defaults, but a
+    future definition is free to diverge). Passing ``None`` (the default)
+    for either falls back to its module-level constant
+    (``_DEFAULT_DROP_IDX`` / ``_DEFAULT_MAX_SEQUENCE_LENGTH``) — only
+    correct for a caller with no resolved per-run value to hand. Callers
+    that know the effective values for THIS run (``DreamLiteTrainer``, via
+    ``self.driver.drop_idx`` / ``self.driver.max_sequence_length`` — already
+    resolved from ``architecture_params`` in ``DreamLiteDriver.__init__``)
+    must pass them explicitly so a definition override is captured, not
+    just the defaults.
+
+    Computed FRESH on every call (reads the current module globals rather
+    than freezing a value at import time) so a future edit — or a test
+    monkeypatching one of these constants — is picked up immediately.
+
+    Used by ``DreamLiteTrainer._disk_cache_key`` to version its disk-cache
+    key so a template, drop-idx, OR max-sequence-length change can never
+    silently reuse embeddings encoded under the OLD template/config (the
+    poisoned-cache incident class this closes: only the ``"[Generate]: "``
+    prefix previously reached the hashed key, not the chat template,
+    drop-idx, or max-sequence-length it wraps).
+    """
+    effective_drop_idx = _DEFAULT_DROP_IDX if drop_idx is None else drop_idx
+    effective_max_sequence_length = (
+        _DEFAULT_MAX_SEQUENCE_LENGTH
+        if max_sequence_length is None
+        else max_sequence_length
+    )
+    src = "|".join(
+        [
+            DREAMLITE_PROMPT_TEMPLATE,
+            str(effective_drop_idx),
+            str(effective_max_sequence_length),
+        ]
+    )
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
 
 
 class DreamLiteDriver(IModelDriver):

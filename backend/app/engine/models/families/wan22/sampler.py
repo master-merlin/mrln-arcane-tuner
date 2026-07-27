@@ -98,11 +98,19 @@ class Wan22Sampler(WanVideoSamplerBase):
             # diffusers WanPipeline — feeding the bare sigma caused pure noise.
             expert = high if float(sigma) >= self.boundary else low
             t = (sigma * WAN_FLOWMATCH_SCALE).reshape(1).expand(x.shape[0])
+            # I2V A14B pins a 36-in-channel patch_embedding on BOTH experts
+            # (wan22_i2v_a14b.yaml); the base's inline pad guard lived only in
+            # WanVideoSamplerBase.denoise, and this sampler fully overrides
+            # denoise — so it must call the shared helper explicitly (a no-op
+            # for the 16-in-channel t2v checkpoint). Without this every
+            # wan22-i2v preview crashed in patch_embedding (wave-3 audit
+            # 2026-07-26).
+            x_in = self._maybe_pad_i2v(x)
             with torch.no_grad(), torch.autocast(
                 device_type=device_type, dtype=autocast_dtype
             ):
                 out = expert(
-                    hidden_states=x,
+                    hidden_states=x_in,
                     timestep=t,
                     encoder_hidden_states=cond,
                     encoder_hidden_states_image=None,

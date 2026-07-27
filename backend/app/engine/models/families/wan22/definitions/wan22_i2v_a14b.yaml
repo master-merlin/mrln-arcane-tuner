@@ -8,7 +8,9 @@ defaults:
   learning_rate: 1.0e-4
   timestep_sampling: model_shift
   expert_switch_interval: 1
-  expert_swap_mode: auto
+  # "auto" has no resident-vs-swap VRAM probe (Task W3.T2) — it silently
+  # behaved as "resident" anyway; ship the honest value.
+  expert_swap_mode: resident
 components:
   repo:
     path: huggingface:Wan-AI/Wan2.2-I2V-A14B-Diffusers
@@ -55,7 +57,5 @@ lora_targetable_modules:
 - attn2.to_k
 - attn2.to_v
 - attn2.to_out.0
-- attn2.add_k_proj
-- attn2.add_v_proj
 - ffn.net.0.proj
 - ffn.net.2

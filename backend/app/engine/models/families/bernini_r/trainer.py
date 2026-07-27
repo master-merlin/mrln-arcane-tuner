@@ -142,17 +142,36 @@ class BerniniRTrainer(
         transformer is loaded, so there is nothing to swap). NOTE: bernini uses
         the router for STEP SELECTION + swap/state only; the actual per-step
         timesteps come from :meth:`sample_timesteps` (range-split band sampling).
+
+        Task W3.T3: the reused :class:`ExpertRouter`'s ``p_high`` Monte-Carlo
+        estimate defaults to the GENERIC ``TimestepSampler`` formula for
+        ``config["timestep_sampling"]`` — but bernini's ACTUAL per-step
+        timesteps (:meth:`sample_timesteps` / :meth:`_sample_band`) come from
+        ITS OWN SD3-``mode`` + per-task shift-warp transform
+        (:meth:`_mode_shift_timesteps`), which the generic ``"mode"`` formula
+        does not include (no shift warp at all). Under the 14B v2v defaults
+        (``mode_scale=1.29``, ``shift=5.0``) that mismatch estimates
+        ``p_high ≈ 0.16`` against the real ``≈ 0.29`` — the high expert was
+        step-selected for a step-frequency far below the timestep-mass its
+        band actually carries, under-training it roughly 2×. Passing
+        ``timestep_draw`` fixes the estimate to the REAL distribution; it is
+        harmless (never invoked) for a pinned single-expert router, which
+        skips the Monte-Carlo estimate entirely.
         """
         switch_interval = int(self.config.get("expert_switch_interval", 1))
         seed = int(self.config.get("seed", 0) or 0)
         mode = getattr(self, "expert_mode", "both")
         pinned = None if mode == "both" else mode
+        mode_scale, shift = self._timestep_params()
         router = ExpertRouter(
             boundary=self.driver.boundary,
             switch_interval=switch_interval,
             timestep_cfg=self.config,
             seed=seed,
             pinned_expert=pinned,
+            timestep_draw=lambda n: self._mode_shift_timesteps(
+                torch.rand(n), mode_scale, shift
+            ),
         )
         self.expert_router = router
         self.driver.set_router(router)
@@ -370,6 +389,40 @@ class BerniniRTrainer(
                     params.append(p)
         return params
 
+    # ── Dual-expert EMA (W3.T10, mirrors Wan22Trainer) ────────────────────
+
+    def _ema_parameters(self) -> dict[str, torch.nn.Parameter] | None:
+        """EMA-shadow BOTH experts' trainable params on a 14B ``both`` run.
+
+        Without this override, ``_configure_ema`` binds ``EMAHandler`` to
+        ``_get_primary_model()`` — the single ACTIVE expert — so only that
+        expert's LoRA gets an EMA shadow; the other expert's saved file is
+        raw (un-EMA'd) weights. Names are prefixed ``high.``/``low.`` so the
+        two experts' identically-named parameters don't collide in one
+        shadow dict.
+
+        The 1.3B (non-dual) and single-expert-mode (high/low) paths fall
+        back to ``None`` (base primary-model behavior), byte-identical to
+        the un-overridden path.
+        """
+        driver = getattr(self, "driver", None)
+        if (
+            not getattr(driver, "is_dual", False)
+            or getattr(self, "expert_mode", "both") != "both"
+        ):
+            return None
+        out: dict[str, torch.nn.Parameter] = {}
+        for prefix, model in (
+            (HIGH, driver.transformer_high),
+            (LOW, driver.transformer_low),
+        ):
+            if model is None:
+                continue
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    out[f"{prefix}.{name}"] = param
+        return out
+
     def _configure_optimization(self, max_train_steps: int) -> None:
         """Configure the optimizer over BOTH experts' params (14B ``both``).
 
@@ -399,6 +452,26 @@ class BerniniRTrainer(
             super()._configure_optimization(max_train_steps)
         finally:
             primary.parameters = original_parameters  # type: ignore[method-assign]
+
+        # Explicit start placement (Task W3.T2, mirrors Wan22Trainer): both
+        # experts now carry PEFT adapters and the optimizer holds both
+        # experts' params — place them on their configured devices BEFORE the
+        # training loop starts, independent of whether the step-0 baseline
+        # sampler runs (previously the ONLY thing that placed the deferred low
+        # expert).
+        #
+        # Block-swapping is a SEPARATE hazard (wave-3 review, mirrors
+        # Wan22Trainer): ``_configure_block_swapping()`` (step 6b) runs
+        # BEFORE this method and may have handed the active expert's deep
+        # blocks to a ``BlockSwappingManager``; a bulk ``.to(device)`` on that
+        # expert would defeat the swap. The driver can't see
+        # ``self._block_swap_managers`` (lives here), so we hand off
+        # explicitly which expert (if any) ``place_experts_for_start()`` /
+        # ``_set_active`` must leave alone.
+        if getattr(self, "_block_swap_managers", None):
+            driver.block_swap_active_expert = driver.active_expert
+        driver.place_experts_for_start()
+
         self.logger.info(
             "bernini_r_optimizer_configured_dual", total_trainable=len(all_params)
         )

@@ -123,6 +123,10 @@ class _Ideogram4FlowSchedule:
         std: float = DEFAULT_SCHEDULE_STD,
     ) -> None:
         self.num_steps = num_steps
+        # Stashed so the sampler's cache key can detect a resolution change
+        # (mean depends on height/width — see below).
+        self.height = height
+        self.width = width
         # Resolution-aware mean: known_mean (== mu) at 512x512, +0.5*log(area
         # ratio) elsewhere (get_schedule_for_resolution).
         num_pixels = height * width
@@ -175,6 +179,8 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
         if (
             self._scheduler is None
             or self._scheduler.num_steps != num_steps
+            or (self._scheduler.height, self._scheduler.width)
+            != (self._height, self._width)
         ):
             self._scheduler = _Ideogram4FlowSchedule(
                 num_steps=num_steps,

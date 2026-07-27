@@ -130,6 +130,17 @@ class GenericSamplingPipeline(ABC):
            g. restore training state
     """
 
+    #: Whether ``_sample_single`` must bracket the text encoder(s) to GPU
+    #: around ``encode_prompt``. ``False`` (default) for every cache-serving
+    #: family: with ``cache_text_embeddings=True`` (the default) prompts are
+    #: pre-warmed into ``text_cache`` and ``encode_prompt`` never touches the
+    #: TE, so the bracket was a redundant 8-16 GB PCIe round-trip per prompt
+    #: per sampling round. A genuine cache miss still self-brackets inside
+    #: ``_get_cached_text_embeddings`` (e.g. ``qwen_image/trainer.py``).
+    #: ``True`` only for samplers whose ``encode_prompt`` calls the driver's
+    #: encoder directly every round (``microsoft_lens``, ``ideogram4``).
+    needs_live_te: bool = False
+
     def __init__(self, pipeline: GenericTrainingPipeline) -> None:
         self.pipeline = pipeline
         self.config: dict[str, Any] = pipeline.config
@@ -618,17 +629,26 @@ class GenericSamplingPipeline(ABC):
         num_steps = int(prompt_cfg.get("num_inference_steps", 20))
         guidance = float(prompt_cfg.get("guidance_scale", 3.5))
 
-        # ── Phase 1: Encode prompt (TE on GPU) ──
-        # Prefer driver.get_text_encoders() (new interface) with fallback
-        # to pipeline._get_text_encoders() for backward compatibility.
-        driver = getattr(self.pipeline, "driver", None)
-        if driver is not None:
-            te_names = list(driver.get_text_encoders().keys())
-        else:
-            te_names = list(self.pipeline._get_text_encoders().keys())
-        te_moved = self._ensure_on_gpu(te_names)
+        # ── Phase 1: Encode prompt (TE on GPU only if needed) ──
+        # Only samplers that call the driver's encoder directly every round
+        # (``needs_live_te = True``) need this bracket. The default
+        # cache-serving path never touches the TE inside ``encode_prompt``
+        # (prompts are pre-warmed), so skipping it here avoids an 8-16 GB
+        # PCIe round-trip per prompt per sampling round. See
+        # ``needs_live_te`` docstring for the cache-miss safety net.
+        te_moved: list[str] = []
+        if self.needs_live_te:
+            # Prefer driver.get_text_encoders() (new interface) with fallback
+            # to pipeline._get_text_encoders() for backward compatibility.
+            driver = getattr(self.pipeline, "driver", None)
+            if driver is not None:
+                te_names = list(driver.get_text_encoders().keys())
+            else:
+                te_names = list(self.pipeline._get_text_encoders().keys())
+            te_moved = self._ensure_on_gpu(te_names)
         text_emb = self.encode_prompt(prompt)
-        self._offload_to_cpu(te_moved)
+        if self.needs_live_te:
+            self._offload_to_cpu(te_moved)
 
         # ── Phase 2: Denoise (only transformer on GPU) ──
         # Stash the full prompt config so edit/kontext samplers can read

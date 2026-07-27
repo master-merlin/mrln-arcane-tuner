@@ -70,6 +70,11 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
 
     pipeline: MicrosoftLensTrainer
 
+    # ``encode_prompt`` below calls ``driver.encode_text`` directly every
+    # round (not the trainer's cached path), so the base sampler must
+    # bracket the text encoder to GPU/CPU around it.
+    needs_live_te = True
+
     def __init__(self, pipeline: MicrosoftLensTrainer) -> None:
         super().__init__(pipeline)
         self._scheduler = None

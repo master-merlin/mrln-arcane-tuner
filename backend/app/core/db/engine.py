@@ -117,18 +117,29 @@ class DatabaseEngine:
 
         def __enter__(self) -> sqlite3.Connection:
             self._engine._write_lock.acquire()
-            self._conn = self._engine._make_connection()
+            try:
+                self._conn = self._engine._make_connection()
+            except BaseException:
+                # Connect failed — the lock must not leak, or every subsequent
+                # db.write() in the process blocks forever.
+                self._engine._write_lock.release()
+                raise
             return self._conn
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            conn = self._conn
-            if conn is not None:
-                if exc_type is None:
-                    conn.commit()
-                else:
-                    conn.rollback()
-                conn.close()
-            self._engine._write_lock.release()
+            try:
+                try:
+                    if exc_type is None:
+                        self._conn.commit()
+                    else:
+                        self._conn.rollback()
+                finally:
+                    self._conn.close()
+            finally:
+                # Always release, even if commit()/rollback()/close() raises
+                # (e.g. a cross-process SQLITE_BUSY at commit) — an unreleased
+                # lock wedges every future write until the backend restarts.
+                self._engine._write_lock.release()
             return False  # don't suppress exceptions
 
     def write(self) -> "_WriteContext":

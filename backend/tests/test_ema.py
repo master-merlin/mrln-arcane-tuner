@@ -177,3 +177,102 @@ class TestStateDictRoundTrip:
         assert ema.shadow["weight"].device.type == "cuda"
         # Real-world reproduction: step() must not raise device mismatch
         ema.step()
+
+
+class TestDictParamsConstruction:
+    """EMAHandler bound to an explicit ``{name: Parameter}`` mapping (W3.T10 —
+    the dual-expert seam) instead of an ``nn.Module``. This is what
+    ``Wan22Trainer``/``BerniniRTrainer``'s ``_ema_parameters()`` hands
+    ``_configure_ema`` on a ``both``-mode run: the union of BOTH experts'
+    trainable params, name-prefixed (``high.``/``low.``) so keys stay unique.
+    Every method (init/step/swap/restore/state_dict round-trip) must behave
+    identically to the ``nn.Module`` path, just sourced from the dict instead
+    of re-querying a single model.
+    """
+
+    @staticmethod
+    def _prefixed_params():
+        """A dual-expert-shaped params dict: two DISTINCT Linear layers whose
+        param names are IDENTICAL ("weight") except for the high./low. prefix
+        — exactly the collision the prefixing exists to avoid."""
+        high = nn.Linear(4, 2, bias=False)
+        low = nn.Linear(4, 2, bias=False)
+        nn.init.ones_(high.weight)
+        nn.init.constant_(low.weight, 2.0)
+        return (
+            {
+                "high.weight": high.weight,
+                "low.weight": low.weight,
+            },
+            high,
+            low,
+        )
+
+    def test_shadow_clones_both_prefixed_params(self):
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.99)
+        assert set(ema.shadow) == {"high.weight", "low.weight"}
+        assert torch.allclose(ema.shadow["high.weight"], high.weight.data)
+        assert torch.allclose(ema.shadow["low.weight"], low.weight.data)
+        assert ema.model is None
+
+    def test_step_updates_both_prefixed_shadows_independently(self):
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.5)
+        high.weight.data.fill_(0.0)
+        low.weight.data.fill_(0.0)
+        ema.step()
+        # high shadow: 0.5*0 + 0.5*1 = 0.5 ; low shadow: 0.5*0 + 0.5*2 = 1.0
+        assert torch.allclose(
+            ema.shadow["high.weight"], torch.full_like(high.weight, 0.5)
+        )
+        assert torch.allclose(
+            ema.shadow["low.weight"], torch.full_like(low.weight, 1.0)
+        )
+
+    def test_store_and_swap_and_restore_round_trip(self):
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.5)
+        high.weight.data.fill_(0.0)
+        low.weight.data.fill_(0.0)
+        ema.step()  # shadows now 0.5 / 1.0
+
+        ema.store_and_swap()
+        assert torch.allclose(high.weight.data, ema.shadow["high.weight"])
+        assert torch.allclose(low.weight.data, ema.shadow["low.weight"])
+
+        ema.restore()
+        assert torch.allclose(high.weight.data, torch.zeros_like(high.weight))
+        assert torch.allclose(low.weight.data, torch.zeros_like(low.weight))
+
+    def test_state_dict_round_trips_through_checkpoint_save_restore(self):
+        """The EMA shadow must round-trip through checkpoint save/restore
+        with the prefixed names — CheckpointManager just ``torch.save``s
+        ``ema_handler.state_dict()`` and later ``ema_handler.load_state_dict``s
+        it back (``app/engine/components/checkpoints.py``); this is
+        source-agnostic (model vs. dict-bound), so a save/load cycle must
+        preserve every prefixed key byte-for-byte."""
+        params, high, low = self._prefixed_params()
+        ema = EMAHandler(params, decay=0.9)
+        high.weight.data.fill_(3.0)
+        low.weight.data.fill_(4.0)
+        ema.step()
+        saved = {k: v.clone() for k, v in ema.state_dict().items()}
+
+        # A FRESH handler (as on resume — new process, new Parameter objects,
+        # SAME prefixed names) loads the saved shadow back.
+        new_high = nn.Linear(4, 2, bias=False)
+        new_low = nn.Linear(4, 2, bias=False)
+        restored = EMAHandler(
+            {"high.weight": new_high.weight, "low.weight": new_low.weight},
+            decay=0.9,
+        )
+        restored.load_state_dict(saved)
+
+        assert set(restored.shadow) == {"high.weight", "low.weight"}
+        assert torch.allclose(restored.shadow["high.weight"], saved["high.weight"])
+        assert torch.allclose(restored.shadow["low.weight"], saved["low.weight"])
+        # Round-tripped shadow must still be independently steppable/swappable.
+        restored.store_and_swap()
+        assert torch.allclose(new_high.weight.data, saved["high.weight"])
+        assert torch.allclose(new_low.weight.data, saved["low.weight"])

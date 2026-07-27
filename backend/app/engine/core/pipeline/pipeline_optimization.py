@@ -431,12 +431,39 @@ class PipelineOptimizationMixin:
     # ── EMA ───────────────────────────────────────────────────────────────
 
     def _configure_ema(self) -> None:
-        """Initialize EMA handler if configured."""
+        """Initialize EMA handler if configured.
+
+        Prefers :meth:`_ema_parameters` when a subclass overrides it non-None
+        (dual-expert trainers — see its docstring): the shadow then covers
+        the union of BOTH experts' trainable params instead of just the
+        primary/active one, so neither expert's LoRA is saved from raw
+        (un-EMA'd) weights.
+        """
         if not self.config.get("ema", False):
             return
         decay = float(self.config.get("ema_decay", 0.999))
         self.logger.info("initializing_ema", decay=decay)
-        self.ema_handler = EMAHandler(self._get_primary_model(), decay=decay)
+        params = self._ema_parameters()
+        if params is not None:
+            self.ema_handler = EMAHandler(params, decay=decay)
+        else:
+            self.ema_handler = EMAHandler(self._get_primary_model(), decay=decay)
+
+    def _ema_parameters(self) -> dict[str, torch.nn.Parameter] | None:
+        """Explicit ``{name: param}`` mapping for :class:`EMAHandler`, or ``None``.
+
+        Base implementation always returns ``None``, which keeps
+        ``_configure_ema``'s original single-model behavior (EMA bound to
+        ``self._get_primary_model()``). Dual-expert trainers
+        (``Wan22Trainer``, ``BerniniRTrainer``) override this to return the
+        union of BOTH experts' trainable params, name-prefixed (``high.``/
+        ``low.``) so keys stay unique — otherwise, with the base's
+        single-model binding, only the currently-active expert's LoRA gets
+        an EMA shadow and the inactive expert's saved file is raw
+        (un-EMA'd) weights, an asymmetric smoothing regime inside one
+        logical LoRA pair.
+        """
+        return None
 
     # ── Managers ──────────────────────────────────────────────────────────
 

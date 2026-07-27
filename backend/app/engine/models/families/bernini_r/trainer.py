@@ -389,6 +389,40 @@ class BerniniRTrainer(
                     params.append(p)
         return params
 
+    # ── Dual-expert EMA (W3.T10, mirrors Wan22Trainer) ────────────────────
+
+    def _ema_parameters(self) -> dict[str, torch.nn.Parameter] | None:
+        """EMA-shadow BOTH experts' trainable params on a 14B ``both`` run.
+
+        Without this override, ``_configure_ema`` binds ``EMAHandler`` to
+        ``_get_primary_model()`` — the single ACTIVE expert — so only that
+        expert's LoRA gets an EMA shadow; the other expert's saved file is
+        raw (un-EMA'd) weights. Names are prefixed ``high.``/``low.`` so the
+        two experts' identically-named parameters don't collide in one
+        shadow dict.
+
+        The 1.3B (non-dual) and single-expert-mode (high/low) paths fall
+        back to ``None`` (base primary-model behavior), byte-identical to
+        the un-overridden path.
+        """
+        driver = getattr(self, "driver", None)
+        if (
+            not getattr(driver, "is_dual", False)
+            or getattr(self, "expert_mode", "both") != "both"
+        ):
+            return None
+        out: dict[str, torch.nn.Parameter] = {}
+        for prefix, model in (
+            (HIGH, driver.transformer_high),
+            (LOW, driver.transformer_low),
+        ):
+            if model is None:
+                continue
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    out[f"{prefix}.{name}"] = param
+        return out
+
     def _configure_optimization(self, max_train_steps: int) -> None:
         """Configure the optimizer over BOTH experts' params (14B ``both``).
 

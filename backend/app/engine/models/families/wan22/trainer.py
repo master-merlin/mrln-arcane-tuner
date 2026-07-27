@@ -207,6 +207,38 @@ class Wan22Trainer(
                     params.append(p)
         return params
 
+    # ── Dual-expert EMA (W3.T10) ──────────────────────────────────────────
+
+    def _ema_parameters(self) -> dict[str, torch.nn.Parameter] | None:
+        """EMA-shadow BOTH experts' trainable params on a ``both``-mode run.
+
+        Without this override, ``_configure_ema`` binds ``EMAHandler`` to
+        ``_get_primary_model()`` — the single ACTIVE expert — so only that
+        expert's LoRA gets an EMA shadow; the other expert's saved file is
+        raw (un-EMA'd) weights. Names are prefixed ``high.``/``low.`` so the
+        two experts' identically-named parameters (e.g. both have a
+        ``blocks.0.attn1.to_q.lora_A.weight``) don't collide in one shadow
+        dict.
+
+        Single-expert runs (``expert_mode`` high/low) fall back to ``None``
+        (base primary-model behavior) — there is only one transformer to
+        shadow, byte-identical to the un-overridden path.
+        """
+        driver: Wan22Driver = self.driver  # type: ignore[assignment]
+        if getattr(self, "expert_mode", "both") != "both":
+            return None
+        out: dict[str, torch.nn.Parameter] = {}
+        for prefix, model in (
+            ("high", driver.transformer_high),
+            ("low", driver.transformer_low),
+        ):
+            if model is None:
+                continue
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    out[f"{prefix}.{name}"] = param
+        return out
+
     def _configure_optimization(self, max_train_steps: int) -> None:
         """Configure optimizer over BOTH experts' params, then base scheduler.
 

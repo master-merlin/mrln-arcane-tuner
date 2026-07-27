@@ -1387,6 +1387,70 @@ class TestStartJobPreflightDownload:
         plugin.start_training.assert_called_once()
 
 
+class TestStartJobPreflightBroadcastFailureMarksFailed:
+    """T3 completion: the preflight status-flip + broadcast sits BEFORE the
+    guarded try in start_job (job.status = RUNNING, then an unguarded
+    run_coroutine_threadsafe broadcast). A RuntimeError from that broadcast
+    (e.g. a closed/stopped event loop during shutdown) or a job.model_dump()
+    serialization error previously escaped uncaught, leaving the job
+    phantom-RUNNING with pid=None. _reconcile_active_jobs deliberately skips
+    pid-less jobs ("possibly mid-launch"), so that phantom wedges the
+    single-GPU queue until a backend restart.
+    """
+
+    def _mock_plugin(self):
+        plugin = MagicMock()
+        # No `.pid` → start_job would skip the LogTailer + PID watchdog if it
+        # ever got that far (it must not, in this scenario).
+        plugin.start_training.return_value = MagicMock(spec=[])
+        return plugin
+
+    def _fake_definition(self):
+        """spec=ModelDefinition mock with a real registered family — see
+        TestStartJobPreflightDownload._fake_definition for why."""
+        registry.discover_families()
+        fake_def = MagicMock(spec=ModelDefinition)
+        fake_def.family = "sdxl"
+        fake_def.architecture_params = {}
+        fake_def.control_inputs = 0
+        fake_def.defaults = {}
+        return fake_def
+
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_preflight_broadcast_failure_marks_failed_not_running(
+        self, mock_pm, mock_get_def, mock_prefetch, tmp_path,
+    ):
+        mock_pm.get_plugin.return_value = self._mock_plugin()
+        mock_get_def.return_value = self._fake_definition()
+
+        mgr = JobManager()
+        mock_loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        mgr.set_loop(mock_loop)
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pfbcast"),
+        )
+        # A second pending job — proves below that the failed launch isn't
+        # still occupying the single-GPU slot.
+        other = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pfbcast-2"),
+        )
+
+        with patch(
+            "app.core.job_manager.asyncio.run_coroutine_threadsafe",
+        ) as mock_rct:
+            mock_rct.side_effect = RuntimeError("Event loop is closed")
+            with pytest.raises(RuntimeError):
+                mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+        assert job.pid is None
+        mock_pm.get_plugin.return_value.start_training.assert_not_called()
+
+        assert mgr._claim_next_pending() == other.id
+
+
 class TestAutoQueue:
     """Backend-owned queue advancement.
 

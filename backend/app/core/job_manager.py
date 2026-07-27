@@ -1292,28 +1292,37 @@ class JobManager:
         if not plugin:
             raise ValueError(f"Plugin {job.plugin_id} not found")
 
-        if preflight:
-            # Reflect the prerequisite base-model download in the job's LIVE
-            # status so the queue card + top bar show real work in progress
-            # instead of an idle "pending" while a large model fetches. This is
-            # an in-memory transition, broadcast immediately. We deliberately do
-            # NOT persist "running" here: the download has no trainer/PID yet, so
-            # leaving the DB row "pending" means a restart mid-download cleanly
-            # resumes from pending — vs. a stranded "running" row that recovery
-            # would mark stopped. ``_preflight_download`` then emits the HF
-            # download progress onto the top-bar indicator.
-            job.status = JobStatus.RUNNING
-            job.status_label = _PREFLIGHT_DOWNLOAD_LABEL
-            if job.started_at is None:
-                job.started_at = time.time()
-            if self._loop:
-                asyncio.run_coroutine_threadsafe(
-                    event_manager.broadcast("job_update", job.model_dump()),
-                    self._loop,
-                )
-            self._preflight_download(job)
-
         try:
+            if preflight:
+                # Reflect the prerequisite base-model download in the job's LIVE
+                # status so the queue card + top bar show real work in progress
+                # instead of an idle "pending" while a large model fetches. This is
+                # an in-memory transition, broadcast immediately. We deliberately do
+                # NOT persist "running" here: the download has no trainer/PID yet, so
+                # leaving the DB row "pending" means a restart mid-download cleanly
+                # resumes from pending — vs. a stranded "running" row that recovery
+                # would mark stopped. ``_preflight_download`` then emits the HF
+                # download progress onto the top-bar indicator.
+                #
+                # This status flip + broadcast is INSIDE the guarded try (not
+                # before it): a RuntimeError from a closed/stopped event loop,
+                # or a job.model_dump() serialization error, would otherwise
+                # escape uncaught here — leaving the job phantom-RUNNING with
+                # pid=None. _reconcile_active_jobs deliberately skips pid-less
+                # jobs ("possibly mid-launch"), so that phantom wedges the
+                # single-GPU queue until a backend restart, same as any other
+                # launch-failure exception this try/except resets.
+                job.status = JobStatus.RUNNING
+                job.status_label = _PREFLIGHT_DOWNLOAD_LABEL
+                if job.started_at is None:
+                    job.started_at = time.time()
+                if self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        event_manager.broadcast("job_update", job.model_dump()),
+                        self._loop,
+                    )
+                self._preflight_download(job)
+
             if clear_stale_signal:
                 from app.engine.components.signal_manager import TrainingSignalManager
 

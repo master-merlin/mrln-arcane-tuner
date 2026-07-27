@@ -8,7 +8,7 @@ and the shared setup / component access helpers.
 import functools
 import random
 from abc import abstractmethod
-from typing import Any
+from typing import Any, NoReturn
 
 import structlog
 import torch
@@ -27,6 +27,25 @@ logger = structlog.get_logger(__name__)
 
 class PipelineBaseMixin(BaseTrainer):
     """Abstract hooks + component wiring for the training pipeline."""
+
+    @staticmethod
+    def _reraise_resolver_failure(exc: AttributeError, *, prop: str) -> NoReturn:
+        """Convert a resolver ``AttributeError`` (e.g. a family class that
+        forgot to declare ``archetype`` — a bare, undefaulted ``ModelFamily``
+        class attr, see ``core/definitions.py``) into a ``RuntimeError``.
+
+        Structural guard for the three CONSUMER call sites
+        (``pipeline_data.py:1007,1172``, ``pipeline_train.py:409-410``) that
+        read these flags via ``getattr(self, "is_video_family", False)``.
+        ``getattr(obj, name, default)`` cannot distinguish "attribute
+        genuinely absent" from "the descriptor's getter raised
+        AttributeError" — it silently swallows BOTH into ``default``. Ensuring
+        a real resolver failure is NEVER a bare ``AttributeError`` makes "a
+        misconfigured family fails loudly" true at every call site, in every
+        order — not an accident of ``prepare_data()``'s unguarded read
+        happening to run first.
+        """
+        raise RuntimeError(f"{prop} resolution failed: {exc}") from exc
 
     @functools.cached_property
     def is_video_family(self) -> bool:
@@ -51,7 +70,10 @@ class PipelineBaseMixin(BaseTrainer):
             return False
         from app.engine.core.video_contract import resolve_video_profile
 
-        return bool(resolve_video_profile(self.definition).is_video)
+        try:
+            return bool(resolve_video_profile(self.definition).is_video)
+        except AttributeError as exc:
+            self._reraise_resolver_failure(exc, prop="is_video_family")
 
     @functools.cached_property
     def is_audio_family(self) -> bool:
@@ -69,8 +91,11 @@ class PipelineBaseMixin(BaseTrainer):
             return False
         from app.engine.core.archetypes import resolve_capabilities
 
-        caps = resolve_capabilities(self.definition)["capabilities"]
-        return bool(caps.get("is_audio_family", False))
+        try:
+            caps = resolve_capabilities(self.definition)["capabilities"]
+            return bool(caps.get("is_audio_family", False))
+        except AttributeError as exc:
+            self._reraise_resolver_failure(exc, prop="is_audio_family")
 
     # ── Auto-delegation of clobber-capable hooks ─────────────────────────
     #
@@ -402,11 +427,32 @@ class PipelineBaseMixin(BaseTrainer):
         seeding here reaches every downstream ``random``/``torch`` draw for
         the run. Absent/empty seed must NOT raise and must NOT touch global
         RNG state — existing unseeded configs keep today's behavior exactly.
+
+        ``config["seed"]`` is an untyped dict entry (no Pydantic-typed
+        run-level ``seed`` field validates it upstream), so a stray value
+        from a legacy job config or a hand-edited/imported template is a
+        reachable input. Seeding is an OPT-IN reproducibility nicety — it
+        must never be the reason a training run cannot start. A value that
+        cannot be interpreted as an integer (a non-numeric string, whitespace,
+        a float-shaped string like ``"12.5"``) is REJECTED with a warning
+        naming the offending value and the run proceeds UNSEEDED, exactly as
+        if no seed were configured — never a crash. Rejecting a float-shaped
+        string rather than truncating it is deliberate: truncating would
+        silently collapse visibly distinct configured values (``"12.5"`` vs
+        ``"12.9"``) onto the same seed, a worse surprise than an unseeded run.
         """
         seed = self.config.get("seed")
         if seed in (None, ""):
             return
-        seed = int(seed)
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            self.logger.warning(
+                "run_seed_invalid_ignored",
+                configured_seed=seed,
+                error=str(exc),
+            )
+            return
         random.seed(seed)
         torch.manual_seed(seed)  # also seeds CUDA (torch.cuda.manual_seed_all)
         self.logger.info("run_seed_applied", seed=seed)

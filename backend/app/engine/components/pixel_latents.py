@@ -60,7 +60,6 @@ class PixelPassthroughLatentManager:
         image_batch: torch.Tensor,
         ids: list[str],
         cache_dirs: list[str] | None = None,
-        mirror_dir: str | None = None,
         source_paths: list[str] | None = None,
         extra_keys: list[str] | None = None,
     ) -> torch.Tensor:

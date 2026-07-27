@@ -278,9 +278,7 @@ class TestControlVideoLatents5D:
         frame/fps windows must not collide in the content-addressed cache
         (mirrors the target video t{start}-{end} convention)."""
         ds = str(tmp_path / "ds")
-        lm = LatentManager(
-            FakeWanVAE(), device="cpu", cache_dir=str(tmp_path / "shared")
-        )
+        lm = LatentManager(FakeWanVAE(), device="cpu")
         h = _Harness(lm)
 
         item_a = _video_edit_item(

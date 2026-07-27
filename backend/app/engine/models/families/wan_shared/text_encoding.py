@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from torch import Tensor
 
 from app.engine.core.text_encoding import TextEncoderOutput
 
@@ -79,18 +78,3 @@ def encode_umt5(
         embeddings=hidden.to(dtype=dtype),
         attention_mask=attention_mask,
     )
-
-
-def encode_umt5_tensor(
-    text_encoder: Any,
-    tokenizer: Any,
-    captions: list[str],
-    device: torch.device,
-    dtype: torch.dtype,
-    *,
-    max_length: int = WAN_TE_MAX_LENGTH,
-) -> Tensor:
-    """Convenience: return only the masked ``[B, L, D]`` embedding tensor."""
-    return encode_umt5(
-        text_encoder, tokenizer, captions, device, dtype, max_length=max_length
-    ).embeddings

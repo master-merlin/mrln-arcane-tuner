@@ -209,17 +209,21 @@ class TestLatentManager:
         """Encode → save → load cycle produces identical latents."""
         vae = MockVAE()
         cache_dir = str(tmp_path / "cache")
-        lm = LatentManager(vae, device="cpu", cache_dir=cache_dir)
+        lm = LatentManager(vae, device="cpu")
 
         images = torch.randn(2, 3, 256, 256)
-        original = lm.encode_and_cache_batch(images, ["img1", "img2"])
-        
+        original = lm.encode_and_cache_batch(
+            images, ["img1", "img2"], cache_dirs=[cache_dir, cache_dir]
+        )
+
         # Verify files created
         assert os.path.exists(os.path.join(cache_dir, "img1.safetensors"))
         assert os.path.exists(os.path.join(cache_dir, "img2.safetensors"))
-        
+
         # Reload
-        loaded = lm.load_cached_latents(["img1", "img2"])
+        loaded = lm.load_cached_latents(
+            ["img1", "img2"], cache_dirs=[cache_dir, cache_dir]
+        )
         assert loaded is not None
         assert torch.allclose(original.cpu(), loaded.cpu())
 
@@ -227,9 +231,9 @@ class TestLatentManager:
         """load_cached_latents returns None if any file is missing."""
         vae = MockVAE()
         cache_dir = str(tmp_path / "cache")
-        lm = LatentManager(vae, device="cpu", cache_dir=cache_dir)
-        
-        result = lm.load_cached_latents(["nonexistent_img"])
+        lm = LatentManager(vae, device="cpu")
+
+        result = lm.load_cached_latents(["nonexistent_img"], cache_dirs=[cache_dir])
         assert result is None
 
     def test_cache_per_item_dirs(self, tmp_path):
@@ -252,15 +256,3 @@ class TestLatentManager:
         expected = os.path.join("/data/my_dataset", ".cache", "sdxl_base", "1.0.0", "latents", "original", "1024x1024")
         assert result == expected
 
-    def test_mirror_dir(self, tmp_path):
-        """Mirror directory receives a copy of cached latents."""
-        vae = MockVAE()
-        cache_dir = str(tmp_path / "primary")
-        mirror = str(tmp_path / "mirror")
-        lm = LatentManager(vae, device="cpu", cache_dir=cache_dir)
-        
-        images = torch.randn(1, 3, 256, 256)
-        lm.encode_and_cache_batch(images, ["test"], mirror_dir=mirror)
-        
-        assert os.path.exists(os.path.join(cache_dir, "test.safetensors"))
-        assert os.path.exists(os.path.join(mirror, "test.safetensors"))

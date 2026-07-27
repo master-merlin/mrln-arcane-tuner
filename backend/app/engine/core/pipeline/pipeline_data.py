@@ -1367,11 +1367,12 @@ class PipelineDataMixin:
         batch["control_ids"] = ctrl_ids
         batch["control_paths"] = ctrl_paths
         batch["control_cache_dirs"] = ctrl_cache_dirs
-        # Only attached when at least one slot carries a real discriminator —
-        # an all-image control batch stays byte-identical (no new batch key,
-        # no new kwarg reaching the latent manager in `_load_control_latents`).
-        if any(any(keys) for keys in ctrl_extra_keys):
-            batch["control_extra_keys"] = ctrl_extra_keys
+        # Attached unconditionally: LatentManager's extra_keys handling
+        # degrades an empty/absent discriminator to the legacy
+        # source-bytes-only hash (latents.py's REGRESSION CONTRACT), so an
+        # all-image control batch produces byte-identical cache filenames
+        # whether or not this key carries real (non-empty) entries.
+        batch["control_extra_keys"] = ctrl_extra_keys
 
     def _decode_control_spec(self, spec: tuple, transform=None) -> torch.Tensor:
         """Decode ONE control input from its plain-data recipe.
@@ -1433,19 +1434,16 @@ class PipelineDataMixin:
             ids = batch["control_ids"][slot_idx]
             paths = batch["control_paths"][slot_idx]
             extra_keys = slots_extra_keys[slot_idx] if slots_extra_keys else None
-            # Conditional kwarg: an image-only batch never passes `extra_keys`
-            # at all, so a latent-manager stub with the pre-BR1 signature
-            # (positional ids/cache_dirs + source_paths) keeps working.
-            key_kwargs = (
-                {"extra_keys": extra_keys} if extra_keys and any(extra_keys) else {}
-            )
+            # extra_keys is passed unconditionally — LatentManager accepts it
+            # with a default of None (latents.py:299/484), so there is no
+            # legacy stub signature left to shield from the kwarg.
             lat = None
             if use_cache:
                 lat = self.latent_manager.load_cached_latents(
                     ids,
                     cache_dirs,
                     source_paths=paths,
-                    **key_kwargs,
+                    extra_keys=extra_keys or None,
                 )
             if lat is None:
                 # Cache miss — decode the deferred slot now (video families);
@@ -1463,7 +1461,7 @@ class PipelineDataMixin:
                     ids=ids,
                     cache_dirs=cache_dirs if use_cache else None,
                     source_paths=paths,
-                    **key_kwargs,
+                    extra_keys=extra_keys or None,
                 )
             control_latents.append(lat.to(self.device, dtype=self.autocast_dtype))
         batch["control_latents"] = control_latents

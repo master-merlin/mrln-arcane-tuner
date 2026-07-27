@@ -498,8 +498,12 @@ class TestImageControlRegressionPin:
         assert "control_is_video" not in item
 
         batch = h._get_batch([item])
-        # No video control -> no new batch key at all (byte-identical dict).
-        assert "control_extra_keys" not in batch
+        # W5.T8: control_extra_keys is now attached unconditionally (no more
+        # "only if a slot has a real discriminator" gate) — but every entry
+        # is the empty-string sentinel for an image-only batch, which
+        # LatentManager treats identically to extra_keys being absent
+        # entirely (see test_cache_filename_matches_pre_br1_hash below).
+        assert batch["control_extra_keys"] == [[""]]
         assert batch["control_images"][0].ndim == 4  # [B, C, H, W], not 5D
 
     def test_cache_filename_matches_pre_br1_hash(self, tmp_path):
@@ -521,28 +525,37 @@ class TestImageControlRegressionPin:
         )  # no extra_key
         assert os.path.exists(os.path.join(cache_dir, expected_name))
 
-    def test_load_control_latents_calls_stub_without_extra_keys_kwarg(self, tmp_path):
-        """A latent-manager stub with the PRE-BR1 signature (no extra_keys
-        parameter at all) must keep working — proves the kwarg stays
-        conditional and is never passed for an image-only batch."""
+    def test_load_control_latents_passes_extra_keys_unconditionally(self, tmp_path):
+        """W5.T8: extra_keys is passed on EVERY call (image-only batches
+        included) — the caller no longer hides the kwarg behind a
+        conditional. The stub here carries the CURRENT LatentManager
+        signature (``extra_keys`` accepted with a default of None,
+        latents.py:299/484), not the retired pre-BR1 one."""
 
-        class _PreBR1Stub:
+        class _CurrentSignatureStub:
             def __init__(self):
                 self.load_calls = []
                 self.encode_calls = []
 
-            def load_cached_latents(self, ids, cache_dirs, source_paths=None):
-                self.load_calls.append((list(ids), list(cache_dirs)))
+            def load_cached_latents(
+                self, ids, cache_dirs, source_paths=None, extra_keys=None
+            ):
+                self.load_calls.append((list(ids), list(cache_dirs), extra_keys))
                 return None
 
             def encode_and_cache_batch(
-                self, images, ids=None, cache_dirs=None, source_paths=None
+                self,
+                images,
+                ids=None,
+                cache_dirs=None,
+                source_paths=None,
+                extra_keys=None,
             ):
-                self.encode_calls.append(list(ids or []))
+                self.encode_calls.append((list(ids or []), extra_keys))
                 return torch.ones(images.shape[0], 4, 1, 1)
 
         ds = str(tmp_path / "ds")
-        stub = _PreBR1Stub()
+        stub = _CurrentSignatureStub()
         h = _Harness(stub)
         item = _image_edit_item(ds, "a")
 
@@ -551,6 +564,10 @@ class TestImageControlRegressionPin:
 
         assert batch["control_latents"][0].shape[0] == 1
         assert stub.encode_calls
+        # extra_keys reached the stub as an explicit kwarg (never omitted),
+        # even though this image-only batch has no real discriminator.
+        _, passed_extra_keys = stub.encode_calls[0]
+        assert passed_extra_keys == [""]
 
 
 # ── Control decode deferral (warm cache skips the per-step clip decode) ────

@@ -83,17 +83,30 @@ class TrainingLogger:
     def log_step(
         self,
         step: int,
-        loss: float,
+        loss: float | None,
         lr: float = 0.0,
         extra: dict[str, Any] | None = None
     ):
-        """Log a single training step and accumulate loss history."""
+        """Log a single training step and accumulate loss history.
+
+        ``loss=None`` marks a step that produced no usable loss signal at
+        all (e.g. an all-NaN gradient-accumulation window that skipped
+        backward/optimizer entirely — see W2.T6). Progress/step/ETA
+        telemetry is still emitted so the Jobs screen keeps ticking instead
+        of appearing hung, but the step is deliberately excluded from the
+        loss chart, the in-memory loss history and the DB metrics buffer:
+        piping the raw NaN through would be silently sanitized to 0.0 by
+        the NaN-guard below, which would read on the chart as "loss
+        dropped to zero" — actively misleading for a step where no
+        gradient was ever computed. A real (possibly NaN/Inf) ``loss``
+        keeps behaving exactly as before.
+        """
         import math
-        
+
         # Sanitize NaN/Inf to prevent invalid JSON breaking the frontend
         def _safe(v: float) -> float:
             return 0.0 if (math.isnan(v) or math.isinf(v)) else v
-        
+
         current_time = time.time()
 
         # Adjust last_step_time if we just came out of a pause
@@ -134,12 +147,11 @@ class TrainingLogger:
         
         progress = int(((step + 1) / self.max_steps) * 100)
         progress = min(100, max(0, progress))
-        
-        safe_loss = _safe(float(loss))
+
+        safe_loss = _safe(float(loss)) if loss is not None else None
         safe_lr = _safe(float(lr)) if lr is not None else 0.0
-        
+
         log_data = {
-            "loss": safe_loss,
             "step": step + 1,
             "progress": progress,
             "learning_rate": safe_lr,
@@ -148,13 +160,15 @@ class TrainingLogger:
             "elapsed": int(total_elapsed),
             "eta": int(eta)
         }
-        
+        if safe_loss is not None:
+            log_data["loss"] = safe_loss
+
         if extra:
             for k, v in extra.items():
                 if isinstance(v, float):
                     extra[k] = _safe(v)
             log_data.update(extra)
-            
+
         # Backend structured log
         logger.info("step_progress", **log_data)
 
@@ -162,28 +176,34 @@ class TrainingLogger:
         if self.log_writer and hasattr(self.log_writer, "step"):
             self.log_writer.step(log_data)
 
-        # Accumulate loss history
-        self._loss_history.append({
-            "step": step + 1,
-            "loss": round(safe_loss, 6),
-            "lr": safe_lr,
-            "elapsed": int(total_elapsed),
-            "timestamp": int(current_time),
-        })
+        # Accumulate loss history / DB metrics only when a real loss was
+        # produced this step. A `loss=None` marker event (see docstring)
+        # still advances progress/ETA telemetry above without leaving a
+        # fake data point in the chart, history, or DB averaging.
+        if safe_loss is not None:
+            self._loss_history.append(
+                {
+                    "step": step + 1,
+                    "loss": round(safe_loss, 6),
+                    "lr": safe_lr,
+                    "elapsed": int(total_elapsed),
+                    "timestamp": int(current_time),
+                }
+            )
 
-        # Buffer metrics for DB flush
-        if self._job_id:
-            metric = {
-                "step": step + 1,
-                "loss": round(safe_loss, 6),
-                "lr": safe_lr,
-                "grad_norm": extra.get("grad_norm") if extra else None,
-                "timestep_mean": extra.get("timestep_mean") if extra else None,
-                "epoch": extra.get("epoch") if extra else None,
-            }
-            self._metrics_buffer.append(metric)
-            if len(self._metrics_buffer) >= _METRICS_FLUSH_INTERVAL:
-                self.flush_metrics()
+            # Buffer metrics for DB flush
+            if self._job_id:
+                metric = {
+                    "step": step + 1,
+                    "loss": round(safe_loss, 6),
+                    "lr": safe_lr,
+                    "grad_norm": extra.get("grad_norm") if extra else None,
+                    "timestep_mean": extra.get("timestep_mean") if extra else None,
+                    "epoch": extra.get("epoch") if extra else None,
+                }
+                self._metrics_buffer.append(metric)
+                if len(self._metrics_buffer) >= _METRICS_FLUSH_INTERVAL:
+                    self.flush_metrics()
 
     def save_loss_history(self, output_dir: str | None = None):
         """

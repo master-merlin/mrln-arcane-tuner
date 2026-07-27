@@ -602,6 +602,43 @@ class PipelineTrainMixin:
             if did_backward == 0:
                 self.logger.warning("nan_window_skipped", step=step)
                 self.optimizer.zero_grad(set_to_none=True)
+
+                # Observability only — must NOT affect training math (the
+                # optimizer/scheduler/EMA skip above is untouched). Before
+                # this, the ONLY trace of a fully-skipped window was the
+                # structured-logger warning above, which never reaches
+                # job_log.jsonl. From the Jobs screen this looked
+                # indistinguishable from a hung process: the step counter,
+                # loss chart, ETA and log tail all froze at the last good
+                # step until nan_count hit 10 and the run aborted (W2.T6
+                # review finding). Advance the DB step counter and emit a
+                # marker-only step event so the counter/ETA/log tail keep
+                # ticking while the loss chart stays honest.
+                #
+                # loss=None — not the raw NaN and not a fabricated 0.0.
+                # Piping the NaN through would be silently sanitized to 0.0
+                # by log_step's own NaN-guard, which would read on the
+                # chart as "loss dropped to zero": actively misleading for
+                # a step where no gradient was ever computed. `loss=None`
+                # tells log_step to skip the chart/history/DB-metrics
+                # entirely (see its docstring) while still emitting
+                # progress/step/ETA telemetry.
+                raw_lr = 0.0
+                if (
+                    hasattr(self.optimizer, "param_groups")
+                    and self.optimizer.param_groups
+                ):
+                    raw_lr = self.optimizer.param_groups[0].get("lr") or 0.0
+                self.logger_component.log_step(
+                    step,
+                    None,
+                    float(raw_lr),
+                    extra={
+                        "nan_window_skipped": True,
+                        "nan_count": self.nan_count,
+                    },
+                )
+                self._update_job_progress(step)
                 continue
 
             # 5. Optimizer step (after all accumulation steps)

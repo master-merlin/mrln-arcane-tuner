@@ -176,6 +176,56 @@ def test_all_nan_window_skips_optimizer_scheduler_ema(tmp_path):
     )
 
 
+# ── Test 4: fix-wave — observability must not go silent (review finding) ──
+
+
+def test_all_nan_window_still_advances_job_progress(tmp_path):
+    """The step counter that drives the Jobs screen 'Step X/Y' KPI must not
+    freeze during a NaN storm — ``_update_job_progress`` is the sole writer
+    of ``completed_steps`` and must fire even when the window is fully
+    skipped."""
+    t = _ScriptedTrainer(tmp_path, grad_accum=2, loss_plan=[_nan, _nan])
+    with patch.object(
+        PipelineTrainMixin, "_update_job_progress", autospec=True
+    ) as mock_progress:
+        _run(t)
+
+    mock_progress.assert_any_call(t, 0)
+
+    # The optimizer/scheduler/EMA-not-stepped property must remain intact —
+    # this is what the fix must NOT regress.
+    t.optimizer.step.assert_not_called()
+    t.lr_scheduler.step.assert_not_called()
+    t.ema_handler.step.assert_not_called()
+
+
+def test_all_nan_window_emits_marker_log_step(tmp_path):
+    """A NaN-skipped window must still reach the real Jobs-screen log
+    channel (``logger_component.log_step``, which feeds job_log.jsonl) with
+    a clear marker — not just the structured ``self.logger.warning`` that
+    never reaches the UI. The loss must NOT be a real/fabricated number:
+    ``loss=None`` is the contract that keeps the chart/DB honest (see
+    training_logger.log_step docstring)."""
+    t = _ScriptedTrainer(tmp_path, grad_accum=2, loss_plan=[_nan, _nan])
+    _run(t)
+
+    t.logger_component.log_step.assert_called_once()
+    args, kwargs = t.logger_component.log_step.call_args
+    step_arg = args[0]
+    loss_arg = args[1]
+    assert step_arg == 0
+    assert loss_arg is None, (
+        f"expected loss=None for a fully-NaN window, got {loss_arg!r}"
+    )
+    extra = kwargs.get("extra") or (args[3] if len(args) > 3 else {})
+    assert extra.get("nan_window_skipped") is True
+
+    # Optimizer/scheduler/EMA still untouched.
+    t.optimizer.step.assert_not_called()
+    t.lr_scheduler.step.assert_not_called()
+    t.ema_handler.step.assert_not_called()
+
+
 # ── Test 2: ALL-NaN window under AMP — scaler must be skipped too ─────────
 
 

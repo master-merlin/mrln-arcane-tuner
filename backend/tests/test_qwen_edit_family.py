@@ -276,6 +276,103 @@ class TestEditProcessorFallbackVisibility:
         assert emb.shape[0] == 1 and msk.shape[0] == 1  # behavior unchanged
 
 
+# ── VL-processor RESOLVED path (real bug: _extract_masked_hidden wiring) ──
+
+
+class _FakeBatchEncoding(dict):
+    """Minimal ``BatchEncoding`` stand-in — dict + a no-op ``.to(device)``."""
+
+    def to(self, device):
+        return self
+
+
+class _FakeQwenProcessor:
+    """Stub Qwen2VL processor: returns a dict of tensors, no real weights."""
+
+    def __init__(self, seq_len: int = 70):
+        self.seq_len = seq_len
+        self.calls: list[tuple] = []
+
+    def __call__(self, text, images, padding=True, return_tensors="pt"):
+        self.calls.append((text, images))
+        return _FakeBatchEncoding(
+            input_ids=torch.ones(1, self.seq_len, dtype=torch.long),
+            attention_mask=torch.ones(1, self.seq_len, dtype=torch.long),
+        )
+
+
+class _FakeQwenTextEncoder:
+    """Stub Qwen2.5-VL text encoder: returns fixed-width fake hidden states."""
+
+    def __init__(self, hidden_dim: int = 8):
+        self.hidden_dim = hidden_dim
+
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        pixel_values=None,
+        image_grid_thw=None,
+        output_hidden_states=True,
+    ):
+        b, seq_len = input_ids.shape
+        hidden = torch.randn(b, seq_len, self.hidden_dim)
+        return types.SimpleNamespace(hidden_states=[hidden])
+
+
+class TestEditExtractMaskedHiddenWiring:
+    """Pins the VL-conditioned path once a processor RESOLVES.
+
+    ``QwenImageEditTrainer._encode_text_with_control`` called
+    ``self._extract_masked_hidden(...)`` (trainer_edit.py), but that method
+    exists only as a ``@staticmethod`` on ``QwenImageDriver`` (driver.py) —
+    nowhere on the trainer's MRO. The fallback-only tests above
+    (``TestEditProcessorFallbackVisibility``) never reach this line because
+    they force ``processor is None``; this test builds the trainer WITH a
+    resolved processor so the real (buggy, pre-fix) line executes.
+    """
+
+    def _trainer_with_processor(self, hidden_dim: int = 8):
+        from app.engine.models.families.qwen_image.driver import QwenImageDriver
+
+        class _FakeDriver:
+            # The REAL staticmethod, exposed through a driver stand-in — the
+            # fix must delegate through ``self.driver``, not duplicate it.
+            _extract_masked_hidden = staticmethod(
+                QwenImageDriver._extract_masked_hidden
+            )
+
+        t = object.__new__(QwenImageEditTrainer)
+        t._processor_resolved = True
+        t._processor = _FakeQwenProcessor()
+        t._warned_no_processor = False
+        t._no_processor_reason = None
+        t.device = torch.device("cpu")
+        t.driver = _FakeDriver()
+        t.text_encoder = _FakeQwenTextEncoder(hidden_dim=hidden_dim)
+        return t
+
+    def test_resolved_processor_path_does_not_raise_attributeerror(self, tmp_path):
+        from PIL import Image as PILImage
+
+        control_path = tmp_path / "control.png"
+        PILImage.new("RGB", (8, 8)).save(control_path)
+
+        t = self._trainer_with_processor()
+
+        # Must not raise AttributeError ("... object has no attribute
+        # '_extract_masked_hidden'") — the real (pre-fix) crash the moment
+        # the processor resolves.
+        emb, mask = t._encode_text_with_control(
+            "a cat riding a bike",
+            str(control_path),
+            torch.float32,
+        )
+        assert emb.shape[0] == 1
+        assert mask.shape[0] == 1
+        assert emb.shape[-1] == 8  # hidden_dim carried through unchanged
+
+
 # ── Sampler precision + slicing contract ─────────────────────────────────
 
 

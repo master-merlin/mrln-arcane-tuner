@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import torch.nn as nn
 import structlog
 
@@ -48,6 +50,14 @@ class EMAHandler:
             if param.requires_grad:
                 self.shadow[name] = param.data.clone()
 
+        # Cache {name: param} for the shadowed subset only, once, so step()
+        # never needs to re-walk (and dict/name-test) every parameter of an
+        # up-to-14B PEFT-wrapped model — just its own already-cloned shadow
+        # keys. Kept correct across param-set changes by refreshing inside
+        # load_state_dict (see there), which re-walks anyway.
+        self._shadow_params: dict[str, nn.Parameter] = {}
+        self._refresh_shadow_param_cache()
+
         logger.info("ema_initialized", decay=decay, shadow_params=len(self.shadow))
 
     def _named_parameters(self):
@@ -56,19 +66,45 @@ class EMAHandler:
             return self._params.items()
         return self.model.named_parameters()
 
+    def _refresh_shadow_param_cache(self, param_dict: dict | None = None) -> None:
+        """(Re)build the ``{name: param}`` mapping for every shadowed name.
+
+        Walks ``_named_parameters()`` once, unless the caller already has
+        that walk's result (``load_state_dict`` passes its own ``param_dict``
+        in so refreshing here costs no extra walk). Must be called any time
+        ``self.shadow``'s key set could have changed — construction and
+        ``load_state_dict``'s key-mismatch handling (dual-expert
+        ``high.``/``low.``-prefixed path included).
+        """
+        if param_dict is None:
+            param_dict = dict(self._named_parameters())
+        self._shadow_params = {
+            name: param_dict[name] for name in self.shadow if name in param_dict
+        }
+
     def step(self):
         """
         Update shadow weights based on current model weights.
         Should be called after optimizer.step().
+
+        Iterates only the cached ``{name: param}`` mapping (shadow-sized,
+        not the full param set) and updates in place via ``lerp_`` — no
+        fresh tensor allocation per shadow param per step (the previous
+        ``(1-d)*p + d*s`` expression materialized one before ``copy_``,
+        churning the caching allocator's pool). Mathematically identical to
+        ``shadow = decay*shadow + (1-decay)*param``: ``lerp_(end, w)``
+        computes ``self + w*(end - self)`` which reduces to the same two
+        additive terms (pinned by a reference-formula test in
+        ``test_ema.py``).
         """
-        for name, param in self._named_parameters():
-            if name in self.shadow:
-                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
-                self.shadow[name].copy_(new_average)
+        for name, param in self._shadow_params.items():
+            self.shadow[name].lerp_(param.data, 1.0 - self.decay)
 
         self._step_count += 1
-        if self._step_count % 100 == 0:
-            # Log shadow weight stats periodically
+        if self._step_count % 100 == 0 and logger.isEnabledFor(logging.DEBUG):
+            # Gated: each .item() is a serial GPU sync. Computing hundreds of
+            # them (one per shadow tensor on a high-rank LoRA) purely to feed
+            # a DEBUG log line nobody reads at INFO level was pure waste.
             shadow_norms = [v.norm().item() for v in self.shadow.values()]
             if shadow_norms:
                 logger.debug(
@@ -157,8 +193,8 @@ class EMAHandler:
           parameter, log the same loud warning — a partial adopt must
           never be silent about which params it left uncovered.
         """
-        param_devices = {name: p.device for name, p in self._named_parameters()}
-        live_names = set(param_devices)
+        param_dict = dict(self._named_parameters())
+        live_names = set(param_dict)
         loaded_names = set(state_dict)
         overlap = live_names & loaded_names
 
@@ -172,12 +208,17 @@ class EMAHandler:
                 sample_live=sorted(live_names)[:5],
                 sample_loaded=sorted(loaded_names)[:5],
             )
+            # Shadow is untouched, but refresh anyway (reuses this walk,
+            # costs nothing extra) — keeps the cache correct even if the
+            # live Parameter objects themselves changed since __init__.
+            self._refresh_shadow_param_cache(param_dict)
             return
 
         merged = dict(self.shadow)
         for name in overlap:
-            merged[name] = state_dict[name].to(param_devices[name])
+            merged[name] = state_dict[name].to(param_dict[name].device)
         self.shadow = merged
+        self._refresh_shadow_param_cache(param_dict)
 
         missing_live = live_names - overlap
         if missing_live:

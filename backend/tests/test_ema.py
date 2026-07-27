@@ -24,6 +24,28 @@ class _RecordingLogger:
         pass
 
 
+class _LevelGatedLogger:
+    """Fake structlog logger honoring ``isEnabledFor`` (mirrors
+    ``structlog.stdlib.BoundLogger`` — the project's real wrapper class,
+    which proxies straight through to the underlying stdlib ``Logger``)."""
+
+    def __init__(self, debug_enabled: bool) -> None:
+        self._debug_enabled = debug_enabled
+        self.debug_calls: list[tuple[str, dict]] = []
+
+    def isEnabledFor(self, level: int) -> bool:  # noqa: N802 - matches stdlib API
+        return self._debug_enabled
+
+    def debug(self, event, **kw):
+        self.debug_calls.append((event, kw))
+
+    def info(self, event, **kw):
+        pass
+
+    def warning(self, event, **kw):
+        pass
+
+
 def _make_model():
     """Simple linear model for EMA testing."""
     m = nn.Linear(4, 2, bias=False)
@@ -70,6 +92,139 @@ class TestEMAStep:
         ema.step()
         ema.step()
         assert ema._step_count == 2
+
+
+class TestEMAStepEfficiency:
+    """W5.T2: cached {name: param} mapping + in-place lerp_ + gated telemetry.
+
+    ``step()`` used to walk ALL of ``_named_parameters()`` every call
+    (name/dict-membership test per tensor) and allocate a fresh tensor per
+    shadow param before ``copy_``. This pins: (1) the update is numerically
+    equivalent to the original ``(1-d)*p + d*s`` formula, (2) step() no
+    longer re-walks ``_named_parameters()`` at all (only the cached
+    shadow-sized mapping), (3) the periodic norm telemetry is gated behind
+    the logger's DEBUG level.
+    """
+
+    def test_step_matches_reference_formula(self):
+        # Non-power-of-two decay/values so floating-point reordering
+        # differences (if any) would actually show up, not cancel out.
+        torch.manual_seed(0)
+        model = _make_model()
+        nn.init.normal_(model.weight)
+        decay = 0.837
+        ema = EMAHandler(model, decay=decay)
+        original_shadow = ema.shadow["weight"].clone()
+
+        # Simulate an optimizer step moving the live param.
+        nn.init.normal_(model.weight, mean=5.0, std=2.0)
+        reference = (1.0 - decay) * model.weight.data + decay * original_shadow
+
+        ema.step()
+
+        # torch's lerp_ kernel reorders the arithmetic (self + w*(end-self))
+        # vs. the reference's (1-d)*p + d*s, so this is NOT bit-exact — but
+        # the deviation is pure float32-ULP rounding on O(1)-O(5) magnitude
+        # operands (empirically ~1e-7 absolute). Plain allclose's DEFAULT
+        # rtol is relative to the OUTPUT, which fails near an output's
+        # zero-crossing (rtol * ~0 ~= 0) even though the absolute error
+        # there is the same tiny ULP-level rounding as everywhere else — so
+        # pin with a fixed absolute tolerance sized to that rounding, not a
+        # size that would tolerate any real algebraic change (a genuine
+        # semantic bug would show O(0.1)+ deviation, ~1000x bigger).
+        assert torch.allclose(ema.shadow["weight"], reference, atol=1e-5, rtol=0)
+        # Confirm the assertion has teeth (not a degenerate always-true check).
+        assert not torch.allclose(
+            ema.shadow["weight"], reference + 1.0, atol=1e-5, rtol=0
+        )
+
+    def test_step_matches_reference_formula_dual_expert_prefixed(self):
+        """Same numeric pin, but through the W3.T10 dict-bound (dual-expert
+        prefixed-name) construction path — the trickiest path to keep
+        correct while caching per-name param references."""
+        torch.manual_seed(1)
+        high = nn.Linear(4, 2, bias=False)
+        low = nn.Linear(4, 2, bias=False)
+        nn.init.normal_(high.weight)
+        nn.init.normal_(low.weight)
+        decay = 0.712
+        ema = EMAHandler(
+            {"high.weight": high.weight, "low.weight": low.weight}, decay=decay
+        )
+        orig_high = ema.shadow["high.weight"].clone()
+        orig_low = ema.shadow["low.weight"].clone()
+
+        nn.init.normal_(high.weight, mean=3.0, std=1.5)
+        nn.init.normal_(low.weight, mean=-2.0, std=0.5)
+        ref_high = (1.0 - decay) * high.weight.data + decay * orig_high
+        ref_low = (1.0 - decay) * low.weight.data + decay * orig_low
+
+        ema.step()
+
+        assert torch.allclose(ema.shadow["high.weight"], ref_high, atol=1e-5, rtol=0)
+        assert torch.allclose(ema.shadow["low.weight"], ref_low, atol=1e-5, rtol=0)
+
+    def test_step_does_not_rewalk_named_parameters(self):
+        """The whole-model walk only happens at construction (and inside
+        load_state_dict); step() must use the cached mapping exclusively."""
+        model = _make_model()
+        ema = EMAHandler(model, decay=0.9)
+
+        calls = {"n": 0}
+        original = ema._named_parameters
+
+        def counting():
+            calls["n"] += 1
+            return original()
+
+        ema._named_parameters = counting
+
+        for _ in range(50):
+            ema.step()
+
+        assert calls["n"] == 0
+
+    def test_load_state_dict_refreshes_cache_after_rewalk(self):
+        """load_state_dict's own re-walk must refresh the cached mapping —
+        step() afterwards must still update the (possibly-rebound) params."""
+        model = _make_model()
+        ema = EMAHandler(model, decay=0.5)
+        ema.load_state_dict({"weight": torch.full((2, 4), 3.0)})
+
+        model.weight.data.fill_(0.0)
+        ema.step()
+        # shadow = 0.5*0.0 + 0.5*3.0 = 1.5 — proves the post-load_state_dict
+        # cache still points at the live "weight" param, not a stale/empty one.
+        assert torch.allclose(
+            ema.shadow["weight"], torch.full_like(model.weight.data, 1.5)
+        )
+
+    def test_step_telemetry_suppressed_below_debug_level(self, monkeypatch):
+        model = _make_model()
+        ema = EMAHandler(model, decay=0.9)
+
+        rec = _LevelGatedLogger(debug_enabled=False)
+        monkeypatch.setattr(ema_module, "logger", rec)
+
+        for _ in range(200):
+            ema.step()
+
+        assert rec.debug_calls == []
+
+    def test_step_telemetry_emitted_when_debug_enabled(self, monkeypatch):
+        model = _make_model()
+        ema = EMAHandler(model, decay=0.9)
+
+        rec = _LevelGatedLogger(debug_enabled=True)
+        monkeypatch.setattr(ema_module, "logger", rec)
+
+        for _ in range(100):
+            ema.step()
+
+        assert len(rec.debug_calls) == 1
+        event, kw = rec.debug_calls[0]
+        assert event == "ema_step"
+        assert kw["step_count"] == 100
 
 
 class TestStoreAndSwap:

@@ -45,7 +45,6 @@ from app.engine.core.text_encoding import TextEncoderOutput
 
 from .driver import Kandinsky5Driver, build_cu_seqlens, resolve_negative_prompt
 from .loader import Kandinsky5Loader
-from .saver import Kandinsky5Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -58,7 +57,6 @@ class Kandinsky5Trainer(GenericTrainingPipeline):
     def _setup_family(self) -> None:
         self.driver = Kandinsky5Driver(self.definition, self.device)
         self.loader = Kandinsky5Loader(self.device)
-        self.saver = Kandinsky5Saver()
 
     def _create_sampler(self):
         interval = int(self.config.get("sample_every_n_steps", 0))

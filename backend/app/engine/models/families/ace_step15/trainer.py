@@ -41,7 +41,6 @@ from app.engine.core.pipeline import GenericTrainingPipeline
 
 from .driver import AceStep15Driver
 from .loader import AceStep15Loader
-from .saver import AceStep15Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -58,7 +57,6 @@ class AceStep15Trainer(GenericTrainingPipeline):
     def _setup_family(self) -> None:
         self.driver = AceStep15Driver(self.definition, self.device)
         self.loader = AceStep15Loader(self.device)
-        self.saver = AceStep15Saver()
         # genre_ratio lives in the run config, not architecture_params — the
         # driver has no `self.config` (only definition + device, per the
         # house IModelDriver contract), so the trainer wires it explicitly.

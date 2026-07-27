@@ -27,7 +27,6 @@ from app.engine.core.text_encoding import TextEncoderOutput
 
 from .driver import Ltx2Driver
 from .loader import Ltx2Loader
-from .saver import Ltx2Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -67,7 +66,6 @@ class Ltx2Trainer(GenericTrainingPipeline):
         train_audio = self._resolve_train_audio()
         self.driver = Ltx2Driver(self.definition, self.device)
         self.loader = Ltx2Loader(self.device, train_audio=train_audio)
-        self.saver = Ltx2Saver()
         # Surface the resolved flag onto the driver so get_lora_targets,
         # compute_loss, etc. gate the audio sub-stream consistently even before
         # components are assigned (assign_components re-confirms it from arch).

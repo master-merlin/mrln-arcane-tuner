@@ -37,7 +37,6 @@ from app.engine.models.families.wan_shared.trainer_base import (
 from .driver import Wan22Driver
 from .expert_router import ExpertRouter
 from .loader import Wan22Loader
-from .saver import Wan22Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -69,7 +68,6 @@ class Wan22Trainer(
         self.loader = Wan22Loader(
             self.device, expert_mode=self.expert_mode, defer_second_expert=defer
         )
-        self.saver = Wan22Saver(mode=self.driver.mode)
         self._build_router()
 
     def _build_router(self) -> ExpertRouter:

@@ -30,7 +30,6 @@ from app.engine.core.pipeline import GenericTrainingPipeline
 
 from .driver import Hv15Driver
 from .loader import Hv15Loader
-from .saver import Hv15Saver
 
 logger = structlog.get_logger(__name__)
 
@@ -50,7 +49,6 @@ class Hv15Trainer(GenericTrainingPipeline):
     def _setup_family(self) -> None:
         self.driver = Hv15Driver(self.definition, self.device)
         self.loader = Hv15Loader(self.device)
-        self.saver = Hv15Saver(mode=self.driver.mode)
 
     def _create_sampler(self):
         interval = int(self.config.get("sample_every_n_steps", 0))

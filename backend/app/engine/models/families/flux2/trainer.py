@@ -235,17 +235,10 @@ class Flux2Trainer(GenericTrainingPipeline):
                 total=len(self.text_cache),
             )
         elif uncached_caps:
-            # TE was fully unloaded — fill with zeros
-            te_max_len = getattr(self.driver, 'te_max_length', 512)
-            concat_layers = getattr(self.driver, 'te_concat_layers', 3)
-            for orig_idx, cap in uncached_caps:
-                self.logger.error("text_encoder_unavailable", caption=cap[:50])
-                dummy = torch.zeros(
-                    1, te_max_len,
-                    4096 * concat_layers,
-                    dtype=dtype,
-                )
-                results[orig_idx] = dummy
+            raise RuntimeError(
+                "Text encoder was unloaded but encountered uncached caption(s): "
+                + ", ".join(cap[:50] for _, cap in uncached_caps)
+            )
 
         return torch.cat(
             [r.to(self.device, dtype=dtype) for r in results], dim=0

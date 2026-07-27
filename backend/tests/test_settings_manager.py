@@ -217,6 +217,111 @@ class TestModuleSettings:
         assert on_disk["application"]["backend_port"] == 8000
 
 
+# ── W4.T6: atomic writes + write lock + honest cache ─────────────────────
+
+
+class TestAtomicWriteAndLock:
+    """save() must never leave settings.json truncated/corrupt (it holds the
+    HF token and the jobs.auto_queue/auto_resume prefs the queue reads), and
+    concurrent update_module_settings callers must not lose each other's
+    writes."""
+
+    def test_save_survives_crash_mid_write(self, settings_file, monkeypatch):
+        """A crash partway through json.dump must leave the ORIGINAL file
+        content intact (atomic tmp-file + os.replace), not a truncated one."""
+        mgr = _make_manager(settings_file)
+        mgr.settings["custom"] = {"key": "before-crash"}
+        mgr.save()
+        with open(settings_file) as f:
+            original = f.read()
+
+        import json as json_module
+
+        def _boom(obj, fp, **kwargs):
+            fp.write('{"partial": true')  # simulate partial output
+            raise RuntimeError("boom mid-write")
+
+        monkeypatch.setattr(json_module, "dump", _boom)
+
+        mgr.settings["custom"] = {"key": "after-crash-attempt"}
+        mgr.save()  # must not raise, must not corrupt the real file
+
+        with open(settings_file) as f:
+            after = f.read()
+        assert after == original
+        assert not os.path.exists(settings_file + ".tmp")
+
+    def test_concurrent_update_module_settings_no_lost_update(self, settings_file):
+        """Two threads hammering update_module_settings on DIFFERENT modules
+        must both end up fully persisted — no lost update from an
+        unsynchronized load-merge-save race."""
+        import threading
+
+        mgr = _make_manager(settings_file)
+
+        def worker(module_name: str):
+            for i in range(100):
+                mgr.update_module_settings(module_name, {f"k{i}": i})
+
+        t1 = threading.Thread(target=worker, args=("mod_a",))
+        t2 = threading.Thread(target=worker, args=("mod_b",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        with open(settings_file) as f:
+            on_disk = json.load(f)
+        assert len(on_disk["mod_a"]) == 100
+        assert len(on_disk["mod_b"]) == 100
+        assert on_disk["mod_a"]["k99"] == 99
+        assert on_disk["mod_b"]["k99"] == 99
+
+    def test_get_module_settings_reads_disk_once_when_unchanged(
+        self, settings_file, monkeypatch,
+    ):
+        """get_module_settings must not re-read the file from disk on every
+        call — only when the on-disk mtime actually changed (external edit)."""
+        mgr = _make_manager(settings_file)
+        mgr.update_module_settings("ui", {"theme": "dark"})
+
+        open_calls = {"count": 0}
+        real_open = open
+
+        def _counting_open(*args, **kwargs):
+            open_calls["count"] += 1
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _counting_open)
+
+        first = mgr.get_module_settings("ui")
+        second = mgr.get_module_settings("ui")
+
+        assert first == second == {"theme": "dark"}
+        assert open_calls["count"] <= 1
+
+    def test_get_module_settings_reloads_after_external_edit(self, settings_file):
+        """An external writer touching settings.json (different mtime) must
+        be picked up — the cache must not go stale forever."""
+        import time as time_module
+
+        mgr = _make_manager(settings_file)
+        assert mgr.get_module_settings("ui") == {}
+
+        # Simulate an external process editing the file directly.
+        time_module.sleep(0.01)
+        with open(settings_file) as f:
+            data = json.load(f)
+        data["ui"] = {"theme": "light"}
+        with open(settings_file, "w") as f:
+            json.dump(data, f)
+        # Force a distinct mtime on filesystems with coarse resolution.
+        stat = os.stat(settings_file)
+        os.utime(settings_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        assert mgr.get_module_settings("ui") == {"theme": "light"}
+
+
 # ── Per-Model Param Validation ───────────────────────────────────────────
 
 

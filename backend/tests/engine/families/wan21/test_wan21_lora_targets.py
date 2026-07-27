@@ -1,18 +1,19 @@
 """WAN 2.1 LoRA-target tests.
 
-The driver returns the WAN self/cross-attn + ffn targets; I2V adds the image
-cross-attention projections (``add_k_proj`` / ``add_v_proj``). The actual
-``WanTransformerBlock`` module names are asserted to match the targets so PEFT's
-suffix matching will hit real modules.
+The driver returns the WAN self/cross-attn + ffn targets. T2V and I2V share
+the exact same pattern-default surface (W3.T9): the image cross-attention
+projections (``add_k_proj`` / ``add_v_proj``) are DEAD on wan21 i2v — nothing
+ever computes a CLIP image embedding to feed them (the loader no longer even
+loads the CLIP encoder), so targeting them trained nothing but zero-delta
+tensors and wasted optimizer slots. The actual ``WanTransformerBlock`` module
+names are asserted to match the shipped targets so PEFT's suffix matching
+will hit real modules.
 """
 
 import torch
 
 from app.engine.models.families.wan21.driver import Wan21Driver
-from app.engine.models.families.wan_shared.driver_base import (
-    WAN_I2V_EXTRA_LORA_TARGETS,
-    WAN_T2V_LORA_TARGETS,
-)
+from app.engine.models.families.wan_shared.driver_base import WAN_T2V_LORA_TARGETS
 
 
 class _Defn:
@@ -30,15 +31,14 @@ def test_t2v_targets():
     assert "attn2.add_v_proj" not in targets
 
 
-def test_i2v_targets_add_image_projections():
+def test_i2v_targets_match_t2v_no_dead_image_projections():
+    """I2V's pattern-default targets are IDENTICAL to t2v's (W3.T9) — the
+    image cross-attn projections are dead weight, not a real i2v feature."""
     driver = Wan21Driver(_Defn("i2v"), torch.device("cpu"))
     targets = driver.get_lora_targets()
-    for t in WAN_T2V_LORA_TARGETS:
-        assert t in targets
-    for t in WAN_I2V_EXTRA_LORA_TARGETS:
-        assert t in targets
-    assert "attn2.add_k_proj" in targets
-    assert "attn2.add_v_proj" in targets
+    assert set(targets) == set(WAN_T2V_LORA_TARGETS)
+    assert "attn2.add_k_proj" not in targets
+    assert "attn2.add_v_proj" not in targets
 
 
 def test_definition_targets_override_defaults():
@@ -57,7 +57,7 @@ def test_targets_match_real_wan_block_module_names():
     )
     module_names = {n for n, _ in blk.named_modules()}
 
-    for target in WAN_T2V_LORA_TARGETS + WAN_I2V_EXTRA_LORA_TARGETS:
+    for target in WAN_T2V_LORA_TARGETS:
         assert any(n == target or n.endswith("." + target) for n in module_names), (
             f"LoRA target {target!r} matches no module in WanTransformerBlock"
         )

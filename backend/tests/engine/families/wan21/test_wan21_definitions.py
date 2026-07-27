@@ -73,9 +73,11 @@ def test_i2v_definition_has_i2v_mode_and_image_encoder(registry, model_id):
     assert arch["transformer.in_channels"] == 36
     assert arch["image_encoder._class_name"] == "CLIPVisionModel"
     assert "image_encoder" in defn.detected_precision
-    # i2v LoRA targets include the image cross-attn projections.
-    assert "attn2.add_k_proj" in defn.lora_targetable_modules
-    assert "attn2.add_v_proj" in defn.lora_targetable_modules
+    # W3.T9: the image cross-attn LoRA targets are DEAD (nothing ever feeds
+    # a CLIP image embedding into the transformer — the loader no longer
+    # even loads the CLIP encoder) and are no longer shipped.
+    assert "attn2.add_k_proj" not in defn.lora_targetable_modules
+    assert "attn2.add_v_proj" not in defn.lora_targetable_modules
 
 
 @pytest.mark.parametrize("model_id", WAN_IDS)

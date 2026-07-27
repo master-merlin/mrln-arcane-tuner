@@ -99,10 +99,12 @@ Exemptions:
     extra ``x_embedder`` / ``final_layer2`` / ``t_embedder1`` heads legitimately
     create missing keys), so a byte-clean round-trip contract does not apply.
     Its hand-load already surfaces missing/unexpected keys via ``self.warnings``.
-  * ``_EXEMPT_COMPONENTS`` -- wan21 i2v ``image_encoder`` (open_clip ``.bin``
-    CLIP-ViT-H) and hunyuan_video15 i2v ``image_encoder`` (SiglipVisionModel):
-    VISION encoders, not text encoders, loaded from non-diffusers formats --
-    outside the B1 text-encoder bug class.
+  * ``_EXEMPT_COMPONENTS`` -- hunyuan_video15 i2v ``image_encoder``
+    (SiglipVisionModel): a VISION encoder, not a text encoder, loaded from a
+    non-diffusers format -- outside the B1 text-encoder bug class. (wan21 i2v
+    no longer loads a CLIP image encoder at all -- W3.T9 removed the dead
+    component: nothing ever fed its output into the transformer, so it was a
+    multi-GB download + host-RAM residency + load-time cost for zero effect.)
 """
 
 from __future__ import annotations
@@ -444,11 +446,10 @@ _EXEMPT_FAMILIES = {
 # a ``_Case``. Adding a NEW TE-like component to any family fails the coverage
 # guard until it is either given a ``_Case`` or listed here.
 _EXEMPT_COMPONENTS: dict[tuple[str, str], str] = {
-    ("wan21", "image_encoder"): (
-        "I2V conditioning VISION encoder (open_clip CLIP-ViT-H '.bin', declared "
-        "transformers.CLIPVisionModel) -- a vision tower, not a text encoder, and "
-        "loaded from a non-diffusers format; outside the B1 text-encoder bug class."
-    ),
+    # wan21 i2v no longer has an "image_encoder" manifest entry at all (W3.T9
+    # deleted the CLIPVisionModel/CLIPImageProcessor specs — the component was
+    # loaded but its output never reached the transformer), so there is
+    # nothing left here to exempt.
     ("hunyuan_video15", "image_encoder"): (
         "I2V conditioning VISION encoder (transformers.SiglipVisionModel) -- a "
         "vision tower, not a text encoder; outside the B1 text-encoder bug class."

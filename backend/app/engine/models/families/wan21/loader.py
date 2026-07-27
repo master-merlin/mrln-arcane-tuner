@@ -1,17 +1,18 @@
 """WAN 2.1 loader — manifest-driven via GenericComponentLoader.
 
-Components (diffusers-format repo):
+Components (diffusers-format repo), same for both T2V and I2V definitions:
 - ``tokenizer``     : ``AutoTokenizer`` (UMT5)
 - ``text_encoder``  : ``UMT5EncoderModel``
 - ``vae``           : ``AutoencoderKLWan`` — kept fp32 (temporal VAE precision)
 - ``unet``          : ``WanTransformer3DModel`` (the diffusion transformer)
 
-I2V definitions (``mode: i2v``) additionally load:
-- ``image_encoder`` : ``CLIPVisionModel``
-- ``image_processor``: ``CLIPImageProcessor``
-
-The image encoder/processor are only added when the definition is I2V, so T2V
-loads stay lean and never download CLIP weights.
+W3.T9: I2V definitions used to additionally load a ``CLIPVisionModel``
+``image_encoder`` + ``CLIPImageProcessor`` ``image_processor``, but NOTHING
+ever populated ``WanDriverBase.BATCH_IMAGE_EMBED`` from them (only
+``wan_shared/driver_base.py``'s ``forward_pass`` READ it, always as ``None`` —
+CLIP conditioning was a documented, never-implemented follow-up). Every
+wan21-i2v run was paying a multi-GB CLIP download + host-RAM residency + load
+time for a component whose output never reached the transformer. Removed.
 """
 
 from __future__ import annotations
@@ -28,10 +29,6 @@ class Wan21Loader(GenericComponentLoader):
     def get_component_manifest(
         self, definition: ModelDefinition
     ) -> list[ComponentSpec]:
-        arch = getattr(definition, "architecture_params", {}) or {}
-        mode = str(arch.get("mode", "t2v")).lower()
-        is_i2v = mode == "i2v"
-
         manifest: list[ComponentSpec] = [
             # -- Tokenizer (UMT5) --
             ComponentSpec(
@@ -68,25 +65,5 @@ class Wan21Loader(GenericComponentLoader):
                 fallback_to_root=True,
             ),
         ]
-
-        if is_i2v:
-            manifest += [
-                # -- CLIP vision image encoder (I2V conditioning) --
-                ComponentSpec(
-                    key="image_encoder",
-                    hf_class="transformers.CLIPVisionModel",
-                    subfolder="image_encoder",
-                    candidates=["image_encoder"],
-                    fallback_to_root=True,
-                ),
-                ComponentSpec(
-                    key="image_processor",
-                    hf_class="transformers.CLIPImageProcessor",
-                    subfolder="image_processor",
-                    candidates=["image_processor"],
-                    is_torch_model=False,
-                    fallback_to_root=True,
-                ),
-            ]
 
         return manifest

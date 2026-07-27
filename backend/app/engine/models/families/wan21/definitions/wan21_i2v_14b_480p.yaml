@@ -178,8 +178,6 @@ lora_targetable_modules:
 - attn2.to_k
 - attn2.to_v
 - attn2.to_out.0
-- attn2.add_k_proj
-- attn2.add_v_proj
 - ffn.net.0.proj
 - ffn.net.2
 block_topology: []

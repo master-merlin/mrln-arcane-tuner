@@ -399,6 +399,15 @@ class BerniniRTrainer(
             super()._configure_optimization(max_train_steps)
         finally:
             primary.parameters = original_parameters  # type: ignore[method-assign]
+
+        # Explicit start placement (Task W3.T2, mirrors Wan22Trainer): both
+        # experts now carry PEFT adapters and the optimizer holds both
+        # experts' params — place them on their configured devices BEFORE the
+        # training loop starts, independent of whether the step-0 baseline
+        # sampler runs (previously the ONLY thing that placed the deferred low
+        # expert).
+        driver.place_experts_for_start()
+
         self.logger.info(
             "bernini_r_optimizer_configured_dual", total_trainable=len(all_params)
         )

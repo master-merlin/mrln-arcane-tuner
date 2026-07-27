@@ -114,16 +114,46 @@ class BerniniRDriver(WanDriverBase):
         self.expert_mode = str(mode or "both").lower()
 
     def configure_swap_mode(self, mode: str) -> None:
-        """Set ``expert_swap_mode`` (``auto``/``swap``/``resident``)."""
-        self.swap_mode = str(mode or "resident").lower()
+        """Set ``expert_swap_mode`` (``auto``/``swap``/``resident``).
+
+        ``auto`` was documented as a resident-vs-swap VRAM probe, but no such
+        probe exists anywhere in this driver — it has always silently resolved
+        to ``resident`` with no signal that the "auto" choice was never
+        actually evaluated. Rather than keep lying, resolve it explicitly and
+        say so once (mirrors :class:`Wan22Driver`).
+        """
+        resolved = str(mode or "resident").lower()
+        if resolved == "auto":
+            self.logger.warning(
+                "expert_swap_auto_unimplemented",
+                message=(
+                    "expert_swap_mode='auto' has no resident-vs-swap VRAM "
+                    "probe implemented; resolving to 'resident' (both experts "
+                    "on GPU)."
+                ),
+            )
+            resolved = "resident"
+        self.swap_mode = resolved
 
     def _expert_model(self, expert: str) -> nn.Module | None:
         return self.transformer_high if expert == HIGH else self.transformer_low
 
     def _set_active(self, expert: str) -> None:
-        """Point ``self.transformer`` (the primary model) at ``expert``."""
+        """Point ``self.transformer`` (the primary model) at ``expert``.
+
+        Placement safety net (mirrors :class:`Wan22Driver._set_active`): in
+        ``resident`` mode both experts should already be on ``self.device``
+        via :meth:`place_experts_for_start`; this catches anything that
+        reaches here without that having run first, before it turns into a
+        device-mismatch ``RuntimeError`` mid-forward.
+        """
         self._active_expert = expert
-        self.transformer = self._expert_model(expert)
+        model = self._expert_model(expert)
+        if model is not None and self.swap_mode == "resident":
+            p = next(model.parameters(), None)
+            if p is not None and p.device != self.device:
+                model.to(self.device)
+        self.transformer = model
 
     @property
     def active_expert(self) -> str:

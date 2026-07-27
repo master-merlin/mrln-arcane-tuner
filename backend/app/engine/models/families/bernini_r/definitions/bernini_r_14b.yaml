@@ -56,7 +56,9 @@ defaults:
   # Dual-expert (MoE) training controls (mirrors wan22 T2V-A14B). ``both`` trains
   # both experts in one run (two LoRA files); ``high``/``low`` train one expert.
   expert_mode: both
-  expert_swap_mode: auto
+  # "auto" has no resident-vs-swap VRAM probe (Task W3.T2) — it silently
+  # behaved as "resident" anyway; ship the honest value.
+  expert_swap_mode: resident
   expert_switch_interval: 1
   # v2v inference defaults (upstream ``BerniniRendererPipeline.__call__`` /
   # ``GEN_Wanx22.sample()`` — recon §5).

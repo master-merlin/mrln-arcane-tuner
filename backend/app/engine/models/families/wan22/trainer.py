@@ -228,6 +228,20 @@ class Wan22Trainer(
         finally:
             primary.parameters = original_parameters  # type: ignore[method-assign]
 
+        # Explicit start placement (Task W3.T2): both experts now carry PEFT
+        # adapters and the optimizer holds both experts' params — place them
+        # on their configured devices BEFORE the training loop starts. This
+        # used to be a pure side effect of the step-0 baseline SAMPLER's
+        # device-ensure loop, which is skipped whenever sampling is disabled
+        # (sample_every_n_steps=0), declined (sample_before_training=False),
+        # raises (swallowed at the call site), or block-swapping is active —
+        # any of which left the deferred low expert CPU-resident until the
+        # first router flip hit it mid-forward (wave-3 audit 2026-07-26).
+        # Single-expert runs are unaffected: place_experts_for_start() no-ops
+        # on the missing expert.
+        driver: Wan22Driver = self.driver  # type: ignore[assignment]
+        driver.place_experts_for_start()
+
         self.logger.info(
             "wan22_optimizer_configured_dual",
             total_trainable=len(all_params),

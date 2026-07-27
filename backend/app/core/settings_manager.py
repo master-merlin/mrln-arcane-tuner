@@ -157,6 +157,18 @@ class SettingsManager:
                         os.remove(tmp_path)
                 except OSError:
                     pass
+                # The write never landed, so disk still holds the PRE-save
+                # content — but self.settings in memory now holds the change
+                # that failed to persist. Leaving _loaded_mtime_ns at its old
+                # value would make _is_cache_stale() report "fresh" (disk's
+                # mtime hasn't moved), so get_module_settings() would keep
+                # serving the unpersisted in-memory value until a process
+                # restart. Force the next read to reload from disk instead —
+                # this is reachable on Windows, where os.replace onto
+                # settings.json raises PermissionError while another process
+                # (e.g. the trainer subprocess, which reads settings through
+                # this same manager) holds it open.
+                self._loaded_mtime_ns = None
 
     def get_module_settings(self, module: str) -> dict[str, Any]:
         """Get settings for a specific module.

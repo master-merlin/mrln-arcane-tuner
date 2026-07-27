@@ -593,13 +593,22 @@ async def apply_project_import(
         def _apply() -> dict[str, Any]:
             try:
                 outer = zipfile.ZipFile(archive_path)
-                manifest = pportable.read_project_manifest(outer)
-            except ManifestError as exc:
-                raise HTTPException(400, str(exc)) from exc
             except zipfile.BadZipFile as exc:
                 raise HTTPException(400, "Archive is not a valid zip file.") from exc
 
+            # `outer` must be closed on EVERY path from here, including a
+            # ManifestError from read_project_manifest — opening it outside
+            # this `with` (as before) left the handle open when the manifest
+            # read raised, and on Windows a still-open handle turns the outer
+            # route's `Path(tmp.name).unlink(missing_ok=True)` cleanup into an
+            # unhandled PermissionError (missing_ok doesn't suppress it),
+            # turning a clean 400 into a 500 and leaking the temp archive.
             with outer:
+                try:
+                    manifest = pportable.read_project_manifest(outer)
+                except ManifestError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+
                 proj = manifest["project"]
                 name = proj_res.get("name") or proj.get("name") or "Imported Project"
                 on_conflict = proj_res.get("on_conflict")

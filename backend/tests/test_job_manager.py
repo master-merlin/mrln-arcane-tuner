@@ -146,6 +146,53 @@ class TestJobCRUD:
         mock_tree.assert_not_called()
 
 
+class TestForceDeleteAdvancesQueue:
+    """W4 finding 2: a force-delete of a RUNNING/PAUSED job kills its
+    process tree and genuinely frees the GPU — the exact same effect as
+    stop_job's kill. stop_job schedules a queue advance right after (with an
+    explicit comment that skipping it "strands every queued job in
+    pending"); delete_job did not, so a force-delete left the queue idle
+    until a manual Start even with auto-queue enabled and other jobs
+    PENDING. Fix mirrors stop_job's placement/reasoning."""
+
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345])
+    @patch.object(JobManager, "schedule_advance_queue")
+    def test_force_delete_running_job_advances_queue(self, mock_advance, _mock_tree):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+
+        mgr.delete_job(job.id, force=True)
+
+        mock_advance.assert_called_once()
+
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345])
+    @patch.object(JobManager, "schedule_advance_queue")
+    def test_force_delete_paused_job_advances_queue(self, mock_advance, _mock_tree):
+        """PAUSED still holds VRAM — same guard/fix as RUNNING."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.PAUSED
+        job.pid = 12345
+
+        mgr.delete_job(job.id, force=True)
+
+        mock_advance.assert_called_once()
+
+    @patch.object(JobManager, "schedule_advance_queue")
+    def test_delete_pending_job_does_not_advance_queue(self, mock_advance):
+        """A PENDING delete frees nothing (the job never held the GPU) —
+        matches stop_job, which only advances after actually stopping an
+        active job."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+
+        mgr.delete_job(job.id)
+
+        mock_advance.assert_not_called()
+
+
 # ── Set Loop ─────────────────────────────────────────────────────────────
 
 
@@ -1449,6 +1496,126 @@ class TestStartJobPreflightBroadcastFailureMarksFailed:
         mock_pm.get_plugin.return_value.start_training.assert_not_called()
 
         assert mgr._claim_next_pending() == other.id
+
+
+class TestStartJobAbortsWhenDeletedMidLaunch:
+    """W4 finding 1: a job force-deleted while start_job is mid-launch used
+    to orphan a live GPU-holding trainer. The whole base-model preflight
+    download (``_preflight_download``, which can take minutes for a large
+    model) runs while the UI still shows the card RUNNING — so a
+    ``force=true`` delete lands, removes the job from ``_jobs`` and the DB,
+    and returns 200 while ``start_job`` keeps going regardless: it spawns
+    the real trainer, persists a "running" row for a deleted job (0 rows
+    affected), and starts a PID watchdog that immediately no-ops
+    (``if not job: break``). The result is a live trainer invisible to
+    ``_claim_next_pending``, so auto-queue can launch a SECOND trainer on
+    top of it.
+
+    Fix: re-check registry membership (``self.get_job(job_id) is job``)
+    right after the preflight download and right after ``start_training``
+    returns — the two points where a concurrent delete can complete during
+    the real-world race windows (a multi-minute download; the
+    launcher/redirector spawn on Windows)."""
+
+    def _fake_definition(self):
+        """spec=ModelDefinition mock with a real registered family — see
+        TestStartJobPreflightDownload._fake_definition for why."""
+        registry.discover_families()
+        fake_def = MagicMock(spec=ModelDefinition)
+        fake_def.family = "sdxl"
+        fake_def.architecture_params = {}
+        fake_def.control_inputs = 0
+        fake_def.defaults = {}
+        return fake_def
+
+    @patch.object(JobManager, "_start_pid_watchdog")
+    @patch("app.core.job_manager.LogTailer")
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_deleted_during_preflight_download_aborts_before_spawning_trainer(
+        self, mock_pm, mock_get_def, mock_prefetch, _mock_tailer, mock_watchdog, tmp_path,
+    ):
+        """A force=true delete can land while the (possibly multi-minute)
+        base-model preflight download is in flight. start_job must notice
+        the job is gone BEFORE spawning the real trainer subprocess —
+        otherwise a live VRAM-holding process is orphaned outside the
+        registry, invisible to _claim_next_pending."""
+        mgr = JobManager()
+        mock_get_def.return_value = self._fake_definition()
+        plugin = MagicMock()
+        plugin.start_training.return_value = MagicMock(pid=4242)
+        mock_pm.get_plugin.return_value = plugin
+
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="delmid1"),
+        )
+
+        def fake_prefetch(definition):
+            # Simulate a concurrent force-delete completing while this
+            # (possibly multi-minute) download is in flight.
+            with mgr._lock:
+                mgr._jobs.pop(job.id, None)
+
+        mock_prefetch.side_effect = fake_prefetch
+
+        persisted = []
+        with patch.object(
+            mgr, "_persist_status",
+            side_effect=lambda jid, status, **kw: persisted.append(status),
+        ):
+            mgr.start_job(job.id)  # must NOT raise
+
+        plugin.start_training.assert_not_called()
+        mock_watchdog.assert_not_called()
+        assert "running" not in persisted
+
+    @patch.object(JobManager, "_terminate_process_tree")
+    @patch.object(JobManager, "_start_pid_watchdog")
+    @patch("app.core.job_manager.LogTailer")
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_deleted_while_start_training_runs_kills_the_spawned_process(
+        self, mock_pm, mock_get_def, mock_prefetch, _mock_tailer, mock_watchdog,
+        mock_terminate, tmp_path,
+    ):
+        """A concurrent delete can also complete WHILE plugin.start_training
+        is spawning the launcher (the Windows base-interpreter redirect
+        takes real time). If the job is gone by the time start_training
+        returns, the just-spawned process must be killed immediately instead
+        of being handed a watchdog/persisted status — otherwise it's a live
+        GPU-holding orphan the registry no longer knows about."""
+        mgr = JobManager()
+        mock_get_def.return_value = self._fake_definition()
+        plugin = MagicMock()
+
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="delmid2"),
+        )
+
+        def fake_start_training(config):
+            # Simulate a concurrent force-delete completing AFTER the
+            # process already exists but before start_job notices.
+            with mgr._lock:
+                mgr._jobs.pop(job.id, None)
+            proc = MagicMock()
+            proc.pid = 9999
+            return proc
+
+        plugin.start_training.side_effect = fake_start_training
+        mock_pm.get_plugin.return_value = plugin
+
+        persisted = []
+        with patch.object(
+            mgr, "_persist_status",
+            side_effect=lambda jid, status, **kw: persisted.append(status),
+        ):
+            mgr.start_job(job.id)  # must NOT raise
+
+        mock_terminate.assert_called_once_with(9999)
+        mock_watchdog.assert_not_called()
+        assert "running" not in persisted
 
 
 class TestAutoQueue:

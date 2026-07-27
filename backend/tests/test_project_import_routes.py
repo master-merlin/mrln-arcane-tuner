@@ -1,6 +1,7 @@
 """Route tests for project import (plan + apply)."""
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -123,6 +124,41 @@ def test_plan_rejects_non_project_zip(client):
     bad = write_manifest_zip({"format_version": 1, "kind": "template"}).getvalue()
     resp = _upload(client, "/api/projects/import/plan", bad)
     assert resp.status_code == 400
+
+
+def test_apply_rejects_non_project_zip_and_cleans_up_temp_file(client, monkeypatch):
+    """W4 finding 4: ``zipfile.ZipFile(archive_path)`` is opened OUTSIDE any
+    ``with``/try-finally in ``_apply``'s inner closure; when
+    ``read_project_manifest`` raises ``ManifestError`` for a non-project
+    archive, the ``outer`` handle is never closed. On Windows the still-open
+    handle turns the outer route's ``Path(tmp.name).unlink(missing_ok=True)``
+    cleanup into a ``PermissionError`` (sharing violation) — which
+    ``missing_ok`` does NOT suppress — so the clean 400 becomes an unhandled
+    500 and the temp archive leaks permanently. Assert both the status code
+    AND that the temp file the route created no longer exists afterward."""
+    import tempfile as tempfile_module
+
+    from app.api import project_routes
+
+    created: list[str] = []
+    real_ntf = tempfile_module.NamedTemporaryFile
+
+    def _spy_ntf(*args, **kwargs):
+        f = real_ntf(*args, **kwargs)
+        created.append(f.name)
+        return f
+
+    monkeypatch.setattr(project_routes.tempfile, "NamedTemporaryFile", _spy_ntf)
+
+    bad = write_manifest_zip({"format_version": 1, "kind": "template"}).getvalue()
+    resp = _apply(client, bad)
+
+    assert resp.status_code == 400
+    assert created, "expected apply_project_import to create a temp archive"
+    assert not os.path.exists(created[0]), (
+        "leaked temp archive: outer ZipFile was never closed on the "
+        "ManifestError path, so Windows refused the unlink"
+    )
 
 
 def _apply(client, zip_bytes, resolutions=None):

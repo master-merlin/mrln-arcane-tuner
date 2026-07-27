@@ -763,6 +763,7 @@ class JobManager:
         :meth:`stop_job` performs) before removing the job.
         """
         job = self.get_job(job_id)
+        freed_gpu = False
         if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
             if not force:
                 raise JobConflictError(
@@ -776,6 +777,7 @@ class JobManager:
                     root_pid=job.pid,
                     killed_pids=killed,
                 )
+            freed_gpu = True
 
         self._auto_resume_state.pop(job_id, None)
         self._stop_tailer(job_id)
@@ -796,6 +798,16 @@ class JobManager:
                 ),
                 loop,
             )
+
+        # The GPU is now free (a force-delete just killed the trainer that
+        # was holding it) — advance the queue so the next pending job
+        # auto-starts, matching stop_job's placement/reasoning
+        # (job_manager.py's stop_job, a few hundred lines below). Without
+        # this a force-delete strands every queued job in "pending" until a
+        # manual Start, even with auto-queue enabled. (No-op when auto-queue
+        # is off, another job is still active, or nothing is pending.)
+        if freed_gpu:
+            self.schedule_advance_queue()
 
     # ── Log Tailer Dispatcher ────────────────────────────────────────
 
@@ -1323,12 +1335,49 @@ class JobManager:
                     )
                 self._preflight_download(job)
 
+                # A concurrent delete_job(force=True) can complete while the
+                # (possibly multi-minute) download above was in flight — the
+                # UI shows the card RUNNING for that whole window, so the
+                # delete needs no special timing to race here. If the job is
+                # no longer the one this registry entry points at, a real
+                # trainer must NOT be spawned for it: launching now would
+                # create a live VRAM-holding process invisible to
+                # _claim_next_pending (the job is gone from _jobs), letting
+                # auto-queue launch a second trainer on top of it. Return
+                # cleanly — no exception, no persist, no watchdog — since the
+                # delete already removed the DB row and broadcast the
+                # deletion.
+                if self.get_job(job_id) is not job:
+                    logger.warning(
+                        "start_job_aborted_deleted_during_preflight",
+                        job_id=job_id,
+                    )
+                    return
+
             if clear_stale_signal:
                 from app.engine.components.signal_manager import TrainingSignalManager
 
                 TrainingSignalManager(self._get_job_output_dir(job)).clear_signal()
 
             process = plugin.start_training(job.config)
+
+            # Same race, later window: the job may have been deleted while
+            # start_training() itself was spawning the subprocess (the
+            # Windows base-interpreter redirect launcher takes real time).
+            # Kill what we just spawned immediately instead of persisting a
+            # "running" status / starting a watchdog for a job the registry
+            # no longer knows about — otherwise this is a live GPU-holding
+            # orphan, exactly like the preflight-window case above.
+            if self.get_job(job_id) is not job:
+                pid = getattr(process, "pid", None)
+                killed = self._terminate_process_tree(pid)
+                logger.warning(
+                    "start_job_aborted_deleted_after_spawn",
+                    job_id=job_id,
+                    pid=pid,
+                    killed_pids=killed,
+                )
+                return
 
             job.status = JobStatus.RUNNING
             if job.started_at is None:

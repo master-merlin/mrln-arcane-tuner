@@ -300,6 +300,43 @@ class TestAtomicWriteAndLock:
         assert first == second == {"theme": "dark"}
         assert open_calls["count"] <= 1
 
+    def test_failed_save_forces_reload_on_next_read(self, settings_file, monkeypatch):
+        """W4 finding 3: a failed save (e.g. ``os.replace`` raising
+        PermissionError because another process — such as the trainer
+        subprocess, which reads settings through this same manager — holds
+        settings.json open, a real Windows scenario) must not leave the
+        in-memory dict silently diverged from the untouched on-disk file.
+        Pre-fix, the except branch left ``_loaded_mtime_ns`` at its pre-save
+        value (still matching disk, since disk was never touched), so
+        ``_is_cache_stale()`` returned False and ``get_module_settings`` kept
+        serving the unpersisted in-memory change until a process restart.
+        The next read must notice the save never landed and re-load from
+        disk instead."""
+        mgr = _make_manager(settings_file)
+        mgr.update_module_settings("jobs", {"auto_queue": False})
+
+        def _boom(_src, _dst):
+            raise PermissionError(
+                "The process cannot access the file because it is being "
+                "used by another process"
+            )
+
+        monkeypatch.setattr(os, "replace", _boom)
+
+        # Mutate in-memory and attempt to persist it — the patched os.replace
+        # makes this fail, but save() must swallow the error (not raise).
+        mgr.settings["jobs"]["auto_queue"] = True
+        mgr.save()
+
+        # Disk still has the last successfully-persisted value.
+        with open(settings_file) as f:
+            on_disk = json.load(f)
+        assert on_disk["jobs"]["auto_queue"] is False
+
+        # The next read must re-load from disk (discarding the unpersisted
+        # in-memory True) instead of serving the stale cache.
+        assert mgr.get_module_settings("jobs")["auto_queue"] is False
+
     def test_get_module_settings_reloads_after_external_edit(self, settings_file):
         """An external writer touching settings.json (different mtime) must
         be picked up — the cache must not go stale forever."""

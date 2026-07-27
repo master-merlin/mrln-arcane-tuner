@@ -808,7 +808,11 @@ export class TrainingJobQueueComponent implements OnInit {
         // (row disappears from store.entities() this tick), the effect above
         // prunes our local jobs/historicalJobs signals so the template
         // re-renders immediately. JobStore handles rollback + toast on failure.
-        void this.jobStore.deleteJob(id);
+        // force=true for an active (running/pending/paused) job: the confirm
+        // message above already tells the user this stops the run — the
+        // backend refuses to delete a RUNNING/PAUSED job otherwise (409),
+        // to stop a blind caller from orphaning a GPU-zombie trainer.
+        void this.jobStore.deleteJob(id, active);
       },
     });
   }

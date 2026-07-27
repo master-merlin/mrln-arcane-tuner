@@ -66,7 +66,7 @@ describe('JobStore', () => {
         // Should be immediate — signal updates synchronously
         expect(store.entities().map(j => j.id)).toEqual(['b']);
         await p;
-        expect(api.deleteJob).toHaveBeenCalledWith('a');
+        expect(api.deleteJob).toHaveBeenCalledWith('a', false);
     });
 
     it('deleteJob rolls back on API failure', async () => {

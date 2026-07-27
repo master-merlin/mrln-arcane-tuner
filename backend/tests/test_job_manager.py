@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.core.job import Job, JobStatus
-from app.core.job_manager import JobManager
+from app.core.job_manager import JobManager, JobConflictError
 from app.engine.core.definitions import ModelDefinition
 from app.engine.models.registry import registry
 
@@ -90,6 +90,107 @@ class TestJobCRUD:
         """delete_job for unknown ID should not raise."""
         mgr = JobManager()
         mgr.delete_job("nonexistent")  # Should not raise
+
+    def test_delete_running_job_without_force_raises_conflict(self):
+        """delete_job on a RUNNING job with force=False must refuse — the job
+        survives and its trainer subprocess is left alone (no GPU zombie)."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+
+        with pytest.raises(JobConflictError):
+            mgr.delete_job(job.id)
+
+        assert mgr.get_job(job.id) is not None
+        assert mgr.get_job(job.id).status == JobStatus.RUNNING
+
+    def test_delete_paused_job_without_force_raises_conflict(self):
+        """A PAUSED job still holds VRAM — same guard as RUNNING."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.PAUSED
+        job.pid = 12345
+
+        with pytest.raises(JobConflictError):
+            mgr.delete_job(job.id)
+
+        assert mgr.get_job(job.id) is not None
+
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345, 67890])
+    def test_delete_running_job_with_force_kills_tree_first(self, mock_tree):
+        """force=True kills the process tree (the exact zombie stop_job kills)
+        BEFORE removing the job, and drops any auto-resume bookkeeping —
+        otherwise an unowned trainer keeps holding VRAM and the single-GPU
+        guard sees the GPU as free, letting auto-queue double-launch."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+        mgr._auto_resume_state[job.id] = {"total": 1}
+
+        mgr.delete_job(job.id, force=True)
+
+        mock_tree.assert_called_once_with(12345)
+        assert mgr.get_job(job.id) is None
+        assert job.id not in mgr._auto_resume_state
+
+    @patch.object(JobManager, "_terminate_process_tree")
+    def test_delete_pending_job_needs_no_force(self, mock_tree):
+        """A PENDING (not yet launched) job has no process to kill — delete
+        must succeed without force and must not attempt a kill."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        mgr.delete_job(job.id)
+        assert mgr.get_job(job.id) is None
+        mock_tree.assert_not_called()
+
+
+class TestForceDeleteAdvancesQueue:
+    """W4 finding 2: a force-delete of a RUNNING/PAUSED job kills its
+    process tree and genuinely frees the GPU — the exact same effect as
+    stop_job's kill. stop_job schedules a queue advance right after (with an
+    explicit comment that skipping it "strands every queued job in
+    pending"); delete_job did not, so a force-delete left the queue idle
+    until a manual Start even with auto-queue enabled and other jobs
+    PENDING. Fix mirrors stop_job's placement/reasoning."""
+
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345])
+    @patch.object(JobManager, "schedule_advance_queue")
+    def test_force_delete_running_job_advances_queue(self, mock_advance, _mock_tree):
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        job.pid = 12345
+
+        mgr.delete_job(job.id, force=True)
+
+        mock_advance.assert_called_once()
+
+    @patch.object(JobManager, "_terminate_process_tree", return_value=[12345])
+    @patch.object(JobManager, "schedule_advance_queue")
+    def test_force_delete_paused_job_advances_queue(self, mock_advance, _mock_tree):
+        """PAUSED still holds VRAM — same guard/fix as RUNNING."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.PAUSED
+        job.pid = 12345
+
+        mgr.delete_job(job.id, force=True)
+
+        mock_advance.assert_called_once()
+
+    @patch.object(JobManager, "schedule_advance_queue")
+    def test_delete_pending_job_does_not_advance_queue(self, mock_advance):
+        """A PENDING delete frees nothing (the job never held the GPU) —
+        matches stop_job, which only advances after actually stopping an
+        active job."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+
+        mgr.delete_job(job.id)
+
+        mock_advance.assert_not_called()
 
 
 # ── Set Loop ─────────────────────────────────────────────────────────────
@@ -795,6 +896,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_populates_jobs(self, MockRepo):
         """load_from_db should hydrate _jobs from DB rows."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-1",
@@ -820,6 +922,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_running_demoted_to_stopped(self, MockRepo):
         """Jobs that were running at shutdown should be marked stopped."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-run",
@@ -842,6 +945,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_paused_queued_for_relaunch(self, MockRepo):
         """Paused jobs whose process is dead are loaded as PENDING and queued for relaunch."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "db-job-paused",
@@ -866,6 +970,7 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_existing_jobs_not_overwritten(self, MockRepo):
         """Live in-memory jobs should not be replaced by DB rows."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "live-job",
@@ -893,11 +998,81 @@ class TestLoadFromDB:
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_handles_exception_gracefully(self, MockRepo):
         """load_from_db should not crash if the DB is unavailable."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.side_effect = Exception("DB locked")
         mgr = JobManager()
         mgr.load_from_db()  # Should not raise
 
         assert mgr.list_jobs() == []
+
+
+class TestLoadFromDbActiveStatusHydration:
+    """T4: restart hydration must never strand an active job outside the
+    ``list_recent`` 200-row recency window.
+
+    Uses a REAL, isolated DatabaseEngine/JobHistoryRepository (not mocked) so
+    the actual ``ORDER BY created_at DESC LIMIT 200`` semantics are exercised
+    — the bug is specifically about that SQL window dropping an old row, so a
+    mock-only test wouldn't prove the fix.
+    """
+
+    @pytest.fixture()
+    def isolated_db(self, tmp_path):
+        """Swap the DatabaseEngine singleton for a private tmp-file DB for the
+        duration of one test, so this test's rows never mix with the shared
+        session-scoped test DB (``conftest.py::_isolate_test_db``) that other
+        tests' ``create_job`` calls also write into."""
+        from app.core.db.engine import DatabaseEngine
+
+        old_instance = DatabaseEngine._instance
+        engine = DatabaseEngine(db_path=str(tmp_path / "t4_isolated.db"))
+        engine.initialize()
+        DatabaseEngine._instance = engine
+        yield engine
+        engine.close()
+        DatabaseEngine._instance = old_instance
+
+    def test_old_pending_job_survives_the_200_row_recency_window(self, isolated_db):
+        from app.core.db.repositories.job_repo import JobHistoryRepository
+
+        repo = JobHistoryRepository()
+
+        old_pending_id = "old-pending-job"
+        repo.create(
+            {
+                "id": old_pending_id,
+                "lora_name": "old",
+                "definition_id": "flux/dev",
+                "status": "pending",
+                "config": {},
+                "created_at": 1.0,  # the oldest row in the table
+            }
+        )
+
+        # 201 terminal rows, ALL newer than the pending job — guarantees a
+        # plain `list_recent(limit=200)` window excludes it (only 200 slots,
+        # 201 newer candidates).
+        for i in range(201):
+            repo.create(
+                {
+                    "id": f"terminal-{i}",
+                    "lora_name": f"t{i}",
+                    "definition_id": "flux/dev",
+                    "status": "completed",
+                    "config": {},
+                    "created_at": 1000.0 + i,
+                }
+            )
+
+        mgr = JobManager()
+        mgr.load_from_db()
+
+        hydrated = mgr.get_job(old_pending_id)
+        assert hydrated is not None, (
+            "a pending job older than the 200-row recency window must still "
+            "be hydrated — otherwise it's invisible to the queue forever"
+        )
+        assert hydrated.status == JobStatus.PENDING
 
 
 class TestFreshRestart:
@@ -1047,6 +1222,98 @@ class TestStartJobClearsStaleSignal:
         assert os.path.exists(sig), "intentional pause signal must survive recovery launch"
 
 
+class TestStartJobLaunchFailureMarksFailed:
+    """Any exception during launch must reset the job to FAILED (T3).
+
+    Before the fix, only ``except (OSError, ValueError, RuntimeError)``
+    reset the job — a KeyError/TypeError from a bad config, or an OSError
+    raised by ``clear_stale_signal`` (which sat OUTSIDE the try), left the
+    job stuck RUNNING with ``pid=None``. ``_reconcile_active_jobs``
+    deliberately skips pid-less jobs ("possibly mid-launch"), so that phantom
+    blocks the single-GPU queue until a backend restart.
+    """
+
+    def _mgr_with_job(self, tmp_path):
+        mgr = JobManager()
+        job = mgr.create_job(
+            "standard", _make_config(output_dir=str(tmp_path), lora_name="boom")
+        )
+        return mgr, job
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_oserror_from_start_training_marks_failed(self, mock_pm, tmp_path):
+        """Regression guard: the pre-existing OSError handling must still
+        mark FAILED, persist, and re-raise exactly as before."""
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = OSError("boom")
+
+        with pytest.raises(OSError):
+            mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+        assert job.error == "boom"
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_keyerror_from_start_training_marks_failed(self, mock_pm, tmp_path):
+        """A non-OSError/ValueError/RuntimeError exception (e.g. a bad-config
+        KeyError) must ALSO reset the job to FAILED instead of stranding it
+        RUNNING with pid=None."""
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = KeyError("boom")
+
+        with pytest.raises(KeyError):
+            mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+        assert job.pid is None
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_typeerror_from_start_training_marks_failed(self, mock_pm, tmp_path):
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = TypeError("boom")
+
+        with pytest.raises(TypeError):
+            mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_launch_failure_does_not_block_the_single_gpu_guard(self, mock_pm, tmp_path):
+        """After a launch failure the job must NOT be counted as
+        RUNNING/PAUSED by the single-GPU guard — otherwise the queue is
+        wedged until a manual restart."""
+        mgr, job = self._mgr_with_job(tmp_path)
+        mock_pm.get_plugin.return_value.start_training.side_effect = KeyError("boom")
+
+        with pytest.raises(KeyError):
+            mgr.start_job(job.id)
+
+        # A fresh pending job must be claimable — proves the failed launch
+        # isn't still occupying the single-GPU slot.
+        other = mgr.create_job(
+            "standard", _make_config(output_dir=str(tmp_path), lora_name="next")
+        )
+        assert mgr._claim_next_pending() == other.id
+
+    @patch("app.core.job_manager.plugin_manager")
+    def test_clear_stale_signal_oserror_marks_failed(self, mock_pm, tmp_path):
+        """``clear_stale_signal`` now runs INSIDE the guarded try — an OSError
+        clearing a stale signal file must also reset the job to FAILED
+        instead of leaving it RUNNING with no trainer ever launched."""
+        mgr, job = self._mgr_with_job(tmp_path)
+
+        with patch(
+            "app.engine.components.signal_manager.TrainingSignalManager"
+        ) as mock_sig_mgr:
+            mock_sig_mgr.return_value.clear_signal.side_effect = OSError("disk full")
+
+            with pytest.raises(OSError):
+                mgr.start_job(job.id)  # clear_stale_signal=True by default
+
+        assert job.status == JobStatus.FAILED
+        mock_pm.get_plugin.return_value.start_training.assert_not_called()
+
+
 class TestStartJobPreflightDownload:
     """start_job pre-fetches the base model in-process before launching.
 
@@ -1165,6 +1432,190 @@ class TestStartJobPreflightDownload:
         # the failure-label transition — not just the first one.
         assert mock_rct.call_count >= 2
         plugin.start_training.assert_called_once()
+
+
+class TestStartJobPreflightBroadcastFailureMarksFailed:
+    """T3 completion: the preflight status-flip + broadcast sits BEFORE the
+    guarded try in start_job (job.status = RUNNING, then an unguarded
+    run_coroutine_threadsafe broadcast). A RuntimeError from that broadcast
+    (e.g. a closed/stopped event loop during shutdown) or a job.model_dump()
+    serialization error previously escaped uncaught, leaving the job
+    phantom-RUNNING with pid=None. _reconcile_active_jobs deliberately skips
+    pid-less jobs ("possibly mid-launch"), so that phantom wedges the
+    single-GPU queue until a backend restart.
+    """
+
+    def _mock_plugin(self):
+        plugin = MagicMock()
+        # No `.pid` → start_job would skip the LogTailer + PID watchdog if it
+        # ever got that far (it must not, in this scenario).
+        plugin.start_training.return_value = MagicMock(spec=[])
+        return plugin
+
+    def _fake_definition(self):
+        """spec=ModelDefinition mock with a real registered family — see
+        TestStartJobPreflightDownload._fake_definition for why."""
+        registry.discover_families()
+        fake_def = MagicMock(spec=ModelDefinition)
+        fake_def.family = "sdxl"
+        fake_def.architecture_params = {}
+        fake_def.control_inputs = 0
+        fake_def.defaults = {}
+        return fake_def
+
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_preflight_broadcast_failure_marks_failed_not_running(
+        self, mock_pm, mock_get_def, mock_prefetch, tmp_path,
+    ):
+        mock_pm.get_plugin.return_value = self._mock_plugin()
+        mock_get_def.return_value = self._fake_definition()
+
+        mgr = JobManager()
+        mock_loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        mgr.set_loop(mock_loop)
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pfbcast"),
+        )
+        # A second pending job — proves below that the failed launch isn't
+        # still occupying the single-GPU slot.
+        other = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="pfbcast-2"),
+        )
+
+        with patch(
+            "app.core.job_manager.asyncio.run_coroutine_threadsafe",
+        ) as mock_rct:
+            mock_rct.side_effect = RuntimeError("Event loop is closed")
+            with pytest.raises(RuntimeError):
+                mgr.start_job(job.id)
+
+        assert job.status == JobStatus.FAILED
+        assert job.pid is None
+        mock_pm.get_plugin.return_value.start_training.assert_not_called()
+
+        assert mgr._claim_next_pending() == other.id
+
+
+class TestStartJobAbortsWhenDeletedMidLaunch:
+    """W4 finding 1: a job force-deleted while start_job is mid-launch used
+    to orphan a live GPU-holding trainer. The whole base-model preflight
+    download (``_preflight_download``, which can take minutes for a large
+    model) runs while the UI still shows the card RUNNING — so a
+    ``force=true`` delete lands, removes the job from ``_jobs`` and the DB,
+    and returns 200 while ``start_job`` keeps going regardless: it spawns
+    the real trainer, persists a "running" row for a deleted job (0 rows
+    affected), and starts a PID watchdog that immediately no-ops
+    (``if not job: break``). The result is a live trainer invisible to
+    ``_claim_next_pending``, so auto-queue can launch a SECOND trainer on
+    top of it.
+
+    Fix: re-check registry membership (``self.get_job(job_id) is job``)
+    right after the preflight download and right after ``start_training``
+    returns — the two points where a concurrent delete can complete during
+    the real-world race windows (a multi-minute download; the
+    launcher/redirector spawn on Windows)."""
+
+    def _fake_definition(self):
+        """spec=ModelDefinition mock with a real registered family — see
+        TestStartJobPreflightDownload._fake_definition for why."""
+        registry.discover_families()
+        fake_def = MagicMock(spec=ModelDefinition)
+        fake_def.family = "sdxl"
+        fake_def.architecture_params = {}
+        fake_def.control_inputs = 0
+        fake_def.defaults = {}
+        return fake_def
+
+    @patch.object(JobManager, "_start_pid_watchdog")
+    @patch("app.core.job_manager.LogTailer")
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_deleted_during_preflight_download_aborts_before_spawning_trainer(
+        self, mock_pm, mock_get_def, mock_prefetch, _mock_tailer, mock_watchdog, tmp_path,
+    ):
+        """A force=true delete can land while the (possibly multi-minute)
+        base-model preflight download is in flight. start_job must notice
+        the job is gone BEFORE spawning the real trainer subprocess —
+        otherwise a live VRAM-holding process is orphaned outside the
+        registry, invisible to _claim_next_pending."""
+        mgr = JobManager()
+        mock_get_def.return_value = self._fake_definition()
+        plugin = MagicMock()
+        plugin.start_training.return_value = MagicMock(pid=4242)
+        mock_pm.get_plugin.return_value = plugin
+
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="delmid1"),
+        )
+
+        def fake_prefetch(definition):
+            # Simulate a concurrent force-delete completing while this
+            # (possibly multi-minute) download is in flight.
+            with mgr._lock:
+                mgr._jobs.pop(job.id, None)
+
+        mock_prefetch.side_effect = fake_prefetch
+
+        persisted = []
+        with patch.object(
+            mgr, "_persist_status",
+            side_effect=lambda jid, status, **kw: persisted.append(status),
+        ):
+            mgr.start_job(job.id)  # must NOT raise
+
+        plugin.start_training.assert_not_called()
+        mock_watchdog.assert_not_called()
+        assert "running" not in persisted
+
+    @patch.object(JobManager, "_terminate_process_tree")
+    @patch.object(JobManager, "_start_pid_watchdog")
+    @patch("app.core.job_manager.LogTailer")
+    @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")
+    @patch("app.engine.models.registry.registry.get_definition")
+    @patch("app.core.job_manager.plugin_manager")
+    def test_deleted_while_start_training_runs_kills_the_spawned_process(
+        self, mock_pm, mock_get_def, mock_prefetch, _mock_tailer, mock_watchdog,
+        mock_terminate, tmp_path,
+    ):
+        """A concurrent delete can also complete WHILE plugin.start_training
+        is spawning the launcher (the Windows base-interpreter redirect
+        takes real time). If the job is gone by the time start_training
+        returns, the just-spawned process must be killed immediately instead
+        of being handed a watchdog/persisted status — otherwise it's a live
+        GPU-holding orphan the registry no longer knows about."""
+        mgr = JobManager()
+        mock_get_def.return_value = self._fake_definition()
+        plugin = MagicMock()
+
+        job = mgr.create_job(
+            "flux/dev", _make_config(output_dir=str(tmp_path), lora_name="delmid2"),
+        )
+
+        def fake_start_training(config):
+            # Simulate a concurrent force-delete completing AFTER the
+            # process already exists but before start_job notices.
+            with mgr._lock:
+                mgr._jobs.pop(job.id, None)
+            proc = MagicMock()
+            proc.pid = 9999
+            return proc
+
+        plugin.start_training.side_effect = fake_start_training
+        mock_pm.get_plugin.return_value = plugin
+
+        persisted = []
+        with patch.object(
+            mgr, "_persist_status",
+            side_effect=lambda jid, status, **kw: persisted.append(status),
+        ):
+            mgr.start_job(job.id)  # must NOT raise
+
+        mock_terminate.assert_called_once_with(9999)
+        mock_watchdog.assert_not_called()
+        assert "running" not in persisted
 
 
 class TestAutoQueue:
@@ -1567,6 +2018,7 @@ class TestPriorityPersistence:
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_from_db_hydrates_priority(self, MockRepo):
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "j-pri", "definition_id": "flux/dev", "config": {},
@@ -1580,6 +2032,7 @@ class TestPriorityPersistence:
 
     @patch("app.core.db.repositories.job_repo.JobHistoryRepository")
     def test_load_from_db_priority_defaults_zero(self, MockRepo):
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [
             {
                 "id": "j-nopri", "definition_id": "flux/dev", "config": {},
@@ -1803,6 +2256,7 @@ class TestStaleActiveReconciliation:
     def test_load_demotes_running_with_reused_pid(self, MockRepo):
         """A running job whose stored PID is alive but is NOT our trainer (PID
         reuse / an unrelated orphan) must be demoted, not kept RUNNING."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [{
             "id": "db-reused", "definition_id": "flux/dev", "config": {},
             "status": "running", "created_at": 1.0, "started_at": 1.0,
@@ -1817,6 +2271,7 @@ class TestStaleActiveReconciliation:
     def test_load_keeps_running_when_pid_is_our_trainer(self, MockRepo):
         """An orphaned-but-alive trainer (our run_trainer for this job) is kept
         RUNNING and queued for re-attach — training survives a server restart."""
+        MockRepo.return_value.list_by_statuses.return_value = []
         MockRepo.return_value.list_recent.return_value = [{
             "id": "db-live", "definition_id": "flux/dev", "config": {},
             "status": "running", "created_at": 1.0, "started_at": 1.0,

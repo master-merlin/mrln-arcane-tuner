@@ -258,8 +258,11 @@ export class JobService {
     return this.http.post<JobActionResponse & { direction: string }>(`${this.apiUrl}/${jobId}/reorder?direction=${direction}`, {});
   }
 
-  deleteJob(jobId: string): Observable<JobActionResponse> {
-    return this.http.delete<JobActionResponse>(`${this.apiUrl}/${jobId}`);
+  /** Remove a job. A RUNNING/PAUSED job's trainer subprocess must be killed
+   *  explicitly — pass `force = true` (the queue's confirm-gated delete does
+   *  this for active jobs) or the backend 409s instead of orphaning it. */
+  deleteJob(jobId: string, force = false): Observable<JobActionResponse> {
+    return this.http.delete<JobActionResponse>(`${this.apiUrl}/${jobId}?force=${force}`);
   }
 
   getJobSamples(jobId: string): Observable<JobSample[]> {

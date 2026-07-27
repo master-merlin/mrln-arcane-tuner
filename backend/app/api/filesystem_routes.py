@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -10,6 +12,43 @@ from pydantic import BaseModel
 
 
 router = APIRouter()
+
+# ── Native folder-picker single-flight (W4.T12) ─────────────────────────
+#
+# tkinter is not thread-safe across concurrent `tk.Tk()` roots, and the
+# dialog thread is pinned until the user closes it — an abandoned dialog (or
+# several) would otherwise sit in the shared default executor that every
+# other `asyncio.to_thread` call in the app draws from, starving unrelated
+# API requests. A dedicated single-worker executor confines the dialog to
+# its own thread, and a non-blocking lock rejects a second concurrent
+# request with 409 instead of queueing it behind the first (queueing would
+# just move the starvation from "shared executor" to "this executor").
+_dialog_lock = threading.Lock()
+_dialog_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="folder-dialog")
+
+
+def _ask_for_folder(initial_dir: str, title: str) -> str:
+    """Blocking: open the native OS folder-picker dialog and return the choice.
+
+    Uses ``tkinter.filedialog.askdirectory`` which works on Windows, macOS,
+    and Linux without additional dependencies. Must only ever run on
+    ``_dialog_executor`` (single worker) — never the shared default executor.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    # Bring the dialog to the front on Windows
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.askdirectory(
+            initialdir=initial_dir or None,
+            title=title,
+        )
+    finally:
+        root.destroy()
+    return selected or ""
 
 
 # ── Response Models ──────────────────────────────────────────────────────
@@ -40,32 +79,29 @@ _ALLOWED_ROOTS: list[Path] = [
 async def pick_folder(body: dict | None = None):
     """Open a native OS folder-picker dialog and return the chosen path.
 
-    Uses ``tkinter.filedialog.askdirectory`` which works on Windows,
-    macOS, and Linux without additional dependencies.
+    Single-flight (W4.T12): a second request while a dialog is already open
+    gets an immediate 409 rather than pinning another thread — an abandoned
+    dialog previously left its thread parked forever in the shared default
+    executor, and tkinter is not thread-safe across concurrent roots anyway.
 
     Optional body fields:
         initial_dir: Starting directory for the dialog (default: user home).
         title: Dialog window title (default: "Select Folder").
     """
+    if not _dialog_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Folder dialog already open")
+
     initial_dir = (body or {}).get("initial_dir", "")
     title = (body or {}).get("title", "Select Folder")
 
-    def _ask() -> str:
-        import tkinter as tk
-        from tkinter import filedialog
+    def _run() -> str:
+        try:
+            return _ask_for_folder(initial_dir, title)
+        finally:
+            _dialog_lock.release()
 
-        root = tk.Tk()
-        root.withdraw()
-        # Bring the dialog to the front on Windows
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(
-            initialdir=initial_dir or None,
-            title=title,
-        )
-        root.destroy()
-        return selected or ""
-
-    path = await asyncio.to_thread(_ask)
+    loop = asyncio.get_running_loop()
+    path = await loop.run_in_executor(_dialog_executor, _run)
     return {"path": path}
 
 

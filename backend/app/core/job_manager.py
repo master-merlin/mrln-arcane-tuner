@@ -29,6 +29,12 @@ from app.core.plugin_manager import plugin_manager
 logger = structlog.get_logger(__name__)
 
 
+class JobConflictError(Exception):
+    """Raised when an operation refuses to act on a job in its current state
+    without an explicit override (e.g. deleting a RUNNING/PAUSED job without
+    ``force=True``). Routes translate this to HTTP 409."""
+
+
 def _parse_persisted_log_lines(log_path: str, limit: int = 1000) -> list[str]:
     """Reconstruct a job's display log tail from its persisted ``job_log.jsonl``.
 
@@ -151,85 +157,115 @@ class JobManager:
         restarts.  Jobs that were ``running`` or ``paused`` at shutdown are
         demoted to ``stopped`` because the training subprocess is no longer
         alive.
+
+        Two passes: ``list_by_statuses`` fetches EVERY pending/running/paused
+        row unbounded first, then ``list_recent(limit=200)`` tops up with
+        recent terminal rows (skipping ids already hydrated). Active rows
+        must never depend on the recency window — a pending job older than
+        the 200 most-recent records would otherwise never load into
+        ``_jobs``: invisible to the queue, the UI, and ``advance_queue``,
+        permanently stranded until someone notices and manually intervenes.
         """
         try:
             from app.core.db.repositories.job_repo import JobHistoryRepository
 
             repo = JobHistoryRepository()
-            rows = repo.list_recent(limit=200, include_active=True)
+            active_rows = repo.list_by_statuses(["pending", "running", "paused"])
+            recent_rows = repo.list_recent(limit=200, include_active=True)
 
             loaded = 0
+            hydrated_ids: set[str] = set()
             with self._lock:
-                for row in rows:
-                    if row["id"] in self._jobs:
-                        continue  # Don't overwrite live jobs
+                for row in active_rows:
+                    if self._hydrate_row(row, repo):
+                        loaded += 1
+                    hydrated_ids.add(row["id"])
 
-                    status_str = row.get("status", "pending")
-                    stored_pid = row.get("pid")
-
-                    # For running/paused jobs, check if OUR trainer subprocess
-                    # survived. Identity-match (not bare pid_exists) so a reused
-                    # PID — or an unrelated orphan — can't masquerade as a live
-                    # trainer and keep the job RUNNING, wedging the queue.
-                    if status_str in ("running", "paused"):
-                        if self._is_trainer_process(stored_pid, row["id"]):
-                            # Process survived the restart — keep status
-                            logger.info(
-                                "job_process_still_alive",
-                                job_id=row["id"],
-                                pid=stored_pid,
-                                status=status_str,
-                            )
-                            # Store for post-load re-attachment of LogTailer + watchdog
-                            self._recovery_jobs.append({
-                                "id": row["id"],
-                                "status": status_str,
-                                "pid": stored_pid,
-                            })
-                        else:
-                            # Process is dead
-                            if status_str == "paused":
-                                # Paused jobs should be re-launched and re-paused
-                                logger.info(
-                                    "paused_job_process_dead_will_relaunch",
-                                    job_id=row["id"],
-                                    pid=stored_pid,
-                                )
-                                self._recovery_jobs.append({
-                                    "id": row["id"],
-                                    "status": "relaunch_paused",
-                                })
-                                status_str = "pending"  # Load as pending, will re-launch later
-                            else:
-                                # Running job whose process died → stopped
-                                status_str = "stopped"
-                                try:
-                                    repo.update_status(row["id"], status="stopped", error="Interrupted by system restart")
-                                except Exception as e:
-                                    logger.warning("failed_to_update_interrupted_job_status", error=str(e))
-
-                    # Resolve plugin_id: DB stores definition_id which may
-                    # be the HF model path (legacy) or 'standard' (correct).
-                    raw_def_id = row.get("definition_id", "")
-                    resolved_plugin_id = raw_def_id if raw_def_id in ("standard",) else "standard"
-
-                    self._jobs[row["id"]] = Job(
-                        id=row["id"],
-                        plugin_id=resolved_plugin_id,
-                        config=row.get("config") or {},
-                        status=JobStatus(status_str),
-                        created_at=row.get("created_at", 0),
-                        started_at=row.get("started_at"),
-                        finished_at=row.get("finished_at"),
-                        error=row.get("error"),
-                        pid=stored_pid,
-                        priority=row.get("priority") or 0,
-                    )
-                    loaded += 1
+                for row in recent_rows:
+                    if row["id"] in hydrated_ids:
+                        continue  # already hydrated by the active-status pass
+                    if self._hydrate_row(row, repo):
+                        loaded += 1
+                    hydrated_ids.add(row["id"])
 
             logger.info("jobs_loaded_from_db", count=loaded)
         except Exception as e:
             logger.warning("jobs_load_from_db_failed", error=str(e))
+
+    def _hydrate_row(self, row: dict, repo: Any) -> bool:
+        """Build one ``Job`` from a persisted row and register it in ``_jobs``.
+
+        Shared by both passes of :meth:`load_from_db` (the active-status
+        hydration and the recency top-up). Must be called with ``self._lock``
+        already held. Returns ``False`` (no-op) if the id is already
+        registered — either a live in-memory job predating this call, or a
+        row already hydrated by the other pass.
+        """
+        if row["id"] in self._jobs:
+            return False  # Don't overwrite live jobs
+
+        status_str = row.get("status", "pending")
+        stored_pid = row.get("pid")
+
+        # For running/paused jobs, check if OUR trainer subprocess survived.
+        # Identity-match (not bare pid_exists) so a reused PID — or an
+        # unrelated orphan — can't masquerade as a live trainer and keep the
+        # job RUNNING, wedging the queue.
+        if status_str in ("running", "paused"):
+            if self._is_trainer_process(stored_pid, row["id"]):
+                # Process survived the restart — keep status
+                logger.info(
+                    "job_process_still_alive",
+                    job_id=row["id"],
+                    pid=stored_pid,
+                    status=status_str,
+                )
+                # Store for post-load re-attachment of LogTailer + watchdog
+                self._recovery_jobs.append({
+                    "id": row["id"],
+                    "status": status_str,
+                    "pid": stored_pid,
+                })
+            else:
+                # Process is dead
+                if status_str == "paused":
+                    # Paused jobs should be re-launched and re-paused
+                    logger.info(
+                        "paused_job_process_dead_will_relaunch",
+                        job_id=row["id"],
+                        pid=stored_pid,
+                    )
+                    self._recovery_jobs.append({
+                        "id": row["id"],
+                        "status": "relaunch_paused",
+                    })
+                    status_str = "pending"  # Load as pending, will re-launch later
+                else:
+                    # Running job whose process died → stopped
+                    status_str = "stopped"
+                    try:
+                        repo.update_status(row["id"], status="stopped", error="Interrupted by system restart")
+                    except Exception as e:
+                        logger.warning("failed_to_update_interrupted_job_status", error=str(e))
+
+        # Resolve plugin_id: DB stores definition_id which may be the HF
+        # model path (legacy) or 'standard' (correct).
+        raw_def_id = row.get("definition_id", "")
+        resolved_plugin_id = raw_def_id if raw_def_id in ("standard",) else "standard"
+
+        self._jobs[row["id"]] = Job(
+            id=row["id"],
+            plugin_id=resolved_plugin_id,
+            config=row.get("config") or {},
+            status=JobStatus(status_str),
+            created_at=row.get("created_at", 0),
+            started_at=row.get("started_at"),
+            finished_at=row.get("finished_at"),
+            error=row.get("error"),
+            pid=stored_pid,
+            priority=row.get("priority") or 0,
+        )
+        return True
 
     def recover_jobs(self) -> None:
         """Post-startup recovery for jobs whose state needs action.
@@ -715,8 +751,35 @@ class JobManager:
             return True
         return False
 
-    def delete_job(self, job_id: str) -> None:
-        """Remove a job from the registry and the database. Broadcasts entity.changed."""
+    def delete_job(self, job_id: str, force: bool = False) -> None:
+        """Remove a job from the registry and the database. Broadcasts entity.changed.
+
+        A RUNNING/PAUSED job has a live trainer subprocess holding VRAM.
+        Deleting its registry entry without stopping it first would orphan a
+        GPU-zombie trainer that the single-GPU guard (``_claim_next_pending``)
+        can no longer see — auto-queue would then launch a second trainer on
+        top of it. Refuses with :class:`JobConflictError` unless
+        ``force=True``, which kills the process tree first (the same kill
+        :meth:`stop_job` performs) before removing the job.
+        """
+        job = self.get_job(job_id)
+        freed_gpu = False
+        if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+            if not force:
+                raise JobConflictError(
+                    f"Job {job_id} is {job.status.value}; stop it first or pass force=true"
+                )
+            if job.pid:
+                killed = self._terminate_process_tree(job.pid)
+                logger.info(
+                    "delete_job_force_killed_tree",
+                    job_id=job_id,
+                    root_pid=job.pid,
+                    killed_pids=killed,
+                )
+            freed_gpu = True
+
+        self._auto_resume_state.pop(job_id, None)
         self._stop_tailer(job_id)
         with self._lock:
             if job_id in self._jobs:
@@ -735,6 +798,16 @@ class JobManager:
                 ),
                 loop,
             )
+
+        # The GPU is now free (a force-delete just killed the trainer that
+        # was holding it) — advance the queue so the next pending job
+        # auto-starts, matching stop_job's placement/reasoning
+        # (job_manager.py's stop_job, a few hundred lines below). Without
+        # this a force-delete strands every queued job in "pending" until a
+        # manual Start, even with auto-queue enabled. (No-op when auto-queue
+        # is off, another job is still active, or nothing is pending.)
+        if freed_gpu:
+            self.schedule_advance_queue()
 
     # ── Log Tailer Dispatcher ────────────────────────────────────────
 
@@ -1231,33 +1304,80 @@ class JobManager:
         if not plugin:
             raise ValueError(f"Plugin {job.plugin_id} not found")
 
-        if preflight:
-            # Reflect the prerequisite base-model download in the job's LIVE
-            # status so the queue card + top bar show real work in progress
-            # instead of an idle "pending" while a large model fetches. This is
-            # an in-memory transition, broadcast immediately. We deliberately do
-            # NOT persist "running" here: the download has no trainer/PID yet, so
-            # leaving the DB row "pending" means a restart mid-download cleanly
-            # resumes from pending — vs. a stranded "running" row that recovery
-            # would mark stopped. ``_preflight_download`` then emits the HF
-            # download progress onto the top-bar indicator.
-            job.status = JobStatus.RUNNING
-            job.status_label = _PREFLIGHT_DOWNLOAD_LABEL
-            if job.started_at is None:
-                job.started_at = time.time()
-            if self._loop:
-                asyncio.run_coroutine_threadsafe(
-                    event_manager.broadcast("job_update", job.model_dump()),
-                    self._loop,
-                )
-            self._preflight_download(job)
-
-        if clear_stale_signal:
-            from app.engine.components.signal_manager import TrainingSignalManager
-            TrainingSignalManager(self._get_job_output_dir(job)).clear_signal()
-
         try:
+            if preflight:
+                # Reflect the prerequisite base-model download in the job's LIVE
+                # status so the queue card + top bar show real work in progress
+                # instead of an idle "pending" while a large model fetches. This is
+                # an in-memory transition, broadcast immediately. We deliberately do
+                # NOT persist "running" here: the download has no trainer/PID yet, so
+                # leaving the DB row "pending" means a restart mid-download cleanly
+                # resumes from pending — vs. a stranded "running" row that recovery
+                # would mark stopped. ``_preflight_download`` then emits the HF
+                # download progress onto the top-bar indicator.
+                #
+                # This status flip + broadcast is INSIDE the guarded try (not
+                # before it): a RuntimeError from a closed/stopped event loop,
+                # or a job.model_dump() serialization error, would otherwise
+                # escape uncaught here — leaving the job phantom-RUNNING with
+                # pid=None. _reconcile_active_jobs deliberately skips pid-less
+                # jobs ("possibly mid-launch"), so that phantom wedges the
+                # single-GPU queue until a backend restart, same as any other
+                # launch-failure exception this try/except resets.
+                job.status = JobStatus.RUNNING
+                job.status_label = _PREFLIGHT_DOWNLOAD_LABEL
+                if job.started_at is None:
+                    job.started_at = time.time()
+                if self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        event_manager.broadcast("job_update", job.model_dump()),
+                        self._loop,
+                    )
+                self._preflight_download(job)
+
+                # A concurrent delete_job(force=True) can complete while the
+                # (possibly multi-minute) download above was in flight — the
+                # UI shows the card RUNNING for that whole window, so the
+                # delete needs no special timing to race here. If the job is
+                # no longer the one this registry entry points at, a real
+                # trainer must NOT be spawned for it: launching now would
+                # create a live VRAM-holding process invisible to
+                # _claim_next_pending (the job is gone from _jobs), letting
+                # auto-queue launch a second trainer on top of it. Return
+                # cleanly — no exception, no persist, no watchdog — since the
+                # delete already removed the DB row and broadcast the
+                # deletion.
+                if self.get_job(job_id) is not job:
+                    logger.warning(
+                        "start_job_aborted_deleted_during_preflight",
+                        job_id=job_id,
+                    )
+                    return
+
+            if clear_stale_signal:
+                from app.engine.components.signal_manager import TrainingSignalManager
+
+                TrainingSignalManager(self._get_job_output_dir(job)).clear_signal()
+
             process = plugin.start_training(job.config)
+
+            # Same race, later window: the job may have been deleted while
+            # start_training() itself was spawning the subprocess (the
+            # Windows base-interpreter redirect launcher takes real time).
+            # Kill what we just spawned immediately instead of persisting a
+            # "running" status / starting a watchdog for a job the registry
+            # no longer knows about — otherwise this is a live GPU-holding
+            # orphan, exactly like the preflight-window case above.
+            if self.get_job(job_id) is not job:
+                pid = getattr(process, "pid", None)
+                killed = self._terminate_process_tree(pid)
+                logger.warning(
+                    "start_job_aborted_deleted_after_spawn",
+                    job_id=job_id,
+                    pid=pid,
+                    killed_pids=killed,
+                )
+                return
 
             job.status = JobStatus.RUNNING
             if job.started_at is None:
@@ -1295,7 +1415,14 @@ class JobManager:
                 # Start PID watchdog as safety net
                 self._start_pid_watchdog(job_id, process.pid)
 
-        except (OSError, ValueError, RuntimeError) as e:
+        except Exception as e:
+            # Broadened from (OSError, ValueError, RuntimeError): ANY launch
+            # failure (a KeyError/TypeError from a bad config, an OSError from
+            # clear_stale_signal, ...) must reset the job — otherwise it's
+            # stranded RUNNING with pid=None. _reconcile_active_jobs
+            # deliberately skips pid-less jobs ("possibly mid-launch"), so an
+            # uncaught exception type here phantom-blocks the single-GPU
+            # queue until a backend restart.
             job.status = JobStatus.FAILED
             job.error = str(e)
             self._persist_status(job_id, "failed", error=job.error)

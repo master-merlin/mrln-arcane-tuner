@@ -17,7 +17,7 @@ from starlette.background import BackgroundTask
 
 from app.api._path_guard import validate_path_within
 from app.core.job import Job
-from app.core.job_manager import job_manager
+from app.core.job_manager import job_manager, JobConflictError
 from app.core.naming import model_part_from_definition_id
 from app.core.logger import get_logger
 from app.api.schemas.job_schemas import (
@@ -259,10 +259,18 @@ async def get_job_logs(job_id: str):
 
 
 @router.delete("/jobs/{job_id}", response_model=JobActionResponse)
-async def delete_job(job_id: str):
-    """Remove a job from the registry."""
-    logger.info("deleting_job", job_id=job_id)
-    await asyncio.to_thread(job_manager.delete_job, job_id)
+async def delete_job(job_id: str, force: bool = False):
+    """Remove a job from the registry.
+
+    A RUNNING/PAUSED job's trainer subprocess must be explicitly torn down —
+    pass ``force=true`` to kill the process tree first. Without it, deleting
+    an active job 409s instead of silently orphaning a GPU-zombie trainer.
+    """
+    logger.info("deleting_job", job_id=job_id, force=force)
+    try:
+        await asyncio.to_thread(job_manager.delete_job, job_id, force)
+    except JobConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return {"status": "deleted", "job_id": job_id}
 
 

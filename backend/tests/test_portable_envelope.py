@@ -9,8 +9,10 @@ import pytest
 from app.core.portable.archive import (
     safe_extract,
     write_bundle_zip,
+    write_bundle_zip_to_path,
     write_manifest_zip,
     write_zip,
+    write_zip_to_path,
 )
 from app.core.portable.envelope import (
     ManifestError,
@@ -142,6 +144,52 @@ def test_write_bundle_zip_writes_manifest_and_named_entries():
         assert zf.read("datasets/b.zip") == b"BBB"
         loaded = json.loads(zf.read("manifest.json"))
     assert names == {"manifest.json", "templates/a.zip", "datasets/b.zip"}
+    assert loaded["kind"] == "project"
+
+
+def test_write_zip_to_path_matches_in_memory_write_zip(tmp_path):
+    """W4.T11: the disk-streaming variant must produce the same archive
+    contents as the in-memory one (never buffer multi-GB archives in RAM)."""
+    root = tmp_path / "src"
+    (root / "sub").mkdir(parents=True)
+    (root / "a.jpg").write_bytes(b"img-a")
+    (root / "sub" / "b.jpg").write_bytes(b"img-b")
+
+    dest = tmp_path / "out.zip"
+    write_zip_to_path(dest, root, {"kind": "dataset", "format_version": 1})
+
+    assert dest.is_file()
+    with zipfile.ZipFile(dest) as zf:
+        names = set(zf.namelist())
+        assert names == {"manifest.json", "a.jpg", "sub/b.jpg"}
+        assert zf.read("a.jpg") == b"img-a"
+        assert zf.read("sub/b.jpg") == b"img-b"
+        loaded = json.loads(zf.read("manifest.json"))
+    assert loaded["kind"] == "dataset"
+
+
+def test_write_bundle_zip_to_path_accepts_bytes_and_path_entries(tmp_path):
+    """W4.T11: a bundle entry may be raw bytes (small template archive) or a
+    Path to a file already on disk (nested dataset archive) — the latter
+    must be copied in via ``zf.write`` (chunked), never read fully first."""
+    nested = tmp_path / "nested.zip"
+    with zipfile.ZipFile(nested, "w") as zf:
+        zf.writestr("inner.txt", "hello")
+
+    dest = tmp_path / "bundle.zip"
+    write_bundle_zip_to_path(
+        dest,
+        {"kind": "project", "format_version": 1},
+        {"templates/a.zip": b"AAA", "datasets/b.zip": nested},
+    )
+
+    assert dest.is_file()
+    with zipfile.ZipFile(dest) as zf:
+        names = set(zf.namelist())
+        assert names == {"manifest.json", "templates/a.zip", "datasets/b.zip"}
+        assert zf.read("templates/a.zip") == b"AAA"
+        assert zf.read("datasets/b.zip") == nested.read_bytes()
+        loaded = json.loads(zf.read("manifest.json"))
     assert loaded["kind"] == "project"
 
 

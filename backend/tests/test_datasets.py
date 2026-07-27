@@ -1,5 +1,8 @@
 import time
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from app.core.dataset_manager import Dataset
 
 
@@ -158,20 +161,67 @@ def test_scan_all_datasets(mock_to_thread, mock_manager, client):
 
 
 @patch("app.api.dataset.crud_routes.dataset_manager")
-def test_upload_file(mock_manager, client):
+def test_upload_file(mock_manager, client, tmp_path):
+    """Happy path against a REAL temp directory (not a mocked open()) so this
+    also exercises the tmp-write + os.replace path end-to-end (W4.T7)."""
     mock_dataset = MagicMock()
-    mock_dataset.path = "/tmp/test"
+    mock_dataset.path = str(tmp_path)
     mock_manager.get_dataset.return_value = mock_dataset
 
-    with patch("app.api.dataset.crud_routes.open", create=True):
-        with patch("app.api.dataset.crud_routes.shutil.copyfileobj"):
-            response = client.post(
-                "/api/datasets/test/upload",
-                files={"file": ("test.txt", b"hello world")}
-            )
-            assert response.status_code == 200
-            assert response.json()["filename"] == "test.txt"
-            assert response.json()["status"] == "uploaded"
+    response = client.post(
+        "/api/datasets/test/upload",
+        files={"file": ("test.txt", b"hello world")}
+    )
+    assert response.status_code == 200
+    assert response.json()["filename"] == "test.txt"
+    assert response.json()["status"] == "uploaded"
+
+    saved = tmp_path / "test.txt"
+    assert saved.read_bytes() == b"hello world"
+    # No leftover .tmp file after a successful upload.
+    assert not (tmp_path / "test.txt.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_disconnect_leaves_no_partial_file(tmp_path):
+    """W4.T7: a client disconnect mid-upload (UploadFile.read raising after
+    delivering some bytes) must NOT leave a truncated file at the final path
+    — the next dataset scan would index it as real media."""
+    from app.api.dataset.crud_routes import upload_file
+
+    class _DisconnectingUpload:
+        filename = "photo.png"
+
+        def __init__(self):
+            self._served_first = False
+
+        async def read(self, size: int = -1) -> bytes:
+            if not self._served_first:
+                self._served_first = True
+                return b"partial-bytes-before-disconnect"
+            raise ConnectionResetError("client disconnected mid-upload")
+
+    mock_dataset = MagicMock()
+    mock_dataset.path = str(tmp_path)
+
+    # ConnectionResetError is an OSError subclass, so the route converts it
+    # to a clean 500 rather than crashing the worker — either way, no
+    # partial file must land on disk.
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        await upload_file(
+            name="ds",
+            file=_DisconnectingUpload(),
+            slot=0,
+            target_stem=None,
+            dataset=mock_dataset,
+        )
+
+    final_path = tmp_path / "photo.png"
+    assert not final_path.exists()
+    # No orphaned .tmp file left behind either.
+    assert list(tmp_path.iterdir()) == []
 
 
 @patch("app.api.dataset.crud_routes.dataset_manager")
@@ -250,7 +300,9 @@ def test_save_caption_dataset_not_found(mock_to_thread, mock_manager, client):
     mock_to_thread.side_effect = run_sync
     mock_manager.save_caption.side_effect = ValueError("not found")
     response = client.put("/api/datasets/ghost/captions/img.txt", json={"content": "text"})
-    assert response.status_code == 500  # ValueError → 500 in save_caption route
+    # W4.T13: matches the GET twin (test_get_caption_dataset_not_found) — an
+    # unknown dataset is a 404, not an INTERNAL_ERROR 500.
+    assert response.status_code == 404
 
 
 # ── Lyrics (audio sidecar) ───────────────────────────────────────────────
@@ -305,7 +357,9 @@ def test_save_lyrics_dataset_not_found(mock_to_thread, mock_manager, client):
     response = client.put(
         "/api/datasets/ghost/lyrics/song.lyrics.txt", json={"content": "x"},
     )
-    assert response.status_code == 500  # ValueError → 500, mirrors save_caption
+    # W4.T13: matches the GET twin (test_get_lyrics_dataset_not_found) — an
+    # unknown dataset is a 404, not an INTERNAL_ERROR 500.
+    assert response.status_code == 404
 
 
 # ── Image Enable/Disable ────────────────────────────────────────────────
@@ -433,6 +487,87 @@ def test_calc_crop_targets_success(mock_manager, client):
     data = response.json()
     assert "target_width" in data
     assert "target_height" in data
+
+
+# ── Download Dataset ─────────────────────────────────────────────────────
+
+
+class TestDownloadDatasetEndpoint:
+    """W4.T11: download streams via a temp file (FileResponse + BackgroundTask
+    cleanup) instead of building the whole zip in an in-memory BytesIO."""
+
+    def test_download_dataset_returns_zip_excludes_caches_and_cleans_up_temp_file(
+        self, client, tmp_path, monkeypatch,
+    ):
+        import io
+        import zipfile
+        from pathlib import Path
+
+        from app.core.dataset_manager import dataset_manager
+        import app.api.dataset.crud_routes as crud_mod
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "dl_ds"
+        ds_path.mkdir()
+        (ds_path / "a.jpg").write_bytes(b"img-a")
+        (ds_path / ".cache").mkdir()
+        (ds_path / ".cache" / "latents.bin").write_bytes(b"NOPE")
+
+        dataset_manager.create_dataset("dl_ds", path=str(ds_path))
+
+        # Spy on the temp path handed to zipfile so we can assert it's gone
+        # (BackgroundTask cleanup) once the response has been fully sent.
+        recorded: dict[str, str] = {}
+        orig_mkstemp = crud_mod.tempfile.mkstemp
+
+        def _spy_mkstemp(*a, **k):
+            fd, p = orig_mkstemp(*a, **k)
+            recorded["path"] = p
+            return fd, p
+
+        monkeypatch.setattr(crud_mod.tempfile, "mkstemp", _spy_mkstemp)
+
+        try:
+            response = client.get("/api/datasets/dl_ds/download")
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "application/zip"
+            assert ".zip" in response.headers.get("content-disposition", "")
+
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                names = set(zf.namelist())
+            assert "a.jpg" in names
+            assert not any(n.startswith(".cache/") for n in names)
+
+            assert "path" in recorded, "route never built a temp-file zip"
+            assert not Path(recorded["path"]).exists(), (
+                "temp zip was not cleaned up after the response was sent"
+            )
+        finally:
+            dataset_manager.delete_dataset("dl_ds", delete_files=True)
+
+    def test_download_dataset_404_when_directory_missing(
+        self, client, tmp_path, monkeypatch,
+    ):
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "dl_missing"
+        ds_path.mkdir()
+        dataset_manager.create_dataset("dl_missing", path=str(ds_path))
+        import shutil
+        shutil.rmtree(ds_path)
+
+        try:
+            response = client.get("/api/datasets/dl_missing/download")
+            assert response.status_code == 404
+        finally:
+            dataset_manager.delete_dataset("dl_missing", delete_files=True)
 
 
 # ── Bump Version ─────────────────────────────────────────────────────────

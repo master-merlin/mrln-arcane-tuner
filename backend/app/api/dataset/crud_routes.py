@@ -14,6 +14,7 @@ import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.api._deps import dataset_or_404
 from app.api._path_guard import sanitize_filename, validate_path_within
@@ -246,22 +247,47 @@ async def upload_file(
 
     logger.info("uploading_file", dataset_name=name, filename=rel_name, slot=slot)
 
+    # Stream to a sibling .tmp file and only os.replace() it onto the final
+    # path once the whole body has arrived (mirrors the chunked-read
+    # exemplar at crud_routes.py's import_dataset_upload route, and the
+    # tmp+replace pattern at dataset/thumbnails.py:88-89). Without this, a
+    # client disconnect mid-upload left a truncated file AT the final path —
+    # which the next scan indexed as real media — and a re-upload of an
+    # existing name truncated the original in place before the copy finished.
+    tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
     try:
-        def save_upload():
-            with open(save_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+        with open(tmp_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                buffer.write(chunk)
+        os.replace(tmp_path, save_path)
+    except OSError as e:
+        tmp_path.unlink(missing_ok=True)
+        logger.error(
+            "upload_failed", dataset_name=name, filename=rel_name, error=str(e)
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+    except BaseException:
+        # Anything else (e.g. the client disconnecting mid-read) still must
+        # not leave a truncated file behind — clean up and let it propagate.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
-        await asyncio.to_thread(save_upload)
-        if slot:
+    if slot:
+        try:
             # Targeted refresh: control flags/dims on the paired media item
             # (no full rescan), emits the media_item entity.changed event.
             await asyncio.to_thread(
-                dataset_manager.refresh_control_metadata, name, target_stem,
+                dataset_manager.refresh_control_metadata,
+                name,
+                target_stem,
             )
-        return {"filename": rel_name, "status": "uploaded"}
-    except OSError as e:
-        logger.error("upload_failed", dataset_name=name, filename=rel_name, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        except OSError as e:
+            logger.error(
+                "upload_failed", dataset_name=name, filename=rel_name, error=str(e)
+            )
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return {"filename": rel_name, "status": "uploaded"}
 
 
 # ── Pairs & Media ────────────────────────────────────────────────────────
@@ -351,7 +377,9 @@ async def save_caption(name: str, filename: str, request: CaptionRequest):
         await asyncio.to_thread(dataset_manager.save_caption, name, filename, request.content)
         return {"status": "saved"}
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Matches the GET twin (get_caption) — an unknown dataset is a client
+        # error (404), not an INTERNAL_ERROR (was 500).
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── Lyrics (audio sidecar) ───────────────────────────────────────────────
@@ -383,7 +411,9 @@ async def save_lyrics(name: str, filename: str, request: CaptionRequest):
         await asyncio.to_thread(dataset_manager.save_lyrics, name, filename, request.content)
         return {"status": "saved"}
     except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Matches the GET twin (get_lyrics) — an unknown dataset is a client
+        # error (404), not an INTERNAL_ERROR (was 500).
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── Image Enable/Disable ────────────────────────────────────────────────
@@ -417,7 +447,12 @@ async def enable_all_images(name: str):
 
 @router.get("/datasets/{name}/download")
 async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_404)):
-    """Download a dataset as a zip file (DatasetName_Version.zip)."""
+    """Download a dataset as a zip file (DatasetName_Version.zip).
+
+    W4.T11: streams straight to a temp file (a dataset can be multi-GB of
+    video media) instead of building the archive in an in-memory BytesIO —
+    mirrors the checkpoint-zip download pattern (job_routes.download_checkpoint_zip).
+    """
     dataset_root = Path(dataset.path)
     if not dataset_root.is_dir():
         raise HTTPException(status_code=404, detail="Dataset directory not found on disk")
@@ -425,9 +460,10 @@ async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_
     zip_filename = f"{dataset.name}_{dataset.version}.zip"
     logger.info("downloading_dataset", dataset_name=name, zip_filename=zip_filename)
 
-    def _build_zip() -> io.BytesIO:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    def _build_zip() -> str:
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="dsdownload_")
+        os.close(fd)
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path in dataset_root.rglob("*"):
                 # Skip derived/cache subdirectories
                 if ".cache" in file_path.parts or ".thumbnails" in file_path.parts:
@@ -435,14 +471,14 @@ async def download_dataset(name: str, dataset: Dataset = Depends(get_dataset_or_
                 if file_path.is_file():
                     arc_name = file_path.relative_to(dataset_root)
                     zf.write(file_path, arc_name)
-        buf.seek(0)
-        return buf
+        return tmp_path
 
-    buf = await asyncio.to_thread(_build_zip)
-    return StreamingResponse(
-        buf,
+    tmp_path = await asyncio.to_thread(_build_zip)
+    return FileResponse(
+        tmp_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+        filename=zip_filename,
+        background=BackgroundTask(os.remove, tmp_path),
     )
 
 

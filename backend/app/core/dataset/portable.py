@@ -19,7 +19,7 @@ from typing import Any
 
 from app.core.dataset_manager import Dataset
 from app.core.portable import envelope as _envelope
-from app.core.portable.archive import safe_extract, write_zip
+from app.core.portable.archive import safe_extract, write_zip, write_zip_to_path
 from app.core.portable.envelope import ManifestError, build_manifest_header
 
 # Bump only on a breaking change to the dataset manifest shape.
@@ -42,6 +42,7 @@ __all__ = [
     "ManifestError",
     "build_manifest",
     "write_export_zip",
+    "write_export_zip_to_path",
     "read_manifest",
     "safe_extract",
 ]
@@ -62,6 +63,15 @@ def build_manifest(dataset: Dataset, app_version: str) -> dict[str, Any]:
 def write_export_zip(dataset_root: Path, manifest: dict[str, Any]) -> io.BytesIO:
     """Build the export zip: ``manifest.json`` first, then files (no caches)."""
     return write_zip(dataset_root, manifest, skip_dirs=_EXCLUDED_DIRS)
+
+
+def write_export_zip_to_path(
+    dest: Path, dataset_root: Path, manifest: dict[str, Any]
+) -> None:
+    """Like :func:`write_export_zip` but streams straight to *dest* on disk —
+    for embedding a dataset (which may carry multi-GB video media) into a
+    project bundle without ever buffering the whole archive in RAM."""
+    write_zip_to_path(dest, dataset_root, manifest, skip_dirs=_EXCLUDED_DIRS)
 
 
 def read_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:

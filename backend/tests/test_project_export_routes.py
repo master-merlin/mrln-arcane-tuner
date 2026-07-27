@@ -88,8 +88,13 @@ def test_export_project_embed_and_reference_datasets(MockProjects, MockPrefs, mo
     MockPrefs.get.return_value = {}
     ds = SimpleNamespace(id="d1", name="style", path="/tmp/style")
     mock_dsmgr.get_dataset.return_value = ds
+
+    def _fake_write_export(dest, root, manifest):
+        with open(dest, "wb") as f:
+            f.write(b"DSZIP")
+
     with patch("app.core.dataset.portable.build_manifest", return_value={"kind": "dataset"}), \
-         patch("app.core.dataset.portable.write_export_zip", return_value=io.BytesIO(b"DSZIP")):
+         patch("app.core.dataset.portable.write_export_zip_to_path", side_effect=_fake_write_export):
         resp = client.post("/api/projects/p1/export", json={
             "templates": [],
             "datasets": [{"name": "style", "mode": "embed"},
@@ -132,9 +137,14 @@ def test_export_project_colliding_slugs_get_distinct_arcnames(
     MockPrefs.get.return_value = {}
     mock_dsmgr.get_dataset.side_effect = lambda name: SimpleNamespace(
         id=name, name=name, path=f"/tmp/{name}")
-    payloads = iter([io.BytesIO(b"FIRST"), io.BytesIO(b"SECOND")])
+    payloads = iter([b"FIRST", b"SECOND"])
+
+    def _fake_write_export(dest, root, manifest):
+        with open(dest, "wb") as f:
+            f.write(next(payloads))
+
     with patch("app.core.dataset.portable.build_manifest", return_value={"kind": "dataset"}), \
-         patch("app.core.dataset.portable.write_export_zip", side_effect=lambda *a, **k: next(payloads)):
+         patch("app.core.dataset.portable.write_export_zip_to_path", side_effect=_fake_write_export):
         resp = client.post("/api/projects/p1/export", json={
             "templates": [],
             "datasets": [{"name": "日本", "mode": "embed"},

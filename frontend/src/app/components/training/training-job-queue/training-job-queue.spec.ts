@@ -131,7 +131,24 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         // The delete only fires from the modal's confirm callback.
         const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
         data.onConfirm();
-        expect(del).toHaveBeenCalledWith('archived-1');
+        // force=false here: the job isn't found in either jobs()/historicalJobs()
+        // (neither was seeded in this test), so `active` resolves false.
+        expect(del).toHaveBeenCalledWith('archived-1', false);
+    });
+
+    it('deleteJob() passes force=true for a RUNNING job (backend requires it to kill the trainer instead of 409ing)', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+        const store = TestBed.inject(JobStore);
+        const del = vi.spyOn(store, 'deleteJob').mockResolvedValue(undefined);
+
+        component.jobs.set([makeJob('running-1', JobStatus.RUNNING)]);
+
+        component.deleteJob('running-1');
+        const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+
+        expect(del).toHaveBeenCalledWith('running-1', true);
     });
 
     it('toggleAutoResume() flips the signal and persists server-side', () => {

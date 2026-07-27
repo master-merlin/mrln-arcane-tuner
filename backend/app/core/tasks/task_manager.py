@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 import uuid
+from collections import deque
 
 from app.core.drain import DrainActive, is_draining
 from app.core.events import event_manager
@@ -15,6 +16,13 @@ logger = get_logger(__name__)
 # Min interval / delta between *progress* broadcasts for one task (anti-flood).
 _PROGRESS_MIN_INTERVAL_S = 0.2
 _PROGRESS_MIN_DELTA = 0.02  # fraction of total
+
+# Cap on retained *terminal* (completed/failed/cancelled) task records. Without
+# this, _tasks/_cancels/_last_emit only ever grew for the life of the process —
+# a long session of batch ops (caption batches, rescan batches, ...) leaks
+# memory and bloats every GET /tasks poll unboundedly. Active (pending/
+# running) tasks are never pruned regardless of this cap.
+_MAX_TERMINAL = 500
 
 
 class TaskManager:
@@ -36,6 +44,10 @@ class TaskManager:
         self._lock = threading.Lock()
         self._lanes: dict[str, list[tuple[str, object]]] = {}
         self._lane_threads: dict[str, threading.Thread] = {}
+        # FIFO of terminal task ids, oldest first — drives the prune in
+        # _finish(). Guarded by _lock (multiple lanes can finish different
+        # tasks concurrently on their own worker threads).
+        self._terminal_order: deque[str] = deque()
 
     def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         self._loop = loop
@@ -129,6 +141,20 @@ class TaskManager:
         # client-side reconcile is idempotent.
         if t.dataset_name:
             self._emit_dataset_invalidated(t.dataset_name)
+        self._prune_terminal(task_id)
+
+    def _prune_terminal(self, task_id: str) -> None:
+        """Record *task_id* as newly-terminal and evict the oldest terminal
+        record(s) once the retained set exceeds _MAX_TERMINAL. Active tasks
+        are never touched — only ids that passed through _finish() land in
+        _terminal_order."""
+        with self._lock:
+            self._terminal_order.append(task_id)
+            while len(self._terminal_order) > _MAX_TERMINAL:
+                oldest = self._terminal_order.popleft()
+                self._tasks.pop(oldest, None)
+                self._cancels.pop(oldest, None)
+                self._last_emit.pop(oldest, None)
 
     def _emit_dataset_invalidated(self, name: str) -> None:
         """Broadcast the coarse ``dataset.invalidated`` signal (see

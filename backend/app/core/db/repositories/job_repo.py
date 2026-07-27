@@ -102,6 +102,26 @@ class JobHistoryRepository:
         rows = conn.execute(sql, params).fetchall()
         return [self._from_row(r) for r in rows]
 
+    def list_by_statuses(self, statuses: list[str]) -> list[dict[str, Any]]:
+        """All rows in any of the given statuses, unbounded (active rows are few).
+
+        Used at startup to hydrate active jobs (pending/running/paused)
+        regardless of how old they are — ``list_recent``'s recency window
+        (``ORDER BY created_at DESC LIMIT N``) can drop an old pending job
+        that never got picked up, permanently stranding it: invisible to the
+        in-memory queue, the UI, and ``advance_queue``.
+        """
+        if not statuses:
+            return []
+        conn = get_db().connection()
+        placeholders = ", ".join("?" for _ in statuses)
+        rows = conn.execute(
+            f"SELECT * FROM job_history WHERE status IN ({placeholders}) "
+            "ORDER BY created_at ASC",
+            statuses,
+        ).fetchall()
+        return [self._from_row(r) for r in rows]
+
     def get_by_lora_name(self, lora_name: str) -> list[dict[str, Any]]:
         conn = get_db().connection()
         rows = conn.execute(

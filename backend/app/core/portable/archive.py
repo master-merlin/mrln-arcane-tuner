@@ -42,6 +42,29 @@ def write_zip(
     return buf
 
 
+def write_zip_to_path(
+    dest: Path, root: Path, manifest: dict[str, Any], *, skip_dirs: Iterable[str] = ()
+) -> None:
+    """Like :func:`write_zip` but streams straight to *dest* on disk instead
+    of building the archive in an in-memory buffer first.
+
+    ``zipfile.ZipFile.write`` copies each source file in chunks (not a full
+    read into RAM), so this is the version to use when *root* may contain
+    multi-GB media (e.g. a video dataset) — the caller only ever holds one
+    file's worth of buffered I/O at a time, never the whole archive.
+    """
+    root = Path(root)
+    skip = set(skip_dirs)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2))
+        for file_path in root.rglob("*"):
+            if any(part in skip for part in file_path.parts):
+                continue
+            if file_path.is_file():
+                arc_name = file_path.relative_to(root).as_posix()
+                zf.write(file_path, arc_name)
+
+
 def write_manifest_zip(manifest: dict[str, Any]) -> io.BytesIO:
     """Build a manifest-only archive (no file tree).
 
@@ -69,6 +92,27 @@ def write_bundle_zip(
             zf.writestr(arcname, payload)
     buf.seek(0)
     return buf
+
+
+def write_bundle_zip_to_path(
+    dest: Path, manifest: dict[str, Any], entries: dict[str, bytes | Path]
+) -> None:
+    """Like :func:`write_bundle_zip` but streams straight to *dest* on disk.
+
+    Each entry may be raw ``bytes`` (small payloads, e.g. a template archive)
+    or a ``Path`` to a file already on disk (e.g. a nested dataset archive
+    written via :func:`write_zip_to_path`) — the latter is copied into the
+    bundle via ``zf.write`` (chunked), never read fully into memory first.
+    Used by the project export route so a project bundling multi-GB embedded
+    dataset archives is never held fully in RAM.
+    """
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2))
+        for arcname, payload in entries.items():
+            if isinstance(payload, Path):
+                zf.write(payload, arcname)
+            else:
+                zf.writestr(arcname, payload)
 
 
 def safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:

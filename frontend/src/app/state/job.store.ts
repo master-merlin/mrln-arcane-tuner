@@ -39,10 +39,10 @@ export class JobStore extends EntityStore<Job> {
         }
     }
 
-    async deleteJob(id: string): Promise<void> {
+    async deleteJob(id: string, force = false): Promise<void> {
         await this.runOptimistic({
             apply: m => { const n = new Map(m); n.delete(id); return n; },
-            request: () => firstValueFrom(this.api.deleteJob(id)),
+            request: () => firstValueFrom(this.api.deleteJob(id, force)),
             errorMessage: `Couldn't delete job — restored.`,
         });
     }

@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 from PIL import Image
 from app.core.captioning.models.qwen3_vl import Qwen3VLModel
@@ -49,6 +49,51 @@ def test_generate_caption_success(mock_to_thread, mock_validate, mock_manager, m
     assert response.status_code == 200
     assert response.json() == {"caption": "A beautiful sunset"}
     mock_service_instance.generate_caption.assert_called_once()
+
+
+@patch("app.api.caption_routes.CaptionService")
+@patch("app.core.dataset_manager.dataset_manager")
+@patch("app.api.caption_routes.asyncio.to_thread")
+def test_generate_caption_masked_target_updates_media_flags_atomically(
+    mock_to_thread, mock_manager, mock_service_cls, client, tmp_path,
+):
+    """W4.T14: the masked-caption metadata update goes through
+    DatasetManager.update_media_flags_async (atomic mutate+persist) instead
+    of a hand-rolled dict mutation + _persist_media_item_async."""
+    async def run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
+    mock_to_thread.side_effect = run_sync
+
+    mock_service_instance = MagicMock()
+    mock_service_instance.generate_caption.return_value = "masked caption"
+    mock_service_cls.get_instance.return_value = mock_service_instance
+
+    ds_root = tmp_path / "ds"
+    masked_dir = ds_root / "masked"
+    masked_dir.mkdir(parents=True)
+    (masked_dir / "image.jpg").write_bytes(b"\xff\xd8\xff\xe0")
+
+    mock_dataset = MagicMock()
+    mock_dataset.path = str(ds_root)
+    mock_dataset.media_metadata = {"image.jpg": {"has_masked_caption": False}}
+    mock_manager.get_dataset.return_value = mock_dataset
+    mock_manager.update_media_flags_async = AsyncMock()
+
+    payload = {
+        "dataset_name": "test_ds",
+        "image_rel_path": "image.jpg",
+        "model_id": "moondream",
+        "params": {},
+        "target": "masked",
+    }
+
+    response = client.post("/api/captions/generate", json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"caption": "masked caption"}
+    mock_manager.update_media_flags_async.assert_called_once_with(
+        "test_ds", "image.jpg", has_masked_caption=True,
+    )
 
 
 @patch("app.api.caption_routes.CaptionService")

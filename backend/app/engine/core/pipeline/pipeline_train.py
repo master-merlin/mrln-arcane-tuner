@@ -396,6 +396,7 @@ class PipelineTrainMixin:
             self.optimizer.zero_grad()
             accumulated_loss = 0.0
             grad_norm = torch.tensor(0.0)
+            did_backward = 0  # count of micro-steps that actually ran backward()
 
             for accum_idx in range(grad_accum):
                 batch_items = next(data_iter)
@@ -589,6 +590,19 @@ class PipelineTrainMixin:
                             self.scaler.scale(loss).backward()
                         else:
                             loss.backward()
+                    did_backward += 1
+
+            # 4a. Every micro-step in this accumulation window was NaN/Inf and
+            #     skipped: there are no gradients to step on. Stepping anyway
+            #     would still shrink weights (AdamW decoupled weight decay),
+            #     advance adaptive d-estimates (Prodigy), advance the LR
+            #     scheduler, and decay EMA toward unchanged params — all with
+            #     zero signal. Zero the (empty) grad buffer for the next
+            #     window and skip optimizer/scaler/scheduler/EMA entirely.
+            if did_backward == 0:
+                self.logger.warning("nan_window_skipped", step=step)
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
 
             # 5. Optimizer step (after all accumulation steps)
             #    Profiler region "optimizer": unscale + grad-norm clip + step.

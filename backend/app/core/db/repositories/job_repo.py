@@ -7,7 +7,6 @@ metrics summaries, and dataset lineage tracking.
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -257,13 +256,16 @@ class JobHistoryRepository:
             FROM job_history
             WHERE final_lora_size_bytes IS NOT NULL {flt}
         """, args).fetchone()
-        lora_files = conn.execute(f"""
-            SELECT final_lora_file FROM job_history
+        # lora_on_disk is persisted at write time (run completion, the
+        # backfill reconcile pass) — pure SQL here, no per-request
+        # filesystem sweep (was an os.path.isfile() call per completed job
+        # on every GET).
+        lora_on_disk_row = conn.execute(f"""
+            SELECT COALESCE(SUM(lora_on_disk), 0) AS n
+            FROM job_history
             WHERE status = 'completed' AND final_lora_file IS NOT NULL {flt}
-        """, args).fetchall()
-        lora_on_disk = sum(
-            1 for r in lora_files if os.path.isfile(r["final_lora_file"])
-        )
+        """, args).fetchone()
+        lora_on_disk = lora_on_disk_row["n"]
         ckpts = conn.execute(f"""
             SELECT COUNT(*) AS n
             FROM checkpoints c JOIN job_history j ON c.job_id = j.id

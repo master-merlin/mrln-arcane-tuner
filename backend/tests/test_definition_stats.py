@@ -252,6 +252,59 @@ def test_backfill_size_only_fallback_persists_no_path(tmp_path):
     assert rec["final_lora_size_bytes"] == 10 * MB
 
 
+def test_backfill_sets_lora_on_disk_when_file_recovered(tmp_path):
+    """W5.T9: the reconcile pass sets lora_on_disk=1 when it locates (or
+    already has) a final_lora_file that verifiably exists on disk."""
+    def_id = f"bfdisk_{uuid.uuid4().hex[:8]}"
+    out_dir = tmp_path / "run_out_disk"
+    out_dir.mkdir()
+    lora = out_dir / "my_lora_final.safetensors"
+    lora.write_bytes(b"x" * (10 * MB))
+    (out_dir / "training_log.json").write_text(json.dumps({
+        "lora_filename": "my_lora_final.safetensors",
+        "elapsed_seconds": 1500.0,
+        "step": 1000,
+    }))
+    job_id = _insert_job(def_id, output_dir=str(out_dir),
+                         completed_steps=1000, config=_ref_config())
+
+    backfill.run_backfill()
+
+    rec = get_db().connection().execute(
+        "SELECT lora_on_disk FROM job_history WHERE id = ?", (job_id,),
+    ).fetchone()
+    assert rec["lora_on_disk"] == 1
+
+
+def test_backfill_self_heals_lora_on_disk_when_file_deleted(tmp_path):
+    """A row already carries lora_on_disk=1 from a prior pass, but the user
+    deleted the file outside the app since — the NEXT reconcile pass must
+    flip it back to 0 (refreshed every pass, unlike the other recovered
+    fields which are gated behind "missing")."""
+    def_id = f"bfheal_{uuid.uuid4().hex[:8]}"
+    out_dir = tmp_path / "run_out_heal"
+    out_dir.mkdir()
+    lora = out_dir / "will_be_deleted.safetensors"
+    lora.write_bytes(b"x" * (5 * MB))
+    job_id = _insert_job(
+        def_id,
+        output_dir=str(out_dir),
+        completed_steps=1000,
+        final_lora_file=str(lora),
+        final_lora_size_bytes=5 * MB,
+        lora_on_disk=1,
+        config=_ref_config(),
+    )
+
+    lora.unlink()  # simulate the user deleting the LoRA outside the app
+    backfill.run_backfill()
+
+    rec = get_db().connection().execute(
+        "SELECT lora_on_disk FROM job_history WHERE id = ?", (job_id,),
+    ).fetchone()
+    assert rec["lora_on_disk"] == 0
+
+
 # ── Stats getter ────────────────────────────────────────────────────────
 
 

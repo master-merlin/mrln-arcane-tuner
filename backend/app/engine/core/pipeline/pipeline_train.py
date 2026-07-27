@@ -1083,9 +1083,16 @@ class PipelineTrainMixin:
 
             final_lora_path, final_lora_size = self._current_lora_artifact()
             artifact_fields = (
-                {"final_lora_file": final_lora_path,
-                 "final_lora_size_bytes": final_lora_size}
-                if final_lora_path else {}
+                {
+                    "final_lora_file": final_lora_path,
+                    "final_lora_size_bytes": final_lora_size,
+                    # _current_lora_artifact() only returns a path when
+                    # os.path.getsize() just succeeded on it, so the file is
+                    # confirmed on disk at this exact moment.
+                    "lora_on_disk": 1,
+                }
+                if final_lora_path
+                else {}
             )
 
             repo.complete(

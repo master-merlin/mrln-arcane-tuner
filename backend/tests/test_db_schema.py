@@ -230,7 +230,7 @@ class TestV2Migration:
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 18
+            assert row["version"] == 19
 
     def test_v12_drops_saved_concepts(self, db_engine):
         """V12 removes the orphaned ``saved_concepts`` table; the drop is

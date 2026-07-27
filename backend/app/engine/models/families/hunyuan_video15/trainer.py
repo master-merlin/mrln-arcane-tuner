@@ -515,6 +515,28 @@ class Hv15Trainer(GenericTrainingPipeline):
                             path=path,
                             error=str(unlink_err),
                         )
+                    # The structured self.logger.warning above never reaches
+                    # job_log.jsonl / the Jobs screen (see pipeline_train.py's
+                    # nan_window_skipped comment) — without this, a run whose
+                    # Siglip conditioning silently zero-fills would complete
+                    # looking perfectly healthy. Emit once per affected item
+                    # per run (build_batch_extra runs every step; a per-step
+                    # flood would be its own problem), keyed on the resolved
+                    # cache path so repeated hits on the SAME item this run
+                    # dedupe even if it is re-corrupted mid-run.
+                    warned = getattr(self, "_hv15_siglip_corrupt_warned", None)
+                    if warned is None:
+                        warned = set()
+                        self._hv15_siglip_corrupt_warned = warned
+                    if path not in warned:
+                        warned.add(path)
+                        self._emit_warning(
+                            f"Image-conditioning cache for '{item['id']}' is "
+                            "corrupt: this item trained with ZEROED image "
+                            "conditioning for the remainder of this run. "
+                            "The corrupt cache file was discarded, so the "
+                            "next pre-cache pass will regenerate it."
+                        )
             embeds.append(emb)
 
         ref = next((e for e in embeds if e is not None), None)

@@ -505,3 +505,79 @@ def test_precache_aux_regenerates_after_build_batch_extra_discards_corrupt_file(
     assert Path(path).exists()
     assert load_file(path)["audio_latents"].shape == (L, 128)
     assert t.driver.encode_calls == 1  # regenerated exactly once
+
+
+# ── corrupt cache → user-visible warning (W2 pre-merge finding) ────────────
+#
+# self.logger.warning goes to the structured backend logger and never reaches
+# job_log.jsonl / the Jobs screen (see pipeline_train.py's nan_window_skipped
+# handling). Without ALSO emitting through self._emit_warning (the JobLogWriter
+# IPC seam sampling failures already use), an LTX-2 run whose audio stream
+# silently drops to mask=0 completes looking perfectly healthy. These tests
+# assert against a fake ``_log_writer`` — the real seam ``_emit_warning``
+# writes through — not against the structured logger mock used above.
+
+
+class _WarningRecorder:
+    """JobLogWriter stand-in recording every warning(...) call."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def status(self, label: str) -> None:  # pragma: no cover - unused here
+        pass
+
+
+def test_build_batch_extra_corrupt_cache_emits_user_visible_warning(tmp_path):
+    """The corrupt-cache degrade must ALSO surface via _emit_warning (→
+    job_log.jsonl / Jobs screen), naming the clip and stating plainly that it
+    trained with no audio and that the cache will regenerate."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    extra = t.build_batch_extra([a])  # must not raise
+
+    assert extra == {}
+    assert len(lw.warnings) == 1
+    msg = lw.warnings[0]
+    assert "clipA" in msg
+    assert "audio" in msg.lower()
+    assert "regenerate" in msg.lower() or "next pre-cache" in msg.lower()
+
+
+def test_build_batch_extra_corrupt_cache_warns_user_once_per_item(tmp_path):
+    """build_batch_extra runs once per training step — repeated calls for the
+    SAME corrupt clip must not flood job_log.jsonl with a duplicate warning
+    per step."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    t.build_batch_extra([a])
+    # The corrupt file was discarded after the first call — recreate it so
+    # the SECOND call hits the load-failure branch again (simulating the
+    # cache still being absent/corrupt for this same run/step).
+    _write_corrupt_audio_cache_file(t, a)
+    t.build_batch_extra([a])
+    t.build_batch_extra([a])
+
+    assert len(lw.warnings) == 1
+
+
+def test_build_batch_extra_without_log_writer_is_safe(tmp_path):
+    """No _log_writer attached (e.g. other unit tests) → no crash."""
+    t = _trainer()
+    a = _video_item(tmp_path, "clipA")
+    _write_corrupt_audio_cache_file(t, a)
+
+    extra = t.build_batch_extra([a])  # must not raise
+
+    assert extra == {}

@@ -370,3 +370,80 @@ def test_precache_aux_regenerates_after_build_batch_extra_discards_corrupt_file(
 
     emb = load_file(path)["image_embeds"]
     assert torch.all(emb == 3.0)
+
+
+# ── corrupt cache → user-visible warning (W2 pre-merge finding) ────────────
+#
+# self.logger.warning goes to the structured backend logger and never reaches
+# job_log.jsonl / the Jobs screen (see pipeline_train.py's nan_window_skipped
+# handling). Without ALSO emitting through self._emit_warning (the JobLogWriter
+# IPC seam sampling failures already use), an i2v run whose Siglip conditioning
+# silently zero-fills completes looking perfectly healthy. These tests assert
+# against a fake ``_log_writer`` — the real seam ``_emit_warning`` writes
+# through — not against the structured logger mock used above.
+
+
+class _WarningRecorder:
+    """JobLogWriter stand-in recording every warning(...) call."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def status(self, label: str) -> None:  # pragma: no cover - unused here
+        pass
+
+
+def test_build_batch_extra_corrupt_cache_emits_user_visible_warning(tmp_path):
+    """The corrupt-cache degrade must ALSO surface via _emit_warning (→
+    job_log.jsonl / Jobs screen), naming the item and stating plainly that it
+    trained with zeroed image conditioning and that the cache will regenerate.
+    """
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    extra = t.build_batch_extra([item])  # must not raise
+
+    assert extra == {}
+    assert len(lw.warnings) == 1
+    msg = lw.warnings[0]
+    assert "img1" in msg
+    assert "zero" in msg.lower()
+    assert "regenerate" in msg.lower() or "next pre-cache" in msg.lower()
+
+
+def test_build_batch_extra_corrupt_cache_warns_user_once_per_item(tmp_path):
+    """build_batch_extra runs once per training step — repeated calls for the
+    SAME corrupt item must not flood job_log.jsonl with a duplicate warning
+    per step."""
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+    lw = _WarningRecorder()
+    t._log_writer = lw
+
+    t.build_batch_extra([item])
+    # The corrupt file was discarded after the first call — recreate it so
+    # the SECOND call hits the load-failure branch again (simulating the
+    # cache still being absent/corrupt for this same run/step).
+    _write_corrupt_cache_file(item, "img1")
+    t.build_batch_extra([item])
+    t.build_batch_extra([item])
+
+    assert len(lw.warnings) == 1
+
+
+def test_build_batch_extra_without_log_writer_is_safe(tmp_path):
+    """No _log_writer attached (e.g. other unit tests) → no crash."""
+    item = _still_item(tmp_path, "img1")
+    _write_corrupt_cache_file(item, "img1")
+    t = _make_trainer("i2v", tmp_path, [item])
+
+    extra = t.build_batch_extra([item])  # must not raise
+
+    assert extra == {}

@@ -698,6 +698,30 @@ class Ltx2Trainer(GenericTrainingPipeline):
                                 path=path,
                                 error=str(unlink_err),
                             )
+                        # The structured self.logger.warning above never
+                        # reaches job_log.jsonl / the Jobs screen (see
+                        # pipeline_train.py's nan_window_skipped comment) —
+                        # without this, a run whose audio stream silently
+                        # drops to mask=0 would complete looking perfectly
+                        # healthy. Emit once per affected clip per run
+                        # (build_batch_extra runs every step; a per-step
+                        # flood would be its own problem), keyed on the
+                        # resolved cache path so repeated hits on the SAME
+                        # clip this run dedupe even if it is re-corrupted
+                        # mid-run.
+                        warned = getattr(self, "_ltx2_audio_corrupt_warned", None)
+                        if warned is None:
+                            warned = set()
+                            self._ltx2_audio_corrupt_warned = warned
+                        if path not in warned:
+                            warned.add(path)
+                            self._emit_warning(
+                                f"Audio-latent cache for '{item['id']}' is "
+                                "corrupt: this clip trained with NO AUDIO "
+                                "(mask=0) for the remainder of this run. "
+                                "The corrupt cache file was discarded, so "
+                                "the next pre-cache pass will regenerate it."
+                            )
             latents.append(lat)
 
         ref = next((latent for latent in latents if latent is not None), None)

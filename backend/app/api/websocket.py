@@ -25,7 +25,11 @@ async def _stream_metrics(websocket: WebSocket, interval_s: float = 2.0):
 
     try:
         while True:
-            snap = system_monitor.snapshot()
+            # NVML per-GPU queries + compute-process enumeration + a
+            # psutil.Process(pid).name() lookup per process — on a WDDM box
+            # under training load NVML can stall. Offload to a thread so a
+            # slow snapshot() never blocks the event loop (W4.T10).
+            snap = await asyncio.to_thread(system_monitor.snapshot)
             msg = json.dumps({
                 "type": "system_metrics",
                 "payload": snap.to_dict(),

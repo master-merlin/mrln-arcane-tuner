@@ -28,28 +28,24 @@ logger = structlog.get_logger(__name__)
 # Disk-cache key template identity (the qwen_image/boogu_image precedent).
 # ``TextEmbeddingCache.caption_to_filename`` hashes ONLY the string it is
 # given; passing the raw caption meant a future edit to the driver's prefix/
-# suffix chat template or quotation-aware tokenization would silently reuse
-# embeddings encoded under the OLD template. Baking
-# ``te_template_fingerprint()`` into the hashed string makes a template
-# change always produce a fresh on-disk filename. The IN-MEMORY
+# suffix chat template, quotation-aware tokenization, OR effective
+# ``te.max_length`` (truncation/padding length) would silently reuse
+# embeddings encoded under the OLD template/length. Baking
+# ``te_template_fingerprint()`` into the hashed string makes any of those
+# changes always produce a fresh on-disk filename. The IN-MEMORY
 # ``self.text_cache`` stays keyed by the raw caption (the krea2/ernie/
 # ideogram4 convention the cross-family seam contract expects).
+#
+# ``_disk_cache_key`` is a TRAINER INSTANCE METHOD (not a module-level
+# function, and not a ``@staticmethod``) because it must fold in
+# ``self.max_length`` — the EFFECTIVE, possibly per-definition-overridden
+# ``te.max_length`` for this run (kept in lock-step with the driver by
+# ``_assign_components``) — which by definition cannot be known by a
+# function with no access to instance state. This is the same shape chosen
+# for ``DreamLiteTrainer._disk_cache_key`` (dropped from ``@staticmethod``
+# for the identical reason), normalizing the convention across both
+# families.
 _TE_TEMPLATE_VERSION = "v1"
-
-
-def _disk_cache_key(caption: str) -> str:
-    """Compose the string hashed by ``TextEmbeddingCache.caption_to_filename``.
-
-    Baking the template fingerprint into the hashed string (instead of the
-    raw caption) means a future template change produces a DIFFERENT on-disk
-    filename for the same caption text, instead of silently reusing a stale
-    embedding encoded under the old template.
-    """
-    template_id = (
-        f"longcat_image/quotation_chat_template/"
-        f"{_TE_TEMPLATE_VERSION}/{te_template_fingerprint()}"
-    )
-    return f"{template_id}::{caption}"
 
 
 class LongCatImageTrainer(GenericTrainingPipeline):
@@ -97,6 +93,25 @@ class LongCatImageTrainer(GenericTrainingPipeline):
     def transformer(self) -> torch.nn.Module:
         """Alias for sampler compatibility (sampler accesses .transformer)."""
         return self.model
+
+    def _disk_cache_key(self, caption: str) -> str:
+        """Compose the string hashed by ``TextEmbeddingCache.caption_to_filename``.
+
+        Baking the template fingerprint into the hashed string (instead of
+        the raw caption) means a future template OR effective-max_length
+        change produces a DIFFERENT on-disk filename for the same caption
+        text, instead of silently reusing a stale embedding encoded under
+        the old template/length. Passes ``self.max_length`` — the EFFECTIVE
+        ``te.max_length`` resolved for this run (synced from the driver in
+        ``_assign_components``, which itself resolves any per-definition
+        ``te.max_length`` override) — into ``te_template_fingerprint`` so a
+        definition override is captured, not just the module default.
+        """
+        template_id = (
+            f"longcat_image/quotation_chat_template/"
+            f"{_TE_TEMPLATE_VERSION}/{te_template_fingerprint(self.max_length)}"
+        )
+        return f"{template_id}::{caption}"
 
     # -- Disk-backed TE Pre-caching --
 
@@ -162,10 +177,10 @@ class LongCatImageTrainer(GenericTrainingPipeline):
                 continue
             if te1_dir and te2_dir:
                 emb_tensor = TextEmbeddingCache.load(
-                    _disk_cache_key(caption), te1_dir, hint
+                    self._disk_cache_key(caption), te1_dir, hint
                 )
                 mask_tensor = TextEmbeddingCache.load(
-                    _disk_cache_key(caption), te2_dir, hint
+                    self._disk_cache_key(caption), te2_dir, hint
                 )
                 if emb_tensor is not None and mask_tensor is not None:
                     self.text_cache[caption] = (emb_tensor, mask_tensor)
@@ -226,11 +241,11 @@ class LongCatImageTrainer(GenericTrainingPipeline):
                     self.text_cache[cap] = (emb_cpu, mask_cpu)
                     if te1_dir:
                         TextEmbeddingCache.save(
-                            _disk_cache_key(cap), emb_cpu, te1_dir, hint
+                            self._disk_cache_key(cap), emb_cpu, te1_dir, hint
                         )
                     if te2_dir:
                         TextEmbeddingCache.save(
-                            _disk_cache_key(cap), mask_cpu, te2_dir, hint
+                            self._disk_cache_key(cap), mask_cpu, te2_dir, hint
                         )
 
                 pct = int(min(i + batch_size, encode_total) / encode_total * 100)

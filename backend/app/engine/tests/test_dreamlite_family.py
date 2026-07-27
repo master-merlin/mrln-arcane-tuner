@@ -917,7 +917,18 @@ def test_trainer_peft_model_sync():
 
 def test_trainer_te_disk_cache_layout(tmp_path):
     """TE disk cache lands in embeddings/{te_quant}/te1|te2 (emb + mask);
-    dataset captions are warmed under their PREFIXED cache key."""
+    dataset captions are warmed under their PREFIXED cache key.
+
+    ``_disk_cache_key`` is a real (non-static) ``DreamLiteTrainer`` instance
+    method (W3 fix-wave) — a bare ``MagicMock(spec=DreamLiteTrainer)`` would
+    silently auto-mock it (returning a ``MagicMock`` instead of a string and
+    crashing ``TextEmbeddingCache``'s sha256 hash), so it must be explicitly
+    bound to THIS mock via ``types.MethodType``, same as every other
+    trainer-method override in this file (see ``_positive_key`` below).
+    """
+    import types  # noqa: PLC0415
+    from types import SimpleNamespace  # noqa: PLC0415
+
     import torch  # noqa: PLC0415
 
     from app.engine.components.text_embeddings import TextEmbeddingCache
@@ -941,6 +952,14 @@ def test_trainer_te_disk_cache_layout(tmp_path):
         DreamLiteTrainer._sample_prompt_texts(trainer)
     )
     trainer._positive_key = DreamLiteTrainer._positive_key
+    # Driver stand-in carrying the resolved (module-default) te.drop_idx /
+    # te.max_sequence_length that DreamLiteDriver.__init__ would compute —
+    # `_disk_cache_key` reads these for the EFFECTIVE per-run fingerprint.
+    trainer.driver = SimpleNamespace(max_sequence_length=200, drop_idx=34)
+    trainer._disk_cache_key = types.MethodType(
+        DreamLiteTrainer._disk_cache_key,
+        trainer,
+    )
 
     def _fake_encode(texts, dtype):
         b = len(texts)
@@ -956,8 +975,11 @@ def test_trainer_te_disk_cache_layout(tmp_path):
     assert te2.is_dir(), "te2 (attention mask) cache dir missing"
 
     key = "[Generate]: a dreamlite caption"
-    emb = TextEmbeddingCache.load(key, str(te1), "hint0")
-    mask = TextEmbeddingCache.load(key, str(te2), "hint0")
+    # Look up under the FINGERPRINTED disk key — the same one
+    # ``_pre_cache_text_embeddings`` used to save (not the raw prefixed key).
+    disk_key = trainer._disk_cache_key(key)
+    emb = TextEmbeddingCache.load(disk_key, str(te1), "hint0")
+    mask = TextEmbeddingCache.load(disk_key, str(te2), "hint0")
     assert emb is not None and emb.shape == (20, 12)
     assert mask is not None and mask.shape == (20,)
     assert key in trainer.text_cache

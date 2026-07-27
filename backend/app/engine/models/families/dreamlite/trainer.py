@@ -119,24 +119,41 @@ class DreamLiteTrainer(GenericTrainingPipeline):
     # ``TextEmbeddingCache.caption_to_filename`` hashes ONLY the string it is
     # given. Before this fix, that string was the (optionally
     # ``"[Generate]: "``-prefixed) caption alone — a future edit to the
-    # driver's pinned chat template or ``drop_idx`` would silently reuse
-    # embeddings encoded under the OLD template, since the on-disk filename
-    # for the SAME caption text wouldn't change (the poisoned-cache incident
-    # class this closes; see ``te_template_fingerprint`` in driver.py).
+    # driver's pinned chat template, ``drop_idx``, or ``max_sequence_length``
+    # would silently reuse embeddings encoded under the OLD template/config,
+    # since the on-disk filename for the SAME caption text wouldn't change
+    # (the poisoned-cache incident class this closes; see
+    # ``te_template_fingerprint`` in driver.py).
+    #
+    # ``_disk_cache_key`` is a PLAIN INSTANCE METHOD (not ``@staticmethod``)
+    # because it must fold in ``self.driver.drop_idx`` /
+    # ``self.driver.max_sequence_length`` — the EFFECTIVE, possibly
+    # per-definition-overridden values for this run — which by definition
+    # cannot be known by a function with no access to instance state. This
+    # is the same shape chosen for ``LongCatImageTrainer._disk_cache_key``
+    # (moved off a bare module-level function for the identical reason),
+    # normalizing the convention across both families.
 
-    @staticmethod
-    def _disk_cache_key(key: str) -> str:
+    def _disk_cache_key(self, key: str) -> str:
         """Compose the string hashed by ``TextEmbeddingCache.caption_to_filename``.
 
         Baking the driver's TE template fingerprint into the hashed string
-        (instead of the raw, already-prefixed key) means a future template
-        or drop-idx change produces a DIFFERENT on-disk filename for the
-        same text, instead of silently reusing a stale embedding encoded
-        under the old template.
+        (instead of the raw, already-prefixed key) means a future template,
+        drop-idx, or max-sequence-length change produces a DIFFERENT on-disk
+        filename for the same text, instead of silently reusing a stale
+        embedding encoded under the old template/config. Passes
+        ``self.driver.max_sequence_length`` / ``self.driver.drop_idx`` — the
+        EFFECTIVE values resolved from ``architecture_params`` in
+        ``DreamLiteDriver.__init__`` (covers a ``te.max_sequence_length`` /
+        ``te.drop_idx`` definition override, not just the module default).
         """
         from .driver import te_template_fingerprint  # noqa: PLC0415
 
-        template_id = f"dreamlite/qwen3vl_chat_template/v1/{te_template_fingerprint()}"
+        fp = te_template_fingerprint(
+            self.driver.max_sequence_length,
+            self.driver.drop_idx,
+        )
+        template_id = f"dreamlite/qwen3vl_chat_template/v1/{fp}"
         return f"{template_id}::{key}"
 
     # -- Disk-backed TE Pre-caching --

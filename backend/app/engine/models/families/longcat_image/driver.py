@@ -48,23 +48,47 @@ PROMPT_TEMPLATE_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
 QUOTE_PAIRS: list[tuple[str, str]] = [("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")]
 
 
-def te_template_fingerprint() -> str:
-    """Fingerprint of every constant that transforms a caption before encoding.
+def te_template_fingerprint(max_length: int | None = None) -> str:
+    """Fingerprint of every input that transforms a caption before encoding.
 
-    Covers the prefix/suffix chat-template wrapper (``PROMPT_TEMPLATE_PREFIX``
-    / ``_SUFFIX``) and the quotation-aware tokenization pairs (``QUOTE_PAIRS``)
-    that ``split_quotation`` uses to decide which spans get per-character
-    tokenization. Computed FRESH on every call (reads the current module
-    globals rather than freezing a value at import time) so a future edit —
-    or a test monkeypatching one of these constants — is picked up
-    immediately.
+    Covers, EXHAUSTIVELY:
+    - the prefix/suffix chat-template wrapper (``PROMPT_TEMPLATE_PREFIX`` /
+      ``_SUFFIX``);
+    - the quotation-aware tokenization pairs (``QUOTE_PAIRS``) that
+      ``split_quotation`` uses to decide which spans get per-character
+      tokenization;
+    - the EFFECTIVE tokenizer max length that governs truncation
+      (``encode_longcat``'s ``caption_truncated`` branch) and padding
+      (``tokenizer.pad(..., max_length=...)``).
 
-    Used by ``LongCatImageTrainer`` to version its disk-cache key
-    (``_disk_cache_key`` in trainer.py — the qwen_image/boogu_image
-    precedent) so a template change can never silently reuse embeddings
-    encoded under the OLD template.
+    ``max_length`` is per-definition overridable via the ``te.max_length``
+    architecture param (``longcat_image/definitions/base.yaml`` sets it to
+    512 explicitly — the same value as ``TOKENIZER_MAX_LENGTH``, but a
+    future definition is free to diverge). Passing ``None`` (the default)
+    falls back to the module-level ``TOKENIZER_MAX_LENGTH`` constant — only
+    correct for a caller that has no resolved per-run value to hand. Callers
+    that know the effective value for THIS run (``LongCatImageTrainer``,
+    which mirrors ``driver.max_length`` — see ``_assign_components``) must
+    pass it explicitly so a definition override is captured, not just the
+    default.
+
+    Computed FRESH on every call (reads the current module globals rather
+    than freezing a value at import time) so a future edit — or a test
+    monkeypatching one of these constants — is picked up immediately.
+
+    Used by ``LongCatImageTrainer._disk_cache_key`` to version its disk-cache
+    key so a template OR max_length change can never silently reuse
+    embeddings encoded under the OLD template/length.
     """
-    src = "|".join([PROMPT_TEMPLATE_PREFIX, PROMPT_TEMPLATE_SUFFIX, repr(QUOTE_PAIRS)])
+    effective_max_length = TOKENIZER_MAX_LENGTH if max_length is None else max_length
+    src = "|".join(
+        [
+            PROMPT_TEMPLATE_PREFIX,
+            PROMPT_TEMPLATE_SUFFIX,
+            repr(QUOTE_PAIRS),
+            str(effective_max_length),
+        ]
+    )
     return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
 
 

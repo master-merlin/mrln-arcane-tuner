@@ -5,13 +5,26 @@ after the last image; the eager ``DELETE /captions/unload`` the frontend
 fires on model/variant/tab changes must be a no-op while a caption batch
 is pending or running (it would force a per-image reload — or crash a
 generate in flight on the GPU lane).
+
+W5.T10 moved the active-batch check from a separate ``task_manager.list()``
+call in the route into ``CaptionService.unload_models(skip_if_batch_active=
+True)`` itself, so the check and the actual unload now run atomically under
+one lock (``CaptionService._unload_lock``) — closing a check-then-act race
+where a batch could start in the window between the route's own check and
+the ``asyncio.to_thread``-dispatched unload actually running. These tests
+therefore exercise the REAL ``unload_models`` (not a wholesale stand-in for
+it — that would bypass the exact check-then-act logic under test) and only
+stub its side effect (``unload_gpu_plugins``), so the lock + check still run
+for real.
 """
+
 import asyncio
 import time
 
 import pytest
 
 from app.api import caption_routes
+from app.core.captioning import caption_service as caption_service_mod
 from app.core.captioning.caption_service import CaptionService
 from app.core.tasks.task import Task, TaskStatus
 
@@ -23,10 +36,15 @@ def _task(status: TaskStatus, type_: str = "caption_batch") -> Task:
 
 @pytest.fixture
 def unload_counter(monkeypatch):
+    """Stub the unload's side effect only — ``unload_models`` itself (the
+    active-batch check + the lock) runs for real, so the race-closing
+    contract stays under test."""
     calls = {"n": 0}
     monkeypatch.setattr(
-        CaptionService, "unload_models",
-        classmethod(lambda cls: calls.__setitem__("n", calls["n"] + 1)))
+        caption_service_mod,
+        "unload_gpu_plugins",
+        lambda owner, **kwargs: calls.__setitem__("n", calls["n"] + 1),
+    )
     return calls
 
 

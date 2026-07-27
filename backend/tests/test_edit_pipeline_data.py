@@ -29,14 +29,16 @@ class _StubLatentManager:
         self.encode_calls = []
         self.cached = False
 
-    def load_cached_latents(self, ids, cache_dirs, source_paths=None):
-        self.load_calls.append((list(ids), list(cache_dirs)))
+    def load_cached_latents(self, ids, cache_dirs, source_paths=None, extra_keys=None):
+        self.load_calls.append((list(ids), list(cache_dirs), extra_keys))
         if not self.cached:
             return None
         return torch.zeros(len(ids), 4, 1, 1)
 
-    def encode_and_cache_batch(self, images, ids=None, cache_dirs=None, source_paths=None):
-        self.encode_calls.append(list(ids or []))
+    def encode_and_cache_batch(
+        self, images, ids=None, cache_dirs=None, source_paths=None, extra_keys=None
+    ):
+        self.encode_calls.append((list(ids or []), extra_keys))
         return torch.ones(images.shape[0], 4, 1, 1)
 
 

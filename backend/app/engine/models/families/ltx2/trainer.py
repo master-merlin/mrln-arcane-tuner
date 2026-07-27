@@ -309,12 +309,29 @@ class Ltx2Trainer(GenericTrainingPipeline):
         for cap in captions:
             entry = self.text_cache.get(cap)
             if entry is None:
-                if self.driver.text_encoder is None:
+                te = self.driver.text_encoder
+                if te is None:
                     raise RuntimeError(
                         "Text encoder offloaded and caption not pre-cached: "
                         f"{cap[:60]!r}"
                     )
+                # Guard: a cache miss can hit with the TE merely CPU-resident
+                # (unload_text_encoder: False only offloads — it doesn't null
+                # driver.text_encoder), not fully unloaded. Bracket to GPU for
+                # the encode, matching the canonical qwen_image miss path.
+                te_was_offloaded = False
+                if isinstance(te, torch.nn.Module):
+                    te_was_offloaded = next(te.parameters()).device != self.device
+                    if te_was_offloaded:
+                        self.logger.warning(
+                            "te_cache_miss_after_offload",
+                            hint="pre-caching should have covered all captions",
+                        )
+                        te.to(self.device)
                 out = self.driver.encode_text([cap], dtype)
+                if te_was_offloaded:
+                    te.to("cpu")
+                    torch.cuda.empty_cache()
                 entry = self._slice_te_output(out, 0)
                 self.text_cache[cap] = entry
             emb_c, pooled_c, mask_c = entry

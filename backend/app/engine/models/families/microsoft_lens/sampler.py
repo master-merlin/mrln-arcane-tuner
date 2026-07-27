@@ -213,9 +213,18 @@ class MicrosoftLensSampler(GenericSamplingPipeline):
         do_cfg = guidance_scale > 1.0
         uncond_stacked = uncond_mask = None
         if do_cfg:
+            # T10 moved this encode out of encode_prompt() (Phase 1, inside
+            # _sample_single's needs_live_te bracket) so a CFG-off round never
+            # pays for it. But denoise() runs in Phase 2, AFTER Phase 1 has
+            # already offloaded the text encoder back to CPU — a live driver
+            # forward here needs its OWN bracket, or encode_text moves its
+            # cuda inputs against a CPU-resident module and raises a device
+            # mismatch on every CFG-on round (the default: guidance_scale=3.5).
+            te_moved = self._ensure_on_gpu(["text_encoder"])
             uncond = driver.encode_text([""], dtype)
             uncond_stacked = uncond.embeddings.to(device)
             uncond_mask = uncond.attention_mask.to(device)
+            self._offload_to_cpu(te_moved)
 
         latents = noise.to(device=device, dtype=dtype)
         batch = {"latent_h": self._latent_h, "latent_w": self._latent_w}

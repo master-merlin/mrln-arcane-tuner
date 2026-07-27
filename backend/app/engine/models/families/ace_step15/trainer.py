@@ -223,15 +223,32 @@ class AceStep15Trainer(GenericTrainingPipeline):
             key = self._compose_key(cap, lyr)
             entry = self.text_cache.get(key)
             if entry is None:
-                if self.driver.text_encoder is None:
+                te = self.driver.text_encoder
+                if te is None:
                     raise RuntimeError(
                         "Text/condition encoder offloaded and (caption, "
                         f"lyrics) not pre-cached: {cap[:60]!r}"
                     )
+                # Guard: a cache miss can hit with the TE merely CPU-resident
+                # (unload_text_encoder: False only offloads — it doesn't null
+                # driver.text_encoder), not fully unloaded. Bracket to GPU for
+                # the encode, matching the canonical qwen_image miss path.
+                te_was_offloaded = False
+                if isinstance(te, torch.nn.Module):
+                    te_was_offloaded = next(te.parameters()).device != self.device
+                    if te_was_offloaded:
+                        self.logger.warning(
+                            "te_cache_miss_after_offload",
+                            hint="pre-caching should have covered all captions",
+                        )
+                        te.to(self.device)
                 audio_duration = float(self.config.get("duration_s", 30.0) or 30.0)
                 eh, em = self.driver.encode_condition(
                     [cap], [lyr], dtype, audio_duration=audio_duration
                 )
+                if te_was_offloaded:
+                    te.to("cpu")
+                    torch.cuda.empty_cache()
                 entry = (eh.cpu(), em.cpu())
                 self.text_cache[key] = entry
             entries.append(entry)

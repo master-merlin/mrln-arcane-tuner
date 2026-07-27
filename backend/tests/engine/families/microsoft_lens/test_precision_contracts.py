@@ -103,6 +103,7 @@ def _make_sampler(*, use_amp, autocast_dtype=torch.bfloat16, dtype=torch.float32
         driver=driver,
         transformer=transformer,
         vae=_FakeVAE(),
+        components={},
         autocast_dtype=autocast_dtype,
         use_amp=use_amp,
         _block_swap_managers=None,

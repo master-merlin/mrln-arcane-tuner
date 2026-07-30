@@ -3,7 +3,7 @@ import asyncio
 from typing import Any
 from fastapi import WebSocket
 import json
-from app.core.logger import get_logger
+from app.core.logger import get_logger, ws_send_scope
 
 logger = get_logger(__name__)
 
@@ -58,12 +58,20 @@ class EventManager:
         ``send_text`` await can never block ``broadcast()`` or any other
         connection's delivery. A send failure tears this connection down
         (mirrors the error handling ``broadcast()`` used to do inline).
+
+        The send runs inside :func:`ws_send_scope` so the per-frame DEBUG
+        traces uvicorn's websockets protocol logs during ``send_text`` are not
+        mirrored back to clients — mirroring one enqueues another message here,
+        which logs another trace: an unbounded feedback loop. ``broadcast()``
+        used to inherit that guard implicitly by awaiting the send itself; this
+        task does not, so it must set the scope explicitly.
         """
         try:
             while True:
                 msg = await queue.get()
                 try:
-                    await websocket.send_text(msg)
+                    with ws_send_scope():
+                        await websocket.send_text(msg)
                 except Exception as e:
                     logger.warning("websocket_send_failed", error=str(e))
                     queue.task_done()

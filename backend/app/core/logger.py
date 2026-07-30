@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,36 @@ def set_logging_loop(loop):
 
 # ContextVar to prevent infinite recursion in logging
 _in_ws_log = ContextVar("in_ws_log", default=False)
+
+
+@contextmanager
+def ws_send_scope():
+    """Mark the current context as "pushing bytes into a WebSocket".
+
+    Every log record emitted inside this scope is skipped by
+    :class:`WebSocketLogHandler` instead of being mirrored to clients.
+
+    This is load-bearing, not belt-and-braces. uvicorn hands its own
+    ``uvicorn.error`` logger to the ``websockets`` protocol, which logs one
+    ``> TEXT '…' [N bytes]`` DEBUG record for every frame it writes. Mirroring
+    such a record emits another frame, which logs another trace, which mirrors
+    again — an unbounded log->WS->log loop that fills server.log at event-loop
+    speed (observed: 114 MB / 1.19M lines, 100% frame traces, one client).
+
+    The loop used to be impossible by accident: ``broadcast()`` awaited
+    ``send_text`` inline, and ``run_coroutine_threadsafe`` propagates the
+    context that :meth:`WebSocketLogHandler.emit` had already marked. W4.T9
+    moved the send into a per-connection sender task created back in
+    ``connect()`` — outside that context — so the guard stopped covering the
+    only path that can feed itself. Any code that writes to a socket must wrap
+    the write in this scope.
+    """
+    token = _in_ws_log.set(True)
+    try:
+        yield
+    finally:
+        _in_ws_log.reset(token)
+
 
 class WebSocketLogHandler(logging.Handler):
     def emit(self, record):
@@ -79,8 +110,19 @@ def config_log_level(level_str: str = "INFO"):
     
     # 2. Update specific loggers to ensure they respect the new level
     # especially uvicorn which can be chatty
-    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"]:
+    for logger_name in ["uvicorn", "uvicorn.access", "fastapi"]:
         logging.getLogger(logger_name).setLevel(level)
+
+    # 3. uvicorn.error is floored at INFO — never DEBUG.
+    # uvicorn passes logging.getLogger("uvicorn.error") to the websockets
+    # protocol as its logger (uvicorn/protocols/websockets/websockets_impl.py),
+    # so this logger's DEBUG stream is one per-frame "> TEXT '…' [N bytes]"
+    # trace per WebSocket frame sent or received. That is not an application
+    # log: it is unparseable as JSON (docs/LOGGING.md golden rule 1) and it
+    # rides on a logger name that none of the "websockets"-prefixed
+    # suppressions below can match. Threshold only — uvicorn's real INFO
+    # lifecycle lines, warnings and errors all still surface.
+    logging.getLogger("uvicorn.error").setLevel(max(level, logging.INFO))
 
 
 # Third-party loggers that flood the logs during model downloads. Pinned to a

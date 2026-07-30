@@ -732,8 +732,13 @@
    rails collapse so the center detail pane is never crushed and the page
    never scrolls horizontally. */
 
-/* Medium: drop the right SYSTEM rail; keep the queue + detail two-up. */
-@media (max-width: 1200px) {
+/* Medium: drop the right SYSTEM rail; keep the queue + detail two-up.
+   1400, not 1200: `340px 1fr 320px` inside `.content` (viewport - 232px
+   sidebar - 28px padding) leaves the detail pane ~354px at a 1280 viewport,
+   while its own head tools need ~469px — so between 1200 and ~1405 the pane
+   was clipped by `overflow-x: hidden`, which is exactly what the comment above
+   says must not happen. Matches the canonical scale in styles/base.css. */
+@media (max-width: 1400px) {
     .jobs-grid {
         grid-template-columns: 320px minmax(0, 1fr);
     }

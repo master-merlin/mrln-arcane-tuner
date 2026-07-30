@@ -230,10 +230,17 @@ class TaskManager:
         if throttle:
             now = time.time()
             last = self._last_emit.get(task.id, 0.0)
-            frac_step = task.total or 1
-            min_step = max(1, int(_PROGRESS_MIN_DELTA * frac_step))
             recent = (now - last) < _PROGRESS_MIN_INTERVAL_S
-            small = (task.current % min_step != 0) and task.current < task.total
+            if task.total > 0:
+                min_step = max(1, int(_PROGRESS_MIN_DELTA * task.total))
+                small = (task.current % min_step != 0) and task.current < task.total
+            else:
+                # Unknown total: there is no percentage to step on, so the
+                # delta half of the rule cannot apply and time alone throttles.
+                # Previously ``frac_step = total or 1`` made min_step 1, so
+                # ``current % 1 == 0`` always held, ``small`` was always False,
+                # and an unknown-total task broadcast on EVERY update.
+                small = True
             if recent and small:
                 return
             self._last_emit[task.id] = now

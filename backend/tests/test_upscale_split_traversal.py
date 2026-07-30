@@ -151,7 +151,7 @@ class TestSplitOutputPrefix:
 
         written: list[str] = []
 
-        def _fake_ffmpeg(args, progress_cb=None, timeout=None):
+        def _fake_ffmpeg(args, progress_cb=None, *, should_abort=None, timeout=None):
             written.append(args[-1])  # out_path is the last argv entry
             open(args[-1], "wb").close()
             return 0

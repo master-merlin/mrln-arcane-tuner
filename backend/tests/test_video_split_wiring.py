@@ -123,11 +123,11 @@ def test_split_segment_failure_isolated(monkeypatch, tiny_dataset):
     calls = {"n": 0}
     real_cut = split_batch._cut_segment
 
-    def flaky_cut(src, out, start, end, mode):
+    def flaky_cut(src, out, start, end, mode, should_abort=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("boom")
-        return real_cut(src, out, start, end, mode)
+        return real_cut(src, out, start, end, mode, should_abort)
 
     monkeypatch.setattr(split_batch, "_cut_segment", flaky_cut)
 
@@ -278,7 +278,7 @@ def test_auto_mode_decides_copy_on_keyframe(monkeypatch, tiny_dataset):
     used_modes = []
     real_run = split_batch._run_ffmpeg
 
-    def spy_args(args, progress_cb=None):
+    def spy_args(args, progress_cb=None, *, should_abort=None):
         # "-c copy" present → stream-copy chosen.
         used_modes.append("copy" if "copy" in args else "reencode")
         return real_run(args, progress_cb)

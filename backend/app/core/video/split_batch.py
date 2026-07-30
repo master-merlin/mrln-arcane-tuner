@@ -34,6 +34,7 @@ from pathlib import Path
 
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
+from app.core.video.ffmpeg import FFmpegAborted
 
 logger = get_logger(__name__)
 
@@ -45,10 +46,10 @@ _KEYFRAME_SNAP_S = 0.1
 # ── Seams ───────────────────────────────────────────────────────────────────
 
 
-def _run_ffmpeg(args: list[str], progress_cb=None) -> int:
+def _run_ffmpeg(args: list[str], progress_cb=None, *, should_abort=None) -> int:
     from app.core.video.ffmpeg import run_ffmpeg
 
-    return run_ffmpeg(args, progress_cb=progress_cb)
+    return run_ffmpeg(args, progress_cb=progress_cb, should_abort=should_abort)
 
 
 def _nearest_keyframe(path: str, t: float) -> float:
@@ -131,12 +132,21 @@ def _build_args(
 
 
 def _cut_segment(
-    source_path: str, out_path: str, start_s: float, end_s: float, mode: str
+    source_path: str,
+    out_path: str,
+    start_s: float,
+    end_s: float,
+    mode: str,
+    should_abort=None,
 ) -> str:
-    """Cut a single segment. Returns the effective mode used ('copy'/'reencode')."""
+    """Cut a single segment. Returns the effective mode used ('copy'/'reencode').
+
+    ``should_abort`` is polled by the runner while ffmpeg is alive, so a
+    cancelled task stops mid-segment instead of only at the segment boundary.
+    """
     effective_mode = _decide_mode(source_path, start_s, mode)
     args = _build_args(source_path, out_path, start_s, end_s, effective_mode)
-    _run_ffmpeg(args)
+    _run_ffmpeg(args, should_abort=should_abort)
     return effective_mode
 
 
@@ -202,6 +212,7 @@ def run_video_split_batch(
                     float(start_s),
                     float(end_s),
                     mode,
+                    should_abort=lambda: task_manager.is_cancelled(task_id),
                 )
                 ok += 1
                 produced.append(out_name)
@@ -213,6 +224,16 @@ def run_video_split_batch(
                     start=start_s,
                     end=end_s,
                 )
+            except FFmpegAborted:
+                # Cancelled mid-segment: not a failure, and the partial mp4 the
+                # killed encoder left behind must not survive as a "clip".
+                cancelled = True
+                try:
+                    out_path.unlink(missing_ok=True)
+                except OSError:  # pragma: no cover - best effort
+                    pass
+                logger.info("video_segment_cancelled", task_id=task_id, segment=i)
+                break
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 logger.warning(

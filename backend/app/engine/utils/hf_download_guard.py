@@ -60,13 +60,13 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 import structlog
+
+from app.core.proc_utils import drain_pipes, kill_process
 
 logger = structlog.get_logger(__name__)
 
@@ -231,74 +231,16 @@ def _make_default_probe(repo_id: str) -> Callable[[], object]:
     return _probe
 
 
-class _PipeTail:
-    """Continuously drain one child pipe on a daemon thread, keeping only
-    the last ``max_chars`` of output.
-
-    WHY: without an active reader, a chatty child (tqdm bars when the user
-    env sets ``HF_HUB_DISABLE_PROGRESS_BARS=0`` — our setdefault respects an
-    explicit value — or urllib3 retry warnings on exactly the flaky networks
-    this guard targets) fills the ~4-64KB OS pipe buffer, BLOCKS on its next
-    write, on-disk growth stops, and the watchdog would kill a perfectly
-    healthy download as "stalled". Draining decouples the child's verbosity
-    from the stall signal; the bounded tail keeps memory flat while
-    preserving the lines that matter (the resolved path is the LAST stdout
-    line; the newest stderr carries the real error)."""
-
-    def __init__(self, stream, max_chars: int = 65536):
-        self._chunks: deque[str] = deque()
-        self._size = 0
-        self._max = max_chars
-        self._lock = threading.Lock()
-        self._thread = threading.Thread(
-            target=self._drain, args=(stream,), daemon=True, name="hf_guard_pipe",
-        )
-        self._thread.start()
-
-    def _drain(self, stream) -> None:
-        try:
-            for line in stream:
-                with self._lock:
-                    self._chunks.append(line)
-                    self._size += len(line)
-                    while self._size > self._max and len(self._chunks) > 1:
-                        self._size -= len(self._chunks.popleft())
-        except Exception:
-            # Pipe closed mid-read (child killed) — the tail so far stands.
-            pass
-
-    def text(self, join_timeout_s: float = 5.0) -> str:
-        """Join the drain thread (EOF arrives when the child exits or is
-        killed) and return the retained tail."""
-        self._thread.join(timeout=join_timeout_s)
-        with self._lock:
-            return "".join(self._chunks)
-
-
-def _drain_pipes(
-    proc: "subprocess.Popen[str]",
-) -> tuple[Optional[_PipeTail], Optional[_PipeTail]]:
-    """Attach tail-drainers to whichever of stdout/stderr are pipes."""
-    out = _PipeTail(proc.stdout) if proc.stdout is not None else None
-    err = _PipeTail(proc.stderr) if proc.stderr is not None else None
-    return out, err
-
-
-def _kill(proc: "subprocess.Popen[str]") -> None:
-    """Terminate then kill. On Windows both calls invoke ``TerminateProcess``
-    (releasing file locks immediately); on POSIX ``terminate`` (SIGTERM) is
-    tried first and ``kill`` (SIGKILL) follows only if the process is still
-    alive after a short grace wait."""
-    for action in (proc.terminate, proc.kill):
-        try:
-            action()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=2)
-            return
-        except Exception:
-            continue
+# Pipe draining and child killing are shared with the ffmpeg runner, which has
+# the identical deadlock exposure — see app/core/proc_utils.py for why an
+# undrained pipe wedges the parent. WHY IT MATTERS HERE SPECIFICALLY: a chatty
+# child (tqdm bars when the user env sets HF_HUB_DISABLE_PROGRESS_BARS=0 — our
+# setdefault respects an explicit value — or urllib3 retry warnings on exactly
+# the flaky networks this guard targets) that blocks on a full pipe stops
+# growing the on-disk cache, and the stall watchdog would kill a perfectly
+# healthy download.
+_drain_pipes = drain_pipes
+_kill = kill_process
 
 
 def _run_one_attempt(
@@ -346,9 +288,15 @@ def _run_one_attempt(
                 last_activity_t = now
             elif now - last_activity_t >= stall_timeout_s:
                 _kill(proc)
-                return _AttemptOutcome(
-                    ok=False, reason="stalled", detail="no on-disk activity",
-                )
+                # Surface the child's own last words. The natural-exit path
+                # below reads the tails; the stall path used to discard them
+                # and report a bare "no on-disk activity", hiding the actual
+                # cause (401, proxy refusal, DNS) behind a generic stall.
+                err = (tail_err.text() if tail_err else "").strip()
+                detail = "no on-disk activity"
+                if err:
+                    detail = f"{detail}; last stderr: {err[-500:]}"
+                return _AttemptOutcome(ok=False, reason="stalled", detail=detail)
             time.sleep(poll_interval_s)
 
         stdout = tail_out.text() if tail_out else ""

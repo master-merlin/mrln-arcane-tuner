@@ -15,14 +15,19 @@ shipped definitions that match this shape are pinned below.
 
 from __future__ import annotations
 
-import glob
+from pathlib import Path
 
 import pytest
 import yaml
 
 from app.engine.utils.vram_estimator import _get_component_disk_mb
 
-_DEFS = sorted(glob.glob("app/engine/models/families/*/definitions/*.yaml"))
+# Anchored on this file, not the CWD: the suite is run both from ``backend/``
+# and from the repo root (``pytest backend``), and a relative glob silently
+# returns [] in the second case — which would turn every definition assertion
+# below into a vacuous pass rather than a failure.
+_FAMILIES = Path(__file__).resolve().parents[1] / "app/engine/models/families"
+_DEFS = sorted(str(p) for p in _FAMILIES.glob("*/definitions/*.yaml"))
 
 
 class TestComponentDiskLookup:

@@ -91,6 +91,10 @@ async def upscale_media(
             detail="Missing dependencies: pip install spandrel torch"
         )
 
+    # Request-shape validation first: "Upscale is not supported for audio" is a
+    # more useful 400 than a 403/404 about some incidental path detail.
+    reject_audio_op(request.image_path, "Upscale")
+
     dataset_root = Path(dataset.path)
     # Containment BEFORE any IO: this route reads ``img_path`` with PIL and then
     # writes the upscaled pixels back over it, so an escaping ``image_path`` was
@@ -106,7 +110,6 @@ async def upscale_media(
         raise HTTPException(status_code=404, detail="Image not found")
     if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
-    reject_audio_op(request.image_path, "Upscale")
 
     def _upscale():
         from PIL import Image as PILImage

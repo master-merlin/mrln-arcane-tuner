@@ -1,6 +1,6 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { filter } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { ScopeStore } from '../../state/scope.store';
@@ -10,6 +10,7 @@ import { JobStore } from '../../state/job.store';
 import { ProjectService } from '../../services/project.service';
 import { JobStatus } from '../../services/job';
 import { SystemService } from '../../services/system.service';
+import { WebSocketService } from '../../services/websocket.service';
 
 /**
  * Sidebar — brand, jump-to placeholder, screen nav, active-scope card,
@@ -49,6 +50,8 @@ export class SidebarComponent implements OnInit {
     private datasetStore = inject(DatasetStore);
     private jobStore = inject(JobStore);
     private systemService = inject(SystemService);
+    private ws = inject(WebSocketService);
+    private destroyRef = inject(DestroyRef);
     private router = inject(Router);
 
     protected nav = NAV;
@@ -97,16 +100,29 @@ export class SidebarComponent implements OnInit {
     } as const;
 
     ngOnInit() {
-        this.systemService.getVersion().subscribe({
-            next: (r) => this.appVersion.set(r.version),
-            error: () => this.appVersion.set('?.?.?'),
-        });
+        this.loadVersion();
+
+        // The sidebar lives for the whole session, so a one-shot fetch here
+        // never updates again — and the one thing guaranteed to change the
+        // version is the in-app "update & restart", after which the footer kept
+        // showing the version the user just upgraded AWAY from. Re-read it
+        // whenever the socket comes back.
+        this.ws.reconnected$
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe(() => this.loadVersion());
 
         // Hydrate the stores so the nav badge counts are populated on EVERY
         // screen (not just after visiting Datasets / Jobs). Both are
         // WS-reconciled, so they stay live afterwards.
         void this.datasetStore.loadAll();
         void this.jobStore.loadAll();
+    }
+
+    private loadVersion(): void {
+        this.systemService.getVersion().subscribe({
+            next: (r) => this.appVersion.set(r.version),
+            error: () => this.appVersion.set('?.?.?'),
+        });
     }
 
     protected activeProject = computed(() => {

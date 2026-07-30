@@ -2,6 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
+import { WebSocketService } from './websocket.service';
 import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 import { ScopeStore } from '../state/scope.store';
 import type {
@@ -85,10 +86,27 @@ export class ProjectService {
   private http = inject(HttpClient);
   private rtc = inject(RuntimeConfigService);
   private scope = inject(ScopeStore);
+  private ws = inject(WebSocketService);
 
   // Global App State for Projects
   allProjects = signal<Project[]>([]);
   activeJobsProject = signal<string | null>(null);
+
+  constructor() {
+    // Re-hydrate when the socket comes back. `loadProjects()` is called ONCE,
+    // by the shell at app init, so without this the list is frozen at whatever
+    // it held when the backend went away — and if the app happened to start
+    // against a backend that was down or restarting, it stays empty until the
+    // user presses F5. Every other server-backed store already does this:
+    // EntityStore re-runs `loadAll()` off `ws.reconnected()`, DatasetSyncService
+    // re-reconciles each loaded dataset, TaskStore resyncs. Projects were the
+    // one hole.
+    //
+    // Keyed on reconnect rather than `serverRestarted$`: a socket that drops
+    // and returns against the SAME backend has still missed every mutation in
+    // between, so the list needs re-fetching either way.
+    this.ws.reconnected$.subscribe(() => this.loadProjects());
+  }
 
   /**
    * Loading tri-state for {@link loadProjects}. Lets screens distinguish

@@ -10,7 +10,7 @@ import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { provideHttpClient, withXhr } from '@angular/common/http';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { MassCaptionModalComponent } from '../mass-caption.component';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
@@ -54,7 +54,17 @@ describe('MassCaptionModalComponent — launcher contract (Task 9)', () => {
                 provideHttpClient(withXhr()),
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
-                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                // `reconnected$` too: ProjectService (pulled in transitively)
+                // re-hydrates its list off it, so a stub without it makes the
+                // whole injector throw rather than fail an assertion.
+                {
+                    provide: WebSocketService,
+                    useValue: {
+                        entityChanged: signal(null),
+                        reconnected: signal(0),
+                        reconnected$: new Subject<void>(),
+                    },
+                },
                 { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
                 { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },

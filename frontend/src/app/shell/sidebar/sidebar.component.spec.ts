@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { Router } from '@angular/router';
 import { SidebarComponent } from './sidebar.component';
 import { ScopeStore } from '../../state/scope.store';
@@ -8,15 +8,21 @@ import { DatasetStore } from '../../state/dataset.store';
 import { JobStore } from '../../state/job.store';
 import { ProjectService } from '../../services/project.service';
 import { SystemService } from '../../services/system.service';
+import { WebSocketService } from '../../services/websocket.service';
+
+/** Reset by every {@link mount}; lets a test drive a socket reconnect. */
+let reconnected$: Subject<void>;
 
 // The `showSystem` computed drives the `@if` around the sidebar's mini-monitor
 // (`.side-system`). An empty template keeps RouterLink/child directives from
 // instantiating so we can exercise the route gate in isolation.
-function mount(url: string) {
+function mount(url: string, systemService: unknown = { getVersion: () => of({ version: '9.9.9' }) }) {
+    reconnected$ = new Subject<void>();
     TestBed.configureTestingModule({
         imports: [SidebarComponent],
         providers: [
             { provide: Router, useValue: { url, events: of() } },
+            { provide: WebSocketService, useValue: { reconnected$ } },
             { provide: ScopeStore, useValue: { projectId: () => null, setGlobal: () => {} } },
             {
                 provide: SystemStore,
@@ -30,7 +36,7 @@ function mount(url: string) {
             { provide: ProjectService, useValue: { allProjects: () => [] } },
             { provide: DatasetStore, useValue: { entities: () => [], loadAll: () => Promise.resolve() } },
             { provide: JobStore, useValue: { entities: () => [], loadAll: () => Promise.resolve() } },
-            { provide: SystemService, useValue: { getVersion: () => of({ version: '9.9.9' }) } },
+            { provide: SystemService, useValue: systemService },
         ],
     }).overrideComponent(SidebarComponent, { set: { template: '' } });
     const fixture = TestBed.createComponent(SidebarComponent);
@@ -40,6 +46,7 @@ function mount(url: string) {
         showSystem: () => boolean;
         meterTone: (pct: number) => 'ok' | 'warn' | 'crit';
         meterColor: (pct: number) => string;
+        appVersion: () => string;
     };
 }
 
@@ -86,5 +93,39 @@ describe('SidebarComponent — meter threshold tint (T19)', () => {
         expect(c.meterColor(10)).toBe('var(--color-success)');
         expect(c.meterColor(80)).toBe('var(--color-warning)');
         expect(c.meterColor(95)).toBe('var(--color-danger)');
+    });
+});
+
+/**
+ * The sidebar footer shows the running backend version and is mounted for the
+ * whole session, so its one-shot fetch never ran again. The app can restart the
+ * backend from inside itself ("update & restart"), and after exactly that the
+ * footer kept showing the version the user had just upgraded away from, until a
+ * browser reload. Re-read it when the socket comes back.
+ */
+describe('SidebarComponent — backend version follows a restart', () => {
+    function versionService(versions: string[]) {
+        let i = 0;
+        return { getVersion: () => of({ version: versions[Math.min(i++, versions.length - 1)] }) };
+    }
+
+    it('shows the version fetched at init', () => {
+        expect(mount('/datasets', versionService(['0.7.7-beta'])).appVersion()).toBe('0.7.7-beta');
+    });
+
+    it('re-reads the version on reconnect, so an in-app update is reflected', () => {
+        const c = mount('/datasets', versionService(['0.7.7-beta', '0.7.8-beta']));
+        expect(c.appVersion()).toBe('0.7.7-beta');
+
+        reconnected$.next();
+
+        expect(c.appVersion()).toBe('0.7.8-beta');
+    });
+
+    it('re-reads on every reconnect, not just the first', () => {
+        const c = mount('/datasets', versionService(['a', 'b', 'c']));
+        reconnected$.next();
+        reconnected$.next();
+        expect(c.appVersion()).toBe('c');
     });
 });

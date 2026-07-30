@@ -265,14 +265,27 @@ def make_progress_tqdm(
     return _BoundProgressTqdm
 
 
+#: Root files that mark a cached repo. ``model_index.json`` is the diffusers
+#: pipeline manifest and ``config.json`` the single-model/transformers one — a
+#: diffusers repo has NO root config.json (its component configs live in
+#: subfolders), so probing only for that missed most of this app's models. On a
+#: representative local cache 42 of 77 repos were diffusers-format, i.e. the
+#: suppression this function exists to provide never fired for them.
+_CACHE_MARKER_FILES = ("model_index.json", "config.json")
+
+
 def _is_repo_cached(repo_id: str) -> bool:
-    """Best-effort: True when the repo's ``config.json`` is already in the HF
-    cache, i.e. the model was downloaded before and loading it won't hit the
-    network. Used to suppress a spurious download-bar flash on a pure cache hit
-    (loading cached shards from disk into VRAM is not a download)."""
+    """Best-effort: True when the repo's manifest is already in the HF cache,
+    i.e. the model was downloaded before and loading it won't hit the network.
+    Used to suppress a spurious download-bar flash on a pure cache hit (loading
+    cached shards from disk into VRAM is not a download)."""
     try:
         from huggingface_hub import try_to_load_from_cache
-        return isinstance(try_to_load_from_cache(repo_id, "config.json"), str)
+
+        return any(
+            isinstance(try_to_load_from_cache(repo_id, name), str)
+            for name in _CACHE_MARKER_FILES
+        )
     except Exception:
         return False
 
@@ -421,33 +434,32 @@ class SnapshotProgressRegistry:
         return out
 
 
-@contextmanager
-def _capture_per_file(
-    registry: SnapshotProgressRegistry,
-) -> Generator[None, None, None]:
-    """Temporarily route HF's per-file byte bars into *registry*.
+# ── per-file capture: one refcounted patch, never a nested one ───────────
+#
+# The capture works by swapping a module global in huggingface_hub, which is
+# process-wide. Patching per-call and restoring in ``finally`` is only correct
+# while calls strictly nest: two concurrent snapshot downloads finishing in the
+# order they started leave the FIRST one's subclass installed permanently, so
+# every later download routes its per-file bars into a dead registry. Instead a
+# single patch is installed by the first capture and removed by the last, and
+# bars are attributed only when exactly one capture is active — with two in
+# flight there is no way to tell which download a bar belongs to, so they are
+# attributed to neither (aggregate byte progress, which is polled from disk per
+# repo, is unaffected).
+_capture_lock = threading.Lock()
+_active_registries: list["SnapshotProgressRegistry"] = []
+_capture_original: Optional[type] = None
+_capture_module = None
 
-    huggingface_hub builds each per-file download bar via
-    ``_get_progress_bar_context`` → the module-global ``tqdm`` in the
-    ``huggingface_hub.utils.tqdm`` submodule. We swap that name for an
-    emitting subclass for the duration of a download and restore it in
-    ``finally``. (Note: ``import huggingface_hub.utils.tqdm`` binds the tqdm
-    *class*, not the module — the package re-exports the class under that
-    name — so we reach the real module through ``sys.modules``.) The outer
-    "Fetching N files" bar uses unit "files" (not "B"), so it is ignored.
-    Best-effort: if the module/attr is absent on some future HF version, the
-    hook no-ops and only aggregate progress is shown.
-    """
-    import sys
 
-    import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
+def _current_registry() -> Optional["SnapshotProgressRegistry"]:
+    with _capture_lock:
+        if len(_active_registries) == 1:
+            return _active_registries[0]
+        return None
 
-    mod = sys.modules.get("huggingface_hub.utils.tqdm")
-    original = getattr(mod, "tqdm", None) if mod is not None else None
-    if mod is None or original is None:
-        yield
-        return
 
+def _make_per_file_tqdm(original: type) -> type:
     class _PerFileTqdm(original):  # type: ignore[misc, valid-type]
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -456,24 +468,74 @@ def _capture_per_file(
             # the file-count bar and any non-download bar are ignored.
             if getattr(self, "unit", "") == "B" and getattr(self, "desc", ""):
                 self._reg_name = self.desc
-                registry.update(self._reg_name, int(self.n or 0), self.total)
+                reg = _current_registry()
+                if reg is not None:
+                    reg.update(self._reg_name, int(self.n or 0), self.total)
 
         def update(self, n: int = 1) -> "bool | None":
             ret = super().update(n)
             if self._reg_name:
-                registry.update(self._reg_name, int(self.n or 0), self.total)
+                reg = _current_registry()
+                if reg is not None:
+                    reg.update(self._reg_name, int(self.n or 0), self.total)
             return ret
 
         def close(self) -> None:
             if self._reg_name:
-                registry.done(self._reg_name)
+                reg = _current_registry()
+                if reg is not None:
+                    reg.done(self._reg_name)
             super().close()
 
-    mod.tqdm = _PerFileTqdm
+    return _PerFileTqdm
+
+
+@contextmanager
+def _capture_per_file(
+    registry: SnapshotProgressRegistry,
+) -> Generator[None, None, None]:
+    """Route HF's per-file byte bars into *registry* for the duration.
+
+    huggingface_hub builds each per-file download bar via
+    ``_get_progress_bar_context`` → the module-global ``tqdm`` in the
+    ``huggingface_hub.utils.tqdm`` submodule. (Note: ``import
+    huggingface_hub.utils.tqdm`` binds the tqdm *class*, not the module — the
+    package re-exports the class under that name — so we reach the real module
+    through ``sys.modules``.) The outer "Fetching N files" bar uses unit
+    "files" (not "B"), so it is ignored. Best-effort: if the module/attr is
+    absent on some future HF version, the hook no-ops and only aggregate
+    progress is shown.
+    """
+    global _capture_original, _capture_module
+    import sys
+
+    import huggingface_hub.utils.tqdm  # noqa: F401  (registers the submodule)
+
+    mod = sys.modules.get("huggingface_hub.utils.tqdm")
+    if mod is None or getattr(mod, "tqdm", None) is None:
+        yield
+        return
+
+    with _capture_lock:
+        _active_registries.append(registry)
+        if _capture_original is None:
+            # First capture in flight — take the REAL original under the lock so
+            # a concurrent starter can never capture an already-patched class.
+            _capture_original = mod.tqdm
+            _capture_module = mod
+            mod.tqdm = _make_per_file_tqdm(_capture_original)
     try:
         yield
     finally:
-        mod.tqdm = original
+        with _capture_lock:
+            try:
+                _active_registries.remove(registry)
+            except ValueError:  # pragma: no cover - defensive
+                pass
+            if not _active_registries and _capture_original is not None:
+                _capture_module.tqdm = _capture_original
+                _capture_original = None
+                _capture_module = None
 
 
 def _progress_signature(p: DownloadProgress) -> tuple:

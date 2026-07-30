@@ -211,16 +211,62 @@ class QuantizationFactory:
 
     # ── Disk Cache API (Preserved for compatibility) ──────────────────────
     @staticmethod
+    def state_shape_signature(module: nn.Module) -> dict[str, tuple]:
+        """Shapes of *module*'s state dict, keyed by name. Metadata only — no
+        tensor data is touched, so this is cheap on a 20 GB backbone."""
+        return {k: tuple(v.shape) for k, v in module.state_dict().items()}
+
+    @staticmethod
+    def cache_is_loadable(
+        source_signature: dict[str, tuple], quantized: nn.Module
+    ) -> bool:
+        """Can a cache of *quantized* ever be loaded back?
+
+        ``load_quantized`` is handed the freshly-loaded UNQUANTIZED component
+        and calls ``load_state_dict`` on it, so a cache is only usable when
+        quantization preserved the state-dict layout. torchao's tensor
+        subclasses do (same keys, same logical shapes); a PACKING backend does
+        not — bitsandbytes replaces ``nn.Linear`` with ``Linear4bit`` holding a
+        uint8 ``Params4bit`` of half the elements, and loading that raises a
+        size mismatch for every weight.
+
+        Without this check the pipeline spent a full serialization pass writing
+        a multi-GB cache on every run that could only ever be rejected at load
+        (the ``except Exception`` in ``load_quantized`` turned it into a silent
+        miss), so nf4/int4 users paid the write cost forever and never got a
+        hit.
+        """
+        return source_signature == QuantizationFactory.state_shape_signature(
+            quantized
+        )
+
+    @staticmethod
     def _get_cache_root() -> str:
         here = os.path.dirname(__file__)
         backend_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
         return os.path.join(backend_root, "models", ".quantized")
 
     @staticmethod
+    def _sanitize_segment(raw: str) -> str:
+        """One path segment from an identifier: no separators, no ``..``.
+
+        Separators were already stripped; ``..`` was not, so an id of ".."
+        walked the cache root up one level. Not reachable today (ids come from
+        the registry, i.e. from yaml filenames) but this is a path built from
+        data and it should not depend on that staying true.
+        """
+        cleaned = raw.replace("/", "_").replace("\\", "_").replace(":", "_")
+        return "_" if cleaned.strip(".") == "" else cleaned
+
+    @staticmethod
     def resolve_cache_path(definition_id: str, component: str, scheme: str) -> str:
         root = QuantizationFactory._get_cache_root()
-        safe_id = definition_id.replace("/", "_").replace("\\", "_").replace(":", "_")
-        return os.path.join(root, safe_id, scheme, component)
+        return os.path.join(
+            root,
+            QuantizationFactory._sanitize_segment(definition_id),
+            QuantizationFactory._sanitize_segment(scheme),
+            QuantizationFactory._sanitize_segment(component),
+        )
 
     @staticmethod
     def _get_source_fingerprint(source_path: str | None) -> dict:
@@ -249,7 +295,20 @@ class QuantizationFactory:
         cache_path: str,
         scheme: str,
         source_path: str | None = None,
+        source_param_count: int | None = None,
+        source_signature: dict[str, tuple] | None = None,
     ) -> None:
+        if source_signature is not None and not QuantizationFactory.cache_is_loadable(
+            source_signature, module
+        ):
+            logger.info(
+                "quantized_cache_skipped_unloadable",
+                path=cache_path,
+                scheme=scheme,
+                reason="backend changed the state-dict layout (packing backend)",
+            )
+            return
+
         os.makedirs(cache_path, exist_ok=True)
 
         metadata = {
@@ -257,6 +316,13 @@ class QuantizationFactory:
             "torch_version": torch.__version__,
             "timestamp": time.time(),
             "param_count": sum(p.numel() for p in module.parameters()),
+            # The count of the UNQUANTIZED module, which is what load_quantized
+            # can measure at its call site. Packing backends (bitsandbytes
+            # Linear4bit stores a uint8 Params4bit of half the elements) change
+            # numel, so comparing the post-quantization count against the
+            # freshly-loaded bf16 module made every load a guaranteed mismatch
+            # and the disk cache silently never hit for nf4/int4.
+            "source_param_count": source_param_count,
         }
 
         fingerprint = QuantizationFactory._get_source_fingerprint(source_path)
@@ -306,11 +372,22 @@ class QuantizationFactory:
             logger.info("quantized_cache_scheme_mismatch", path=cache_path, cached=metadata.get("scheme"), requested=scheme)
             return None
 
+        # ``module`` here is the freshly-loaded UNQUANTIZED component, so compare
+        # against the source count when the cache recorded one. Entries written
+        # before that field existed only carry the post-quantization count,
+        # which is only comparable for backends that preserve numel (torchao's
+        # tensor subclasses do; bitsandbytes' packing does not) — treat those
+        # as unverifiable rather than as a mismatch, and let the scheme + source
+        # fingerprint checks below carry the validation.
         param_count = sum(p.numel() for p in module.parameters())
-        cached_count = metadata.get("param_count")
+        cached_count = metadata.get("source_param_count")
         if cached_count and cached_count != param_count:
-             logger.warning("quantized_cache_param_mismatch", cached=cached_count, current=param_count)
-             return None
+            logger.warning(
+                "quantized_cache_param_mismatch",
+                cached=cached_count,
+                current=param_count,
+            )
+            return None
 
         if source_path:
             fingerprint = QuantizationFactory._get_source_fingerprint(source_path)
@@ -325,7 +402,14 @@ class QuantizationFactory:
                 from safetensors.torch import load_file
                 state_dict = load_file(os.path.join(cache_path, "model.safetensors"))
             else:
-                state_dict = torch.load(os.path.join(cache_path, "model.pt"), weights_only=False)
+                # weights_only=True: this is a cache file under backend/models,
+                # and the legacy torch.save fallback path is only ever a plain
+                # state dict. Loading it with the pickle interpreter enabled was
+                # the one remaining arbitrary-code sink in the engine (every
+                # checkpoints.py load already pins weights_only=True).
+                state_dict = torch.load(
+                    os.path.join(cache_path, "model.pt"), weights_only=True
+                )
 
             module.load_state_dict(state_dict, strict=False, assign=True)
             logger.info("quantized_model_loaded", path=cache_path, scheme=scheme)

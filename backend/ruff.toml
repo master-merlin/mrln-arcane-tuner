@@ -1,10 +1,20 @@
 # Ruff configuration for the MRLN Arcane Tuner backend.
 #
-# Rule selection is intentionally left at Ruff's defaults (E4/E7/E9 + F) — this
-# file exists only to carve out vendored code from linting.
+# Rule selection is E4/E7/E9 + F — pyflakes plus the pycodestyle errors that
+# catch real defects, deliberately not the stylistic families.
+#
+# It is written out EXPLICITLY rather than inherited from Ruff's defaults:
+# those defaults are not a stable contract. Upgrading 0.15 -> 0.16 widened them
+# and turned a clean tree into 1678 findings (490 import-order, 242 unused-noqa,
+# 162 blind-except, ...) — none of them new defects, all of them noise that
+# would have buried the handful of real ones. Adding a rule family should be a
+# decision recorded here, not a side effect of a version bump.
 #
 # `**/vendor` holds third-party model implementations (DiT / transformer code)
 # vendored verbatim from their upstream repos and refreshed via each family's
 # `vendor/_refresh.py`. We track it as-is and must not reformat or relint it,
 # so its upstream style (e.g. `lambda` assignments) is not our concern.
 extend-exclude = ["**/vendor"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

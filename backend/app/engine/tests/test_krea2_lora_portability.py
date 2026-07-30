@@ -185,7 +185,8 @@ def test_krea2_saver_key_format():
     definition.lora_targetable_modules = _LORA_TARGETS
     definition.architecture_params = {}
 
-    import tempfile, pathlib
+    import pathlib
+    import tempfile
     with tempfile.TemporaryDirectory() as td:
         saved_path = pathlib.Path(td) / "test.safetensors"
 
@@ -236,7 +237,8 @@ def test_krea2_saver_is_family_agnostic():
     definition.lora_targetable_modules = _LORA_TARGETS
     definition.architecture_params = {}
 
-    import tempfile, pathlib
+    import pathlib
+    import tempfile
     with tempfile.TemporaryDirectory() as td:
         saved_path = pathlib.Path(td) / "test.safetensors"
 
@@ -285,7 +287,8 @@ def test_krea2_saver_architecture_metadata():
     definition.lora_targetable_modules = _LORA_TARGETS
     definition.architecture_params = {}
 
-    import tempfile, pathlib
+    import pathlib
+    import tempfile
     with tempfile.TemporaryDirectory() as td:
         saved_path = pathlib.Path(td) / "test.safetensors"
 

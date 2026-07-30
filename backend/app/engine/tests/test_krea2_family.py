@@ -9,7 +9,16 @@ TDD order:
   6. test_krea2_definitions_loaded              — Raw + Turbo definitions loaded
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import torch
+
+if TYPE_CHECKING:  # pragma: no cover - annotation only
+    # The real import lives inside the helper bodies (these tests deliberately
+    # defer family imports); this makes the return annotation resolvable.
+    from app.engine.models.families.krea2.trainer import Krea2Trainer
 import pytest
 from unittest.mock import MagicMock
 

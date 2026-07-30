@@ -129,10 +129,21 @@ import type { DatasetPair } from '../../services/dataset';
         }
     `,
     styles: [`
-        :host { display: block; height: 100%; overflow: hidden; }
+        /* Masking (left rail) and captioning (right rail) both live here, so
+           this is the mode where a small monitor hurts most: both rails were
+           fixed at 340px and the image being masked got whatever was left.
+           One variable, decided only in the breakpoints below — canonical scale
+           in src/styles/base.css. */
+        :host {
+            --ws-rail: 340px;
+            display: block; height: 100%; overflow: hidden;
+        }
+        @media (max-width: 1400px) { :host { --ws-rail: 300px; } }
+        @media (max-width: 1200px) { :host { --ws-rail: 264px; } }
+
         .details-grid {
             display: grid;
-            grid-template-columns: 340px 1fr 340px;
+            grid-template-columns: var(--ws-rail) 1fr var(--ws-rail);
             height: 100%;
             overflow: hidden;
         }
@@ -145,6 +156,23 @@ import type { DatasetPair } from '../../services/dataset';
         .pane.caption { border-left: 1px solid var(--color-border-subtle); background: var(--color-surface-low); }
         .pane.canvas { background: var(--color-base); display: flex; flex-direction: column; overflow: hidden; }
         .pane.canvas > app-detail-media-container { flex: 1; min-height: 0; }
+
+        /* Stack rather than squeeze: canvas first, then the mask and caption
+           rails, with the mode scrolling. Same controls, in sequence — nothing
+           is dropped on a small screen. */
+        @media (max-width: 900px) {
+            :host { overflow-y: auto; }
+            .details-grid {
+                grid-template-columns: 1fr;
+                height: auto;
+                min-height: 100%;
+                overflow: visible;
+            }
+            .pane { overflow: visible; }
+            .pane.canvas { order: -1; min-height: 52vh; }
+            .pane.mask    { border-right: 0; border-top: 1px solid var(--color-border-subtle); }
+            .pane.caption { border-left: 0;  border-top: 1px solid var(--color-border-subtle); }
+        }
         .empty {
             display: flex; align-items: center; justify-content: center;
             height: 100%;

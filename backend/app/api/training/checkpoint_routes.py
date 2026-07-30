@@ -3,33 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.api._path_guard import validate_path_in_allowed_roots
 from app.engine.utils.checkpoint_inspector import inspect_checkpoint
 
 router = APIRouter()
-
-# Allowed roots for checkpoint inspection
-_ALLOWED_ROOTS: list[Path] = [
-    Path(__file__).resolve().parents[3],  # backend/
-    Path("outputs").resolve(),
-]
 
 
 @router.get("/checkpoints/inspect", response_model=dict[str, Any])
 async def inspect_checkpoint_route(path: str):
     """Inspect a checkpoint's metadata without loading weights."""
-    resolved = Path(path).resolve()
-
-    # Verify the path stays within allowed directories
-    if not any(resolved.is_relative_to(root) for root in _ALLOWED_ROOTS):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path is outside allowed directories.",
-        )
+    # Shared operator-tool roots (see app/api/_path_guard.ALLOWED_FS_ROOTS) —
+    # this module used to carry its own CWD-dependent copy of the list.
+    resolved = validate_path_in_allowed_roots(path)
     if not resolved.exists():
         raise HTTPException(status_code=404, detail=f"Checkpoint not found: {path}")
 

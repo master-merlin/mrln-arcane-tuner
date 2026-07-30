@@ -26,7 +26,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import validate_path_within
+from app.api._path_guard import sanitize_filename, validate_path_within
 from app.api.schemas.common_schemas import TaskEnqueuedResponse
 from app.api.schemas.video_schemas import (
     ClipHealthSummaryResponse,
@@ -124,6 +124,14 @@ async def video_split(name: str, request: VideoSplitRequest):
     from app.core.video.split_batch import run_video_split_batch
 
     segments = [s.model_dump() for s in request.segments]
+    # ``output_prefix`` becomes the leading component of every output filename
+    # (``{prefix}_{i:03d}.mp4``) inside the dataset dir, and ffmpeg runs with
+    # ``-y``. Unsanitized it was an arbitrary-location overwrite. Strip any
+    # directory component; an all-separator prefix collapses to "" and falls
+    # back to the source stem in the worker.
+    output_prefix = (
+        sanitize_filename(request.output_prefix) if request.output_prefix else None
+    )
     task = task_manager.create(
         type="video_split",
         title=f"Split · {Path(request.source_rel_path).stem}",
@@ -138,7 +146,7 @@ async def video_split(name: str, request: VideoSplitRequest):
             source_rel_path=request.source_rel_path,
             segments=segments,
             mode=request.mode,
-            output_prefix=request.output_prefix,
+            output_prefix=output_prefix,
             archive_source=request.archive_source,
         ),
         lane="cpu",

@@ -762,13 +762,30 @@ def _is_video_definition(definition: Any) -> bool:
     return "video.vae_temporal" in arch
 
 
+#: Interchangeable names for the PRIMARY trainable component. The alias walk is
+#: valid only within this group — a definition that calls its backbone
+#: ``transformer`` still answers a lookup for ``unet`` and vice versa.
+_PRIMARY_KEYS: tuple[str, ...] = ("transformer", "unet", "model")
+
+
 def _get_component_disk_mb(size_mb: dict, key: str) -> float:
     """Look up on-disk component size in MB from model_size_mb dict.
 
-    Tries *key* first, then common aliases (transformer/unet).
-    Returns 0 when not found.
+    For the primary component, any of :data:`_PRIMARY_KEYS` answers. For every
+    OTHER component (``text_encoder``, ``vae``, …) only the exact key answers.
+    Returns 0 when not found, which sends the caller to the param-count
+    fallback table.
+
+    The alias walk used to be unconditional — ``(key, "transformer", "unet")``
+    for every key — so a definition shipping a primary size but no
+    ``text_encoder``/``vae`` had the TRANSFORMER size returned as both. Two
+    shipped definitions matched (``bernini_r_14b``, ``k5_i2v_pro_sft_5s``) and
+    reported caching peaks of 55.6 GB / 74.7 GB against real figures of roughly
+    12.6 GB / 18.3 GB; since ``peak_mb = max(training, caching)`` that surfaced
+    as a false "won't fit" on cards that fit the run comfortably.
     """
-    for k in (key, "transformer", "unet"):
+    candidates = _PRIMARY_KEYS if key in _PRIMARY_KEYS else (key,)
+    for k in candidates:
         val = size_mb.get(k, 0)
         if val > 0:
             return float(val)

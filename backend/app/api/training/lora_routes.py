@@ -3,34 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.api._path_guard import validate_path_in_allowed_roots
 from app.api.schemas.lora_schemas import ResizeLoraRequest
 
 router = APIRouter()
 
-# Allowed roots for LoRA file access
-_ALLOWED_ROOTS: list[Path] = [
-    Path(__file__).resolve().parents[3],  # backend/
-    Path("outputs").resolve(),
-]
-
-
-def _check_lora_path(raw_path: str) -> Path:
-    """Resolve and validate a LoRA file path."""
-    resolved = Path(raw_path).resolve()
-    if not any(resolved.is_relative_to(root) for root in _ALLOWED_ROOTS):
-        # Surface the allowed roots so the user knows where to move the file —
-        # a bare "outside allowed directories" leaves them with no way to fix it.
-        allowed = ", ".join(str(root) for root in _ALLOWED_ROOTS)
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access denied: path is outside allowed directories. Allowed: {allowed}",
-        )
-    return resolved
+# Shared operator-tool roots (see app/api/_path_guard.ALLOWED_FS_ROOTS) — this
+# module used to carry its own CWD-dependent copy rooted at all of ``backend/``,
+# which let the WRITING endpoint (/tools/lora/resize) target the database or a
+# venv binary.
+_check_lora_path = validate_path_in_allowed_roots
 
 
 @router.get("/tools/lora/inspect", response_model=dict[str, Any])
@@ -53,8 +39,11 @@ async def resize_lora_file(request: ResizeLoraRequest):
     import torch
     from app.engine.utils.lora_tools import resize_lora
 
-    _check_lora_path(request.input_path)
-    _check_lora_path(request.output_path)
+    # Pass the RESOLVED paths downstream, not the raw request strings: guarding
+    # a path and then handing the unvalidated original to the worker relies on
+    # the callee re-deriving the identical resolution.
+    in_path = _check_lora_path(request.input_path)
+    out_path = _check_lora_path(request.output_path)
 
     dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
     save_dtype = dtype_map.get(request.save_dtype) if request.save_dtype else None
@@ -62,8 +51,8 @@ async def resize_lora_file(request: ResizeLoraRequest):
     try:
         return await asyncio.to_thread(
             resize_lora,
-            request.input_path,
-            request.output_path,
+            str(in_path),
+            str(out_path),
             request.new_rank,
             request.new_alpha,
             save_dtype,

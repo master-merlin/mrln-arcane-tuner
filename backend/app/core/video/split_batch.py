@@ -176,7 +176,13 @@ def run_video_split_batch(
             task_manager.fail(task_id, f"source not found: {source_rel_path}")
             return
 
-        prefix = output_prefix or Path(source_rel_path).stem
+        # Contain our OWN output name rather than trusting the caller. Both
+        # current callers sanitize pre-enqueue, but a future one (resume, retry,
+        # replay from a persisted task record) must not be able to reopen the
+        # arbitrary-location write primitive — ``prefix`` is the leading segment
+        # of every output path and ffmpeg runs with ``-y``. ``Path(x).name``
+        # drops every directory component and collapses a pure ".." to "".
+        prefix = Path(output_prefix or "").name or Path(source_rel_path).stem
 
         for i, seg in enumerate(segments):
             if task_manager.is_cancelled(task_id):

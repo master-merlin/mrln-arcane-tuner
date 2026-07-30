@@ -9,7 +9,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api._deps import dataset_or_404
-from app.api._path_guard import reject_audio_op, safe_remove
+from app.api._path_guard import (
+    reject_audio_op,
+    safe_remove,
+    validate_path_in_allowed_roots,
+    validate_path_within,
+)
 from app.core.dataset_manager import Dataset, dataset_manager
 from app.core.logger import get_logger
 from app.api.schemas.upscale_schemas import (
@@ -44,7 +49,11 @@ async def list_upscale_models(request: UpscaleListRequest):
         if not folder.is_dir():
             folder = _LEGACY_UPSCALE_FOLDER
     else:
-        folder = Path(folder_str)
+        # A client-named folder is an absolute path — contain it to the
+        # operator-tool roots. Unguarded, this route was an arbitrary directory
+        # lister (returning names, full paths and sizes for every model-suffixed
+        # file it found).
+        folder = validate_path_in_allowed_roots(folder_str)
 
     if not folder.is_dir():
         raise HTTPException(status_code=404, detail=f"Folder not found: {folder}")
@@ -83,8 +92,15 @@ async def upscale_media(
         )
 
     dataset_root = Path(dataset.path)
-    img_path = dataset_root / request.image_path
-    model_path = Path(request.model_path)
+    # Containment BEFORE any IO: this route reads ``img_path`` with PIL and then
+    # writes the upscaled pixels back over it, so an escaping ``image_path`` was
+    # an arbitrary-file OVERWRITE primitive (the exists() check below makes it
+    # overwrite-only, which still reaches the database, a definition yaml, a
+    # model .safetensors, or the served frontend bundle).
+    img_path = validate_path_within(dataset_root / request.image_path, dataset_root)
+    # The model is handed to spandrel, which torch.loads ``.pth`` checkpoints —
+    # an unrestricted path made that an arbitrary-pickle load sink.
+    model_path = validate_path_in_allowed_roots(request.model_path)
 
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")

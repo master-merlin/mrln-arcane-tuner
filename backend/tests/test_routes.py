@@ -76,14 +76,15 @@ def test_inspect_checkpoint_success(mock_to_thread, mock_inspect, client):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
     mock_inspect.return_value = {"status": "ok", "components": []}
-    import app.api.training.checkpoint_routes as ckpt_mod
-    orig = ckpt_mod._ALLOWED_ROOTS
-    ckpt_mod._ALLOWED_ROOTS = [Path("/").resolve()]
+    # All four operator tools share one allowlist now (_path_guard).
+    import app.api._path_guard as guard_mod
+    orig = guard_mod.ALLOWED_FS_ROOTS
+    guard_mod.ALLOWED_FS_ROOTS = (Path("/").resolve(),)
     try:
         with patch.object(Path, 'exists', return_value=True):
             response = client.get("/api/checkpoints/inspect?path=/some/checkpoint")
     finally:
-        ckpt_mod._ALLOWED_ROOTS = orig
+        guard_mod.ALLOWED_FS_ROOTS = orig
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
@@ -886,13 +887,13 @@ def test_inspect_lora_not_found(mock_to_thread, mock_inspect, mock_check, client
 def test_inspect_lora_outside_allowed_lists_allowed_roots(client):
     # A path outside every allowed root is rejected (correct) AND the error must
     # name the allowed directories so the user can move the file to fix it.
-    from app.api.training import lora_routes
+    from app.api._path_guard import ALLOWED_FS_ROOTS
     outside = "/definitely/not/allowed/lora.safetensors"
     response = client.get(f"/api/tools/lora/inspect?path={outside}")
     assert response.status_code == 403
     detail = response.json()["detail"]
     assert "Allowed:" in detail
-    for root in lora_routes._ALLOWED_ROOTS:
+    for root in ALLOWED_FS_ROOTS:
         assert str(root) in detail
 
 
@@ -1073,25 +1074,25 @@ def test_browse_filesystem_success(client, tmp_path):
     sub = tmp_path / "subdir"
     sub.mkdir()
     (sub / "child").mkdir()
-    import app.api.filesystem_routes as fs_mod
-    orig = fs_mod._ALLOWED_ROOTS
-    fs_mod._ALLOWED_ROOTS = [tmp_path]
+    import app.api._path_guard as guard_mod
+    orig = guard_mod.ALLOWED_FS_ROOTS
+    guard_mod.ALLOWED_FS_ROOTS = (tmp_path,)
     try:
         response = client.get(f"/api/filesystem/browse?path={tmp_path}")
     finally:
-        fs_mod._ALLOWED_ROOTS = orig
+        guard_mod.ALLOWED_FS_ROOTS = orig
     assert response.status_code == 200
     assert len(response.json()["entries"]) >= 1
 
 
 def test_browse_filesystem_not_found(client):
-    import app.api.filesystem_routes as fs_mod
-    orig = fs_mod._ALLOWED_ROOTS
-    fs_mod._ALLOWED_ROOTS = [Path("/").resolve()]
+    import app.api._path_guard as guard_mod
+    orig = guard_mod.ALLOWED_FS_ROOTS
+    guard_mod.ALLOWED_FS_ROOTS = (Path("/").resolve(),)
     try:
         response = client.get("/api/filesystem/browse?path=/some/nonexistent/dir")
     finally:
-        fs_mod._ALLOWED_ROOTS = orig
+        guard_mod.ALLOWED_FS_ROOTS = orig
     assert response.status_code == 404
 
 
@@ -1099,13 +1100,13 @@ def test_browse_filesystem_checkpoint_detection(client, tmp_path):
     ckpt = tmp_path / "ckpt_dir"
     ckpt.mkdir()
     (ckpt / "training_state.json").write_text("{}")
-    import app.api.filesystem_routes as fs_mod
-    orig = fs_mod._ALLOWED_ROOTS
-    fs_mod._ALLOWED_ROOTS = [tmp_path]
+    import app.api._path_guard as guard_mod
+    orig = guard_mod.ALLOWED_FS_ROOTS
+    guard_mod.ALLOWED_FS_ROOTS = (tmp_path,)
     try:
         response = client.get(f"/api/filesystem/browse?path={tmp_path}")
     finally:
-        fs_mod._ALLOWED_ROOTS = orig
+        guard_mod.ALLOWED_FS_ROOTS = orig
     entries = response.json()["entries"]
     ckpt_entry = next(e for e in entries if e["name"] == "ckpt_dir")
     assert ckpt_entry["type"] == "checkpoint"

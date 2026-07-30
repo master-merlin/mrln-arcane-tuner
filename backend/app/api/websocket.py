@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.events import event_manager
-from app.core.logger import get_logger
+from app.core.logger import get_logger, ws_send_scope
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -34,7 +34,10 @@ async def _stream_metrics(websocket: WebSocket, interval_s: float = 2.0):
                 "type": "system_metrics",
                 "payload": snap.to_dict(),
             })
-            await websocket.send_text(msg)
+            # ws_send_scope: keep the frame trace this write logs out of the
+            # log->WS mirror (see app.core.logger.ws_send_scope).
+            with ws_send_scope():
+                await websocket.send_text(msg)
             await asyncio.sleep(interval_s)
     except Exception:
         pass  # client disconnected — task will be cleaned up
@@ -54,10 +57,11 @@ async def websocket_endpoint(websocket: WebSocket):
     ws_id = id(websocket)
 
     # Send server identity so frontend can detect restarts
-    await websocket.send_text(json.dumps({
-        "type": "server_hello",
-        "payload": {"instance_id": _SERVER_INSTANCE_ID},
-    }))
+    with ws_send_scope():
+        await websocket.send_text(json.dumps({
+            "type": "server_hello",
+            "payload": {"instance_id": _SERVER_INSTANCE_ID},
+        }))
     try:
         while True:
             raw = await websocket.receive_text()

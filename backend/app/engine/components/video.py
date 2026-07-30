@@ -69,6 +69,62 @@ def _smart_resize_crop_chw(
     return t
 
 
+def _select_nearest(wanted_ts, timed_frames, convert):
+    """Pick the nearest frame per wanted timestamp in a SINGLE streaming pass.
+
+    ``wanted_ts`` is ascending and ``timed_frames`` yields ``(t, frame)`` with
+    non-decreasing ``t``, so the nearest frame to each stamp is always one of
+    the two straddling it. Holding just those two — plus the one converted
+    tensor — makes peak memory a function of the TARGET size, not of the source
+    resolution or the window length.
+
+    The previous implementation appended every decoded frame as a full-size
+    rgb24 ndarray before selecting, so a 4K source cost ~25 MB per decoded
+    frame: a 5 s window (plus the backward keyframe seek's run-up) reached
+    multiple GB of host RAM per dataset item, multiplied by DataLoader workers.
+
+    ``convert`` is applied at most once per distinct source frame, so a
+    ``target_fps`` above the source rate reuses the tensor rather than
+    re-resampling the same pixels.
+    """
+    out: list[torch.Tensor] = []
+    it = iter(timed_frames)
+    cur = next(it, None)
+    if cur is None:
+        return out
+
+    prev = None
+    exhausted = False
+    cached_t: float | None = None
+    cached: torch.Tensor | None = None
+
+    for ts in wanted_ts:
+        # Advance until the current frame is at/after this stamp.
+        while not exhausted and cur[0] < ts:
+            nxt = next(it, None)
+            if nxt is None:
+                exhausted = True
+                break
+            prev, cur = cur, nxt
+
+        # ``<=`` not ``<``: an exactly-equidistant stamp (e.g. ts=0.45 between
+        # frames at 0.40 and 0.50, reachable whenever target_fps is not a
+        # divisor of the source rate) must resolve to the EARLIER frame, which
+        # is what the previous ``min(range(...), key=abs-diff)`` did by
+        # returning the first minimal index. Flipping that tie would silently
+        # shift which pixels a clip trains on and invalidate every cached
+        # latent for it.
+        best = cur
+        if prev is not None and abs(prev[0] - ts) <= abs(cur[0] - ts):
+            best = prev
+
+        if cached is None or best[0] != cached_t:
+            cached_t, cached = best[0], convert(best[1])
+        out.append(cached)
+
+    return out
+
+
 class VideoFrameLoader:
     """Decode, resample, and tensorize video clips for training/sampling."""
 
@@ -143,31 +199,38 @@ class VideoFrameLoader:
                 except (OSError, ValueError):
                     pass
 
-            decoded: list[tuple[float, "np.ndarray"]] = []
             max_wanted = wanted_ts[-1]
-            for frame in container.decode(stream):
-                # Frame presentation time in seconds (fallback to pts*time_base).
-                if frame.time is not None:
-                    t = float(frame.time)
-                elif frame.pts is not None and time_base:
-                    t = float(frame.pts) * time_base
-                else:
-                    t = len(decoded) / (target_fps or 1.0)
-                decoded.append((t, frame.to_ndarray(format="rgb24")))
-                # Stop once we have a frame at/after the last wanted timestamp.
-                if t >= max_wanted:
-                    break
 
-            if not decoded:
+            def _timed_frames():
+                """Yield ``(t, frame)`` up to the last wanted timestamp.
+
+                Frames are NOT converted here — the selector decides which ones
+                are worth the rgb24 copy.
+                """
+                seen = 0
+                for frame in container.decode(stream):
+                    # Presentation time in seconds (fallback to pts*time_base).
+                    if frame.time is not None:
+                        t = float(frame.time)
+                    elif frame.pts is not None and time_base:
+                        t = float(frame.pts) * time_base
+                    else:
+                        t = seen / (target_fps or 1.0)
+                    seen += 1
+                    yield t, frame
+                    # Stop once we hold a frame at/after the last wanted stamp.
+                    if t >= max_wanted:
+                        return
+
+            frames_out = _select_nearest(
+                wanted_ts,
+                _timed_frames(),
+                lambda frame: _smart_resize_crop_chw(
+                    frame.to_ndarray(format="rgb24"), target_w, target_h, h_flip
+                ),
+            )
+            if not frames_out:
                 raise VideoClipTooShort(f"decoded 0 frames from {path}")
-
-            times = [d[0] for d in decoded]
-            frames_out: list[torch.Tensor] = []
-            for ts in wanted_ts:
-                idx = min(range(len(times)), key=lambda i: abs(times[i] - ts))
-                frames_out.append(
-                    _smart_resize_crop_chw(decoded[idx][1], target_w, target_h, h_flip)
-                )
 
             clip = torch.stack(frames_out, dim=1)  # [3, F, H, W]
             logger.debug(

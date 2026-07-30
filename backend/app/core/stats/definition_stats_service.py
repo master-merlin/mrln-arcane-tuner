@@ -165,6 +165,13 @@ def _aggregate(definition_id: str, rows: list) -> dict[str, Any]:
         if (agg := _agg(samples)):
             vram[field] = agg
     if vram:
+        # Stamp the analytic-formula version these ratios were derived against.
+        # A coefficient is measured ÷ analytic, so a formula change silently
+        # invalidates it — see VRAM_FORMULA_VERSION. Non-dict value, so the
+        # readers' `isinstance(entry, dict)` filter skips it naturally.
+        from app.engine.utils.vram_estimator import VRAM_FORMULA_VERSION
+
+        vram["formula_version"] = VRAM_FORMULA_VERSION
         stats["vram"] = vram
     return stats
 
@@ -290,14 +297,30 @@ def _vram_estimate(definition_id: str, config: dict[str, Any],
     defn = _get_definition(definition_id)
     if defn is None:
         return None
+    from app.engine.utils.vram_estimator import VRAM_FORMULA_VERSION, VRAMEstimator
+
     # Build a per-component calibration dict from learned coefficients.
     calibration: dict[str, float] = {}
     vram_stats = stats.get("vram") or {}
+    # Coefficients are ``measured ÷ analytic``. When the analytic formula has
+    # changed since they were derived, applying them skews the estimate by the
+    # formula delta — in the under-estimating direction if the correction shrank
+    # a term, which _sane_calibration's plausibility band cannot detect. Drop
+    # the whole block; the next completed run for this definition (or a stats
+    # backfill) re-derives it against the current formula.
+    if vram_stats.get("formula_version") != VRAM_FORMULA_VERSION:
+        if vram_stats:
+            logger.info(
+                "vram_calibration_stale",
+                definition_id=definition_id,
+                stamped=vram_stats.get("formula_version"),
+                current=VRAM_FORMULA_VERSION,
+            )
+        vram_stats = {}
     for field, entry in vram_stats.items():
         if isinstance(entry, dict) and entry.get("value") is not None:
             calibration[field] = float(entry["value"])
     try:
-        from app.engine.utils.vram_estimator import VRAMEstimator
         report = VRAMEstimator.estimate(defn, config, calibration=calibration or None)
         out = report.to_dict()
         out["calibrated"] = bool(calibration)

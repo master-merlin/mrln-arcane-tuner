@@ -500,7 +500,7 @@ export class ImportArchiveModalComponent {
         this.datasets.importDatasetFile(this.file()!, onConflict, newName).subscribe({
             next: () => {
                 this.toast.success('Dataset imported.');
-                void this.datasetStore?.loadAll();
+                void this.datasetStore?.loadAll({ force: true });
                 this.fireImported();
                 this.phase.set('done');
                 this.busy.set(false);
@@ -609,7 +609,7 @@ export class ImportArchiveModalComponent {
         }).subscribe({
             next: () => {
                 this.toast.success('Import rolled back.');
-                void this.datasetStore?.loadAll();
+                void this.datasetStore?.loadAll({ force: true });
                 this.overlay.closeModal();
             },
             error: (err) => this.toast.error(this.extractErr(err)),

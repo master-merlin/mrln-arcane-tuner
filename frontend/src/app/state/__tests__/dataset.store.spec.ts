@@ -181,3 +181,113 @@ describe('DatasetStore', () => {
         expect(store.loading()).toBe(false);
     });
 });
+
+/**
+ * The library list is the app's biggest payload — measured at 4116 KB for 93
+ * datasets — and TWO components hydrate the store on mount (the sidebar, for
+ * its nav badge counts, and the datasets screen, for the grid). Without
+ * coalescing that is two full fetches, 8.2 MB, for one page load.
+ *
+ * `force` exists for the post-mutation callers: a request that started before
+ * an import/delete/rescan landed can still be in flight, and joining it would
+ * hand back the pre-mutation list.
+ */
+describe('DatasetStore.loadAll — request coalescing', () => {
+    let store: DatasetStore;
+    let listDatasets: Mock;
+
+    function setup() {
+        listDatasets = vi.fn();
+        TestBed.configureTestingModule({
+            providers: [
+                DatasetStore,
+                { provide: DatasetService, useValue: { listDatasets } },
+                {
+                    provide: WebSocketService,
+                    useValue: {
+                        entityChanged: signal(null),
+                        reconnected: signal(0),
+                        on: vi.fn().mockReturnValue(new Subject().asObservable()),
+                    },
+                },
+                { provide: ToastService, useValue: { error: vi.fn() } },
+            ],
+        });
+        store = TestBed.inject(DatasetStore);
+    }
+
+    beforeEach(() => setup());
+
+    it('issues ONE request when two callers load concurrently', async () => {
+        const pending = new Subject<Dataset[]>();
+        listDatasets.mockReturnValue(pending);
+
+        const a = store.loadAll();   // sidebar
+        const b = store.loadAll();   // datasets screen
+
+        expect(listDatasets).toHaveBeenCalledTimes(1);
+
+        pending.next([makeDataset('a', 'alpha')]);
+        pending.complete();
+        await Promise.all([a, b]);
+
+        expect(store.entities()).toHaveLength(1);
+    });
+
+    it('both callers observe the shared result', async () => {
+        listDatasets.mockReturnValue(of([makeDataset('a', 'alpha'), makeDataset('b', 'beta')]));
+        await Promise.all([store.loadAll(), store.loadAll()]);
+        expect(listDatasets).toHaveBeenCalledTimes(1);
+        expect(store.entities().map(d => d.id).sort()).toEqual(['a', 'b']);
+    });
+
+    it('a later, separate load still refetches once the first settled', async () => {
+        listDatasets.mockReturnValue(of([makeDataset('a', 'alpha')]));
+        await store.loadAll();
+        await store.loadAll();
+        expect(listDatasets).toHaveBeenCalledTimes(2);
+    });
+
+    it('force bypasses the join so a post-mutation reload is never stale', async () => {
+        const pending = new Subject<Dataset[]>();
+        listDatasets.mockReturnValue(pending);
+
+        void store.loadAll();
+        expect(listDatasets).toHaveBeenCalledTimes(1);
+
+        listDatasets.mockReturnValue(of([makeDataset('b', 'beta')]));
+        await store.loadAll({ force: true });
+
+        expect(listDatasets).toHaveBeenCalledTimes(2);
+        expect(store.entities().map(d => d.id)).toEqual(['b']);
+    });
+
+    it('a slow response that lost the race cannot clobber the newer list', async () => {
+        const slow = new Subject<Dataset[]>();
+        listDatasets.mockReturnValue(slow);
+        const stale = store.loadAll();
+
+        // A forced reload overtakes and lands first.
+        listDatasets.mockReturnValue(of([makeDataset('b', 'beta')]));
+        await store.loadAll({ force: true });
+        expect(store.entities().map(d => d.id)).toEqual(['b']);
+
+        // The original request finally answers with the pre-mutation list.
+        slow.next([makeDataset('a', 'alpha')]);
+        slow.complete();
+        await stale;
+
+        expect(store.entities().map(d => d.id)).toEqual(['b']);
+    });
+
+    it('clears the in-flight slot on failure so the next load retries', async () => {
+        listDatasets.mockReturnValue(throwError(() => new Error('offline')));
+        await expect(store.loadAll()).rejects.toThrow('offline');
+
+        listDatasets.mockReturnValue(of([makeDataset('a', 'alpha')]));
+        await store.loadAll();
+
+        expect(listDatasets).toHaveBeenCalledTimes(2);
+        expect(store.entities()).toHaveLength(1);
+    });
+});

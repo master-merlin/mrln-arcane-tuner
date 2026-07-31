@@ -989,7 +989,7 @@ export class DatasetsScreen {
                     });
                 }
                 this.toast.success(`Removed ${n} dataset${n === 1 ? '' : 's'} from library.`);
-                void this.datasets.loadAll().catch(() => undefined);
+                void this.datasets.loadAll({ force: true }).catch(() => undefined);
                 this.clearSelection();
             },
         });
@@ -1332,7 +1332,7 @@ export class DatasetsScreen {
                         this.toast.success(wipe
                             ? `Dataset '${d.name}' and its files deleted.`
                             : `Dataset '${d.name}' removed from library.`);
-                        void this.datasets.loadAll().catch(() => undefined);
+                        void this.datasets.loadAll({ force: true }).catch(() => undefined);
                     },
                     error: (err: { error?: { detail?: string }; message?: string }) =>
                         this.toast.error('Failed to delete dataset: ' + (err?.error?.detail || err?.message)),

@@ -306,3 +306,95 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         expect(priv.resumableByJob().has(STOPPED_ID)).toBe(false);
     });
 });
+
+/**
+ * A failed job-control request used to produce NOTHING the user could see.
+ *
+ * `startJob` / `stopJob` / `pauseJob` / `resumeJob` / `softStopJob` /
+ * `hardStopJob` were all `.subscribe(() => this.loadJobs())` with no error
+ * callback, and the app installs no global `ErrorHandler` — the single HTTP
+ * interceptor retries transient failures and re-throws everything else. So the
+ * row kept its old status, no toast appeared, and the click read as a no-op.
+ * The stop verbs are worse: they close the confirm modal BEFORE the request, so
+ * a silent failure leaves the user believing the job was stopped.
+ */
+describe('TrainingJobQueueComponent — job-control failures are surfaced', () => {
+    let api: Record<string, Mock>;
+    let toast: { error: Mock; success: Mock; info: Mock; warning: Mock };
+
+    const boom = () => throwError(() => ({ error: { detail: 'job is not running' } }));
+
+    beforeEach(() => {
+        api = {
+            listJobs: vi.fn().mockReturnValue(of([])),
+            listJobHistory: vi.fn().mockReturnValue(of([])),
+            getJobCheckpoints: vi.fn().mockReturnValue(of([])),
+            getAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
+            getAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
+            startJob: vi.fn().mockReturnValue(boom()),
+            stopJob: vi.fn().mockReturnValue(boom()),
+            pauseJob: vi.fn().mockReturnValue(boom()),
+            resumeJob: vi.fn().mockReturnValue(boom()),
+            softStopJob: vi.fn().mockReturnValue(boom()),
+        };
+        toast = { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() };
+
+        const wsStub = {
+            entityChanged: signal(null),
+            reconnected: signal(0),
+            isConnected: signal(false),
+            messages$: new Subject<any>().asObservable(),
+            reconnected$: new Subject<void>().asObservable(),
+            serverRestarted$: new Subject<void>().asObservable(),
+            on: () => of(),
+        };
+
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                TrainingJobQueueComponent,
+                { provide: JobService, useValue: api },
+                { provide: WebSocketService, useValue: wsStub },
+                { provide: ToastService, useValue: toast },
+                {
+                    provide: ProjectService,
+                    useValue: { allProjects: signal([]), activeJobsProject: signal(null) },
+                },
+                { provide: ModelService, useValue: {} },
+                { provide: RuntimeConfigService, useValue: { apiUrl: 'http://test', wsUrl: 'ws://test' } },
+                { provide: ResumeJobService, useValue: { open: vi.fn() } },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
+            ],
+        });
+    });
+
+    const verbs: ReadonlyArray<[string, (c: any) => void]> = [
+        ['start', c => c.startJob('j1')],
+        ['stop', c => c.stopJob('j1')],
+        ['pause', c => c.pauseJob('j1')],
+        ['resume', c => c.resumeJob('j1')],
+        ['soft-stop', c => c.softStopJob('j1')],
+        ['stop', c => c.hardStopJob('j1')],
+    ];
+
+    for (const [verb, act] of verbs) {
+        it(`toasts the backend detail when ${verb} fails`, () => {
+            const component = TestBed.inject(TrainingJobQueueComponent) as any;
+            TestBed.tick();
+            toast.error.mockClear();
+
+            act(component);
+
+            expect(toast.error).toHaveBeenCalledTimes(1);
+            const msg = toast.error.mock.calls[0][0] as string;
+            expect(msg).toContain(verb);
+            expect(msg).toContain('job is not running');
+        });
+    }
+
+    it('does not throw an unhandled rejection when the request fails', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent) as any;
+        TestBed.tick();
+        expect(() => component.stopJob('j1')).not.toThrow();
+    });
+});

@@ -9,7 +9,12 @@ import { OverlayStore } from '../../../../state/overlay.store';
     selector: 'app-detail-masking-sidebar',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
-    host: { class: 'w-80 h-full flex flex-col' },
+    // `w-full`, not a fixed `w-80`: the only host is details-mode's left rail,
+    // which already sets its own width. Pinned at 320px the sidebar was wider
+    // than the rail as soon as the rail narrowed, and `.pane { overflow-x:
+    // hidden }` CLIPPED the difference — mask controls silently cut off with no
+    // scrollbar to reveal them. The rail is now the single source of width.
+    host: { class: 'w-full h-full flex flex-col' },
     imports: [DatasetMaskingSettingsComponent, DecimalPipe],
     template: `
         <div class="w-full h-full border-r border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">

@@ -13,8 +13,10 @@ import os
 import struct
 import structlog
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 from typing import Any
+
+from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)
 
@@ -104,7 +106,9 @@ def inspect_lora(path: str) -> dict[str, Any]:
     block_config = _parse_block_config(metadata)
 
     # ── Norm distribution (summary stats across all layers) ──
-    norm_summary = _compute_norm_summary(state_dict)
+    # Derived from layer_details rather than recomputed: both need ‖B @ A‖ for
+    # every module, and the delta matmul is the whole cost of an inspect.
+    norm_summary = _compute_norm_summary(layer_details)
 
     result = {
         "path": path,
@@ -221,6 +225,18 @@ def resize_lora(
         a_2d = weight_a.view(weight_a.shape[0], -1)
         b_2d = weight_b.view(weight_b.shape[0], -1)
 
+        # Conv LoRAs keep the kernel on A ([rank, in, kh, kw]) and a 1×1 B
+        # ([out, rank, 1, 1]), so b_2d's inner dim is the rank and the matmul
+        # lines up. A B tensor with a real spatial kernel does not, and would
+        # otherwise surface as a bare shape RuntimeError from torch.
+        if b_2d.shape[1] != a_2d.shape[0]:
+            raise ValueError(
+                f"Cannot resize module '{module_name}': its up-weight has shape "
+                f"{tuple(orig_b_shape)}, which does not contract with the "
+                f"down-weight {tuple(orig_a_shape)}. Only the standard layout "
+                "(kernel on the down-weight, 1x1 up-weight) is supported."
+            )
+
         # Reconstruct effective delta: W = B @ A
         delta = b_2d @ a_2d  # [out_features, in_features_flat]
 
@@ -272,9 +288,12 @@ def resize_lora(
     new_metadata["ss_network_alpha"] = str(new_alpha)
     new_metadata["arcane_resized_from_rank"] = str(old_rank)
 
-    # Save
+    # Save via tmp+replace: a direct save_file leaves a truncated .safetensors
+    # at the destination if the write is interrupted, and the LoRA listing shows
+    # that as a real adapter. (Also the standard workaround for the Windows
+    # mmap lock when the output path is a file that was loaded earlier.)
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    save_file(new_dict, output_path, metadata=new_metadata)
+    safe_save_file(new_dict, output_path, metadata=new_metadata)
 
     output_size = os.path.getsize(output_path)
     output_size_mb = round(output_size / (1024 * 1024), 2)
@@ -791,37 +810,30 @@ def _parse_block_config(metadata: dict) -> dict[str, Any]:
     return config
 
 
-def _compute_norm_summary(state_dict: dict) -> dict[str, Any]:
+def _compute_norm_summary(layer_details: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Compute summary statistics of Frobenius norms across all LoRA layers.
+
+    Takes the already-computed ``layer_details`` (see
+    :func:`_compute_layer_details`) rather than the raw state dict: it needs
+    ``‖B @ A‖`` per module, which that pass has already produced. Recomputing
+    the delta here meant every inspect ran the full per-layer matmul twice.
 
     Returns:
         Dict with ``mean_norm``, ``std_norm``, ``max_norm``, ``min_norm``,
         ``max_norm_layer``, ``min_norm_layer``. Useful for detecting
         overtrained (hot) or dead layers.
     """
-    pairs = _find_lora_pairs(state_dict, "")
-    if not pairs:
-        return {}
-
-    norms: list[float] = []
-    layer_names: list[str] = []
-
-    for module_name, (a_key, b_key) in pairs.items():
-        try:
-            weight_a = state_dict[a_key].float()
-            weight_b = state_dict[b_key].float()
-
-            # Flatten higher-dim tensors (conv layers) to 2D for matmul
-            a_2d = weight_a.view(weight_a.shape[0], -1)
-            b_2d = weight_b.view(weight_b.shape[0], -1)
-
-            delta = b_2d @ a_2d
-            norm = torch.norm(delta, p="fro").item()
-            norms.append(norm)
-            layer_names.append(module_name)
-        except RuntimeError:
-            continue
+    norms: list[float] = [
+        float(layer["norm_delta"])
+        for layer in layer_details
+        if layer.get("norm_delta") is not None
+    ]
+    layer_names: list[str] = [
+        layer["module"]
+        for layer in layer_details
+        if layer.get("norm_delta") is not None
+    ]
 
     if not norms:
         return {}

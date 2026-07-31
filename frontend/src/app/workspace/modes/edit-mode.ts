@@ -50,10 +50,22 @@ import type { DatasetPair } from '../../services/dataset';
         }
     `,
     styles: [`
-        :host { display: block; height: 100%; overflow: hidden; }
+        /* Rail width is a variable so the breakpoints below are the only place
+           it is decided. Both rails are FIXED width and the canvas takes the
+           remainder, so on a narrow screen every pixel comes out of the image
+           being edited: at the old flat 340px, a 1280-wide laptop (minus the
+           232px app sidebar) left the canvas 368px. See the canonical scale in
+           src/styles/base.css. */
+        :host {
+            --ws-rail: 340px;
+            display: block; height: 100%; overflow: hidden;
+        }
+        @media (max-width: 1400px) { :host { --ws-rail: 300px; } }
+        @media (max-width: 1200px) { :host { --ws-rail: 264px; } }
+
         .edit-grid {
             display: grid;
-            grid-template-columns: 340px 1fr 340px;
+            grid-template-columns: var(--ws-rail) 1fr var(--ws-rail);
             height: 100%;
             overflow: hidden;
         }
@@ -61,6 +73,24 @@ import type { DatasetPair } from '../../services/dataset';
         .pane.left  { border-right: 1px solid var(--color-border-subtle); background: var(--color-surface-low); overflow-y: auto; overflow-x: hidden; }
         .pane.right { border-left: 1px solid var(--color-border-subtle); background: var(--color-surface-low); overflow: hidden; display: flex; flex-direction: column; }
         .pane.center { background: var(--color-base); display: flex; flex-direction: column; overflow: hidden; }
+
+        /* Below the rails' own minimum the three-column split stops being an
+           edit surface at all, so stack instead: canvas first (ordered ahead of
+           the DOM), rails under it, and the whole mode scrolls. Nothing is
+           hidden — the same controls are reachable, just sequentially. */
+        @media (max-width: 900px) {
+            :host { overflow-y: auto; }
+            .edit-grid {
+                grid-template-columns: 1fr;
+                height: auto;
+                min-height: 100%;
+                overflow: visible;
+            }
+            .pane { overflow: visible; }
+            .pane.center { order: -1; min-height: 52vh; }
+            .pane.left  { border-right: 0; border-top: 1px solid var(--color-border-subtle); }
+            .pane.right { border-left: 0;  border-top: 1px solid var(--color-border-subtle); }
+        }
         .edit-empty {
             display: flex; align-items: center; justify-content: center;
             height: 100%; color: var(--color-text-muted); font-size: 13px;

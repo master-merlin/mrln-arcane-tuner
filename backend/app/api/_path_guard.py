@@ -48,6 +48,60 @@ def validate_path_within(candidate: str | Path, root: str | Path) -> Path:
     return candidate_resolved
 
 
+# ── Operator-tool filesystem roots ───────────────────────────────────────
+#
+# The operator-facing tools that take an ABSOLUTE path from the client
+# (checkpoint inspect, LoRA inspect/resize, folder browse, upscale-model
+# listing) previously each carried their own private copy of this list —
+# three near-identical ``_ALLOWED_ROOTS`` definitions that had already
+# drifted, plus one route (upscale list-models) with no check at all.
+#
+# Two changes over those copies:
+#   * Anchored on ``__file__``, NOT the process CWD. ``Path("outputs").resolve()``
+#     depended on where the server was launched from — it lands on
+#     ``backend/outputs`` for the normal ``cwd=backend`` start but on
+#     ``<repo>/outputs`` (a directory that does not exist) if launched from the
+#     repo root, silently widening or narrowing the allowlist.
+#   * Scoped to the three DATA trees instead of the whole of ``backend/``.
+#     The old root admitted ``venv/``, ``app/`` and ``arcane_tuner.db``, which
+#     matters because ``/tools/lora/resize`` WRITES to a client-named path —
+#     the broad root let it overwrite the database or a venv binary.
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]  # backend/
+
+ALLOWED_FS_ROOTS: tuple[Path, ...] = (
+    _BACKEND_ROOT / "outputs",
+    _BACKEND_ROOT / "models",
+    _BACKEND_ROOT / "datasets",
+)
+
+
+def validate_path_in_allowed_roots(candidate: str | Path) -> Path:
+    """Resolve *candidate* and verify it lives under one of :data:`ALLOWED_FS_ROOTS`.
+
+    The absolute-path counterpart to :func:`validate_path_within` (which
+    contains a client path inside one specific dataset root). Returns the
+    resolved ``Path``; raises ``HTTPException(403)`` naming the allowed roots
+    so the user knows where to move the file.
+    """
+    resolved = Path(candidate).resolve()
+    if any(resolved.is_relative_to(root) for root in ALLOWED_FS_ROOTS):
+        return resolved
+
+    logger.warning(
+        "path_outside_allowed_roots",
+        candidate=str(candidate),
+        roots=[str(r) for r in ALLOWED_FS_ROOTS],
+    )
+    allowed = ", ".join(str(root) for root in ALLOWED_FS_ROOTS)
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Access denied: path is outside allowed directories. "
+            f"Allowed: {allowed}"
+        ),
+    )
+
+
 def reject_audio_op(path: str | Path, op: str = "This operation") -> None:
     """Raise ``HTTPException(400)`` if *path*'s extension is an audio type.
 

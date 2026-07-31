@@ -24,6 +24,7 @@ model_shift    – Inference-matched flow-match shift in logit space.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from typing import Any
 
 import structlog
@@ -53,6 +54,20 @@ def _patchified_seq_len(latents: torch.Tensor | None, patchify_factor: int = 1) 
 
 
 # ── RADC PDF builder ──────────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=256)
+def _radc_cdf(center_q: int, width_q: int) -> torch.Tensor:
+    """Cached CPU CDF for a quantized ``(center, width)`` pair.
+
+    ``center`` moves continuously with training progress, so the raw pair is a
+    poor cache key; quantizing to 1e-3 collapses a whole run into a few hundred
+    distinct curves while shifting the sampled distribution by less than one of
+    the 1000 bins. Without this, every step rebuilt a 1000-bin Gaussian,
+    normalized it twice, and re-derived the cumulative sum.
+    """
+    pdf = _make_radc_pdf(center_q / 1000.0, width_q / 1000.0)
+    return torch.cumsum(pdf / pdf.sum(), dim=0)
 
 
 def _make_radc_pdf(center: float, width: float) -> torch.Tensor:
@@ -215,6 +230,15 @@ class TimestepSampler:
                 m = (max_shift - base_shift) / (4096 - 256)
                 b = base_shift - m * 256
                 mu = seq_len * m + b
+                # CLAMP to the declared shift band — the line is calibrated on
+                # 256..4096 tokens and EXTRAPOLATES past it. A 2048px still
+                # (16384 tokens) reaches mu 3.27 — the exact value the comment
+                # above calls "far too high" — and a video latent goes past 4,
+                # where sigmoid(N(0,1)+mu) puts essentially every sample at
+                # t≈1 and training sees noise only. ``model_shift`` already
+                # clamps its interpolation the same way.
+                mu = max(min(mu, max(base_shift, max_shift)),
+                         min(base_shift, max_shift))
             else:
                 mu = (base_shift + max_shift) / 2.0
             return torch.sigmoid(torch.randn((bs,), device=device) + mu)
@@ -222,10 +246,14 @@ class TimestepSampler:
         if mode == "radc":
             center = _radc_center(config, progress, latents)
             width = float(config.get("radc_width", 0.5))
-            pdf = _make_radc_pdf(center, width)
+            cdf = _radc_cdf(round(center * 1000), round(width * 1000)).to(device)
             u = torch.rand((bs,), device=device)
-            cdf = torch.cumsum(pdf / pdf.sum(), dim=0).to(device)
             indices = torch.searchsorted(cdf, u)
+            # searchsorted can return len(cdf) when u exceeds the final bin by a
+            # float epsilon, which would yield t = 1.001; clamp so the raw
+            # sample() contract (t in [0, 1]) holds for direct callers too, not
+            # only for sample_scaled's own clamp.
+            indices = indices.clamp(max=cdf.shape[0] - 1)
             return (indices.float() + 1) / 1000.0
 
         if mode == "model_shift":

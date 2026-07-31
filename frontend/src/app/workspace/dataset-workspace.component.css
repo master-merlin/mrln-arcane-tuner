@@ -39,12 +39,21 @@
     min-height: 56px;
 }
 
+/*
+ * `justify-self: stretch` (the default) on the two side clusters, NOT
+ * `start`/`end`. A grid item with `justify-self: start` is sized to its
+ * max-content and then aligned, so it never shrinks to its track: the left
+ * cluster stayed 533px wide inside a 292px column and simply painted over the
+ * mode tabs. All the truncation machinery below (`.ws-name`, `.path`,
+ * `min-width: 0`) was already in place and could never engage. Stretch to the
+ * track and align the CONTENT inside instead, so the ellipses do their job.
+ */
 .ws-left {
     display: flex;
     align-items: center;
     gap: 10px;
     min-width: 0;
-    justify-self: start;
+    justify-content: flex-start;
 }
 .ws-center {
     display: flex;
@@ -55,7 +64,27 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    justify-self: end;
+    min-width: 0;
+    justify-content: flex-end;
+}
+
+/*
+ * The three clusters need ~1335px to sit side by side, so on anything narrower
+ * than a wide desktop the actions cluster (scope switcher, model-aware toggle,
+ * Analyze / Cache / Rescan, close) cannot shrink and would still collide with
+ * the centred mode tabs. Give it its own row: dataset info + mode tabs on top,
+ * actions right-aligned underneath. Nothing is hidden.
+ */
+@media (max-width: 1400px) {
+    .ws-topbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        row-gap: 8px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    .ws-left   { grid-row: 1; grid-column: 1; }
+    .ws-center { grid-row: 1; grid-column: 2; justify-self: end; }
+    .ws-right  { grid-row: 2; grid-column: 1 / -1; flex-wrap: wrap; row-gap: 6px; }
 }
 
 .ws-back { padding-left: 6px; }

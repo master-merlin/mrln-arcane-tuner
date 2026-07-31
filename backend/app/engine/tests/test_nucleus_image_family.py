@@ -552,6 +552,7 @@ def test_driver_encode_text_uses_chat_template_and_return_index():
 
     out = drv.encode_text(["a red bicycle"], torch.float32)
 
+    assert out.embeddings is not None
     assert len(seen_templates) == 1
     messages = seen_templates[0]
     assert messages[0] == {"role": "system", "content": NUCLEUS_SYSTEM_PROMPT}

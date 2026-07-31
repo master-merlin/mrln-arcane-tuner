@@ -2,6 +2,26 @@
    Layered into @layer base so component classes (.btn, .chip, etc.) win
    on specificity grounds; unlayered rules would otherwise override them. */
 
+/* ── Canonical viewport breakpoints ──────────────────────────────────────
+   Use THESE widths in new `@media` rules. CSS custom properties cannot be
+   read inside a media query, so this is a naming convention rather than a
+   token — which is exactly why it needs writing down: the app had grown six
+   different breakpoints (560/820/900/960/1100/1200) across six files, so the
+   same "collapse to one column" moment happened at a different width on every
+   screen.
+
+     1400px — wide desktop → laptop. Fixed side rails step down; layout keeps
+              its shape. Nothing is hidden or reflowed.
+     1200px — laptop (1280×800, 1366×768 minus the 232px app sidebar). Rails
+              reach their minimum useful width.
+      900px — small window / split screen. Multi-column layouts STACK, with
+              the primary content ordered first and the container scrolling.
+              Stack, never hide: the same controls stay reachable.
+
+   Existing screens (datasets, jobs, training, server, training-stats) still
+   use their original ad-hoc widths — aligning them changes when those screens
+   reflow, so it is deliberately left as a separate change. */
+
 @layer base {
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }

@@ -34,6 +34,33 @@ PROVIDER_BASE_URLS: dict[str, str | None] = {
 #: Backoff schedule for retryable failures (429 / 5xx / transport errors).
 RETRY_DELAYS = [1.0, 2.0, 4.0, 8.0, 16.0]
 
+#: Ceiling on the total time one caption request may spend across all attempts.
+#: Six attempts at the default 120s timeout plus 31s of backoff is over 12
+#: minutes for a SINGLE image, during which a batch looks wedged; stop retrying
+#: once the budget is gone and surface the last error.
+TOTAL_BUDGET_S = 300.0
+
+#: Schemes a provider base URL may use. "custom" lets the user point at a local
+#: server (Ollama, LM Studio, vLLM), so the host is deliberately unrestricted —
+#: but a non-HTTP scheme is always a misconfiguration, and rejecting it early
+#: gives a clear message instead of an httpx UnsupportedProtocol deep in a
+#: batch worker.
+_ALLOWED_SCHEMES = ("http", "https")
+
+
+def _validate_base_url(base_url: str) -> str:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(
+            f"Provider base URL must start with http:// or https:// (got "
+            f"{base_url!r})."
+        )
+    if not parsed.netloc:
+        raise ValueError(f"Provider base URL has no host: {base_url!r}")
+    return base_url.rstrip("/")
+
 # Test seam — monkeypatched so retry tests don't actually sleep.
 _sleep = time.sleep
 
@@ -94,13 +121,13 @@ def chat_vision(
     def _data_url(jpeg: bytes) -> str:
         return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
 
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    content: list[dict] = [{"type": "text", "text": prompt}]
+    url = f"{_validate_base_url(base_url)}/chat/completions"
+    parts: list[dict] = [{"type": "text", "text": prompt}]
     for jpeg in [*(extra_images_jpeg or []), image_jpeg]:
-        content.append({"type": "image_url", "image_url": {"url": _data_url(jpeg)}})
+        parts.append({"type": "image_url", "image_url": {"url": _data_url(jpeg)}})
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": content}],
+        "messages": [{"role": "user", "content": parts}],
         "temperature": temperature,
         "top_p": top_p,
         "max_tokens": max_tokens,
@@ -109,6 +136,7 @@ def chat_vision(
         payload["response_format"] = response_format
 
     last_error: Exception | None = None
+    started = time.monotonic()
     with httpx.Client(timeout=timeout, transport=transport) as client:
         for attempt in range(len(RETRY_DELAYS) + 1):
             _check_abort()
@@ -122,15 +150,22 @@ def chat_vision(
                     snippet = resp.text[:300]
                     raise RuntimeError(f"Provider error {resp.status_code}: {snippet}")
                 body = resp.json()
-                content = (
+                caption = (
                     (body.get("choices") or [{}])[0].get("message", {}).get("content")
                 )
-                if not content or not content.strip():
+                if not caption or not caption.strip():
                     raise RuntimeError("Provider returned an empty caption.")
-                return content.strip()
+                return caption.strip()
             except (_RetryableHTTPError, httpx.TransportError) as exc:
                 last_error = exc
                 if attempt >= len(RETRY_DELAYS):
+                    break
+                if time.monotonic() - started >= TOTAL_BUDGET_S:
+                    logger.warning(
+                        "api_caption_budget_exhausted",
+                        attempts=attempt + 1,
+                        budget_s=TOTAL_BUDGET_S,
+                    )
                     break
                 delay = RETRY_DELAYS[attempt]
                 retry_after = getattr(exc, "retry_after", None)
@@ -164,7 +199,7 @@ def list_models(
     transport: httpx.BaseTransport | None = None,
 ) -> list[str]:
     """GET {base}/models and return the model id list."""
-    url = f"{base_url.rstrip('/')}/models"
+    url = f"{_validate_base_url(base_url)}/models"
     with httpx.Client(timeout=timeout, transport=transport) as client:
         resp = client.get(url, headers=_headers(api_key))
         resp.raise_for_status()

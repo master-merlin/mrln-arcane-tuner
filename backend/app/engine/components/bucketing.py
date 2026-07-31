@@ -136,9 +136,15 @@ class BucketManager:
             "target_resolution": spatial["target_resolution"],
             "frames": frames,
         }
-        # Track temporal distribution alongside the spatial key already logged
-        # by get_bucket (so video runs surface a frame breakdown too).
-        self._distribution[f"{spatial['width']}x{spatial['height']}x{frames}f"] += 1
+        # Replace the spatial-only key ``get_bucket`` just counted with the
+        # spatial×temporal one. Counting BOTH made every video item two entries
+        # in the same Counter, so log_distribution's ``total_images`` read 2×
+        # the real item count and every percentage was halved.
+        spatial_key = f"{spatial['width']}x{spatial['height']}"
+        self._distribution[spatial_key] -= 1
+        if self._distribution[spatial_key] <= 0:
+            del self._distribution[spatial_key]
+        self._distribution[f"{spatial_key}x{frames}f"] += 1
         return result
 
     def _generate_buckets(self) -> list[BucketResolution]:

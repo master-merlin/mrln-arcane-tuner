@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from app.api._path_guard import validate_path_in_allowed_roots
 
 
 router = APIRouter()
@@ -68,11 +69,8 @@ class BrowseResponse(BaseModel):
     parent: str
     entries: list[BrowseEntry]
 
-# Allowed browsing roots — constrain all browse requests to these trees.
-_ALLOWED_ROOTS: list[Path] = [
-    Path(__file__).resolve().parents[2],  # backend/
-    Path("outputs").resolve(),
-]
+# Allowed browsing roots live in ``app/api/_path_guard.ALLOWED_FS_ROOTS`` —
+# this module used to carry its own CWD-dependent copy.
 
 
 @router.post("/filesystem/pick-folder")
@@ -111,16 +109,8 @@ async def browse_filesystem(path: str = "outputs") -> dict:
 
     Used by the frontend folder picker for selecting checkpoint directories.
     """
-    resolved = Path(path).resolve()
-
     # Verify the requested path lives under at least one allowed root.
-    if not any(
-        resolved.is_relative_to(root) for root in _ALLOWED_ROOTS
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path is outside allowed directories.",
-        )
+    resolved = validate_path_in_allowed_roots(path)
 
     def _scan() -> tuple[bool, bool, list[dict[str, str]]]:
         """Run all blocking filesystem stats in a worker thread.

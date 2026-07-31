@@ -159,6 +159,13 @@ class PipelineLoadingMixin:
 
                     te_vram = QuantizationFactory.estimate_vram(te, te_quant, te_backend)
                     self.logger.info("quantizing_te", name=name, backend=te_backend, scheme=te_quant, **te_vram)
+                    # Captured BEFORE quantizing — quantize() may mutate in
+                    # place. The count is what load_quantized compares against
+                    # on a later run; the shape signature decides whether a
+                    # cache of this backend's output could ever be loaded back
+                    # at all (see QuantizationFactory.cache_is_loadable).
+                    source_params = sum(p.numel() for p in te.parameters())
+                    source_sig = QuantizationFactory.state_shape_signature(te)
                     quantized_te = QuantizationFactory.quantize(te, te_quant, backend_name=te_backend)
                     self.components[name] = quantized_te
                     setattr(self, name, quantized_te)
@@ -167,7 +174,12 @@ class PipelineLoadingMixin:
                     if store and definition_id:
                         cache_path = QuantizationFactory.resolve_cache_path(definition_id, name, te_quant)
                         try:
-                            QuantizationFactory.save_quantized(quantized_te, cache_path, te_quant, source_path=source_path)
+                            QuantizationFactory.save_quantized(
+                                quantized_te, cache_path, te_quant,
+                                source_path=source_path,
+                                source_param_count=source_params,
+                                source_signature=source_sig,
+                            )
                         except Exception as e:
                             self.logger.warning("quantized_cache_save_failed", name=name, error=str(e))
 
@@ -236,6 +248,9 @@ class PipelineLoadingMixin:
 
                 vram_est = QuantizationFactory.estimate_vram(model, quant_scheme, quant_backend)
                 self.logger.info("quantizing_model", backend=quant_backend, scheme=quant_scheme, **vram_est)
+                # Captured BEFORE quantizing (quantize() may mutate in place).
+                source_params = sum(p.numel() for p in model.parameters())
+                source_sig = QuantizationFactory.state_shape_signature(model)
                 quantized = QuantizationFactory.quantize(model, quant_scheme, backend_name=quant_backend)
                 self._update_primary_model(quantized)
 
@@ -243,7 +258,12 @@ class PipelineLoadingMixin:
                 if is_cacheable and store and definition_id:
                     cache_path = QuantizationFactory.resolve_cache_path(definition_id, comp_name, quant_scheme)
                     try:
-                        QuantizationFactory.save_quantized(quantized, cache_path, quant_scheme, source_path=source_path)
+                        QuantizationFactory.save_quantized(
+                            quantized, cache_path, quant_scheme,
+                            source_path=source_path,
+                            source_param_count=source_params,
+                            source_signature=source_sig,
+                        )
                     except Exception as e:
                         self.logger.warning("quantized_cache_save_failed", error=str(e))
 

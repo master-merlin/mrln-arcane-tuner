@@ -21,10 +21,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 
 import structlog
+
+from app.core.proc_utils import PipeTail, kill_process
 
 logger = structlog.get_logger(__name__)
 
@@ -72,11 +76,26 @@ def _parse_progress_line(line: str) -> tuple[str, str] | None:
     return key.strip(), value.strip()
 
 
+#: Default wall-clock ceiling for one ffmpeg invocation. Generous — a long
+#: re-encode is legitimately slow — but bounded, because an unbounded
+#: subprocess.run() on a wedged ffmpeg parks the cpu-lane worker thread
+#: permanently and every later split / scene-detect task queues behind it.
+DEFAULT_TIMEOUT_S = 1800.0
+
+#: How often the run loop checks liveness, the timeout, and the abort flag.
+_POLL_INTERVAL_S = 0.25
+
+
+class FFmpegAborted(FFmpegError):
+    """Raised when ``should_abort`` asked the run to stop (task cancelled)."""
+
+
 def run_ffmpeg(
     args: list[str],
     progress_cb=None,
     *,
-    timeout: float | None = None,
+    timeout: float | None = DEFAULT_TIMEOUT_S,
+    should_abort=None,
 ) -> int:
     """Run ffmpeg with an explicit argv list (never via a shell).
 
@@ -89,6 +108,12 @@ def run_ffmpeg(
     marker (``stats["progress"]`` is ``"continue"`` or ``"end"``; ``out_time_ms``
     / ``out_time_us`` carry the encoded position).
 
+    ``should_abort`` is polled roughly every 250 ms; returning True kills the
+    child and raises :class:`FFmpegAborted`. Without it a cancelled batch could
+    only take effect BETWEEN segments — the worker thread was blocked inside a
+    single un-interruptible ``subprocess.run``, so pressing Cancel did nothing
+    until the current segment finished (or forever, if it never did).
+
     Returns the process exit code. Raises :class:`FFmpegError` on non-zero exit
     (with captured stderr tail) or timeout.
     """
@@ -100,24 +125,6 @@ def run_ffmpeg(
 
     logger.debug("ffmpeg_run", argv=argv)
 
-    if progress_cb is None:
-        try:
-            proc = subprocess.run(
-                argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:  # pragma: no cover - timing
-            raise FFmpegError(f"ffmpeg timed out after {timeout}s") from exc
-        if proc.returncode != 0:
-            tail = (proc.stderr or "")[-2000:]
-            raise FFmpegError(f"ffmpeg exited {proc.returncode}: {tail}")
-        return proc.returncode
-
-    # Streaming-progress mode.
     proc = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
@@ -125,10 +132,50 @@ def run_ffmpeg(
         text=True,
         bufsize=1,
     )
+    # BOTH pipes are drained on threads for the whole run. ffmpeg writes stream
+    # dumps and per-packet warnings to stderr (non-monotonic DTS on stream-copy
+    # splits is routine); with no reader it blocks on a full pipe buffer and the
+    # parent waits forever for a process that is waiting for the parent.
+    stdout_tail = PipeTail(proc.stdout) if progress_cb is None else None
+    stderr_tail = PipeTail(proc.stderr)
+
+    progress_thread = None
+    if progress_cb is not None:
+        progress_thread = threading.Thread(
+            target=_pump_progress, args=(proc.stdout, progress_cb),
+            daemon=True, name="ffmpeg_progress",
+        )
+        progress_thread.start()
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    try:
+        while proc.poll() is None:
+            if should_abort is not None and should_abort():
+                kill_process(proc)
+                raise FFmpegAborted("ffmpeg run aborted (task cancelled)")
+            if deadline is not None and time.monotonic() > deadline:
+                kill_process(proc)
+                raise FFmpegError(f"ffmpeg timed out after {timeout}s")
+            time.sleep(_POLL_INTERVAL_S)
+        ret = proc.returncode
+    finally:
+        if proc.poll() is None:  # pragma: no cover - defensive
+            kill_process(proc)
+
+    if progress_thread is not None:
+        progress_thread.join(timeout=5.0)
+
+    if ret != 0:
+        tail = stderr_tail.text() or (stdout_tail.text() if stdout_tail else "")
+        raise FFmpegError(f"ffmpeg exited {ret}: {tail[-2000:]}")
+    return ret
+
+
+def _pump_progress(stream, progress_cb) -> None:
+    """Read ``-progress pipe:1`` output and fire *progress_cb* per block."""
     stats: dict[str, str] = {}
     try:
-        assert proc.stdout is not None
-        for raw in proc.stdout:
+        for raw in stream:
             parsed = _parse_progress_line(raw)
             if parsed is None:
                 continue
@@ -140,18 +187,8 @@ def run_ffmpeg(
                 except Exception as exc:  # noqa: BLE001 - cb must not kill the run
                     logger.debug("ffmpeg_progress_cb_failed", error=str(exc))
                 stats.clear()
-        ret = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:  # pragma: no cover - timing
-        proc.kill()
-        raise FFmpegError(f"ffmpeg timed out after {timeout}s") from exc
-    finally:
-        stderr_tail = ""
-        if proc.stderr is not None:
-            stderr_tail = proc.stderr.read()[-2000:]
-
-    if ret != 0:
-        raise FFmpegError(f"ffmpeg exited {ret}: {stderr_tail}")
-    return ret
+    except Exception:  # noqa: BLE001 - pipe closed when the child was killed
+        pass
 
 
 def nearest_keyframe_before(path: str | Path, t: float) -> float:

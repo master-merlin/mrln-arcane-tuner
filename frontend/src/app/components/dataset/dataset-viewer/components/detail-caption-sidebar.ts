@@ -20,7 +20,10 @@ import { StructuredCaptionModalComponent } from '../../../../modals/structured-c
     selector: 'app-detail-caption-sidebar',
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
-    host: { class: 'w-80 h-full flex flex-col' },
+    // `w-full`, not a fixed `w-80` — see the note on detail-masking-sidebar:
+    // details-mode's rail owns the width, and a pinned 320px host was clipped
+    // (not scrolled) the moment the rail was narrower than that.
+    host: { class: 'w-full h-full flex flex-col' },
     imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent, StructuredCaptionModalComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">

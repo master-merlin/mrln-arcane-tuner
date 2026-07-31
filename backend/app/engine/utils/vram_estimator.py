@@ -349,6 +349,20 @@ _QUANT_BITS: dict[str, float] = {
 _CALIB_MIN = 0.1
 _CALIB_MAX = 4.0
 
+#: Bump whenever an ANALYTIC term changes shape (not when a table entry is
+#: recalibrated). Per-definition calibration coefficients are stored as
+#: ``measured ÷ analytic``, so a formula change silently invalidates them in a
+#: direction the ``_CALIB_MIN``/``_CALIB_MAX`` band cannot detect: a factor
+#: learned against an inflated analytic under-estimates once the analytic is
+#: corrected. ``definition_stats_service`` stamps the version alongside the
+#: coefficients and ignores a whole ``vram`` block whose stamp is stale, so the
+#: next completed run (or a stats backfill) re-derives them.
+#:
+#: v2 — removed the phantom ``depth_single_blocks`` default of 38 from the
+#: activation term (42 of 50 definitions have no single blocks and were being
+#: charged for 38 of them).
+VRAM_FORMULA_VERSION = 2
+
 
 # ---------------------------------------------------------------------------
 # Result data-class
@@ -379,6 +393,10 @@ class VRAMReport:
     total_mb: float = 0.0  # total card VRAM
     used_mb: float = 0.0  # already in use by other processes (ComfyUI, browser, …)
     fits: bool = True
+    # False when the live GPU query failed, i.e. ``fits`` is the untested
+    # default rather than a verdict. Without this a card the estimator could not
+    # read reported an unqualified "fits: true" with available_mb == 0.
+    fit_known: bool = False
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -396,6 +414,7 @@ class VRAMReport:
             "total_mb": round(self.total_mb),
             "used_mb": round(self.used_mb),
             "fits": self.fits,
+            "fit_known": self.fit_known,
             "warnings": self.warnings,
         }
 
@@ -443,7 +462,13 @@ class VRAMEstimator:
 
         # ── 1. Model weight size (primary trainable component) ───────────
         primary_key = "unet"
-        native_bpp = _bytes_per_param(precision.get(primary_key, "torch.bfloat16"))
+        # ``detected_precision`` keys the primary component by its real name —
+        # "transformer" for every DiT family, "unet" only for sdxl/dreamlite. A
+        # bare ``precision.get("unet")`` therefore missed and silently defaulted
+        # to bf16, so an fp8-on-disk backbone (krea2) derived the wrong
+        # bytes-per-param and under-counted its param total 2×, dragging the
+        # LoRA / optimizer / gradient rows down with it.
+        native_bpp = _bytes_per_param(_precision_for(precision, primary_key))
 
         quant_scheme = config.get("quantization", "none")
         if quant_scheme != "none" and quant_scheme in _QUANT_BITS:
@@ -567,7 +592,13 @@ class VRAMEstimator:
         # Without grad checkpointing: ~resolution² × depth × hidden × batch × 2 bytes
         # With grad checkpointing: ~1/3 of above
         hidden_size = arch.get("hidden_size", 3072)
-        depth = arch.get("depth", 19) + arch.get("depth_single_blocks", 38)
+        # ``depth_single_blocks`` defaults to 0, not 38: only the flux-lineage
+        # families (flux1/flux2/chroma/longcat/ovis — 8 of 50 definitions)
+        # actually have single-stream blocks. The old default charged every
+        # other definition for 38 blocks it does not have, inflating the
+        # activation row 1.6×–3.4× (sdxl read 57 layers instead of 19; prx 54
+        # instead of 16). See VRAM_FORMULA_VERSION.
+        depth = arch.get("depth", 19) + arch.get("depth_single_blocks", 0)
         pixels = (resolution // 8) ** 2  # latent space
         # Multiply by latent_frames so more frames → more activation memory
         # (image: latent_frames=1 → unchanged).
@@ -595,7 +626,7 @@ class VRAMEstimator:
         )
 
         # ── 7. Caching peak (TE on GPU during embedding generation) ─────
-        te_bpp = _bytes_per_param(precision.get("text_encoder", "torch.bfloat16"))
+        te_bpp = _bytes_per_param(_precision_for(precision, "text_encoder"))
         te_quant = config.get("te_quantization", "none")
         if te_quant != "none" and te_quant in _QUANT_BITS:
             te_effective_bpp = _QUANT_BITS[te_quant] / 8
@@ -632,7 +663,9 @@ class VRAMEstimator:
         # (caching_peak 26 GB × 22.9 → 601 GB). Reject the implausible ones so
         # the affected component reverts to its uncalibrated analytic value.
         if calibration:
-            for field in (
+            # ``comp`` not ``field`` — the latter shadows the dataclasses.field
+            # imported at module scope.
+            for comp in (
                 "model_weights_mb",
                 "lora_adapters_mb",
                 "optimizer_states_mb",
@@ -640,9 +673,9 @@ class VRAMEstimator:
                 "activations_mb",
                 "overhead_mb",
             ):
-                k = _sane_calibration(calibration.get(field), field, report)
+                k = _sane_calibration(calibration.get(comp), comp, report)
                 if k is not None:
-                    setattr(report, field, getattr(report, field) * k)
+                    setattr(report, comp, getattr(report, comp) * k)
             report.training_peak_mb = (
                 report.model_weights_mb
                 + report.lora_adapters_mb
@@ -676,6 +709,7 @@ class VRAMEstimator:
                 report.used_mb = gpu.vram_used_mb
                 report.available_mb = max(gpu.vram_total_mb - gpu.vram_used_mb, 0)
                 report.fits = report.peak_mb < report.available_mb * 0.95  # 5% headroom
+                report.fit_known = True
         except Exception:
             report.warnings.append("Could not query GPU — fit check skipped")
 
@@ -711,8 +745,14 @@ class VRAMEstimator:
             )
 
         # ── Quantization arch compatibility ──────────────────────────
-        _check_quant_compat(quant_scheme, "Model quantization", report, config)
-        _check_quant_compat(te_quant, "TE quantization", report, config)
+        _check_quant_compat(
+            quant_scheme, "Model quantization", report, config,
+            backend_key="quantization_backend",
+        )
+        _check_quant_compat(
+            te_quant, "TE quantization", report, config,
+            backend_key="te_quantization_backend",
+        )
 
         logger.info(
             "vram_estimate",
@@ -762,13 +802,30 @@ def _is_video_definition(definition: Any) -> bool:
     return "video.vae_temporal" in arch
 
 
+#: Interchangeable names for the PRIMARY trainable component. The alias walk is
+#: valid only within this group — a definition that calls its backbone
+#: ``transformer`` still answers a lookup for ``unet`` and vice versa.
+_PRIMARY_KEYS: tuple[str, ...] = ("transformer", "unet", "model")
+
+
 def _get_component_disk_mb(size_mb: dict, key: str) -> float:
     """Look up on-disk component size in MB from model_size_mb dict.
 
-    Tries *key* first, then common aliases (transformer/unet).
-    Returns 0 when not found.
+    For the primary component, any of :data:`_PRIMARY_KEYS` answers. For every
+    OTHER component (``text_encoder``, ``vae``, …) only the exact key answers.
+    Returns 0 when not found, which sends the caller to the param-count
+    fallback table.
+
+    The alias walk used to be unconditional — ``(key, "transformer", "unet")``
+    for every key — so a definition shipping a primary size but no
+    ``text_encoder``/``vae`` had the TRANSFORMER size returned as both. Two
+    shipped definitions matched (``bernini_r_14b``, ``k5_i2v_pro_sft_5s``) and
+    reported caching peaks of 55.6 GB / 74.7 GB against real figures of roughly
+    12.6 GB / 18.3 GB; since ``peak_mb = max(training, caching)`` that surfaced
+    as a false "won't fit" on cards that fit the run comfortably.
     """
-    for k in (key, "transformer", "unet"):
+    candidates = _PRIMARY_KEYS if key in _PRIMARY_KEYS else (key,)
+    for k in candidates:
         val = size_mb.get(k, 0)
         if val > 0:
             return float(val)
@@ -815,6 +872,22 @@ def _bytes_per_param(dtype_str: str) -> int:
     return _DTYPE_BYTES.get(dtype_str, 2)  # default bf16
 
 
+def _precision_for(precision: dict, key: str) -> str:
+    """Detected dtype for *key*, honouring the primary-component aliases.
+
+    ``detected_precision`` names the backbone "transformer" on DiT families and
+    "unet" on sdxl/dreamlite; a caller asking for either must find whichever the
+    definition actually recorded. Falls back to bf16 (the near-universal load
+    dtype) when nothing matches.
+    """
+    candidates = _PRIMARY_KEYS if key in _PRIMARY_KEYS else (key,)
+    for k in candidates:
+        val = precision.get(k)
+        if val:
+            return str(val)
+    return "torch.bfloat16"
+
+
 def _sane_calibration(k: Any, field: str, report: VRAMReport) -> float | None:
     """Validate a per-component calibration multiplier.
 
@@ -842,9 +915,22 @@ def _sane_calibration(k: Any, field: str, report: VRAMReport) -> float | None:
 
 
 def _check_quant_compat(
-    scheme: str, label: str, report: VRAMReport, config: dict[str, Any]
+    scheme: str,
+    label: str,
+    report: VRAMReport,
+    config: dict[str, Any],
+    *,
+    backend_key: str = "quantization_backend",
 ) -> None:
-    """Add a warning to *report* if *scheme* isn't supported on this GPU."""
+    """Add a warning to *report* if *scheme* isn't supported on this GPU.
+
+    ``backend_key`` names the config key holding the backend preference for
+    THIS scheme — the two branches below used to read each other's key
+    (the nvfp4 branch read ``te_quantization_backend`` even when checking the
+    model, and the fp8 branch read ``quantization_backend`` even when checking
+    the TE), so one of the two callers always resolved its fallback against the
+    wrong backend preference.
+    """
     if scheme in ("none", "bf16"):
         return
 
@@ -859,28 +945,26 @@ def _check_quant_compat(
     except Exception:
         return
 
-    # NVFP4 requires SM >= 100
+    requirement: str | None = None
     if scheme == "nvfp4" and sm < 100:
-        from app.engine.factories.quantization import QuantizationFactory
-
-        backend_name = config.get("te_quantization_backend", "auto")
-        fallback, scheme = QuantizationFactory.validate_and_fallback(
-            scheme, backend_name
-        )
-        report.warnings.append(
-            f"{label} '{scheme}' requires Blackwell (SM ≥ 100) but {gpu_name} has SM {sm}. "
-            f"Will fall back to '{fallback}' at runtime."
-        )
-
-    # FP8 requires SM >= 89
+        requirement = "Blackwell (SM ≥ 100)"
     elif scheme == "fp8" and sm < 89:
-        from app.engine.factories.quantization import QuantizationFactory
+        requirement = "Ada/Hopper/Blackwell (SM ≥ 89)"
+    if requirement is None:
+        return
 
-        backend_name = config.get("quantization_backend", "auto")
-        fallback, scheme = QuantizationFactory.validate_and_fallback(
-            scheme, backend_name
-        )
-        report.warnings.append(
-            f"{label} '{scheme}' requires Ada/Hopper/Blackwell (SM ≥ 89) but {gpu_name} has SM {sm}. "
-            f"Will fall back to '{fallback}' at runtime."
-        )
+    from app.engine.factories.quantization import QuantizationFactory
+
+    # validate_and_fallback returns (BACKEND, SCHEME). Unpacking it as
+    # (fallback, scheme) swapped the two: the message then named the backend as
+    # the fallback scheme AND rewrote ``scheme`` to the resolved fallback, so it
+    # claimed the fallback itself required Blackwell ("'nf4' requires
+    # Blackwell…"). Keep the REQUESTED scheme for the requirement clause and
+    # report the resolved scheme as the fallback.
+    _backend, fallback_scheme = QuantizationFactory.validate_and_fallback(
+        scheme, config.get(backend_key, "auto")
+    )
+    report.warnings.append(
+        f"{label} '{scheme}' requires {requirement} but {gpu_name} has SM {sm}. "
+        f"Will fall back to '{fallback_scheme}' at runtime."
+    )

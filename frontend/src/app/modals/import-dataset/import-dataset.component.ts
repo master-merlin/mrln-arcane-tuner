@@ -183,7 +183,7 @@ export class ImportDatasetModalComponent {
                     : this.api.importDatasetPath(this.serverPath.trim(), onConflict, newName);
             const ds = await firstValueFrom(result$);
             this.toast.success(`Imported "${ds.name}".`);
-            await this.datasets.loadAll().catch(() => undefined);
+            await this.datasets.loadAll({ force: true }).catch(() => undefined);
             this.overlay.closeModal();
         } catch (err: unknown) {
             const e = err as { status?: number; message?: string; error?: { detail?: unknown } };

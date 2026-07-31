@@ -245,7 +245,7 @@ export class RescanModalComponent {
         for (const ds of targets) {
             void this.sync.refreshDataset(ds).catch(() => undefined);
         }
-        void this.datasets.loadAll()
+        void this.datasets.loadAll({ force: true })
             .then(() => {
                 if (this.data.datasetName) return;
                 const missing = this.datasets.entities().filter(d => d.missing);

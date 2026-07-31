@@ -743,15 +743,38 @@ export class TrainingJobQueueComponent implements OnInit {
     return gn.toFixed(4);
   }
 
+  /**
+   * Error handler for the job-control verbs.
+   *
+   * These were `.subscribe(() => this.loadJobs())` with no error callback, and
+   * the app installs no global `ErrorHandler` — the only HTTP interceptor
+   * retries transient failures and re-throws everything else. So a failed
+   * Stop/Pause/Resume produced NOTHING: no toast, no state change, the row kept
+   * showing its old status and the click read as a no-op. Worse for the stop
+   * verbs, which close the confirm modal BEFORE the request, so the user is
+   * left believing the job was stopped.
+   */
+  private jobActionFailed(verb: string, e: unknown): void {
+    const err = e as { error?: { detail?: string }; message?: string };
+    this.toast.error(`Failed to ${verb} job: ${err?.error?.detail || err?.message || 'unknown error'}`);
+    this.loadJobs();
+  }
+
   startJob(id: string) {
-    this.jobService.startJob(id).subscribe(() => this.loadJobs());
+    this.jobService.startJob(id).subscribe({
+      next: () => this.loadJobs(),
+      error: (e) => this.jobActionFailed('start', e),
+    });
   }
 
   stopJob(id: string) {
-    this.jobService.stopJob(id).subscribe(() => {
-      const job = this.jobs().find(j => j.id === id);
-      if (job) this.archiveLocally(job, JobStatus.STOPPED);
-      this.loadJobs();
+    this.jobService.stopJob(id).subscribe({
+      next: () => {
+        const job = this.jobs().find(j => j.id === id);
+        if (job) this.archiveLocally(job, JobStatus.STOPPED);
+        this.loadJobs();
+      },
+      error: (e) => this.jobActionFailed('stop', e),
     });
   }
 
@@ -884,11 +907,17 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   pauseJob(id: string) {
-    this.jobService.pauseJob(id).subscribe(() => this.loadJobs());
+    this.jobService.pauseJob(id).subscribe({
+      next: () => this.loadJobs(),
+      error: (e) => this.jobActionFailed('pause', e),
+    });
   }
 
   resumeJob(id: string) {
-    this.jobService.resumeJob(id).subscribe(() => this.loadJobs());
+    this.jobService.resumeJob(id).subscribe({
+      next: () => this.loadJobs(),
+      error: (e) => this.jobActionFailed('resume', e),
+    });
   }
 
   toggleArchiveScope() {
@@ -976,15 +1005,21 @@ export class TrainingJobQueueComponent implements OnInit {
 
   softStopJob(id: string) {
     this.closeStopModal();
-    this.jobService.softStopJob(id).subscribe(() => this.loadJobs());
+    this.jobService.softStopJob(id).subscribe({
+      next: () => this.loadJobs(),
+      error: (e) => this.jobActionFailed('soft-stop', e),
+    });
   }
 
   hardStopJob(id: string) {
     this.closeStopModal();
-    this.jobService.stopJob(id).subscribe(() => {
-      const job = this.jobs().find(j => j.id === id);
-      if (job) this.archiveLocally(job, JobStatus.STOPPED);
-      this.loadJobs();
+    this.jobService.stopJob(id).subscribe({
+      next: () => {
+        const job = this.jobs().find(j => j.id === id);
+        if (job) this.archiveLocally(job, JobStatus.STOPPED);
+        this.loadJobs();
+      },
+      error: (e) => this.jobActionFailed('stop', e),
     });
   }
 

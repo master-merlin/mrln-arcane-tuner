@@ -110,10 +110,23 @@ describe('TopbarComponent — LLM availability icon', () => {
 
     it('shows the Bot icon (linking to Server settings) when the LLM endpoint is reachable', () => {
         const fixture = mountReal('/datasets');
-        TestBed.inject(HttpTestingController).match('/api/llm-refine/models')
-            .forEach(r => r.flush({ curated: [], installed: ['m1'], available: true }));
+        // The probe is deferred to `afterNextRender`, so it has not been issued
+        // yet — the first render is what triggers it.
+        const http = TestBed.inject(HttpTestingController);
+        expect(http.match('/api/llm-refine/models')).toHaveLength(0);
+
+        fixture.detectChanges();
+        const probes = http.match('/api/llm-refine/models');
+        expect(probes).toHaveLength(1);
+        probes.forEach(r => r.flush({ curated: [], installed: ['m1'], available: true }));
+
         fixture.detectChanges();
         expect(fixture.nativeElement.querySelector('[aria-label="LLM endpoint reachable"]')).toBeTruthy();
+    });
+
+    it('issues no LLM probe during construction (it is off the boot path)', () => {
+        mountReal('/datasets');
+        TestBed.inject(HttpTestingController).expectNone('/api/llm-refine/models');
     });
 
     afterEach(() => drainLlmProbe());

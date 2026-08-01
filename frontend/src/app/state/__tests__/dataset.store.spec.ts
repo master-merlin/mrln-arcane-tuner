@@ -183,10 +183,10 @@ describe('DatasetStore', () => {
 });
 
 /**
- * The library list is the app's biggest payload — measured at 4116 KB for 93
- * datasets — and TWO components hydrate the store on mount (the sidebar, for
- * its nav badge counts, and the datasets screen, for the grid). Without
- * coalescing that is two full fetches, 8.2 MB, for one page load.
+ * The library list is the app's largest response, and TWO components hydrate
+ * the store on mount (the sidebar, for its nav badge counts, and the datasets
+ * screen, for the grid). Without coalescing that is two full fetches and two
+ * parses for one page load.
  *
  * `force` exists for the post-mutation callers: a request that started before
  * an import/delete/rescan landed can still be in flight, and joining it would

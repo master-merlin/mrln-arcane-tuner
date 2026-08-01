@@ -138,9 +138,9 @@ export class DatasetStore extends EntityStore<Dataset> {
      *
      * The sidebar hydrates the store for its nav badge counts and the datasets
      * screen loads it for the grid, so mounting the library fired
-     * `GET /datasets` TWICE — measured at 4116 KB per response, i.e. 8.2 MB
-     * and two parses for one page load. Same coalescing DatasetSyncService
-     * already does per dataset for `refreshDataset`.
+     * `GET /datasets` TWICE — the app's largest response, fetched and parsed
+     * twice for one page load. Same coalescing DatasetSyncService already does
+     * per dataset for `refreshDataset`.
      *
      * `force: true` bypasses the join and always issues a fresh request. Use it
      * after a mutation: a request that STARTED before the mutation landed can

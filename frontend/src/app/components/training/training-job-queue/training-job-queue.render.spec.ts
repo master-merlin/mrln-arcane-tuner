@@ -40,12 +40,17 @@ function setup(): {
         getAutoQueue: Mock;
         setAutoQueue: Mock;
         reorderJob: Mock;
+        getJobSamples: Mock;
     };
 } {
     const api = {
         listJobs: vi.fn().mockReturnValue(of([])),
         listJobHistory: vi.fn().mockReturnValue(of([])),
         getJobCheckpoints: vi.fn().mockReturnValue(of([])),
+        // The component prefetches sample availability for archived rows from a
+        // `setTimeout`, so any spec that seeds a non-empty archive needs this
+        // stubbed or the timer throws after the test has moved on.
+        getJobSamples: vi.fn().mockReturnValue(of([])),
         getAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
         setAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
         getAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
@@ -233,15 +238,130 @@ describe('TrainingJobQueueComponent — rendered DOM', () => {
         expect(overlay.openModal).toHaveBeenCalledWith('training-stats');
     });
 
-    it('opens the training-stats modal from the expanded archive header button', () => {
+    it('opens the training-stats modal from the archive header when expanded', () => {
         const { fixture } = setup();
         fixture.detectChanges();
         fixture.componentInstance.toggleArchive();
         fixture.detectChanges();
         const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
-        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="open-stats-btn-expanded"]');
+        // One header now serves both states, so it is the same button/testid.
+        const btn: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="open-stats-btn"]');
         expect(btn).toBeTruthy();
         btn.click();
         expect(overlay.openModal).toHaveBeenCalledWith('training-stats');
+    });
+});
+
+/**
+ * The archive header used to be two different layouts. Collapsed showed a
+ * "RECENT" eyebrow with no project selector and no stats button in the header;
+ * expanded swapped in the real ARCHIVE header — and dropped the footer button
+ * entirely, so the only way back to the compact view was clicking the eyebrow
+ * text, which does not look like a control. One header in both states now, and
+ * the footer button toggles.
+ */
+describe('TrainingJobQueueComponent — archive header', () => {
+    beforeEach(() => TestBed.resetTestingModule());
+
+    const P1 = 'proj-1';
+
+    function withArchive(n: number, projectId: string | null = null) {
+        const { fixture, api } = setup();
+        const jobs = Array.from({ length: n }, (_, i) => ({
+            ...makeJob(`arch-${i}`, JobStatus.COMPLETED),
+            project_id: i % 2 === 0 ? projectId : null,
+        }));
+        api.listJobHistory.mockReturnValue(of(jobs));
+        fixture.detectChanges();
+        return { fixture, api };
+    }
+
+    const q = (fixture: any, sel: string) => fixture.nativeElement.querySelector(sel) as HTMLElement | null;
+    const rows = (fixture: any) =>
+        fixture.nativeElement.querySelectorAll('[data-testid^="job-item-"]').length;
+
+    it('renders the same header controls collapsed and expanded', () => {
+        const { fixture } = withArchive(10);
+
+        for (const state of ['collapsed', 'expanded']) {
+            expect(q(fixture, '[data-testid="archive-count"]'), state).toBeTruthy();
+            expect(q(fixture, '[data-testid="archive-project-selector"]'), state).toBeTruthy();
+            expect(q(fixture, '[data-testid="open-stats-btn"]'), state).toBeTruthy();
+            expect(q(fixture, '[data-testid="toggle-archive-btn"]'), state).toBeTruthy();
+            fixture.componentInstance.toggleArchive();
+            fixture.detectChanges();
+        }
+    });
+
+    it('keeps the footer button in BOTH states so the view can be collapsed again', () => {
+        const { fixture } = withArchive(10);
+        const btn = () => q(fixture, '[data-testid="toggle-archive-btn"]')!;
+
+        expect(btn().getAttribute('aria-expanded')).toBe('false');
+        btn().click();
+        fixture.detectChanges();
+
+        expect(btn(), 'the toggle vanished once expanded').toBeTruthy();
+        expect(btn().getAttribute('aria-expanded')).toBe('true');
+
+        btn().click();
+        fixture.detectChanges();
+        expect(btn().getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('previews a bounded number of rows collapsed and shows all when expanded', () => {
+        const { fixture } = withArchive(10);
+        const preview = rows(fixture);
+        expect(preview).toBeLessThan(10);
+
+        fixture.componentInstance.toggleArchive();
+        fixture.detectChanges();
+        expect(rows(fixture)).toBe(10);
+    });
+
+    it('shows the bare total when unfiltered', () => {
+        const { fixture } = withArchive(10);
+        expect(q(fixture, '[data-testid="archive-count"]')!.textContent!.trim()).toBe('10');
+    });
+
+    it('shows "(filtered) total" when a project is selected, like the datasets nav badge', () => {
+        const { fixture } = withArchive(10, P1);
+        fixture.componentInstance.onArchiveScopeChange(P1);
+        fixture.detectChanges();
+
+        // Half the fixture rows carry the project id.
+        expect(q(fixture, '[data-testid="archive-count"]')!.textContent!.trim()).toBe('(5) 10');
+    });
+
+    it('actually filters the rendered rows by project', () => {
+        const { fixture } = withArchive(10, P1);
+        fixture.componentInstance.toggleArchive();
+        fixture.detectChanges();
+        expect(rows(fixture)).toBe(10);
+
+        fixture.componentInstance.onArchiveScopeChange(P1);
+        fixture.detectChanges();
+        expect(rows(fixture), 'the project selector did not narrow the list').toBe(5);
+
+        fixture.componentInstance.onArchiveScopeChange('all');
+        fixture.detectChanges();
+        expect(rows(fixture)).toBe(10);
+    });
+
+    it('filters without a refetch — the rows are already held', () => {
+        const { fixture, api } = withArchive(10, P1);
+        const before = api.listJobHistory.mock.calls.length;
+
+        fixture.componentInstance.onArchiveScopeChange(P1);
+        fixture.detectChanges();
+
+        expect(api.listJobHistory.mock.calls.length).toBe(before);
+    });
+
+    it('always requests the FULL archive so the total is real', () => {
+        const { api } = withArchive(10, P1);
+        for (const call of api.listJobHistory.mock.calls) {
+            expect(call[0] ?? null).toBeNull();
+        }
     });
 });

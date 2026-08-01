@@ -22,6 +22,9 @@ import type { JobConfigData } from '../../../modals/job-config/job-config.compon
 import { ResumeJobService } from '../../../services/resume-job.service';
 import { ToastService } from '../../../services/toast';
 
+/** Archive rows shown while collapsed — a preview, not the whole archive. */
+const ARCHIVE_PREVIEW_ROWS = 6;
+
 @Component({
   selector: 'app-training-job-queue',
   standalone: true,
@@ -56,7 +59,47 @@ export class TrainingJobQueueComponent implements OnInit {
     return this.jobs().filter(j => this.ACTIVE_STATUSES.has(j.status) && !arch.has(j.id));
   });
 
-  archivedJobs = computed(() => this.historicalJobs());
+  /**
+   * Every archived row the client holds, before any filter — the "total" half
+   * of the header count.
+   */
+  archiveTotal = computed(() => this.historicalJobs().length);
+
+  /** True while the project selector is narrowing the archive. */
+  archiveFiltered = computed(() => {
+    const f = this.archiveProjectFilter();
+    return !!f && f !== 'all';
+  });
+
+  /**
+   * Archived rows after the project + text filters — what the list renders.
+   *
+   * The project filter is applied HERE, client-side. It used to be a server
+   * argument (`listJobHistory(projectId)`), which never actually held: the
+   * JobStore seeds the archive with the UNFILTERED history and the store
+   * reconcile effect adds back any archived row missing from the local list,
+   * so every excluded row reappeared as soon as the store landed. Filtering
+   * the rendered view instead makes the selector work, makes switching
+   * projects instant (no round trip), and gives the header a real
+   * filtered-vs-total pair to show.
+   */
+  archivedJobs = computed(() =>
+    this.historicalJobs().filter(
+      j => this.matchesArchiveProject(j) && this.matchesFilter(j),
+    ),
+  );
+
+  /** Rows actually rendered: the whole archive when expanded, else a preview. */
+  visibleArchiveRows = computed(() =>
+    this.archiveExpanded() ? this.archivedJobs() : this.archivedJobs().slice(0, ARCHIVE_PREVIEW_ROWS),
+  );
+
+  private matchesArchiveProject(job: Job): boolean {
+    const f = this.archiveProjectFilter();
+    if (!f || f === 'all') return true;
+    return job.project_id === f;
+  }
+
   archiveExpanded = signal<boolean>(false);
   archiveProjectScope = signal<boolean>(true);
   archiveProjectFilter = signal<string>('all');
@@ -73,7 +116,6 @@ export class TrainingJobQueueComponent implements OnInit {
       .filter(j => j.status === JobStatus.PENDING && this.matchesFilter(j))
       .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.created_at - b.created_at),
   );
-  recentJobs = computed(() => this.historicalJobs().filter(j => this.matchesFilter(j)).slice(0, 6));
 
   // Output events for config actions
   saveAsTemplate = output<{ name: string; config: TrainingConfig; definition_id: string }>();
@@ -591,9 +633,12 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   loadHistory() {
-    const filter = this.archiveProjectFilter();
-    const projectId = (filter && filter !== 'all') ? filter : null;
-    this.jobService.listJobHistory(projectId).subscribe(jobs => {
+    // Always fetch the FULL archive. The project filter is applied client-side
+    // (see `archivedJobs`), so the header can report filtered-vs-total and
+    // switching projects costs no round trip. Passing the project here was also
+    // pointless: the JobStore seed below fetches unfiltered history anyway and
+    // its reconcile effect merged those rows straight back in.
+    this.jobService.listJobHistory(null).subscribe(jobs => {
       // Keep optimistic archive rows the server hasn't persisted yet, so a
       // just-stopped job doesn't blink out between the optimistic move and the
       // history DB write landing.
@@ -933,7 +978,8 @@ export class TrainingJobQueueComponent implements OnInit {
     this.projectService.activeJobsProject.set(pid);
     this.archiveProjectScope.set(!!pid);
     localStorage.setItem('archiveProjectScope', String(!!pid));
-    this.loadHistory();
+    // No reload: `archivedJobs` re-filters the rows already held, so the list
+    // updates in the same frame instead of after a round trip.
   }
 
   getProjectName(projectId: string): string {

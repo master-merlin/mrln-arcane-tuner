@@ -42,7 +42,9 @@ class MicrosoftLensLoader(GenericComponentLoader):
                 subfolder="text_encoder",
                 fallback_to_root=True,
                 # Dequantize MXFP4 -> bf16 so we never need Triton MoE kernels
-                # on Windows. 96 GB VRAM holds the dequantized 20B encoder.
+                # on Windows. Trades VRAM for portability: the bf16 encoder is
+                # materially larger than the quantized weights, so this needs a
+                # card that can hold the dequantized 20B encoder.
                 load_kwargs={"quantization_config": None},
             ),
             ComponentSpec(

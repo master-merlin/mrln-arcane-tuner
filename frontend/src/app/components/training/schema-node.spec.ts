@@ -157,7 +157,7 @@ describe('coerceConfigNumbers()', () => {
       temporal_coverage: 'tiled',
       cache_latents: true,
       resolutions: [768],
-      datasets: [{ num_repeats: 1, dataset_name: 'Airwolf_video' }],
+      datasets: [{ num_repeats: 1, dataset_name: 'ds-a' }],
       project_id: 'p1', // non-schema key — must survive untouched
     };
     coerceConfigNumbers(cfg, schema);
@@ -166,7 +166,7 @@ describe('coerceConfigNumbers()', () => {
     expect(cfg['temporal_coverage']).toBe('tiled'); // enum string left alone
     expect(cfg['cache_latents']).toBe(true); // boolean left alone
     expect(cfg['resolutions']).toEqual([768]);
-    expect(cfg['datasets']).toEqual([{ num_repeats: 1, dataset_name: 'Airwolf_video' }]);
+    expect(cfg['datasets']).toEqual([{ num_repeats: 1, dataset_name: 'ds-a' }]);
     expect(cfg['project_id']).toBe('p1');
   });
 

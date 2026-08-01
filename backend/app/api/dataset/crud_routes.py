@@ -53,9 +53,30 @@ def get_dataset_or_404(name: str) -> Dataset:
 # ── Dataset CRUD ─────────────────────────────────────────────────────────
 
 
-@router.get("/datasets", response_model=list[Dataset])
+@router.get(
+    "/datasets",
+    response_model=list[Dataset],
+    # `media_metadata` is the per-FILE map. On a single dataset it is bounded;
+    # on the LIST endpoint it dominates the response and grows with the TOTAL
+    # file count across the library, while every other field is O(1) per row —
+    # so this payload scales with the wrong quantity, and pays it on every
+    # library load. Nothing consumes it from this response: the client reads
+    # per-file data from `/datasets/{name}/pairs`, and the cross-dataset MPx
+    # histogram is computed server-side by `/datasets/stats/mpx-distribution`
+    # for exactly this reason.
+    #
+    # `{"__all__": {...}}`, NOT `{"media_metadata"}`: against a list response
+    # model the bare field-name form silently does nothing and ships the field
+    # anyway. The exclusion is serialization-only, so the `excluded_count` and
+    # `median_quality_score` computed fields — both derived from
+    # `media_metadata` — are still computed and still returned.
+    #
+    # `GET /datasets/{name}` deliberately still carries it: it is one dataset,
+    # so the payload is bounded, and single-dataset consumers may want it.
+    response_model_exclude={"__all__": {"media_metadata"}},
+)
 async def list_datasets():
-    """List all registered datasets."""
+    """List all registered datasets (without the heavy per-file metadata)."""
     return await asyncio.to_thread(dataset_manager.list_datasets)
 
 

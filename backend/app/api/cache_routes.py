@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading as _threading
 import time as _time
 from pathlib import Path
 from typing import Any
@@ -407,6 +408,10 @@ def _aggregate_cache_stats() -> dict[str, Any]:
 _CACHE_STATS_TTL_S = 120.0
 _cache_stats_value: dict | None = None
 _cache_stats_at: float = 0.0
+# Single-flight guard for the background recompute. Set from the event loop
+# (request handler), cleared from a worker thread, so it takes a lock.
+_cache_stats_lock = _threading.Lock()
+_cache_stats_refreshing = False
 
 
 def _get_fresh_cache_stats() -> dict | None:
@@ -421,6 +426,37 @@ def _store_cache_stats(stats: dict) -> None:
     _cache_stats_at = _time.time()
 
 
+def _begin_refresh() -> bool:
+    """Claim the right to start a background refresh. False if one is running."""
+    global _cache_stats_refreshing
+    with _cache_stats_lock:
+        if _cache_stats_refreshing:
+            return False
+        _cache_stats_refreshing = True
+        return True
+
+
+def _end_refresh() -> None:
+    global _cache_stats_refreshing
+    with _cache_stats_lock:
+        _cache_stats_refreshing = False
+
+
+def _schedule_cache_stats_refresh() -> None:
+    """Queue a silent recompute on the background lane; no-op if one is live."""
+    if not _begin_refresh():
+        return
+    from app.core.tasks.task_manager import task_manager
+    try:
+        task = task_manager.create(
+            type="cache_stats_warmup", title="Cache stats", user_visible=False,
+        )
+        task_manager.enqueue(task.id, run_cache_stats_refresh, lane="background")
+    except Exception:  # noqa: BLE001 - never let a refresh failure break the GET
+        _end_refresh()
+        raise
+
+
 def run_cache_stats_refresh(task_id: str) -> None:
     """Silent background worker — recompute the cross-dataset cache aggregation
     and warm the in-memory cache. Runs on the non-GPU 'background' lane."""
@@ -431,16 +467,34 @@ def run_cache_stats_refresh(task_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         task_manager.fail(task_id, str(exc))
         return
+    finally:
+        _end_refresh()
     task_manager.complete(task_id)
 
 
 @router.get("/datasets/cache/stats", response_model=CacheStatsResponse)
 async def cache_stats():
-    """Aggregate cache size statistics across all datasets (TTL-cached; warmed
-    at startup by a silent background task)."""
-    cached = _get_fresh_cache_stats()
-    if cached is not None:
-        return cached
+    """Aggregate cache size statistics across all datasets.
+
+    Stale-while-revalidate. `_aggregate_cache_stats` walks every dataset root
+    twice (cache subtrees + full on-disk size), so its cost scales with the
+    whole library and is dominated by disk latency — seconds, not milliseconds,
+    whenever the OS page cache is cold. It used to run INLINE whenever the value
+    was older than the TTL, which meant the first visit to the Datasets screen
+    after any idle gap longer than the TTL paid the full sweep. The startup
+    warm-up hid that: it made the cost look like a once-per-boot event.
+
+    Now an existing value is ALWAYS returned immediately and a recompute is
+    queued on the background lane when it is stale. This is a "size on disk"
+    KPI, so serving it one refresh-interval old is the right trade. The only
+    remaining inline wait is the cold case where no value exists at all, which
+    the startup warm-up normally covers before the first navigation.
+    """
+    if _cache_stats_value is not None:
+        if _get_fresh_cache_stats() is None:
+            _schedule_cache_stats_refresh()
+        return _cache_stats_value
+
     stats = await asyncio.to_thread(_aggregate_cache_stats)
     _store_cache_stats(stats)
     return stats

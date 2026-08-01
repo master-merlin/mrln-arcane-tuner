@@ -1,4 +1,5 @@
 import {
+    afterNextRender,
     ChangeDetectionStrategy,
     Component,
     computed,
@@ -47,10 +48,20 @@ export class TopbarComponent {
     protected llm = inject(LlmAvailabilityStore);
 
     constructor() {
-        // App-init probe: detect whether the LLM endpoint (Ollama/LM Studio)
-        // is reachable so the availability icon + LLM-gated controls reflect
-        // reality on first paint.
-        this.llm.refresh();
+        // Probe for the LLM endpoint (Ollama / LM Studio) AFTER the first
+        // render rather than during construction.
+        //
+        // It is the one boot request that leaves the app: when the endpoint is
+        // not running the request costs a connection timeout rather than a
+        // round trip, and it is consistently the slowest call in the boot
+        // sequence. Held on the critical path it occupies one of the browser's
+        // few per-origin connections while the app's own payloads are still in
+        // flight.
+        //
+        // Nothing on first paint depends on the answer — the icon below is
+        // positive-only (`@if (llm.available())`), so it is hidden either way
+        // until the probe resolves and then simply appears.
+        afterNextRender(() => this.llm.refresh());
     }
 
     /** Open the Server screen (where the LLM endpoint is configured). */

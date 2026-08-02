@@ -172,21 +172,25 @@
       <ng-container *ngTemplateOutlet="recentRow; context: { $implicit: job }"></ng-container>
     }
 
-    <!-- Always rendered, and a TOGGLE: it used to disappear once expanded,
-         leaving the eyebrow itself as the only (undiscoverable) way back. -->
-    <div class="flex gap-1.5 mt-2.5">
-      <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
-        [attr.aria-expanded]="archiveExpanded()"
-        [title]="archiveExpanded() ? 'Collapse archive' : 'Expand archive'"
-        class="btn ghost sm flex-1 justify-center">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
-        @if (archiveExpanded()) { Collapse } @else { Archive ({{ archiveTotal() }}) }
-      </button>
-    </div>
-
     @if (!runningJobs().length && !pendingJobs().length && !archiveTotal()) {
       <div class="px-2 py-12 text-center text-text-disabled text-[12.5px] italic">No jobs yet.</div>
     }
+  </div>
+
+  <!-- Always rendered, and a TOGGLE: it used to disappear once expanded,
+       leaving the eyebrow itself as the only (undiscoverable) way back.
+       It also sits OUTSIDE the scrolling list — an expanded archive is
+       arbitrarily long, and a control parked after the last row is reachable
+       only by scrolling the whole thing. Its own bar, so no row passes behind
+       it and nothing is hidden underneath. -->
+  <div class="q-archive-foot flex gap-1.5 shrink-0">
+    <button (click)="toggleArchive()" data-testid="toggle-archive-btn"
+      [attr.aria-expanded]="archiveExpanded()"
+      [title]="archiveExpanded() ? 'Collapse archive' : 'Expand archive'"
+      class="btn ghost sm flex-1 justify-center">
+      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+      @if (archiveExpanded()) { Collapse } @else { Archive ({{ archiveTotal() }}) }
+    </button>
   </div>
 </div>
 

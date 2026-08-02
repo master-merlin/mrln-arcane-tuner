@@ -41,6 +41,21 @@
     outline-offset: -2px;
 }
 
+/* Archive expand/collapse toggle — its own bar at the foot of the queue panel,
+   a sibling of the scrolling list rather than the list's last row.
+
+   The archive is unbounded, so once expanded the toggle sat below however many
+   rows the list happened to hold: collapsing again meant scrolling the whole
+   archive to reach the control. Keeping it out of the scroll container fixes
+   that without overlaying anything — the list gets the remaining height and
+   stops above this bar, so no row ever passes behind it. Mirrors the panel
+   header's border treatment at the opposite edge. */
+.q-archive-foot {
+    padding: 8px 10px;
+    background: var(--color-surface-low);
+    border-top: 1px solid color-mix(in oklab, var(--color-surface-mid) 60%, transparent);
+}
+
 /* Small status chip on running cards. */
 .head-chip-sm {
     padding: 1px 6px;

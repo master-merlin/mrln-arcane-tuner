@@ -309,6 +309,24 @@ describe('TrainingJobQueueComponent — archive header', () => {
         expect(btn().getAttribute('aria-expanded')).toBe('false');
     });
 
+    it('keeps the footer toggle outside the scrolling list so a long archive cannot bury it', () => {
+        const { fixture } = withArchive(40);
+        fixture.componentInstance.toggleArchive();
+        fixture.detectChanges();
+
+        const btn = q(fixture, '[data-testid="toggle-archive-btn"]')!;
+        const scroller = q(fixture, '.overflow-y-auto')!;
+        const rowsInScroller = scroller.querySelectorAll('[data-testid^="job-item-"]').length;
+
+        // The rows scroll; the toggle must not scroll with them, or collapsing
+        // an expanded archive means scrolling past every row to find it.
+        expect(rowsInScroller).toBe(40);
+        expect(scroller.contains(btn), 'the toggle scrolls away with the archive').toBe(false);
+
+        // A sibling bar, not an overlay: nothing renders behind it.
+        expect(getComputedStyle(btn.parentElement!).position).toBe('static');
+    });
+
     it('previews a bounded number of rows collapsed and shows all when expanded', () => {
         const { fixture } = withArchive(10);
         const preview = rows(fixture);

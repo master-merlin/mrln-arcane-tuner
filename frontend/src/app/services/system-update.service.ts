@@ -46,6 +46,13 @@ export class SystemUpdateService {
     constructor() {
         this.ws.on<UpdateStatus>('update.status').subscribe(s => this.ingest(s));
         this.refreshStatus();
+        // Shell-lifetime state, so it has to re-hydrate on reconnect: the WS
+        // feed only carries transitions that happen while we are connected, and
+        // the most likely reason this socket dropped is the restart at the end
+        // of an update WE triggered. Without this the indicator keeps showing
+        // the pre-restart state (`restarting`, or a stale `behind` count)
+        // against a server that has already finished, until the user reloads.
+        this.ws.reconnected$.subscribe(() => this.refreshStatus());
     }
 
     private ingest(s: UpdateStatus): void {

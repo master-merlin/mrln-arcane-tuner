@@ -18,12 +18,14 @@ describe('SystemUpdateService', () => {
     let httpGet: ReturnType<typeof vi.fn>;
     let httpPost: ReturnType<typeof vi.fn>;
     let wsEvents: Subject<UpdateStatus>;
+    let reconnected$: Subject<void>;
     let toastInfo: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
         httpGet = vi.fn().mockReturnValue(new Subject());
         httpPost = vi.fn().mockReturnValue(new Subject());
         wsEvents = new Subject<UpdateStatus>();
+        reconnected$ = new Subject<void>();
         toastInfo = vi.fn();
 
         TestBed.configureTestingModule({
@@ -31,7 +33,10 @@ describe('SystemUpdateService', () => {
                 SystemUpdateService,
                 { provide: HttpClient, useValue: { get: httpGet, post: httpPost } },
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
-                { provide: WebSocketService, useValue: { on: () => wsEvents.asObservable() } },
+                {
+                    provide: WebSocketService,
+                    useValue: { on: () => wsEvents.asObservable(), reconnected$ },
+                },
                 { provide: ToastService, useValue: { info: toastInfo } },
             ],
         });
@@ -47,6 +52,19 @@ describe('SystemUpdateService', () => {
     it('refreshStatus() calls GET /system/update/status', () => {
         service.refreshStatus();
         expect(httpGet).toHaveBeenCalledWith('/api/system/update/status');
+    });
+
+    it('re-fetches the status when the socket reconnects', () => {
+        // The `update.status` feed only carries transitions seen while
+        // connected, and the restart that ends an update is exactly when we are
+        // not. One GET at construction, one per reconnect.
+        expect(httpGet).toHaveBeenCalledTimes(1);
+
+        reconnected$.next();
+        expect(httpGet).toHaveBeenCalledTimes(2);
+
+        reconnected$.next();
+        expect(httpGet).toHaveBeenCalledTimes(3);
     });
 
     it('check() POSTs to /system/update/check', () => {

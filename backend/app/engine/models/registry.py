@@ -79,6 +79,18 @@ class ModelRegistry:
 
 
     @classmethod
+    def _central_definitions_dir(cls) -> str:
+        """Central (non family-scoped) definitions directory.
+
+        Anchored on this module, like the family scan below. It used to be
+        ``os.getcwd() / "app/engine/models/definitions"``, which only ever
+        resolved when the process happened to be launched from ``backend\\`` —
+        a service, a different launcher or a test run would silently scan
+        nothing and load no central definitions, with no error to show for it.
+        """
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "definitions")
+
+    @classmethod
     def register_family(cls, name: str, family_class: type[ModelFamily]) -> None:
         """Register a model family class under the given name."""
         cls._families[name] = family_class
@@ -87,8 +99,7 @@ class ModelRegistry:
     def initialize(cls) -> None:
         """One-stop initialization: discover families then load definitions."""
         cls.discover_families()
-        defs_dir = os.path.join(os.getcwd(), "app/engine/models/definitions")
-        cls.load_definitions(defs_dir)
+        cls.load_definitions(cls._central_definitions_dir())
 
     @classmethod
     def discover_families(cls) -> None:
@@ -139,7 +150,7 @@ class ModelRegistry:
              return
 
         cls._definitions = {} # Clear existing
-        defs_dir = definitions_dir or os.path.join(os.getcwd(), "app/engine/models/definitions")
+        defs_dir = definitions_dir or cls._central_definitions_dir()
 
         # 1. Scan Central Definitions
         if os.path.exists(defs_dir):

@@ -418,21 +418,54 @@ export class MassCaptionModalComponent implements OnInit {
      *  truth for both `startGenerate()` and the count-on-CTA label. Mirrors the
      *  target/strategy/model-aware branching the launcher used to compute inline
      *  inside the click handler. */
+    /**
+     * True when this run writes a per-definition VARIANT
+     * (`captions/<definition_id>/<stem>.txt`) rather than the general caption
+     * (`<stem>.txt`).
+     *
+     * THE SINGLE SOURCE OF TRUTH for both the `definition_id` we send and the
+     * "already captioned?" predicate below. They must never be derived
+     * separately: the backend writes a variant only when it receives a
+     * `definition_id` (`caption_batch._write_caption`), and we only send one
+     * for a structured caption format — so with a PLAIN-format definition
+     * active, `activeDefinitionId()` is truthy while the run still overwrites
+     * the general caption. Keying the filter on the definition id alone made
+     * Incremental ask "does a variant exist?" (never, for a plain definition)
+     * and then overwrite every general caption — a silent full wipe.
+     */
+    protected writesVariant = computed<boolean>(() =>
+        this.target() === 'original'
+        && !!this.modelContext.activeDefinitionId()
+        && this.modelContext.activeCaptionFormat() !== 'plain');
+
     protected generateCandidates = computed<DatasetPair[]>(() => {
         const all = this.pairs();
         const target = this.target();
         const mode = this.strategy();
-        const defId = this.modelContext.activeDefinitionId();
-        const vmap = this.variantMap();
-        return target === 'masked'
-            ? (mode === 'keep'
-                ? all.filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption)
-                : all.filter(p => p.metadata?.has_mask))
-            : (mode === 'keep'
-                ? (defId
-                    ? all.filter(p => !vmap[this.stemOf(p.media_file)]?.trim())
-                    : all.filter(p => !p.caption_content?.trim()))
-                : [...all]);
+
+        // Overwrite is defined as "everything in scope" — it needs no knowledge
+        // of what already exists, so it never waits on the variant map.
+        if (mode !== 'keep') {
+            return target === 'masked' ? all.filter(p => p.metadata?.has_mask) : [...all];
+        }
+
+        if (target === 'masked') {
+            return all.filter(p => p.metadata?.has_mask && !p.metadata?.has_masked_caption);
+        }
+
+        if (this.writesVariant()) {
+            // Fail CLOSED while the answer is unknown. `variantMap` starts empty
+            // and is filled asynchronously, so "not fetched yet" and "no variant
+            // exists" look identical — and reading unknown as "needs captioning"
+            // selects the entire dataset. No candidates means the CTA is
+            // disabled, so an incremental run can never start on a guess.
+            if (this.variantMapStatus() !== 'ready') return [];
+            const vmap = this.variantMap();
+            return all.filter(p => !vmap[this.stemOf(p.media_file)]?.trim());
+        }
+
+        // The run writes the general caption, so the general caption decides.
+        return all.filter(p => !p.caption_content?.trim());
     });
     protected generateCount = computed(() => this.generateCandidates().length);
 
@@ -454,6 +487,14 @@ export class MassCaptionModalComponent implements OnInit {
         if (this.tab() === 'refine') {
             return n === 0 ? 'No captions to refine' : `Refine ${n} caption${n === 1 ? '' : 's'}`;
         }
+        // Distinguish "nothing to do" from "we don't know yet" — with the
+        // incremental filter waiting on the variant map, a bare "No images to
+        // caption" would read as a finished check rather than a pending one.
+        if (this.strategy() === 'keep' && this.writesVariant() && this.variantMapStatus() !== 'ready') {
+            return this.variantMapStatus() === 'loading'
+                ? 'Checking existing captions…'
+                : 'Cannot check existing captions — retry or use Overwrite';
+        }
         if (this.target() === 'masked') {
             return n === 0 ? 'No masked images to caption' : `Caption ${n} masked image${n === 1 ? '' : 's'}`;
         }
@@ -473,16 +514,37 @@ export class MassCaptionModalComponent implements OnInit {
      *  whenever model-aware mode is on. Empty when not model-aware. */
     protected variantMap = signal<Record<string, string>>({});
 
+    /** Whether {@link variantMap} can be trusted. `ready` also covers "not
+     *  needed" (no definition active). An incremental run that depends on the
+     *  map refuses to start unless this is `ready` — see
+     *  {@link generateCandidates}. */
+    protected variantMapStatus = signal<'ready' | 'loading' | 'error'>('ready');
+
     /** Fetches the variant map for the currently active definition whenever the
      *  definition or dataset changes.  Runs only when a definitionId is present
      *  and a datasetName is available. */
     private _variantMapEffect = effect(() => {
         const defId = this.modelContext.activeDefinitionId();
         const name  = this.data.datasetName;
-        if (!defId || !name) { this.variantMap.set({}); return; }
+        if (!defId || !name) {
+            this.variantMap.set({});
+            this.variantMapStatus.set('ready');   // nothing to know
+            return;
+        }
+        this.variantMapStatus.set('loading');
         this.datasetsApi.getCaptionVariantMap(name, defId).subscribe({
-            next: r  => this.variantMap.set(r.variants ?? {}),
-            error: () => this.variantMap.set({}),
+            next: r => {
+                this.variantMap.set(r.variants ?? {});
+                this.variantMapStatus.set('ready');
+            },
+            error: () => {
+                // Do NOT fall back to `{}` and carry on: an empty map reads as
+                // "no image has a variant", which turns Incremental into a
+                // full overwrite. Mark it unknown and say so.
+                this.variantMap.set({});
+                this.variantMapStatus.set('error');
+                this.toast.error('Could not read existing captions — incremental captioning is unavailable until this succeeds.');
+            },
         });
     });
 
@@ -584,14 +646,16 @@ export class MassCaptionModalComponent implements OnInit {
             return;
         }
 
-        const isStructured = this.modelContext.activeCaptionFormat() !== 'plain';
+        // `definition_id` is what makes the backend write a variant instead of
+        // the general caption, so it comes from the SAME predicate the
+        // candidate filter used — see `writesVariant`.
         const captionInstructions = this.currentSettings.captionInstructions ?? '';
 
-        const enrichedParams = isStructured
+        const enrichedParams = this.modelContext.activeCaptionFormat() !== 'plain'
             ? {
                 ...this.currentSettings.params,
                 ...(captionInstructions ? { caption_instructions: captionInstructions } : {}),
-                ...(defId ? { definition_id: defId } : {}),
+                ...(this.writesVariant() ? { definition_id: defId } : {}),
               }
             : this.currentSettings.params;
 

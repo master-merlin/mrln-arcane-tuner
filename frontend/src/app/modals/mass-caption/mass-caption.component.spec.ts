@@ -396,6 +396,145 @@ describe('MassCaptionComponent — incremental (keep) candidate selection', () =
         }));
     });
 
+    /**
+     * The destructive-incremental bug.
+     *
+     * Whether a run writes a per-definition VARIANT or the GENERAL caption is
+     * decided by `caption_format`: the modal only sends `definition_id` for a
+     * structured format, and the backend only writes a variant when it receives
+     * one (`caption_batch._write_caption`). With a PLAIN-format definition
+     * active, `definition_id` is truthy but the run still overwrites the general
+     * `<stem>.txt`.
+     *
+     * The candidate filter used to key on `activeDefinitionId()` alone, so in
+     * that configuration it asked "does a variant exist?" — nothing writes
+     * variants for a plain definition, so the answer was no for every image,
+     * every image was selected, and Incremental wiped every existing caption.
+     *
+     * The predicate has to be keyed on the same condition as the write target.
+     */
+    it('plain-format definition + keep: skips images that already have a GENERAL caption', () => {
+        setup();
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'flux1-dev', family: 'flux1', name: 'FLUX.1 dev', caption_format: 'plain' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        // No variants exist — nothing writes them for a plain-format definition.
+        comp.variantMap.set({});
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'already captioned' },
+            { media_file: 'b.png', caption_content: '' },
+        ]);
+        comp.startGenerate();
+
+        // This run overwrites <stem>.txt, so the general caption is what
+        // "already captioned" means. Only b.png is missing one.
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
+            image_rel_paths: ['b.png'],
+        }));
+    });
+
+    it('plain-format definition + keep: starts nothing when every image has a general caption', () => {
+        setup();
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'flux1-dev', family: 'flux1', name: 'FLUX.1 dev', caption_format: 'plain' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        comp.variantMap.set({});
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'cap a' },
+            { media_file: 'b.png', caption_content: 'cap b' },
+        ]);
+        comp.startGenerate();
+
+        expect(api.batchCaption).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Fail-closed on an unknown variant map. `variantMap` starts empty and is
+     * filled by an async fetch that can also fail (it used to swallow the error
+     * and leave `{}`). "Not loaded yet" and "no variant exists" were
+     * indistinguishable, and the code read both as "needs captioning" — so a
+     * click during the in-flight window, or after a failed fetch, selected the
+     * whole dataset. Unknown must never resolve to the destructive answer.
+     */
+    it('structured definition + keep: selects nothing while the variant map is unknown', () => {
+        setup();
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        comp.variantMapStatus.set('loading');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'generic a' },
+            { media_file: 'b.png', caption_content: 'generic b' },
+        ]);
+        comp.startGenerate();
+
+        expect(api.batchCaption).not.toHaveBeenCalled();
+    });
+
+    it('structured definition + keep: a failed variant-map fetch cannot start a run', () => {
+        setup();
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('keep');
+        comp.variantMapStatus.set('error');
+        comp.pairs.set([{ media_file: 'a.png', caption_content: 'generic a' }]);
+        comp.startGenerate();
+
+        expect(api.batchCaption).not.toHaveBeenCalled();
+    });
+
+    it('overwrite is unaffected by an unknown variant map — it selects everything by definition', () => {
+        setup();
+
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(true);
+        modelContext.setDefinition({ id: 'ideogram4', family: 'ideogram4', name: 'Ideogram 4', caption_format: 'ideogram4_json' });
+
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.currentSettings = { resolvedModelId: 'm', params: {}, resolvedSystemPrompt: '' };
+        comp.target.set('original');
+        comp.strategy.set('overwrite');
+        comp.variantMapStatus.set('loading');
+        comp.pairs.set([
+            { media_file: 'a.png', caption_content: 'generic a' },
+            { media_file: 'b.png', caption_content: 'generic b' },
+        ]);
+        comp.startGenerate();
+
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({
+            image_rel_paths: ['a.png', 'b.png'],
+        }));
+    });
+
     it('overwrite: sends all images regardless of generic or variant captions', () => {
         setup({ 'a': 'existing variant', 'b': 'existing variant' });
 

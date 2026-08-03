@@ -884,8 +884,13 @@ class DatasetManager:
             try:
                 scoring_service.unload_models()
                 logger.info("scoring_complete", dataset=name, scored=scored_count)
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                # Never fail a scan over the unload, but never hide it either:
+                # a failed unload means the scoring model is still holding VRAM,
+                # and the next allocation is the one that reports OOM.
+                logger.warning(
+                    "scoring_unload_failed", dataset=name, scored=scored_count, error=str(e),
+                )
 
     def _score_single_image(
         self,
@@ -1524,8 +1529,17 @@ class DatasetManager:
                             meta.pop("overlay_dimensions", None)
                             try:
                                 self._persist_media_item(dataset, lookup_key)
-                            except Exception:
-                                pass
+                            except Exception as e:  # noqa: BLE001
+                                # Read path — a failed persist must not break
+                                # the listing, but swallowing it silently means
+                                # the cleared overlay flags come back on the
+                                # next read and nobody knows why.
+                                logger.warning(
+                                    "overlay_flag_cleanup_persist_failed",
+                                    dataset=dataset.name,
+                                    media_file=lookup_key,
+                                    error=str(e),
+                                )
                     p["metadata"] = meta
 
             # Pair roles: physical slot files from disk, logical ordering
@@ -1602,12 +1616,28 @@ class DatasetManager:
         # set length, so a fresh save and a full rescan agree on the
         # value without disk-walking on every caption write.
         stem = os.path.splitext(filename)[0]
+        matched_key: str | None = None
         for key, meta in dataset.media_metadata.items():
             media_stem = os.path.splitext(key)[0]
             if media_stem == stem:
                 meta["has_caption"] = True
-                self._persist_media_item(dataset, key)
+                matched_key = key
                 break
+
+        if matched_key is None:
+            # Failure mode 1 above, now handled rather than merely documented:
+            # the image landed in the folder after the last scan, so it has no
+            # media_metadata entry, the loop matched nothing, and the recount
+            # below returned the SAME number — no persist, no broadcast, and a
+            # library card that kept its old total until someone rescanned by
+            # hand. Index that one file now (a single-item incremental rescan)
+            # so the write path leaves the DB consistent with the disk.
+            matched_key = self._adopt_media_for_stem(dataset, stem)
+            if matched_key is not None:
+                dataset.media_metadata[matched_key]["has_caption"] = True
+
+        if matched_key is not None:
+            self._persist_media_item(dataset, matched_key)
 
         new_caption_count = sum(
             1 for m in dataset.media_metadata.values() if m.get("has_caption")
@@ -1640,6 +1670,59 @@ class DatasetManager:
                 )
 
         return content
+
+    def _adopt_media_for_stem(self, dataset: "Dataset", stem: str) -> str | None:
+        """Index the dataset-root media file named *stem* if it isn't indexed yet.
+
+        A single-item incremental rescan: builds the same entry
+        ``_scan_dataset_files`` would, so a later full rescan agrees with what
+        we wrote. Returns the ``media_metadata`` key, or None when no media
+        file carries that stem — an orphan caption counts toward nothing and
+        must not fabricate a media item.
+        """
+        from app.core.dataset.scan_helpers import (
+            build_audio_entry,
+            build_media_entry,
+            extract_media_dimensions,
+        )
+
+        try:
+            entries = os.listdir(dataset.path)
+        except OSError as e:
+            logger.warning("adopt_media_listdir_failed", dataset=dataset.name, error=str(e))
+            return None
+
+        for f in entries:
+            f_stem, ext = os.path.splitext(f)
+            ext = ext.lower()
+            if f_stem != stem or ext not in self.MULTIMEDIA_EXTS:
+                continue
+
+            file_path = os.path.join(dataset.path, f)
+            try:
+                if ext in AUDIO_EXTENSIONS:
+                    entry = build_audio_entry(file_path, stem, ext, dataset.path, {})
+                else:
+                    width, height = extract_media_dimensions(file_path, ext)
+                    if width <= 0 or height <= 0:
+                        return None
+                    entry = build_media_entry(
+                        file_path, stem, ext, dataset.path, {}, width, height,
+                    )
+            except Exception as e:  # noqa: BLE001 - unreadable/corrupt media
+                # Never fail the caption save over this; the caption is already
+                # on disk. Say so, and leave the count for the next rescan.
+                logger.warning(
+                    "adopt_media_failed", dataset=dataset.name, file=f, error=str(e),
+                )
+                return None
+
+            dataset.media_metadata[f] = entry
+            dataset.multimedia_count += 1
+            logger.info("adopted_unscanned_media", dataset=dataset.name, file=f)
+            return f
+
+        return None
 
     def save_lyrics(self, name: str, filename: str, content: str) -> str:
         """Save a lyrics sidecar (``<stem>.lyrics.txt``) for an audio file.

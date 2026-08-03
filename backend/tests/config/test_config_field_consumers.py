@@ -107,6 +107,14 @@ ALLOWED_STUBS: dict[str, str] = {
         "declared + gated(has_audio) + tested audio loss-weight stub; no "
         "runtime consumer wired yet (video/audio-training backlog)"
     ),
+    "adaptive_targeting": (
+        "consumed by AdaptiveTargetingController wiring (Task 5 of "
+        "2026-08-03 plan); stub entry removed there"
+    ),
+    "adaptive_targeting_config": (
+        "consumed by AdaptiveTargetingController wiring (Task 5 of "
+        "2026-08-03 plan); stub entry removed there"
+    ),
 }
 
 
@@ -242,6 +250,8 @@ UNIVERSAL_FIELDS = frozenset(
         "offload_to_cpu",
         "vram_safe_bucket_order",
         "targeted_layers",
+        "adaptive_targeting",
+        "adaptive_targeting_config",
         "sample_every_n_steps",
         "sample_skip_first_n_steps",
         "sample_prompts",

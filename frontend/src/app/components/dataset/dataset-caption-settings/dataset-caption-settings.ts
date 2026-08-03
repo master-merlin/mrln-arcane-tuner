@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
 import { ProjectService, ProjectPreferences } from '../../../services/project.service';
 import { TemplateService, Template } from '../../../services/template.service';
+import { ToastService } from '../../../services/toast';
 import { ApiCaptionService, ApiProviderStatus } from '../../../services/api-caption.service';
 import { ModelContextStore } from '../../../state/model-context.store';
 import { OverlayStore } from '../../../state/overlay.store';
@@ -396,6 +397,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
     private datasetService = inject(DatasetService);
     private projectService = inject(ProjectService);
     private templateService = inject(TemplateService);
+    private toast = inject(ToastService);
     /** Injected now; the API connection UI (Task 9) consumes it. */
     private apiCaptionService = inject(ApiCaptionService);
     /** Exposes activeCaptionFormat() and activeDefinitionId() for the template. */
@@ -891,9 +893,10 @@ export class DatasetCaptionSettingsComponent implements OnInit {
                     this.pendingCopyChanges = null;
                     if (pending) this.updateActiveTemplate(pending);
                 },
-                error: () => {
+                error: (e) => {
                     this.creatingCopy = false;
                     this.pendingCopyChanges = null;
+                    this.settingsOpFailed('create the template', e);
                 },
             });
             return;
@@ -921,9 +924,19 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             const pending = this.pendingSaves.get(id);
             if (pending) {
                 this.pendingSaves.delete(id);
-                this.templateService.updateTemplate('captioning', id, pending).subscribe();
+                this.templateService.updateTemplate('captioning', id, pending).subscribe({ error: (e) => this.settingsOpFailed('save the template', e) });
             }
         }, 500);
+    }
+
+
+    /** No global ErrorHandler catches a rejected call, so a template or
+     *  preference write that the backend refused used to leave the UI showing
+     *  the pre-action state — silently, and worst on the debounced auto-save
+     *  paths where the user believes their edits are already persisted. */
+    private settingsOpFailed(op: string, e: unknown): void {
+        const err = e as { error?: { detail?: string }; message?: string };
+        this.toast.error(`Couldn't ${op}: ${err?.error?.detail || err?.message || 'unknown error'}`);
     }
 
     addTemplate() {
@@ -937,9 +950,12 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             system_prompt: this.captionSystemPrompt(),
             wildcard: this.captionWildcard(),
             config: this.captionModelParams()
-        }).subscribe(newTpl => {
+        }).subscribe({
+            next: newTpl => {
             this.currentTemplates.update(ts => [...ts, newTpl]);
             this.onTemplateChange(newTpl.id);
+        },
+            error: (e) => this.settingsOpFailed('create the template', e),
         });
     }
 
@@ -953,8 +969,11 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         const name = prompt('Rename template:', tpl.name);
         if (!name || name === tpl.name) return;
 
-        this.templateService.updateTemplate('captioning', activeId, { name }).subscribe(updatedTpl => {
+        this.templateService.updateTemplate('captioning', activeId, { name }).subscribe({
+            next: updatedTpl => {
             this.currentTemplates.update(ts => ts.map(t => t.id === activeId ? updatedTpl : t));
+        },
+            error: (e) => this.settingsOpFailed('save the template', e),
         });
     }
 
@@ -968,12 +987,15 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             confirmLabel: 'Delete',
             destructive: true,
             onConfirm: () => {
-                this.templateService.deleteTemplate('captioning', activeId).subscribe(() => {
+                this.templateService.deleteTemplate('captioning', activeId).subscribe({
+                    next: () => {
                     this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
                     const remaining = this.currentTemplates();
                     if (remaining.length > 0) {
                         this.onTemplateChange(remaining[0].id);
                     }
+                },
+                    error: (e) => this.settingsOpFailed('delete the template', e),
                 });
             },
         });

@@ -857,6 +857,15 @@ export class JobsScreen {
     }
 
     // ── Sampling controls ───────────────────────────────────────────────
+    /** Surface a failed job action. There is no global ErrorHandler, so without
+     *  this the control silently does nothing and the UI keeps showing the
+     *  pre-action state — the twin of the queue rail's `jobActionFailed`. */
+    private jobActionFailed(verb: string, e: unknown): void {
+        const err = e as { error?: { detail?: string }; message?: string };
+        this.toast.error(`Failed to ${verb}: ${err?.error?.detail || err?.message || 'unknown error'}`);
+        void this.jobStore.loadAll();
+    }
+
     protected toggleSamplingPause(): void {
         const j = this.selectedJob();
         if (!j) return;
@@ -864,7 +873,10 @@ export class JobsScreen {
         const action$ = paused
             ? this.jobService.resumeSampling(j.id)
             : this.jobService.pauseSampling(j.id);
-        action$.subscribe({ next: () => this.samplingPaused.set(!paused) });
+        action$.subscribe({
+            next: () => this.samplingPaused.set(!paused),
+            error: (e) => this.jobActionFailed(paused ? 'resume sampling' : 'pause sampling', e),
+        });
     }
     protected onCadenceChange(event: Event): void {
         const j = this.selectedJob();
@@ -872,6 +884,7 @@ export class JobsScreen {
         if (!j || !value || value <= 0) return;
         this.jobService.setSamplingCadence(j.id, value).subscribe({
             next: () => this.samplingCadence.set(value),
+            error: (e) => this.jobActionFailed('change the sampling cadence', e),
         });
     }
 
@@ -884,6 +897,7 @@ export class JobsScreen {
         if (!j) return;
         this.jobService.pauseJob(j.id).subscribe({
             next: () => void this.jobStore.loadAll(),
+            error: (e) => this.jobActionFailed('pause the job', e),
         });
     }
 
@@ -942,6 +956,7 @@ export class JobsScreen {
             onConfirm: () => {
                 this.jobService.stopJob(j.id).subscribe({
                     next: () => void this.jobStore.loadAll(),
+                    error: (e) => this.jobActionFailed('stop the job', e),
                 });
             },
         });
@@ -1017,7 +1032,10 @@ export class JobsScreen {
     protected resumeJob(): void {
         const j = this.selectedJob();
         if (!j) return;
-        this.jobService.resumeJob(j.id).subscribe({ next: () => void this.jobStore.loadAll() });
+        this.jobService.resumeJob(j.id).subscribe({
+            next: () => void this.jobStore.loadAll(),
+            error: (e) => this.jobActionFailed('resume the job', e),
+        });
     }
 
     /** Restart an archived job (proceeds as-is; reuses the existing output). */

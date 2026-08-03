@@ -104,6 +104,16 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   allTemplates = signal<Template[]>([]);
   activeTemplateId = signal<string>('default');
 
+  /** Template mutations failed silently: no global ErrorHandler catches a
+   *  rejected call, so a create/rename/delete that the backend refused left the
+   *  UI showing the pre-action state with no indication anything went wrong —
+   *  worst on the auto-save paths, where the user believes their edits are
+   *  persisted. */
+  private templateOpFailed(op: string, e: unknown): void {
+    const err = e as { error?: { detail?: string }; message?: string };
+    this.toast.error(`Couldn't ${op}: ${err?.error?.detail || err?.message || 'unknown error'}`);
+  }
+
   /** Persisted active-template id for this project (from preferences), used by
    *  _maybeAutoApply to restore the user's selection across a reload. */
   private _preferredActiveId: string | null = null;
@@ -260,11 +270,14 @@ export class TrainingTemplateSelectorComponent implements OnInit {
         name: p.name,
         project_id: this.projectId(),
         config: p.config,
-      }).subscribe(newTpl => {
-        this.allTemplates.update(current => [...current, newTpl]);
-        this._pendingAdopt = null;
-        this._setActiveTemplateQuietly(newTpl.id);
-        this.toast.success(`Template "${p.name}" was missing — recreated it.`);
+      }).subscribe({
+        error: (e) => this.templateOpFailed('create the template', e),
+        next: newTpl => {
+          this.allTemplates.update(current => [...current, newTpl]);
+          this._pendingAdopt = null;
+          this._setActiveTemplateQuietly(newTpl.id);
+          this.toast.success(`Template "${p.name}" was missing — recreated it.`);
+        },
       });
     }
   }
@@ -366,10 +379,13 @@ export class TrainingTemplateSelectorComponent implements OnInit {
             name: name,
             project_id: this.projectId(),
             config: this.currentFormConfig()
-        }).subscribe(newTpl => {
-            this.allTemplates.update(current => [...current, newTpl]);
-            this.activeTemplateId.set(newTpl.id);
-            this.toast.success('Template cloned!');
+        }).subscribe({
+            error: (e) => this.templateOpFailed('clone the template', e),
+            next: newTpl => {
+                this.allTemplates.update(current => [...current, newTpl]);
+                this.activeTemplateId.set(newTpl.id);
+                this.toast.success('Template cloned!');
+            },
         });
       },
     });
@@ -392,9 +408,12 @@ export class TrainingTemplateSelectorComponent implements OnInit {
         // Compare trimmed-to-trimmed: `newName` is already trimmed by the input
         // modal, but a stored name with stray whitespace shouldn't defeat this.
         if (newName === tpl.name.trim()) return;
-        this.templateService.updateTemplate('training', id, { name: newName }).subscribe(updatedTpl => {
-            this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
-            this.toast.success('Template renamed!');
+        this.templateService.updateTemplate('training', id, { name: newName }).subscribe({
+            error: (e) => this.templateOpFailed('rename the template', e),
+            next: updatedTpl => {
+                this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
+                this.toast.success('Template renamed!');
+            },
         });
       },
     });
@@ -411,13 +430,16 @@ export class TrainingTemplateSelectorComponent implements OnInit {
       confirmLabel: 'Delete',
       destructive: true,
       onConfirm: () => {
-        this.templateService.deleteTemplate('training', id).subscribe(() => {
-            this.allTemplates.update(current => current.filter(t => t.id !== id));
-            const remaining = this.filteredTemplates();
-            if (remaining.length > 0) {
-                this.activeTemplateId.set(remaining[0].id);
-            }
-            this.toast.success('Template deleted!');
+        this.templateService.deleteTemplate('training', id).subscribe({
+            error: (e) => this.templateOpFailed('delete the template', e),
+            next: () => {
+                this.allTemplates.update(current => current.filter(t => t.id !== id));
+                const remaining = this.filteredTemplates();
+                if (remaining.length > 0) {
+                    this.activeTemplateId.set(remaining[0].id);
+                }
+                this.toast.success('Template deleted!');
+            },
         });
       },
     });
@@ -458,8 +480,11 @@ export class TrainingTemplateSelectorComponent implements OnInit {
       if (existing) {
         this.activeTemplateId.set(existing.id);
         this._persistActiveTemplate(existing.id);
-        this.templateService.updateTemplate('training', existing.id, { definition_id: currentDefId, config: newFormValue }).subscribe(updatedTpl => {
-            this.allTemplates.update(current => current.map(t => t.id === existing.id ? updatedTpl : t));
+        this.templateService.updateTemplate('training', existing.id, { definition_id: currentDefId, config: newFormValue }).subscribe({
+            error: (e) => this.templateOpFailed('save the template', e),
+            next: updatedTpl => {
+                this.allTemplates.update(current => current.map(t => t.id === existing.id ? updatedTpl : t));
+            },
         });
         return;
       }
@@ -488,8 +513,11 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     }
 
     // Pending auto-save logic
-    this.templateService.updateTemplate('training', id, { definition_id: currentDefId, config: newFormValue }).subscribe(updatedTpl => {
-        this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
+    this.templateService.updateTemplate('training', id, { definition_id: currentDefId, config: newFormValue }).subscribe({
+        error: (e) => this.templateOpFailed('save the template', e),
+        next: updatedTpl => {
+            this.allTemplates.update(current => current.map(t => t.id === id ? updatedTpl : t));
+        },
     });
   }
 
@@ -517,9 +545,12 @@ export class TrainingTemplateSelectorComponent implements OnInit {
         name: name,
         project_id: this.projectId(),
         config: config
-    }).subscribe(newTpl => {
-        this.allTemplates.update(current => [...current, newTpl]);
-        this.activeTemplateId.set(newTpl.id);
+    }).subscribe({
+        error: (e) => this.templateOpFailed('create the template', e),
+        next: newTpl => {
+            this.allTemplates.update(current => [...current, newTpl]);
+            this.activeTemplateId.set(newTpl.id);
+        },
     });
   }
 }

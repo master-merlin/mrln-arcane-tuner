@@ -96,14 +96,23 @@ def rerender_overlay_from_recipe(
     # re-applied to the new pixels).
     json_path = _overlays_json_path(dataset_path)
     try:
-        with open(json_path, encoding="utf-8") as f:
-            data = json.load(f)
-        key = relative_path if relative_path in data else rel
-        if key in data:
-            data[key]["created_at"] = datetime.now(timezone.utc).isoformat()
-            data[key]["overlay_file"] = f"overlays/{stem}.png"
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+        # Lock across the read AND the write: this rewrites the whole recipe
+        # map, so interleaving with another overlay op on the same dataset
+        # silently drops that op's entry. Write goes through the atomic helper
+        # so an interrupted rewrite cannot truncate every recipe.
+        from app.core.dataset.media_helpers import (
+            _overlays_json_lock,
+            write_overlays_json,
+        )
+
+        with _overlays_json_lock:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            key = relative_path if relative_path in data else rel
+            if key in data:
+                data[key]["created_at"] = datetime.now(timezone.utc).isoformat()
+                data[key]["overlay_file"] = f"overlays/{stem}.png"
+                write_overlays_json(json_path, data)
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("overlays_json_timestamp_failed", stem=stem, error=str(e))
 

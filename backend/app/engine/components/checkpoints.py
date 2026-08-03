@@ -662,8 +662,13 @@ class CheckpointManager:
                     safe_save_file(flat_tensors, te_path)
                     manifest["te_cache.safetensors"] = os.path.getsize(te_path)
                     idx_path = os.path.join(path, "te_cache_index.json")
-                    with open(idx_path, "w", encoding="utf-8") as f:
+                    # The tensors beside this go through safe_save; the index
+                    # that makes them addressable must be just as atomic, or a
+                    # torn write leaves a cache whose contents cannot be found.
+                    idx_tmp = f"{idx_path}.tmp"
+                    with open(idx_tmp, "w", encoding="utf-8") as f:
                         json.dump(index, f, ensure_ascii=False)
+                    os.replace(idx_tmp, idx_path)
                     manifest["te_cache_index.json"] = os.path.getsize(idx_path)
                     logger.info(
                         "saved_te_cache",

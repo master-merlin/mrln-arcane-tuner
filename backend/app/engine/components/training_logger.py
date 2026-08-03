@@ -218,8 +218,14 @@ class TrainingLogger:
         path = os.path.join(target_dir, "loss_history.json")
         
         try:
-            with open(path, "w") as f:
+            # tmp+replace: the stats modal reads this back, and a truncated
+            # rewrite (the process is killed mid-save often enough — TDR,
+            # user stop) leaves it unparseable, losing the whole history
+            # rather than the last append.
+            tmp = f"{path}.tmp"
+            with open(tmp, "w") as f:
                 json.dump(self._loss_history, f, indent=2)
+            os.replace(tmp, path)
             logger.debug("loss_history_saved", path=path, entries=len(self._loss_history))
         except OSError as e:
             logger.warning("loss_history_save_failed", path=path, error=str(e))

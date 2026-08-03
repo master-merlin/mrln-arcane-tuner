@@ -8,12 +8,44 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Any
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+#: Serializes read-modify-write cycles on a dataset's ``overlays.json``.
+#: Two overlay operations on the same dataset otherwise interleave read/write
+#: and the second one writes back a copy of the recipe map that predates the
+#: first — last writer wins, silently.
+_overlays_json_lock = threading.Lock()
+
+
+def write_overlays_json(path: str, data: dict[str, Any]) -> None:
+    """Atomically replace an ``overlays.json``.
+
+    The recipe map is the whole overlay history for a dataset, rewritten in full
+    on every single-image change. A plain ``open(path, "w")`` truncates it
+    before the new bytes land, so an interrupted write leaves a truncated file
+    that the next reader fails to parse — losing every recipe, not just the one
+    being edited. Same tmp+replace pattern as ``settings_manager``.
+
+    Callers must hold :data:`_overlays_json_lock` across their read AND this
+    write; atomicity alone does not make read-modify-write safe.
+    """
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
@@ -47,14 +79,14 @@ def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
     overlays_json = os.path.join(dataset_path, "overlays.json")
     if os.path.exists(overlays_json):
         try:
-            with open(overlays_json, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if any(k in data for k in (relative_path, rel)):
-                data.pop(relative_path, None)
-                data.pop(rel, None)
-                existed = True
-                with open(overlays_json, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
+            with _overlays_json_lock:
+                with open(overlays_json, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if any(k in data for k in (relative_path, rel)):
+                    data.pop(relative_path, None)
+                    data.pop(rel, None)
+                    existed = True
+                    write_overlays_json(overlays_json, data)
         except (OSError, json.JSONDecodeError) as e:
             logger.warning("overlays_json_update_failed", stem=stem, error=str(e))
 

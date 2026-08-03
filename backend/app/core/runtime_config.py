@@ -39,8 +39,12 @@ def write_runtime_config(backend_port: int, frontend_port: int) -> None:
 
     try:
         os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
-        with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+        # The frontend reads this at boot to find the API; a truncated write
+        # here means the SPA cannot reach the backend at all.
+        tmp_path = f"{_CONFIG_PATH}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
+        os.replace(tmp_path, _CONFIG_PATH)
         logger.info("runtime_config_written", path=_CONFIG_PATH, config=config)
     except OSError as e:
         logger.warning("runtime_config_write_failed", error=str(e), path=_CONFIG_PATH)

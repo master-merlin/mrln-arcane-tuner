@@ -146,7 +146,7 @@ interface ApplicationSettings {
   `,
     styles: [`
         .server-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-        @media (max-width: 1100px) { .server-settings-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 1200px) { .server-settings-grid { grid-template-columns: 1fr; } }
         .sc-body { display: flex; flex-direction: column; gap: 14px; }
         .sc-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .sc-field { display: flex; flex-direction: column; min-width: 0; }

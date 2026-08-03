@@ -183,7 +183,7 @@
 
 /* Narrow: collapse the TOC too — single-column form with the estimate
    strip beneath it. */
-@media (max-width: 820px) {
+@media (max-width: 900px) {
     .training-grid {
         grid-template-columns: minmax(0, 1fr);
     }

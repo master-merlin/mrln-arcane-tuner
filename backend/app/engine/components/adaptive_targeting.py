@@ -2,8 +2,10 @@
 
 Measures per-module recent learning at analysis events (windowed ‖ΔW‖² of the
 effective LoRA delta, EMA-smoothed across windows) and freezes modules that
-stopped contributing. Freeze-only mode is monotonic; reactivation (probe
-windows) and the rebuild action are layered on in later tasks.
+stopped contributing. Freeze-only mode is monotonic; opt-in reactivation adds
+probe windows that reopen the universe for a bounded number of steps and may
+re-admit a module an earlier event froze. The rebuild action is layered on in a
+later task.
 
 Zero per-step overhead between events: the only per-step work is an integer
 compare. Event cost is rank-space Gram products over the module registry.
@@ -150,6 +152,9 @@ class AdaptiveTargetingController:
         self._universe: list[str] = []
         self._active: list[str] = []
         self._snapshot: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        # Non-None only while a probe window is open (reactivation mode).
+        self._probe_open_step: int | None = None
+        self._pre_probe_active: list[str] = []
         self._warmup_end = int(self.config.warmup_pct * self.total_steps)
         self._next_event = self._warmup_end + self.config.interval_steps
 
@@ -207,10 +212,30 @@ class AdaptiveTargetingController:
 
     # ── step hook ─────────────────────────────────────────────────────────
     def on_optimizer_step(self, step: int) -> str | None:
-        if not self.enabled or step < self._next_event:
+        if not self.enabled:
+            return None
+        probe_open_step = self._probe_open_step
+        if probe_open_step is not None:
+            # The interval clock PAUSES while a probe window is open. A regular
+            # narrowing event firing mid-probe would truncate the probe's own
+            # measurement window AND rank a keep-set over a universe that is
+            # only temporarily wide open.
+            if step < probe_open_step + self.config.probe_steps:
+                return None
+        elif step < self._next_event:
             return None
         try:
-            result = self._run_event(step)
+            if probe_open_step is not None:
+                self._close_probe(step)
+                result = None
+            elif self._probe_is_due():
+                self._open_probe(step)
+                result = None
+            else:
+                result = self._run_event(step)
+            # Reset only on a step that actually ran an event: the budget is
+            # three CONSECUTIVE failed EVENTS, and resetting on the ordinary
+            # in-between steps would make it unreachable.
             self._consecutive_failures = 0
             return result
         except Exception as exc:  # noqa: BLE001 — must never kill a run (spec §7)
@@ -339,6 +364,103 @@ class AdaptiveTargetingController:
         )
         return None
 
+    # ── probe windows (reactivation mode, spec §5) ────────────────────────
+    def _probe_is_due(self) -> bool:
+        """Is the event now due a probe window rather than a regular narrowing?
+
+        ``event_index > 0`` deliberately skips the very first event: a probe
+        measures which modules deserve re-admission, and before any narrowing
+        has happened there is nothing to re-admit — it would burn a whole
+        window re-measuring an already fully-trainable universe.
+        """
+        if not self.config.reactivation:
+            return False
+        return (
+            self.event_index > 0
+            and (self.event_index + 1) % self.config.probe_every == 0
+        )
+
+    def _open_probe(self, step: int) -> None:
+        """Temporarily unfreeze the whole universe and start a fresh window.
+
+        The pre-probe set is captured BEFORE the unfreeze because
+        ``_apply_active_set`` overwrites ``self._active`` with the universe: a
+        close that finds no signal would otherwise "restore" the wide-open
+        universe and silently discard every narrowing decision of the run.
+        """
+        self._pre_probe_active = list(self._active)
+        self._apply_active_set(list(self._universe))
+        # The measurement window is the probe and nothing else. Heat carried in
+        # from the preceding interval was accumulated while most of the universe
+        # was frozen and physically could not move, so it cannot rank the
+        # modules the probe exists to re-rank.
+        self._snapshot = self._take_snapshot()
+        self._probe_open_step = step
+        self.event_index += 1
+        # Both counters are 0 by contract: the unfreeze is temporary and the
+        # real accounting belongs to the matching "probe_apply". The widened
+        # ``active_count`` on this event is what makes the probe visible.
+        self._emit_event(
+            step, kind="probe_open", frozen_this_event=0, reactivated_this_event=0
+        )
+
+    def _close_probe(self, step: int) -> None:
+        """Measure the probe window and apply a possibly-re-admitting keep-set."""
+        before = list(self._pre_probe_active)
+        try:
+            # Same ordering as ``_run_event``: computed into a LOCAL so a failure
+            # part-way through cannot leave the EMA one window ahead of the
+            # snapshot it was measured against.
+            heat = self._compute_window_heat()
+            selection = select_active(
+                heat,
+                self._universe,
+                self.config.energy_threshold,
+                self.config.min_active_pct,
+            )
+        finally:
+            # Released even when the measurement raised. A probe left open
+            # pauses the interval clock forever, so every later event of the run
+            # is lost and the run finishes wide open and unmeasured.
+            self._probe_open_step = None
+            self._pre_probe_active = []
+            self._next_event = step + self.config.interval_steps
+        self._snapshot = self._take_snapshot()
+        self._heat = heat
+
+        if selection.total_heat <= 0.0:
+            # Nothing moved even with the whole universe trainable, so the
+            # ranking would be arbitrary and re-admitting on it a coin flip.
+            # Restore the PRE-probe set, never ``self._active`` — that is the
+            # universe this probe opened.
+            self._apply_active_set(before)
+            logger.info("adaptive_probe_zero_heat", step=step)
+            self.log_writer.log(
+                f"adaptive_targeting: probe window ending at step {step} had no "
+                "learning signal — the pre-probe active set is restored unchanged"
+            )
+            return
+
+        keep = selection.keep
+        keep_set = set(keep)
+        before_set = set(before)
+        self._hot = [name for name in selection.hot if name in keep_set]
+        reactivated = len([name for name in keep if name not in before_set])
+        frozen_now = len([name for name in before if name not in keep_set])
+        # Deliberately NOT intersected with the pre-probe set: re-admitting a
+        # module that went cold earlier and learned again during the probe is
+        # the entire point of this mode. Both remaining bounds still hold —
+        # ``select_active`` only ever ranks names from the universe (so a
+        # user-frozen module can never come back) and applies the min-active
+        # floor over that same universe (so no padding is needed here).
+        self._apply_active_set(keep)
+        self._emit_event(
+            step,
+            kind="probe_apply",
+            frozen_this_event=frozen_now,
+            reactivated_this_event=reactivated,
+        )
+
     def _emit_event(
         self,
         step: int,
@@ -410,6 +532,8 @@ class AdaptiveTargetingController:
             "event_index": self.event_index,
             "next_event": self._next_event,
             "rebuild_count": self.rebuild_count,
+            # Diagnostics only — a resume never reopens it (see restore_state).
+            "probe_open_step": self._probe_open_step,
         }
 
     def restore_state(self, state: dict[str, Any]) -> None:
@@ -451,4 +575,18 @@ class AdaptiveTargetingController:
         self.event_index = int(state.get("event_index", 0))
         self.rebuild_count = int(state.get("rebuild_count", 0))
         self._next_event = int(state.get("next_event", self._next_event))
+        if state.get("probe_open_step") is not None:
+            # A probe cannot be resumed: the baseline snapshot it was being
+            # measured against died with the process, so the surviving half of
+            # the window would be compared against the resume point and read as
+            # near-zero heat everywhere — a re-admission decision on noise.
+            self.log_writer.log(
+                "adaptive_targeting: a probe window was open when this run "
+                "stopped — it is abandoned; the next event is a fresh normal "
+                "window over the restored active set"
+            )
+        # Unconditional: the restored active set is the one the probe had
+        # widened, and only a fresh normal event may narrow it again.
+        self._probe_open_step = None
+        self._pre_probe_active = []
         self._snapshot = self._take_snapshot()  # window restarts at resume point

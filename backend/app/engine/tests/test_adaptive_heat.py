@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from app.engine.core.optimization.adaptive_heat import (
-    Selection,  # noqa: F401 - imported to pin the interface name Task 3 consumes
+    Selection,
     delta_frobenius_sq,
     select_active,
 )
@@ -51,7 +51,12 @@ def test_selection_keeps_top_energy_until_threshold():
 def test_selection_respects_min_active_floor():
     heat = {"m1": 99.0, "m2": 0.5, "m3": 0.3, "m4": 0.2}
     sel = select_active(heat, list(heat), energy_threshold=0.5, min_active_pct=0.75)
-    assert len(sel.keep) == 3  # ceil(0.75 * 4)
+    assert len(sel.keep) == 3  # ceil(0.75 * 4) == 3
+
+    # Non-integer product pins the authorized rounding direction: ceil(2.4) == 3,
+    # which floor(2.4) == 2 and round(2.4) == 2 would both get wrong.
+    sel_ceil = select_active(heat, list(heat), energy_threshold=0.5, min_active_pct=0.6)
+    assert len(sel_ceil.keep) == 3  # ceil(0.6 * 4) == 3, not floor/round's 2
 
 
 def test_hot_tier_is_90pct_energy_prefix():
@@ -61,9 +66,24 @@ def test_hot_tier_is_90pct_energy_prefix():
     assert sel.hot == ["m1", "m2"]
     assert sel.keep == ["m1", "m2", "m3", "m4"]  # threshold 1.0 keeps all
 
+    # Tighter fixture straddling the 0.90 constant on both sides of m3, so a
+    # drift of the hot-tier cutoff to 0.85 or 0.95 would change membership and
+    # fail this assertion (the fixture above alone tolerates any cutoff in
+    # roughly (0.80, 0.95]).
+    heat_tight = {"m1": 79.0, "m2": 8.0, "m3": 7.0, "m4": 6.0}
+    sel_tight = select_active(
+        heat_tight, list(heat_tight), energy_threshold=1.0, min_active_pct=0.01
+    )
+    # cum before m3 = 87: ≥ 0.85*100 (excluded at 0.85) but < 0.90*100 (included at 0.90)
+    # cum before m4 = 94: ≥ 0.90*100 (excluded at 0.90) but < 0.95*100 (included at 0.95)
+    assert sel_tight.hot == ["m1", "m2", "m3"]
+
 
 def test_zero_total_heat_returns_full_universe():
     """Nothing learned in the window → caller must skip freezing (never freeze on noise)."""
     sel = select_active({}, ["m1", "m2"], energy_threshold=0.9, min_active_pct=0.1)
+    assert isinstance(
+        sel, Selection
+    )  # pins the return type, not just its attribute shape
     assert sel.total_heat == 0.0
     assert sel.keep == ["m1", "m2"]

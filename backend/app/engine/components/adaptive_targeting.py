@@ -388,14 +388,23 @@ class AdaptiveTargetingController:
         close that finds no signal would otherwise "restore" the wide-open
         universe and silently discard every narrowing decision of the run.
         """
-        self._pre_probe_active = list(self._active)
-        self._apply_active_set(list(self._universe))
+        pre_probe = list(self._active)
         # The measurement window is the probe and nothing else. Heat carried in
         # from the preceding interval was accumulated while most of the universe
         # was frozen and physically could not move, so it cannot rank the
         # modules the probe exists to re-rank.
-        self._snapshot = self._take_snapshot()
+        #
+        # Snapshotting FIRST is deliberate: it only READS weight values, so the
+        # unfreeze cannot affect it, and every fallible step therefore runs
+        # before the one irreversible one. Unfreezing first would let a snapshot
+        # failure leave the model genuinely trainable across the whole universe
+        # while ``_probe_open_step`` is still None — the controller would not
+        # know a probe was open, so nothing would ever close it.
+        snapshot = self._take_snapshot()
+        self._pre_probe_active = pre_probe
+        self._snapshot = snapshot
         self._probe_open_step = step
+        self._apply_active_set(list(self._universe))
         self.event_index += 1
         # Both counters are 0 by contract: the unfreeze is temporary and the
         # real accounting belongs to the matching "probe_apply". The widened
@@ -418,6 +427,16 @@ class AdaptiveTargetingController:
                 self.config.energy_threshold,
                 self.config.min_active_pct,
             )
+        except Exception:
+            # Roll the MODEL back, not just the bookkeeping. ``_open_probe``
+            # flipped real ``requires_grad`` flags across the universe; leaving
+            # them set would train every module the run had already frozen —
+            # burning exactly the compute this feature exists to save — and
+            # would turn the next event's monotonic intersect against
+            # ``self._active`` into a no-op, silently bypassing the invariant.
+            # Re-raised so on_optimizer_step still logs, surfaces and counts it.
+            self._apply_active_set(before)
+            raise
         finally:
             # Released even when the measurement raised. A probe left open
             # pauses the interval clock forever, so every later event of the run

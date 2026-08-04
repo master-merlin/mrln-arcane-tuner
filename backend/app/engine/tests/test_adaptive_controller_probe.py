@@ -231,6 +231,119 @@ def test_failed_probe_close_releases_the_window(
     assert [event["kind"] for event in _adapt(writer)][-1] == "narrow"
 
 
+def _narrow_onto_two(ctl, model, train_step):
+    """Run event 1 so the active set is exactly two NON-prefix modules.
+
+    Two modules carry all the heat and the floor is ceil(0.13 * 8) = 2, so
+    ``select_active`` keeps exactly those two whatever their relative
+    magnitudes. Picking them from the middle and end of module order matters:
+    with a single hot module the surviving set would be the module-order prefix
+    that a fresh, unconstrained selection also lands on via floor padding, and
+    "rolled back correctly" would be indistinguishable from "not rolled back".
+    """
+    hot = ["blocks.1.to_v", "blocks.3.to_q"]
+    for step in range(1, 21):
+        train_step(model, hot)
+        ctl.on_optimizer_step(step)
+    active = ctl.get_state()["active_modules"]
+    assert set(active) == set(hot)
+    return active
+
+
+def test_failed_probe_close_rolls_the_model_back_to_the_pre_probe_set(
+    make_adaptive_controller, train_step, lora_params, monkeypatch
+):
+    """A failed close must revert the real ``requires_grad`` flags, not just the
+    bookkeeping. ``_open_probe`` unfroze the whole universe; leaving it that way
+    trains every module the run had already frozen and makes the next event's
+    monotonic intersect against ``self._active`` a no-op.
+    """
+    import app.engine.components.adaptive_targeting as mod
+
+    model, ctl, writer = make_adaptive_controller(**_cfg())
+    pre_probe = _narrow_onto_two(ctl, model, train_step)
+    frozen_before_probe = lora_params(model, "blocks.0.to_q")
+    assert frozen_before_probe
+    assert all(not p.requires_grad for p in frozen_before_probe)
+
+    real_select = mod.select_active
+    failing = {"on": False}
+
+    def flaky(*args, **kwargs):
+        if failing["on"]:
+            raise RuntimeError("boom")
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "select_active", flaky)
+
+    for step in range(21, 31):  # the probe opens at step 30
+        train_step(model, ["blocks.1.to_v"])
+        ctl.on_optimizer_step(step)
+    assert ctl.active_count == 8  # the probe really did unfreeze the universe
+
+    failing["on"] = True
+    for step in range(31, 35):  # the close at step 34 raises
+        train_step(model, ["blocks.1.to_v"])
+        ctl.on_optimizer_step(step)
+
+    assert ctl.enabled is True  # one failure is survivable
+    assert ctl.get_state()["probe_open_step"] is None  # the window was released
+    # By module IDENTITY, not by count: a wrong set of the right size is the bug.
+    assert ctl.get_state()["active_modules"] == pre_probe
+    assert all(not p.requires_grad for p in frozen_before_probe)
+    assert any(  # and the reason still reached the log channel
+        "boom" in str(data) for msg_type, data in writer.events if msg_type == "warning"
+    )
+
+    failing["on"] = False
+    for step in range(35, 45):  # the interval clock runs again → event at 44
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+        # Checked on EVERY step, not once: an unfrozen universe would train for
+        # real across the whole recovery interval, which is the actual cost.
+        assert all(not p.requires_grad for p in frozen_before_probe)
+    assert [event["kind"] for event in _adapt(writer)][-1] == "narrow"
+
+
+def test_failed_probe_open_leaves_the_universe_frozen(
+    make_adaptive_controller, train_step, lora_params, monkeypatch
+):
+    """``_open_probe`` does its fallible work BEFORE the unfreeze.
+
+    The unfreeze flips real flags but ``_probe_open_step`` marks the window;
+    if a failure lands between them the model is trainable across the universe
+    while the controller does not know a probe is open, so nothing ever closes
+    it and it stays that way until some later probe completes.
+    """
+    model, ctl, writer = make_adaptive_controller(**_cfg())
+    pre_probe = _narrow_onto_two(ctl, model, train_step)
+    frozen_before_probe = lora_params(model, "blocks.0.to_q")
+    assert all(not p.requires_grad for p in frozen_before_probe)
+
+    real_snapshot = ctl._take_snapshot
+    failing = {"on": False}
+
+    def flaky():
+        if failing["on"]:
+            raise RuntimeError("boom")
+        return real_snapshot()
+
+    monkeypatch.setattr(ctl, "_take_snapshot", flaky)
+
+    failing["on"] = True
+    for step in range(21, 31):  # the probe open at step 30 raises
+        train_step(model, ["blocks.1.to_v"])
+        ctl.on_optimizer_step(step)
+
+    assert ctl.enabled is True
+    assert ctl.get_state()["active_modules"] == pre_probe
+    assert all(not p.requires_grad for p in frozen_before_probe)
+    assert ctl.get_state()["probe_open_step"] is None
+    assert any(
+        "boom" in str(data) for msg_type, data in writer.events if msg_type == "warning"
+    )
+
+
 def test_freeze_only_mode_never_opens_a_probe(make_adaptive_controller, train_step):
     """``reactivation`` is off by default — the probe path must stay dormant even
     when the probe knobs are set, or freeze mode silently becomes non-monotonic."""

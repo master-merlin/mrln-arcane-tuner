@@ -28,6 +28,13 @@ def test_event_freezes_cold_modules_observably(
     make_adaptive_controller, train_step, lora_params
 ):
     model, ctl, writer = make_adaptive_controller(energy_threshold=0.90)
+    # The module's hard invariant: base model params are NEVER touched. PEFT
+    # already froze them, so only an exact before/after comparison can catch a
+    # regression that flips one — every other assertion here filters on lora_.
+    base_before = {
+        n: p.requires_grad for n, p in model.named_parameters() if ".lora_" not in n
+    }
+    assert base_before  # the comparison must not be vacuous
     hot = ["blocks.0.to_q", "blocks.1.to_q"]
     for step in range(1, 25):
         train_step(model, hot)
@@ -40,6 +47,10 @@ def test_event_freezes_cold_modules_observably(
     assert ctl.active_count < 8
     kinds = [d["kind"] for t, d in writer.events if t == "adapt"]
     assert "narrow" in kinds
+    base_after = {
+        n: p.requires_grad for n, p in model.named_parameters() if ".lora_" not in n
+    }
+    assert base_after == base_before
 
 
 def test_frozen_params_receive_no_grad_on_next_backward(
@@ -64,18 +75,32 @@ def test_never_freezes_below_floor(make_adaptive_controller, train_step):
     assert ctl.active_count >= 4  # ceil(0.5 * 8)
 
 
-def test_freeze_mode_is_monotonic(make_adaptive_controller, train_step, lora_params):
+def test_freeze_mode_is_monotonic(
+    make_adaptive_controller, train_step, force_update, lora_params
+):
     model, ctl, _writer = make_adaptive_controller(energy_threshold=0.90)
     for step in range(1, 25):
         train_step(model, ["blocks.0.to_q"])
         ctl.on_optimizer_step(step)
-    narrowed = ctl.active_count
-    assert narrowed < 8
-    # Later, a previously-cold module gets hot — freeze mode must NOT re-admit it.
+    before = ctl.get_state()["active_modules"]
+    assert len(before) < 8
+    assert "blocks.3.to_v" not in before
+
+    # A frozen module now moves MORE than anything still active — the metric
+    # sees genuine heat on it. train_step cannot produce this (it skips frozen
+    # params, so driving it through train_step would prove nothing: the module
+    # would be re-admitted by no implementation at all). Freeze mode must still
+    # refuse; reactivation is probe-gated (Task 4).
     for step in range(25, 45):
-        train_step(model, ["blocks.3.to_v"])
+        train_step(model, ["blocks.0.to_q"])
+        force_update(model, "blocks.3.to_v", scale=5.0)
         ctl.on_optimizer_step(step)
-    assert ctl.active_count <= narrowed
+
+    after = ctl.get_state()["active_modules"]
+    # Set containment, not a count: freezing one module while un-freezing
+    # another keeps the count equal but is exactly what must not happen.
+    assert set(after) <= set(before)
+    assert "blocks.3.to_v" not in after
     assert all(not p.requires_grad for p in lora_params(model, "blocks.3.to_v"))
 
 
@@ -100,6 +125,15 @@ def test_respects_manually_frozen_universe(
         train_step(model, ["blocks.0.to_q"])
         ctl.on_optimizer_step(step)
     assert all(not p.requires_grad for p in lora_params(model, "blocks.2"))
+
+    # Persisted heat/hot for a user-frozen module must not survive a resume
+    # either: it is outside the universe, so reporting it in hot_count and
+    # top_modules would advertise a module the controller never manages.
+    ctl.restore_state(
+        {"heat": {"blocks.2.to_q": 9.0}, "hot_modules": ["blocks.2.to_q"]}
+    )
+    assert ctl.hot_count == 0
+    assert "blocks.2.to_q" not in ctl.get_state()["heat"]
 
 
 def test_zero_heat_window_skips_freezing(make_adaptive_controller):
@@ -135,24 +169,89 @@ def test_json_history_written_atomically_and_parseable(
     assert not os.path.exists(path + ".tmp")
 
 
+def _patch_flaky_heat(monkeypatch):
+    """Make ``delta_frobenius_sq`` fail on demand; returns the switch dict."""
+    import app.engine.components.adaptive_targeting as mod
+
+    real = mod.delta_frobenius_sq
+    switch = {"failing": True}
+
+    def flaky(*args, **kwargs):
+        if switch["failing"]:
+            raise RuntimeError("boom")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "delta_frobenius_sq", flaky)
+    return switch
+
+
+def _run(ctl, model, train_step, first, last):
+    for step in range(first, last):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+
 def test_three_consecutive_failures_disable_feature(
     make_adaptive_controller, train_step, monkeypatch
 ):
     model, ctl, writer = make_adaptive_controller()
-    import app.engine.components.adaptive_targeting as mod
+    _patch_flaky_heat(monkeypatch)
 
-    monkeypatch.setattr(
-        mod,
-        "delta_frobenius_sq",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    for step in range(1, 60):
-        train_step(model, ["blocks.0.to_q"])
-        ctl.on_optimizer_step(step)
+    # Events land at 20, 30, 40 (warmup 10 + interval 10).
+    _run(ctl, model, train_step, 1, 31)
+    assert ctl.enabled is True  # two strikes is not three
+    _run(ctl, model, train_step, 31, 41)
     assert ctl.enabled is False
+
     warnings = [d for t, d in writer.events if t == "warning"]
     assert any("boom" in str(w) for w in warnings)  # the reason is surfaced
     assert any("adaptive_targeting_disabled" in str(w) for w in warnings)
+
+
+def test_failed_event_does_not_advance_the_heat_state(
+    make_adaptive_controller, train_step, monkeypatch
+):
+    """An event that dies part-way must leave the EMA and the snapshot it was
+    measured against consistent. Advancing the heat and then failing before the
+    snapshot is replaced makes the next window count this interval twice."""
+    import app.engine.components.adaptive_targeting as mod
+
+    model, ctl, _writer = make_adaptive_controller()
+    for step in range(1, 21):  # event at 20 succeeds and records heat
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+    heat_before = ctl.get_state()["heat"]
+    assert heat_before
+
+    monkeypatch.setattr(
+        mod,
+        "select_active",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    for step in range(21, 31):  # event at 30 dies after heat was computed
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+    assert ctl.enabled is True  # one failure is survivable
+    assert ctl.get_state()["heat"] == heat_before
+
+
+def test_successful_event_resets_the_failure_streak(
+    make_adaptive_controller, train_step, monkeypatch
+):
+    """The budget is three CONSECUTIVE failures, not three failures ever —
+    otherwise a long run with occasional transient errors disables itself."""
+    model, ctl, _writer = make_adaptive_controller()
+    switch = _patch_flaky_heat(monkeypatch)
+
+    _run(ctl, model, train_step, 1, 30)  # event 20 fails
+    switch["failing"] = False
+    _run(ctl, model, train_step, 30, 40)  # event 30 succeeds → streak reset
+    switch["failing"] = True
+    _run(ctl, model, train_step, 40, 60)  # events 40, 50 fail
+    assert ctl.enabled is True  # three failures total, only two in a row
+    _run(ctl, model, train_step, 60, 70)  # event 60 fails → three in a row
+    assert ctl.enabled is False
 
 
 def test_zero_lora_modules_disables_with_warning(tmp_path, fake_log_writer):
@@ -194,6 +293,115 @@ def test_keep_patterns_match_targeted_layer_manager(
         n for n, p in model.named_parameters() if ".lora_" in n and p.requires_grad
     }
     assert active_after == active_before
+
+
+def test_floor_padding_keeps_the_hottest_module_not_a_positional_prefix(
+    make_adaptive_controller, train_step
+):
+    """When the monotonic intersect drops the keep-set below the floor, the
+    padding must re-admit the HOTTEST still-active modules. Padding with a
+    positional prefix of the active list instead would freeze the one module
+    that is still learning, whenever it sorts late in module order.
+
+    ``heat_ema=0`` (no smoothing) makes the second window read exactly zero for
+    modules that stopped moving, which is what puts the frozen, module-ordered
+    filler modules ahead of them in ``select_active``'s own floor padding.
+    """
+    model, ctl, _writer = make_adaptive_controller(
+        energy_threshold=0.99, min_active_pct=0.13, heat_ema=0.0
+    )
+    # Event at step 20: three modules learn, none of them early in module order.
+    # The loop stops ON the event, so no post-event step leaks into window two.
+    warm = ["blocks.0.to_v", "blocks.1.to_q", "blocks.3.to_v"]
+    for step in range(1, 21):
+        train_step(model, warm)
+        ctl.on_optimizer_step(step)
+    assert set(ctl.get_state()["active_modules"]) == set(warm)
+
+    # Event at step 30: only the LAST of the three still learns. select_active
+    # pads its own floor with zero-heat modules in module order — all frozen —
+    # so the intersect with the active set falls to one, below the floor of 2.
+    for step in range(21, 31):
+        train_step(model, ["blocks.3.to_v"])
+        ctl.on_optimizer_step(step)
+
+    active = ctl.get_state()["active_modules"]
+    assert len(active) == 2  # ceil(0.13 * 8), the floor — padding ran
+    assert "blocks.3.to_v" in active  # a positional prefix would have evicted it
+
+
+def test_restore_state_warns_when_persisted_modules_do_not_match(
+    make_adaptive_controller,
+):
+    """A state written against a different module graph must not quietly leave
+    the controller wide open — the narrowing decision would vanish in silence."""
+    _model, ctl, writer = make_adaptive_controller()
+    ctl.restore_state(
+        {"active_modules": ["blocks.99.to_q", "somewhere.else"], "event_index": 4}
+    )
+    assert ctl.active_count == 8  # deliberately open — and said so
+    warnings = [str(d) for t, d in writer.events if t == "warning"]
+    assert any(
+        "resumed state lists 2" in w and "only 0" in w for w in warnings
+    )  # both counts named
+
+
+def test_unmanaged_adapters_are_reported_not_silently_dropped(
+    tmp_path, fake_log_writer
+):
+    """A peft Embedding keeps its adapter in ``lora_embedding_A``/``_B``, which
+    this controller cannot measure — but TargetedLayerManager DOES manage those
+    suffixes, so an unreported skip is a module ``keep_patterns()`` would
+    silently freeze on a rebuild restart."""
+    from peft import LoraConfig, get_peft_model
+
+    class _EmbeddingModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.tok_emb = nn.Embedding(8, 16)
+            self.to_q = nn.Linear(16, 16)
+
+        def forward(self, idx):
+            return self.to_q(self.tok_emb(idx))
+
+    model = get_peft_model(
+        _EmbeddingModel(),
+        LoraConfig(r=2, lora_alpha=2, target_modules=["to_q", "tok_emb"]),
+    )
+    ctl = AdaptiveTargetingController(
+        model=model,
+        config=AdaptiveTargetingConfig(),
+        total_steps=100,
+        log_writer=fake_log_writer,
+        output_dir=str(tmp_path),
+    )
+    assert ctl.enabled is True  # keeps operating
+    assert ctl.total_count == 1  # only to_q is measurable
+    warnings = [str(d) for t, d in fake_log_writer.events if t == "warning"]
+    assert len(warnings) == 1  # ONE line, not one per module
+    assert "tok_emb" in warnings[0]
+
+
+def test_history_heat_survives_tiny_values_and_non_finite(
+    tmp_path, make_adaptive_controller
+):
+    """Heat is stored with six SIGNIFICANT figures: real per-window ‖ΔW‖² runs
+    far below 1e-6, where decimal rounding would write the whole map as zeros.
+    A non-finite value must serialize as null, never as a plausible 0.0 —
+    JSON.parse rejects NaN, and 0.0 would read as 'this layer never learned'."""
+    _model, ctl, _writer = make_adaptive_controller()
+    ctl.restore_state(
+        {"heat": {"blocks.0.to_q": 3.21e-11, "blocks.1.to_q": float("nan")}}
+    )
+    ctl._write_history()
+
+    path = os.path.join(str(tmp_path), "adaptive_targeting.json")
+    with open(path, encoding="utf-8") as fh:
+        raw = fh.read()
+    assert "NaN" not in raw and "Infinity" not in raw
+    heat = json.loads(raw)["heat"]
+    assert heat["blocks.0.to_q"] == 3.21e-11  # not flattened to 0.0
+    assert heat["blocks.1.to_q"] is None  # not a plausible 0.0
 
 
 def test_state_round_trip_restores_active_set(

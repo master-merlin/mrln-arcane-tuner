@@ -162,6 +162,26 @@ def train_step():
 
 
 @pytest.fixture
+def force_update():
+    """Factory: ``(model, module_substr, scale=0.5) -> None``.
+
+    Moves a module's LoRA weights REGARDLESS of ``requires_grad`` — what a probe
+    window's temporary un-freeze looks like from the heat metric's point of
+    view. ``train_step`` deliberately skips frozen params, so this is the only
+    way a test can put heat on a module the controller has already frozen (and
+    therefore the only way to prove monotonicity non-circularly).
+    """
+
+    def _force(model, module_substr: str, scale: float = 0.5) -> None:
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if ".lora_" in name and module_substr in name:
+                    param.data += torch.randn_like(param) * scale
+
+    return _force
+
+
+@pytest.fixture
 def lora_params():
     """Factory: ``(model, module_substr) -> list[Parameter]`` of LoRA params."""
 

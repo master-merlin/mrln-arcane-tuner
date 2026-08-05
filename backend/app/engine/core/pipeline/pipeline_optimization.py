@@ -118,6 +118,11 @@ class PipelineOptimizationMixin:
         # 9. Resume
         self._resume_if_needed()
 
+        # 9b. Adaptive layer targeting — created LAST of the model-shaping
+        #     steps so the controller's universe is the final trainable set
+        #     (post-PEFT, post-targeted_layers freeze, post-resume).
+        self._configure_adaptive_targeting()
+
         # 10. Sampler (for generating sample images during training)
         self.sampler = self._create_sampler()
         if self.sampler:
@@ -354,6 +359,98 @@ class PipelineOptimizationMixin:
 
         manager = TargetedLayerManager(patterns)
         manager.apply(model)
+
+    # ── Adaptive Layer Targeting ─────────────────────────────────────────
+
+    def _configure_adaptive_targeting(self) -> None:
+        """Create the :class:`AdaptiveTargetingController` when enabled (spec §5).
+
+        Ordering is the contract, not a preference: this must run AFTER PEFT,
+        after the manual ``targeted_layers`` freeze and after resume, so the
+        controller's universe is exactly the adapter set that is still
+        trainable when the loop starts. Built any earlier it would adopt
+        modules the user turned off and could hand them back on a rebuild.
+
+        Setup never kills the run (spec §7): a malformed sub-config, a model
+        carrying no readable LoRA adapters, or a missing job log writer
+        disables the feature with a surfaced warning and training proceeds
+        exactly as it would with the feature off. This is an optional
+        optimization and must never be the thing that ends a multi-hour job.
+        """
+        self.adaptive_controller = None
+        self._adaptive_total_emitted = False
+        if not self.config.get("adaptive_targeting", False):
+            return
+
+        # Same defensive read as the rest of the pipeline: the writer is
+        # injected by run_trainer and is absent in non-job contexts.
+        log_writer = getattr(self, "_log_writer", None)
+        try:
+            if log_writer is None:
+                # The job log is the controller's ONLY channel for its freeze
+                # decisions AND its own failures. Without one it would narrow
+                # the trainable set invisibly, so refuse rather than steer the
+                # run blind.
+                raise RuntimeError("trainer has no job log writer")
+
+            from app.engine.components.adaptive_targeting import (
+                AdaptiveTargetingController,
+            )
+            from app.engine.models.adaptive import AdaptiveTargetingConfig
+
+            at_config = AdaptiveTargetingConfig.model_validate(
+                self.config.get("adaptive_targeting_config") or {}
+            )
+            controller = AdaptiveTargetingController(
+                model=self._get_primary_model(),
+                config=at_config,
+                total_steps=int(self.config.get("max_train_steps", 1000)),
+                log_writer=log_writer,
+                output_dir=self.checkpoint_manager.output_dir,
+            )
+            # The controller switches ITSELF off (with its own surfaced
+            # warning) when it finds nothing to manage. Dropping the reference
+            # here is what makes the per-step hook and the metric helper cost
+            # literally nothing for the rest of the run.
+            if not controller.enabled:
+                return
+            self.adaptive_controller = controller
+            self.logger.info(
+                "adaptive_targeting_enabled",
+                modules=controller.total_count,
+                interval_steps=at_config.interval_steps,
+                action=at_config.action,
+                reactivation=at_config.reactivation,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface it, never kill the run
+            self.logger.warning("adaptive_targeting_setup_failed", error=str(exc))
+            if log_writer is not None:
+                log_writer.warning(f"adaptive_targeting disabled — setup failed: {exc}")
+            self.adaptive_controller = None
+
+    def _adaptive_step_extras(self) -> dict[str, int]:
+        """Adaptive counters for the per-step log payload (spec §6).
+
+        Counter reads only — the measurement happens at analysis events, never
+        here. Returns an EMPTY dict when the feature is off so a feature-off
+        run's step payload stays byte-identical to what it was before this
+        feature existed.
+        """
+        controller = getattr(self, "adaptive_controller", None)
+        if controller is None:
+            return {}
+        extras = {
+            "adaptive_active": controller.active_count,
+            "adaptive_hot": controller.hot_count,
+        }
+        if not getattr(self, "_adaptive_total_emitted", False):
+            # Once per PROCESS: the denominator cannot change while the process
+            # lives, so repeating it every step is pure payload weight. A
+            # rebuild restart is a NEW process and re-announces it, which is
+            # what lets the chart rescale after the universe narrows.
+            extras["adaptive_total"] = controller.total_count
+            self._adaptive_total_emitted = True
+        return extras
 
     # ── Optimizer + Scheduler + Scaler ───────────────────────────────────
 

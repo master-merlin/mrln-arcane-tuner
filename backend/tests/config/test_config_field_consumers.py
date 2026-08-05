@@ -107,14 +107,6 @@ ALLOWED_STUBS: dict[str, str] = {
         "declared + gated(has_audio) + tested audio loss-weight stub; no "
         "runtime consumer wired yet (video/audio-training backlog)"
     ),
-    "adaptive_targeting": (
-        "consumed by AdaptiveTargetingController wiring (Task 5 of "
-        "2026-08-03 plan); stub entry removed there"
-    ),
-    "adaptive_targeting_config": (
-        "consumed by AdaptiveTargetingController wiring (Task 5 of "
-        "2026-08-03 plan); stub entry removed there"
-    ),
 }
 
 

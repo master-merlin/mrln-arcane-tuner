@@ -687,6 +687,15 @@ class PipelineTrainMixin:
             if driver is not None and hasattr(driver, "on_optimizer_step"):
                 driver.on_optimizer_step(step)
 
+            # 6a-2. Adaptive layer targeting. Between analysis events this is a
+            # single integer compare inside the controller; the hook is skipped
+            # entirely when the feature is off, so a feature-off run pays only
+            # this getattr. Freeze mode always returns None — the rebuild
+            # return value is acted on in a later task.
+            adaptive_ctl = getattr(self, "adaptive_controller", None)
+            if adaptive_ctl is not None:
+                adaptive_ctl.on_optimizer_step(step)
+
             # 6b. First completed optimizer step: optimizer states are now
             # allocated and gradients are live — snapshot the resident set so
             # _compute_vram_measured can isolate optimizer + activations.
@@ -724,6 +733,18 @@ class PipelineTrainMixin:
 
             # Epoch progress
             extra["epoch"] = round((step + 1) / self._steps_per_epoch, 2)
+
+            # Adaptive layer targeting narrowing curve (spec §6). Rides the
+            # SAME payload as loss/lr so the UI can chart the staircase against
+            # the loss curve; no keys at all when the feature is off.
+            #
+            # Gated on the controller rather than relying on the helper's own
+            # empty-dict return: the helper lives on the optimization mixin,
+            # and this loop must keep running on any trainer composed without
+            # it. A controller can only exist when that mixin ran, so the two
+            # conditions are equivalent whenever the helper is reachable.
+            if adaptive_ctl is not None:
+                extra.update(self._adaptive_step_extras())
 
             # Batch resolution / bucket dims (from last accumulation batch).
             # Read from batch_items[0] — the bucket key the iterator grouped on —

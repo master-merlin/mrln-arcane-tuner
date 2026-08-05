@@ -33,17 +33,35 @@ logger = structlog.get_logger(__name__)
 # PEFT prefix injected by ``get_peft_model()``
 _PEFT_PREFIX = "base_model.model."
 
+# ``torch.compile`` wraps the model in an ``OptimizedModule`` that reaches the
+# real module through ``_orig_mod``, so every submodule name gains that
+# segment. It carries no architectural meaning and it is NOT stable across
+# processes — the same job may be compiled in one run and not in the next
+# (quantization is config-driven), and patterns persisted as ``targeted_layers``
+# are matched in a LATER process. Left in, every pattern misses and the run
+# trains nothing.
+_COMPILE_SEGMENT = "_orig_mod"
+
 # Suffixes that identify LoRA adapter parameters
 _LORA_SUFFIXES = (".lora_A.weight", ".lora_B.weight",
                   ".lora_A.default.weight", ".lora_B.default.weight",
                   ".lora_embedding_A", ".lora_embedding_B")
 
 
-def _strip_peft_prefix(name: str) -> str:
-    """Remove the ``base_model.model.`` prefix added by PEFT."""
-    if name.startswith(_PEFT_PREFIX):
-        return name[len(_PEFT_PREFIX):]
-    return name
+def normalize_module_name(name: str) -> str:
+    """Strip wrapper segments so a module path is stable across processes.
+
+    Removes every ``torch.compile`` ``_orig_mod`` segment (wherever it appears —
+    a compiled sub-model nests it mid-path) and then the ``base_model.model.``
+    prefix PEFT adds. Order matters: with the compile wrapper outermost the PEFT
+    prefix is no longer at position 0.
+    """
+    normalized = ".".join(
+        segment for segment in name.split(".") if segment != _COMPILE_SEGMENT
+    )
+    if normalized.startswith(_PEFT_PREFIX):
+        return normalized[len(_PEFT_PREFIX):]
+    return normalized
 
 
 def _get_lora_parent_path(name: str) -> str | None:
@@ -54,7 +72,7 @@ def _get_lora_parent_path(name: str) -> str | None:
 
     Returns None if this is not a LoRA parameter.
     """
-    stripped = _strip_peft_prefix(name)
+    stripped = normalize_module_name(name)
     for suffix in _LORA_SUFFIXES:
         if stripped.endswith(suffix):
             parent = stripped[: -len(suffix)]

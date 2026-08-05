@@ -27,12 +27,11 @@ import structlog
 import torch
 
 from app.engine.core.optimization.adaptive_heat import delta_frobenius_sq, select_active
+from app.engine.core.optimization.targeted_training import normalize_module_name
 from app.engine.models.adaptive import AdaptiveTargetingConfig
 
 logger = structlog.get_logger(__name__)
 
-# PEFT prefix injected by ``get_peft_model()``.
-_PEFT_PREFIX = "base_model.model."
 # An analysis event may never kill a multi-hour run, but a metric that keeps
 # failing is also not steering anything — after this many consecutive failures
 # the feature switches itself off (loudly) instead of burning event budget.
@@ -41,11 +40,6 @@ HISTORY_FILENAME = "adaptive_targeting.json"
 
 # First numeric path segment of a module name — ``blocks.7.attn.to_q`` → 7.
 _BLOCK_INDEX_RE = re.compile(r"(?:^|\.)(\d+)(?:\.|$)")
-
-
-def _strip_prefix(name: str) -> str:
-    """Remove the ``base_model.model.`` prefix added by PEFT."""
-    return name[len(_PEFT_PREFIX) :] if name.startswith(_PEFT_PREFIX) else name
 
 
 def earliest_active_block(module_names: list[str]) -> int | None:
@@ -101,7 +95,12 @@ def _unmanaged_adapter_names(module) -> list[str]:
 def _discover_lora_modules(
     model,
 ) -> tuple[dict[str, tuple[torch.nn.Parameter, torch.nn.Parameter]], list[str]]:
-    """Map PEFT-prefix-stripped module path → its ``(lora_A, lora_B)`` weights.
+    """Map normalized module path → its ``(lora_A, lora_B)`` weights.
+
+    Names go through :func:`normalize_module_name`, the SAME normalization
+    ``TargetedLayerManager`` applies: these names become the anchored patterns a
+    rebuild restart re-applies in a different process, whose PEFT/compile
+    wrapping must not change which modules they select.
 
     Returns ``(modules, unmanaged)``; ``unmanaged`` names adapter-bearing
     modules whose layout this controller cannot read (see
@@ -119,11 +118,11 @@ def _discover_lora_modules(
             except (KeyError, TypeError, AttributeError):
                 adapter = None
         if adapter is not None:
-            modules[_strip_prefix(name)] = adapter
+            modules[normalize_module_name(name)] = adapter
         elif _unmanaged_adapter_names(module):
             # Ordinary (non-adapter) modules land here too — only the ones
             # actually carrying an adapter are worth reporting.
-            unmanaged.append(_strip_prefix(name))
+            unmanaged.append(normalize_module_name(name))
     return modules, unmanaged
 
 
@@ -180,14 +179,11 @@ class AdaptiveTargetingController:
             if a_p.requires_grad and b_p.requires_grad
         ]
         if not self._universe:
-            reason = (
+            self._disable(
                 "no LoRA modules found on the model"
                 if not self._modules
                 else "every LoRA module is already frozen by targeted_layers"
             )
-            self.enabled = False
-            self.log_writer.warning(f"adaptive_targeting_disabled: {reason}")
-            logger.error("adaptive_targeting_disabled", reason=reason)
             return
 
         self._active = list(self._universe)
@@ -245,17 +241,38 @@ class AdaptiveTargetingController:
                 f"adaptive_targeting event failed at step {step}: {exc}"
             )
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                self.enabled = False
-                self.log_writer.warning(
-                    "adaptive_targeting_disabled: "
+                self._disable(
                     f"{_MAX_CONSECUTIVE_FAILURES} consecutive analysis failures"
-                )
-                logger.error(
-                    "adaptive_targeting_disabled",
-                    reason="consecutive analysis failures",
                 )
             self._next_event = step + self.config.interval_steps
             return None
+
+    def _disable(self, reason: str) -> None:
+        """Switch the feature off — after undoing a half-applied probe.
+
+        Order is the contract: a failure inside ``_open_probe`` past the
+        un-freeze trips this latch while the window is open, and from then on
+        ``on_optimizer_step`` returns early forever, so ``_close_probe`` never
+        runs. Without the rollback every module the run had frozen stays
+        trainable for the rest of the job — the exact compute this feature
+        exists to save, lost permanently and invisibly.
+        """
+        if self._probe_open_step is not None:
+            try:
+                if self._pre_probe_active:
+                    self._apply_active_set(self._pre_probe_active)
+            except Exception as exc:  # noqa: BLE001 — never mask the disable
+                logger.warning("adaptive_probe_rollback_failed", error=str(exc))
+                self.log_writer.warning(
+                    "adaptive_targeting: could not restore the pre-probe active "
+                    f"set while disabling ({exc}) — the universe stays trainable"
+                )
+            finally:
+                self._probe_open_step = None
+                self._pre_probe_active = []
+        self.enabled = False
+        self.log_writer.warning(f"adaptive_targeting_disabled: {reason}")
+        logger.error("adaptive_targeting_disabled", reason=reason)
 
     # ── internals ─────────────────────────────────────────────────────────
     def _take_snapshot(self) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
@@ -555,7 +572,15 @@ class AdaptiveTargetingController:
             "probe_open_step": self._probe_open_step,
         }
 
-    def restore_state(self, state: dict[str, Any]) -> None:
+    def restore_state(
+        self, state: dict[str, Any], current_step: int | None = None
+    ) -> None:
+        """Re-adopt a persisted state; ``current_step`` is the resume point.
+
+        ``current_step`` is optional only for callers that genuinely cannot name
+        one (tests, direct state inspection). A resume that CAN name it must, so
+        the schedule below can be clamped against it.
+        """
         if not self.enabled or not state:
             return
         universe = set(self._universe)
@@ -594,6 +619,16 @@ class AdaptiveTargetingController:
         self.event_index = int(state.get("event_index", 0))
         self.rebuild_count = int(state.get("rebuild_count", 0))
         self._next_event = int(state.get("next_event", self._next_event))
+        if current_step is not None:
+            # A persisted next_event that predates the resume point would fire
+            # on the very next step, over a window one step long — ranking
+            # modules on that is the freeze-on-noise the zero-heat guard exists
+            # to prevent. The first post-resume window is always a full interval,
+            # measured from the resume point (the baseline snapshot below is
+            # taken there too).
+            self._next_event = max(
+                self._next_event, int(current_step) + self.config.interval_steps
+            )
         if state.get("probe_open_step") is not None:
             # A probe cannot be resumed: the baseline snapshot it was being
             # measured against died with the process, so the surviving half of

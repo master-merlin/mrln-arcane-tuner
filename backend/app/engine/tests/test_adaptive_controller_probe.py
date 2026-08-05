@@ -344,6 +344,56 @@ def test_failed_probe_open_leaves_the_universe_frozen(
     )
 
 
+def test_disable_while_a_probe_is_open_rolls_the_model_back(
+    make_adaptive_controller, train_step, lora_params, monkeypatch
+):
+    """The 3-strike disable must not strand the model wide open.
+
+    A failure inside ``_open_probe`` past the un-freeze trips the latch while
+    the window is open. From then on ``on_optimizer_step`` returns early
+    forever, so ``_close_probe`` never runs and every LoRA module the run had
+    frozen keeps training for the rest of the job — burning exactly the compute
+    this feature exists to save, permanently and invisibly.
+    """
+    model, ctl, writer = make_adaptive_controller(**_cfg(probe_every=3))
+
+    # _write_history is the last thing _emit_event does, so failing it lands
+    # AFTER _open_probe has already flipped the universe trainable.
+    def boom() -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ctl, "_write_history", boom)
+
+    hot = ["blocks.1.to_v", "blocks.3.to_q"]
+    for step in range(1, 31):  # events at 20 and 30, both narrow, both fail
+        train_step(model, hot)
+        ctl.on_optimizer_step(step)
+    pre_probe = ctl.get_state()["active_modules"]
+    assert set(pre_probe) == set(hot)  # the narrowing itself did apply
+    assert ctl.enabled is True  # two strikes is not three
+    frozen_before_probe = lora_params(model, "blocks.0.to_q")
+    assert all(not p.requires_grad for p in frozen_before_probe)
+
+    for step in range(31, 41):  # event 3 is the probe; its emit is strike three
+        train_step(model, hot)
+        ctl.on_optimizer_step(step)
+
+    assert ctl.enabled is False
+    assert ctl.get_state()["probe_open_step"] is None
+    # By module IDENTITY, not by count: a wrong set of the right size is the bug.
+    assert ctl.get_state()["active_modules"] == pre_probe
+    assert all(not p.requires_grad for p in frozen_before_probe)
+    warnings = [str(data) for msg_type, data in writer.events if msg_type == "warning"]
+    assert any("adaptive_targeting_disabled" in w for w in warnings)
+
+    # Checked on every step, not once: a stranded universe trains for REAL
+    # across the whole remaining run, which is the actual cost of the bug.
+    for step in range(41, 60):
+        train_step(model, hot)
+        ctl.on_optimizer_step(step)
+        assert all(not p.requires_grad for p in frozen_before_probe)
+
+
 def test_freeze_only_mode_never_opens_a_probe(make_adaptive_controller, train_step):
     """``reactivation`` is off by default — the probe path must stay dormant even
     when the probe knobs are set, or freeze mode silently becomes non-monotonic."""

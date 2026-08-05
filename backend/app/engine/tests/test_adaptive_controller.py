@@ -404,6 +404,126 @@ def test_history_heat_survives_tiny_values_and_non_finite(
     assert heat["blocks.1.to_q"] is None  # not a plausible 0.0
 
 
+class _CompiledShim(nn.Module):
+    """Stand-in for ``torch._dynamo.OptimizedModule``.
+
+    ``torch.compile`` returns a wrapper that holds the real module under
+    ``_orig_mod``, so every submodule name gains that segment. Simulated rather
+    than compiled for real: the fp8 compile path needs a GPU + Triton, and the
+    only thing under test here is the NAME shape it produces.
+    """
+
+    def __init__(self, inner) -> None:
+        super().__init__()
+        self._orig_mod = inner
+
+    def forward(self, *args, **kwargs):
+        return self._orig_mod(*args, **kwargs)
+
+
+def _controller(model, tmp_path, writer, **cfg):
+    return AdaptiveTargetingController(
+        model=model,
+        config=AdaptiveTargetingConfig(
+            warmup_pct=0.1, interval_steps=10, probe_steps=5, min_active_pct=0.13, **cfg
+        ),
+        total_steps=100,
+        log_writer=writer,
+        output_dir=str(tmp_path),
+    )
+
+
+def test_compile_wrapper_segment_is_stripped_from_module_names(
+    tmp_path, make_peft_tiny, fake_log_writer, train_step
+):
+    """A name carrying ``_orig_mod`` would make every emitted pattern miss.
+
+    The patterns are persisted as ``targeted_layers`` and re-applied by a
+    DIFFERENT process whose compile state may differ (the fp8 family compiles,
+    a plain resume of the same job may not). Names must therefore be
+    compile-state independent, or the restart matches nothing and trains
+    nothing.
+    """
+    from app.engine.core.optimization.targeted_training import TargetedLayerManager
+
+    model = _CompiledShim(make_peft_tiny(4))
+    ctl = _controller(model, tmp_path, fake_log_writer, energy_threshold=0.90)
+    assert ctl.total_count == 8  # discovery still finds every module
+
+    hot = ["blocks.1.to_v", "blocks.3.to_q"]
+    for step in range(1, 21):
+        train_step(model, hot)
+        ctl.on_optimizer_step(step)
+    assert set(ctl.get_state()["active_modules"]) == set(hot)
+    assert not any("_orig_mod" in pattern for pattern in ctl.keep_patterns())
+
+    # The contract that matters: a different, UNCOMPILED process re-applies them.
+    fresh = make_peft_tiny(4)
+    TargetedLayerManager(ctl.keep_patterns()).apply(fresh)
+    trainable = {
+        n for n, p in fresh.named_parameters() if ".lora_" in n and p.requires_grad
+    }
+    assert trainable  # not vacuous: something stayed trainable
+    assert trainable == {
+        n
+        for n, _ in fresh.named_parameters()
+        if ".lora_" in n and any(module in n for module in hot)
+    }
+
+
+def test_targeted_layer_manager_matches_a_compiled_model(make_peft_tiny):
+    """The mirror direction of the same defect: patterns captured WITHOUT the
+    compile wrapper must still select the right modules in a process that has
+    one. ``_configure_targeted_training`` runs after ``_compile_if_quantized``,
+    so this is the path a rebuild restart on the fp8 family actually takes."""
+    from app.engine.core.optimization.targeted_training import TargetedLayerManager
+
+    compiled = _CompiledShim(make_peft_tiny(4))
+    TargetedLayerManager(["^blocks\\.1\\.to_v$"]).apply(compiled)
+    trainable = {
+        n for n, p in compiled.named_parameters() if ".lora_" in n and p.requires_grad
+    }
+    assert trainable == {
+        n
+        for n, _ in compiled.named_parameters()
+        if ".lora_" in n and "blocks.1.to_v" in n
+    }
+
+
+def test_restore_clamps_next_event_to_the_resume_point(
+    make_adaptive_controller, train_step
+):
+    """A checkpoint whose ``next_event`` predates the resume point must not fire
+    an event on the next step: that measurement window would be one step long,
+    and ranking modules on it is exactly the freeze-on-noise the zero-heat guard
+    exists to prevent."""
+    model, ctl, _writer = make_adaptive_controller(energy_threshold=0.90)
+    for step in range(1, 21):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+    state = ctl.get_state()
+    assert state["next_event"] == 30  # the schedule this run was on
+
+    resumed_model, resumed, writer = make_adaptive_controller(energy_threshold=0.90)
+    resumed.restore_state(state, current_step=500)
+    for step in range(501, 510):  # a full interval must elapse first
+        train_step(resumed_model, ["blocks.0.to_q"])
+        resumed.on_optimizer_step(step)
+    assert not [d for t, d in writer.events if t == "adapt"]
+
+    train_step(resumed_model, ["blocks.0.to_q"])
+    resumed.on_optimizer_step(510)  # resume point + interval_steps
+    assert [d["kind"] for t, d in writer.events if t == "adapt"] == ["narrow"]
+
+
+def test_restore_without_a_step_keeps_the_saved_schedule(make_adaptive_controller):
+    """Backward-compatible signature: callers that cannot name a resume step
+    (and every existing one) keep the persisted schedule verbatim."""
+    _model, ctl, _writer = make_adaptive_controller()
+    ctl.restore_state({"next_event": 77})
+    assert ctl.get_state()["next_event"] == 77
+
+
 def test_state_round_trip_restores_active_set(
     make_adaptive_controller, train_step, lora_params
 ):

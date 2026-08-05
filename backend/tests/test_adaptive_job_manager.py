@@ -15,6 +15,7 @@ mock event loop and the DB/queue side effects patched out.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -128,6 +129,17 @@ def test_non_rebuild_adapt_event_records_no_pending(jm_job):
     mgr, job, _ = jm_job
     mgr._dispatch_log_entry(job.id, _adapt(_NARROW))
     assert job.id not in mgr._pending_rebuilds
+
+
+def test_malformed_adapt_payload_is_surfaced_not_dropped(jm_job, caplog):
+    """A non-dict payload can only mean the trainer's event contract changed —
+    and one of these events carries the rebuild handoff. Warn; never swallow."""
+    mgr, job, broadcasts = jm_job
+    with caplog.at_level(logging.WARNING, logger="app.core.job_manager"):
+        mgr._dispatch_log_entry(job.id, _adapt("not-a-dict"))
+    assert job.logs == []
+    assert not broadcasts
+    assert "adapt_entry_malformed" in caplog.text
 
 
 # ── rebuild handoff ──────────────────────────────────────────────────────
@@ -332,6 +344,119 @@ def test_rejected_rebuild_leaves_no_pending_entry(jm_job, tmp_path):
     assert job.id not in mgr._pending_rebuilds
 
 
+def test_second_rebuild_in_the_same_job_relaunches_from_the_new_checkpoint(
+    jm_job, tmp_path,
+):
+    """rebuild → relaunch → rebuild again, on the SAME job record.
+
+    This is the path where a leaked pending entry would actually bite: the
+    first handoff must be fully consumed before the second arrives, and the
+    second must resume from ITS checkpoint, not the first one's.
+    """
+    mgr, job, _ = jm_job
+    run_dir, first = _run_with_checkpoint(mgr, tmp_path)
+    second = os.path.join(run_dir, "checkpoint-000200")
+    os.makedirs(second)
+    with open(os.path.join(second, "training_state.json"), "w", encoding="utf-8") as fh:
+        fh.write("{}")
+
+    relaunches: list[str] = []
+
+    def fake_restart(job_id, fresh):
+        relaunches.append(job_id)
+        job.status = JobStatus.RUNNING        # a real relaunch re-enters RUNNING
+
+    with patch.object(mgr, "_get_job_output_dir", return_value=run_dir), \
+            patch.object(mgr, "restart_job", side_effect=fake_restart):
+        mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+        mgr._dispatch_log_entry(job.id, _exit(0))
+        assert _wait_until(lambda: len(relaunches) == 1)
+        assert job.config["resume_from_checkpoint"] == os.path.abspath(first)
+
+        mgr._dispatch_log_entry(job.id, _adapt(
+            {**_REBUILD, "checkpoint_dir": "checkpoint-000200",
+             "keep_patterns": [r"^blocks\.1\.to_k$"], "rebuild_count": 2},
+        ))
+        mgr._dispatch_log_entry(job.id, _exit(0))
+        assert _wait_until(lambda: len(relaunches) == 2)
+
+    assert job.config["resume_from_checkpoint"] == os.path.abspath(second)
+    assert job.config["targeted_layers"] == [r"^blocks\.1\.to_k$"]
+    assert job.id not in mgr._pending_rebuilds
+    assert mgr._rebuild_restarts[job.id] == 2
+
+
+def test_rebuild_relaunches_are_capped_per_session(jm_job, tmp_path):
+    """A backend-side budget, independent of the controller's own cap.
+
+    The controller's counter lives in the trainer and is NOT consulted when
+    the backend is replaying its own stale log lines — the runaway this bounds
+    emits nothing new. Past the cap the job must FAIL with the reason, not
+    relaunch again.
+    """
+    mgr, job, _ = jm_job
+    run_dir, _ckpt = _run_with_checkpoint(mgr, tmp_path)
+    relaunches: list[str] = []
+
+    def fake_restart(job_id, fresh):
+        relaunches.append(job_id)
+        job.status = JobStatus.RUNNING
+
+    with patch.object(mgr, "_get_job_output_dir", return_value=run_dir), \
+            patch.object(mgr, "restart_job", side_effect=fake_restart):
+        for i in range(mgr._MAX_REBUILD_RESTARTS):
+            mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+            mgr._dispatch_log_entry(job.id, _exit(0))
+            assert _wait_until(lambda n=i: len(relaunches) == n + 1), \
+                f"relaunch {i + 1} within the cap never happened"
+        # One more than the budget allows.
+        mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+        mgr._dispatch_log_entry(job.id, _exit(0))
+
+    assert len(relaunches) == mgr._MAX_REBUILD_RESTARTS   # no further relaunch
+    assert job.status == JobStatus.FAILED
+    assert "cap" in (job.error or "").lower()
+    assert job.id not in mgr._pending_rebuilds
+
+
+def test_rebuild_budget_is_cleared_by_a_fresh_restart(jm_job, tmp_path):
+    """A restart-from-zero is a new session — it must not inherit a spent
+    budget (mirrors how ``_auto_resume_state`` is managed)."""
+    mgr, job, _ = jm_job
+    mgr._rebuild_restarts[job.id] = mgr._MAX_REBUILD_RESTARTS
+    job.status = JobStatus.FAILED
+    with patch.object(mgr, "_get_job_output_dir", return_value=str(tmp_path / "run")), \
+            patch.object(mgr, "_reconcile_active_jobs"), \
+            patch.object(mgr, "start_job"):
+        mgr.restart_job(job.id, fresh=True)
+    assert job.id not in mgr._rebuild_restarts
+
+
+def test_relaunch_failure_before_launch_fails_the_job_loudly(jm_job, tmp_path):
+    """``restart_job`` raising BEFORE ``start_job`` used to leave the record
+    STOPPED with no error and no broadcast — a run that vanished for no stated
+    reason. It must end FAILED, with the reason, and broadcast."""
+    mgr, job, broadcasts = jm_job
+    run_dir, _ckpt = _run_with_checkpoint(mgr, tmp_path)
+    with patch.object(mgr, "_get_job_output_dir", return_value=run_dir), \
+            patch.object(mgr, "restart_job", side_effect=RuntimeError("no launcher")):
+        mgr._restart_for_rebuild(job.id, _REBUILD)
+        assert _wait_until(lambda: job.status == JobStatus.FAILED)
+    assert "no launcher" in (job.error or "")
+    assert any(topic == "job_update" for topic, _ in broadcasts)
+
+
+def test_relaunch_stands_down_when_the_user_intervened(jm_job, tmp_path):
+    """The sibling ``_schedule_auto_resume._fire`` re-checks before firing;
+    match it — a job someone else took over is no longer ours to relaunch."""
+    mgr, job, _ = jm_job
+    with patch.object(mgr, "restart_job") as restart:
+        job.status = JobStatus.RUNNING     # e.g. a manual relaunch got there first
+        mgr._run_rebuild_restart(job.id)
+    restart.assert_not_called()
+    assert job.status == JobStatus.RUNNING
+
+
 def test_rebuild_restart_rotates_the_log_and_relaunches_once(jm_job, tmp_path):
     """End-to-end over a REAL ``LogTailer``: the relaunch must happen only
     after the tailer has released ``job_log.jsonl``.
@@ -344,6 +469,12 @@ def test_rebuild_restart_rotates_the_log_and_relaunches_once(jm_job, tmp_path):
     replay: the job would relaunch forever. Asserted on the bytes on disk (the
     old log is gone, a rotated copy exists, the offset was reset) plus exactly
     ONE launch.
+
+    The rename-while-open failure is Windows-specific, so on a POSIX runner
+    this test passes for a weaker reason (the rotation would have succeeded
+    either way). It still pins the ordering everywhere; the relaunch cap in
+    ``test_rebuild_relaunches_are_capped_per_session`` is the platform-neutral
+    bound on the same runaway.
     """
     from app.core.log_tailer import LogTailer, LOG_FILENAME
 

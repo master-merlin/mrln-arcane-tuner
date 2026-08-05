@@ -131,6 +131,17 @@ class JobManager:
     # Let the driver/GPU settle after a reset before relaunching.
     _AUTO_RESUME_COOLDOWN_S = 45.0
 
+    # ── Adaptive rebuild relaunches ──────────────────────────────────────
+    # Backend-side backstop on how many times ONE job may be relaunched for a
+    # rebuild in a single backend session. Deliberately above the controller's
+    # own per-run cap, so it never binds a healthy run — it exists for the case
+    # where the trainer's counter is NOT consulted at all: if the log rotation
+    # in _reset_job_log_state ever fails (Windows refuses the rename while the
+    # file is open), the next tailer re-reads this run's OWN rebuild_request +
+    # exit(0) and relaunches forever without the trainer emitting anything.
+    # Two independent caps for the same failure class as auto-resume above.
+    _MAX_REBUILD_RESTARTS = 8
+
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
@@ -143,6 +154,11 @@ class JobManager:
         # Popped unconditionally by the exit handler — it must never survive a
         # run and hijack the next one.
         self._pending_rebuilds: dict[str, dict[str, Any]] = {}
+        # Rebuild relaunches performed this session, keyed by job_id. Budget
+        # for _MAX_REBUILD_RESTARTS; cleared wherever a job legitimately starts
+        # a fresh session (delete, clean completion, restart-fresh) exactly like
+        # _auto_resume_state.
+        self._rebuild_restarts: dict[str, int] = {}
         # Reference to the main event loop for scheduling async broadcasts from threads
         self._loop: asyncio.AbstractEventLoop | None = None
         # Jobs needing post-startup recovery (re-launch paused, re-attach alive)
@@ -787,6 +803,8 @@ class JobManager:
             freed_gpu = True
 
         self._auto_resume_state.pop(job_id, None)
+        self._rebuild_restarts.pop(job_id, None)
+        self._pending_rebuilds.pop(job_id, None)
         self._stop_tailer(job_id)
         with self._lock:
             if job_id in self._jobs:
@@ -894,7 +912,15 @@ class JobManager:
             # as well as broadcast: a client that reconnects mid-run rebuilds
             # its event list from the buffer, and would otherwise show an
             # empty timeline for a run that has already narrowed.
-            if isinstance(data, dict):
+            if not isinstance(data, dict):
+                # Never drop one silently: a malformed payload here can only
+                # mean the trainer's event contract changed, and one of these
+                # carries the rebuild handoff.
+                logger.warning(
+                    "adapt_entry_malformed", job_id=job_id,
+                    data_type=type(data).__name__,
+                )
+            else:
                 message = _json.dumps({"adapt": data})
                 with self._lock:
                     job.logs.append(message)
@@ -1060,6 +1086,7 @@ class JobManager:
         # intentionally skipped: stopping is a deliberate intervention.
         if job.status == JobStatus.COMPLETED:
             self._auto_resume_state.pop(job_id, None)  # success clears the budget
+            self._rebuild_restarts.pop(job_id, None)   # …and the rebuild budget
             self.schedule_advance_queue()
         elif job.status == JobStatus.FAILED:
             # A transient GPU device fault (TDR/RC-reset) leaves valid
@@ -1766,6 +1793,7 @@ class JobManager:
         if fresh:
             self._delete_job_output_dir(job)
             self._auto_resume_state.pop(job_id, None)  # clean slate → reset budget
+            self._rebuild_restarts.pop(job_id, None)   # …including the rebuild budget
             # A from-zero restart must NOT resume. If this job was previously
             # continued from a checkpoint, its config still carries
             # resume_from_checkpoint pointing into the output dir we just
@@ -1912,6 +1940,14 @@ class JobManager:
                 raise ValueError(f"checkpoint {checkpoint_dir!r} is not resumable")
             if not keep_patterns:
                 raise ValueError("no keep patterns — refusing to relaunch untargeted")
+            # Backend-side budget. The controller's own cap rides in the
+            # trainer and is NOT consulted when the backend is replaying its
+            # own stale log lines, which is exactly the runaway this bounds.
+            if self._rebuild_restarts.get(job_id, 0) >= self._MAX_REBUILD_RESTARTS:
+                raise ValueError(
+                    "rebuild relaunch cap reached "
+                    f"({self._MAX_REBUILD_RESTARTS} this session)"
+                )
         except ValueError as exc:
             logger.error("rebuild_restart_rejected", job_id=job_id, error=str(exc))
             # Route the rejection through the normal terminal-failure path so
@@ -1923,9 +1959,14 @@ class JobManager:
             )
             return
 
+        # Counted at the DECISION, not at a successful launch: a relaunch that
+        # dies on the way up must still consume budget, or a crash-loop would
+        # never reach the cap.
+        self._rebuild_restarts[job_id] = self._rebuild_restarts.get(job_id, 0) + 1
         logger.info(
             "rebuild_restart", job_id=job_id, checkpoint=ckpt_path,
             kept=len(keep_patterns), rebuild_count=data.get("rebuild_count"),
+            session_restarts=self._rebuild_restarts[job_id],
         )
 
         new_config = copy.deepcopy(job.config)
@@ -1966,17 +2007,60 @@ class JobManager:
 
     def _run_rebuild_restart(self, job_id: str) -> None:
         """Relaunch body for :meth:`_restart_for_rebuild`, off the tailer thread."""
+        job = self.get_job(job_id)
+        if not job:
+            return
+        # Someone acted between the handoff and this thread getting scheduled
+        # (stop/delete/manual relaunch) → stand down, exactly like
+        # ``_schedule_auto_resume``'s ``_fire``. ``_restart_for_rebuild`` parks
+        # the job STOPPED, so any other status means we no longer own it.
+        if job.status != JobStatus.STOPPED:
+            logger.info(
+                "rebuild_restart_cancelled", job_id=job_id, status=str(job.status),
+            )
+            return
         try:
             self.restart_job(job_id, fresh=False)
         except Exception as e:
-            # ``start_job`` already marks the job FAILED before re-raising, so
-            # the run is surfaced; what's left is to not strand the queue on a
-            # relaunch that blew up (mirrors ``_schedule_auto_resume``).
             logger.error("rebuild_restart_failed", job_id=job_id, error=str(e))
+            self._fail_stranded_rebuild(job_id, f"Adaptive rebuild relaunch failed: {e}")
+            # Never strand the queue on a relaunch that blew up (mirrors
+            # ``_schedule_auto_resume``).
             try:
                 self.schedule_advance_queue()
             except Exception:
                 pass
+
+    def _fail_stranded_rebuild(self, job_id: str, error: str) -> None:
+        """Mark a job FAILED when its rebuild relaunch never got off the ground.
+
+        Only touches a job STILL parked in the STOPPED state
+        :meth:`_restart_for_rebuild` left it in — past that point
+        ``restart_job``/``start_job`` own the record and ``start_job``'s own
+        failure path already marks it FAILED with the reason.
+
+        Written out rather than routed through ``_handle_exit_message`` because
+        that handler deliberately refuses to overwrite a STOPPED job (it
+        protects user stops), which is precisely the state to be corrected
+        here. Without this the run sat STOPPED with no error and no broadcast:
+        a run that vanished from the UI for no stated reason.
+        """
+        job = self.get_job(job_id)
+        if not job or job.status != JobStatus.STOPPED:
+            return
+        with self._lock:
+            job.status = JobStatus.FAILED
+            job.error = error
+            job.finished_at = time.time()
+            job.pid = None
+        self._persist_status(
+            job_id, "failed", error=error, finished_at=job.finished_at,
+        )
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                event_manager.broadcast("job_update", job.model_dump()),
+                self._loop,
+            )
 
     def _reset_job_log_state(self, job: Job) -> None:
         """Rotate the job's log file + drop its tailer offset.

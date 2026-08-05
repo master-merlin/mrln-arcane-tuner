@@ -261,6 +261,8 @@ class CheckpointManager:
         elapsed_time: float = 0.0,
         te_cache: dict[str, dict[str, torch.Tensor]] | None = None,
         cache_manifest: dict[str, list[str]] | None = None,
+        adaptive_state: dict[str, Any] | None = None,
+        optimizer_param_names: list[str] | None = None,
     ) -> str:
         """
         Save a full checkpoint (distribution LoRA + resume state).
@@ -274,6 +276,12 @@ class CheckpointManager:
             config: Training configuration dict.
             ema_handler: EMA handler to save shadow weights from.
             is_final: True for the final save at training end.
+            adaptive_state: Adaptive-layer-targeting controller state, so a
+                resume re-adopts the narrowed active set instead of silently
+                training every module again.
+            optimizer_param_names: Ordered names of the params handed to the
+                optimizer. Only these make ``optimizer.pt`` remappable onto a
+                narrowed param set after a rebuild restart (spec §5).
 
         Returns:
             Path to the checkpoint directory.
@@ -336,7 +344,7 @@ class CheckpointManager:
                     ema_handler.restore()
 
         # 2. Save resume state
-        self._save_train_state(save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest)
+        self._save_train_state(save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest, adaptive_state=adaptive_state, optimizer_param_names=optimizer_param_names)
 
         # 2b. Also save step-numbered checkpoint when final (rollback safety)
         if is_final:
@@ -344,7 +352,7 @@ class CheckpointManager:
             step_save_path = os.path.join(self.output_dir, step_folder)
             os.makedirs(step_save_path, exist_ok=True)
             logger.info("saving_step_numbered_final", step=step, path=step_save_path)
-            self._save_train_state(step_save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest)
+            self._save_train_state(step_save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest, adaptive_state=adaptive_state, optimizer_param_names=optimizer_param_names)
 
         # 3. Write verbose training log (to root output dir for easy access)
         self._write_training_log(
@@ -549,6 +557,8 @@ class CheckpointManager:
         elapsed_time: float = 0.0,
         te_cache: dict[str, dict[str, torch.Tensor]] | None = None,
         cache_manifest: dict[str, list[str]] | None = None,
+        adaptive_state: dict[str, Any] | None = None,
+        optimizer_param_names: list[str] | None = None,
     ) -> None:
         """Save all training state files for resume."""
         logger.info("saving_train_state", path=path)
@@ -603,6 +613,24 @@ class CheckpointManager:
                 manifest["optimizer.pt"] = os.path.getsize(opt_path)
             except (OSError, RuntimeError) as e:
                 logger.error("failed_to_save_optimizer", error=str(e))
+            # 2b. The names that make the state above remappable. Optimizer
+            # state is keyed by a param's POSITION in the flat group, so after
+            # a rebuild restart narrows the trainable set the positions no
+            # longer line up — only this list can re-key them (spec §5).
+            # tmp+replace: the next process reads it back and a torn write is
+            # indistinguishable from a valid shorter list.
+            if optimizer_param_names:
+                try:
+                    names_path = os.path.join(path, "optimizer_param_names.json")
+                    tmp_names_path = names_path + ".tmp"
+                    with open(tmp_names_path, "w", encoding="utf-8") as f:
+                        json.dump(list(optimizer_param_names), f)
+                    os.replace(tmp_names_path, names_path)
+                    manifest["optimizer_param_names.json"] = os.path.getsize(names_path)
+                except OSError as e:
+                    # Degraded, not fatal: a resume without it still loads the
+                    # optimizer verbatim; only a rebuild restart needs it.
+                    logger.error("failed_to_save_optimizer_param_names", error=str(e))
         else:
             logger.warning("optimizer_is_none_skipping_save")
 
@@ -687,6 +715,11 @@ class CheckpointManager:
         }
         if cache_manifest:
             state["cache_manifest"] = cache_manifest
+        if adaptive_state:
+            # The narrowed active set, the heat map and the rebuild counters.
+            # Without it a resume re-adopts the FULL module set and quietly
+            # discards every freeze decision the run had made.
+            state["adaptive_targeting"] = adaptive_state
         state_path = os.path.join(path, "training_state.json")
         tmp_state_path = state_path + ".tmp"
         try:
@@ -716,6 +749,59 @@ class CheckpointManager:
 
     # ── Load ─────────────────────────────────────────────────────────
 
+    def _remap_optimizer_state(
+        self,
+        path: str,
+        saved_state: dict[str, Any],
+        current_names: list[str] | None,
+    ) -> dict[str, Any]:
+        """Re-key a saved optimizer state onto THIS process's param set.
+
+        Returns ``saved_state`` UNCHANGED — the same object, so an ordinary
+        resume is byte-identical to what it was before rebuilds existed —
+        unless all of: the caller named its params, the checkpoint saved a name
+        list, and the two lists differ. That combination only happens on a
+        rebuild restart, whose optimizer covers a narrowed subset (spec §5).
+        """
+        if not current_names:
+            return saved_state
+        names_path = os.path.join(path, "optimizer_param_names.json")
+        if not os.path.isfile(names_path):
+            # Every checkpoint written before this feature. The saved state
+            # matches the current optimizer 1:1, so load it verbatim.
+            return saved_state
+        try:
+            with open(names_path, "r", encoding="utf-8") as f:
+                saved_names = json.load(f)
+        except (OSError, ValueError) as e:
+            # Unreadable list: fall back to the verbatim load rather than
+            # inventing a mapping. If the sets really do differ,
+            # load_state_dict raises with a clear size mismatch — and this
+            # warning names the cause.
+            logger.warning(
+                "optimizer_param_names_unreadable", path=names_path, error=str(e),
+            )
+            return saved_state
+        if saved_names == list(current_names):
+            return saved_state
+
+        from app.engine.core.optimization.optimizer_remap import remap_optimizer_state
+
+        remapped, unmapped = remap_optimizer_state(
+            saved_state, saved_names, list(current_names)
+        )
+        for name in unmapped:
+            # Named, one line each: a param that silently starts from zeroed
+            # moments looks converged and drags the next few hundred steps.
+            logger.warning("optimizer_state_not_remapped", param=name)
+        logger.info(
+            "optimizer_state_remapped",
+            saved_params=len(saved_names),
+            current_params=len(current_names),
+            fresh=len(unmapped),
+        )
+        return remapped
+
     def load_checkpoint(
         self,
         path: str,
@@ -727,6 +813,7 @@ class CheckpointManager:
         ema_handler: Any | None = None,
         current_config: dict[str, Any] | None = None,
         skip_scheduler: bool = False,
+        optimizer_param_names: list[str] | None = None,
     ) -> CheckpointState:
         """
         Load training state from a checkpoint directory.
@@ -741,6 +828,10 @@ class CheckpointManager:
             ema_handler: EMA handler to restore shadow weights into.
             current_config: If provided, validates compatibility and applies overrides.
             skip_scheduler: If True, skip loading scheduler state (e.g. LR override).
+            optimizer_param_names: Ordered names of the params THIS process
+                handed to the optimizer. Only used when they differ from the
+                names saved beside the checkpoint's ``optimizer.pt`` — i.e. a
+                rebuild restart, where the state must be re-keyed by name.
 
         Returns:
             CheckpointState with step, config, loaded components list.
@@ -832,6 +923,7 @@ class CheckpointManager:
             opt_path = os.path.join(path, "optimizer.pt")
             if os.path.exists(opt_path):
                 sd = torch.load(opt_path, map_location="cpu", weights_only=True)
+                sd = self._remap_optimizer_state(path, sd, optimizer_param_names)
                 optimizer.load_state_dict(sd)
                 state.components_loaded.append("optimizer")
                 logger.debug("loaded_optimizer")

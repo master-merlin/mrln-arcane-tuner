@@ -36,6 +36,11 @@ logger = structlog.get_logger(__name__)
 # failing is also not steering anything — after this many consecutive failures
 # the feature switches itself off (loudly) instead of burning event budget.
 _MAX_CONSECUTIVE_FAILURES = 3
+# Hard cap on checkpoint+restart cycles per run (spec §5). Each rebuild costs a
+# full checkpoint, a process teardown and a model reload; past a handful the
+# restart overhead outweighs the optimizer-VRAM it reclaims. Hitting the cap is
+# never fatal — the run continues with in-place freezing.
+_MAX_REBUILDS = 5
 HISTORY_FILENAME = "adaptive_targeting.json"
 
 # First numeric path segment of a module name — ``blocks.7.attn.to_q`` → 7.
@@ -154,6 +159,12 @@ class AdaptiveTargetingController:
         # Non-None only while a probe window is open (reactivation mode).
         self._probe_open_step: int | None = None
         self._pre_probe_active: list[str] = []
+        # Rebuild bookkeeping (rebuild action only). The baseline is the
+        # active-param count the CURRENT optimizer was built over; the pending
+        # step carries a requested-but-not-yet-emitted rebuild.
+        self._params_at_last_rebuild = 0
+        self._pending_rebuild_step: int | None = None
+        self._rebuild_cap_logged = False
         self._warmup_end = int(self.config.warmup_pct * self.total_steps)
         self._next_event = self._warmup_end + self.config.interval_steps
 
@@ -187,6 +198,7 @@ class AdaptiveTargetingController:
             return
 
         self._active = list(self._universe)
+        self._params_at_last_rebuild = self._active_param_count()
         self._snapshot = self._take_snapshot()
 
     # ── public counters (per-step metrics, Task 5) ────────────────────────
@@ -205,6 +217,18 @@ class AdaptiveTargetingController:
     def keep_patterns(self) -> list[str]:
         """Anchored regexes of the CURRENT active set, for ``TargetedLayerManager``."""
         return [f"^{re.escape(name)}$" for name in self._active]
+
+    def _active_param_count(self) -> int:
+        """LoRA params the optimizer is currently stepping — the rebuild metric.
+
+        Counted in PARAMS, not modules: a rebuild is worth its restart only for
+        the optimizer state it stops allocating, and modules differ in size by
+        orders of magnitude.
+        """
+        return sum(
+            self._modules[name][0].numel() + self._modules[name][1].numel()
+            for name in self._active
+        )
 
     # ── step hook ─────────────────────────────────────────────────────────
     def on_optimizer_step(self, step: int) -> str | None:
@@ -379,7 +403,76 @@ class AdaptiveTargetingController:
         self._emit_event(
             step, kind="narrow", frozen_this_event=frozen_now, reactivated_this_event=0
         )
-        return None
+        if self.config.action != "rebuild":
+            return None
+        return self._maybe_request_rebuild(step)
+
+    # ── rebuild action (spec §5) ──────────────────────────────────────────
+    def _maybe_request_rebuild(self, step: int) -> str | None:
+        """Ask the train loop for a checkpoint+restart, if the shrink earned it.
+
+        The narrowing above has ALREADY been applied in place, so returning
+        ``None`` here is simply freeze-mode behaviour — nothing is lost when the
+        threshold is not met or the cap is spent.
+
+        The ``adapt`` event is deliberately NOT emitted here: it carries the
+        checkpoint directory the backend relaunches from, and that checkpoint
+        does not exist until the loop has written it (see
+        :meth:`notify_rebuild_checkpoint`).
+        """
+        active_params = self._active_param_count()
+        # Measured against the last rebuild, never the run start: each restart
+        # has to earn its own shrink, or every event past the first threshold
+        # would request one.
+        baseline = max(self._params_at_last_rebuild, 1)
+        shrink = 1.0 - (active_params / baseline)
+        if shrink < self.config.rebuild_min_shrink_pct / 100.0:
+            return None
+        if self.rebuild_count >= _MAX_REBUILDS:
+            if not self._rebuild_cap_logged:
+                # Once per run: the condition holds at every later event too,
+                # and a repeated line would read as repeated restarts.
+                self._rebuild_cap_logged = True
+                self.log_writer.log(
+                    f"adaptive_targeting: rebuild cap of {_MAX_REBUILDS} reached "
+                    "— training continues with in-place freezing only"
+                )
+                logger.info("adaptive_rebuild_cap_reached", step=step)
+            return None
+        self.rebuild_count += 1
+        self._params_at_last_rebuild = active_params
+        self._pending_rebuild_step = step
+        return "rebuild_request"
+
+    def notify_rebuild_checkpoint(self, checkpoint_dir: str) -> None:
+        """Emit the deferred ``rebuild_request`` now that the checkpoint exists.
+
+        ``checkpoint_dir`` is the directory NAME (not a path): the backend
+        resolves it against the run's output dir, which only it knows in its own
+        process.
+
+        Ignores a call with nothing pending — the backend relaunches the job on
+        this event, so an unrequested one would restart a healthy run.
+        """
+        step = self._pending_rebuild_step
+        if step is None:
+            logger.warning(
+                "adaptive_rebuild_notify_without_request",
+                checkpoint_dir=checkpoint_dir,
+            )
+            return
+        self._pending_rebuild_step = None
+        self._emit_event(
+            step,
+            kind="rebuild_request",
+            frozen_this_event=0,
+            reactivated_this_event=0,
+            extra={
+                "checkpoint_dir": checkpoint_dir,
+                "keep_patterns": self.keep_patterns(),
+                "rebuild_count": self.rebuild_count,
+            },
+        )
 
     # ── probe windows (reactivation mode, spec §5) ────────────────────────
     def _probe_is_due(self) -> bool:
@@ -568,6 +661,9 @@ class AdaptiveTargetingController:
             "event_index": self.event_index,
             "next_event": self._next_event,
             "rebuild_count": self.rebuild_count,
+            # Active-param baseline the next shrink is measured against — the
+            # restart's optimizer is built over exactly this many params.
+            "params_at_last_rebuild": self._params_at_last_rebuild,
             # Diagnostics only — a resume never reopens it (see restore_state).
             "probe_open_step": self._probe_open_step,
         }
@@ -618,6 +714,12 @@ class AdaptiveTargetingController:
         self._hot = [n for n in state.get("hot_modules", []) if n in universe]
         self.event_index = int(state.get("event_index", 0))
         self.rebuild_count = int(state.get("rebuild_count", 0))
+        # Falls back to the set just restored, never to the full universe: a
+        # baseline wider than the optimizer's real param set would read as a
+        # shrink this run never made and fire a rebuild on the first event.
+        self._params_at_last_rebuild = int(
+            state.get("params_at_last_rebuild") or self._active_param_count()
+        )
         self._next_event = int(state.get("next_event", self._next_event))
         if current_step is not None:
             # A persisted next_event that predates the resume point would fire

@@ -191,6 +191,17 @@ async def run_async_trainer(trainer, log_writer=None):
         # ── Train ────────────────────────────────────────────────────
         _emit_status("Training", log_writer)
         await trainer.train()
+
+        # Adaptive layer targeting asked for a rebuild restart: train() already
+        # saved the resumable checkpoint and emitted the `adapt` event naming
+        # it, and deliberately skipped the final LoRA save. Exit 0 — the
+        # backend relaunches this same job from that checkpoint.
+        if getattr(trainer, "_rebuild_exit", False):
+            if log_writer:
+                log_writer.log(
+                    "Adaptive rebuild restart requested — final save skipped; "
+                    "the backend relaunches this job from the checkpoint"
+                )
     except Exception as e:
         # safety-net print: fallback, async-trainer wrapper exception; _log_writer may not exist
         print(f"CRITICAL: Async Trainer Exception: {str(e)}", file=sys.stderr)

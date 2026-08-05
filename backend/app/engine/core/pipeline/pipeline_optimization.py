@@ -4,6 +4,7 @@ Pipeline Optimization Mixin — PEFT/LoRA, optimizer, LR scheduler, EMA, resume.
 Handles Phase B (prepare_for_training) and all optimization-related setup.
 """
 
+import json
 import os
 from typing import Any
 
@@ -414,6 +415,7 @@ class PipelineOptimizationMixin:
             # literally nothing for the rest of the run.
             if not controller.enabled:
                 return
+            self._restore_adaptive_state(controller)
             self.adaptive_controller = controller
             self.logger.info(
                 "adaptive_targeting_enabled",
@@ -427,6 +429,42 @@ class PipelineOptimizationMixin:
             if log_writer is not None:
                 log_writer.warning(f"adaptive_targeting disabled — setup failed: {exc}")
             self.adaptive_controller = None
+
+    def _restore_adaptive_state(self, controller) -> None:
+        """Re-adopt the controller state persisted in the resumed checkpoint.
+
+        Done HERE and nowhere else: ``_resume_if_needed`` runs before the
+        controller exists, so this is the only point where both the checkpoint
+        and a live controller are available. Without it every resume — and
+        every rebuild restart — silently starts from a wide-open module set and
+        an empty heat map, discarding the run's narrowing.
+
+        A missing or unreadable section is not fatal: the run continues with a
+        fresh controller, which is the pre-feature behaviour, but says so.
+        """
+        resume_dir = self.config.get("resume_from_checkpoint")
+        if not resume_dir:
+            return
+        state_path = os.path.join(resume_dir, "training_state.json")
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                saved = json.load(f).get("adaptive_targeting")
+        except (OSError, ValueError) as e:
+            self.logger.warning(
+                "adaptive_state_restore_failed", path=state_path, error=str(e),
+            )
+            return
+        if not saved:
+            return
+        # The resumed step, so a next_event that predates it cannot fire an
+        # analysis event on a one-step measurement window.
+        controller.restore_state(saved, current_step=int(getattr(self, "global_step", 0)))
+        self.logger.info(
+            "adaptive_state_restored",
+            active=controller.active_count,
+            total=controller.total_count,
+            rebuild_count=controller.rebuild_count,
+        )
 
     def _adaptive_step_extras(self) -> dict[str, int]:
         """Adaptive counters for the per-step log payload (spec §6).
@@ -490,6 +528,10 @@ class PipelineOptimizationMixin:
             for te in self._get_text_encoders().values():
                 params += [p for p in te.parameters() if p.requires_grad]
 
+        # Ordered names for exactly those param objects, in the order the
+        # optimizer receives them — see _name_optimizer_params.
+        self._optimizer_param_names = self._name_optimizer_params(params)
+
         self.optimizer = OptimizerFactory.create(
             optimizer_type, params, lr, weight_decay,
             betas=betas,
@@ -524,6 +566,68 @@ class PipelineOptimizationMixin:
             autocast_dtype=str(self.autocast_dtype),
             scaler_enabled=self.scaler.is_enabled(),
         )
+
+    def _name_optimizer_params(self, params: list[torch.nn.Parameter]) -> list[str]:
+        """Name the exact param objects handed to the optimizer, in their order.
+
+        Resolved by IDENTITY against every trainable component rather than by
+        re-walking the primary model: the dual-expert trainers assemble
+        ``params`` themselves (both experts, via a patched ``parameters()``),
+        and a second walk would name a DIFFERENT set than the optimizer holds.
+        The list has to stay index-aligned with the optimizer's own param order
+        — the rebuild remap is positional-by-name, so a shifted list would hand
+        each param its neighbour's moments.
+
+        Component-prefixed because names are only unique within a component
+        (every text encoder repeats the primary model's paths). The paths
+        themselves are normalized, so a process that ``torch.compile``s the
+        model produces the same list as one that does not — otherwise a restart
+        whose compile state differs would find NOTHING to remap and silently
+        restart every param's moments.
+        """
+        from app.engine.core.optimization.targeted_training import (
+            normalize_module_name,
+        )
+
+        sources = list(self._build_trainable_components().items())
+        # The primary model is the fallback source: a family may hand the saver
+        # a proxy that deliberately cannot enumerate params (hidream_o1), and
+        # its params would otherwise all end up unnamed.
+        sources.append(("unet", self._get_primary_model()))
+
+        by_id: dict[int, str] = {}
+        for comp_name, comp in sources:
+            named = getattr(comp, "named_parameters", None)
+            if named is None:
+                continue  # e.g. a plain state_dict a family threads through
+            for param_name, param in named():
+                # First source wins: "unet" aliases one of the dual experts,
+                # and both keys point at the same objects.
+                by_id.setdefault(
+                    id(param), f"{comp_name}.{normalize_module_name(param_name)}"
+                )
+
+        names: list[str] = []
+        unnamed = 0
+        for position, param in enumerate(params):
+            name = by_id.get(id(param))
+            if name is None:
+                # A placeholder keeps the list index-aligned; it simply never
+                # matches on resume, so that param starts from fresh moments.
+                unnamed += 1
+                name = f"<unnamed>.{position}"
+            names.append(name)
+        if unnamed:
+            self.logger.warning(
+                "optimizer_param_names_incomplete",
+                unnamed=unnamed,
+                total=len(params),
+                message=(
+                    "Some optimizer params belong to no trainable component; "
+                    "after a rebuild restart they resume from fresh moments."
+                ),
+            )
+        return names
 
     # ── EMA ───────────────────────────────────────────────────────────────
 
@@ -645,6 +749,10 @@ class PipelineOptimizationMixin:
                 scaler=self.scaler,
                 ema_handler=self.ema_handler,
                 current_config=self.config,
+                # Only consulted when the checkpoint's own name list differs
+                # from this one — a rebuild restart, whose optimizer covers a
+                # narrowed subset. Any other resume loads verbatim.
+                optimizer_param_names=getattr(self, "_optimizer_param_names", None),
             )
             self.global_step = checkpoint_state.global_step
             self.logger_component.elapsed_offset = checkpoint_state.elapsed_time

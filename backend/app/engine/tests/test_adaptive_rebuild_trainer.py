@@ -79,28 +79,67 @@ def test_no_rebuild_below_shrink_threshold(make_adaptive_controller, train_step)
     assert not _rebuild_events(writer)
 
 
-def test_rebuild_mode_with_no_shrink_behaves_exactly_like_freeze(
-    make_adaptive_controller, train_step
+def test_rebuild_mode_below_the_threshold_behaves_exactly_like_freeze(
+    tmp_path, make_peft_tiny, train_step, fake_log_writer
 ):
-    """A rebuild-mode run whose keep-set never shrinks must be
-    indistinguishable from a freeze-mode one — same events, same flags, no
-    restart. Every module keeps learning, so no event can narrow anything."""
-    model, rebuild_ctl, rebuild_writer = make_adaptive_controller(
-        **_rebuild_cfg(energy_threshold=1.0)
-    )
-    model2, freeze_ctl, freeze_writer = make_adaptive_controller(energy_threshold=1.0)
-    every = [f"blocks.{i}.{proj}" for i in range(4) for proj in ("to_q", "to_v")]
-    for step in range(1, 41):
-        train_step(model, every)
-        train_step(model2, every)
-        assert rebuild_ctl.on_optimizer_step(step) is None
-        freeze_ctl.on_optimizer_step(step)
+    """A rebuild-mode run whose shrink never reaches the threshold must be
+    indistinguishable from a freeze-mode one — same narrowing, same events, no
+    restart. Real narrowing happens here (8 modules down to the floor); only
+    the restart is withheld, which is the branch worth pinning.
 
-    assert rebuild_ctl.active_count == freeze_ctl.active_count == 8
-    assert [e["kind"] for e in _adapt(rebuild_writer)] == [
-        e["kind"] for e in _adapt(freeze_writer)
-    ]
+    Both controllers run over the SAME model, so they see byte-identical
+    weights and any difference is a real behavioural difference rather than
+    two random trajectories drifting apart.
+    """
+    from app.engine.components.adaptive_targeting import AdaptiveTargetingController
+    from app.engine.models.adaptive import AdaptiveTargetingConfig
+
+    model = make_peft_tiny(4)
+    # A second writer of the same class as the fixture's — the shared doubles
+    # live in conftest and cannot be imported across test modules.
+    writers = [fake_log_writer, type(fake_log_writer)()]
+    controllers = []
+    for action, writer in zip(("freeze", "rebuild"), writers):
+        controllers.append(
+            AdaptiveTargetingController(
+                model=model,
+                config=AdaptiveTargetingConfig(
+                    warmup_pct=0.1,
+                    interval_steps=10,
+                    probe_steps=5,
+                    min_active_pct=0.13,
+                    energy_threshold=0.90,
+                    action=action,
+                    # 75% is the shrink this run actually makes (8 → 2 modules);
+                    # the threshold sits above it, so no rebuild is earned.
+                    rebuild_min_shrink_pct=95.0,
+                ),
+                total_steps=100,
+                log_writer=writer,
+                output_dir=str(tmp_path / action),
+            )
+        )
+    freeze_ctl, rebuild_ctl = controllers
+    freeze_writer, rebuild_writer = writers
+
+    for step in range(1, 41):
+        train_step(model, ["blocks.0.to_q"])
+        freeze_ctl.on_optimizer_step(step)
+        assert rebuild_ctl.on_optimizer_step(step) is None
+
+    # Narrowing really happened — the comparison is not over two no-ops.
+    assert 0 < rebuild_ctl.active_count < 8
+    # By module identity, not by count: a different set of the same size is
+    # exactly the divergence this test exists to catch.
+    assert (
+        rebuild_ctl.get_state()["active_modules"]
+        == freeze_ctl.get_state()["active_modules"]
+    )
+    assert [
+        (e["kind"], e["step"], e["active_count"]) for e in _adapt(rebuild_writer)
+    ] == [(e["kind"], e["step"], e["active_count"]) for e in _adapt(freeze_writer)]
     assert rebuild_ctl.rebuild_count == 0
+    assert not _rebuild_events(rebuild_writer)
 
 
 def test_freeze_action_never_requests_a_rebuild(make_adaptive_controller, train_step):
@@ -178,6 +217,71 @@ def test_notify_without_a_pending_request_emits_nothing(
     ctl.notify_rebuild_checkpoint("checkpoint-000020")
     ctl.notify_rebuild_checkpoint("checkpoint-000020")  # replay of the same one
     assert len(_rebuild_events(writer)) == 1
+
+
+def test_rebuild_event_gets_its_own_event_index(make_adaptive_controller, train_step):
+    """Two `adapt` payloads, two indices. Reusing the narrow event's index
+    makes a consumer keying on it see a duplicate."""
+    model, ctl, writer = make_adaptive_controller(**_rebuild_cfg())
+    for step in range(1, 21):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+    ctl.notify_rebuild_checkpoint("checkpoint-000020")
+
+    events = _adapt(writer)
+    assert [e["kind"] for e in events] == ["narrow", "rebuild_request"]
+    assert events[1]["event_index"] == events[0]["event_index"] + 1
+    assert ctl.get_state()["event_index"] == events[1]["event_index"]
+
+
+def test_history_write_failure_after_the_event_shipped_is_not_a_failed_handoff(
+    make_adaptive_controller, train_step, monkeypatch
+):
+    """Once the payload is on the log-writer channel the backend HAS it and is
+    relaunching this job. Raising past that point makes the train loop report a
+    failed handoff and keep training — two processes on one job.
+
+    The run-dir history file is a routine Windows failure for this write pattern
+    (the UI can hold it open), which is exactly why it must not be fatal here.
+    """
+    model, ctl, writer = make_adaptive_controller(**_rebuild_cfg())
+    for step in range(1, 21):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+    def boom():
+        raise PermissionError("adaptive_targeting.json is open in another process")
+
+    monkeypatch.setattr(ctl, "_write_history", boom)
+    ctl.notify_rebuild_checkpoint("checkpoint-000020")  # must NOT raise
+
+    assert len(_rebuild_events(writer)) == 1  # the event still shipped
+    assert any(  # and the write failure is surfaced, never silent
+        "adaptive_targeting.json" in str(data)
+        for msg_type, data in writer.events
+        if msg_type == "warning"
+    )
+
+
+def test_a_failed_emit_still_raises_so_the_run_does_not_exit(
+    make_adaptive_controller, train_step, monkeypatch
+):
+    """The mirror case: if the event never reached the writer, the backend does
+    NOT know about the rebuild, so the caller must see the failure and keep
+    training rather than exit a job nothing will relaunch."""
+    import pytest
+
+    model, ctl, writer = make_adaptive_controller(**_rebuild_cfg())
+    for step in range(1, 21):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("job log channel is gone")
+
+    monkeypatch.setattr(writer, "emit", boom)
+    with pytest.raises(OSError):
+        ctl.notify_rebuild_checkpoint("checkpoint-000020")
 
 
 def test_rebuild_state_round_trip_restores_counts_and_baseline(
@@ -271,6 +375,40 @@ def test_checkpoint_keeps_every_lora_module_when_the_set_is_narrowed(
     saved = load_file(os.path.join(path, "unet", "adapter_model.safetensors"))
     assert any("blocks.0.to_q" in key for key in saved)
     assert any("blocks.1.to_q" in key for key in saved)
+
+
+def test_exported_lora_keeps_every_lora_module_when_the_set_is_narrowed(
+    tmp_path, make_peft_tiny
+):
+    """The same invariant on the artifact the USER loads. The adapter dump and
+    the distribution LoRA are produced by different code paths; a saver that
+    filtered on ``requires_grad`` would ship a LoRA missing every module the run
+    froze — silently dropping their learned deltas from the final result."""
+    from app.engine.core.pipeline.saver_base import GenericLoRASaver
+
+    class _TinySaver(GenericLoRASaver):
+        architecture_name = "tiny"
+
+    model = make_peft_tiny(2)
+    for name, param in model.named_parameters():
+        if ".lora_" in name and "blocks.0." in name:
+            param.requires_grad_(False)
+
+    out = tmp_path / "run"
+    manager = CheckpointManager(output_dir=str(out), saver_impl=_TinySaver())
+    manager.save_checkpoint(
+        step=20,
+        components={"unet": model},
+        config={"lora_name": "t"},
+        adaptive_state={"active_modules": ["blocks.1.to_q"]},
+    )
+
+    from safetensors.torch import load_file
+
+    exported = load_file(str(out / "t_000020.safetensors"))
+    assert exported  # the saver really produced weights
+    assert any("blocks.0.to_q" in key for key in exported)  # frozen: still shipped
+    assert any("blocks.1.to_q" in key for key in exported)
 
 
 def test_feature_off_save_writes_neither_the_key_nor_the_names_file(
@@ -482,7 +620,7 @@ def test_param_names_follow_a_family_override_that_supplies_its_own_params(
 
 
 class _TrainHost(PipelineTrainMixin):
-    """Exposes exactly what ``_save_rebuild_checkpoint`` reads from a trainer."""
+    """Exposes exactly what ``_save_resumable_checkpoint`` reads from a trainer."""
 
     def __init__(self, tmp_path, model, controller=None, names=None):
         self.config = {"lora_name": "t"}
@@ -509,7 +647,7 @@ class _TrainHost(PipelineTrainMixin):
         return None
 
 
-def test_save_rebuild_checkpoint_returns_the_dir_and_persists_the_state(
+def test_save_resumable_checkpoint_returns_the_dir_and_persists_the_state(
     tmp_path, make_peft_tiny, make_adaptive_controller, train_step
 ):
     """End-to-end on the value Task 7 relaunches from: the directory name the
@@ -521,7 +659,7 @@ def test_save_rebuild_checkpoint_returns_the_dir_and_persists_the_state(
         ctl.on_optimizer_step(step)
 
     host = _TrainHost(tmp_path, make_peft_tiny(2), controller=ctl, names=["unet.a"])
-    path = host._save_rebuild_checkpoint(20)
+    path = host._save_resumable_checkpoint(20)
     assert os.path.basename(path) == "checkpoint-000020"
     assert os.path.isdir(path)
 
@@ -536,11 +674,11 @@ def test_save_rebuild_checkpoint_returns_the_dir_and_persists_the_state(
         assert json.load(fh) == ["unet.a"]
 
 
-def test_save_rebuild_checkpoint_without_the_feature_is_a_plain_checkpoint(
+def test_save_resumable_checkpoint_without_the_feature_is_a_plain_checkpoint(
     tmp_path, make_peft_tiny
 ):
     host = _TrainHost(tmp_path, make_peft_tiny(2))
-    path = host._save_rebuild_checkpoint(5)
+    path = host._save_resumable_checkpoint(5)
     with open(os.path.join(path, "training_state.json"), encoding="utf-8") as fh:
         assert "adaptive_targeting" not in json.load(fh)
 
@@ -552,14 +690,16 @@ def test_train_loop_acts_on_the_rebuild_request():
     src = inspect.getsource(PipelineTrainMixin.train)
     hook = src.index("adaptive_ctl.on_optimizer_step(step)")
     act = src.index('adaptive_action == "rebuild_request"')
-    save = src.index("self._save_rebuild_checkpoint(step)")
+    save = src.index("self._save_resumable_checkpoint(step)")
     notify = src.index("notify_rebuild_checkpoint(")
     flag = src.index("self._rebuild_exit = True")
     # The event announces a checkpoint directory, so the checkpoint must exist
     # before it is emitted; the flag is what run_trainer and the block after
     # the loop read to skip the final save.
     assert hook < act < save < notify < flag
-    assert "break" in src[flag : flag + 200]
+    # The loop leaves on the flag, and still inside the rebuild block — a break
+    # that landed after the periodic save would write a second checkpoint.
+    assert flag < src.index("break", flag) < src.index("save_every > 0 and step > 0")
     # Save AND announcement inside one try, with the exit flag outside it: if
     # the backend never learns about the rebuild, exiting would end the job
     # with no final LoRA and nothing to relaunch it.
@@ -588,7 +728,7 @@ def test_periodic_and_rebuild_saves_share_one_call():
     the adaptive state too and the two can never drift apart."""
     src = inspect.getsource(PipelineTrainMixin.train)
     periodic = src.index("save_every > 0 and step > 0")
-    assert "self._save_rebuild_checkpoint(step)" in src[periodic : periodic + 900]
+    assert "self._save_resumable_checkpoint(step)" in src[periodic : periodic + 900]
 
 
 def test_run_trainer_consults_the_rebuild_flag():

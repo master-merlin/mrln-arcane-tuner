@@ -453,6 +453,11 @@ class AdaptiveTargetingController:
 
         Ignores a call with nothing pending — the backend relaunches the job on
         this event, so an unrequested one would restart a healthy run.
+
+        Raises only if the event never reached the log writer. Once it HAS, the
+        backend is already relaunching this job, so a failure past that point
+        must not be raised: the caller would keep training a job that a second
+        process is about to pick up.
         """
         step = self._pending_rebuild_step
         if step is None:
@@ -462,6 +467,9 @@ class AdaptiveTargetingController:
             )
             return
         self._pending_rebuild_step = None
+        # Its own event index: this is a second `adapt` payload, and a consumer
+        # keying on event_index must not see the narrow event's index twice.
+        self.event_index += 1
         self._emit_event(
             step,
             kind="rebuild_request",
@@ -472,6 +480,7 @@ class AdaptiveTargetingController:
                 "keep_patterns": self.keep_patterns(),
                 "rebuild_count": self.rebuild_count,
             },
+            swallow_history_error=True,
         )
 
     # ── probe windows (reactivation mode, spec §5) ────────────────────────
@@ -597,7 +606,17 @@ class AdaptiveTargetingController:
         frozen_this_event: int,
         reactivated_this_event: int,
         extra: dict | None = None,
+        swallow_history_error: bool = False,
     ) -> None:
+        """Append, broadcast and persist one analysis event.
+
+        ``swallow_history_error`` is for events the CALLER acts on
+        irreversibly: once the payload is on the log-writer channel the backend
+        has it, so a later failure to rewrite the run-dir history file must not
+        be reported back as "the event never happened". It is surfaced, never
+        silent. Every other caller wants the failure — an event that cannot be
+        persisted is a failed event and must count against the failure budget.
+        """
         active_params = sum(
             self._modules[n][0].numel() + self._modules[n][1].numel()
             for n in self._active
@@ -629,7 +648,17 @@ class AdaptiveTargetingController:
             f"adaptive_targeting[{kind}] step {step}: "
             f"{self.active_count}/{self.total_count} layers active"
         )
-        self._write_history()
+        if not swallow_history_error:
+            self._write_history()
+            return
+        try:
+            self._write_history()
+        except Exception as exc:  # noqa: BLE001 — the event already shipped
+            logger.warning("adaptive_history_write_failed", kind=kind, error=str(exc))
+            self.log_writer.warning(
+                f"adaptive_targeting: could not update {HISTORY_FILENAME} after the "
+                f"{kind} event ({exc}) — the event itself was delivered"
+            )
 
     def _write_history(self) -> None:
         """Rewrite the run-dir history file atomically.

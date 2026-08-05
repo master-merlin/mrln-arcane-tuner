@@ -17,6 +17,14 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+# Prefix the pipeline gives a param it could not name (see
+# ``_name_optimizer_params``). Placeholders are POSITIONAL, so the same string
+# means a different tensor in every process — a narrowed restart's
+# ``<unnamed>.3`` is not the saved ``<unnamed>.3``. They are therefore excluded
+# from matching on BOTH sides: an unnamed param starts fresh and is reported,
+# which is the only honest outcome.
+UNNAMED_PREFIX = "<unnamed>."
+
 
 def remap_optimizer_state(
     saved_state: dict[str, Any],
@@ -27,8 +35,9 @@ def remap_optimizer_state(
 
     Returns ``(state_dict, unmapped)`` where ``state_dict`` is ready for
     ``optimizer.load_state_dict`` and ``unmapped`` names every current param
-    that starts from fresh moments (absent from the saved list, or present but
-    never stepped — optimizer state is allocated lazily).
+    that starts from fresh moments (absent from the saved list, carrying an
+    unnamable-param placeholder, or present but never stepped — optimizer state
+    is allocated lazily).
 
     Emits a SINGLE param group, which is what the pipeline always builds (every
     optimizer strategy receives one flat param list). Per-param state indices in
@@ -37,13 +46,17 @@ def remap_optimizer_state(
 
     ``saved_state`` is never mutated: the caller may still fall back to it.
     """
-    old_index = {name: position for position, name in enumerate(saved_names)}
+    old_index = {
+        name: position
+        for position, name in enumerate(saved_names)
+        if not name.startswith(UNNAMED_PREFIX)
+    }
     saved_per_param = saved_state.get("state") or {}
 
     new_state: dict[int, Any] = {}
     unmapped: list[str] = []
     for new_position, name in enumerate(current_names):
-        old_position = old_index.get(name)
+        old_position = None if name.startswith(UNNAMED_PREFIX) else old_index.get(name)
         if old_position is None or old_position not in saved_per_param:
             unmapped.append(name)
             continue

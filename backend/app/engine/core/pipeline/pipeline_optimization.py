@@ -585,6 +585,7 @@ class PipelineOptimizationMixin:
         whose compile state differs would find NOTHING to remap and silently
         restart every param's moments.
         """
+        from app.engine.core.optimization.optimizer_remap import UNNAMED_PREFIX
         from app.engine.core.optimization.targeted_training import (
             normalize_module_name,
         )
@@ -612,10 +613,13 @@ class PipelineOptimizationMixin:
         for position, param in enumerate(params):
             name = by_id.get(id(param))
             if name is None:
-                # A placeholder keeps the list index-aligned; it simply never
-                # matches on resume, so that param starts from fresh moments.
+                # A placeholder keeps the list index-aligned. It is POSITIONAL,
+                # so the same string denotes a different tensor in a narrowed
+                # restart — ``remap_optimizer_state`` excludes the prefix from
+                # matching on both sides so it can never transplant another
+                # param's moments; the param starts fresh and is reported.
                 unnamed += 1
-                name = f"<unnamed>.{position}"
+                name = f"{UNNAMED_PREFIX}{position}"
             names.append(name)
         if unnamed:
             self.logger.warning(

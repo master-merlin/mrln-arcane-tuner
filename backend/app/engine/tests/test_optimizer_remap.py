@@ -112,6 +112,42 @@ def test_saved_state_is_not_mutated():
     assert set(saved["state"]) == {0, 1}
 
 
+def test_unnamable_param_placeholders_never_match_each_other():
+    """Placeholders are POSITIONAL, so the same string means a different tensor
+    in each process — and a narrowed restart's list is shorter, which lines
+    ``<unnamed>.N`` up with a DIFFERENT saved param. Matching them would
+    transplant a foreign param's moments (or throw a shape error at the first
+    step, far from the cause)."""
+    a, b, c = (torch.nn.Parameter(torch.randn(4, 4)) for _ in range(3))
+    saved = _adam_state([a, b, c]).state_dict()
+    # Saved position 1 is unnamable; after the narrowing, position 1 of the
+    # CURRENT list is a different unnamable param.
+    remapped, missing = remap_optimizer_state(
+        saved,
+        saved_names=["m.a", "<unnamed>.1", "m.c"],
+        current_names=["m.a", "<unnamed>.1"],
+    )
+    assert missing == ["<unnamed>.1"]
+    assert set(remapped["state"]) == {0}  # nothing was transplanted
+    assert torch.equal(remapped["state"][0]["exp_avg"], saved["state"][0]["exp_avg"])
+
+    new_opt = torch.optim.AdamW([a, b], lr=1e-3)
+    new_opt.load_state_dict(remapped)
+    assert 1 not in new_opt.state_dict()["state"]
+
+
+def test_placeholder_in_the_saved_list_alone_is_not_matchable():
+    """Excluded on BOTH sides: a saved placeholder must not be handed to a
+    param that happens to carry the same positional string this run."""
+    a, b = (torch.nn.Parameter(torch.randn(4, 4)) for _ in range(2))
+    saved = _adam_state([a, b]).state_dict()
+    remapped, missing = remap_optimizer_state(
+        saved, saved_names=["<unnamed>.0", "m.b"], current_names=["<unnamed>.0", "m.b"]
+    )
+    assert missing == ["<unnamed>.0"]
+    assert set(remapped["state"]) == {1}
+
+
 def test_param_that_never_stepped_is_reported_not_invented():
     """Optimizer state is allocated lazily, so a param present in the saved
     NAME list can still have no entry. It must be reported like any other

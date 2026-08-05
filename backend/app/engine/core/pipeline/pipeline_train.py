@@ -856,8 +856,9 @@ class PipelineTrainMixin:
             # save is survivable: the run continues exactly as freeze mode would.
             if adaptive_action == "rebuild_request":
                 self._emit_status("Saving Checkpoint")
+                self.logger_component.pause_step_timer()
                 try:
-                    ckpt_dir = self._save_rebuild_checkpoint(step)
+                    ckpt_dir = self._save_resumable_checkpoint(step)
                     # Emitted only now: the event names the directory the
                     # backend resumes from, which had to exist first. Inside
                     # the try on purpose — if the announcement never reaches
@@ -872,12 +873,18 @@ class PipelineTrainMixin:
                         f"Adaptive rebuild handoff failed at step {step}: {e} "
                         "— training continues without the restart"
                     )
-                    self._emit_status("Training")
                 else:
                     self._record_checkpoint(step, is_final=False)
                     self.logger_component.flush_metrics()
                     self._update_job_progress(step)
                     self._rebuild_exit = True
+                finally:
+                    # Symmetric with the periodic save: the timer must not keep
+                    # counting the save into the next step, and the last status
+                    # the UI sees must not be a save that already finished.
+                    self.logger_component.resume_step_timer()
+                    self._emit_status("Training")
+                if self._rebuild_exit:
                     break
 
             # 8. Periodic save
@@ -886,7 +893,7 @@ class PipelineTrainMixin:
                 self.logger.info("periodic_checkpoint_saving", step=step)
                 self._emit_status("Saving Checkpoint")
                 self.logger_component.pause_step_timer()
-                self._save_rebuild_checkpoint(step)
+                self._save_resumable_checkpoint(step)
                 self.logger_component.resume_step_timer()
                 self.logger.info(
                     "periodic_checkpoint_saved",
@@ -937,25 +944,32 @@ class PipelineTrainMixin:
                 self._emit_status("Profiling complete")
                 return
 
+        # Capture training-phase VRAM peaks NOW — before the final checkpoint
+        # save allocates extra memory (EMA copy, safetensors buffers) that would
+        # otherwise inflate the measured "training" peak. Ahead of the rebuild
+        # exit below on purpose: a rebuilding job is a chain of segments, and
+        # measuring only the last (narrowest) one would feed the VRAM estimator
+        # a number no full-width segment ever ran at.
+        self._capture_training_peaks()
+        self._vram_measured = self._compute_vram_measured()
+
         # ── Rebuild restart: stop here, deliberately unfinished ──
         if getattr(self, "_rebuild_exit", False):
             # No final LoRA, no is_final checkpoint, no completed job record:
             # the backend is about to relaunch this same job from the
             # checkpoint saved above. A "final" artifact would advertise a
-            # finished run that is still mid-training. The loss history IS
-            # flushed — it belongs to the steps that really happened.
+            # finished run that is still mid-training. The loss history and this
+            # segment's VRAM breakdown ARE written — they belong to the steps
+            # that really happened, and _complete_job_history (which normally
+            # persists the breakdown) must not run for an unfinished job.
             self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
+            if self._vram_measured:
+                self._write_vram_measured(self._vram_measured)
             self.logger.info("rebuild_exit_skipping_final_save", step=self.global_step)
             return
 
         # ── Training complete ──
         self.logger.info("training_finished")
-
-        # Capture training-phase VRAM peaks NOW — before the final checkpoint
-        # save allocates extra memory (EMA copy, safetensors buffers) that would
-        # otherwise inflate the measured "training" peak.
-        self._capture_training_peaks()
-        self._vram_measured = self._compute_vram_measured()
 
         self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
 
@@ -1010,7 +1024,7 @@ class PipelineTrainMixin:
 
     # ── Checkpoint save (periodic + adaptive rebuild) ─────────────────
 
-    def _save_rebuild_checkpoint(self, step: int) -> str:
+    def _save_resumable_checkpoint(self, step: int) -> str:
         """Save a full resumable checkpoint and return its directory.
 
         The ONE invocation both the periodic ``save_every_n_steps`` save and

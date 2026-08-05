@@ -182,6 +182,21 @@ class JobReplayResponse(BaseModel):
     loss: list[Any]
 
 
+class JobAdaptiveHistoryResponse(BaseModel):
+    """A run's ``adaptive_targeting.json`` (spec §6).
+
+    Event rows and the heat map are written by the trainer-side controller and
+    grow with it, so both stay open — the UI renders whatever fields the run
+    that produced them emitted. ``heat`` values are nullable: a non-finite
+    measurement is stored as null rather than 0.0, which would read as a layer
+    that never learned.
+    """
+
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    modules: list[str] = Field(default_factory=list)
+    heat: dict[str, float | None] = Field(default_factory=dict)
+
+
 class JobHistoryRow(BaseModel):
     """One raw ``job_history`` table row (``SELECT *``, with
     config/datasets_used/loss_history/targeted_layers/tags JSON-decoded by
@@ -360,6 +375,65 @@ async def get_job_replay(job_id: str):
         }
 
     return await asyncio.to_thread(_load)
+
+
+@router.get(
+    "/jobs/history/{job_id}/adaptive", response_model=JobAdaptiveHistoryResponse,
+)
+async def get_job_adaptive_history(job_id: str):
+    """Adaptive layer-targeting event history for a run (spec §6).
+
+    Reads the run dir's ``adaptive_targeting.json`` — the same
+    ``job_history.output_dir`` resolution the sibling ``/replay`` route uses.
+    A run with the feature off (or one predating it) has no such file: that is
+    the empty shape with HTTP 200, not an error, so the UI hides the section
+    without special-casing failures. A corrupt/unreadable file degrades the
+    same way rather than failing the whole job-detail view.
+    """
+    from app.core.db.repositories.job_repo import JobHistoryRepository
+
+    job = await asyncio.to_thread(JobHistoryRepository().get_by_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    empty: dict[str, Any] = {"events": [], "modules": [], "heat": {}}
+
+    def _read() -> dict[str, Any]:
+        import json
+        from pathlib import Path
+
+        from app.engine.components.adaptive_targeting import HISTORY_FILENAME
+
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return empty
+        path = Path(output_dir) / HISTORY_FILENAME
+        if not path.is_file():
+            return empty
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return empty
+        if not isinstance(data, dict):
+            return empty
+        # Shape-check each key independently: a half-written or older-schema
+        # file must degrade to what IS readable, never 500 the route through
+        # response-model validation.
+        events = data.get("events")
+        modules = data.get("modules")
+        heat = data.get("heat")
+        return {
+            "events": [e for e in events if isinstance(e, dict)]
+            if isinstance(events, list) else [],
+            "modules": [m for m in modules if isinstance(m, str)]
+            if isinstance(modules, list) else [],
+            "heat": {
+                k: v for k, v in heat.items()
+                if isinstance(k, str) and (v is None or isinstance(v, (int, float)))
+            } if isinstance(heat, dict) else {},
+        }
+
+    return await asyncio.to_thread(_read)
 
 
 @router.get("/jobs/history/{job_id}/rerun-config", response_model=dict[str, Any])

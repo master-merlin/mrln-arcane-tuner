@@ -136,6 +136,13 @@ class JobManager:
         self._lock = threading.Lock()
         # Auto-resume bookkeeping keyed by job_id: {"total", "stall", "from_step"}.
         self._auto_resume_state: dict[str, dict[str, Any]] = {}
+        # Adaptive-targeting rebuild handoffs announced but not yet acted on,
+        # keyed by job_id (the trainer's ``rebuild_request`` adapt event). The
+        # trainer's rebuild exit is an ORDINARY exit(0), so this entry is the
+        # only thing that tells a rebuild apart from a genuine completion.
+        # Popped unconditionally by the exit handler — it must never survive a
+        # run and hijack the next one.
+        self._pending_rebuilds: dict[str, dict[str, Any]] = {}
         # Reference to the main event loop for scheduling async broadcasts from threads
         self._loop: asyncio.AbstractEventLoop | None = None
         # Jobs needing post-startup recovery (re-launch paused, re-attach alive)
@@ -880,6 +887,33 @@ class JobManager:
                 loop,
             )
 
+        elif msg_type == "adapt":
+            # Adaptive layer targeting (spec §6). Wrapped under an "adapt" key
+            # so the Jobs screen can tell these apart from the plain step
+            # metrics that share the job_log channel. Mirrored into job.logs
+            # as well as broadcast: a client that reconnects mid-run rebuilds
+            # its event list from the buffer, and would otherwise show an
+            # empty timeline for a run that has already narrowed.
+            if isinstance(data, dict):
+                message = _json.dumps({"adapt": data})
+                with self._lock:
+                    job.logs.append(message)
+                    if len(job.logs) > 1000:
+                        job.logs.pop(0)
+                    if data.get("kind") == "rebuild_request":
+                        # Record BEFORE the trainer's exit line arrives: the
+                        # exit is a normal exit(0) and carries no marker of
+                        # its own (see _handle_exit_message).
+                        self._pending_rebuilds[job_id] = data
+                asyncio.run_coroutine_threadsafe(
+                    event_manager.broadcast("job_log", {
+                        "job_id": job_id,
+                        "message": message,
+                        "timestamp": timestamp,
+                    }),
+                    loop,
+                )
+
         elif msg_type == "warning":
             with self._lock:
                 job.warnings.append(str(data))
@@ -948,12 +982,28 @@ class JobManager:
 
     def _handle_exit_message(self, job_id: str, data: Any) -> None:
         """Process an exit message from the trainer subprocess."""
+        # Popped FIRST and unconditionally, before any early return: a rebuild
+        # announcement that isn't consumed here (crash, vanished job) must not
+        # linger and turn a LATER clean exit of the same job into a relaunch.
+        pending = self._pending_rebuilds.pop(job_id, None)
+
         job = self.get_job(job_id)
         if not job:
             return
 
         code = data.get("code", 1) if isinstance(data, dict) else 1
         error = data.get("error") if isinstance(data, dict) else None
+
+        # An adaptive rebuild: the trainer checkpointed, announced where, and
+        # exited 0 through its NORMAL path — indistinguishable from a finished
+        # run except for the pending entry. Relaunch instead of completing.
+        # A non-zero exit means it crashed after announcing: that is an
+        # ordinary failure and falls through to the normal path below. STOPPED
+        # means the user intervened while the handoff was in flight — a
+        # deliberate Stop must never be answered with a relaunch.
+        if pending is not None and code == 0 and job.status != JobStatus.STOPPED:
+            self._restart_for_rebuild(job_id, pending)
+            return
 
         # Diagnostic: if the trainer reported exit but its PID or any
         # descendants are still alive, training work is still running
@@ -1821,6 +1871,112 @@ class JobManager:
 
         # Re-launch the same record (or queue it behind an active job).
         self.restart_job(job_id, fresh=False)
+
+    def _restart_for_rebuild(self, job_id: str, data: dict[str, Any]) -> None:
+        """Relaunch the SAME job from an adaptive rebuild checkpoint (spec §5).
+
+        The trainer-initiated sibling of :meth:`resume_from_checkpoint`: same
+        record, same resume mechanics, plus ``targeted_layers`` narrowed to the
+        modules the controller kept — the fresh optimizer over only those
+        params is what actually reclaims the optimizer-state VRAM.
+
+        Every field here arrives in a LOG FILE, so none of it is trusted.
+        ``checkpoint_dir`` is validated exactly like the user-facing resume
+        path (anchored name regex + containment inside the run dir) and the
+        RESOLVED path is what gets persisted; an empty keep list is rejected
+        because an empty ``targeted_layers`` means "train everything"
+        downstream — the inverse of a narrowing rebuild. A rejected handoff
+        FAILS the job with the reason surfaced: the trainer has already exited
+        without a final LoRA, so silently completing it would advertise a
+        finished run that never finished.
+        """
+        job = self.get_job(job_id)
+        if not job:
+            return
+
+        checkpoint_dir = str(data.get("checkpoint_dir") or "")
+        raw_patterns = data.get("keep_patterns")
+        keep_patterns = [p for p in raw_patterns if isinstance(p, str) and p] \
+            if isinstance(raw_patterns, list) else []
+
+        run_dir = os.path.abspath(self._get_job_output_dir(job))
+        ckpt_path = os.path.abspath(os.path.join(run_dir, checkpoint_dir))
+        try:
+            if not _RESUMABLE_DIR_RE.match(checkpoint_dir):
+                raise ValueError(f"invalid checkpoint dir {checkpoint_dir!r}")
+            # Containment by resolve + commonpath, never a startswith prefix
+            # test (a sibling run named "<run>2" passes a prefix check).
+            if os.path.commonpath([ckpt_path, run_dir]) != run_dir:
+                raise ValueError("checkpoint escapes the run dir")
+            if not os.path.isfile(os.path.join(ckpt_path, "training_state.json")):
+                raise ValueError(f"checkpoint {checkpoint_dir!r} is not resumable")
+            if not keep_patterns:
+                raise ValueError("no keep patterns — refusing to relaunch untargeted")
+        except ValueError as exc:
+            logger.error("rebuild_restart_rejected", job_id=job_id, error=str(exc))
+            # Route the rejection through the normal terminal-failure path so
+            # the bookkeeping (persist, tailer, broadcast, queue advance) can't
+            # drift from it. The pending entry is already popped, so this
+            # cannot re-enter the rebuild branch.
+            self._handle_exit_message(
+                job_id, {"code": 1, "error": f"Adaptive rebuild restart rejected: {exc}"},
+            )
+            return
+
+        logger.info(
+            "rebuild_restart", job_id=job_id, checkpoint=ckpt_path,
+            kept=len(keep_patterns), rebuild_count=data.get("rebuild_count"),
+        )
+
+        new_config = copy.deepcopy(job.config)
+        # Replaces (not extends) any manual targeted_layers: the controller's
+        # universe was already the post-targeted_layers trainable set, so the
+        # kept patterns are a subset of what the user asked to train.
+        new_config["targeted_layers"] = keep_patterns
+        new_config["resume_from_checkpoint"] = ckpt_path
+        # Same dataset across a rebuild — reuse the existing caches.
+        new_config["use_cached_latents"] = True
+        new_config["use_cached_embeddings"] = True
+        with self._lock:
+            job.config = new_config
+            # restart_job refuses a RUNNING/PENDING job, and the trainer that
+            # just exited leaves this one RUNNING.
+            job.status = JobStatus.STOPPED
+            job.pid = None
+        # The relaunched process reads its config from the DB, so this write
+        # is what actually narrows the next run.
+        self._persist_config(job_id, new_config)
+        self._persist_status(job_id, "stopped", resumed_from=ckpt_path)
+
+        # The relaunch must NOT run on the caller's thread: that is the
+        # tailer's dispatch thread, and it holds job_log.jsonl OPEN for the
+        # whole polling loop. ``restart_job`` rotates that file, a rename
+        # Windows refuses while it is open — and ``_reset_job_log_state``
+        # swallows the failure, so the next tailer would replay the previous
+        # run's rebuild_request + exit(0) and relaunch the job forever.
+        # A worker thread also lets ``restart_job``'s own ``_stop_tailer``
+        # actually JOIN the tailer (``stop()`` cannot join itself), so the
+        # file is closed and the offset reset before the rotation.
+        threading.Thread(
+            target=self._run_rebuild_restart,
+            args=(job_id,),
+            daemon=True,
+            name=f"rebuild_restart_{job_id[:8]}",
+        ).start()
+
+    def _run_rebuild_restart(self, job_id: str) -> None:
+        """Relaunch body for :meth:`_restart_for_rebuild`, off the tailer thread."""
+        try:
+            self.restart_job(job_id, fresh=False)
+        except Exception as e:
+            # ``start_job`` already marks the job FAILED before re-raising, so
+            # the run is surfaced; what's left is to not strand the queue on a
+            # relaunch that blew up (mirrors ``_schedule_auto_resume``).
+            logger.error("rebuild_restart_failed", job_id=job_id, error=str(e))
+            try:
+                self.schedule_advance_queue()
+            except Exception:
+                pass
 
     def _reset_job_log_state(self, job: Job) -> None:
         """Rotate the job's log file + drop its tailer offset.

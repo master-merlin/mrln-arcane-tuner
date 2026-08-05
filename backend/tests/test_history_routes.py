@@ -201,6 +201,72 @@ def test_get_job_replay_no_data(MockJobRepo, MockMetricsRepo, client):
     assert body["loss"] == []
 
 
+# ── GET /jobs/history/{job_id}/adaptive ──────────────────────────────────
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_from_disk(MockRepo, client, tmp_path):
+    """The run dir's adaptive_targeting.json, served verbatim."""
+    import json
+
+    payload = {
+        "events": [{"step": 100, "kind": "narrow", "active_count": 5,
+                    "total_count": 8, "top_modules": ["blocks.0.to_q"]}],
+        "modules": ["blocks.0.to_q", "blocks.1.to_k"],
+        "heat": {"blocks.0.to_q": 1.5e-07, "blocks.1.to_k": None},
+    }
+    (tmp_path / "adaptive_targeting.json").write_text(
+        json.dumps(payload), encoding="utf-8",
+    )
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "job-1", "output_dir": str(tmp_path),
+    }
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == payload
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_absent_returns_empty_shape(MockRepo, client, tmp_path):
+    """Feature off / older run: HTTP 200 + the empty shape, so the modal can
+    hide the section without special-casing an error."""
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "job-1", "output_dir": str(tmp_path),
+    }
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "modules": [], "heat": {}}
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_corrupt_file_degrades(MockRepo, client, tmp_path):
+    """A truncated/garbage history must degrade to the empty shape, never 500."""
+    (tmp_path / "adaptive_targeting.json").write_text(
+        '{"events": [{"step": 1', encoding="utf-8",
+    )
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "job-1", "output_dir": str(tmp_path),
+    }
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "modules": [], "heat": {}}
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_missing_output_dir(MockRepo, client):
+    MockRepo.return_value.get_by_id.return_value = {"id": "job-1", "output_dir": None}
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "modules": [], "heat": {}}
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_not_found(MockRepo, client):
+    MockRepo.return_value.get_by_id.return_value = None
+    response = client.get("/api/jobs/history/ghost/adaptive")
+    assert response.status_code == 404
+
+
 @patch(_JOB_REPO)
 def test_get_rerun_config_found(MockRepo, client):
     MockRepo.return_value.get_config_for_rerun.return_value = {"lr": 1e-4}

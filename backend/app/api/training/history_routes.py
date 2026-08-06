@@ -168,6 +168,11 @@ class LossCurvePoint(BaseModel):
     grad_norm: float | None = None
     timestep_mean: float | None = None
     epoch: float | None = None
+    # Adaptive layer-targeting staircase replay (Task 8/12): NULL for every
+    # step of a run that never enabled the feature — 0 is itself a meaningful
+    # "every remaining layer just froze" value, so it must stay distinguishable
+    # from "no data", both in the DB (see migrations._migrate_v20) and here.
+    active_layers: int | None = None
 
 
 class JobMetricsResponse(BaseModel):

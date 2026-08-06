@@ -147,6 +147,31 @@ def test_get_job_metrics(MockRepo, client):
     assert "summary" in response.json()
 
 
+@patch(_METRICS_REPO)
+def test_get_job_metrics_active_layers_survives_response_model(MockRepo, client):
+    """Response-model passthrough pin: LossCurvePoint must not silently drop
+    active_layers. Pydantic v2 defaults to extra='ignore', so a field the repo
+    returns but the response model never declared would be filtered out of the
+    JSON before it reaches the frontend — the DB column and repo SELECT being
+    correct would not save it. Asserted at the HTTP layer (not the repo layer)
+    because that's exactly where the prior gap lived: a repo-level assertion
+    passes regardless of whether the field ships. Covers both a populated row
+    and an absent one, since NULL and a real value must stay distinguishable
+    end to end, not just inside the DB."""
+    MockRepo.return_value.get_loss_curve.return_value = [
+        {"step": 1, "loss": 0.5, "lr": 1e-4, "grad_norm": 0.1,
+         "timestep_mean": 500.0, "epoch": 0.1, "active_layers": 248},
+        {"step": 2, "loss": 0.4, "lr": 1e-4, "grad_norm": 0.1,
+         "timestep_mean": 500.0, "epoch": 0.1, "active_layers": None},
+    ]
+    MockRepo.return_value.get_summary.return_value = {}
+    response = client.get("/api/jobs/history/job-1/metrics")
+    assert response.status_code == 200
+    curve = response.json()["curve"]
+    assert curve[0]["active_layers"] == 248
+    assert curve[1]["active_layers"] is None
+
+
 @patch(_JOB_REPO)
 def test_get_job_replay_not_found(MockRepo, client):
     MockRepo.return_value.get_by_id.return_value = None

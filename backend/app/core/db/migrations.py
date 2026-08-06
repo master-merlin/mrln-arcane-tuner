@@ -52,6 +52,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v17,
         _migrate_v18,
         _migrate_v19,
+        _migrate_v20,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -1045,3 +1046,26 @@ def _migrate_v19(conn) -> None:
             "UPDATE job_history SET lora_on_disk = ? WHERE id = ?",
             (on_disk, row["id"]),
         )
+
+
+# ── V20: active_layers on step_metrics (adaptive layer-targeting replay) ──
+
+def _migrate_v20(conn) -> None:
+    """Add ``step_metrics.active_layers``, populated per step by the adaptive
+    layer-targeting controller's live ``adaptive_active`` count.
+
+    Nullable, and left NULL (never backfilled to 0) for every existing row
+    and every future step where the feature is off: 0 is itself a meaningful
+    value here ("every remaining layer just froze"), so it must stay
+    distinguishable from "adaptive targeting was never enabled for this run"
+    — a stats replay chart that coerced absence to 0 would draw a fake
+    narrowing-to-zero staircase for runs that never used the feature.
+
+    Idempotent: the ``ADD COLUMN`` is guarded (SQLite has no
+    ``IF NOT EXISTS`` for columns), matching every prior single-column
+    migration in this file.
+    """
+    try:
+        conn.execute("ALTER TABLE step_metrics ADD COLUMN active_layers INTEGER")
+    except Exception:
+        pass  # Column already exists

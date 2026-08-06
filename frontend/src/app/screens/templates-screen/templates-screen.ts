@@ -11,7 +11,7 @@ import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { IcoComponent } from '../../icons/ico.component';
 import { SegmentedComponent, SegOption } from '../../ui/segmented/segmented.component';
-import { TemplateService, Template } from '../../services/template.service';
+import { TemplateService, Template, TemplateDomain } from '../../services/template.service';
 import { ProjectService, Project } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ImportArchiveService } from '../../services/import-archive.service';
@@ -19,7 +19,7 @@ import { ScopeStore } from '../../state/scope.store';
 import { TrainingHandoffService } from '../../state/training-handoff.service';
 import { ToastService } from '../../services/toast';
 
-type Domain = 'captioning' | 'masking' | 'training';
+type Domain = TemplateDomain;
 
 interface TemplateRow {
     domain: Domain;
@@ -33,6 +33,7 @@ const DOMAIN_OPTIONS: ReadonlyArray<SegOption<'all' | Domain>> = [
     { value: 'training', label: 'Training' },
     { value: 'captioning', label: 'Caption' },
     { value: 'masking', label: 'Mask' },
+    { value: 'adaptive', label: 'Adaptive' },
 ];
 
 const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
@@ -59,7 +60,7 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
             <div>
                 <div class="eyebrow">LIBRARY</div>
                 <h1 class="page-title">Templates</h1>
-                <p class="page-sub">Every training, captioning &amp; masking template across all projects.</p>
+                <p class="page-sub">Every training, captioning, masking &amp; adaptive-targeting template across all projects.</p>
             </div>
             <div class="ts-head-actions">
                 <button class="icon-btn" type="button"
@@ -132,6 +133,7 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
                                     @case ('training') { <span class="chip violet">Training</span> }
                                     @case ('captioning') { <span class="chip brand">Caption</span> }
                                     @case ('masking') { <span class="chip success">Mask</span> }
+                                    @case ('adaptive') { <span class="chip warning">Adaptive</span> }
                                 }
                                 @if (r.tpl.readonly) {
                                     <span class="chip violet">System</span>
@@ -238,6 +240,7 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
         .tl-dot.brand { background: var(--color-brand); }
         .tl-dot.success { background: var(--color-success); }
         .tl-dot.violet { background: var(--color-violet); }
+        .tl-dot.warning { background: var(--color-warning); }
         .tl-info {
             flex: 1;
             min-width: 0;
@@ -347,13 +350,14 @@ export class TemplatesScreen implements OnInit {
             } catch {
                 projects = this.projects.allProjects();
             }
-            // Global (project_id null) for each domain, plus each project's three domains.
+            // Global (project_id null) for each domain, plus each project's domains.
             const globalCalls = [
                 firstValueFrom(this.templates.listCaptioningTemplates(null, null)),
                 firstValueFrom(this.templates.listMaskingTemplates(null, null)),
                 firstValueFrom(this.templates.listTrainingTemplates(undefined, undefined)),
+                firstValueFrom(this.templates.listAdaptivePresets(null)),
             ] as const;
-            const [capG, maskG, trainG] = await Promise.all(globalCalls);
+            const [capG, maskG, trainG, adaptG] = await Promise.all(globalCalls);
 
             const rows: TemplateRow[] = [];
             const seen = new Set<string>();
@@ -368,6 +372,7 @@ export class TemplatesScreen implements OnInit {
             add('captioning', null, 'Global', (capG ?? []).filter(t => !t.project_id));
             add('masking', null, 'Global', (maskG ?? []).filter(t => !t.project_id));
             add('training', null, 'Global', (trainG ?? []).filter(t => !t.project_id));
+            add('adaptive', null, 'Global', (adaptG ?? []).filter(t => !t.project_id));
 
             // P11: fetch every project's three domains CONCURRENTLY instead of
             // awaiting each project in series (the old N+1 loop stalled the whole
@@ -379,12 +384,13 @@ export class TemplatesScreen implements OnInit {
             const settled = await Promise.allSettled(
                 projects.map(async p => {
                     try {
-                        const [cap, mask, train] = await Promise.all([
+                        const [cap, mask, train, adapt] = await Promise.all([
                             firstValueFrom(this.templates.listCaptioningTemplates(null, p.id)),
                             firstValueFrom(this.templates.listMaskingTemplates(null, p.id)),
                             firstValueFrom(this.templates.listTrainingTemplates(undefined, p.id)),
+                            firstValueFrom(this.templates.listAdaptivePresets(p.id)),
                         ]);
-                        return { p, cap, mask, train };
+                        return { p, cap, mask, train, adapt };
                     } catch {
                         throw { p };
                     }
@@ -392,10 +398,11 @@ export class TemplatesScreen implements OnInit {
             );
             for (const res of settled) {
                 if (res.status === 'fulfilled') {
-                    const { p, cap, mask, train } = res.value;
+                    const { p, cap, mask, train, adapt } = res.value;
                     add('captioning', p.id, p.name, (cap ?? []).filter(t => t.project_id === p.id));
                     add('masking', p.id, p.name, (mask ?? []).filter(t => t.project_id === p.id));
                     add('training', p.id, p.name, (train ?? []).filter(t => t.project_id === p.id));
+                    add('adaptive', p.id, p.name, (adapt ?? []).filter(t => t.project_id === p.id));
                 } else {
                     const p = (res.reason as { p?: Project })?.p;
                     if (p) this.toast.warning(`Could not load templates for project "${p.name}".`);
@@ -436,10 +443,14 @@ export class TemplatesScreen implements OnInit {
      * Icon for the row "Edit" affordance (P7). Training templates edit on the
      * separate Training screen (this button LEAVES `/templates`), so they get a
      * distinct external glyph; caption + mask edit in place via a modal and keep
-     * the pencil. Mirrors ProjectDetail.editIcon.
+     * the pencil. Adaptive presets are a bag of numeric knobs with no settings
+     * dialog of their own, so their edit IS the JSON editor. Mirrors
+     * ProjectDetail.editIcon.
      */
-    editIcon(domain: Domain): 'ExternalLink' | 'Pencil' {
-        return domain === 'training' ? 'ExternalLink' : 'Pencil';
+    editIcon(domain: Domain): 'ExternalLink' | 'Pencil' | 'Braces' {
+        if (domain === 'training') return 'ExternalLink';
+        if (domain === 'adaptive') return 'Braces';
+        return 'Pencil';
     }
 
     edit(r: TemplateRow): void {
@@ -450,6 +461,15 @@ export class TemplatesScreen implements OnInit {
                 // Training templates are edited on the Training screen (same path
                 // project-detail uses), so hand the config off and navigate there.
                 if (r.domain === 'training') { this.openTrainingTemplate(full); return; }
+                // Same reason for adaptive presets: the caption/mask dialog cannot
+                // render their knob dict, so editing means the JSON editor. Their
+                // real editing surface is the training form's card.
+                if (r.domain === 'adaptive') {
+                    this.overlay.openModal('template-json', {
+                        domain: r.domain, template: full, onSaved: () => void this.load(),
+                    });
+                    return;
+                }
                 this.overlay.openModal('template-edit', {
                     domain: r.domain, template: full, onSaved: () => void this.load(),
                 });
@@ -508,7 +528,10 @@ export class TemplatesScreen implements OnInit {
     }
 
     protected dotClass(d: Domain): string {
-        return d === 'captioning' ? 'brand' : d === 'masking' ? 'success' : 'violet';
+        if (d === 'captioning') return 'brand';
+        if (d === 'masking') return 'success';
+        if (d === 'adaptive') return 'warning';
+        return 'violet';
     }
 
     private msg(err: unknown): string {

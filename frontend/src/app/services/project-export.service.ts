@@ -14,6 +14,7 @@ const DOMAINS: { domain: TemplateDomain; label: string }[] = [
   { domain: 'training', label: 'Training templates' },
   { domain: 'captioning', label: 'Caption templates' },
   { domain: 'masking', label: 'Mask templates' },
+  { domain: 'adaptive', label: 'Adaptive targeting presets' },
 ];
 
 /**
@@ -34,16 +35,20 @@ export class ProjectExportService {
 
   async open(projectId: string, projectName: string): Promise<void> {
     try {
-      const [datasets, cap, mask, train] = await Promise.all([
+      const [datasets, cap, mask, train, adaptive] = await Promise.all([
         firstValueFrom(this.projects.getProjectDatasets(projectId)),
         firstValueFrom(this.templates.listCaptioningTemplates(null, projectId)),
         firstValueFrom(this.templates.listMaskingTemplates(null, projectId)),
         firstValueFrom(this.templates.listTrainingTemplates(undefined, projectId)),
+        firstValueFrom(this.templates.listAdaptivePresets(projectId)),
       ]);
       const byDomain: Record<TemplateDomain, Template[]> = {
         training: (train ?? []).filter(t => t.project_id === projectId),
         captioning: (cap ?? []).filter(t => t.project_id === projectId),
         masking: (mask ?? []).filter(t => t.project_id === projectId),
+        // The three factory presets are global + readonly, so this only ever
+        // surfaces the project's own branched presets.
+        adaptive: (adaptive ?? []).filter(t => t.project_id === projectId),
       };
       const groups: ExportGroup[] = DOMAINS
         .filter(d => byDomain[d.domain].length > 0)

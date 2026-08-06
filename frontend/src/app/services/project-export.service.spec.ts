@@ -42,6 +42,12 @@ describe('ProjectExportService', () => {
                         listCaptioningTemplates: () => of([tpl('c1', 'p1', { model_id: 'qwen3-vl' }), tpl('cg', null)]),
                         listMaskingTemplates: () => of([]),
                         listTrainingTemplates: () => of([tpl('t1', 'p1', { definition_id: 'flux-dev' })]),
+                        // Factory presets are global + readonly; only the project's
+                        // own branched presets belong in a project export.
+                        listAdaptivePresets: () => of([
+                            tpl('a1', 'p1', { branched_from: 'factory-balanced' }),
+                            tpl('factory-balanced', null, { readonly: true }),
+                        ]),
                     },
                 },
                 { provide: ImportArchiveService, useValue: { downloadBlob } },
@@ -61,6 +67,10 @@ describe('ProjectExportService', () => {
         expect(keys).toContain('training');
         expect(keys).toContain('captioning');
         expect(keys).not.toContain('masking'); // empty domain dropped
+        // Adaptive presets export alongside the other domains, project-scoped only.
+        expect(keys).toContain('adaptive');
+        const adaptive = data.groups.find((g: { key: string }) => g.key === 'adaptive');
+        expect(adaptive.items.map((i: { id: string }) => i.id)).toEqual(['a1']);
         const cap = data.groups.find((g: { key: string }) => g.key === 'captioning');
         expect(cap.items.map((i: { id: string }) => i.id)).toEqual(['c1']); // global 'cg' excluded
         expect(cap.items[0].sub).toBe('qwen3-vl'); // model_id subline

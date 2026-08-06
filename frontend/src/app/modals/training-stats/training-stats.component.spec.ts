@@ -356,6 +356,27 @@ describe('TrainingStatsModalComponent', () => {
             expect(getJobMetrics).toHaveBeenCalledWith('j1');
         });
 
+        it('shows a caret affordance on the run row that flips on expand/collapse', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            openTab(fixture, 1);
+            (fixture.nativeElement.querySelector('[data-testid="stats-family-row"]') as HTMLElement).click();
+            fixture.detectChanges();
+            runs$.next([
+                { id: 'j1', lora_name: 'x_lora', status: 'completed', created_at: 1752624000,
+                  completed_steps: 1500, avg_step_time: 1.70523, min_loss: 0.005319 },
+            ]);
+            runs$.complete();
+            fixture.detectChanges();
+
+            const row = fixture.nativeElement.querySelector('[data-testid="stats-run-row"]') as HTMLElement;
+            expect(row.textContent).toContain('▸'); // collapsed
+            row.click();
+            fixture.detectChanges();
+            expect(row.textContent).toContain('▾'); // expanded
+        });
+
         it('renders the Adaptive header + event table when the run has adaptive events', () => {
             const fixture = setup();
             stats$.next(makeStats()); stats$.complete();
@@ -365,7 +386,7 @@ describe('TrainingStatsModalComponent', () => {
             adaptive$.next({
                 events: [
                     { step: 100, event_index: 0, kind: 'narrow', active_count: 200, total_count: 248,
-                      hot_count: 40, active_param_pct: 80.6, earliest_active_block: 2 },
+                      hot_count: 40, active_param_pct: 80.60000000000001, earliest_active_block: 2 },
                     { step: 300, event_index: 1, kind: 'narrow', active_count: 120, total_count: 248,
                       hot_count: 30, active_param_pct: 48.4, earliest_active_block: 5 },
                 ],
@@ -384,11 +405,14 @@ describe('TrainingStatsModalComponent', () => {
             expect(rows.length).toBe(2);
             expect(rows[0].textContent).toContain('narrow');
             expect(rows[0].textContent).toContain('200/248');
-            expect(rows[0].textContent).toContain('80.6');
+            // fmtPct rounds to 1 decimal — an unrounded float must never leak
+            // through as "80.60000000000001%".
+            expect(rows[0].textContent).toContain('80.6%');
+            expect(rows[0].textContent).not.toContain('80.60000000000001');
             expect(rows[1].textContent).toContain('120/248');
         });
 
-        it('is genuinely absent from the DOM (not CSS-hidden) for a run with no adaptive history', () => {
+        it('is genuinely absent from the DOM (not CSS-hidden) for a run with no adaptive history — and does NOT show the error branch', () => {
             const fixture = setup();
             stats$.next(makeStats()); stats$.complete();
             fixture.detectChanges();
@@ -400,10 +424,34 @@ describe('TrainingStatsModalComponent', () => {
             metrics$.complete();
             fixture.detectChanges();
 
-            expect(fixture.nativeElement.querySelector('[data-testid="stats-adaptive-section"]')).toBeFalsy();
+            const el: HTMLElement = fixture.nativeElement;
+            expect(el.querySelector('[data-testid="stats-adaptive-section"]')).toBeFalsy();
+            expect(el.querySelector('[data-testid="stats-adapt-empty"]')).toBeTruthy();
+            expect(el.querySelector('[data-testid="stats-adapt-error"]')).toBeFalsy();
         });
 
-        it('charts the active-layers staircase, skipping NULL rows rather than plotting them as 0', () => {
+        // The empty-200 shape ("this run never used the feature") and a genuine
+        // fetch failure (500 / network drop / the 404 the backend reserves for
+        // an unknown job id) must never collapse into the same "no data" message
+        // — that would silently misreport an error as a plausible default.
+        it('surfaces a failed adaptive fetch as an error, distinct from the empty-200 "no data" message', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+
+            adaptive$.error(new Error('boom'));
+            metrics$.next({ curve: [], summary: {} });
+            metrics$.complete();
+            fixture.detectChanges();
+
+            const el: HTMLElement = fixture.nativeElement;
+            expect(el.querySelector('[data-testid="stats-adapt-error"]')).toBeTruthy();
+            expect(el.querySelector('[data-testid="stats-adapt-empty"]')).toBeFalsy();
+            expect(el.querySelector('[data-testid="stats-adaptive-section"]')).toBeFalsy();
+        });
+
+        it('renders the chart host when the run has a curve', () => {
             const fixture = setup();
             stats$.next(makeStats()); stats$.complete();
             fixture.detectChanges();
@@ -427,6 +475,40 @@ describe('TrainingStatsModalComponent', () => {
 
             const section = fixture.nativeElement.querySelector('[data-testid="stats-adaptive-section"]');
             expect(section?.querySelector('app-stats-uplot')).toBeTruthy();
+        });
+
+        // `StatsUplotComponent` short-circuits before constructing uPlot under
+        // jsdom (no 2D canvas context), so the DOM has no observable trace of
+        // WHICH points were plotted — the render-presence test above cannot
+        // pin the NULL-skip contract. Assert on the component's own
+        // `adaptiveData()` (which wraps `buildAdaptiveSeries`, already unit-pinned
+        // in stats-charts.spec.ts) so a regression that started plotting NULL as
+        // 0 fails here too, not only one layer down.
+        it('feeds the chart a NULL-skipped series, never a zero-filled one', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+
+            adaptive$.next({
+                events: [{ step: 10, event_index: 0, kind: 'narrow', active_count: 5, total_count: 8 }],
+                modules: [], heat: {},
+            });
+            adaptive$.complete();
+            metrics$.next({
+                curve: [
+                    { step: 1, loss: 0.5, lr: 1e-4, grad_norm: null, timestep_mean: null, epoch: null, active_layers: 8 },
+                    { step: 2, loss: 0.4, lr: 1e-4, grad_norm: null, timestep_mean: null, epoch: null, active_layers: null },
+                    { step: 3, loss: 0.3, lr: 1e-4, grad_norm: null, timestep_mean: null, epoch: null, active_layers: 5 },
+                ],
+                summary: {},
+            });
+            metrics$.complete();
+            fixture.detectChanges();
+
+            const data = (fixture.componentInstance as any).adaptiveData();
+            expect(data[0]).toEqual([1, 3]);   // step 2 (NULL) skipped, not plotted as 0
+            expect(data[1]).toEqual([8, 5]);
         });
 
         it('collapses the run (and its Adaptive fetches) on a second click', () => {

@@ -156,7 +156,9 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                                     @for (r of runs; track r.id) {
                                                         <div class="ts-run-grid ts-run-expandable" data-testid="stats-run-row"
                                                              (click)="toggleRunAdaptive(r.id)">
-                                                            <span class="mono ts-run-name" [title]="r.lora_name">{{ r.lora_name }}</span>
+                                                            <span class="mono ts-run-name" [title]="r.lora_name">
+                                                                <i class="ts-fam-caret">{{ expandedRun() === r.id ? '▾' : '▸' }}</i>{{ r.lora_name }}
+                                                            </span>
                                                             <span class="mono">{{ fmtDate(r.created_at) }}</span>
                                                             <span class="mono ts-run-status" [class]="'ts-run-status ' + r.status">{{ r.status }}</span>
                                                             <span class="mono">{{ fmtCount(r.completed_steps ?? 0) }}</span>
@@ -170,6 +172,8 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                                                  used the feature. -->
                                                             @if (runAdaptiveLoading()) {
                                                                 <div class="ts-note">Loading adaptive data…</div>
+                                                            } @else if (adaptiveError()) {
+                                                                <div class="ts-adapt-err" data-testid="stats-adapt-error">Could not load adaptive data — see server logs.</div>
                                                             } @else if (adaptiveEvents().length > 0) {
                                                                 <div class="card ts-section ts-adapt-card" data-testid="stats-adaptive-section">
                                                                     <div class="card-head"><div class="card-title">Adaptive</div>
@@ -190,7 +194,7 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                                                                 <span class="mono">{{ e.step }}</span>
                                                                                 <span class="mono">{{ e.kind }}</span>
                                                                                 <span class="mono">{{ e.active_count }}/{{ e.total_count }}</span>
-                                                                                <span class="mono">{{ e.active_param_pct != null ? e.active_param_pct + '%' : '—' }}</span>
+                                                                                <span class="mono">{{ fmtPct(e.active_param_pct) }}</span>
                                                                                 <span class="mono">{{ e.earliest_active_block ?? '—' }}</span>
                                                                             </div>
                                                                         }
@@ -331,6 +335,7 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
         .ts-run-expandable { cursor: pointer; }
         .ts-run-expandable:hover { background: var(--color-surface-high); }
         .ts-adapt-card { margin: 2px 0 8px 18px; }
+        .ts-adapt-err { color: var(--color-danger); font-size: 11px; margin: 4px 0 4px 18px; }
         /* minmax(0, …): same overflow guard as .ts-kpis — "kind" values like
            rebuild_request are the longest cell and must not force the grid wide. */
         .ts-adapt-grid {
@@ -458,6 +463,13 @@ export class TrainingStatsModalComponent implements OnInit {
     // (`/metrics`, for the staircase chart) and render both inline.
     protected expandedRun = signal<string | null>(null);
     protected runAdaptiveLoading = signal(false);
+    /** A failed `/adaptive` fetch (500, network drop, or a 404 on an unknown
+     *  job id — the ONE case the backend treats as a real error, per
+     *  history_routes.py) must render as a failure, distinct from the
+     *  legitimate empty-200 "this run never used the feature" shape —
+     *  collapsing the two would silently misreport an error as a plausible
+     *  default (engineering invariant 4). */
+    protected adaptiveError = signal(false);
     protected adaptiveEvents = signal<AdaptEvent[]>([]);
     private adaptiveCurve = signal<{ step: number; active_layers: number | null }[]>([]);
     private adaptiveSeq = 0;
@@ -477,6 +489,7 @@ export class TrainingStatsModalComponent implements OnInit {
         this.expandedRun.set(jobId);
         const seq = ++this.adaptiveSeq;
         this.runAdaptiveLoading.set(true);
+        this.adaptiveError.set(false);
         this.adaptiveEvents.set([]);
         this.adaptiveCurve.set([]);
         this.jobService.getJobAdaptiveHistory(jobId).subscribe({
@@ -487,14 +500,14 @@ export class TrainingStatsModalComponent implements OnInit {
             },
             error: () => {
                 if (seq !== this.adaptiveSeq) return;
-                this.adaptiveEvents.set([]);
+                this.adaptiveError.set(true); // a real failure — never render as "no data"
                 this.runAdaptiveLoading.set(false);
             },
         });
         // Chart data only — a failure here still leaves the event table usable.
         this.jobService.getJobMetrics(jobId).subscribe({
             next: m => { if (seq !== this.adaptiveSeq) return; this.adaptiveCurve.set(m.curve); },
-            error: () => { /* chart stays empty; table is independent */ },
+            error: () => { /* chart stays empty; table/error state independent */ },
         });
     }
 
@@ -502,6 +515,7 @@ export class TrainingStatsModalComponent implements OnInit {
         this.adaptiveSeq++; // invalidate any in-flight fetch for the run being collapsed
         this.expandedRun.set(null);
         this.runAdaptiveLoading.set(false);
+        this.adaptiveError.set(false);
         this.adaptiveEvents.set([]);
         this.adaptiveCurve.set([]);
     }
@@ -509,6 +523,7 @@ export class TrainingStatsModalComponent implements OnInit {
     protected fmtDate(sec: number): string { return new Date(sec * 1000).toISOString().slice(0, 10); }
     protected fmtStepTime(v: number | undefined): string { return typeof v === 'number' ? v.toFixed(3) + 's' : '—'; }
     protected fmtLoss(v: number | undefined): string { return typeof v === 'number' ? v.toFixed(6) : '—'; }
+    protected fmtPct(v: number | undefined | null): string { return typeof v === 'number' ? v.toFixed(1) + '%' : '—'; }
 
     /** Run the disk backfill (recovers legacy LoRA files/sizes), then refetch. */
     protected reconcile(): void {

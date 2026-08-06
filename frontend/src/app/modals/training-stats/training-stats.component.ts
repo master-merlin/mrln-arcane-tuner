@@ -4,9 +4,10 @@ import { JobService, type Job, type TrainingStats } from '../../services/job';
 import { ProjectService } from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
-import { formatDuration } from '../../shared/job-metrics';
+import { formatDuration, type AdaptEvent } from '../../shared/job-metrics';
 import {
-    buildActivityChart, buildHistogramChart, readAxisTheme, buildActivityOpts, buildHistogramOpts,
+    buildActivityChart, buildHistogramChart, buildAdaptiveSeries,
+    readAxisTheme, buildActivityOpts, buildHistogramOpts, buildAdaptiveOpts,
 } from './stats-charts';
 import { StatsUplotComponent } from './stats-uplot.component';
 import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
@@ -153,7 +154,8 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                                         <span>steps</span><span>step time</span><span>min loss</span>
                                                     </div>
                                                     @for (r of runs; track r.id) {
-                                                        <div class="ts-run-grid" data-testid="stats-run-row">
+                                                        <div class="ts-run-grid ts-run-expandable" data-testid="stats-run-row"
+                                                             (click)="toggleRunAdaptive(r.id)">
                                                             <span class="mono ts-run-name" [title]="r.lora_name">{{ r.lora_name }}</span>
                                                             <span class="mono">{{ fmtDate(r.created_at) }}</span>
                                                             <span class="mono ts-run-status" [class]="'ts-run-status ' + r.status">{{ r.status }}</span>
@@ -161,6 +163,43 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
                                                             <span class="mono">{{ fmtStepTime(r.avg_step_time) }}</span>
                                                             <span class="mono">{{ fmtLoss(r.min_loss) }}</span>
                                                         </div>
+                                                        @if (expandedRun() === r.id) {
+                                                            <!-- ── Adaptive layer targeting (Task 12) ──────────
+                                                                 Durable per-run history — absent from the DOM
+                                                                 entirely (not CSS-hidden) when the run never
+                                                                 used the feature. -->
+                                                            @if (runAdaptiveLoading()) {
+                                                                <div class="ts-note">Loading adaptive data…</div>
+                                                            } @else if (adaptiveEvents().length > 0) {
+                                                                <div class="card ts-section ts-adapt-card" data-testid="stats-adaptive-section">
+                                                                    <div class="card-head"><div class="card-title">Adaptive</div>
+                                                                        <span class="mono ts-sub">layer targeting · {{ adaptiveEvents().length }} events</span>
+                                                                    </div>
+                                                                    <div class="card-body">
+                                                                        @if (adaptiveData(); as ad) {
+                                                                            @if (adaptiveOpts(); as ao) {
+                                                                                <app-stats-uplot [data]="ad" [opts]="ao" [height]="110"/>
+                                                                            }
+                                                                        }
+                                                                        <div class="ts-adapt-grid ts-fam-head mono">
+                                                                            <span>step</span><span>kind</span><span>active/total</span>
+                                                                            <span>active %</span><span>earliest block</span>
+                                                                        </div>
+                                                                        @for (e of adaptiveEvents(); track e.event_index ?? e.step) {
+                                                                            <div class="ts-adapt-grid" data-testid="stats-adapt-row">
+                                                                                <span class="mono">{{ e.step }}</span>
+                                                                                <span class="mono">{{ e.kind }}</span>
+                                                                                <span class="mono">{{ e.active_count }}/{{ e.total_count }}</span>
+                                                                                <span class="mono">{{ e.active_param_pct != null ? e.active_param_pct + '%' : '—' }}</span>
+                                                                                <span class="mono">{{ e.earliest_active_block ?? '—' }}</span>
+                                                                            </div>
+                                                                        }
+                                                                    </div>
+                                                                </div>
+                                                            } @else {
+                                                                <div class="ts-note" data-testid="stats-adapt-empty">No adaptive layer-targeting data for this run.</div>
+                                                            }
+                                                        }
                                                     } @empty { <div class="ts-note">No runs found.</div> }
                                                 }
                                             </div>
@@ -289,6 +328,16 @@ import { TabsComponent, type TabItem } from '../../ui/tabs/tabs.component';
         .ts-run-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .ts-run-status.failed { color: var(--color-danger); }
         .ts-run-status.stopped { color: var(--color-warning); }
+        .ts-run-expandable { cursor: pointer; }
+        .ts-run-expandable:hover { background: var(--color-surface-high); }
+        .ts-adapt-card { margin: 2px 0 8px 18px; }
+        /* minmax(0, …): same overflow guard as .ts-kpis — "kind" values like
+           rebuild_request are the longest cell and must not force the grid wide. */
+        .ts-adapt-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1fr);
+            gap: 8px; align-items: center; padding: 3px 0; font-size: 11.5px;
+        }
         .ts-rate { display: flex; align-items: center; gap: 8px; }
         .ts-rate-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--color-surface-mid); overflow: hidden; display: block; }
         .ts-rate-bar b { display: block; height: 100%; background: var(--color-success); }
@@ -374,6 +423,7 @@ export class TrainingStatsModalComponent implements OnInit {
         const seq = ++this.reloadSeq;
         this.loading.set(true);
         this.expandedFamily.set(null); // scope changed — stale run list must not survive
+        this.collapseRunAdaptive(); // and any run drilled into under the old scope
         this.jobService.getTrainingStats(this.projectFilter()).subscribe({
             next: s => { if (seq !== this.reloadSeq) return; this.stats.set(s); this.loading.set(false); },
             error: () => { if (seq !== this.reloadSeq) return; this.stats.set(null); this.loading.set(false); },
@@ -388,8 +438,9 @@ export class TrainingStatsModalComponent implements OnInit {
 
     /** Expand one family into its per-run table (lazy fetch); click again collapses. */
     protected toggleFamily(id: string): void {
-        if (this.expandedFamily() === id) { this.expandedFamily.set(null); return; }
+        if (this.expandedFamily() === id) { this.expandedFamily.set(null); this.collapseRunAdaptive(); return; }
         this.expandedFamily.set(id);
+        this.collapseRunAdaptive(); // a run drilled into under the old family must not survive
         const seq = ++this.runsSeq;
         this.familyRuns.set(null);
         this.familyRunsLoading.set(true);
@@ -397,6 +448,62 @@ export class TrainingStatsModalComponent implements OnInit {
             next: runs => { if (seq !== this.runsSeq) return; this.familyRuns.set(runs); this.familyRunsLoading.set(false); },
             error: () => { if (seq !== this.runsSeq) return; this.familyRuns.set([]); this.familyRunsLoading.set(false); },
         });
+    }
+
+    // ── Adaptive layer targeting drill-down (Task 12) ──────────────────
+    // The cross-job aggregate has no notion of "the current run" — the only
+    // per-job identity in scope is a `Job.id` from the family run table above,
+    // so a run row is the entry point: click it to fetch that one job's
+    // durable adaptive-targeting history (`/adaptive`) + metrics curve
+    // (`/metrics`, for the staircase chart) and render both inline.
+    protected expandedRun = signal<string | null>(null);
+    protected runAdaptiveLoading = signal(false);
+    protected adaptiveEvents = signal<AdaptEvent[]>([]);
+    private adaptiveCurve = signal<{ step: number; active_layers: number | null }[]>([]);
+    private adaptiveSeq = 0;
+
+    protected readonly adaptiveData = computed<uPlot.AlignedData | null>(() => {
+        const s = buildAdaptiveSeries(this.adaptiveCurve());
+        return s.steps.length ? [s.steps, s.counts] : null;
+    });
+    protected readonly adaptiveOpts = computed<Omit<uPlot.Options, 'width' | 'height'> | null>(() => {
+        if (!this.adaptiveData()) return null;
+        return buildAdaptiveOpts(readAxisTheme(), this.cssVar('--color-warning'));
+    });
+
+    /** Expand one run's Adaptive section (lazy fetch); click again collapses. */
+    protected toggleRunAdaptive(jobId: string): void {
+        if (this.expandedRun() === jobId) { this.collapseRunAdaptive(); return; }
+        this.expandedRun.set(jobId);
+        const seq = ++this.adaptiveSeq;
+        this.runAdaptiveLoading.set(true);
+        this.adaptiveEvents.set([]);
+        this.adaptiveCurve.set([]);
+        this.jobService.getJobAdaptiveHistory(jobId).subscribe({
+            next: h => {
+                if (seq !== this.adaptiveSeq) return;
+                this.adaptiveEvents.set(h.events);
+                this.runAdaptiveLoading.set(false);
+            },
+            error: () => {
+                if (seq !== this.adaptiveSeq) return;
+                this.adaptiveEvents.set([]);
+                this.runAdaptiveLoading.set(false);
+            },
+        });
+        // Chart data only — a failure here still leaves the event table usable.
+        this.jobService.getJobMetrics(jobId).subscribe({
+            next: m => { if (seq !== this.adaptiveSeq) return; this.adaptiveCurve.set(m.curve); },
+            error: () => { /* chart stays empty; table is independent */ },
+        });
+    }
+
+    private collapseRunAdaptive(): void {
+        this.adaptiveSeq++; // invalidate any in-flight fetch for the run being collapsed
+        this.expandedRun.set(null);
+        this.runAdaptiveLoading.set(false);
+        this.adaptiveEvents.set([]);
+        this.adaptiveCurve.set([]);
     }
 
     protected fmtDate(sec: number): string { return new Date(sec * 1000).toISOString().slice(0, 10); }

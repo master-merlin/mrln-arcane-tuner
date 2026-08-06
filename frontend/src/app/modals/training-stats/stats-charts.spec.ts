@@ -1,5 +1,5 @@
 import {
-    buildActivityChart, buildHistogramChart,
+    buildActivityChart, buildHistogramChart, buildAdaptiveSeries,
     readAxisTheme, themedAxis, buildActivityOpts, buildHistogramOpts,
     activityTooltip, histogramTooltip,
 } from './stats-charts';
@@ -73,6 +73,34 @@ describe('axis theming', () => {
             expect(opts.axes?.every(a => a.stroke === '#aaa')).toBe(true);
             expect(opts.plugins?.length).toBe(1);
         }
+    });
+});
+
+describe('buildAdaptiveSeries', () => {
+    it('maps active_layers to a steps/counts pair aligned to step, skipping NULL rows', () => {
+        const series = buildAdaptiveSeries([
+            { step: 10, active_layers: 248 },
+            { step: 20, active_layers: 248 },
+            { step: 30, active_layers: null },
+            { step: 40, active_layers: 120 },
+            { step: 50, active_layers: 61 },
+        ]);
+        expect(series.steps).toEqual([10, 20, 40, 50]);
+        expect(series.counts).toEqual([248, 248, 120, 61]);
+    });
+
+    it('returns empty arrays for an empty or all-NULL curve', () => {
+        expect(buildAdaptiveSeries([])).toEqual({ steps: [], counts: [] });
+        expect(buildAdaptiveSeries([{ step: 1, active_layers: null }])).toEqual({ steps: [], counts: [] });
+    });
+
+    it('keeps a real 0 ("every remaining layer just froze") — never conflated with a skipped NULL', () => {
+        const series = buildAdaptiveSeries([
+            { step: 1, active_layers: 0 },
+            { step: 2, active_layers: null },
+        ]);
+        expect(series.steps).toEqual([1]);
+        expect(series.counts).toEqual([0]);
     });
 });
 

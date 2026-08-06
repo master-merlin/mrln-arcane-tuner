@@ -59,6 +59,20 @@ export interface AdaptEvent {
     hot_count?: number;
     active_param_pct?: number;
     earliest_active_block?: number | null;
+    /**
+     * Fields below are always present on the durable per-run history
+     * (`GET /jobs/history/{job_id}/adaptive`, Task 12) — the live `{"adapt":
+     * …}` broadcast (Task 11) carries the SAME dict, but the two live-view
+     * tests only exercised the subset above, so these stayed optional here
+     * rather than widen an already-covered call site's assumptions.
+     */
+    /** Sequence number within a run's adaptive timeline; stable identity for
+     *  list rendering (do NOT `@for … track $index` — a rebuild detaches
+     *  rows keyed that way). */
+    event_index?: number;
+    frozen_this_event?: number;
+    reactivated_this_event?: number;
+    top_modules?: string[];
 }
 
 export type LossTone = 'success' | 'warning' | 'danger';

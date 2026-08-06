@@ -40,6 +40,10 @@ describe('TrainingStatsModalComponent', () => {
     let recomputeStats: ReturnType<typeof vi.fn>;
     let runs$: Subject<unknown>;
     let listFamilyRuns: ReturnType<typeof vi.fn>;
+    let adaptive$: Subject<unknown>;
+    let getJobAdaptiveHistory: ReturnType<typeof vi.fn>;
+    let metrics$: Subject<unknown>;
+    let getJobMetrics: ReturnType<typeof vi.fn>;
 
     function setup() {
         stats$ = new Subject<TrainingStats>();
@@ -48,10 +52,20 @@ describe('TrainingStatsModalComponent', () => {
         recomputeStats = vi.fn().mockReturnValue(recompute$.asObservable());
         runs$ = new Subject<unknown>();
         listFamilyRuns = vi.fn().mockImplementation(() => runs$.asObservable());
+        adaptive$ = new Subject<unknown>();
+        getJobAdaptiveHistory = vi.fn().mockImplementation(() => adaptive$.asObservable());
+        metrics$ = new Subject<unknown>();
+        getJobMetrics = vi.fn().mockImplementation(() => metrics$.asObservable());
         TestBed.configureTestingModule({
             imports: [TrainingStatsModalComponent],
             providers: [
-                { provide: JobService, useValue: { getTrainingStats, recomputeStats, listFamilyRuns } },
+                {
+                    provide: JobService,
+                    useValue: {
+                        getTrainingStats, recomputeStats, listFamilyRuns,
+                        getJobAdaptiveHistory, getJobMetrics,
+                    },
+                },
                 { provide: ProjectService, useValue: { allProjects: signal([{ id: 'p1', name: 'P1' }]) } },
                 { provide: OverlayStore, useValue: { topModal: () => undefined, closeModal: vi.fn() } },
             ],
@@ -64,6 +78,23 @@ describe('TrainingStatsModalComponent', () => {
     function openTab(fixture: ReturnType<typeof setup>, index: number) {
         const tabs = fixture.nativeElement.querySelectorAll('[data-testid="stats-tabs"] .tab');
         (tabs[index] as HTMLButtonElement).click();
+        fixture.detectChanges();
+    }
+
+    /** Drive to "family expanded, one run row visible" — the Adaptive
+     *  section's entry point (a specific run's job id, the only per-job
+     *  identity this cross-job modal has in scope). */
+    function expandOneRun(fixture: ReturnType<typeof setup>, jobId = 'j1') {
+        openTab(fixture, 1);
+        (fixture.nativeElement.querySelector('[data-testid="stats-family-row"]') as HTMLElement).click();
+        fixture.detectChanges();
+        runs$.next([
+            { id: jobId, lora_name: 'x_lora', status: 'completed', created_at: 1752624000,
+              completed_steps: 1500, avg_step_time: 1.70523, min_loss: 0.005319 },
+        ]);
+        runs$.complete();
+        fixture.detectChanges();
+        (fixture.nativeElement.querySelector('[data-testid="stats-run-row"]') as HTMLElement).click();
         fixture.detectChanges();
     }
 
@@ -312,5 +343,106 @@ describe('TrainingStatsModalComponent', () => {
         fixture.detectChanges();
         expect(fixture.nativeElement.querySelector('[data-testid="stats-reconcile-error"]')).toBeTruthy();
         expect(btn.disabled).toBe(false);
+    });
+
+    // ── Adaptive section (Task 12) ───────────────────────────────────────
+    describe('Adaptive section', () => {
+        it('fetches a clicked run\'s adaptive history + metrics by job id', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+            expect(getJobAdaptiveHistory).toHaveBeenCalledWith('j1');
+            expect(getJobMetrics).toHaveBeenCalledWith('j1');
+        });
+
+        it('renders the Adaptive header + event table when the run has adaptive events', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+
+            adaptive$.next({
+                events: [
+                    { step: 100, event_index: 0, kind: 'narrow', active_count: 200, total_count: 248,
+                      hot_count: 40, active_param_pct: 80.6, earliest_active_block: 2 },
+                    { step: 300, event_index: 1, kind: 'narrow', active_count: 120, total_count: 248,
+                      hot_count: 30, active_param_pct: 48.4, earliest_active_block: 5 },
+                ],
+                modules: [], heat: {},
+            });
+            adaptive$.complete();
+            metrics$.next({ curve: [], summary: {} });
+            metrics$.complete();
+            fixture.detectChanges();
+
+            const el: HTMLElement = fixture.nativeElement;
+            const section = el.querySelector('[data-testid="stats-adaptive-section"]');
+            expect(section).toBeTruthy();
+            expect(section?.textContent).toContain('Adaptive');
+            const rows = el.querySelectorAll('[data-testid="stats-adapt-row"]');
+            expect(rows.length).toBe(2);
+            expect(rows[0].textContent).toContain('narrow');
+            expect(rows[0].textContent).toContain('200/248');
+            expect(rows[0].textContent).toContain('80.6');
+            expect(rows[1].textContent).toContain('120/248');
+        });
+
+        it('is genuinely absent from the DOM (not CSS-hidden) for a run with no adaptive history', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+
+            adaptive$.next({ events: [], modules: [], heat: {} });
+            adaptive$.complete();
+            metrics$.next({ curve: [], summary: {} });
+            metrics$.complete();
+            fixture.detectChanges();
+
+            expect(fixture.nativeElement.querySelector('[data-testid="stats-adaptive-section"]')).toBeFalsy();
+        });
+
+        it('charts the active-layers staircase, skipping NULL rows rather than plotting them as 0', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+
+            adaptive$.next({
+                events: [{ step: 10, event_index: 0, kind: 'narrow', active_count: 5, total_count: 8 }],
+                modules: [], heat: {},
+            });
+            adaptive$.complete();
+            metrics$.next({
+                curve: [
+                    { step: 1, loss: 0.5, lr: 1e-4, grad_norm: null, timestep_mean: null, epoch: null, active_layers: 8 },
+                    { step: 2, loss: 0.4, lr: 1e-4, grad_norm: null, timestep_mean: null, epoch: null, active_layers: null },
+                    { step: 3, loss: 0.3, lr: 1e-4, grad_norm: null, timestep_mean: null, epoch: null, active_layers: 5 },
+                ],
+                summary: {},
+            });
+            metrics$.complete();
+            fixture.detectChanges();
+
+            const section = fixture.nativeElement.querySelector('[data-testid="stats-adaptive-section"]');
+            expect(section?.querySelector('app-stats-uplot')).toBeTruthy();
+        });
+
+        it('collapses the run (and its Adaptive fetches) on a second click', () => {
+            const fixture = setup();
+            stats$.next(makeStats()); stats$.complete();
+            fixture.detectChanges();
+            expandOneRun(fixture, 'j1');
+            adaptive$.next({ events: [{ step: 10, event_index: 0, kind: 'narrow', active_count: 5, total_count: 8 }], modules: [], heat: {} });
+            adaptive$.complete();
+            metrics$.next({ curve: [], summary: {} }); metrics$.complete();
+            fixture.detectChanges();
+            expect(fixture.nativeElement.querySelector('[data-testid="stats-adaptive-section"]')).toBeTruthy();
+
+            (fixture.nativeElement.querySelector('[data-testid="stats-run-row"]') as HTMLElement).click();
+            fixture.detectChanges();
+            expect(fixture.nativeElement.querySelector('[data-testid="stats-adaptive-section"]')).toBeFalsy();
+        });
     });
 });

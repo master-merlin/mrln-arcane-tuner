@@ -4,6 +4,21 @@ import { RuntimeConfigService } from './runtime-config.service';
 import { Observable } from 'rxjs';
 import type { VRAMReport } from './system.service';
 import type { SchemaNode } from '../components/training/schema-node';
+import type { AdaptEvent } from '../shared/job-metrics';
+
+/** One `step_metrics` row (`GET /jobs/history/{job_id}/metrics`). `active_layers`
+ *  is NULL for every step of a run that never enabled adaptive layer targeting;
+ *  0 is itself meaningful ("every remaining layer just froze") and must stay
+ *  distinguishable from NULL through every consumer (Task 8/12). */
+export interface JobMetricsCurveRow {
+  step: number;
+  loss: number | null;
+  lr: number | null;
+  grad_norm: number | null;
+  timestep_mean: number | null;
+  epoch: number | null;
+  active_layers: number | null;
+}
 
 /**
  * A plugin-schema-driven training config. The concrete fields are defined by
@@ -203,6 +218,33 @@ export class JobService {
       output_dir: string | null;
       loss: Array<{ step: number; loss: number; lr?: number; grad_norm?: number; epoch?: number }>;
     }>(`${this.apiUrl}/history/${jobId}/replay`);
+  }
+
+  /**
+   * Adaptive layer-targeting event history for one run — the durable
+   * timeline (`adaptive_targeting.json`, Task 7). Always HTTP 200: a run
+   * that never used the feature (or predates it) returns the empty shape,
+   * never a 404 — 404 is reserved for an unknown job id — so the stats-modal
+   * "Adaptive" section (Task 12) can key its visibility on `events.length`
+   * alone, no error special-casing.
+   */
+  getJobAdaptiveHistory(jobId: string): Observable<{
+    events: AdaptEvent[];
+    modules: string[];
+    heat: Record<string, number | null>;
+  }> {
+    return this.http.get<{
+      events: AdaptEvent[];
+      modules: string[];
+      heat: Record<string, number | null>;
+    }>(`${this.apiUrl}/history/${jobId}/adaptive`);
+  }
+
+  /** Per-step metrics curve for one run (stats-modal Adaptive drill-down chart, Task 12). */
+  getJobMetrics(jobId: string): Observable<{ curve: JobMetricsCurveRow[]; summary: Record<string, unknown> }> {
+    return this.http.get<{ curve: JobMetricsCurveRow[]; summary: Record<string, unknown> }>(
+      `${this.apiUrl}/history/${jobId}/metrics`,
+    );
   }
 
   /**

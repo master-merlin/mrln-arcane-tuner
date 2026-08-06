@@ -1,7 +1,7 @@
 """Template CRUD routes — domain-specific with project scoping.
 
 Replaces the legacy unified template routes. Each domain (captioning,
-masking, training) has its own repository and scoping rules.
+masking, training, adaptive) has its own repository and scoping rules.
 """
 
 from __future__ import annotations
@@ -67,6 +67,24 @@ class MaskingTemplate(BaseModel):
     branched_from: str | None = None
 
 
+class AdaptiveTemplate(BaseModel):
+    """An adaptive layer-targeting preset. Unlike the other three domains it
+    carries no scoping key (no ``model_id``/``definition_id``) — a preset is a
+    bag of tuning knobs that applies to any definition."""
+
+    id: str
+    project_id: str | None = None
+    name: str
+    is_default: bool = False
+    readonly: bool = False
+    config: dict[str, Any] | str | None = None
+    created_at: float
+    updated_at: float | None = None
+    used_count: int = 0
+    last_used_at: float | None = None
+    branched_from: str | None = None
+
+
 class TrainingTemplate(BaseModel):
     id: str
     project_id: str | None = None
@@ -108,6 +126,17 @@ class CreateTrainingTemplateRequest(BaseModel):
     config: dict[str, Any] = {}
 
 
+class CreateAdaptivePresetRequest(BaseModel):
+    """``branched_from`` is settable at create — the card auto-branches a user
+    preset the moment a knob is edited while a factory preset is selected, and
+    the lineage is what lets the picker nest the copy under its parent."""
+
+    name: str
+    project_id: str | None = None
+    branched_from: str | None = None
+    config: dict[str, Any] = {}
+
+
 class UpdateTemplateRequest(BaseModel):
     name: str | None = None
     system_prompt: str | None = None
@@ -146,7 +175,7 @@ class ImportEntryResolution(BaseModel):
 
 
 class TemplateRow(BaseModel):
-    """A template row from ANY domain (captioning/masking/training).
+    """A template row from ANY domain (captioning/masking/training/adaptive).
 
     ``get``/``update``/``branch`` are generic over the ``domain`` path
     param, resolved only at request time — so unlike the domain-specific
@@ -157,8 +186,8 @@ class TemplateRow(BaseModel):
     would be ambiguous — e.g. a masking row satisfies every required field
     of ``CaptioningTemplate`` too, and would silently gain
     ``system_prompt``/``wildcard`` defaults it never had), this declares only
-    the fields common to all three domain schemas and lets the
-    domain-specific ones pass through untouched via ``extra=\"allow\"``.
+    the fields common to every domain schema and lets the domain-specific
+    ones pass through untouched via ``extra=\"allow\"``.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -180,8 +209,9 @@ class TemplatePlanEntry(BaseModel):
     """Per-entry import plan for one carried template. Open model: fields
     vary by domain — captioning/masking carry ``model_id``/``model_available``;
     training carries ``definition_status``/``local_components``/
-    ``definition_error`` — only the fields common to every domain are
-    declared; everything else passes through via ``extra=\"allow\"``."""
+    ``definition_error``; adaptive carries neither (a preset resolves nothing
+    external) — only the fields common to every domain are declared;
+    everything else passes through via ``extra=\"allow\"``."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -325,6 +355,30 @@ async def create_training_template_from_job(
     return row
 
 
+# ── Adaptive presets ─────────────────────────────────────────────────────
+
+
+@router.get("/templates/adaptive", response_model=list[AdaptiveTemplate])
+async def list_adaptive_presets(
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List adaptive layer-targeting presets (General + project scope)."""
+    from app.core.db.repositories.adaptive_preset_repo import AdaptivePresetRepository
+    repo = AdaptivePresetRepository()
+    return await asyncio.to_thread(repo.list_for_project, None, project_id)
+
+
+@router.post("/templates/adaptive", status_code=201, response_model=AdaptiveTemplate)
+async def create_adaptive_preset(
+    req: CreateAdaptivePresetRequest,
+) -> dict[str, Any]:
+    from app.core.db.repositories.adaptive_preset_repo import AdaptivePresetRepository
+    repo = AdaptivePresetRepository()
+    row = await asyncio.to_thread(repo.create, req.model_dump())
+    await _emit_template_change("created", row)
+    return row
+
+
 # ── Shared CRUD (any domain) ────────────────────────────────────────────
 
 
@@ -333,8 +387,8 @@ async def _emit_template_change(
 ) -> None:
     """Broadcast entity.changed for a template mutation (any domain).
 
-    One shared `template` entity name covers all three domains (captioning/
-    masking/training) — template ids are unique regardless of domain.
+    One shared `template` entity name covers all four domains (captioning/
+    masking/training/adaptive) — template ids are unique regardless of domain.
     """
     await emit_entity_change(
         event_manager.broadcast,
@@ -356,7 +410,22 @@ def _get_repo(domain: str):
     elif domain == "training":
         from app.core.db.repositories.training_template_repo import TrainingTemplateRepository
         return TrainingTemplateRepository()
+    elif domain == "adaptive":
+        from app.core.db.repositories.adaptive_preset_repo import AdaptivePresetRepository
+        return AdaptivePresetRepository()
     raise HTTPException(400, f"Unknown template domain: {domain}")
+
+
+def _readonly_status(domain: str) -> int:
+    """HTTP status for a write attempt on a readonly row of *domain*.
+
+    ``adaptive`` answers 409: a factory preset is immutable BY STATE, not by
+    permission — the contract is "edit a factory preset → branch a user copy",
+    and the client distinguishes that from a real authorization failure. The
+    three older domains keep the 403 their clients have always been pinned to;
+    retrofitting them would be a silent API break.
+    """
+    return 409 if domain == "adaptive" else 403
 
 
 @router.get("/templates/{domain}/{template_id}", response_model=TemplateRow)
@@ -379,7 +448,9 @@ async def update_template(
     if not existing:
         raise HTTPException(404, "Template not found")
     if existing.get("readonly"):
-        raise HTTPException(403, "Cannot modify a readonly default template")
+        raise HTTPException(
+            _readonly_status(domain), "Cannot modify a readonly default template"
+        )
 
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = await asyncio.to_thread(repo.update, template_id, updates)
@@ -396,7 +467,9 @@ async def delete_template(domain: str, template_id: str) -> dict[str, str]:
     if not existing:
         raise HTTPException(404, "Template not found")
     if existing.get("readonly"):
-        raise HTTPException(403, "Cannot delete a readonly default template")
+        raise HTTPException(
+            _readonly_status(domain), "Cannot delete a readonly default template"
+        )
     await asyncio.to_thread(repo.delete, template_id)
     await _emit_template_change("deleted", None, template_id=template_id)
     return {"status": "deleted"}
@@ -596,7 +669,12 @@ def _plan_entry(entry: dict[str, Any], project_id: str | None) -> dict[str, Any]
         "duplicate_name": _name_exists(domain, name, project_id),
         "blocker": False,
     }
-    if domain in ("captioning", "masking"):
+    if domain == "adaptive":
+        # A preset carries only knob values — nothing external to resolve, so
+        # it is never a blocker. An unusable knob set still surfaces above as
+        # a non-blocking config_warning.
+        pass
+    elif domain in ("captioning", "masking"):
         model_id = entry.get("model_id") or ""
         available = import_service.model_available(domain, model_id)
         item["model_id"] = model_id
@@ -649,7 +727,9 @@ def import_template_entries(
             skipped.append({"index": i, "name": name, "reason": "skipped by user"})
             continue
         try:
-            if domain in ("captioning", "masking"):
+            if domain == "adaptive":
+                pass  # self-contained: no model or definition to resolve
+            elif domain in ("captioning", "masking"):
                 if not import_service.model_available(domain, entry.get("model_id") or ""):
                     skipped.append({"index": i, "name": name,
                                     "reason": f"model '{entry.get('model_id')}' not available in this build"})
@@ -801,7 +881,9 @@ def _create_row(domain: str, entry: dict[str, Any], name: str,
         data["project_id"] = project_id
     if domain == "training":
         data["definition_id"] = entry.get("definition_id") or ""
-    else:
+    elif domain in ("captioning", "masking"):
+        # `adaptive` deliberately excluded — it has no model_id column, and
+        # writing one would fail the INSERT with an unknown-column error.
         data["model_id"] = entry.get("model_id") or ""
     if domain == "captioning":
         data["system_prompt"] = entry.get("system_prompt") or "Describe this image in detail."

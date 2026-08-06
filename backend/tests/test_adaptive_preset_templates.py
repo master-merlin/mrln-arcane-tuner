@@ -275,7 +275,7 @@ def test_update_on_factory_preset_rejected(MockRepo, client):
         "id": "factory-balanced", "readonly": True,
     }
     r = client.put("/api/templates/adaptive/factory-balanced", json={"name": "hack"})
-    assert r.status_code == 409
+    assert r.status_code == 403
     MockRepo.return_value.update.assert_not_called()
 
 
@@ -285,14 +285,14 @@ def test_delete_on_factory_preset_rejected(MockRepo, client):
         "id": "factory-balanced", "readonly": True,
     }
     r = client.delete("/api/templates/adaptive/factory-balanced")
-    assert r.status_code == 409
+    assert r.status_code == 403
     MockRepo.return_value.delete.assert_not_called()
 
 
 @patch(_MASK_REPO)
 def test_other_domains_keep_their_403_readonly_status(MockRepo, client):
-    """Prove the negative: adding adaptive's 409 must NOT retrofit the other
-    three domains, whose clients are pinned to 403."""
+    """Prove the negative: the readonly rejection is uniform across domains —
+    adaptive must not diverge from the 403 the other three return."""
     MockRepo.return_value.get_by_id.return_value = {"id": "mask_default_sam3",
                                                     "readonly": True}
     assert client.put("/api/templates/masking/mask_default_sam3",
@@ -313,6 +313,127 @@ def test_branch_and_use_routes(MockRepo, client):
     r = client.post("/api/templates/adaptive/adaptive_3/use")
     assert r.status_code == 200
     MockRepo.return_value.increment_usage.assert_called_once_with("adaptive_3")
+
+
+# ── Knob validation on create / update ───────────────────────────────────
+# Create/update is the PRIMARY path knob values take into the system: the card
+# auto-branches a preset by POSTing edited values on every edit. A knob set
+# that violates the schema must be refused at the edit, not silently persisted
+# to blow up later when a job config is built from it.
+
+
+@patch(_ADAPT_REPO)
+def test_create_rejects_probe_steps_not_below_interval(MockRepo, client):
+    r = client.post("/api/templates/adaptive", json={
+        "name": "Bad", "config": {"preset": "custom", "interval_steps": 20,
+                                  "probe_steps": 400},
+    })
+    assert r.status_code == 400
+    # The message must name the rule that failed, or the card cannot explain it.
+    assert "probe_steps" in r.json()["detail"]
+    MockRepo.return_value.create.assert_not_called()
+
+
+@patch(_ADAPT_REPO)
+def test_create_rejects_rebuild_combined_with_reactivation(MockRepo, client):
+    r = client.post("/api/templates/adaptive", json={
+        "name": "Bad", "config": {"preset": "custom", "action": "rebuild",
+                                  "reactivation": True},
+    })
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "rebuild" in detail and "reactivation" in detail
+    MockRepo.return_value.create.assert_not_called()
+
+
+@patch(_ADAPT_REPO)
+def test_create_rejects_out_of_range_knob(MockRepo, client):
+    r = client.post("/api/templates/adaptive", json={
+        "name": "Bad", "config": {"preset": "custom", "energy_threshold": 4.2},
+    })
+    assert r.status_code == 400
+    assert "energy_threshold" in r.json()["detail"]
+    MockRepo.return_value.create.assert_not_called()
+
+
+@patch(_ADAPT_REPO)
+def test_update_rejects_an_invalid_config(MockRepo, client):
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "adaptive_1", "readonly": False,
+    }
+    r = client.put("/api/templates/adaptive/adaptive_1", json={
+        "config": {"preset": "custom", "interval_steps": 20, "probe_steps": 400},
+    })
+    assert r.status_code == 400
+    assert "probe_steps" in r.json()["detail"]
+    MockRepo.return_value.update.assert_not_called()
+
+
+@patch(_ADAPT_REPO)
+def test_valid_create_and_update_still_succeed(MockRepo, client):
+    """The guard must not become a wall: a legitimate knob set passes through
+    untouched, and a rename carrying no config is never validated at all."""
+    MockRepo.return_value.create.return_value = {
+        "id": "adaptive_ok", "name": "Fine", "created_at": 0.0, "readonly": False,
+        "config": {"preset": "factory:balanced", "interval_steps": 175},
+    }
+    created = client.post("/api/templates/adaptive", json={
+        "name": "Fine", "config": {"preset": "factory:balanced",
+                                   "interval_steps": 175, "probe_steps": 30},
+    })
+    assert created.status_code == 201, created.text
+
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "adaptive_ok", "readonly": False,
+    }
+    MockRepo.return_value.update.return_value = {
+        "id": "adaptive_ok", "name": "Renamed", "created_at": 0.0, "readonly": False,
+    }
+    ok = client.put("/api/templates/adaptive/adaptive_ok", json={
+        "config": {"preset": "custom", "action": "rebuild", "reactivation": False},
+    })
+    assert ok.status_code == 200, ok.text
+
+    # A rename carries no config — the guard must not consult the stored one.
+    assert client.put("/api/templates/adaptive/adaptive_ok",
+                      json={"name": "Renamed"}).status_code == 200
+
+
+@patch(_MASK_REPO)
+def test_adaptive_validation_does_not_leak_into_other_domains(MockRepo, client):
+    """Prove the negative: the knob guard is scoped to `adaptive`. A masking
+    config that would fail AdaptiveTargetingConfig must still update fine."""
+    MockRepo.return_value.get_by_id.return_value = {"id": "mask_1", "readonly": False}
+    MockRepo.return_value.update.return_value = {
+        "id": "mask_1", "name": "M", "model_id": "sam3", "created_at": 0.0,
+    }
+    r = client.put("/api/templates/masking/mask_1", json={
+        "config": {"interval_steps": 20, "probe_steps": 400},
+    })
+    assert r.status_code == 200
+
+
+def test_end_to_end_invalid_config_is_never_persisted(client):
+    """Against the real DB: a rejected create must leave no row behind."""
+    before = {t["id"] for t in client.get("/api/templates/adaptive").json()}
+    r = client.post("/api/templates/adaptive", json={
+        "name": "E2E Bad", "config": {"preset": "custom", "action": "rebuild",
+                                      "reactivation": True},
+    })
+    assert r.status_code == 400
+    after = client.get("/api/templates/adaptive").json()
+    assert {t["id"] for t in after} == before
+    assert "E2E Bad" not in {t["name"] for t in after}
+
+
+def test_import_still_carries_an_invalid_preset_non_blocking(client):
+    """The route guard must NOT have leaked into the import path: D5's contract
+    is a non-blocking config_warning, so a bad preset still imports."""
+    from app.core.template import import_service
+
+    problem = import_service.validate_config(
+        "adaptive", None, {"interval_steps": 20, "probe_steps": 400})
+    assert problem and "probe_steps" in problem
 
 
 # ── Routes against the REAL repo (no mocks) ──────────────────────────────
@@ -359,8 +480,8 @@ def test_end_to_end_factory_preset_is_immutable(client):
     assert detail.json()["readonly"] is True
 
     assert client.put("/api/templates/adaptive/factory-balanced",
-                      json={"name": "hack"}).status_code == 409
-    assert client.delete("/api/templates/adaptive/factory-balanced").status_code == 409
+                      json={"name": "hack"}).status_code == 403
+    assert client.delete("/api/templates/adaptive/factory-balanced").status_code == 403
     # Unchanged after both attempts.
     assert client.get("/api/templates/adaptive/factory-balanced").json()["name"] == (
         "Balanced")

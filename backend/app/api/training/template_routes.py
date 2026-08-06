@@ -358,6 +358,28 @@ async def create_training_template_from_job(
 # ── Adaptive presets ─────────────────────────────────────────────────────
 
 
+def _reject_invalid_adaptive_config(config: dict[str, Any] | None) -> None:
+    """Raise 400 if *config* is not a usable adaptive knob set.
+
+    Create/update is the PRIMARY way knob values enter the system — the card
+    auto-branches a preset by POSTing edited values on every edit — so a set
+    violating the cross-field rules (``probe_steps >= interval_steps``,
+    ``action='rebuild'`` with ``reactivation``) must be refused here. Without
+    this it persists silently and only fails much later, when a job config is
+    built from it, far from the edit that caused it.
+
+    Deliberately delegates to the same ``import_service.validate_config`` the
+    import plan uses, so the two entry points cannot drift apart. Note this is
+    a ROUTE-layer guard on purpose: import keeps its non-blocking
+    ``config_warning`` semantics and must stay able to carry a bad preset in.
+    """
+    from app.core.template import import_service
+
+    problem = import_service.validate_config("adaptive", None, config)
+    if problem:
+        raise HTTPException(400, f"Invalid adaptive preset config: {problem}")
+
+
 @router.get("/templates/adaptive", response_model=list[AdaptiveTemplate])
 async def list_adaptive_presets(
     project_id: str | None = None,
@@ -373,6 +395,7 @@ async def create_adaptive_preset(
     req: CreateAdaptivePresetRequest,
 ) -> dict[str, Any]:
     from app.core.db.repositories.adaptive_preset_repo import AdaptivePresetRepository
+    _reject_invalid_adaptive_config(req.config)
     repo = AdaptivePresetRepository()
     row = await asyncio.to_thread(repo.create, req.model_dump())
     await _emit_template_change("created", row)
@@ -416,18 +439,6 @@ def _get_repo(domain: str):
     raise HTTPException(400, f"Unknown template domain: {domain}")
 
 
-def _readonly_status(domain: str) -> int:
-    """HTTP status for a write attempt on a readonly row of *domain*.
-
-    ``adaptive`` answers 409: a factory preset is immutable BY STATE, not by
-    permission — the contract is "edit a factory preset → branch a user copy",
-    and the client distinguishes that from a real authorization failure. The
-    three older domains keep the 403 their clients have always been pinned to;
-    retrofitting them would be a silent API break.
-    """
-    return 409 if domain == "adaptive" else 403
-
-
 @router.get("/templates/{domain}/{template_id}", response_model=TemplateRow)
 async def get_template(domain: str, template_id: str) -> dict[str, Any]:
     """Get a single template by domain and ID."""
@@ -448,11 +459,13 @@ async def update_template(
     if not existing:
         raise HTTPException(404, "Template not found")
     if existing.get("readonly"):
-        raise HTTPException(
-            _readonly_status(domain), "Cannot modify a readonly default template"
-        )
+        raise HTTPException(403, "Cannot modify a readonly default template")
 
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if domain == "adaptive" and "config" in updates:
+        # Only when a config is actually being written — a plain rename must
+        # not be blocked by whatever is already stored on the row.
+        _reject_invalid_adaptive_config(updates["config"])
     result = await asyncio.to_thread(repo.update, template_id, updates)
     result = result or existing
     await _emit_template_change("updated", result, template_id=template_id)
@@ -467,9 +480,7 @@ async def delete_template(domain: str, template_id: str) -> dict[str, str]:
     if not existing:
         raise HTTPException(404, "Template not found")
     if existing.get("readonly"):
-        raise HTTPException(
-            _readonly_status(domain), "Cannot delete a readonly default template"
-        )
+        raise HTTPException(403, "Cannot delete a readonly default template")
     await asyncio.to_thread(repo.delete, template_id)
     await _emit_template_change("deleted", None, template_id=template_id)
     return {"status": "deleted"}

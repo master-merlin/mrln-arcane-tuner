@@ -44,8 +44,8 @@ const FLAG_OPTIONS: ReadonlyArray<SegOption<'all' | 'default' | 'system'>> = [
 
 /**
  * Templates screen — a dedicated `/templates` library surfacing ALL templates
- * (global + every project) across the three domains (training/captioning/
- * masking). Filters client-side via signals (domain, scope, search, flag) and
+ * (global + every project) across the four domains (training/captioning/
+ * masking/adaptive). Filters client-side via signals (domain, scope, search, flag) and
  * offers per-row edit / edit-JSON / branch / delete plus the full export/import
  * surface (per-row export, export-all-filtered, import). Promoted from the
  * older Templates Library modal.

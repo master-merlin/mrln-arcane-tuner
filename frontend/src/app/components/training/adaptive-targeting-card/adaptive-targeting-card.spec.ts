@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { FormControl } from '@angular/forms';
 import { Observable, Subject, of, throwError } from 'rxjs';
 
-import { AdaptiveTargetingCardComponent } from './adaptive-targeting-card';
+import { AdaptiveTargetingCardComponent, PRESET_SAVE_DEBOUNCE_MS } from './adaptive-targeting-card';
 import { TemplateService, type Template } from '../../../services/template.service';
 import { ToastService } from '../../../services/toast';
 import { byTestId, allByTestId } from '../../../../testing/by-test-id';
@@ -78,6 +78,7 @@ function build(opts: {
   created?: Template;
   createObservable?: Observable<Template>;
   createError?: unknown;
+  updateObservable?: Observable<never>;
   updateError?: unknown;
   enabled?: boolean;
 } = {}) {
@@ -88,8 +89,9 @@ function build(opts: {
       opts.createObservable
         ?? (opts.createError ? throwError(() => opts.createError) : of(opts.created ?? BRANCHED)),
     ),
-    updateTemplate: vi.fn().mockReturnValue(
-      opts.updateError ? throwError(() => opts.updateError) : of({}),
+    updateTemplate: vi.fn().mockImplementation(() =>
+      opts.updateObservable
+        ?? (opts.updateError ? throwError(() => opts.updateError) : of({})),
     ),
   };
   toast = { error: vi.fn(), success: vi.fn(), warning: vi.fn() };
@@ -130,6 +132,28 @@ function toggle(fixture: Fixture, id: string): void {
   const node = el(fixture, id) as HTMLInputElement;
   node.checked = !node.checked;
   node.dispatchEvent(new Event('change'));
+  fixture.detectChanges();
+}
+
+/**
+ * Let the debounced preset-save window elapse. The card matches the training
+ * form's autosave idiom (`template-autosave.service.ts`, 1200 ms), so nothing
+ * reaches the TemplateService until this runs.
+ *
+ * House gotcha: `'Date'` MUST be in `toFake` or RxJS `debounceTime` reschedules
+ * forever, and `useRealTimers()` in `afterEach` is mandatory.
+ */
+beforeEach(() => {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+  });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function flushSave(fixture: Fixture): void {
+  vi.advanceTimersByTime(PRESET_SAVE_DEBOUNCE_MS + 50);
   fixture.detectChanges();
 }
 
@@ -179,9 +203,20 @@ describe('AdaptiveTargetingCard — materialized value (D1)', () => {
     // dict stays complete.
     expect(control.value['probe_steps']).toBe(30);
     expect(control.value['action']).toBe('freeze');
-    // Selecting is not editing: no template write.
+    // Selecting is not editing: no template write, not even a deferred one.
+    flushSave(fixture);
     expect(svc.createAdaptivePreset).not.toHaveBeenCalled();
     expect(svc.updateTemplate).not.toHaveBeenCalled();
+  });
+
+  it('reads round-tripped boolean flags through the shared predicate', () => {
+    // A config that has been through a template row / the JSON editor can carry
+    // "true"/"false" strings. A strict `=== true` would silently drop the user's
+    // re-activation setting; a plain truthiness test would turn "false" ON.
+    expect(build({ initial: { reactivation: 'true' } }).control.value['reactivation']).toBe(true);
+    expect(build({ initial: { reactivation: 'false' } }).control.value['reactivation']).toBe(false);
+    expect(build({ initial: { reactivation: true } }).control.value['reactivation']).toBe(true);
+    expect(build({ initial: {} }).control.value['reactivation']).toBe(false);
   });
 
   it('lists factory presets first, user presets nested under their parent', () => {
@@ -202,6 +237,9 @@ describe('AdaptiveTargetingCard — preset persistence (D2)', () => {
   it('editing a knob on a factory preset auto-branches a user preset, then autosaves into it', () => {
     const { fixture, control } = build();
     setKnob(fixture, 'adaptive-knob-interval_steps', 120);
+    // Nothing is written until the debounce window closes.
+    expect(svc.createAdaptivePreset).not.toHaveBeenCalled();
+    flushSave(fixture);
 
     expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
     const payload = svc.createAdaptivePreset.mock.calls[0][0];
@@ -213,31 +251,55 @@ describe('AdaptiveTargetingCard — preset persistence (D2)', () => {
     expect(control.value['preset']).toBe('user-1');
     expect(control.value['interval_steps']).toBe(120);
 
+    // …and the STORED row is corrected to match: the POST body could only carry
+    // the parent ref, because the new id did not exist yet.
+    expect(svc.updateTemplate).toHaveBeenCalledWith(
+      'adaptive', 'user-1', { config: expect.objectContaining({ preset: 'user-1', interval_steps: 120 }) },
+    );
+
     // A second edit autosaves into the branched preset instead of branching again.
     setKnob(fixture, 'adaptive-knob-interval_steps', 130);
+    flushSave(fixture);
     expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
     expect(svc.updateTemplate).toHaveBeenCalledWith(
       'adaptive', 'user-1', { config: expect.objectContaining({ interval_steps: 130 }) },
     );
   });
 
-  it('auto-branches exactly ONCE even when two edits land back to back', () => {
-    // A slider drag emits many commits; only the first may branch.
+  it('auto-branches exactly ONCE even when edits land in separate save windows', () => {
+    // Each flush is a separate reach into the write path — the debounce is not
+    // what keeps this to one branch, the selection move is.
     const { fixture } = build();
     setKnob(fixture, 'adaptive-knob-interval_steps', 120);
+    flushSave(fixture);
     setKnob(fixture, 'adaptive-knob-probe_every', 7);
+    flushSave(fixture);
     setKnob(fixture, 'adaptive-knob-interval_steps', 140);
+    flushSave(fixture);
     expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapses a burst of edits into a single save', () => {
+    // A slider drag emits many commits; they must not each hit the API.
+    const { fixture } = build({ presets: [...FACTORY, BRANCHED], initial: { preset: 'user-1' } });
+    setKnob(fixture, 'adaptive-knob-interval_steps', 120);
+    setKnob(fixture, 'adaptive-knob-interval_steps', 130);
+    setKnob(fixture, 'adaptive-knob-interval_steps', 140);
+    flushSave(fixture);
+    expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
+    expect(svc.updateTemplate.mock.calls[0][2].config.interval_steps).toBe(140);
   });
 
   it('does NOT start a second branch while the first POST is still in flight', () => {
     // The synchronous `of()` used elsewhere hides this: with a real (pending)
-    // request, a second edit must queue instead of POSTing a duplicate preset.
+    // request, a second edit must not POST a duplicate preset.
     const pending = new Subject<Template>();
     const { fixture, control } = build({ createObservable: pending });
 
     setKnob(fixture, 'adaptive-knob-interval_steps', 120);
+    flushSave(fixture);
     setKnob(fixture, 'adaptive-knob-interval_steps', 130);
+    flushSave(fixture);
     expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
     expect(svc.updateTemplate).not.toHaveBeenCalled();
 
@@ -261,6 +323,7 @@ describe('AdaptiveTargetingCard — preset persistence (D2)', () => {
     expect(control.value['preset']).toBe('user-1');
 
     setKnob(fixture, 'adaptive-knob-interval_steps', 111);
+    flushSave(fixture);
 
     expect(svc.createAdaptivePreset).not.toHaveBeenCalled();
     expect(svc.updateTemplate).toHaveBeenCalledTimes(1);
@@ -269,19 +332,95 @@ describe('AdaptiveTargetingCard — preset persistence (D2)', () => {
     expect(svc.updateTemplate.mock.calls[0][2].config.interval_steps).toBe(111);
   });
 
+  it('a later save supersedes an in-flight one (no out-of-order preset row)', () => {
+    // Every PUT carries the FULL dict, so an older response landing last would
+    // persist a stale knob set. switchMap must tear the first request down.
+    let subscribes = 0;
+    let teardowns = 0;
+    const neverSettles = new Observable<never>(() => {
+      subscribes++;
+      return () => { teardowns++; };
+    });
+    const { fixture } = build({
+      presets: [...FACTORY, BRANCHED],
+      initial: { preset: 'user-1' },
+      updateObservable: neverSettles,
+    });
+
+    setKnob(fixture, 'adaptive-knob-interval_steps', 111);
+    flushSave(fixture);
+    expect(subscribes).toBe(1);
+    expect(teardowns).toBe(0);
+
+    setKnob(fixture, 'adaptive-knob-interval_steps', 222);
+    flushSave(fixture);
+    expect(subscribes).toBe(2);
+    expect(teardowns).toBe(1); // the stale PUT was cancelled, not raced
+    expect(svc.updateTemplate.mock.calls[1][2].config.interval_steps).toBe(222);
+  });
+
+  it('never branches (or saves) for a no-op edit', () => {
+    const { fixture, control } = build();
+    const before = { ...control.value };
+
+    // Re-entering the value that is already set changes nothing.
+    setKnob(fixture, 'adaptive-knob-interval_steps', 200);
+    flushSave(fixture);
+
+    expect(svc.createAdaptivePreset).not.toHaveBeenCalled();
+    expect(svc.updateTemplate).not.toHaveBeenCalled();
+    expect(control.value).toEqual(before);
+  });
+
+  it('treats an out-of-range entry that clamps back to the current value as a no-op', () => {
+    // The reported shape: typing 5 into interval_steps when it is already at
+    // the floor of 10 clamps straight back — and used to branch a preset for a
+    // change that changed nothing.
+    const { fixture } = build();
+    setKnob(fixture, 'adaptive-knob-interval_steps', 10);
+    flushSave(fixture);
+    expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
+    svc.updateTemplate.mockClear();
+
+    setKnob(fixture, 'adaptive-knob-interval_steps', 5); // → clamps to 10 = current
+    flushSave(fixture);
+
+    expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
+    expect(svc.updateTemplate).not.toHaveBeenCalled();
+  });
+
   it('surfaces the backend rejection message instead of failing silently', () => {
     const { fixture } = build({
       createError: { error: { detail: 'Invalid adaptive preset config: probe_steps must be < interval_steps' } },
     });
     setKnob(fixture, 'adaptive-knob-interval_steps', 120);
+    flushSave(fixture);
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('probe_steps must be < interval_steps'));
+  });
+
+  it('surfaces a failed autosave PUT too', () => {
+    const { fixture } = build({
+      presets: [...FACTORY, BRANCHED],
+      initial: { preset: 'user-1' },
+      updateError: { error: { detail: 'preset gone' } },
+    });
+    setKnob(fixture, 'adaptive-knob-interval_steps', 111);
+    flushSave(fixture);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('preset gone'));
+
+    // …and the autosave pipe survives its own error — a later edit still saves.
+    setKnob(fixture, 'adaptive-knob-interval_steps', 222);
+    flushSave(fixture);
+    expect(svc.updateTemplate).toHaveBeenCalledTimes(2);
   });
 
   it('a failed branch does not wedge the card — the next edit retries', () => {
     const { fixture } = build({ createError: { error: { detail: 'nope' } } });
     setKnob(fixture, 'adaptive-knob-interval_steps', 120);
+    flushSave(fixture);
     expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(1);
     setKnob(fixture, 'adaptive-knob-interval_steps', 130);
+    flushSave(fixture);
     expect(svc.createAdaptivePreset).toHaveBeenCalledTimes(2);
   });
 });

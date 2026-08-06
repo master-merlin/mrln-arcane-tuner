@@ -150,6 +150,26 @@ describe('TrainingDynamicConfig — feature-off submit strip (D4)', () => {
     expect('adaptive_targeting_config' in emitted[0]).toBe(false);
   });
 
+  it('still strips it when the capability descriptor deleted the toggle first', () => {
+    // The hidden-field loop runs BEFORE the adaptive strip and deletes any key
+    // `shouldHideField` reports — including the toggle itself, for a family
+    // whose descriptor marks `adaptive_targeting` unsupported. Keying the strip
+    // on the toggle's PRESENCE would then let a feature-off payload ship the
+    // card's materialized knobs, which is precisely what D4 forbids. An absent
+    // toggle is the strongest possible "off".
+    const { comp, emitted } = build();
+    comp.form.get('adaptive_targeting_config')!.setValue({ ...KNOBS });
+    comp.form.get('adaptive_targeting')!.setValue(true);
+    (comp as unknown as { capabilities: { set: (v: unknown) => void } }).capabilities.set({
+      field_visibility: { adaptive_targeting: { supported: false } },
+    });
+
+    comp.onSubmit();
+
+    expect('adaptive_targeting' in emitted[0]).toBe(false);   // precondition
+    expect('adaptive_targeting_config' in emitted[0]).toBe(false);
+  });
+
   it('leaves block_swap_config alone (the strip is scoped to this one field)', () => {
     const { comp, emitted } = build();
     comp.form.get('block_swap_config')!.setValue({ double_blocks: 50 });

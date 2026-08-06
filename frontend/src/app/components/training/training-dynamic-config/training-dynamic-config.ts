@@ -4,6 +4,7 @@ import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Va
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
+import { isTruthyFlag } from '../../../shared/truthy-flag';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
 import type { TrainingEstimate, TrainingConfig } from '../../../services/job';
@@ -40,16 +41,6 @@ export interface TrainingSegment {
   label: string;    // display name
   sub: string;      // one-line summary ('' if none)
   status: 'success' | 'warning' | 'idle' | null;
-}
-
-/**
- * Read a boolean form flag defensively. Checkbox controls normally hold a real
- * boolean, but a value round-tripped through a template/job config can arrive
- * as the STRING "false" — which is truthy, and would flip a gate the wrong way.
- */
-function isTruthyFlag(v: unknown): boolean {
-  if (typeof v === 'string') return v !== '' && v.toLowerCase() !== 'false';
-  return !!v;
 }
 
 @Component({
@@ -2363,7 +2354,12 @@ export class TrainingDynamicConfigComponent {
         // hides those ("show but disable"), so the generic depends_on strip
         // above does not cover it — without this an off run would still carry
         // the card's materialized knobs into the job config.
-        if ('adaptive_targeting' in raw && !isTruthyFlag(raw['adaptive_targeting'])) {
+        //
+        // Deliberately NOT guarded on `'adaptive_targeting' in raw`: the hidden
+        // -field loop above runs FIRST and deletes the toggle outright for a
+        // family whose capability descriptor hides it — an absent toggle is the
+        // strongest possible "feature off", not a reason to keep the config.
+        if (!isTruthyFlag(raw['adaptive_targeting'])) {
           delete raw['adaptive_targeting_config'];
         }
       }

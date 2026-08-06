@@ -1,10 +1,14 @@
 import {
-  ChangeDetectionStrategy, Component, OnInit, computed, inject, input, output, signal,
+  ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, input, output, signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl } from '@angular/forms';
+import { EMPTY, Subject } from 'rxjs';
+import { catchError, debounceTime, switchMap } from 'rxjs/operators';
 
 import { TemplateService, type Template } from '../../../services/template.service';
 import { ToastService } from '../../../services/toast';
+import { isTruthyFlag } from '../../../shared/truthy-flag';
 
 /**
  * The materialized knob dict stored in `adaptive_targeting_config`.
@@ -82,6 +86,10 @@ const SLIDERS: readonly SliderKnob[] = [
 
 const MIN_INTERVAL_STEPS = 10;
 const MIN_PROBE_EVERY = 2;
+
+/** Same window the training form's template autosave uses
+ *  (`template-autosave.service.ts`) — one save per burst of edits. */
+export const PRESET_SAVE_DEBOUNCE_MS = 1200;
 
 function num(v: unknown, fallback: number): number {
   const n = typeof v === 'number' ? v : Number(v);
@@ -357,6 +365,7 @@ export class AdaptiveTargetingCardComponent implements OnInit {
 
   private templates = inject(TemplateService);
   private toast = inject(ToastService);
+  private destroyRef = inject(DestroyRef);
 
   readonly sliders = SLIDERS;
   readonly minIntervalSteps = MIN_INTERVAL_STEPS;
@@ -366,9 +375,39 @@ export class AdaptiveTargetingCardComponent implements OnInit {
   readonly knobs = signal<AdaptiveKnobs>(ADAPTIVE_TARGETING_DEFAULTS);
   readonly presets = signal<Template[]>([]);
 
-  /** A branch POST is in flight; further edits queue rather than branch again. */
+  /** A branch POST is in flight; further edits must not start a second one. */
   private branchInFlight = false;
-  private pendingAfterBranch = false;
+
+  /** Debounced write path — one save per burst of edits. */
+  private edits$ = new Subject<AdaptiveKnobs>();
+  /** Autosave into an EXISTING user preset (the PUT path only). */
+  private putSaves$ = new Subject<{ id: string; config: AdaptiveKnobs }>();
+
+  constructor() {
+    this.edits$.pipe(
+      debounceTime(PRESET_SAVE_DEBOUNCE_MS),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe(value => this.persist(value));
+
+    this.putSaves$.pipe(
+      // A later save supersedes an in-flight one. Every PUT carries the FULL
+      // dict, so two overlapping saves arriving out of order would leave the
+      // preset row holding the older knob set. The BRANCH path deliberately
+      // stays outside this pipe: cancelling a create client-side does not
+      // un-create the row on the server, and the next emission would branch a
+      // second time.
+      switchMap(({ id, config }) => this.templates.updateTemplate('adaptive', id, { config }).pipe(
+        catchError(err => {
+          this.toast.error('Could not save adaptive preset: ' + this.msg(err));
+          // Swallow into EMPTY, never into the outer stream: an error reaching
+          // the outer subscription would tear the pipe down and silently kill
+          // every later autosave.
+          return EMPTY;
+        }),
+      )),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe();
+  }
 
   /** Reference under which a preset row is selected: factory rows key on their
    *  `config.preset` (`factory:<name>`), user rows on their id. */
@@ -488,23 +527,29 @@ export class AdaptiveTargetingCardComponent implements OnInit {
 
   private commit(patch: Partial<AdaptiveKnobs>): void {
     const next = this.normalize({ ...this.knobs(), ...patch });
+    // A no-op edit must not reach the write path: typing a value that clamps
+    // back to the current one (5 into interval_steps when it is already 10)
+    // would otherwise branch a "<Parent> (custom)" preset for a change that
+    // changed nothing.
+    if (this.sameValue(this.knobs(), next)) return;
     this.knobs.set(next);
     this.control().setValue(next);
     this.control().markAsDirty();
-    this.persist(next);
+    this.edits$.next(next);
   }
 
   /**
    * Write the edited knobs back to the selected preset: a readonly factory row
    * is branched into a user preset first (D2), everything else autosaves in
-   * place. Edits that arrive while a branch is in flight are folded into the
-   * follow-up save rather than starting a second branch.
+   * place. An edit that arrives while a branch is in flight is NOT dropped —
+   * it is already in `knobs()`, and the post-branch write below persists that
+   * latest value.
    */
   private persist(value: AdaptiveKnobs): void {
     const current = this.selectedPreset();
     if (!current) return;
 
-    if (this.branchInFlight) { this.pendingAfterBranch = true; return; }
+    if (this.branchInFlight) return;
 
     if (current.readonly) {
       this.branchInFlight = true;
@@ -522,24 +567,24 @@ export class AdaptiveTargetingCardComponent implements OnInit {
           const latest: AdaptiveKnobs = { ...this.knobs(), preset: created.id };
           this.knobs.set(latest);
           this.control().setValue(latest);
-          const flush = this.pendingAfterBranch;
-          this.pendingAfterBranch = false;
-          if (flush) this.persist(latest);
+          // The POST body necessarily carried the PARENT's `preset` ref — the
+          // new id did not exist yet. Write the corrected dict straight back so
+          // the stored row's provenance is self-consistent (D1). `latest` also
+          // carries any edit made while the POST was in flight, so this is the
+          // flush for those too.
+          this.persist(latest);
         },
         error: err => {
           // Always release the guard — a wedged flag would silently disable
           // every later save for the life of the card.
           this.branchInFlight = false;
-          this.pendingAfterBranch = false;
           this.toast.error('Could not save adaptive preset: ' + this.msg(err));
         },
       });
       return;
     }
 
-    this.templates.updateTemplate('adaptive', current.id, { config: { ...value } }).subscribe({
-      error: err => this.toast.error('Could not save adaptive preset: ' + this.msg(err)),
-    });
+    this.putSaves$.next({ id: current.id, config: { ...value } });
   }
 
   // ── Normalization ───────────────────────────────────────────────────────
@@ -572,8 +617,10 @@ export class AdaptiveTargetingCardComponent implements OnInit {
       min_active_pct: slider('min_active_pct'),
       heat_ema: slider('heat_ema'),
       // `rebuild` cannot carry reactivation (backend rule) — collapse rather
-      // than surface an invalid pair.
-      reactivation: action === 'rebuild' ? false : src['reactivation'] === true,
+      // than surface an invalid pair. Read through the shared flag predicate:
+      // a value round-tripped through a template/JSON editor arrives as the
+      // STRING "true", which a strict `=== true` would silently drop to false.
+      reactivation: action === 'rebuild' ? false : isTruthyFlag(src['reactivation']),
       probe_every: clampInt(src['probe_every'], d.probe_every, MIN_PROBE_EVERY, 1_000),
       // probe_steps < interval_steps, enforced against the interval decided above.
       probe_steps: clampInt(src['probe_steps'], d.probe_steps, 1, Math.max(1, interval - 1)),

@@ -395,6 +395,9 @@ MRLN Arcane Tuner supports a wide range of optimizers, from proven defaults to c
 
 **RADC** is a standout feature — it progressively shifts the noise focus from high-noise (learning structure and composition) to low-noise (refining details and textures) over the course of training, with optional resolution-aware weighting for multi-resolution datasets.
 
+#### Adaptive LoRA Layer Targeting
+Periodically measures how much each LoRA module's effective weight is still changing (an EMA-smoothed, windowed norm) and freezes the modules that have stopped contributing, so late-stage training concentrates compute on the layers still doing work. **Off by default.** Two action modes: **freeze** flips `requires_grad` in place for the cheapest possible narrowing; **rebuild** additionally checkpoints and relaunches the same job with a narrowed optimizer to reclaim optimizer VRAM. Conservative / Balanced / Aggressive presets are fully editable and save as your own templates. The narrowing is plotted live on the training curve and summarized afterward in Training Stats.
+
 #### LoRA Parameters
 - **Network rank** (dim): 4–128+. Controls adapter capacity. Rank 16 is a solid default.
 - **Network alpha**: Scaling factor for LoRA influence. Start with `alpha = rank / 2`.

@@ -809,3 +809,37 @@ describe('JobsScreen lightbox navigation follows grouping', () => {
         expect(comp.sampleModal()?.filename).toBe('sample_00_step000000.png');
     });
 });
+
+/**
+ * T11 — adaptive layer targeting status chip.
+ *
+ * The chip surfaces the newest `{"adapt": {...}}` event in the LIVE log
+ * stream (job.logs is live-session-only; the durable history endpoint is a
+ * later task). It must render only when an adapt event exists, and must
+ * disappear again when there is none.
+ */
+describe('JobsScreen adaptive status chip (T11)', () => {
+    const adaptLine = (data: object) => JSON.stringify({ adapt: data });
+
+    it('renders "5/8 layers" when the log stream has an adapt event', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([
+            makeJob({
+                logs: [adaptLine({ step: 20, kind: 'narrow', active_count: 5, total_count: 8 })],
+            }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        const chip = fixture.nativeElement.querySelector('[data-testid="adapt-chip"]');
+        expect(chip).toBeTruthy();
+        expect(chip!.textContent).toContain('5/8 layers');
+    });
+
+    it('does not render the chip when there is no adapt event', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([makeJob({ logs: [] })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="adapt-chip"]')).toBeNull();
+    });
+});

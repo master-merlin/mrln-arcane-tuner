@@ -786,10 +786,20 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         this.emitChanges();
     }
 
-    onTemplateChange(tplId: string) {
+    /**
+     * `auto` marks a programmatic activation — a template this component just
+     * created, or the fallback after a delete. Those move the selection without
+     * the user choosing anything, so they must not tick the usage counter.
+     * Hydration never reaches here; it sets `activeTemplateId` directly.
+     */
+    onTemplateChange(tplId: string, auto = false) {
+        const previous = this.activeTemplateId();
         this.activeTemplateId.set(tplId);
         this.applyActiveTemplate();
         this.settingsUpdate$.next();
+        if (!auto && tplId && tplId !== previous) {
+            this.templateService.recordUse('captioning', tplId);
+        }
     }
 
     updateParam(key: string, value: unknown) {
@@ -953,7 +963,7 @@ export class DatasetCaptionSettingsComponent implements OnInit {
         }).subscribe({
             next: newTpl => {
             this.currentTemplates.update(ts => [...ts, newTpl]);
-            this.onTemplateChange(newTpl.id);
+            this.onTemplateChange(newTpl.id, true);  // creating is not choosing
         },
             error: (e) => this.settingsOpFailed('create the template', e),
         });
@@ -992,7 +1002,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
                     this.currentTemplates.update(ts => ts.filter(t => t.id !== activeId));
                     const remaining = this.currentTemplates();
                     if (remaining.length > 0) {
-                        this.onTemplateChange(remaining[0].id);
+                        // A fallback, not a choice — see onTemplateChange.
+                        this.onTemplateChange(remaining[0].id, true);
                     }
                 },
                     error: (e) => this.settingsOpFailed('delete the template', e),

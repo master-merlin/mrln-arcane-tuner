@@ -184,6 +184,25 @@ export class TemplateService {
     return this.http.post<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}/use`, {});
   }
 
+  /**
+   * Record that a user picked this template — `used_count` and `last_used_at`
+   * are the only signal the Templates library has for ranking by real use.
+   *
+   * Fire-and-forget, and the single home for that policy so all four domains
+   * behave the same. A lost tick is telemetry, not the user's work: it warns
+   * to the console rather than raising a toast over whatever they were doing.
+   *
+   * Callers own the "was this a real choice?" question. Record on an explicit
+   * selection only — never on hydration, a post-create activation or a
+   * post-delete fallback, or the counter measures page visits, not choices.
+   */
+  recordUse(domain: TemplateDomain, templateId: string): void {
+    this.useTemplate(domain, templateId).subscribe({
+      error: (err: unknown) =>
+        console.warn(`${domain} template use not recorded`, err),
+    });
+  }
+
   // Export / Import
   getTemplateExportUrl(domain: TemplateDomain, templateId: string): string {
     return `${this.apiUrl}/${domain}/${templateId}/export`;

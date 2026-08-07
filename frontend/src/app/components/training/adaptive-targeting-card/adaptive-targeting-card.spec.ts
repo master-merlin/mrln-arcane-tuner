@@ -67,7 +67,7 @@ type Svc = {
   listAdaptivePresets: ReturnType<typeof vi.fn>;
   createAdaptivePreset: ReturnType<typeof vi.fn>;
   updateTemplate: ReturnType<typeof vi.fn>;
-  useTemplate: ReturnType<typeof vi.fn>;
+  recordUse: ReturnType<typeof vi.fn>;
 };
 
 let svc: Svc;
@@ -81,7 +81,6 @@ function build(opts: {
   createError?: unknown;
   updateObservable?: Observable<never>;
   updateError?: unknown;
-  useError?: unknown;
   enabled?: boolean;
 } = {}) {
   TestBed.resetTestingModule();
@@ -95,9 +94,9 @@ function build(opts: {
       opts.updateObservable
         ?? (opts.updateError ? throwError(() => opts.updateError) : of({})),
     ),
-    useTemplate: vi.fn().mockReturnValue(
-      opts.useError ? throwError(() => opts.useError) : of({ status: 'recorded' }),
-    ),
+    // Void by contract — TemplateService.recordUse owns the fire-and-forget
+    // policy and its own spec proves the POST and the swallowed failure.
+    recordUse: vi.fn(),
   };
   toast = { error: vi.fn(), success: vi.fn(), warning: vi.fn() };
 
@@ -543,7 +542,7 @@ describe('AdaptiveTargetingCard — feature-off + help wiring', () => {
       listAdaptivePresets: vi.fn().mockReturnValue(throwError(() => new Error('boom'))),
       createAdaptivePreset: vi.fn(),
       updateTemplate: vi.fn(),
-      useTemplate: vi.fn(),
+      recordUse: vi.fn(),
     };
     toast = { error: vi.fn(), success: vi.fn(), warning: vi.fn() };
     TestBed.configureTestingModule({
@@ -567,22 +566,22 @@ describe('AdaptiveTargetingCard — feature-off + help wiring', () => {
 describe('AdaptiveTargetingCard — preset usage counter', () => {
   it('records a use against the row the user picked', () => {
     const { fixture } = build();
-    expect(svc.useTemplate).not.toHaveBeenCalled();  // not on hydration
+    expect(svc.recordUse).not.toHaveBeenCalled();  // not on hydration
 
     setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
 
     // The ROW id, not the `factory:*` provenance ref — /use is keyed on the
     // template's primary key like every other domain.
-    expect(svc.useTemplate).toHaveBeenCalledWith('adaptive', 'factory-aggressive');
+    expect(svc.recordUse).toHaveBeenCalledWith('adaptive', 'factory-aggressive');
   });
 
   it('does not record a use when the same preset is re-selected', () => {
     const { fixture } = build();
     setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
-    expect(svc.useTemplate).toHaveBeenCalledTimes(1);
+    expect(svc.recordUse).toHaveBeenCalledTimes(1);
 
     setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
-    expect(svc.useTemplate).toHaveBeenCalledTimes(1);
+    expect(svc.recordUse).toHaveBeenCalledTimes(1);
   });
 
   it('does not record a use for a selection that resolves to no row', () => {
@@ -591,19 +590,17 @@ describe('AdaptiveTargetingCard — preset usage counter', () => {
     // would POST /templates/adaptive//use.
     const { fixture } = build({ presets: [] });
     setKnob(fixture, 'adaptive-preset-select', 'factory:balanced');
-    expect(svc.useTemplate).not.toHaveBeenCalled();
+    expect(svc.recordUse).not.toHaveBeenCalled();
   });
 
-  it('keeps the selection when the counter call fails — it is not the user\'s work', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { fixture, control } = build({ useError: new Error('offline') });
-
+  it('applies the knobs before recording, so the counter is never on the critical path', () => {
+    const { fixture, control } = build();
     setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
 
+    // The selection is complete and submittable regardless of the tick — the
+    // failure policy itself lives in TemplateService.recordUse's own spec.
     expect(control.value['preset']).toBe('factory:aggressive');
-    expect(control.value['interval_steps']).toBe(150);  // the knobs still applied
+    expect(control.value['interval_steps']).toBe(150);
     expect(toast.error).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalled();  // surfaced, not swallowed
-    warn.mockRestore();
   });
 });

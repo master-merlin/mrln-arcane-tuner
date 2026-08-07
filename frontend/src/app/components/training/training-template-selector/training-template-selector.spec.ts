@@ -24,6 +24,7 @@ function tpl(over: Partial<Template>): Template {
 describe('TrainingTemplateSelectorComponent — auto-apply active template on load', () => {
     let svc: {
         listTrainingTemplates: Mock;
+        recordUse: Mock;
     };
     let projects: {
         getPreferences: Mock;
@@ -37,7 +38,10 @@ describe('TrainingTemplateSelectorComponent — auto-apply active template on lo
     }>;
 
     function build(templates: Template[], trainingSelections: Record<string, unknown> = {}) {
-        svc = { listTrainingTemplates: vi.fn().mockReturnValue(of(templates)) };
+        svc = {
+            listTrainingTemplates: vi.fn().mockReturnValue(of(templates)),
+            recordUse: vi.fn(),
+        };
         projects = {
             getPreferences: vi.fn().mockReturnValue(of({ training_selections: trainingSelections })),
             updatePreferences: vi.fn().mockReturnValue(of({})),
@@ -85,6 +89,32 @@ describe('TrainingTemplateSelectorComponent — auto-apply active template on lo
         fixture.componentInstance.applyTemplate('custom1');
         expect(emitted.length).toBe(1);
         expect(emitted[0].auto).toBeFalsy();
+    });
+
+    it('records a use on a manual selection but never on the auto-apply', () => {
+        // The load-time apply already ran inside build() and is tagged auto —
+        // restoring a selection is not choosing one, so it must not tick.
+        const fixture = build(
+            [tpl({ id: 'a', name: 'Phase I', is_default: true }), tpl({ id: 'b', name: 'Phase II' })],
+        );
+        expect(svc.recordUse).not.toHaveBeenCalled();
+
+        fixture.componentInstance.applyTemplate('b');
+        expect(svc.recordUse).toHaveBeenCalledWith('training', 'b');
+
+        // Re-picking what is already active is not a new use.
+        fixture.componentInstance.applyTemplate('b');
+        expect(svc.recordUse).toHaveBeenCalledTimes(1);
+    });
+
+    it('never records a use for the synthetic Default entry', () => {
+        // 'default' is a UI placeholder with no row behind it — a tick would
+        // POST /templates/training/default/use against a template that does
+        // not exist.
+        const fixture = build([tpl({ id: 'custom1', name: 'Custom' })]);
+        svc.recordUse.mockClear();
+        fixture.componentInstance.applyTemplate('default');
+        expect(svc.recordUse).not.toHaveBeenCalled();
     });
 
     it('restores the persisted active template on load instead of the first one', () => {

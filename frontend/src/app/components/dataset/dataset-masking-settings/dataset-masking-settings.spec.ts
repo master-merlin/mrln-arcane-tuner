@@ -27,6 +27,7 @@ function tpl(over: Partial<Template>): Template {
 describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
     let svc: {
         listMaskingTemplates: Mock;
+        recordUse: Mock;
         createMaskingTemplate: Mock;
         updateTemplate: Mock;
     };
@@ -34,6 +35,7 @@ describe('DatasetMaskingSettings — copy-on-edit of default templates', () => {
     function build(templates: Template[], prefs: Record<string, unknown> = {}) {
         svc = {
             listMaskingTemplates: vi.fn().mockReturnValue(of(templates)),
+            recordUse: vi.fn(),
             createMaskingTemplate: vi.fn().mockImplementation((data: Partial<Template>) =>
                 of(tpl({ ...data, id: 'new-id' } as Partial<Template>))),
             updateTemplate: vi.fn().mockImplementation((_d: string, id: string, data: Partial<Template>) =>
@@ -188,6 +190,7 @@ describe('DatasetMaskingSettings — delete template via confirm modal', () => {
                 tpl({ id: 'mine', name: 'Mine', is_default: false, readonly: false }),
                 tpl({ id: 'other', name: 'Other', is_default: false, readonly: false }),
             ])),
+            recordUse: vi.fn(),
             createMaskingTemplate: vi.fn(),
             updateTemplate: vi.fn(),
             deleteTemplate: vi.fn().mockReturnValue(of({ status: 'ok' })),
@@ -231,5 +234,34 @@ describe('DatasetMaskingSettings — delete template via confirm modal', () => {
         const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
         data.onConfirm();
         expect(svc.deleteTemplate).toHaveBeenCalledWith('masking', 'mine');
+    });
+
+    /**
+     * Same usage-counter contract as captioning: `used_count` must count
+     * CHOICES, so hydration, a post-create activation and a post-delete
+     * fallback all move the selection without ticking it.
+     */
+    it('records a use when the user picks a template, but not on load', () => {
+        const { c, svc } = build();
+        expect(svc.recordUse).not.toHaveBeenCalled();  // load already happened
+
+        c.onTemplateChange('other');
+        expect(svc.recordUse).toHaveBeenCalledWith('masking', 'other');
+
+        c.onTemplateChange('other');  // re-picking the active one is not a use
+        expect(svc.recordUse).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not record a use for the fallback after a delete', () => {
+        const { c, svc, overlay } = build();
+        c.deleteTemplate();
+        svc.recordUse.mockClear();
+
+        const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+
+        // The selection moved to 'other' — the component chose it, not the user.
+        expect(c.activeTemplateId()).toBe('other');
+        expect(svc.recordUse).not.toHaveBeenCalled();
     });
 });

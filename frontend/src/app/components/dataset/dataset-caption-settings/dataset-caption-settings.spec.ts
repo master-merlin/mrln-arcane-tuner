@@ -35,6 +35,7 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
         prefs = { selected_caption_model: 'florence-2', qwen3_variant: '4B-Instruct', active_caption_template: null };
         templateApi = {
             listCaptioningTemplates: vi.fn((modelId: string) => of([makeTemplate(modelId)])),
+            recordUse: vi.fn(),
             createCaptioningTemplate: vi.fn().mockReturnValue(of(makeTemplate('x', 'new'))),
             updateTemplate: vi.fn().mockReturnValue(of({})),
             deleteTemplate: vi.fn().mockReturnValue(of({ status: 'ok' })),
@@ -218,6 +219,7 @@ describe('DatasetCaptionSettings — Additional instructions (structured caption
                 system_prompt: 'Describe this image in detail.', wildcard: '',
                 model_id: modelId,
             }])),
+            recordUse: vi.fn(),
             createCaptioningTemplate: vi.fn().mockReturnValue(of({
                 id: 'new-id', name: 'Custom Settings', project_id: null, config: {},
                 created_at: 0, updated_at: 0, used_count: 0,
@@ -305,6 +307,7 @@ function tplOf(over: Partial<Template>): Template {
 describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
     let svc: {
         listCaptioningTemplates: Mock;
+        recordUse: Mock;
         createCaptioningTemplate: Mock;
         updateTemplate: Mock;
     };
@@ -312,6 +315,7 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
     function build(templates: Template[], prefs: Record<string, unknown> = {}) {
         svc = {
             listCaptioningTemplates: vi.fn().mockReturnValue(of(templates)),
+            recordUse: vi.fn(),
             createCaptioningTemplate: vi.fn().mockImplementation((data: Partial<Template>) =>
                 of(tplOf({ ...data, id: 'new-id' } as Partial<Template>))),
             updateTemplate: vi.fn().mockImplementation((_d: string, id: string, data: Partial<Template>) =>
@@ -455,6 +459,7 @@ describe('DatasetCaptionSettings — delete template via confirm modal', () => {
                 tplOf({ id: 'mine', name: 'Mine' }),
                 tplOf({ id: 'other', name: 'Other' }),
             ])),
+            recordUse: vi.fn(),
             createCaptioningTemplate: vi.fn(),
             updateTemplate: vi.fn(),
             deleteTemplate: vi.fn().mockReturnValue(of({ status: 'ok' })),
@@ -497,5 +502,35 @@ describe('DatasetCaptionSettings — delete template via confirm modal', () => {
         const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
         data.onConfirm();
         expect(svc.deleteTemplate).toHaveBeenCalledWith('captioning', 'mine');
+    });
+
+    /**
+     * `used_count` is the Templates library's only signal for ranking by real
+     * use, so it must count CHOICES. Hydration, a post-create activation and a
+     * post-delete fallback all move the selection without the user picking
+     * anything — counting those would measure page visits instead.
+     */
+    it('records a use when the user picks a template, but not on load', () => {
+        const { c, svc } = build();
+        expect(svc.recordUse).not.toHaveBeenCalled();  // load already happened
+
+        c.onTemplateChange('other');
+        expect(svc.recordUse).toHaveBeenCalledWith('captioning', 'other');
+
+        c.onTemplateChange('other');  // re-picking the active one is not a use
+        expect(svc.recordUse).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not record a use for the fallback after a delete', () => {
+        const { c, svc, overlay } = build();
+        c.deleteTemplate();
+        svc.recordUse.mockClear();
+
+        const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
+        data.onConfirm();
+
+        // The selection moved to 'other' — the component chose it, not the user.
+        expect(c.activeTemplateId()).toBe('other');
+        expect(svc.recordUse).not.toHaveBeenCalled();
     });
 });

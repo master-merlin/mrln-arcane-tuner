@@ -340,6 +340,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
   }
 
   applyTemplate(tplId: string, auto = false) {
+    const previous = this.activeTemplateId();
     this.suppressAutoSave.set(true);
     this.activeTemplateId.set(tplId);
 
@@ -350,6 +351,12 @@ export class TrainingTemplateSelectorComponent implements OnInit {
     // reload restores it. The one-time `auto` apply on load must NOT persist —
     // it's restoring, not choosing.
     if (!auto) this._persistActiveTemplate(tplId);
+    // Same distinction for the usage counter, plus the synthetic "Default"
+    // entry: `'default'` is a UI placeholder with no row behind it, so a tick
+    // against it would address a template that does not exist.
+    if (!auto && tplId !== previous && tplId !== 'default') {
+      this.templateService.recordUse('training', tplId);
+    }
 
     this.templateApplied.emit({
       config: tpl.config,

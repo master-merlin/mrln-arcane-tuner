@@ -12,6 +12,15 @@ Routes are organized per domain (captioning, masking, training):
 
 from unittest.mock import patch
 
+import pytest
+
+from app.core.db.engine import DatabaseEngine
+from app.core.db.migrations import run_migrations
+from app.core.db.repositories.adaptive_preset_repo import AdaptivePresetRepository
+from app.core.db.repositories.captioning_template_repo import CaptioningTemplateRepository
+from app.core.db.repositories.masking_template_repo import MaskingTemplateRepository
+from app.core.db.repositories.training_template_repo import TrainingTemplateRepository
+
 
 _TRAIN_REPO = "app.core.db.repositories.training_template_repo.TrainingTemplateRepository"
 _CAP_REPO = "app.core.db.repositories.captioning_template_repo.CaptioningTemplateRepository"
@@ -276,3 +285,76 @@ def test_use_template(MockRepo, client):
     response = client.post("/api/templates/training/t1/use")
     assert response.status_code == 200
     assert response.json()["status"] == "recorded"
+
+
+# ── Usage counter: the real column, every domain ─────────────────────────
+
+
+@pytest.fixture()
+def usage_engine(tmp_path):
+    """Isolated engine with the full migration chain applied."""
+    engine = DatabaseEngine(db_path=str(tmp_path / "templates.db"))
+    run_migrations(engine)
+    yield engine
+    engine.close()
+
+
+_USAGE_DOMAINS = [
+    (
+        "captioning",
+        "app.core.db.repositories.captioning_template_repo",
+        CaptioningTemplateRepository,
+        {"name": "C", "model_id": "florence-2"},
+    ),
+    (
+        "masking",
+        "app.core.db.repositories.masking_template_repo",
+        MaskingTemplateRepository,
+        {"name": "M", "model_id": "sam3"},
+    ),
+    (
+        "training",
+        "app.core.db.repositories.training_template_repo",
+        TrainingTemplateRepository,
+        {"name": "T", "definition_id": "sdxl_base_1.0"},
+    ),
+    (
+        "adaptive",
+        "app.core.db.repositories.adaptive_preset_repo",
+        AdaptivePresetRepository,
+        {"name": "A"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "domain,module,repo_cls,payload",
+    _USAGE_DOMAINS,
+    ids=[d[0] for d in _USAGE_DOMAINS],
+)
+def test_increment_usage_moves_the_real_column(
+    usage_engine, domain, module, repo_cls, payload
+):
+    """`used_count`/`last_used_at` are the Templates library's only signal for
+    ranking by real use, and every domain's frontend now records one. The route
+    test above proves the wiring against a mock; this proves the column
+    actually moves, on the table THIS domain's repo owns — a copy-pasted
+    `increment_usage` pointing at a sibling table would pass the route test.
+    """
+    with patch(f"{module}.get_db", return_value=usage_engine):
+        repo = repo_cls()
+        created = repo.create(dict(payload))
+        assert created["used_count"] == 0
+        assert created.get("last_used_at") is None
+
+        repo.increment_usage(created["id"])
+
+        after = repo.get_by_id(created["id"])
+        assert after["used_count"] == 1
+        assert after["last_used_at"] is not None
+
+    with usage_engine.connection() as conn:
+        row = conn.execute(
+            f"SELECT used_count FROM {repo_cls.TABLE} WHERE id = ?", (created["id"],)
+        ).fetchone()
+    assert row["used_count"] == 1  # …on this domain's own table

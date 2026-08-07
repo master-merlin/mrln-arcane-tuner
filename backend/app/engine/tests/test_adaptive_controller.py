@@ -668,6 +668,126 @@ def test_unreadable_history_file_warns_and_still_restores(
     assert any("adaptive_targeting.json" in w for w in warnings)
 
 
+@pytest.mark.parametrize("document", ["[]", "null", "3", '"events"'])
+def test_history_that_is_not_an_object_degrades_instead_of_disabling(
+    tmp_path, make_adaptive_controller, document
+):
+    """Valid JSON that is not an object is the same class of problem as a
+    truncated file and must degrade the same way. Reaching for ``.get`` on it
+    raises AttributeError, which no except clause here names — it escapes to
+    the pipeline's setup guard and turns a cosmetic file into "adaptive
+    targeting is off for this whole segment"."""
+    (tmp_path / "adaptive_targeting.json").write_text(document, encoding="utf-8")
+    _model, ctl, writer = make_adaptive_controller()
+    ctl.restore_state({"event_index": 3, "next_event": 400}, current_step=200)
+
+    assert ctl.enabled is True
+    assert ctl.event_index == 3  # the rest of the restore still happened
+    warnings = [str(d) for t, d in writer.events if t == "warning"]
+    assert any("adaptive_targeting.json" in w for w in warnings)
+
+
+def test_a_failed_seed_does_not_discard_the_rest_of_the_restore(
+    tmp_path, make_adaptive_controller, train_step, lora_params, monkeypatch
+):
+    """Re-adopting the event history is the least critical part of a restore
+    and the only part that reads a file this process did not write. If it runs
+    first, an error nobody anticipated takes the narrowed active set, the heat
+    and the schedule clamp down with it, and the run resumes wide open."""
+    model, ctl, _writer = make_adaptive_controller(energy_threshold=0.90)
+    for step in range(1, 25):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+    state = ctl.get_state()
+    frozen = [
+        f"blocks.{i}.{proj}"
+        for i in range(4)
+        for proj in ("to_q", "to_v")
+        if f"blocks.{i}.{proj}" not in state["active_modules"]
+    ]
+    assert frozen  # not vacuous
+
+    (tmp_path / "adaptive_targeting.json").write_text("{}", encoding="utf-8")
+    # Break the layer BELOW the seeder with an error type its except clause
+    # deliberately does not name, standing in for the unforeseen failure.
+    monkeypatch.setattr(json, "load", _boom)
+
+    resumed_model, resumed, _w = make_adaptive_controller(energy_threshold=0.90)
+    with pytest.raises(RecursionError):
+        resumed.restore_state(state, current_step=24)
+
+    assert resumed.event_index == ctl.event_index
+    assert resumed.keep_patterns() == ctl.keep_patterns()
+    for name in frozen:
+        assert all(not p.requires_grad for p in lora_params(resumed_model, name))
+
+
+def _boom(*_args, **_kwargs):
+    raise RecursionError("unforeseen")
+
+
+def test_an_applied_narrowing_survives_a_dead_log_channel(
+    tmp_path, make_adaptive_controller, train_step
+):
+    """The mirror of the rebuild-handoff rule above. A handoff is only real
+    once it ships, so a failed emit must record nothing — but a narrowing is
+    already applied to the model by the time we emit, and the history file is
+    the only durable record of it. Losing it there makes the Stats timeline
+    disagree with what the run actually trained."""
+    model, ctl, writer = make_adaptive_controller(energy_threshold=0.90)
+    working_emit = writer.emit
+
+    def _adapt_channel_down(msg_type, payload):
+        # Only the adapt payload fails. Killing the writer wholesale would also
+        # kill the warning that reports the failure, which is a property of the
+        # test double, not of the log writer this stands in for.
+        if msg_type == "adapt":
+            raise RuntimeError("channel down")
+        working_emit(msg_type, payload)
+
+    writer.emit = _adapt_channel_down
+    for step in range(1, 21):
+        train_step(model, ["blocks.0.to_q"])
+        assert ctl.on_optimizer_step(step) is None  # the failure never kills the run
+    assert ctl.active_count < 8  # the freeze WAS applied
+
+    with open(os.path.join(str(tmp_path), "adaptive_targeting.json"), encoding="utf-8") as fh:
+        events = json.load(fh)["events"]
+    assert [e["kind"] for e in events] == ["narrow"]
+    assert events[0]["active_count"] == ctl.active_count
+    warnings = [str(d) for t, d in writer.events if t == "warning"]
+    assert any("channel down" in w for w in warnings)
+
+
+def test_history_modules_span_the_run_not_only_this_segment(
+    tmp_path, make_adaptive_controller, train_step
+):
+    """A rebuild restart discovers an already-narrowed universe. Writing that
+    as the file's module list would name fewer modules than the file's own
+    events refer to, so anything reading the two together (a post-run report,
+    a future Stats view) would resolve a frozen module to nothing."""
+    path = tmp_path / "adaptive_targeting.json"
+    path.write_text(
+        json.dumps({
+            "events": [{"step": 100, "event_index": 0, "kind": "narrow"}],
+            "modules": ["blocks.0.to_q", "retired.in.an.earlier.segment"],
+            "heat": {},
+        }),
+        encoding="utf-8",
+    )
+
+    model, ctl, _writer = make_adaptive_controller(energy_threshold=0.90)
+    ctl.restore_state({"event_index": 1}, current_step=100)
+    for step in range(101, 125):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+    modules = json.loads(path.read_text(encoding="utf-8"))["modules"]
+    assert "retired.in.an.earlier.segment" in modules  # the earlier segment's
+    assert "blocks.3.to_v" in modules  # …and this one's
+    assert len(modules) == len(set(modules))  # union, not concatenation
+
+
 def test_state_round_trip_restores_active_set(
     make_adaptive_controller, train_step, lora_params
 ):

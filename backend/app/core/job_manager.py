@@ -159,7 +159,9 @@ class JobManager:
         # It must never survive a run and hijack the next one, so EVERY path
         # that ends a run pops it: the exit handler unconditionally, plus the
         # ones that end a run without an exit line ever arriving — the PID
-        # watchdog's finalize, the phantom reconcile, stop_job and restart_job.
+        # watchdog's finalize, the phantom reconcile, stop_job, restart_job and
+        # delete_job. Keep this list exhaustive: a pop site missing from it
+        # reads as deliberate the next time someone audits the map.
         self._pending_rebuilds: dict[str, dict[str, Any]] = {}
         # Rebuild relaunches performed this session, keyed by job_id. Budget
         # for _MAX_REBUILD_RESTARTS; cleared wherever a job legitimately starts

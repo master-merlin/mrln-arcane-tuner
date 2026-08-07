@@ -50,9 +50,9 @@
                 <div>
                     <div class="pd-stat-label">TEMPLATES</div>
                     <div class="pd-stat-value-row">
-                        <div class="pd-stat-value">{{ (p.stats?.captioning_templates ?? 0) + (p.stats?.masking_templates ?? 0) + (p.stats?.training_templates ?? 0) }}</div>
+                        <div class="pd-stat-value">{{ templateCount(p.stats) }}</div>
                     </div>
-                    <div class="pd-stat-sub">caption · mask · training</div>
+                    <div class="pd-stat-sub">caption · mask · training · adaptive</div>
                 </div>
                 <div>
                     <div class="pd-stat-label">ACTIVE JOBS</div>
@@ -321,8 +321,8 @@
                                                     <button class="icon-btn" type="button"
                                                             (click)="editTemplate(s.domain, t)"
                                                             [class.pd-edit-training]="s.domain === 'training'"
-                                                            [title]="s.domain === 'training' ? 'Open in Training screen (leaves this project)' : 'Edit template settings'"
-                                                            [attr.aria-label]="(s.domain === 'training' ? 'Open template ' + t.name + ' in Training screen' : 'Edit template ' + t.name + ' settings')">
+                                                            [title]="editTitle(s.domain)"
+                                                            [attr.aria-label]="editAria(s.domain, t.name)">
                                                         <app-ico [name]="editIcon(s.domain)" [size]="13"/>
                                                     </button>
                                                     <button class="icon-btn" type="button"

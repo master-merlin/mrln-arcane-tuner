@@ -130,7 +130,16 @@ class ProjectRepository:
         conn = get_db().connection()
         stats: dict[str, int] = {}
 
-        for table in ("captioning_templates", "masking_templates", "training_templates"):
+        # Every project-scopable template domain. A domain missing here is
+        # invisible in the project's TEMPLATES stat while still being listed,
+        # branchable and deletable on the detail screen — the count and the
+        # list disagree, and the count is the one users trust.
+        for table in (
+            "captioning_templates",
+            "masking_templates",
+            "training_templates",
+            "adaptive_preset_templates",
+        ):
             row = conn.execute(
                 f"SELECT COUNT(*) as c FROM {table} WHERE project_id = ?",
                 (project_id,),

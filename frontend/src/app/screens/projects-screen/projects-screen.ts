@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject } from '@angular/core';
 import { Router } from '@angular/router';
-import { ProjectService, type Project, type ProjectStats } from '../../services/project.service';
+import {
+    ProjectService, projectTemplateCount, type Project, type ProjectStats,
+} from '../../services/project.service';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
 import { IcoComponent } from '../../icons/ico.component';
@@ -260,11 +262,7 @@ export class ProjectsScreen implements OnInit {
      */
     static cardStat(stats: ProjectStats | undefined, key: StatKey): number | null {
         if (!stats) return null;
-        if (key === 'templates') {
-            return (stats.captioning_templates ?? 0)
-                + (stats.masking_templates ?? 0)
-                + (stats.training_templates ?? 0);
-        }
+        if (key === 'templates') return projectTemplateCount(stats);
         if (key === 'datasets') return stats.datasets ?? 0;
         return stats.jobs ?? 0;
     }

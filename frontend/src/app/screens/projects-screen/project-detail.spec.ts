@@ -232,3 +232,69 @@ describe('ProjectDetail — P7 training-template edit affordance', () => {
     expect(editIcon('masking')).toBe('Pencil');
   });
 });
+
+describe('ProjectDetail — adaptive presets are a first-class project domain', () => {
+  it('loadTemplates lists the project\'s adaptive presets alongside the other three', async () => {
+    const sections = signalStub<unknown[]>([]);
+    const globals = () => signalStub<unknown[]>([]);
+    const row = (id: string, project_id: string | null) => ({ id, project_id });
+    const ctx = {
+      templates: {
+        listCaptioningTemplates: vi.fn().mockReturnValue(of([row('c1', 'p1')])),
+        listMaskingTemplates: vi.fn().mockReturnValue(of([row('m1', 'p1')])),
+        listTrainingTemplates: vi.fn().mockReturnValue(of([row('t1', 'p1')])),
+        // Global rows are the readonly factory presets; only 'a1' is the project's.
+        listAdaptivePresets: vi.fn().mockReturnValue(of([row('a1', 'p1'), row('fac', null)])),
+      },
+      templateSections: sections,
+      globalCaptionTpls: globals(), globalMaskTpls: globals(),
+      globalTrainTpls: globals(), globalAdaptiveTpls: globals(),
+    };
+    await invoke('loadTemplates', ctx, 'p1');
+
+    expect(ctx.templates.listAdaptivePresets).toHaveBeenCalledWith('p1');
+    const setSpy = sections.set as unknown as ReturnType<typeof vi.fn>;
+    const written = setSpy.mock.calls[0][0] as { domain: string; items: unknown[] }[];
+    expect(written.map(s => s.domain))
+      .toEqual(['captioning', 'masking', 'training', 'adaptive']);
+    expect(written[3].items).toEqual([row('a1', 'p1')]);  // the global row is not the project's
+  });
+
+  it('edits an adaptive preset as JSON — the caption/mask dialog cannot render knobs', () => {
+    const openModal = vi.fn();
+    const full = { id: 'a1', name: 'Mine', config: { warmup_pct: 0.25 } };
+    const ctx = {
+      templates: { getTemplate: vi.fn().mockReturnValue(of(full)) },
+      overlay: { openModal },
+      projectId: () => 'p1',
+      loadTemplates: vi.fn(),
+      toast: { error: vi.fn() },
+    };
+    invoke('editTemplate', ctx, 'adaptive', { id: 'a1' });
+
+    expect(openModal).toHaveBeenCalledWith('template-json',
+      expect.objectContaining({ domain: 'adaptive', template: full }));
+    expect(openModal).not.toHaveBeenCalledWith('template-edit', expect.anything());
+    // One fetch, not two — the modal opens on the row already loaded here.
+    expect(ctx.templates.getTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the adaptive row its own affordance so the pencil never lies', () => {
+    const proto = ProjectDetail.prototype as unknown as Record<string, (...a: unknown[]) => string>;
+    expect(proto['editIcon']('training')).toBe('ExternalLink');
+    expect(proto['editIcon']('captioning')).toBe('Pencil');
+    expect(proto['editIcon']('adaptive')).toBe('Braces');
+    expect(proto['editTitle']('adaptive')).toContain('JSON');
+    expect(proto['editAria']('adaptive', 'Mine')).toContain('Mine');
+  });
+
+  it('the TEMPLATES stat counts adaptive presets', () => {
+    const proto = ProjectDetail.prototype as unknown as
+      Record<string, (s: unknown) => number>;
+    expect(proto['templateCount']({
+      captioning_templates: 1, masking_templates: 2, training_templates: 4,
+      adaptive_preset_templates: 3, datasets: 0, jobs: 0,
+    })).toBe(10);
+    expect(proto['templateCount'](undefined)).toBe(0);
+  });
+});

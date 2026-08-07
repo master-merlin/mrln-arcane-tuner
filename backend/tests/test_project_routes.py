@@ -31,6 +31,7 @@ _STATS_KEYS = {
     "captioning_templates",
     "masking_templates",
     "training_templates",
+    "adaptive_preset_templates",
     "datasets",
     "jobs",
 }
@@ -100,7 +101,8 @@ def test_project_full_payload_create_list_get_update(client, tmp_path):
         }
         assert listing[0]["stats"] == {
             "captioning_templates": 0, "masking_templates": 0,
-            "training_templates": 0, "datasets": 0, "jobs": 0,
+            "training_templates": 0, "adaptive_preset_templates": 0,
+            "datasets": 0, "jobs": 0,
         }
 
         got = client.get(f"/api/projects/{pid}").json()
@@ -111,6 +113,32 @@ def test_project_full_payload_create_list_get_update(client, tmp_path):
         updated = client.patch(f"/api/projects/{pid}", json={"description": "e"}).json()
         assert set(updated) == {"id", "name", "description", "color", "created_at", "updated_at"}
         assert updated["description"] == "e"
+
+
+def test_branched_adaptive_preset_counts_toward_the_project_template_stat(
+    client, tmp_path
+):
+    """Adaptive presets are project-scopable exactly like the other three
+    domains — the detail screen lists, branches and deletes them. A stat that
+    skips the domain disagrees with the list right beside it."""
+    with _isolated_db(tmp_path):
+        pid = client.post("/api/projects", json={"name": "Delta"}).json()["id"]
+        assert client.get(f"/api/projects/{pid}").json()["stats"][
+            "adaptive_preset_templates"
+        ] == 0
+
+        factory = client.get("/api/templates/adaptive").json()
+        assert factory, "the three factory presets are seeded by migration"
+        resp = client.post(
+            f"/api/templates/adaptive/{factory[0]['id']}/branch",
+            json={"target_project_id": pid},
+        )
+        assert resp.status_code == 200
+
+        stats = client.get(f"/api/projects/{pid}").json()["stats"]
+        assert stats["adaptive_preset_templates"] == 1
+        # The global factory rows stay out of it — only the project's own.
+        assert stats["training_templates"] == 0
 
 
 def test_project_datasets_association(client, tmp_path):

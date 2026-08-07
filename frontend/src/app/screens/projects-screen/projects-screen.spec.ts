@@ -10,7 +10,7 @@ interface ConfirmData {
 
 const STATS = (over: Partial<ProjectStats> = {}): ProjectStats => ({
   captioning_templates: 0, masking_templates: 0, training_templates: 0,
-  datasets: 0, jobs: 0, ...over,
+  adaptive_preset_templates: 0, datasets: 0, jobs: 0, ...over,
 });
 const PROJ = (over: Partial<Project> = {}): Project => ({
   id: 'p', name: 'P', description: '', color: '#000',
@@ -25,10 +25,14 @@ describe('ProjectsScreen.cardStat — absent stats render em-dash, not 0 (P2)', 
   });
 
   it('returns real numbers (including 0) when stats are present', () => {
-    const s = STATS({ datasets: 3, jobs: 0, captioning_templates: 1, masking_templates: 2, training_templates: 4 });
+    const s = STATS({
+      datasets: 3, jobs: 0, captioning_templates: 1, masking_templates: 2,
+      training_templates: 4, adaptive_preset_templates: 3,
+    });
     expect(ProjectsScreen.cardStat(s, 'datasets')).toBe(3);
     expect(ProjectsScreen.cardStat(s, 'jobs')).toBe(0);
-    expect(ProjectsScreen.cardStat(s, 'templates')).toBe(7); // 1 + 2 + 4
+    // Every project-scopable domain, adaptive presets included.
+    expect(ProjectsScreen.cardStat(s, 'templates')).toBe(10); // 1 + 2 + 4 + 3
   });
 });
 

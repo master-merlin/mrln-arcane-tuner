@@ -488,6 +488,7 @@ export class AdaptiveTargetingCardComponent implements OnInit {
   // ── Edits ───────────────────────────────────────────────────────────────
 
   selectPreset(ref: string): void {
+    const previous = this.knobs().preset;
     const t = this.presets().find(p => this.refOf(p) === ref);
     // Selecting a preset COPIES its knobs in; it never leaves the control
     // holding a bare reference (D1). Unknown ref → keep the current values.
@@ -500,6 +501,24 @@ export class AdaptiveTargetingCardComponent implements OnInit {
     this.control().setValue(next);
     this.control().markAsDirty();
     // Selecting is not editing — nothing is written back to the preset.
+    if (t && ref !== previous) this.recordUse(t.id);
+  }
+
+  /**
+   * Bump the row's `used_count`/`last_used_at`, the only signal the Templates
+   * library has for ranking presets by real use.
+   *
+   * Fire-and-forget on purpose, and deliberately NOT called from the initial
+   * hydration path — every page load would otherwise register a use of
+   * whichever preset the form happens to carry, and the counter would measure
+   * visits instead of choices. A failure is a lost counter tick and nothing
+   * else, so it warns to the console rather than raising a toast over the
+   * user's actual work.
+   */
+  private recordUse(templateId: string): void {
+    this.templates.useTemplate('adaptive', templateId).subscribe({
+      error: (err: unknown) => console.warn('adaptive preset use not recorded', err),
+    });
   }
 
   selectAction(raw: string): void {

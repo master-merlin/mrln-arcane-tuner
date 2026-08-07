@@ -120,6 +120,9 @@ class ProjectStats(BaseModel):
     captioning_templates: int
     masking_templates: int
     training_templates: int
+    # Declared, not inherited: an undeclared key is silently dropped by the
+    # response filter, so a repo that counts it still ships a body without it.
+    adaptive_preset_templates: int
     datasets: int
     jobs: int
 

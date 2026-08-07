@@ -67,6 +67,7 @@ type Svc = {
   listAdaptivePresets: ReturnType<typeof vi.fn>;
   createAdaptivePreset: ReturnType<typeof vi.fn>;
   updateTemplate: ReturnType<typeof vi.fn>;
+  useTemplate: ReturnType<typeof vi.fn>;
 };
 
 let svc: Svc;
@@ -80,6 +81,7 @@ function build(opts: {
   createError?: unknown;
   updateObservable?: Observable<never>;
   updateError?: unknown;
+  useError?: unknown;
   enabled?: boolean;
 } = {}) {
   TestBed.resetTestingModule();
@@ -92,6 +94,9 @@ function build(opts: {
     updateTemplate: vi.fn().mockImplementation(() =>
       opts.updateObservable
         ?? (opts.updateError ? throwError(() => opts.updateError) : of({})),
+    ),
+    useTemplate: vi.fn().mockReturnValue(
+      opts.useError ? throwError(() => opts.useError) : of({ status: 'recorded' }),
     ),
   };
   toast = { error: vi.fn(), success: vi.fn(), warning: vi.fn() };
@@ -538,6 +543,7 @@ describe('AdaptiveTargetingCard — feature-off + help wiring', () => {
       listAdaptivePresets: vi.fn().mockReturnValue(throwError(() => new Error('boom'))),
       createAdaptivePreset: vi.fn(),
       updateTemplate: vi.fn(),
+      useTemplate: vi.fn(),
     };
     toast = { error: vi.fn(), success: vi.fn(), warning: vi.fn() };
     TestBed.configureTestingModule({
@@ -555,5 +561,49 @@ describe('AdaptiveTargetingCard — feature-off + help wiring', () => {
     expect(toast.error).toHaveBeenCalled();
     // The control is still a complete, submittable dict.
     expect(control.value['interval_steps']).toBe(200);
+  });
+});
+
+describe('AdaptiveTargetingCard — preset usage counter', () => {
+  it('records a use against the row the user picked', () => {
+    const { fixture } = build();
+    expect(svc.useTemplate).not.toHaveBeenCalled();  // not on hydration
+
+    setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
+
+    // The ROW id, not the `factory:*` provenance ref — /use is keyed on the
+    // template's primary key like every other domain.
+    expect(svc.useTemplate).toHaveBeenCalledWith('adaptive', 'factory-aggressive');
+  });
+
+  it('does not record a use when the same preset is re-selected', () => {
+    const { fixture } = build();
+    setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
+    expect(svc.useTemplate).toHaveBeenCalledTimes(1);
+
+    setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
+    expect(svc.useTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not record a use for a selection that resolves to no row', () => {
+    // An empty list is the real shape of this: the dropdown has no options, so
+    // a change event carries a ref no row can answer for. Recording against it
+    // would POST /templates/adaptive//use.
+    const { fixture } = build({ presets: [] });
+    setKnob(fixture, 'adaptive-preset-select', 'factory:balanced');
+    expect(svc.useTemplate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the selection when the counter call fails — it is not the user\'s work', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { fixture, control } = build({ useError: new Error('offline') });
+
+    setKnob(fixture, 'adaptive-preset-select', 'factory:aggressive');
+
+    expect(control.value['preset']).toBe('factory:aggressive');
+    expect(control.value['interval_steps']).toBe(150);  // the knobs still applied
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();  // surfaced, not swallowed
+    warn.mockRestore();
   });
 });

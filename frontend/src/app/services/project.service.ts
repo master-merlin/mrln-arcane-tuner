@@ -13,8 +13,24 @@ export interface ProjectStats {
   captioning_templates: number;
   masking_templates: number;
   training_templates: number;
+  adaptive_preset_templates: number;
   datasets: number;
   jobs: number;
+}
+
+/**
+ * Templates a project owns, across every project-scopable domain.
+ *
+ * Lives beside the interface rather than on either screen: the Projects card
+ * and the Project-detail header both show this number, and a domain added to
+ * one sum but not the other makes the same project read two different totals.
+ */
+export function projectTemplateCount(stats: ProjectStats | undefined): number {
+  if (!stats) return 0;
+  return (stats.captioning_templates ?? 0)
+    + (stats.masking_templates ?? 0)
+    + (stats.training_templates ?? 0)
+    + (stats.adaptive_preset_templates ?? 0);
 }
 
 export interface Project {

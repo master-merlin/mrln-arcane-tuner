@@ -3,9 +3,13 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormArray, FormBuilder, FormControl, FormGroup } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
-import { ProjectService, type Project } from '../../services/project.service';
+import {
+    ProjectService, projectTemplateCount, type Project, type ProjectStats,
+} from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
-import { TemplateService, type Template } from '../../services/template.service';
+import {
+    TemplateService, type Template, type TemplateDomain,
+} from '../../services/template.service';
 import { JobService, type Job, type TrainingEstimate } from '../../services/job';
 import { ToastService } from '../../services/toast';
 import { ScopeStore } from '../../state/scope.store';
@@ -24,7 +28,10 @@ import { nextTriggerWord } from '../../shared/trigger-word';
 import type { SchemaNode } from '../../components/training/schema-node';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
-export type TemplateDomain = 'captioning' | 'masking' | 'training';
+// Re-exported, never re-declared. A local union drifts the moment a domain is
+// added: adaptive presets branch into projects and are listed by the export
+// modal, but a screen typed on a narrower union cannot manage them.
+export type { TemplateDomain };
 
 interface ProjectDatasetRow {
     id: string;
@@ -281,6 +288,7 @@ export class ProjectDetail implements OnInit {
     private globalCaptionTpls = signal<Template[]>([]);
     private globalMaskTpls = signal<Template[]>([]);
     private globalTrainTpls = signal<Template[]>([]);
+    private globalAdaptiveTpls = signal<Template[]>([]);
 
     /** Global (project_id null) templates of the domain currently being branched. */
     protected branchableTemplates = computed<Template[]>(() => {
@@ -288,8 +296,14 @@ export class ProjectDetail implements OnInit {
         if (!dom) return [];
         if (dom === 'captioning') return this.globalCaptionTpls();
         if (dom === 'masking') return this.globalMaskTpls();
+        if (dom === 'adaptive') return this.globalAdaptiveTpls();
         return this.globalTrainTpls();
     });
+
+    /** Templates this project owns, across every domain (header TEMPLATES stat). */
+    protected templateCount(stats: ProjectStats | undefined): number {
+        return projectTemplateCount(stats);
+    }
 
     constructor() {
         // FormControl values aren't signals — drive the start-gate computed off
@@ -373,25 +387,31 @@ export class ProjectDetail implements OnInit {
 
     private async loadTemplates(projectId: string): Promise<void> {
         try {
-            const [cap, mask, train] = await Promise.all([
+            const [cap, mask, train, adaptive] = await Promise.all([
                 firstValueFrom(this.templates.listCaptioningTemplates(null, projectId)),
                 firstValueFrom(this.templates.listMaskingTemplates(null, projectId)),
                 firstValueFrom(this.templates.listTrainingTemplates(undefined, projectId)),
+                firstValueFrom(this.templates.listAdaptivePresets(projectId)),
             ]);
             // Server returns global + project rows when project_id is passed; split them.
             this.templateSections.set([
                 { domain: 'captioning', label: 'Caption templates', items: (cap ?? []).filter(t => t.project_id === projectId) },
                 { domain: 'masking', label: 'Mask templates', items: (mask ?? []).filter(t => t.project_id === projectId) },
                 { domain: 'training', label: 'Training templates', items: (train ?? []).filter(t => t.project_id === projectId) },
+                { domain: 'adaptive', label: 'Adaptive targeting presets', items: (adaptive ?? []).filter(t => t.project_id === projectId) },
             ]);
             this.globalCaptionTpls.set((cap ?? []).filter(t => !t.project_id));
             this.globalMaskTpls.set((mask ?? []).filter(t => !t.project_id));
             this.globalTrainTpls.set((train ?? []).filter(t => !t.project_id));
+            // Includes the three readonly factory presets — branching one into
+            // the project is exactly how a project gets its own copy to edit.
+            this.globalAdaptiveTpls.set((adaptive ?? []).filter(t => !t.project_id));
         } catch {
             this.templateSections.set([]);
             this.globalCaptionTpls.set([]);
             this.globalMaskTpls.set([]);
             this.globalTrainTpls.set([]);
+            this.globalAdaptiveTpls.set([]);
         }
     }
 
@@ -405,6 +425,19 @@ export class ProjectDetail implements OnInit {
         this.templates.getTemplate(domain, t.id).subscribe({
             next: (full) => {
                 if (domain === 'training') { this.openTrainingTemplate(full); return; }
+                // Adaptive presets are a bag of numeric knobs with no settings
+                // dialog of their own — the caption/mask modal would render the
+                // wrong UI and save a mask-shaped payload over them. Their real
+                // editing surface is the training form's card; here, JSON.
+                // Mirrors TemplatesScreen.edit.
+                if (domain === 'adaptive') {
+                    this.overlay.openModal('template-json', {
+                        domain,
+                        template: full,
+                        onSaved: () => void this.loadTemplates(this.projectId()),
+                    });
+                    return;
+                }
                 this.overlay.openModal('template-edit', {
                     domain,
                     template: full,
@@ -423,11 +456,27 @@ export class ProjectDetail implements OnInit {
      * a modal and keep the pencil. The tooltip/aria-label already disambiguate;
      * this makes the difference visible at a glance.
      */
-    protected editIcon(domain: TemplateDomain): 'ExternalLink' | 'Pencil' {
-        return domain === 'training' ? 'ExternalLink' : 'Pencil';
+    protected editIcon(domain: TemplateDomain): 'ExternalLink' | 'Pencil' | 'Braces' {
+        if (domain === 'training') return 'ExternalLink';
+        if (domain === 'adaptive') return 'Braces';
+        return 'Pencil';
     }
 
-    /** Raw-JSON "Edit JSON" action — works for all three domains. */
+    /** Tooltip for the same button — must describe what the icon above does. */
+    protected editTitle(domain: TemplateDomain): string {
+        if (domain === 'training') return 'Open in Training screen (leaves this project)';
+        if (domain === 'adaptive') return 'Edit preset values (raw JSON)';
+        return 'Edit template settings';
+    }
+
+    /** Screen-reader form of `editTitle`, naming the row it belongs to. */
+    protected editAria(domain: TemplateDomain, name: string): string {
+        if (domain === 'training') return `Open template ${name} in Training screen`;
+        if (domain === 'adaptive') return `Edit preset ${name} values as raw JSON`;
+        return `Edit template ${name} settings`;
+    }
+
+    /** Raw-JSON "Edit JSON" action — works for every domain. */
     protected editTemplateJson(domain: TemplateDomain, t: Template): void {
         this.templates.getTemplate(domain, t.id).subscribe({
             next: (full) => this.overlay.openModal('template-json', {
@@ -1161,9 +1210,11 @@ export class ProjectDetail implements OnInit {
         return new Date(ts * 1000).toLocaleString();
     }
 
-    protected templateDomainTone(d: 'captioning' | 'masking' | 'training'): string {
+    /** Section dot colour. Same domain→tone mapping as the Templates screen. */
+    protected templateDomainTone(d: TemplateDomain): string {
         if (d === 'captioning') return 'var(--color-brand)';
         if (d === 'masking') return 'var(--color-success)';
+        if (d === 'adaptive') return 'var(--color-warning)';
         return 'var(--color-violet)';
     }
 

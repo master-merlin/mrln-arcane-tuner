@@ -151,6 +151,10 @@ class AdaptiveTargetingController:
         self.rebuild_count = 0
         self._consecutive_failures = 0
         self._events: list[dict[str, Any]] = []
+        # Module names earlier segments of this run managed. A rebuild restart
+        # discovers a NARROWED universe, so without this the history file's
+        # module list would shrink below the set its own events refer to.
+        self._prior_modules: list[str] = []
         self._heat: dict[str, float] = {}
         self._hot: list[str] = []
         self._universe: list[str] = []
@@ -510,7 +514,7 @@ class AdaptiveTargetingController:
                 "keep_patterns": self.keep_patterns(),
                 "rebuild_count": self.rebuild_count,
             },
-            swallow_history_error=True,
+            is_handoff=True,
         )
 
     # ── probe windows (reactivation mode, spec §5) ────────────────────────
@@ -637,16 +641,26 @@ class AdaptiveTargetingController:
         frozen_this_event: int,
         reactivated_this_event: int,
         extra: dict | None = None,
-        swallow_history_error: bool = False,
+        is_handoff: bool = False,
     ) -> None:
         """Append, broadcast and persist one analysis event.
 
-        ``swallow_history_error`` is for events the CALLER acts on
-        irreversibly: once the payload is on the log-writer channel the backend
-        has it, so a later failure to rewrite the run-dir history file must not
-        be reported back as "the event never happened". It is surfaced, never
-        silent. Every other caller wants the failure — an event that cannot be
-        persisted is a failed event and must count against the failure budget.
+        ``is_handoff`` marks the one event the BACKEND acts on irreversibly —
+        the rebuild request. It inverts two orderings, both for the same
+        reason: for a handoff the emit IS the decision, everywhere else the
+        decision was already applied to the model before we got here.
+
+        * Emit vs. record. A handoff emits first, so a failed emit records
+          nothing — ``_write_history`` rewrites the file from ``self._events``
+          and would otherwise publish, on the next successful write, a restart
+          the pipeline never performed. Every other kind records first, so a
+          broken log channel cannot erase a narrowing the run really made from
+          the only durable record of it.
+        * History-write failure. Once a handoff payload is on the log-writer
+          channel the backend has it, so failing to rewrite the file must not
+          be reported back as "the event never happened" — it is surfaced, not
+          raised. Every other caller wants the failure: an event that cannot
+          be persisted is a failed event and must count against the budget.
         """
         active_params = sum(
             self._modules[n][0].numel() + self._modules[n][1].numel()
@@ -673,27 +687,44 @@ class AdaptiveTargetingController:
             "top_modules": self._hot[:10],
             **(extra or {}),
         }
-        # Emit FIRST, record second. ``_write_history`` rewrites the file from
-        # this list, so an event appended before a failing emit would still be
-        # persisted by the next successful one — publishing, for the rebuild
-        # handoff, a restart the pipeline never performed.
-        self.log_writer.emit("adapt", event)
-        self._events.append(event)
-        self.log_writer.log(
+        summary = (
             f"adaptive_targeting[{kind}] step {step}: "
             f"{self.active_count}/{self.total_count} layers active"
         )
-        if not swallow_history_error:
-            self._write_history()
+        if is_handoff:
+            self.log_writer.emit("adapt", event)
+            self._events.append(event)
+            self.log_writer.log(summary)
+            try:
+                self._write_history()
+            except Exception as exc:  # noqa: BLE001 — the event already shipped
+                logger.warning(
+                    "adaptive_history_write_failed", kind=kind, error=str(exc)
+                )
+                self.log_writer.warning(
+                    f"adaptive_targeting: could not update {HISTORY_FILENAME} after "
+                    f"the {kind} event ({exc}) — the event itself was delivered"
+                )
             return
+
+        self._events.append(event)
         try:
-            self._write_history()
-        except Exception as exc:  # noqa: BLE001 — the event already shipped
-            logger.warning("adaptive_history_write_failed", kind=kind, error=str(exc))
-            self.log_writer.warning(
-                f"adaptive_targeting: could not update {HISTORY_FILENAME} after the "
-                f"{kind} event ({exc}) — the event itself was delivered"
-            )
+            self.log_writer.emit("adapt", event)
+        except Exception:
+            # The freeze this event describes is already applied. Persist it
+            # before re-raising, so the durable record matches the model even
+            # though nobody is listening on the live channel. A history write
+            # that also fails must not mask the emit failure the caller's
+            # budget is counting.
+            try:
+                self._write_history()
+            except Exception as hist_exc:  # noqa: BLE001 — emit error wins
+                logger.warning(
+                    "adaptive_history_write_failed", kind=kind, error=str(hist_exc)
+                )
+            raise
+        self.log_writer.log(summary)
+        self._write_history()
 
     def _seed_events_from_history(self, current_step: int | None) -> None:
         """Adopt the run's earlier events before this segment appends to them.
@@ -716,15 +747,27 @@ class AdaptiveTargetingController:
         path = os.path.join(self.output_dir, HISTORY_FILENAME)
         try:
             with open(path, "r", encoding="utf-8") as fh:
-                prior = json.load(fh).get("events")
+                document = json.load(fh)
         except FileNotFoundError:
             return  # first segment of the run — nothing to inherit
         except (OSError, ValueError) as exc:
             self._warn_history_unusable(str(exc))
             return
+        # A file that parses but is not an object (``[...]``, ``null``, ``3``)
+        # must degrade like any other unusable history. Reaching for ``.get``
+        # on it raises AttributeError, which no caller's except clause names —
+        # it would surface as "adaptive targeting failed to configure" and
+        # disable the feature for the whole segment over a cosmetic file.
+        if not isinstance(document, dict):
+            self._warn_history_unusable("its top level is not a JSON object")
+            return
+        prior = document.get("events")
         if not isinstance(prior, list):
             self._warn_history_unusable("its event list is not an array")
             return
+        self._prior_modules = [
+            name for name in document.get("modules", []) if isinstance(name, str)
+        ]
 
         kept: list[dict[str, Any]] = []
         malformed = 0
@@ -761,11 +804,28 @@ class AdaptiveTargetingController:
 
         A reader (UI, post-run report) must never observe a half-written file:
         a partial JSON document is indistinguishable from a corrupt run.
+
+        Schema — the two spans differ, and a consumer must not conflate them:
+
+        ``events``   every analysis event of the RUN, across rebuild segments
+                     (seeded from the prior file, pruned at the resume step).
+        ``modules``  every module the RUN managed, same span as ``events``. A
+                     rebuild restart's own universe is already narrowed, so
+                     this is the union with what earlier segments recorded —
+                     otherwise it would name fewer modules than its own events
+                     reference.
+        ``heat``     live heat of the modules THIS segment still measures, and
+                     only those. Narrower than ``modules`` by construction: a
+                     module frozen in an earlier segment is no longer measured,
+                     so any value carried for it would be a stale reading
+                     presented as a current one.
         """
         path = os.path.join(self.output_dir, HISTORY_FILENAME)
+        seen = set(self._universe)
         payload = {
             "events": self._events,
-            "modules": self._universe,
+            "modules": self._universe
+            + [n for n in self._prior_modules if n not in seen],
             "heat": {k: _json_heat(v) for k, v in self._heat.items()},
         }
         tmp = f"{path}.tmp"
@@ -808,7 +868,6 @@ class AdaptiveTargetingController:
         """
         if not self.enabled or not state:
             return
-        self._seed_events_from_history(current_step)
         # The floor stays a share of the universe the RUN started from. Falls
         # back to this process's universe for state written before the key
         # existed, which is exactly the fresh-controller value.
@@ -882,3 +941,9 @@ class AdaptiveTargetingController:
         self._probe_open_step = None
         self._pre_probe_active = []
         self._snapshot = self._take_snapshot()  # window restarts at resume point
+        # LAST, deliberately. Re-adopting the run's earlier events is the least
+        # critical part of a restore and the only part that reads a file this
+        # process did not write. Going first, any failure in it would discard
+        # the whole restore above — active set, heat, schedule clamp — and the
+        # run would silently resume with none of its narrowing decisions.
+        self._seed_events_from_history(current_step)

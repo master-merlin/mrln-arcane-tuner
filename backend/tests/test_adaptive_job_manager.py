@@ -457,6 +457,164 @@ def test_relaunch_stands_down_when_the_user_intervened(jm_job, tmp_path):
     assert job.status == JobStatus.RUNNING
 
 
+# ── the user's own targeted_layers survive a rebuild ─────────────────────
+
+
+_USER_PATTERNS = [r"^blocks\.\d+\.to_q$"]
+
+
+def _rebuild_once(mgr, job, run_dir, data=None):
+    """Drive one narrowing rebuild through ``_restart_for_rebuild``."""
+    with patch.object(mgr, "_get_job_output_dir", return_value=run_dir), \
+            patch.object(mgr, "restart_job"):
+        mgr._restart_for_rebuild(job.id, data or _REBUILD)
+
+
+def _fresh_restart(mgr, job, run_dir):
+    job.status = JobStatus.FAILED
+    with patch.object(mgr, "_get_job_output_dir", return_value=run_dir), \
+            patch.object(mgr, "_reconcile_active_jobs"), \
+            patch.object(mgr, "_persist_config") as persist, \
+            patch.object(mgr, "start_job"):
+        mgr.restart_job(job.id, fresh=True)
+    return persist
+
+
+def test_fresh_restart_restores_the_users_targeted_layers(jm_job, tmp_path):
+    """A rebuild overwrites ``targeted_layers`` on the PERSISTED record. The
+    narrowed set is this run's machine-derived state, not user intent — a
+    restart-from-zero that inherits it would constrain a full run to the
+    previous run's final keep-set forever, and the original selection would be
+    unrecoverable from the record."""
+    mgr, job, _ = jm_job
+    job.config["targeted_layers"] = list(_USER_PATTERNS)
+    run_dir, _ckpt = _run_with_checkpoint(mgr, tmp_path)
+
+    _rebuild_once(mgr, job, run_dir)
+    assert job.config["targeted_layers"] == [r"^blocks\.0\.to_q$"]  # narrowed
+
+    persist = _fresh_restart(mgr, job, run_dir)
+    assert job.config["targeted_layers"] == _USER_PATTERNS
+    assert "pre_adaptive_targeted_layers" not in job.config
+    assert persist.call_args[0][1]["targeted_layers"] == _USER_PATTERNS
+
+
+def test_fresh_restart_after_a_rebuild_of_an_untargeted_run_clears_the_field(
+    jm_job, tmp_path,
+):
+    """The user selected nothing, so "restore the original" means the field is
+    GONE — leaving the narrowed list would silently target a run the user asked
+    to train whole."""
+    mgr, job, _ = jm_job
+    assert "targeted_layers" not in job.config
+    run_dir, _ckpt = _run_with_checkpoint(mgr, tmp_path)
+
+    _rebuild_once(mgr, job, run_dir)
+    _fresh_restart(mgr, job, run_dir)
+    assert "targeted_layers" not in job.config
+    assert "pre_adaptive_targeted_layers" not in job.config
+
+
+def test_only_the_first_rebuild_stashes_the_original_selection(jm_job, tmp_path):
+    """Segment two must not stash segment one's already-narrowed set — that is
+    how a multi-rebuild run loses the original just as thoroughly, one layer of
+    indirection later."""
+    mgr, job, _ = jm_job
+    job.config["targeted_layers"] = list(_USER_PATTERNS)
+    run_dir, _ckpt = _run_with_checkpoint(mgr, tmp_path)
+    second = os.path.join(run_dir, "checkpoint-000200")
+    os.makedirs(second)
+    with open(os.path.join(second, "training_state.json"), "w", encoding="utf-8") as fh:
+        fh.write("{}")
+
+    _rebuild_once(mgr, job, run_dir)
+    _rebuild_once(mgr, job, run_dir, {
+        **_REBUILD, "checkpoint_dir": "checkpoint-000200",
+        "keep_patterns": [r"^blocks\.1\.to_k$"], "rebuild_count": 2,
+    })
+    assert job.config["targeted_layers"] == [r"^blocks\.1\.to_k$"]
+
+    _fresh_restart(mgr, job, run_dir)
+    assert job.config["targeted_layers"] == _USER_PATTERNS
+
+
+# ── pending-rebuild entries never outlive their run ──────────────────────
+
+
+def _kill_via_watchdog(mgr, job):
+    """Drive the real PID watchdog through an exit-message-less death.
+
+    ``time.sleep`` is neutralized so the watchdog's poll cadence does not make
+    the test wait; everything else — the thread, the finalize block, the status
+    transition — is the production path.
+    """
+    with patch("app.core.job_manager.time.sleep"), \
+            patch.object(mgr, "_resolve_worker_pid", return_value=4242), \
+            patch.object(mgr, "_trainer_tree_dead", return_value=True), \
+            patch.object(mgr, "_terminate_process_tree", return_value=[]):
+        mgr._start_pid_watchdog(job.id, 4242)
+        assert _wait_until(lambda: job.status == JobStatus.STOPPED), \
+            "the watchdog never finalized the job"
+
+
+def test_hard_killed_trainer_does_not_hijack_the_next_run(jm_job, tmp_path):
+    """The trainer announces a rebuild and then dies WITHOUT an exit line (TDR,
+    hard kill) — the window between the two covers VRAM-peak capture, loss
+    history and teardown. The watchdog finalizes the job, so nothing pops the
+    pending entry, and the NEXT run of the same job would be relaunched from a
+    stale checkpoint the moment it exits cleanly."""
+    mgr, job, _ = jm_job
+    job.pid = 4242
+    mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+    assert job.id in mgr._pending_rebuilds
+
+    _kill_via_watchdog(mgr, job)
+    assert job.id not in mgr._pending_rebuilds
+
+    # The user restarts; that run finishes for real.
+    with patch.object(mgr, "_restart_for_rebuild") as restart:
+        job.status = JobStatus.RUNNING
+        mgr._dispatch_log_entry(job.id, _exit(0))
+    restart.assert_not_called()
+    assert job.status == JobStatus.COMPLETED
+
+
+def test_stop_clears_a_pending_rebuild(jm_job):
+    """A deliberate Stop between the announcement and the exit line ends the
+    run — the exit handler's STOPPED guard suppresses THIS relaunch, but the
+    entry itself must not survive to meet a later clean exit."""
+    mgr, job, _ = jm_job
+    job.pid = 4242
+    mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+    with patch.object(mgr, "_terminate_process_tree", return_value=[]):
+        mgr.stop_job(job.id)
+    assert job.id not in mgr._pending_rebuilds
+
+
+def test_phantom_reconcile_clears_a_pending_rebuild(jm_job):
+    """The queue's self-heal is a fourth way a run ends with no exit line: it
+    demotes a RUNNING job whose process is gone straight to FAILED."""
+    mgr, job, _ = jm_job
+    job.pid = 4242
+    mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+    with patch.object(mgr, "_is_trainer_process", return_value=False):
+        assert mgr._reconcile_active_jobs() == [job.id]
+    assert job.id not in mgr._pending_rebuilds
+
+
+def test_restart_clears_a_pending_rebuild(jm_job, tmp_path):
+    """A manual relaunch of a job whose rebuild handoff was never consumed
+    starts a NEW run; the old announcement is not part of it."""
+    mgr, job, _ = jm_job
+    mgr._dispatch_log_entry(job.id, _adapt(_REBUILD))
+    job.status = JobStatus.FAILED
+    with patch.object(mgr, "_get_job_output_dir", return_value=str(tmp_path / "run")), \
+            patch.object(mgr, "_reconcile_active_jobs"), \
+            patch.object(mgr, "start_job"):
+        mgr.restart_job(job.id, fresh=False)
+    assert job.id not in mgr._pending_rebuilds
+
+
 def test_rebuild_restart_rotates_the_log_and_relaunches_once(jm_job, tmp_path):
     """End-to-end over a REAL ``LogTailer``: the relaunch must happen only
     after the tailer has released ``job_log.jsonl``.

@@ -448,13 +448,19 @@ async def get_rerun_config(job_id: str):
     The training config is a plugin-schema-driven blob whose fields vary per
     model family (mirrors ``TrainingConfig`` in job.ts) — ``dict[str, Any]``
     is an intentional open passthrough, not a stand-in for an unwritten model.
+
+    A run that performed adaptive rebuilds carries a ``targeted_layers`` its
+    controller derived, not the one its user chose; the form is prefilled with
+    the user's own selection instead (``restore_user_targeted_layers``), which
+    also strips the stash key from the payload.
     """
     from app.core.db.repositories.job_repo import JobHistoryRepository
+    from app.core.job import restore_user_targeted_layers
     repo = JobHistoryRepository()
     config = await asyncio.to_thread(repo.get_config_for_rerun, job_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return config
+    return restore_user_targeted_layers(config)
 
 
 @router.get("/datasets/{name}/jobs", response_model=list[JobHistoryRow])

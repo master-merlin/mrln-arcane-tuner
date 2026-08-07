@@ -315,6 +315,21 @@ def test_get_rerun_config_full_payload(MockRepo, client):
 
 
 @patch(_JOB_REPO)
+def test_get_rerun_config_undoes_an_adaptive_rebuild_narrowing(MockRepo, client):
+    """A run that rebuilt carries the controller's keep-set in
+    ``targeted_layers``. Re-running it must prefill the form with the selection
+    the USER made, and must not leak the stash key back into a new job."""
+    MockRepo.return_value.get_config_for_rerun.return_value = {
+        "lr": 1e-4,
+        "targeted_layers": [r"^blocks\.0\.to_q$"],
+        "pre_adaptive_targeted_layers": [r"^blocks\.\d+\.to_q$"],
+    }
+    body = client.get("/api/jobs/history/job-1/rerun-config").json()
+    assert body["targeted_layers"] == [r"^blocks\.\d+\.to_q$"]
+    assert "pre_adaptive_targeted_layers" not in body
+
+
+@patch(_JOB_REPO)
 def test_get_rerun_config_not_found(MockRepo, client):
     MockRepo.return_value.get_config_for_rerun.return_value = None
     response = client.get("/api/jobs/history/ghost/rerun-config")

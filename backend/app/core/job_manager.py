@@ -21,7 +21,12 @@ import structlog
 from typing import Any
 
 from app.core.events import event_manager
-from app.core.job import Job, JobStatus
+from app.core.job import (
+    PRE_ADAPTIVE_TARGETED_LAYERS,
+    Job,
+    JobStatus,
+    restore_user_targeted_layers,
+)
 from app.core.naming import model_part_from_definition_id
 from app.core.log_tailer import LogTailer, LOG_FILENAME
 from app.core.plugin_manager import plugin_manager
@@ -151,8 +156,10 @@ class JobManager:
         # keyed by job_id (the trainer's ``rebuild_request`` adapt event). The
         # trainer's rebuild exit is an ORDINARY exit(0), so this entry is the
         # only thing that tells a rebuild apart from a genuine completion.
-        # Popped unconditionally by the exit handler — it must never survive a
-        # run and hijack the next one.
+        # It must never survive a run and hijack the next one, so EVERY path
+        # that ends a run pops it: the exit handler unconditionally, plus the
+        # ones that end a run without an exit line ever arriving — the PID
+        # watchdog's finalize, the phantom reconcile, stop_job and restart_job.
         self._pending_rebuilds: dict[str, dict[str, Any]] = {}
         # Rebuild relaunches performed this session, keyed by job_id. Budget
         # for _MAX_REBUILD_RESTARTS; cleared wherever a job legitimately starts
@@ -1264,6 +1271,12 @@ class JobManager:
                         )
                         # Reap any lingering launcher/worker remnant so VRAM frees.
                         self._terminate_process_tree(pid)
+                        # A death with no exit line never reaches
+                        # _handle_exit_message, so this is the only place that
+                        # can retire a rebuild handoff the dead trainer had
+                        # already announced. Left behind, it hijacks the next
+                        # clean exit of this job (see _pending_rebuilds).
+                        self._pending_rebuilds.pop(job_id, None)
                         with self._lock:
                             job.status = JobStatus.STOPPED
                             job.finished_at = time.time()
@@ -1585,6 +1598,10 @@ class JobManager:
             self._persist_status(
                 job.id, "failed", finished_at=job.finished_at, error=job.error,
             )
+            # Another death with no exit line — same retirement as the watchdog
+            # finalize: a rebuild handoff this phantom announced must not wait
+            # around for the next run's clean exit (see _pending_rebuilds).
+            self._pending_rebuilds.pop(job.id, None)
             self._stop_tailer(job.id)
             reconciled.append(job.id)
             logger.warning(
@@ -1666,6 +1683,10 @@ class JobManager:
         logger.info(
             "stop_job_tree_killed", job_id=job_id, root_pid=job.pid, killed_pids=killed
         )
+        # This run is over. A rebuild handoff it announced but never got to act
+        # on dies with it — see _pending_rebuilds: an entry that outlives its
+        # own run relaunches whichever run of this job exits cleanly next.
+        self._pending_rebuilds.pop(job_id, None)
         with self._lock:
             job.status = JobStatus.STOPPED
             job.finished_at = time.time()
@@ -1790,6 +1811,13 @@ class JobManager:
 
         logger.info("restarting_job", job_id=job_id, fresh=fresh)
 
+        # Whatever the previous run announced belongs to the previous run. A
+        # rebuild handoff that was never consumed (its trainer died without an
+        # exit line) would otherwise be waiting for THIS run's clean exit and
+        # relaunch it from a stale checkpoint. The rebuild path itself pops the
+        # entry in _handle_exit_message before it ever gets here.
+        self._pending_rebuilds.pop(job_id, None)
+
         if fresh:
             self._delete_job_output_dir(job)
             self._auto_resume_state.pop(job_id, None)  # clean slate → reset budget
@@ -1799,9 +1827,18 @@ class JobManager:
             # resume_from_checkpoint pointing into the output dir we just
             # deleted — the trainer would then crash in _resume_if_needed with
             # FileNotFoundError. Strip it (and persist) so fresh means fresh.
-            if job.config.get("resume_from_checkpoint") is not None:
+            # An adaptive rebuild ALSO leaves derived state on the record: it
+            # overwrote targeted_layers with its keep-set. Fresh means fresh
+            # for that too, or the previous run's narrowing silently constrains
+            # every later full run of this job.
+            needs_reset = (
+                job.config.get("resume_from_checkpoint") is not None
+                or PRE_ADAPTIVE_TARGETED_LAYERS in job.config
+            )
+            if needs_reset:
                 new_config = copy.deepcopy(job.config)
                 new_config.pop("resume_from_checkpoint", None)
+                new_config = restore_user_targeted_layers(new_config)
                 with self._lock:
                     job.config = new_config
                 self._persist_config(job_id, new_config)
@@ -1972,7 +2009,13 @@ class JobManager:
         new_config = copy.deepcopy(job.config)
         # Replaces (not extends) any manual targeted_layers: the controller's
         # universe was already the post-targeted_layers trainable set, so the
-        # kept patterns are a subset of what the user asked to train.
+        # kept patterns are a subset of what the user asked to train. The
+        # user's own value is stashed on the FIRST narrowing only — from the
+        # second rebuild on, the field already holds this feature's output, and
+        # re-stashing it would bury the original just as thoroughly.
+        # restart_job(fresh=True) and the rerun-config route hand it back.
+        if PRE_ADAPTIVE_TARGETED_LAYERS not in new_config:
+            new_config[PRE_ADAPTIVE_TARGETED_LAYERS] = job.config.get("targeted_layers")
         new_config["targeted_layers"] = keep_patterns
         new_config["resume_from_checkpoint"] = ckpt_path
         # Same dataset across a rebuild — reuse the existing caches.

@@ -12,6 +12,9 @@ export interface ChartDataPoint {
     lr: number;
     grad_norm?: number;
     d_estimate?: number;
+    /** Adaptive layer targeting narrowing series (Task 11) — count scale, right axis. */
+    adaptive_active?: number;
+    adaptive_hot?: number;
 }
 
 @Component({
@@ -79,6 +82,7 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     private plot: uPlot | null = null;
     private resizeObserver: ResizeObserver | null = null;
     private _lastIsProdigy?: boolean;
+    private _lastHasAdaptive?: boolean;
     private _plateauFired = false;
     private _bestLossStep: number | null = null;
     private _bestLossVal: number | null = null;
@@ -100,6 +104,16 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     /** Check if any data point has a d_estimate (Prodigy optimizer). */
     private isProdigy(): boolean {
         return this.data().some(d => d.d_estimate != null);
+    }
+
+    /**
+     * Whether any point carries adaptive layer targeting fields. Off (the
+     * common case — feature disabled, or not yet on this codebase) means the
+     * two count series/axis are never added: chart output is byte-identical
+     * to the pre-adaptive chart.
+     */
+    private hasAdaptive(): boolean {
+        return this.data().some(d => d.adaptive_active != null || d.adaptive_hot != null);
     }
 
     /** Format small numbers with scientific notation for legend readability.
@@ -202,8 +216,10 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     private buildUPlotData(): uPlot.AlignedData {
         const empty = (n: number) => Array.from({ length: n }, () => new Float64Array(0));
         const currentData = this.data();
+        const adaptive = this.hasAdaptive();
         if (!currentData || currentData.length === 0) {
-            return empty(this.isProdigy() ? 5 : 6) as uPlot.AlignedData;
+            const base = this.isProdigy() ? 5 : 6;
+            return empty(base + (adaptive ? 2 : 0)) as uPlot.AlignedData;
         }
 
         const prodigy = this.isProdigy();
@@ -228,16 +244,21 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         // One cast at the uPlot boundary: the series are plain (number|null)[]
         // (+ a Float64Array x-axis), which uPlot accepts at runtime but its
         // `AlignedData` tuple type doesn't structurally infer from the literal.
-        if (prodigy) {
+        const out: unknown[] = prodigy
             // Prodigy: 5 data slots — no grad norm at all
-            const dEstimate = currentData.map(d => d.d_estimate ?? null);
-            return [steps, smoothedLoss, rawLoss, bestDummy, dEstimate] as unknown as uPlot.AlignedData;
-        } else {
+            ? [steps, smoothedLoss, rawLoss, bestDummy, currentData.map(d => d.d_estimate ?? null)]
             // AdamW: 6 data slots — includes grad norm
-            const lr = currentData.map(d => d.lr);
-            const gradNorm = currentData.map(d => d.grad_norm ?? null);
-            return [steps, smoothedLoss, rawLoss, bestDummy, lr, gradNorm] as unknown as uPlot.AlignedData;
+            : [steps, smoothedLoss, rawLoss, bestDummy, currentData.map(d => d.lr), currentData.map(d => d.grad_norm ?? null)];
+
+        // Adaptive layer targeting: two extra trailing slots, ONLY when at
+        // least one point actually carries the fields (see hasAdaptive()) —
+        // series/axes are only pushed to match in createChart() under the
+        // same condition, so slot count and series count always agree.
+        if (adaptive) {
+            out.push(currentData.map(d => d.adaptive_active ?? null));
+            out.push(currentData.map(d => d.adaptive_hot ?? null));
         }
+        return out as unknown as uPlot.AlignedData;
     }
 
     /** Resolve a CSS custom property from the host element. */
@@ -258,6 +279,12 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         // Best Loss is keyed to the KPI Rail's "Best Loss" tile (violet) so the
         // two surfaces read as the same metric.
         const cBest = this.themeColor('--color-violet');
+        // Adaptive layer targeting narrowing series — reuse existing palette
+        // tokens (not yet used elsewhere in this chart) rather than inventing
+        // new colours: warning (amber) for the broader "active" population,
+        // danger (red) for the narrower "hot"/essential tier.
+        const cAdaptiveActive = this.themeColor('--color-warning');
+        const cAdaptiveHot = this.themeColor('--color-danger');
         const cAxisDim = this.themeColor('--color-text-subtle');
         const cAxis = this.themeColor('--color-text-muted');
         // Stronger than --color-border-subtle so the scientific grid actually
@@ -368,6 +395,49 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                 value: TrainingChartComponent.fmtSci,
             });
         }
+
+        // ── Adaptive layer targeting: narrowing step-series (Task 11) ─────
+        // Additive + conditional: with the feature off (no point carries the
+        // fields) `adaptive` is false and NONE of this runs — series count,
+        // scales and axes stay byte-identical to the pre-adaptive chart.
+        const adaptive = this.hasAdaptive();
+        if (adaptive) {
+            scales['count'] = { auto: true };
+            axes.push({
+                side: 1,
+                scale: 'count',
+                stroke: cAxisDim,
+                grid: { show: false },
+                ticks: { stroke: cTick, width: 1 },
+                font: '10px Inter, sans-serif',
+                labelFont: '10px Inter, sans-serif',
+                size: 40,
+                values: (u: uPlot, vals: number[]) => vals.map(v => (v == null ? '' : String(Math.round(v)))),
+            });
+            // Both series are genuine step functions (a module count only
+            // steps down at a narrowing event) — draw them stepped rather
+            // than linearly-interpolated between sparse points.
+            const steppedPath = uPlot.paths.stepped ? uPlot.paths.stepped({ align: 1 }) : undefined;
+            const countValue = (u: uPlot, v: number | null) => (v == null ? '—' : String(Math.round(v)));
+            series.push({
+                label: 'Active layers',
+                stroke: cAdaptiveActive,
+                width: 1.5,
+                scale: 'count',
+                paths: steppedPath,
+                value: countValue,
+            });
+            series.push({
+                label: 'Hot layers',
+                stroke: cAdaptiveHot,
+                width: 1.5,
+                scale: 'count',
+                dash: [4, 4],
+                paths: steppedPath,
+                value: countValue,
+            });
+        }
+        this._lastHasAdaptive = adaptive;
 
         const opts: uPlot.Options = {
             width,
@@ -550,9 +620,11 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
             this.createChart();
             return;
         }
-        // Rebuild if optimizer type changed (different series count)
+        // Rebuild if optimizer type OR adaptive-series presence changed —
+        // either flips the series/data-slot count, same as the prodigy case.
         const wasProdigy = this._lastIsProdigy ?? false;
-        if (wasProdigy !== this.isProdigy()) {
+        const wasAdaptive = this._lastHasAdaptive ?? false;
+        if (wasProdigy !== this.isProdigy() || wasAdaptive !== this.hasAdaptive()) {
             this.plot.destroy();
             this.plot = null;
             this.createChart();

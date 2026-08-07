@@ -31,6 +31,7 @@ describe('TemplatesScreen.load — parallel per-project fetch (P11)', () => {
       pid == null ? of([]) : capSubjects[pid]);
     const listMaskingTemplates = vi.fn(() => of([]));
     const listTrainingTemplates = vi.fn(() => of([]));
+    const listAdaptivePresets = vi.fn(() => of([]));
 
     const loading = writable(false);
     const rows = writable<unknown[]>([]);
@@ -42,7 +43,7 @@ describe('TemplatesScreen.load — parallel per-project fetch (P11)', () => {
         listProjects: () => of(projects),
         allProjects: () => projects,
       },
-      templates: { listCaptioningTemplates, listMaskingTemplates, listTrainingTemplates },
+      templates: { listCaptioningTemplates, listMaskingTemplates, listTrainingTemplates, listAdaptivePresets },
       toast: { warning: vi.fn(), error: vi.fn() },
       msg: () => 'err',
     };
@@ -81,7 +82,7 @@ describe('TemplatesScreen.load — parallel per-project fetch (P11)', () => {
 const T = (over: Partial<{ id: string; name: string; project_id: string|null; is_default: boolean; readonly: boolean; definition_id: string; model_id: string }>) => ({
   id: 'x', name: 'n', project_id: null, is_default: false, readonly: false, config: {}, created_at: 0, updated_at: 0, used_count: 0, ...over,
 });
-const R = (domain: 'training'|'captioning'|'masking', scopeId: string|null, over = {}) =>
+const R = (domain: 'training'|'captioning'|'masking'|'adaptive', scopeId: string|null, over = {}) =>
   ({ domain, scopeId, scopeLabel: scopeId ?? 'General', tpl: T({ ...over }) as never });
 
 describe('TemplatesScreen.filterRows', () => {
@@ -130,6 +131,91 @@ describe('TemplatesScreen.remove — themed confirm', () => {
     const data = openModal.mock.calls.at(-1)![1] as { onConfirm?: () => void };
     data.onConfirm!();
     expect(deleteTemplate).toHaveBeenCalledWith('training', 't1');
+  });
+});
+
+/**
+ * D6 — the `adaptive` preset domain is a first-class citizen of the library:
+ * it loads alongside the other three, filters like them, and its READONLY
+ * factory rows expose no destructive action.
+ */
+describe('TemplatesScreen — adaptive preset domain (D6)', () => {
+  const proto = TemplatesScreen.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+
+  it('loads global + project-scoped adaptive presets into rows', async () => {
+    const loading = writable(false);
+    const rows = writable<unknown[]>([]);
+    const listAdaptivePresets = vi.fn((pid?: string | null) => of(
+      pid === 'p1'
+        ? [{ id: 'user-1', project_id: 'p1', name: 'Balanced (custom)', branched_from: 'factory-balanced' }]
+        : [{ id: 'factory-balanced', project_id: null, name: 'Balanced', readonly: true }],
+    ));
+    const ctx = {
+      loading, rows,
+      projects: {
+        listProjects: () => of([{ id: 'p1', name: 'P1' }]),
+        allProjects: () => [{ id: 'p1', name: 'P1' }],
+      },
+      templates: {
+        listCaptioningTemplates: () => of([]),
+        listMaskingTemplates: () => of([]),
+        listTrainingTemplates: () => of([]),
+        listAdaptivePresets,
+      },
+      toast: { warning: vi.fn(), error: vi.fn() },
+      msg: () => 'err',
+    };
+
+    await callLoad(ctx);
+
+    const adaptive = rows().filter(r => (r as { domain: string }).domain === 'adaptive');
+    expect(adaptive.map(r => (r as { tpl: { id: string } }).tpl.id))
+      .toEqual(['factory-balanced', 'user-1']);
+    // The project-scoped branch is labelled with its project, the factory row Global.
+    expect((adaptive[0] as { scopeLabel: string }).scopeLabel).toBe('Global');
+    expect((adaptive[1] as { scopeLabel: string }).scopeLabel).toBe('P1');
+  });
+
+  it('filters the adaptive domain like any other', () => {
+    const rows = [
+      R('training', null, { name: 'Anime' }),
+      R('adaptive', null, { id: 'factory-balanced', name: 'Balanced', readonly: true }),
+      R('adaptive', 'p1', { id: 'user-1', name: 'Balanced (custom)' }),
+    ];
+    expect(TemplatesScreen.filterRows(rows, { domain: 'adaptive', scope: 'all', search: '', flag: 'all' }))
+      .toHaveLength(2);
+    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: 'custom', flag: 'all' }))
+      .toHaveLength(1);
+    // The factory rows carry is_default = 0 — they must still show under "System".
+    expect(TemplatesScreen.filterRows(rows, { domain: 'all', scope: 'all', search: '', flag: 'system' }))
+      .toHaveLength(1);
+  });
+
+  it('offers no delete for a readonly factory preset', () => {
+    const deleteTemplate = vi.fn();
+    const openModal = vi.fn();
+    const ctx = {
+      overlay: { openModal }, templates: { deleteTemplate },
+      toast: { success: vi.fn(), error: vi.fn() }, load: vi.fn(), msg: () => 'err',
+    };
+    proto['remove'].call(ctx, { domain: 'adaptive', tpl: { id: 'factory-balanced', name: 'Balanced', readonly: true } });
+    expect(openModal).not.toHaveBeenCalled();
+    expect(deleteTemplate).not.toHaveBeenCalled();
+
+    // …but a branched user preset deletes normally, through the same action.
+    proto['remove'].call(ctx, { domain: 'adaptive', tpl: { id: 'user-1', name: 'Balanced (custom)', readonly: false } });
+    expect(openModal).toHaveBeenCalledWith('confirm', expect.objectContaining({ destructive: true }));
+  });
+
+  it('edits an adaptive preset as raw JSON (the caption/mask modal cannot render it)', () => {
+    const openModal = vi.fn();
+    const ctx = {
+      templates: { getTemplate: () => of({ id: 'user-1', name: 'B (custom)', config: { interval_steps: 200 } }) },
+      overlay: { openModal }, toast: { error: vi.fn() }, msg: () => 'err', load: vi.fn(),
+    };
+    proto['edit'].call(ctx, { domain: 'adaptive', tpl: { id: 'user-1' } });
+    expect(openModal).toHaveBeenCalledWith('template-json', expect.objectContaining({ domain: 'adaptive' }));
+    expect(proto['editIcon'].call({}, 'adaptive')).toBe('Braces');
   });
 });
 

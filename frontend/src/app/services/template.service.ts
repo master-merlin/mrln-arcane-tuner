@@ -5,7 +5,7 @@ import { RuntimeConfigService } from './runtime-config.service';
 import { RETRY_ON_TRANSIENT } from '../interceptors/transient-error.interceptor';
 import type { TrainingConfig } from './job';
 
-export type TemplateDomain = 'captioning' | 'masking' | 'training';
+export type TemplateDomain = 'captioning' | 'masking' | 'training' | 'adaptive';
 
 export interface Template {
   id: string;
@@ -138,8 +138,33 @@ export class TemplateService {
     return this.http.post<Template>(`${this.apiUrl}/training/from-job`, { job_id: jobId, name, project_id: projectId });
   }
 
+  // Adaptive Targeting Presets
+  //
+  // A full template domain (like captioning/masking/training) whose `config` is
+  // the adaptive-targeting knob dict. The three factory rows ship `readonly`
+  // with fixed ids and `is_default = 0` — which preset is "selected" comes from
+  // the config's own `preset` field, never from `is_default`.
+  listAdaptivePresets(projectId?: string | null): Observable<Template[]> {
+    let params = new HttpParams();
+    if (projectId) {
+      params = params.set('project_id', projectId);
+    }
+    return this.http.get<Template[]>(`${this.apiUrl}/adaptive`, { params });
+  }
+
+  /** `branched_from` records the lineage of an auto-branched factory preset.
+   *  The backend always forces `readonly = false` on create. */
+  createAdaptivePreset(data: {
+    name: string;
+    project_id?: string | null;
+    branched_from?: string;
+    config: Record<string, unknown>;
+  }): Observable<Template> {
+    return this.http.post<Template>(`${this.apiUrl}/adaptive`, data);
+  }
+
   // Shared CRUD operations
-  getTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<Template> {
+  getTemplate(domain: TemplateDomain, templateId: string): Observable<Template> {
     return this.http.get<Template>(`${this.apiUrl}/${domain}/${templateId}`);
   }
 
@@ -147,25 +172,25 @@ export class TemplateService {
     return this.http.put<Template>(`${this.apiUrl}/${domain}/${templateId}`, updates);
   }
 
-  deleteTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<{ status: string }> {
+  deleteTemplate(domain: TemplateDomain, templateId: string): Observable<{ status: string }> {
     return this.http.delete<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}`);
   }
 
-  branchTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string, targetProjectId: string, newName?: string): Observable<Template> {
+  branchTemplate(domain: TemplateDomain, templateId: string, targetProjectId: string, newName?: string): Observable<Template> {
     return this.http.post<Template>(`${this.apiUrl}/${domain}/${templateId}/branch`, { target_project_id: targetProjectId, new_name: newName });
   }
 
-  useTemplate(domain: 'captioning' | 'masking' | 'training', templateId: string): Observable<{ status: string }> {
+  useTemplate(domain: TemplateDomain, templateId: string): Observable<{ status: string }> {
     return this.http.post<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}/use`, {});
   }
 
   // Export / Import
-  getTemplateExportUrl(domain: 'captioning' | 'masking' | 'training', templateId: string): string {
+  getTemplateExportUrl(domain: TemplateDomain, templateId: string): string {
     return `${this.apiUrl}/${domain}/${templateId}/export`;
   }
 
   exportTemplatesBundle(
-    items: { domain: 'captioning' | 'masking' | 'training'; id: string }[],
+    items: { domain: TemplateDomain; id: string }[],
   ): Observable<Blob> {
     return this.http.post(`${this.apiUrl}/export`, { items }, { responseType: 'blob' });
   }

@@ -1,10 +1,10 @@
 """Portable template archive: build/parse template manifests (``kind='template'``).
 
 A template archive is a manifest-only ``.zip`` carrying 1..N templates across
-the training/captioning/masking domains. Training entries embed their model
-definition (a ``ModelDefinition`` dump) so the training recipe travels with the
-template. Captioning/masking entries reference a built-in ``model_id`` and carry
-no embedded model.
+the training/captioning/masking/adaptive domains. Training entries embed their
+model definition (a ``ModelDefinition`` dump) so the training recipe travels
+with the template. Captioning/masking entries reference a built-in ``model_id``
+and carry no embedded model. Adaptive entries carry only their knob dict.
 
 Pure: no DB, no registry, no FastAPI. Single source of truth for the template
 archive shape, fully unit-testable.
@@ -23,7 +23,7 @@ from app.core.portable.envelope import ManifestError, build_manifest_header
 MANIFEST_VERSION = 1
 _KIND = "template"
 
-DOMAINS = ("training", "captioning", "masking")
+DOMAINS = ("training", "captioning", "masking", "adaptive")
 
 # Fields carried per domain. Everything else on a template row (id, project_id,
 # created_at/updated_at, used_count, last_used_at, branched_from, is_default,
@@ -32,6 +32,8 @@ _CARRY: dict[str, tuple[str, ...]] = {
     "training": ("name", "definition_id", "config"),
     "captioning": ("name", "model_id", "system_prompt", "wildcard", "config"),
     "masking": ("name", "model_id", "config"),
+    # Adaptive presets are not model-scoped: the knob dict is the whole payload.
+    "adaptive": ("name", "config"),
 }
 
 # Matches a URI scheme prefix like ``s3://``, ``https://`` — any remote source.

@@ -4,6 +4,7 @@ import { ReactiveFormsModule, FormBuilder, FormGroup, FormControl, FormArray, Va
 import { DatasetService } from '../../../services/dataset';
 import { DatasetStore } from '../../../state/dataset.store';
 import { nextTriggerWord } from '../../../shared/trigger-word';
+import { isTruthyFlag } from '../../../shared/truthy-flag';
 import { ToastService } from '../../../services/toast';
 import { SystemService, VRAMReport } from '../../../services/system.service';
 import type { TrainingEstimate, TrainingConfig } from '../../../services/job';
@@ -21,6 +22,7 @@ import { DynamicFormFieldComponent } from '../dynamic-form-field/dynamic-form-fi
 import { DynamicFormGroupComponent } from '../dynamic-form-group/dynamic-form-group';
 import { AdvancedVramCardComponent } from '../advanced-vram-card/advanced-vram-card';
 import { TargetLayersCardComponent } from '../target-layers-card/target-layers-card';
+import { AdaptiveTargetingCardComponent } from '../adaptive-targeting-card/adaptive-targeting-card';
 import { OverlayStore } from '../../../state/overlay.store';
 import { ModelSourceOverride } from '../../../services/model.service';
 import { ModelCapabilitiesService, ModelCapabilities, isFieldHidden } from '../../../services/model-capabilities.service';
@@ -46,7 +48,7 @@ export interface TrainingSegment {
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   providers: [VramEstimationService, TemplateAutosaveService],
-  imports: [TitleCasePipe, ReactiveFormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent],
+  imports: [TitleCasePipe, ReactiveFormsModule, TrainingTemplateSelectorComponent, VramBudgetCardComponent, AdvancedVramCardComponent, DynamicFormFieldComponent, DynamicFormGroupComponent, TargetLayersCardComponent, AdaptiveTargetingCardComponent],
   template: `
     @if (schema()) {
       <form [formGroup]="form" (ngSubmit)="onSubmit()" class="flex flex-col gap-3.5 isolate">
@@ -379,8 +381,9 @@ export interface TrainingSegment {
                        </div>
                      }
 
-                     <!-- Normal Grouping for non-array types (skip block_swap_sliders — rendered near VRAM card) -->
-                     @if (prop.schema.type !== 'array' && !shouldHideField(prop.schema, prop.key) && !prop.schema.inline_group && prop.schema.ui_type !== 'block_swap_sliders' && !loraCustomKeys.has(prop.key)) {
+                     <!-- Normal Grouping for non-array types (skip block_swap_sliders — rendered near VRAM card
+                          — and adaptive_targeting, which has its own full-width card below) -->
+                     @if (prop.schema.type !== 'array' && !shouldHideField(prop.schema, prop.key) && !prop.schema.inline_group && prop.schema.ui_type !== 'block_swap_sliders' && prop.schema.ui_type !== 'adaptive_targeting' && !loraCustomKeys.has(prop.key)) {
                          <app-dynamic-form-field
                             [style.grid-column]="isFullWidthField(prop.key, group.name) ? '1 / -1' : null"
                             [control]="getControl(prop.key)"
@@ -394,6 +397,20 @@ export interface TrainingSegment {
                             (checkpointConfigLoaded)="loadExternalConfig($event)">
                          </app-dynamic-form-field>
                      }
+
+                 <!-- Adaptive layer targeting — full-width card driven by the
+                      adaptive_targeting toggle rendered above it. -->
+                 @if (prop.schema.ui_type === 'adaptive_targeting' && !shouldHideField(prop.schema, prop.key)) {
+                     <div class="mt-4 mb-2" style="grid-column: 1 / -1">
+                         <app-adaptive-targeting-card
+                             [control]="getObjectControl(prop.key)"
+                             [enabled]="isAdaptiveTargetingOn()"
+                             [projectId]="projectId()"
+                             [configHelp]="configHelp()"
+                             (helpRequested)="openHelpModal($event)">
+                         </app-adaptive-targeting-card>
+                     </div>
+                 }
 
                  <!-- Array Types (Delegated to Group Component or Custom Checklists) -->
                  @if (prop.schema.type === 'array' && (prop.schema.ui_type === 'layer_checklist' || !shouldHideField(prop.schema, prop.key))) {
@@ -647,6 +664,7 @@ export class TrainingDynamicConfigComponent {
   @ViewChild(TrainingTemplateSelectorComponent) templateSelector!: TrainingTemplateSelectorComponent;
   @ViewChild(AdvancedVramCardComponent) advancedVramCard!: AdvancedVramCardComponent;
   @ViewChild(TargetLayersCardComponent) targetLayersCard!: TargetLayersCardComponent;
+  @ViewChild(AdaptiveTargetingCardComponent) adaptiveCard!: AdaptiveTargetingCardComponent;
 
   // Config Help System
   configHelp = signal<Record<string, { tip: string; detail: string }>>({});
@@ -960,7 +978,11 @@ export class TrainingDynamicConfigComponent {
     if (schema?.properties?.[key]?.title) {
       return schema.properties[key].title;
     }
-    return key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+    // Cards that own a whole sub-config namespace their help keys
+    // (`adaptive_targeting.interval_steps`); title from the leaf segment so the
+    // modal reads "Interval Steps", not "Adaptive Targeting.interval Steps".
+    const leaf = key.includes('.') ? key.slice(key.lastIndexOf('.') + 1) : key;
+    return leaf.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
   }
 
   /** Resolve the help data for `key` and open the registered config-help modal. */
@@ -1074,6 +1096,9 @@ export class TrainingDynamicConfigComponent {
     try {
       if (event.isDefault) {
         this.resetFormToDefaults();
+        // The reset drops the knob dict back to `{}`; the card re-materializes
+        // it so the control never holds a partial config.
+        this.adaptiveCard?.refreshFromControl();
       } else {
         if (event.definitionId) {
           const model = this.availableModels().find(m => m.id === event.definitionId);
@@ -1088,6 +1113,8 @@ export class TrainingDynamicConfigComponent {
         this._syncBlockSwapFromForm();
         // Rebuild target layers tree from the newly-patched control
         this.targetLayersCard?.refreshFromControl();
+        // Re-normalize the adaptive knob dict from the freshly-patched control.
+        this.adaptiveCard?.refreshFromControl();
       }
     } finally {
       // ALWAYS release the child's auto-save suppression, even if the
@@ -1145,6 +1172,12 @@ export class TrainingDynamicConfigComponent {
             this.addArrayItem(key, propSchema.items);
           }
         }
+      } else if (propSchema.type === 'object' && control instanceof FormControl) {
+        // Object-valued fields render through their own card and are built as
+        // plain FormControls holding a DICT (block_swap_sliders,
+        // adaptive_targeting). The scalar `''` fallback below would put a
+        // string where the submitted payload must carry an object.
+        control.setValue(propSchema.default ?? {});
       } else {
         const def = propSchema.default !== undefined ? propSchema.default : '';
         control?.setValue(def);
@@ -1223,6 +1256,17 @@ export class TrainingDynamicConfigComponent {
     return this.form.get(key) as FormControl<string[]>;
   }
 
+  /** Object-valued fields (block_swap_sliders, adaptive_targeting) are built as
+   *  plain FormControls holding a dict — see buildForm. */
+  getObjectControl(key: string): FormControl<Record<string, unknown>> {
+    return this.form.get(key) as FormControl<Record<string, unknown>>;
+  }
+
+  /** Live state of the `adaptive_targeting` toggle that gates the adaptive card. */
+  isAdaptiveTargetingOn(): boolean {
+    return isTruthyFlag(this.form.get('adaptive_targeting')?.value);
+  }
+
   getSchemaForKey(key: string, parent?: unknown): SchemaNode | null {
     const prop = this.properties().find(p => p.key === key);
     if (prop) return prop.schema;
@@ -1276,6 +1320,8 @@ export class TrainingDynamicConfigComponent {
 
     this._syncBlockSwapFromForm();
     this.targetLayersCard?.refreshFromControl();
+    // Re-normalize the adaptive knob dict from the freshly-patched control.
+    this.adaptiveCard?.refreshFromControl();
 
     setTimeout(() => {
       this._isTemplateApplying = false;
@@ -1315,6 +1361,8 @@ export class TrainingDynamicConfigComponent {
     this._syncBlockSwapFromForm();
     // Rebuild target layers tree from the newly-patched control
     this.targetLayersCard?.refreshFromControl();
+    // Re-normalize the adaptive knob dict from the freshly-patched control.
+    this.adaptiveCard?.refreshFromControl();
 
     // Release auto-save suppression after debounced valueChanges settle
     setTimeout(() => {
@@ -1354,8 +1402,9 @@ export class TrainingDynamicConfigComponent {
             }
           }
         } else if (propSchema.type === 'object') {
-          // block_swap_sliders uses a plain FormControl so setValue() works with dynamic keys
-          if (propSchema.ui_type === 'block_swap_sliders') {
+          // block_swap_sliders / adaptive_targeting use a plain FormControl so
+          // setValue() works with the whole dict (dynamic keys, no sub-controls)
+          if (propSchema.ui_type === 'block_swap_sliders' || propSchema.ui_type === 'adaptive_targeting') {
             group[key] = new FormControl(propSchema.default ?? {});
           } else {
             group[key] = this.fb.group({}); // Simple placeholder
@@ -2299,6 +2348,19 @@ export class TrainingDynamicConfigComponent {
         // Strip targeted_layers when empty (= filtering OFF, train all layers)
         if (Array.isArray(raw['targeted_layers']) && raw['targeted_layers'].length === 0) {
           delete raw['targeted_layers'];
+        }
+        // Strip adaptive_targeting_config when the feature is OFF. Its
+        // depends_on is a BOOLEAN dependency, and _shouldHideSingleDep never
+        // hides those ("show but disable"), so the generic depends_on strip
+        // above does not cover it — without this an off run would still carry
+        // the card's materialized knobs into the job config.
+        //
+        // Deliberately NOT guarded on `'adaptive_targeting' in raw`: the hidden
+        // -field loop above runs FIRST and deletes the toggle outright for a
+        // family whose capability descriptor hides it — an absent toggle is the
+        // strongest possible "feature off", not a reason to keep the config.
+        if (!isTruthyFlag(raw['adaptive_targeting'])) {
+          delete raw['adaptive_targeting_config'];
         }
       }
       // Nested (per-item) capability strip: fields the selected family doesn't

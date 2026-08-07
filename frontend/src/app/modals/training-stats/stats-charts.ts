@@ -42,6 +42,29 @@ export function buildHistogramChart(
     return { xs, counts: h.counts };
 }
 
+/** One curve row this builder reads — subset of `JobMetricsCurveRow` (job.ts). */
+export interface AdaptiveCurveRow { step: number; active_layers: number | null; }
+
+/**
+ * Active-module-count staircase, aligned to step. NULL rows ("no data for
+ * this step") are skipped rather than plotted as 0 — 0 is itself a real,
+ * meaningful value ("every remaining layer just froze") and must stay
+ * distinguishable from "no data" (mirrors the NULL-never-0 contract on
+ * `LossCurvePoint.active_layers`, backend history_routes.py).
+ */
+export function buildAdaptiveSeries(
+    rows: ReadonlyArray<AdaptiveCurveRow>,
+): { steps: number[]; counts: number[] } {
+    const steps: number[] = [];
+    const counts: number[] = [];
+    for (const r of rows) {
+        if (r.active_layers == null) continue;
+        steps.push(r.step);
+        counts.push(r.active_layers);
+    }
+    return { steps, counts };
+}
+
 // ── Axis theming + chart options ─────────────────────────────────────────
 
 export interface AxisTheme { stroke: string; grid: string; font: string; }
@@ -89,6 +112,15 @@ export function histogramTooltip(edges: number[]): TooltipFormatter {
     };
 }
 
+export function adaptiveTooltip(): TooltipFormatter {
+    return (u, idx) => {
+        const step = u.data[0]?.[idx];
+        const count = u.data[1]?.[idx];
+        if (step == null || count == null) return null;
+        return `step ${step}: ${count} active layers`;
+    };
+}
+
 export function buildActivityOpts(
     theme: AxisTheme, colors: SeriesColors, chart: ActivityChart,
 ): Omit<uPlot.Options, 'width' | 'height'> {
@@ -129,5 +161,27 @@ export function buildHistogramOpts(
             { paths: bars, fill: barColor, stroke: 'transparent', points: { show: false } },
         ],
         plugins: [tooltipPlugin(histogramTooltip(edges))],
+    };
+}
+
+/** Stepped staircase chart opts — mirrors the live training-chart's narrowing
+ *  series (`uPlot.paths.stepped`, Task 11) so the post-hoc replay reads the same. */
+export function buildAdaptiveOpts(
+    theme: AxisTheme, color: string,
+): Omit<uPlot.Options, 'width' | 'height'> {
+    const steppedPath = uPlot.paths.stepped ? uPlot.paths.stepped({ align: 1 }) : undefined;
+    return {
+        legend: { show: false },
+        cursor: CURSOR,
+        scales: { x: { time: false } },
+        axes: [
+            themedAxis(theme),
+            themedAxis(theme, { size: 36 }),
+        ],
+        series: [
+            {},
+            { stroke: color, width: 2, paths: steppedPath, points: { show: false } },
+        ],
+        plugins: [tooltipPlugin(adaptiveTooltip())],
     };
 }

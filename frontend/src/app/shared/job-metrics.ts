@@ -31,6 +31,12 @@ export interface StepMetrics {
     resolution?: string;
     nan_count?: number;
     total_steps?: number | string;
+    /** Adaptive layer targeting (Task 5): count of currently-trainable LoRA modules. */
+    adaptive_active?: number;
+    /** Count in the "essential" tier from the controller's last analysis. */
+    adaptive_hot?: number;
+    /** Total module count — emitted once per process (re-appears after a rebuild restart). */
+    adaptive_total?: number;
     [k: string]: unknown;
 }
 
@@ -40,6 +46,33 @@ export interface LossPoint {
     lr: number;
     grad_norm?: number;
     d_estimate?: number;
+    /** Adaptive layer targeting narrowing series (Task 11) — see StepMetrics. */
+    adaptive_active?: number;
+    adaptive_hot?: number;
+}
+
+export interface AdaptEvent {
+    step: number;
+    kind: 'narrow' | 'probe_open' | 'probe_apply' | 'rebuild_request';
+    active_count: number;
+    total_count: number;
+    hot_count?: number;
+    active_param_pct?: number;
+    earliest_active_block?: number | null;
+    /**
+     * Fields below are always present on the durable per-run history
+     * (`GET /jobs/history/{job_id}/adaptive`, Task 12) — the live `{"adapt":
+     * …}` broadcast (Task 11) carries the SAME dict, but the two live-view
+     * tests only exercised the subset above, so these stayed optional here
+     * rather than widen an already-covered call site's assumptions.
+     */
+    /** Sequence number within a run's adaptive timeline; stable identity for
+     *  list rendering (do NOT `@for … track $index` — a rebuild detaches
+     *  rows keyed that way). */
+    event_index?: number;
+    frozen_this_event?: number;
+    reactivated_this_event?: number;
+    top_modules?: string[];
 }
 
 export type LossTone = 'success' | 'warning' | 'danger';
@@ -117,10 +150,49 @@ export function lossSeries(logs: ReadonlyArray<string> | undefined, startStep = 
                 lr: m.learning_rate ?? 0,
                 grad_norm: m.grad_norm,
                 d_estimate: m.d_estimate,
+                adaptive_active: m.adaptive_active,
+                adaptive_hot: m.adaptive_hot,
             });
         }
     }
     return points;
+}
+
+/**
+ * Parse `{"adapt": {...}}` broadcast lines (adaptive layer targeting analysis
+ * events — Task 7's websocket `job_log` payloads). These carry a `step` field
+ * but no `loss`/`status`, so `parseStepLog`'s top-level-`step` check already
+ * keeps them out of `lossSeries`/`latestMetrics` — this is a SEPARATE parse
+ * over the same `job.logs` array, not a filter on top of the step parser.
+ */
+export function adaptEvents(logs: ReadonlyArray<string> | undefined): AdaptEvent[] {
+    if (!logs) return [];
+    const out: AdaptEvent[] = [];
+    for (const line of logs) {
+        if (!line.includes('"adapt"')) continue;
+        try {
+            const parsed = JSON.parse(line);
+            const a = parsed?.adapt;
+            if (a && typeof a.step === 'number' && typeof a.kind === 'string') {
+                out.push(a as AdaptEvent);
+            }
+        } catch {
+            // not JSON — skip
+        }
+    }
+    return out;
+}
+
+/**
+ * Most recent adaptive-layer-targeting event, or null. `job.logs` is
+ * live-session-only (cleared + rotated on a rebuild restart), so this is
+ * "latest known state this session" — NOT durable history. The persisted
+ * timeline lives at GET /api/jobs/history/{job_id}/adaptive (consumed
+ * elsewhere, not here).
+ */
+export function latestAdaptState(logs: ReadonlyArray<string> | undefined): AdaptEvent | null {
+    const events = adaptEvents(logs);
+    return events.length ? events[events.length - 1] : null;
 }
 
 /** Lowest loss in a series with the step it occurred at. */

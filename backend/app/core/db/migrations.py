@@ -52,6 +52,8 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v17,
         _migrate_v18,
         _migrate_v19,
+        _migrate_v20,
+        _migrate_v21,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -1045,3 +1047,72 @@ def _migrate_v19(conn) -> None:
             "UPDATE job_history SET lora_on_disk = ? WHERE id = ?",
             (on_disk, row["id"]),
         )
+
+
+# ── V20: active_layers on step_metrics (adaptive layer-targeting replay) ──
+
+def _migrate_v20(conn) -> None:
+    """Add ``step_metrics.active_layers``, populated per step by the adaptive
+    layer-targeting controller's live ``adaptive_active`` count.
+
+    Nullable, and left NULL (never backfilled to 0) for every existing row
+    and every future step where the feature is off: 0 is itself a meaningful
+    value here ("every remaining layer just froze"), so it must stay
+    distinguishable from "adaptive targeting was never enabled for this run"
+    — a stats replay chart that coerced absence to 0 would draw a fake
+    narrowing-to-zero staircase for runs that never used the feature.
+
+    Idempotent: the ``ADD COLUMN`` is guarded (SQLite has no
+    ``IF NOT EXISTS`` for columns), matching every prior single-column
+    migration in this file.
+    """
+    try:
+        conn.execute("ALTER TABLE step_metrics ADD COLUMN active_layers INTEGER")
+    except Exception:
+        pass  # Column already exists
+
+
+# ── V21: adaptive preset templates (the `adaptive` template domain) ────────
+
+def _migrate_v21(conn) -> None:
+    """Create ``adaptive_preset_templates`` and seed the factory presets.
+
+    Adaptive layer-targeting knobs are exposed as first-class templates rather
+    than a hardcoded enum, so a user gets the full lifecycle (rename, edit,
+    delete, branch, export/import) on their own tuned presets. Mirrors the
+    ``masking_templates`` row shape minus ``model_id`` — a preset is a bag of
+    knobs, not a model-scoped template.
+
+    Seeding happens here, at the same point v4/v14 seed the captioning and
+    masking defaults, so a fresh install has the presets without a separate
+    startup hook.
+
+    Idempotent: ``CREATE TABLE IF NOT EXISTS`` plus an ``INSERT OR IGNORE``
+    on fixed factory ids, so re-running neither duplicates a preset nor
+    overwrites one that already exists.
+    """
+    from app.core.db.repositories.adaptive_preset_repo import (
+        seed_factory_presets_with_conn,
+    )
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS adaptive_preset_templates (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            name          TEXT NOT NULL,
+            is_default    INTEGER NOT NULL DEFAULT 0,
+            readonly      INTEGER NOT NULL DEFAULT 0,
+            config        TEXT NOT NULL DEFAULT '{}',
+            created_at    REAL NOT NULL,
+            updated_at    REAL,
+            used_count    INTEGER NOT NULL DEFAULT 0,
+            last_used_at  REAL,
+            branched_from TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_adaptive_tpl_project
+        ON adaptive_preset_templates(project_id)
+    """)
+
+    seed_factory_presets_with_conn(conn)

@@ -26,8 +26,8 @@ class MetricsRepository:
             for m in metrics:
                 conn.execute("""
                     INSERT INTO step_metrics
-                    (job_id, step, loss, lr, grad_norm, timestep_mean, epoch, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (job_id, step, loss, lr, grad_norm, timestep_mean, epoch, active_layers, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     job_id,
                     m.get("step", 0),
@@ -36,6 +36,7 @@ class MetricsRepository:
                     m.get("grad_norm"),
                     m.get("timestep_mean"),
                     m.get("epoch"),
+                    m.get("active_layers"),
                     now,
                 ))
                 count += 1
@@ -45,7 +46,7 @@ class MetricsRepository:
         """Return step, loss, lr for charting."""
         conn = get_db().connection()
         rows = conn.execute(
-            "SELECT step, loss, lr, grad_norm, timestep_mean, epoch "
+            "SELECT step, loss, lr, grad_norm, timestep_mean, epoch, active_layers "
             "FROM step_metrics WHERE job_id = ? ORDER BY step",
             (job_id,),
         ).fetchall()

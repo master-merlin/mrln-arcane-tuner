@@ -147,6 +147,31 @@ def test_get_job_metrics(MockRepo, client):
     assert "summary" in response.json()
 
 
+@patch(_METRICS_REPO)
+def test_get_job_metrics_active_layers_survives_response_model(MockRepo, client):
+    """Response-model passthrough pin: LossCurvePoint must not silently drop
+    active_layers. Pydantic v2 defaults to extra='ignore', so a field the repo
+    returns but the response model never declared would be filtered out of the
+    JSON before it reaches the frontend — the DB column and repo SELECT being
+    correct would not save it. Asserted at the HTTP layer (not the repo layer)
+    because that's exactly where the prior gap lived: a repo-level assertion
+    passes regardless of whether the field ships. Covers both a populated row
+    and an absent one, since NULL and a real value must stay distinguishable
+    end to end, not just inside the DB."""
+    MockRepo.return_value.get_loss_curve.return_value = [
+        {"step": 1, "loss": 0.5, "lr": 1e-4, "grad_norm": 0.1,
+         "timestep_mean": 500.0, "epoch": 0.1, "active_layers": 248},
+        {"step": 2, "loss": 0.4, "lr": 1e-4, "grad_norm": 0.1,
+         "timestep_mean": 500.0, "epoch": 0.1, "active_layers": None},
+    ]
+    MockRepo.return_value.get_summary.return_value = {}
+    response = client.get("/api/jobs/history/job-1/metrics")
+    assert response.status_code == 200
+    curve = response.json()["curve"]
+    assert curve[0]["active_layers"] == 248
+    assert curve[1]["active_layers"] is None
+
+
 @patch(_JOB_REPO)
 def test_get_job_replay_not_found(MockRepo, client):
     MockRepo.return_value.get_by_id.return_value = None
@@ -201,6 +226,72 @@ def test_get_job_replay_no_data(MockJobRepo, MockMetricsRepo, client):
     assert body["loss"] == []
 
 
+# ── GET /jobs/history/{job_id}/adaptive ──────────────────────────────────
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_from_disk(MockRepo, client, tmp_path):
+    """The run dir's adaptive_targeting.json, served verbatim."""
+    import json
+
+    payload = {
+        "events": [{"step": 100, "kind": "narrow", "active_count": 5,
+                    "total_count": 8, "top_modules": ["blocks.0.to_q"]}],
+        "modules": ["blocks.0.to_q", "blocks.1.to_k"],
+        "heat": {"blocks.0.to_q": 1.5e-07, "blocks.1.to_k": None},
+    }
+    (tmp_path / "adaptive_targeting.json").write_text(
+        json.dumps(payload), encoding="utf-8",
+    )
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "job-1", "output_dir": str(tmp_path),
+    }
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == payload
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_absent_returns_empty_shape(MockRepo, client, tmp_path):
+    """Feature off / older run: HTTP 200 + the empty shape, so the modal can
+    hide the section without special-casing an error."""
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "job-1", "output_dir": str(tmp_path),
+    }
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "modules": [], "heat": {}}
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_corrupt_file_degrades(MockRepo, client, tmp_path):
+    """A truncated/garbage history must degrade to the empty shape, never 500."""
+    (tmp_path / "adaptive_targeting.json").write_text(
+        '{"events": [{"step": 1', encoding="utf-8",
+    )
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "job-1", "output_dir": str(tmp_path),
+    }
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "modules": [], "heat": {}}
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_missing_output_dir(MockRepo, client):
+    MockRepo.return_value.get_by_id.return_value = {"id": "job-1", "output_dir": None}
+    response = client.get("/api/jobs/history/job-1/adaptive")
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "modules": [], "heat": {}}
+
+
+@patch(_JOB_REPO)
+def test_get_job_adaptive_history_not_found(MockRepo, client):
+    MockRepo.return_value.get_by_id.return_value = None
+    response = client.get("/api/jobs/history/ghost/adaptive")
+    assert response.status_code == 404
+
+
 @patch(_JOB_REPO)
 def test_get_rerun_config_found(MockRepo, client):
     MockRepo.return_value.get_config_for_rerun.return_value = {"lr": 1e-4}
@@ -221,6 +312,21 @@ def test_get_rerun_config_full_payload(MockRepo, client):
     response = client.get("/api/jobs/history/job-1/rerun-config")
     assert response.status_code == 200
     assert response.json() == config
+
+
+@patch(_JOB_REPO)
+def test_get_rerun_config_undoes_an_adaptive_rebuild_narrowing(MockRepo, client):
+    """A run that rebuilt carries the controller's keep-set in
+    ``targeted_layers``. Re-running it must prefill the form with the selection
+    the USER made, and must not leak the stash key back into a new job."""
+    MockRepo.return_value.get_config_for_rerun.return_value = {
+        "lr": 1e-4,
+        "targeted_layers": [r"^blocks\.0\.to_q$"],
+        "pre_adaptive_targeted_layers": [r"^blocks\.\d+\.to_q$"],
+    }
+    body = client.get("/api/jobs/history/job-1/rerun-config").json()
+    assert body["targeted_layers"] == [r"^blocks\.\d+\.to_q$"]
+    assert "pre_adaptive_targeted_layers" not in body
 
 
 @patch(_JOB_REPO)

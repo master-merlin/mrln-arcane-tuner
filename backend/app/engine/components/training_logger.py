@@ -200,6 +200,11 @@ class TrainingLogger:
                     "grad_norm": extra.get("grad_norm") if extra else None,
                     "timestep_mean": extra.get("timestep_mean") if extra else None,
                     "epoch": extra.get("epoch") if extra else None,
+                    # NULL (never 0) when adaptive layer-targeting is off or a
+                    # step ran before its controller reported in — 0 is itself
+                    # a meaningful "every remaining layer just froze" value,
+                    # so it must stay distinguishable from "no data".
+                    "active_layers": extra.get("adaptive_active") if extra else None,
                 }
                 self._metrics_buffer.append(metric)
                 if len(self._metrics_buffer) >= _METRICS_FLUSH_INTERVAL:

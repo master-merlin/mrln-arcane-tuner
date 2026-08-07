@@ -14,6 +14,40 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+# Where an adaptive rebuild parks the user's OWN ``targeted_layers`` before it
+# overwrites the field with the controller's keep-set (see
+# ``JobManager._restart_for_rebuild``). Bookkeeping on the job record, not a
+# training-config field — no trainer reads it.
+PRE_ADAPTIVE_TARGETED_LAYERS = "pre_adaptive_targeted_layers"
+
+
+def restore_user_targeted_layers(config: dict[str, Any]) -> dict[str, Any]:
+    """Copy of ``config`` with the user's own ``targeted_layers`` reinstated.
+
+    An adaptive rebuild narrows ``targeted_layers`` on the PERSISTED record to
+    the modules the controller kept — derived state, not user intent. Every
+    path that starts the work over from zero (restart-fresh, re-running the
+    config into the training form) must hand the user's selection back, or one
+    rebuild run permanently constrains every later run to its final keep-set,
+    which the controller then adopts as its manual universe. The stash key is
+    consumed here so the restore cannot happen twice.
+
+    A no-op copy when no rebuild ever narrowed this config.
+    """
+    restored = dict(config)
+    if PRE_ADAPTIVE_TARGETED_LAYERS not in restored:
+        return restored
+    original = restored.pop(PRE_ADAPTIVE_TARGETED_LAYERS)
+    if original is None:
+        # The user targeted nothing, so restoring means the field is ABSENT.
+        # Leaving the narrowed list would silently target a run they asked to
+        # train whole.
+        restored.pop("targeted_layers", None)
+    else:
+        restored["targeted_layers"] = original
+    return restored
+
+
 class JobStatus(str, Enum):
     """Lifecycle states for a training job."""
 

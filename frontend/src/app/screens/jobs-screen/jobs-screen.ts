@@ -45,6 +45,7 @@ import {
     formatDuration,
     formatEta,
     formatGradNorm,
+    latestAdaptState,
     latestMetrics,
     logTail,
     lossSeries,
@@ -54,6 +55,7 @@ import {
     metricSpark,
     resolutionToMpx,
     resolutionMpxSpark,
+    type AdaptEvent,
     type LogLine,
     type LossPoint,
     type LossStatus,
@@ -257,6 +259,18 @@ export class JobsScreen {
      */
     protected readonly status = computed<LossStatus | null>(() =>
         lossStatus(this.selectedJob()?.logs, CONVERGENCE_WINDOW),
+    );
+
+    /**
+     * Latest adaptive layer targeting event (Task 5/7 backend → Task 11 FE) —
+     * the newest `{"adapt": {...}}` broadcast in the LIVE log stream. `job.logs`
+     * is live-session-only (cleared + rotated on a rebuild restart, and its
+     * reconnect-hydration never reconstructs `adapt` entries), so this reflects
+     * "latest known state this session", not durable history — the persisted
+     * timeline (GET /api/jobs/history/{job_id}/adaptive) is a later task.
+     */
+    protected readonly adaptState = computed<AdaptEvent | null>(() =>
+        latestAdaptState(this.selectedJob()?.logs),
     );
 
     // ── KPI helpers ─────────────────────────────────────────────────────

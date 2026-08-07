@@ -46,6 +46,23 @@ class TestLogStep:
         tl.log_step(0, loss=0.5, extra={"grad_norm": float("nan")})
         assert len(tl.loss_history) == 1
 
+    def test_adaptive_active_mapped_to_active_layers_in_metrics_buffer(self):
+        """The DB flush row's active_layers comes from extra['adaptive_active']
+        — the live counter an earlier task wired into the step payload."""
+        tl = TrainingLogger(max_steps=10)
+        tl._job_id = "job-1"
+        tl.log_step(0, loss=0.5, extra={"adaptive_active": 248, "adaptive_hot": 3})
+        assert tl._metrics_buffer[0]["active_layers"] == 248
+
+    def test_active_layers_null_not_zero_when_adaptive_off(self):
+        """D1: a run with adaptive targeting off never sets adaptive_active at
+        all — the buffered row must carry active_layers=None, never 0, so the
+        stats replay can't mistake "no data" for "every layer froze"."""
+        tl = TrainingLogger(max_steps=10)
+        tl._job_id = "job-1"
+        tl.log_step(0, loss=0.5, lr=0.001)
+        assert tl._metrics_buffer[0]["active_layers"] is None
+
 
 class TestLogStepNoneLoss:
     """W2.T6 fix-wave: ``loss=None`` marks a step with no usable loss (an

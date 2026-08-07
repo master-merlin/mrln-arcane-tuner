@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Configuration Schema ─────────────────────────────────────────────────
@@ -1056,6 +1056,29 @@ class BaseTrainingConfig(BaseModel):
             "hidden": True,
         },
     )
+    adaptive_targeting: bool = Field(
+        False,
+        description="LoRA adaptive layer targeting — periodically freeze layers "
+        "that stopped learning so late training focuses on hot layers.",
+        json_schema_extra={"group": "ENGINE"},
+    )
+    adaptive_targeting_config: dict = Field(
+        default_factory=dict,
+        description="Adaptive targeting parameters (preset reference + knob values).",
+        json_schema_extra={
+            "group": "ENGINE",
+            "ui_type": "adaptive_targeting",
+            "depends_on": "adaptive_targeting",
+        },
+    )
+
+    @model_validator(mode="after")
+    def _validate_adaptive_targeting(self) -> "BaseTrainingConfig":
+        if self.adaptive_targeting:
+            from app.engine.models.adaptive import AdaptiveTargetingConfig
+
+            AdaptiveTargetingConfig.model_validate(self.adaptive_targeting_config or {})
+        return self
 
     # [VIDEO] Video-model training (optional; gated by family capability)
     #

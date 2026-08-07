@@ -359,6 +359,10 @@ class PipelineTrainMixin:
 
         start_step = self.global_step + 1 if self.global_step > 0 else 0
         sps_window: list[float] = []  # Sliding window for Samples/s smoothing
+        # Set only by the adaptive rebuild exit below; read after the loop and
+        # by run_trainer, which must not write a final LoRA for a run the
+        # backend is about to relaunch.
+        self._rebuild_exit = False
 
         # Snapshot the caching/load peak, then reset CUDA peak stats so the loop
         # below measures the training-phase peak (calibrates the VRAM wall).
@@ -378,6 +382,7 @@ class PipelineTrainMixin:
             if signal_action == "soft_stop":
                 self.logger.info("soft_stop_saving_checkpoint", step=step)
                 self._emit_status("Saving Checkpoint")
+                _ctl = getattr(self, "adaptive_controller", None)
                 self.checkpoint_manager.save_checkpoint(
                     step=step,
                     components=self._build_trainable_components(),
@@ -388,6 +393,11 @@ class PipelineTrainMixin:
                     ema_handler=self.ema_handler,
                     elapsed_time=self.logger_component.get_total_elapsed(),
                     te_cache=self.get_te_cache(),
+                    # A soft stop is resumed from like any other checkpoint:
+                    # without this the resume re-adopts every module the run
+                    # had frozen and starts the narrowing over.
+                    adaptive_state=_ctl.get_state() if _ctl is not None else None,
+                    optimizer_param_names=getattr(self, "_optimizer_param_names", None),
                 )
                 self.logger.info("soft_stop_checkpoint_saved", step=step)
                 break
@@ -687,6 +697,19 @@ class PipelineTrainMixin:
             if driver is not None and hasattr(driver, "on_optimizer_step"):
                 driver.on_optimizer_step(step)
 
+            # 6a-2. Adaptive layer targeting. Between analysis events this is a
+            # single integer compare inside the controller; the hook is skipped
+            # entirely when the feature is off, so a feature-off run pays only
+            # this getattr. Freeze mode always returns None.
+            adaptive_ctl = getattr(self, "adaptive_controller", None)
+            adaptive_action = None
+            if adaptive_ctl is not None:
+                # The rebuild request is ACTED ON further down, after this
+                # step's batch tensors are freed: it saves a full checkpoint
+                # and must run in the same released-VRAM state as the periodic
+                # save, not on top of a live forward/backward's allocations.
+                adaptive_action = adaptive_ctl.on_optimizer_step(step)
+
             # 6b. First completed optimizer step: optimizer states are now
             # allocated and gradients are live — snapshot the resident set so
             # _compute_vram_measured can isolate optimizer + activations.
@@ -724,6 +747,18 @@ class PipelineTrainMixin:
 
             # Epoch progress
             extra["epoch"] = round((step + 1) / self._steps_per_epoch, 2)
+
+            # Adaptive layer targeting narrowing curve (spec §6). Rides the
+            # SAME payload as loss/lr so the UI can chart the staircase against
+            # the loss curve; no keys at all when the feature is off.
+            #
+            # Gated on the controller rather than relying on the helper's own
+            # empty-dict return: the helper lives on the optimization mixin,
+            # and this loop must keep running on any trainer composed without
+            # it. A controller can only exist when that mixin ran, so the two
+            # conditions are equivalent whenever the helper is reachable.
+            if adaptive_ctl is not None:
+                extra.update(self._adaptive_step_extras())
 
             # Batch resolution / bucket dims (from last accumulation batch).
             # Read from batch_items[0] — the bucket key the iterator grouped on —
@@ -809,24 +844,56 @@ class PipelineTrainMixin:
                 batch,
             )
 
+            # 7b. Adaptive rebuild exit (spec §5). The active set has shrunk
+            # enough to be worth restarting over: save a full resumable
+            # checkpoint, tell the backend where it is, and stop. job_manager
+            # relaunches this SAME job with narrowed targeted_layers, and it is
+            # that restart — a fresh optimizer over only the kept params — that
+            # reclaims the optimizer-state VRAM.
+            #
+            # Placed before the periodic save so a step that is both writes ONE
+            # checkpoint. The narrowing is already applied in place, so a failed
+            # save is survivable: the run continues exactly as freeze mode would.
+            if adaptive_action == "rebuild_request":
+                self._emit_status("Saving Checkpoint")
+                self.logger_component.pause_step_timer()
+                try:
+                    ckpt_dir = self._save_resumable_checkpoint(step)
+                    # Emitted only now: the event names the directory the
+                    # backend resumes from, which had to exist first. Inside
+                    # the try on purpose — if the announcement never reaches
+                    # the backend, exiting would end the job with no final
+                    # LoRA and nothing to relaunch it.
+                    adaptive_ctl.notify_rebuild_checkpoint(os.path.basename(ckpt_dir))
+                except Exception as e:  # noqa: BLE001 — never end the run here
+                    self.logger.error(
+                        "rebuild_handoff_failed", step=step, error=str(e),
+                    )
+                    self._emit_warning(
+                        f"Adaptive rebuild handoff failed at step {step}: {e} "
+                        "— training continues without the restart"
+                    )
+                else:
+                    self._record_checkpoint(step, is_final=False)
+                    self.logger_component.flush_metrics()
+                    self._update_job_progress(step)
+                    self._rebuild_exit = True
+                finally:
+                    # Symmetric with the periodic save: the timer must not keep
+                    # counting the save into the next step, and the last status
+                    # the UI sees must not be a save that already finished.
+                    self.logger_component.resume_step_timer()
+                    self._emit_status("Training")
+                if self._rebuild_exit:
+                    break
+
             # 8. Periodic save
             save_every = int(self.config.get("save_every_n_steps", 0))
             if save_every > 0 and step > 0 and step % save_every == 0:
                 self.logger.info("periodic_checkpoint_saving", step=step)
                 self._emit_status("Saving Checkpoint")
                 self.logger_component.pause_step_timer()
-                self.checkpoint_manager.save_checkpoint(
-                    step=step,
-                    components=self._build_trainable_components(),
-                    optimizer=self.optimizer,
-                    scheduler=self.lr_scheduler,
-                    scaler=self.scaler,
-                    config=self.config,
-                    ema_handler=self.ema_handler,
-                    elapsed_time=self.logger_component.get_total_elapsed(),
-                    te_cache=self.get_te_cache(),
-                    cache_manifest=self._build_cache_manifest(),
-                )
+                self._save_resumable_checkpoint(step)
                 self.logger_component.resume_step_timer()
                 self.logger.info(
                     "periodic_checkpoint_saved",
@@ -877,14 +944,32 @@ class PipelineTrainMixin:
                 self._emit_status("Profiling complete")
                 return
 
-        # ── Training complete ──
-        self.logger.info("training_finished")
-
         # Capture training-phase VRAM peaks NOW — before the final checkpoint
         # save allocates extra memory (EMA copy, safetensors buffers) that would
-        # otherwise inflate the measured "training" peak.
+        # otherwise inflate the measured "training" peak. Ahead of the rebuild
+        # exit below on purpose: a rebuilding job is a chain of segments, and
+        # measuring only the last (narrowest) one would feed the VRAM estimator
+        # a number no full-width segment ever ran at.
         self._capture_training_peaks()
         self._vram_measured = self._compute_vram_measured()
+
+        # ── Rebuild restart: stop here, deliberately unfinished ──
+        if getattr(self, "_rebuild_exit", False):
+            # No final LoRA, no is_final checkpoint, no completed job record:
+            # the backend is about to relaunch this same job from the
+            # checkpoint saved above. A "final" artifact would advertise a
+            # finished run that is still mid-training. The loss history and this
+            # segment's VRAM breakdown ARE written — they belong to the steps
+            # that really happened, and _complete_job_history (which normally
+            # persists the breakdown) must not run for an unfinished job.
+            self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
+            if self._vram_measured:
+                self._write_vram_measured(self._vram_measured)
+            self.logger.info("rebuild_exit_skipping_final_save", step=self.global_step)
+            return
+
+        # ── Training complete ──
+        self.logger.info("training_finished")
 
         self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
 
@@ -902,6 +987,12 @@ class PipelineTrainMixin:
             elapsed_time=self.logger_component.get_total_elapsed(),
             te_cache=self.get_te_cache(),
             cache_manifest=self._build_cache_manifest(),
+            adaptive_state=(
+                self.adaptive_controller.get_state()
+                if getattr(self, "adaptive_controller", None) is not None
+                else None
+            ),
+            optimizer_param_names=getattr(self, "_optimizer_param_names", None),
         )
         self._emit_status("Training")
 
@@ -930,6 +1021,37 @@ class PipelineTrainMixin:
                     self._emit_warning(f"Final sampling failed: {e}")
                 finally:
                     self._emit_status("Training")
+
+    # ── Checkpoint save (periodic + adaptive rebuild) ─────────────────
+
+    def _save_resumable_checkpoint(self, step: int) -> str:
+        """Save a full resumable checkpoint and return its directory.
+
+        The ONE invocation both the periodic ``save_every_n_steps`` save and
+        the adaptive rebuild exit go through, so the two can never drift into
+        writing different resume state.
+
+        The param-name list is written for EVERY run, feature on or off: a
+        rebuild restart resumes from whatever checkpoint is newest, which is
+        usually an ordinary periodic one written long before the first rebuild
+        was requested. ``adaptive_state`` is ``None`` when the feature is off,
+        so a feature-off ``training_state.json`` is unchanged.
+        """
+        controller = getattr(self, "adaptive_controller", None)
+        return self.checkpoint_manager.save_checkpoint(
+            step=step,
+            components=self._build_trainable_components(),
+            optimizer=self.optimizer,
+            scheduler=self.lr_scheduler,
+            scaler=self.scaler,
+            config=self.config,
+            ema_handler=self.ema_handler,
+            elapsed_time=self.logger_component.get_total_elapsed(),
+            te_cache=self.get_te_cache(),
+            cache_manifest=self._build_cache_manifest(),
+            adaptive_state=controller.get_state() if controller is not None else None,
+            optimizer_param_names=getattr(self, "_optimizer_param_names", None),
+        )
 
     # ── File-based IPC helpers ────────────────────────────────────────
 

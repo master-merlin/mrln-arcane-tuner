@@ -146,6 +146,16 @@
                 </div>
             }
 
+            <!-- ── Adaptive layer targeting status chip ──────────────── -->
+            @if (adaptState(); as a) {
+                <div class="adapt-status-row">
+                    <span class="chip teal" data-testid="adapt-chip"
+                          [title]="'Adaptive layer targeting: ' + a.kind">
+                        Adaptive: {{ a.active_count }}/{{ a.total_count }} layers
+                    </span>
+                </div>
+            }
+
             <!-- ── TRAINING CURVES ───────────────────────────────────── -->
             <section class="card collapse-card">
                 <div class="card-head curves-head">

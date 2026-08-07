@@ -242,6 +242,8 @@ UNIVERSAL_FIELDS = frozenset(
         "offload_to_cpu",
         "vram_safe_bucket_order",
         "targeted_layers",
+        "adaptive_targeting",
+        "adaptive_targeting_config",
         "sample_every_n_steps",
         "sample_skip_first_n_steps",
         "sample_prompts",

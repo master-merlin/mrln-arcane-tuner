@@ -394,5 +394,53 @@
     "targeted_layers": {
         "tip": "Select which transformer layers receive LoRA adapters. Placeholder: {targeted_layers}",
         "detail": "By default, LoRA adapters are applied to all eligible layers in the model. Targeted layer training lets you selectively enable LoRA on specific layers.\n\n**When to use:**\n- Training specific concepts that only need certain layers (e.g. style = mid-to-late layers, structure = early layers)\n- Reducing trainable parameter count to prevent overfitting on small datasets\n- Experimenting with which layers most affect your concept\n\n**When to leave empty:**\n- Most standard training — all layers is the safe default\n- When you're unsure which layers matter\n\nEmpty list = all trainable layers receive LoRA adapters."
+    },
+    "adaptive_targeting": {
+        "tip": "Periodically freeze LoRA layers that stopped learning, so late training concentrates on the hot ones.",
+        "detail": "During training a controller measures, once every measurement window, how much each LoRA module actually moved. Modules that have gone cold are frozen; the rest keep training.\n\n**Why:** late in a run most of the gradient signal comes from a minority of layers. Freezing the rest reclaims compute (and, in rebuild mode, optimizer-state VRAM) without changing what the LoRA learns.\n\n**Scope:** adaptive targeting operates strictly *within* your manual **Targeted Layers** selection — it can narrow that set, never widen it.\n\n**Off by default.** With the toggle off, nothing about the run changes."
+    },
+    "adaptive_targeting.preset": {
+        "tip": "Starting point for the knobs below. Editing any knob branches your own editable copy.",
+        "detail": "Presets are ordinary templates in the `adaptive` domain. Three read-only factory presets ship with the app:\n\n- **Conservative** — long warm-up, wide measurement windows, keeps the most layers\n- **Balanced** — the default\n- **Aggressive** — freezes earlier and harder, for speed\n\nEditing a knob while a factory preset is selected automatically creates a user preset named \"<Parent> (custom)\" and keeps saving into it. User presets appear nested under the factory preset they came from, and can be renamed, exported and deleted from the **Templates** screen.\n\n**The preset is provenance only.** A launched job stores the knob *values*, so editing (or deleting) a preset afterwards never changes an already-queued run."
+    },
+    "adaptive_targeting.warmup_pct": {
+        "tip": "Fraction of the run trained with every layer active, before the first measurement.",
+        "detail": "No layer is frozen during warm-up. Early training is where the layer ranking is least stable, so measuring too soon freezes layers that were about to start learning.\n\n**Higher** = safer, less speed-up. **Lower** = adapts sooner.\n\nExpressed as a share of total optimizer steps (0.25 = the first quarter of the run)."
+    },
+    "adaptive_targeting.interval_steps": {
+        "tip": "Optimizer steps between analysis events.",
+        "detail": "Each analysis event compares how much every LoRA module moved during the window that just closed, then re-selects the active set.\n\n**Shorter windows** react faster but measure noisier signal; **longer windows** are more stable but adapt more slowly. Minimum 10.\n\nThe re-activation probe length must stay strictly below this value."
+    },
+    "adaptive_targeting.energy_threshold": {
+        "tip": "Keep the hottest layers until this share of the window's total movement is covered.",
+        "detail": "Modules are ranked by measured heat and kept, hottest first, until their cumulative share reaches this threshold. Everything below the cut is frozen.\n\n**0.97** keeps almost everything (conservative); **0.85** freezes aggressively. This is a share of *energy*, not a count of layers — a run whose movement is concentrated in a few modules will freeze many more layers at the same threshold than an evenly-spread one."
+    },
+    "adaptive_targeting.min_active_pct": {
+        "tip": "Safety floor — never freeze below this share of LoRA modules.",
+        "detail": "Applied after the energy threshold. If the threshold would leave fewer than this share of modules active, the coldest survivors are padded back in (by heat order) until the floor is met.\n\nThis is what prevents a pathological window — an unusually quiet stretch of training — from freezing almost the whole adapter."
+    },
+    "adaptive_targeting.heat_ema": {
+        "tip": "Smoothing applied to each layer's measured heat across windows.",
+        "detail": "Each window's measurement is blended with the running value: `heat = ema * previous + (1 - ema) * measured`.\n\n**0** = judge on the last window alone (fast, twitchy). **Higher** = decisions carry more history, so a single odd window cannot freeze a layer that has been consistently active."
+    },
+    "adaptive_targeting.action": {
+        "tip": "What happens to a cold layer: freeze it in place, or rebuild a smaller adapter.",
+        "detail": "**Freeze** (default) flips `requires_grad` off for the frozen modules. Cheap, fully in-process, reversible — the backward pass gets shorter but the optimizer still holds state for every parameter.\n\n**Rebuild** additionally checkpoints and restarts the run with a *smaller* adapter once the active set has shrunk enough, which also reclaims the optimizer-state VRAM of the dropped modules. It costs a restart, and it is contractually one-way: **re-activation cannot be combined with it**, because a rebuilt adapter holds no optimizer state for the dropped parameters and a probe window could not step them."
+    },
+    "adaptive_targeting.rebuild_min_shrink_pct": {
+        "tip": "Only restart with a smaller adapter once the active set has shrunk by at least this much.",
+        "detail": "Rebuild mode only. A restart is worth its cost only when it removes a meaningful share of the trainable parameters, so a rebuild is triggered only after the active set has shrunk by at least this percentage since the previous rebuild.\n\nRaising it makes rebuilds rarer and larger; lowering it makes them frequent (and each one costs a checkpoint + relaunch)."
+    },
+    "adaptive_targeting.reactivation": {
+        "tip": "Periodically unfreeze everything for a short probe so a layer that starts learning again can return.",
+        "detail": "Freezing is otherwise monotonic: once a module is out, it stays out. With re-activation on, every Nth analysis event opens a short **probe window** in which the whole set trains again, so a layer whose signal returns later in the run can be measured and brought back.\n\nCosts a little speed — probe windows train the full adapter. Unavailable in **rebuild** mode."
+    },
+    "adaptive_targeting.probe_every": {
+        "tip": "Every Nth analysis event is a probe window instead of a plain measurement.",
+        "detail": "Only used when re-activation is on. **2** probes every other window (most responsive, slowest); larger values probe rarely and keep more of the speed-up. Minimum 2."
+    },
+    "adaptive_targeting.probe_steps": {
+        "tip": "Length of a probe window, in optimizer steps. Must stay below the measurement interval.",
+        "detail": "The probe has to be long enough for a re-awakening layer to produce a measurable gradient, but short enough that the un-frozen stretch doesn't eat the speed-up.\n\nHard rule (enforced by the form and re-checked by the backend): **probe length < measurement interval** — a probe that outlives its own window could never close."
     }
 }

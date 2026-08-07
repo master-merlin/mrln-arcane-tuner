@@ -189,6 +189,10 @@ class AdaptiveTargetingController:
             for name, (a_p, b_p) in self._modules.items()
             if a_p.requires_grad and b_p.requires_grad
         ]
+        # Size of the universe the RUN started from. On a fresh controller that
+        # is this process's universe; a resumed/rebuilt one overwrites it from
+        # the persisted state (see restore_state and _min_active_floor).
+        self._original_total = len(self._universe)
         if not self._universe:
             self._disable(
                 "no LoRA modules found on the model"
@@ -344,8 +348,26 @@ class AdaptiveTargetingController:
             b_p.requires_grad_(trainable)
         self._active = [name for name in self._universe if name in keep_set]
 
+    def _min_active_floor(self) -> int:
+        """Smallest keep-set this controller may produce.
+
+        ``min_active_pct`` is a share of the universe the RUN started from, not
+        of whatever the current process inherited: a rebuild restart re-applies
+        the previous keep-set as its manual ``targeted_layers``, so this
+        process's universe IS that keep-set. Recomputing the share against it
+        makes every segment's floor a fraction of an already-narrowed set, and
+        across the capped rebuild cycles the guarantee compounds down toward a
+        single module — while the UI promises a share of the LoRA's modules.
+        Capped at the current universe: a floor this process cannot satisfy
+        would be met by keeping everything, which is the same thing said
+        without the arithmetic.
+        """
+        anchor = max(self._original_total, len(self._universe))
+        floor = math.ceil(self.config.min_active_pct * anchor)
+        return max(1, min(floor, len(self._universe)))
+
     def _pad_to_floor(self, keep: list[str]) -> list[str]:
-        """Top the keep-set back up to ``min_active_pct`` of the universe.
+        """Top the keep-set back up to the min-active floor.
 
         ``select_active`` already applies the floor, but intersecting its result
         with the current active set (monotonicity) can drop below it. Padding
@@ -353,7 +375,7 @@ class AdaptiveTargetingController:
         positional prefix, which could evict a hot module in favour of a cold
         neighbour that merely sorts earlier.
         """
-        floor = max(1, math.ceil(self.config.min_active_pct * len(self._universe)))
+        floor = self._min_active_floor()
         if len(keep) >= floor:
             return keep
         keep_set = set(keep)
@@ -375,6 +397,7 @@ class AdaptiveTargetingController:
             self._universe,
             self.config.energy_threshold,
             self.config.min_active_pct,
+            min_active_count=self._min_active_floor(),
         )
         self._snapshot = self._take_snapshot()
         self._heat = heat
@@ -439,6 +462,13 @@ class AdaptiveTargetingController:
                 )
                 logger.info("adaptive_rebuild_cap_reached", step=step)
             return None
+        # Both counters advance at the DECISION, not once the checkpoint the
+        # caller is about to write exists. A checkpoint that then fails
+        # therefore burns a rebuild slot and moves the shrink baseline, so the
+        # retry must earn a further shrink against the narrower set. That
+        # conservatism is deliberate: rolling them back would let a run whose
+        # checkpoint save keeps failing request a restart at every subsequent
+        # event, and a restart nobody can act on is pure teardown cost.
         self.rebuild_count += 1
         self._params_at_last_rebuild = active_params
         self._pending_rebuild_step = step
@@ -545,6 +575,7 @@ class AdaptiveTargetingController:
                 self._universe,
                 self.config.energy_threshold,
                 self.config.min_active_pct,
+                min_active_count=self._min_active_floor(),
             )
         except Exception:
             # Roll the MODEL back, not just the bookkeeping. ``_open_probe``
@@ -642,8 +673,12 @@ class AdaptiveTargetingController:
             "top_modules": self._hot[:10],
             **(extra or {}),
         }
-        self._events.append(event)
+        # Emit FIRST, record second. ``_write_history`` rewrites the file from
+        # this list, so an event appended before a failing emit would still be
+        # persisted by the next successful one — publishing, for the rebuild
+        # handoff, a restart the pipeline never performed.
         self.log_writer.emit("adapt", event)
+        self._events.append(event)
         self.log_writer.log(
             f"adaptive_targeting[{kind}] step {step}: "
             f"{self.active_count}/{self.total_count} layers active"
@@ -659,6 +694,67 @@ class AdaptiveTargetingController:
                 f"adaptive_targeting: could not update {HISTORY_FILENAME} after the "
                 f"{kind} event ({exc}) — the event itself was delivered"
             )
+
+    def _seed_events_from_history(self, current_step: int | None) -> None:
+        """Adopt the run's earlier events before this segment appends to them.
+
+        ``_write_history`` REWRITES the file from ``self._events``, and that
+        list starts empty in every process — so a resume, and by construction
+        every rebuild restart, would otherwise truncate the durable history to
+        the segment that happens to be running. This file is the only durable
+        record: ``job.logs`` is cleared by the relaunch.
+
+        Events past the resume point are dropped. Resuming an earlier
+        checkpoint discards the steps after it, and republishing their events
+        would advertise narrowing decisions this run no longer made. Callers
+        that cannot name a resume step keep the file's events verbatim.
+
+        An unreadable or malformed file degrades to "history restarts here"
+        with the reason surfaced — never a failed resume, and never a silent
+        one.
+        """
+        path = os.path.join(self.output_dir, HISTORY_FILENAME)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                prior = json.load(fh).get("events")
+        except FileNotFoundError:
+            return  # first segment of the run — nothing to inherit
+        except (OSError, ValueError) as exc:
+            self._warn_history_unusable(str(exc))
+            return
+        if not isinstance(prior, list):
+            self._warn_history_unusable("its event list is not an array")
+            return
+
+        kept: list[dict[str, Any]] = []
+        malformed = 0
+        for entry in prior:
+            if not isinstance(entry, dict):
+                malformed += 1
+                continue
+            try:
+                entry_step = int(entry.get("step", 0))
+            except (TypeError, ValueError):
+                malformed += 1
+                continue
+            if current_step is not None and entry_step > int(current_step):
+                continue
+            kept.append(entry)
+        self._events = kept
+        if malformed:
+            self.log_writer.warning(
+                f"adaptive_targeting: dropped {malformed} unreadable event(s) while "
+                f"re-adopting {HISTORY_FILENAME} — the rest of the history is intact"
+            )
+            logger.warning("adaptive_history_entries_dropped", count=malformed)
+
+    def _warn_history_unusable(self, reason: str) -> None:
+        """Surface a history file this run cannot build on. Never silent."""
+        self.log_writer.warning(
+            f"adaptive_targeting: could not re-adopt {HISTORY_FILENAME} ({reason}) "
+            "— this run's event history restarts from here"
+        )
+        logger.warning("adaptive_history_read_failed", reason=reason)
 
     def _write_history(self) -> None:
         """Rewrite the run-dir history file atomically.
@@ -690,6 +786,10 @@ class AdaptiveTargetingController:
             "event_index": self.event_index,
             "next_event": self._next_event,
             "rebuild_count": self.rebuild_count,
+            # Universe size the min-active floor is a share of. A rebuild
+            # restart's own universe is already narrowed, so the floor must
+            # travel with the state or it erodes segment by segment.
+            "original_total": self._original_total,
             # Active-param baseline the next shrink is measured against — the
             # restart's optimizer is built over exactly this many params.
             "params_at_last_rebuild": self._params_at_last_rebuild,
@@ -708,6 +808,13 @@ class AdaptiveTargetingController:
         """
         if not self.enabled or not state:
             return
+        self._seed_events_from_history(current_step)
+        # The floor stays a share of the universe the RUN started from. Falls
+        # back to this process's universe for state written before the key
+        # existed, which is exactly the fresh-controller value.
+        self._original_total = max(
+            int(state.get("original_total") or 0), len(self._universe)
+        )
         universe = set(self._universe)
         persisted = list(state.get("active_modules", []))
         restored = [n for n in persisted if n in universe]

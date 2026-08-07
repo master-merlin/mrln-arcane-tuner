@@ -483,9 +483,12 @@ class PipelineOptimizationMixin:
         }
         if not getattr(self, "_adaptive_total_emitted", False):
             # Once per PROCESS: the denominator cannot change while the process
-            # lives, so repeating it every step is pure payload weight. A
-            # rebuild restart is a NEW process and re-announces it, which is
-            # what lets the chart rescale after the universe narrows.
+            # lives, so repeating it every step is pure payload weight. No
+            # consumer reads it today — the chart plots the active/hot counts
+            # and the layer totals the UI shows come from the `adapt` events,
+            # which carry their own total_count. This is a diagnostic in the
+            # raw step log; anything that starts scaling on it must handle its
+            # absence on every step but the first of each process.
             extras["adaptive_total"] = controller.total_count
             self._adaptive_total_emitted = True
         return extras

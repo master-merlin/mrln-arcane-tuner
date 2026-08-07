@@ -10,6 +10,7 @@ Shared fixtures (``make_adaptive_controller``, ``train_step``, ``lora_params``,
 import json
 import os
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -522,6 +523,149 @@ def test_restore_without_a_step_keeps_the_saved_schedule(make_adaptive_controlle
     _model, ctl, _writer = make_adaptive_controller()
     ctl.restore_state({"next_event": 77})
     assert ctl.get_state()["next_event"] == 77
+
+
+def _segment_two_controller(model, tmp_path, writer, **cfg):
+    """A controller for the NEXT rebuild segment over an already-narrowed model."""
+    return AdaptiveTargetingController(
+        model=model,
+        config=AdaptiveTargetingConfig(
+            warmup_pct=0.1, interval_steps=10, probe_steps=5, **cfg
+        ),
+        total_steps=100,
+        log_writer=writer,
+        output_dir=str(tmp_path),
+    )
+
+
+def test_floor_is_anchored_on_the_original_universe_across_a_rebuild(
+    tmp_path, make_adaptive_controller, make_peft_tiny, fake_log_writer, train_step
+):
+    """``min_active_pct`` is a share of the run's ORIGINAL universe, not of
+    whatever the previous rebuild segment narrowed it to.
+
+    A rebuild restart re-applies the keep-set as the process's manual
+    ``targeted_layers``, so the next controller's universe IS the previous
+    keep-set. Recomputing the floor from that already-narrowed universe makes
+    the guarantee a fraction of a fraction — over the capped rebuild cycles it
+    collapses toward a single module, while the UI still promises "never leave
+    fewer than this share of LoRA modules active".
+    """
+    from app.engine.core.optimization.targeted_training import TargetedLayerManager
+
+    model, ctl, _writer = make_adaptive_controller(
+        energy_threshold=0.5, min_active_pct=0.5
+    )
+    for step in range(1, 45):
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+    state = ctl.get_state()
+    assert len(state["active_modules"]) == 4  # ceil(0.5 * 8), segment one's floor
+    assert state["original_total"] == 8  # carried across the restart
+
+    # Segment two: the relaunched process freezes everything outside the
+    # keep-set FIRST, so its universe is only those four modules.
+    narrowed = make_peft_tiny(4)
+    TargetedLayerManager(ctl.keep_patterns()).apply(narrowed)
+    ctl2 = _segment_two_controller(
+        narrowed, tmp_path, fake_log_writer,
+        energy_threshold=0.5, min_active_pct=0.5,
+    )
+    assert ctl2.total_count == 4
+    ctl2.restore_state(state)
+
+    # Segment two picks the schedule up where segment one left it (next event
+    # at 50), so these steps really do run analysis events — a loop that ends
+    # before the restored next_event would assert nothing at all.
+    for step in range(41, 75):
+        train_step(narrowed, ["blocks.0.to_q"])
+        ctl2.on_optimizer_step(step)
+    assert [d["kind"] for t, d in fake_log_writer.events if t == "adapt"]
+    # A floor recomputed over the narrowed universe would be ceil(0.5*4) = 2.
+    assert ctl2.active_count == 4
+
+
+def test_restore_seeds_prior_events_and_prunes_the_discarded_future(
+    tmp_path, make_adaptive_controller, train_step
+):
+    """The run-dir history file is the durable record, and every process starts
+    with an empty event list — so without seeding, the first event after a
+    resume (and after EVERY rebuild restart) rewrites the file with only the
+    current segment. Events past the resume point are dropped: rewinding to an
+    earlier checkpoint discards those steps, and keeping their events would
+    advertise decisions this run never made."""
+    path = tmp_path / "adaptive_targeting.json"
+    path.write_text(
+        json.dumps({
+            "events": [
+                {"step": 100, "event_index": 0, "kind": "narrow"},
+                {"step": 200, "event_index": 1, "kind": "rebuild_request"},
+                {"step": 900, "event_index": 2, "kind": "narrow"},
+            ],
+            "modules": [],
+            "heat": {},
+        }),
+        encoding="utf-8",
+    )
+
+    model, ctl, _writer = make_adaptive_controller(energy_threshold=0.90)
+    ctl.restore_state({"event_index": 2}, current_step=200)
+    for step in range(201, 215):  # next_event is clamped to 210
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+    with open(path, encoding="utf-8") as fh:
+        events = json.load(fh)["events"]
+    steps = [e["step"] for e in events]
+    assert steps[:2] == [100, 200]  # the earlier segments survived
+    assert 900 not in steps  # the discarded future did not
+    assert len(steps) > 2  # …and this segment appended to them
+
+
+def test_a_rebuild_request_that_never_shipped_is_not_persisted(
+    tmp_path, make_adaptive_controller, train_step
+):
+    """The pipeline only restarts on an ``adapt`` payload it actually received.
+    An event recorded before a failing emit would still be written to the
+    history file by the NEXT event — a rebuild row for a restart that never
+    happened, in the file the Stats table reads."""
+    model, ctl, writer = make_adaptive_controller(
+        energy_threshold=0.90, action="rebuild", rebuild_min_shrink_pct=1.0
+    )
+    for step in range(1, 21):
+        train_step(model, ["blocks.0.to_q"])
+        assert ctl.on_optimizer_step(step) in (None, "rebuild_request")
+    assert ctl._pending_rebuild_step == 20  # the event asked for a rebuild
+
+    working_emit = writer.emit
+    writer.emit = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("channel down"))
+    with pytest.raises(RuntimeError):
+        ctl.notify_rebuild_checkpoint("checkpoint-000020")
+    writer.emit = working_emit
+
+    for step in range(21, 31):  # the next event rewrites the history file
+        train_step(model, ["blocks.0.to_q"])
+        ctl.on_optimizer_step(step)
+
+    with open(os.path.join(str(tmp_path), "adaptive_targeting.json"), encoding="utf-8") as fh:
+        kinds = [e["kind"] for e in json.load(fh)["events"]]
+    assert kinds  # not vacuous: the surviving events were written
+    assert "rebuild_request" not in kinds
+
+
+def test_unreadable_history_file_warns_and_still_restores(
+    tmp_path, make_adaptive_controller
+):
+    """A corrupt history file must degrade to "history restarts here" with the
+    reason surfaced — never take the resume (and the run) down with it."""
+    (tmp_path / "adaptive_targeting.json").write_text("{ not json", encoding="utf-8")
+    _model, ctl, writer = make_adaptive_controller()
+    ctl.restore_state({"event_index": 3, "next_event": 400}, current_step=200)
+
+    assert ctl.enabled is True
+    assert ctl.event_index == 3  # the rest of the restore still happened
+    warnings = [str(d) for t, d in writer.events if t == "warning"]
+    assert any("adaptive_targeting.json" in w for w in warnings)
 
 
 def test_state_round_trip_restores_active_set(

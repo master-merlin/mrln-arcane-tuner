@@ -43,14 +43,29 @@ def select_active(
     universe: list[str],
     energy_threshold: float,
     min_active_pct: float,
+    min_active_count: int | None = None,
 ) -> Selection:
+    """Rank ``universe`` by heat and keep the hottest prefix above the floor.
+
+    ``min_active_count`` overrides the ``min_active_pct``-derived floor. The
+    caller needs it because the percentage is a promise about the universe the
+    RUN started with, while this function only ever sees the universe of the
+    current process — which a rebuild restart has already narrowed. Passing the
+    count keeps the floor anchored on the original size (spec §5); omitting it
+    keeps the standalone percentage behaviour.
+    """
     total = sum(heat.get(m, 0.0) for m in universe)
     if total <= 0.0:
         # No signal in this window — caller skips the event (spec §7).
         return Selection(keep=list(universe), hot=[], total_heat=0.0)
 
     ranked = sorted(universe, key=lambda m: heat.get(m, 0.0), reverse=True)
-    floor = max(1, math.ceil(min_active_pct * len(universe)))
+    floor = (
+        math.ceil(min_active_pct * len(universe))
+        if min_active_count is None
+        else min_active_count
+    )
+    floor = max(1, min(floor, len(universe)))
 
     keep: list[str] = []
     hot: list[str] = []

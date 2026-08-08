@@ -132,7 +132,20 @@ def _discover_lora_modules(
 
 
 class AdaptiveTargetingController:
-    """Freezes LoRA modules that stopped learning, at fixed step intervals."""
+    """Freezes LoRA modules that stopped learning, at fixed step intervals.
+
+    What this buys, so nobody re-derives it from a disappointing benchmark:
+    NOT step time. Freezing flips ``requires_grad`` on a module's A/B pair and
+    nothing else. The forward is unchanged by contract (a frozen module's delta
+    is part of the model — see ``keep_patterns``), and autograd still walks
+    every block down to ``earliest_active_block``, which stays near zero
+    whenever the surviving modules are spread across the depth. The LoRA
+    weight-gradients that do get skipped are a low single-digit share of a
+    step's work, inside run-to-run noise.
+
+    What it does buy is capacity control late in training, and — in
+    ``action="rebuild"`` only — optimizer state for the dropped parameters.
+    """
 
     def __init__(
         self,

@@ -1058,8 +1058,10 @@ class BaseTrainingConfig(BaseModel):
     )
     adaptive_targeting: bool = Field(
         False,
-        description="LoRA adaptive layer targeting — periodically freeze layers "
-        "that stopped learning so late training focuses on hot layers.",
+        description="LoRA adaptive layer targeting — periodically freeze LoRA "
+        "modules that stopped learning, confining late updates to the ones "
+        "still moving. A regularizer, not a speedup: frozen modules stay in "
+        "the model, so step time is unchanged.",
         json_schema_extra={"group": "ENGINE"},
     )
     adaptive_targeting_config: dict = Field(

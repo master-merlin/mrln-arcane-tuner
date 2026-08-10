@@ -1,0 +1,8 @@
+# Vendored Python code source: huggingface/diffusers, branch minimax-h3
+# (PR #14355 — NOT in any diffusers release as of 2026-08-05.)
+DIFFUSERS_MINIMAX_H3_SHA=245d78fb48f1c87dfb560a94bea6e191c9f9f1c0
+
+# Model weights source: MiniMaxAI/MiniMax-H3 (HuggingFace)
+# Licence: MiniMax H3 Community License Agreement (NOT Apache-2.0).
+# (Not pinned via this file — resolved by the definition YAML's components.repo.path.)
+MINIMAX_H3_HF_REPO=https://huggingface.co/MiniMaxAI/MiniMax-H3

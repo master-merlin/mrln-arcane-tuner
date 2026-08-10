@@ -22,12 +22,31 @@ def _profile(def_id: str = "minimax-h3-t2va"):
     return resolve_video_profile(ModelRegistry._definitions[def_id])
 
 
+def _frame_rule(def_id: str = "minimax-h3-t2va") -> str:
+    """The family's declared Nn+M frame rule, read from the YAML.
+
+    Every frame-rule assertion in this file must obtain the rule THROUGH this
+    helper (or ``resolve_video_profile``), never as a hardcoded ``"17n+5"``
+    literal — a hardcoded literal would let the suite keep passing after
+    someone edited ``video.frame_rule`` in the YAML, which is exactly the
+    drift this file exists to catch.
+    """
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry._definitions = {}
+    ModelRegistry.initialize()
+    return ModelRegistry._definitions[def_id].architecture_params["video.frame_rule"]
+
+
 def _tokens(frames: int, height: int, width: int, def_id: str = "minimax-h3-t2va") -> int:
     """Effective sequence length, DERIVED FROM THE DEFINITION — not hardcoded.
 
-    Reading the factors out of architecture_params is the whole point: this
-    test must fail if someone edits the YAML's vae_spatial/patch_size/
-    vae_temporal, which a hardcoded 32/4 would sail straight past.
+    Reading the spatial factors out of architecture_params is the whole
+    point: this test must fail if someone edits the YAML's vae_spatial or
+    patch_size, which a hardcoded 32 would sail straight past. (The raw
+    ``video.vae_temporal`` factor is pinned separately, by
+    ``test_profile_declares_raw_vae_factor_not_post_patchify`` — it is not
+    read here, because H3's latent-frame count comes from the ``17n+5``
+    frame rule, not the raw temporal-downsample factor.)
     """
     ModelRegistry._definitions_loaded = False
     ModelRegistry._definitions = {}
@@ -66,7 +85,8 @@ def _audio_rows(frames: int, def_id: str = "minimax-h3-t2va") -> int:
 
 def test_effective_factors_derive_to_32x_and_4x():
     """Guards the derivation itself, so the table below cannot pass for the
-    wrong reason (e.g. vae_spatial 32 with patch 1 also yields 32)."""
+    wrong reason (e.g. vae_spatial 32 with patch 1 also yields 32); also pins
+    the raw 4x temporal factor the test's name promises."""
     ModelRegistry._definitions_loaded = False
     ModelRegistry._definitions = {}
     ModelRegistry.initialize()
@@ -74,12 +94,21 @@ def test_effective_factors_derive_to_32x_and_4x():
     assert arch["video.vae_spatial"] == 16
     assert arch["transformer.patch_size"] == [1, 2, 2]
     assert arch["video.vae_spatial"] * arch["transformer.patch_size"][1] == 32
+    assert arch["video.vae_temporal"] == 4
+
+
+def test_declared_frame_rule_is_17n_plus_5():
+    """A typo/edit in the YAML's video.frame_rule (e.g. '17n+5' -> '17n+6')
+    must fail LOUDLY here, not just silently change which frame counts the
+    parametrized tests below happen to accept."""
+    assert _frame_rule() == "17n+5"
+    assert _profile().frame_rule == "17n+5"
 
 
 @pytest.mark.parametrize("frames,valid", [(5, True), (107, True), (124, True), (345, True),
                                           (97, False), (106, False), (1, False)])
 def test_frame_rule_is_17n_plus_5(frames, valid):
-    assert frame_predicate("17n+5")(frames) is valid
+    assert frame_predicate(_frame_rule())(frames) is valid
 
 
 def test_profile_declares_raw_vae_factor_not_post_patchify():
@@ -90,6 +119,7 @@ def test_profile_declares_raw_vae_factor_not_post_patchify():
     assert profile.vae_spatial == 16
     assert profile.vae_temporal == 4
     assert profile.divisibility == 32
+    assert profile.frame_rule == "17n+5"
 
 
 @pytest.mark.parametrize("frames,expected", [(107, 18_432), (124, 21_312), (345, 58_752)])
@@ -110,6 +140,6 @@ def test_default_clip_is_a_valid_17n_plus_5_bucket():
     ModelRegistry.initialize()
     defaults = ModelRegistry._definitions["minimax-h3-t2va"].defaults
     assert defaults["num_frames"] == 107
-    assert frame_predicate("17n+5")(defaults["num_frames"])
+    assert frame_predicate(_frame_rule())(defaults["num_frames"])
     # Guards the original mistake: 97 came from a 4n+1 derivation and is invalid.
     assert defaults["num_frames"] != 97

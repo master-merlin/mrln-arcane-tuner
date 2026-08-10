@@ -26,7 +26,13 @@ components:
     path: huggingface:MiniMaxAI/MiniMax-H3
     type: diffusers
     params: {}
-control_inputs: 1
+# Deliberately 0, NOT an oversight. fl2va's conditioning mechanism is
+# first/last-frame video conditioning, not the paired-EDIT dataset mechanism
+# (Kontext / Qwen-Edit). control_inputs > 0 activates the paired-edit-dataset
+# gating in pipeline_data.py, built for a source-image + edited-target pairing
+# this definition does not implement; flipping it on here would silently
+# route training through a pipeline that does not match the model.
+control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.bfloat16

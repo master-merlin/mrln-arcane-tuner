@@ -215,8 +215,8 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
     if num_frames and not profile.frame_ok(num_frames):
         report.errors.append(
             f"num_frames={num_frames} violates this model's frame rule "
-            f"'{profile.frame_rule}'. Use a value of that form (1, "
-            f"{_first_ladder_values(profile.frame_rule)} …)."
+            f"'{profile.frame_rule}'. Use a value of that form "
+            f"({_first_ladder_values(profile.frame_rule)} …)."
         )
 
     # Per-dataset frame overrides (DatasetItem.num_frames) must also satisfy the
@@ -314,6 +314,14 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
 
 
 def _first_ladder_values(rule: str | None, n: int = 3) -> str:
-    """A short human hint of the first few valid frame counts (e.g. '5, 9, 13')."""
+    """A short human hint of the first ``n + 1`` valid frame counts,
+    INCLUDING the rule's own floor (e.g. '1, 5, 9, 13' for ``4n+1``;
+    '5, 22, 39, 56' for ``17n+5``, whose floor is 5, not 1).
+
+    Slicing from index 0 (rather than hardcoding a leading literal ``1``) is
+    load-bearing: a rule whose floor isn't 1 — MiniMax H3's ``17n+5`` — would
+    otherwise have its validator message advertise ``1`` as a valid value
+    when the predicate rejects it, and omit the real floor entirely.
+    """
     ladder = BucketManager.frame_ladder(BucketManager._default_max_frames(rule), rule)
-    return ", ".join(str(f) for f in ladder[1 : n + 1]) or "1"
+    return ", ".join(str(f) for f in ladder[: n + 1]) or "1"

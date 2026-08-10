@@ -10,7 +10,11 @@ from __future__ import annotations
 import pytest
 
 from app.engine.components.bucketing import BucketManager
-from app.engine.core.video_contract import frame_predicate, snap_frames
+from app.engine.core.video_contract import (
+    _first_ladder_values,
+    frame_predicate,
+    snap_frames,
+)
 
 
 @pytest.mark.parametrize("rule,frames,valid", [
@@ -57,3 +61,48 @@ def test_h3_ladder_anchors_at_5_not_1():
 ])
 def test_snap_frames_rounds_down_to_a_valid_count(rule, raw, snapped):
     assert snap_frames(raw, rule) == snapped
+
+
+# ── Review fixes: FINDING 1 — error-hint ladder slice ──────────────────────
+
+
+def test_first_ladder_values_4n1_hint_is_byte_identical():
+    """Pins the exact hint text a validator error message embeds for 4n+1 —
+    regression guard for the 'output must stay byte-identical' requirement.
+    """
+    assert _first_ladder_values("4n+1") == "1, 5, 9, 13"
+
+
+def test_first_ladder_values_h3_hint_has_real_floor_not_1():
+    hint = _first_ladder_values("17n+5")
+    assert "5" in hint
+    # No standalone "1" token — the old hardcoded-leading-"1" hint would have
+    # advertised a value the 17n+5 predicate rejects.
+    assert "1" not in hint.split(", ")
+    assert hint == "5, 22, 39, 56"
+
+
+# ── Review fixes: FINDING 2 — offset == 0 is not a real rule ───────────────
+
+
+def test_parse_frame_step_rejects_zero_offset():
+    """'4n+0' previously fell through to None (unconstrained); it must keep
+    doing so rather than silently parsing to a (4, 0) rule nothing declares.
+    """
+    assert BucketManager._parse_frame_step("4n+0") is None
+    assert frame_predicate("4n+0")(4) is True  # unconstrained, not rejected
+
+
+# ── Review fixes: FINDING 3 — default ceiling reaches H3's real range ──────
+
+
+def test_default_max_frames_unchanged_for_shipped_rules():
+    assert BucketManager._default_max_frames("4n+1") == 81
+    assert BucketManager._default_max_frames("8n+1") == 121
+
+
+def test_default_max_frames_h3_reaches_real_range():
+    ceiling = BucketManager._default_max_frames("17n+5")
+    assert ceiling >= 124
+    ladder = BucketManager.frame_ladder(ceiling, "17n+5")
+    assert 124 in ladder

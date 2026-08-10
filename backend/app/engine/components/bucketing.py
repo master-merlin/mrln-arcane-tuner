@@ -83,15 +83,40 @@ class BucketManager:
             return None
         step = int(m.group(1))
         offset = int(m.group(2))
-        return (step, offset) if step >= 1 else None
+        # offset == 0 would parse ("4n+0") but is not a real frame rule any
+        # shipped or planned family uses — every family's floor is its first
+        # valid frame count, always >= 1. Rejecting it here (-> image mode)
+        # keeps the failure visible instead of silently accepting a rule
+        # whose ladder would start at 0 and whose predicate would reject the
+        # single-frame still every other rule accepts.
+        return (step, offset) if step >= 1 and offset >= 1 else None
 
     @staticmethod
     def _default_max_frames(rule: str | None) -> int:
-        """Default ladder ceiling per rule (documented in ``frame_ladder``)."""
-        # 4n+1 ladder tops out at 81 frames (n=20); finer (>=8) rules at 121.
+        """Default ladder ceiling per rule (documented in ``frame_ladder``).
+
+        The two shipped rules keep their exact historical ceilings — 81 for
+        WAN's ``4n+1``, 121 for LTX's ``8n+1`` — so neither family's default
+        ladder moves (these two constants are each tuned to that model's own
+        real usable range, not derived from a formula).
+
+        A rule coarser than LTX's (``step > 8`` — e.g. MiniMax H3's
+        ``17n+5``) needs its own ceiling: reusing 121 would truncate the
+        ladder well inside the model's real range. We scale the ceiling with
+        the step using the same ~20-rung horizon implicit in the ``4n+1``
+        default (``1 + 4*20 == 81``), so a coarser rule still reaches a
+        comparable number of rungs instead of being capped by a constant
+        tuned for a 4-frame-per-chunk model. For ``17n+5`` that lands at
+        ``5 + 17*20 == 345`` frames, matching H3's real released range of
+        124-345 frames (ai-toolkit/DiffSynth/musubi).
+        """
         parsed = BucketManager._parse_frame_step(rule)
-        step = parsed[0] if parsed is not None else None
-        return 121 if (step is not None and step >= 8) else 81
+        if parsed is None:
+            return 81
+        step, offset = parsed
+        if step > 8:
+            return offset + step * 20
+        return 121 if step >= 8 else 81
 
     @staticmethod
     def frame_ladder(max_frames: int, rule: str | None) -> list[int]:

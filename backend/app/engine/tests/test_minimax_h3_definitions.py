@@ -54,6 +54,25 @@ def _real_linear_suffixes() -> set[str]:
     return suffixes
 
 
+def _real_refiner_linear_suffixes() -> set[str]:
+    """Same derivation as ``_real_linear_suffixes`` but restricted to modules
+    under ``token_refiner.refiner_blocks`` — main blocks and refiner blocks
+    collapse to the same suffix shape (both index at the first digit
+    segment), so this is the only way to see refiner structure in isolation.
+    """
+    model = build_tiny_transformer()
+    suffixes = set()
+    for name, mod in model.named_modules():
+        if not name.startswith("token_refiner.refiner_blocks."):
+            continue
+        if isinstance(mod, nn.Linear):
+            parts = name.split(".")
+            idx = next((i for i, p in enumerate(parts) if p.isdigit()), None)
+            if idx is not None:
+                suffixes.add(".".join(parts[idx + 1:]))
+    return suffixes
+
+
 # Linear-bearing suffixes present in the REAL checkpoint, read from
 # transformer/diffusion_pytorch_model.safetensors.index.json on 2026-08-08.
 # adaln_proj.linear is real and deliberately NOT targeted — see
@@ -71,16 +90,24 @@ def test_all_three_definitions_exist():
 
 
 def test_vendored_class_module_names_match_the_checkpoint():
-    """The vendored class and the checkpoint must agree on module naming.
+    """The vendored class and the checkpoint must agree on module naming, in
+    BOTH directions.
 
-    If they drift, ``from_pretrained`` either raises or silently skips weights
-    after a ~62 GB download. Catching it here costs a CPU instantiate.
+    A missing module means ``from_pretrained`` either raises or silently
+    skips weights after a ~62 GB download. A vendored class that INVENTS
+    extra Linears absent from the checkpoint is just as dangerous the other
+    way: it would load with random-initialized weights that the checkpoint
+    never trained, and nothing about that failure mode is loud. Catching
+    either direction here costs a CPU instantiate.
     """
     derived = _real_linear_suffixes()
     missing = CHECKPOINT_BLOCK_LINEARS - derived
-    assert not missing, (
-        f"vendored class lacks modules the checkpoint ships: {sorted(missing)} — "
-        "the vendor drop and the weights are out of sync"
+    extra = derived - CHECKPOINT_BLOCK_LINEARS
+    assert derived == CHECKPOINT_BLOCK_LINEARS, (
+        f"vendored class and checkpoint disagree on module naming — "
+        f"the vendor drop and the weights are out of sync.\n"
+        f"  vendor lacks (checkpoint ships): {sorted(missing)}\n"
+        f"  vendor invents (checkpoint lacks): {sorted(extra)}"
     )
 
 
@@ -120,6 +147,27 @@ def test_target_list_is_exactly_the_non_adaln_checkpoint_linears():
             f"Linears.\n  missing: {sorted(expected - shipped)}"
             f"\n  unexpected: {sorted(shipped - expected)}"
         )
+
+
+def test_refiner_blocks_match_checkpoint_minus_adaln():
+    """Refiner blocks carry the checkpoint's block Linears MINUS
+    ``adaln_proj.linear`` — refiners have no per-row AdaLN table, only the
+    main transformer blocks do (see the module docstring). A vendored
+    refiner block that gained or lost a Linear relative to this would
+    silently escape every other test here, since those only check the
+    combined main+refiner suffix set or the shipped YAML, never refiner
+    structure in isolation.
+    """
+    derived_refiner = _real_refiner_linear_suffixes()
+    assert derived_refiner == CHECKPOINT_REFINER_LINEARS, (
+        f"refiner block Linears drifted from the checkpoint.\n"
+        f"  missing: {sorted(CHECKPOINT_REFINER_LINEARS - derived_refiner)}\n"
+        f"  unexpected: {sorted(derived_refiner - CHECKPOINT_REFINER_LINEARS)}"
+    )
+    assert "adaln_proj.linear" not in derived_refiner, (
+        "refiner blocks must NOT carry adaln_proj — they have no per-row "
+        "AdaLN table, unlike the main transformer blocks"
+    )
 
 
 def test_adaln_branch_is_excluded_from_targeting():

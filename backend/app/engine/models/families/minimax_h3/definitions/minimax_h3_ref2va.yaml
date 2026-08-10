@@ -26,6 +26,13 @@ components:
     path: huggingface:MiniMaxAI/MiniMax-H3
     type: diffusers
     params: {}
+# Deliberately 0 in PR0, NOT an oversight. ref2va's reference-conditioning
+# mechanism is not yet modelled (H3-Context-IR is closed-source, see the
+# transformer.subfolder comment below). control_inputs > 0 activates the
+# paired-edit-dataset gating in pipeline_data.py, built for a mechanism this
+# definition does not implement; flipping it on here would silently route
+# training through a pipeline that does not match the model. PR4 owns
+# revisiting this once the Context-IR question is settled.
 control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16

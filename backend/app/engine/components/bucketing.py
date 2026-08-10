@@ -3,10 +3,10 @@ from typing import TypedDict
 from collections import Counter
 import structlog
 
-# Canonical ``Nn+1`` frame-rule parser (e.g. "4n+1" → step 4, "8n+1" → step 8).
-# Defined once here so both temporal bucketing and the video contract's frame
-# predicate agree on what a rule means.
-_FRAME_RULE_RE = re.compile(r"^\s*(\d+)\s*n\s*\+\s*1\s*$", re.IGNORECASE)
+# Canonical ``Nn+M`` frame-rule parser (e.g. "4n+1" → step 4 offset 1,
+# "17n+5" → step 17 offset 5). Defined once here so both temporal bucketing
+# and the video contract's frame predicate agree on what a rule means.
+_FRAME_RULE_RE = re.compile(r"^\s*(\d+)\s*n\s*\+\s*(\d+)\s*$", re.IGNORECASE)
 
 logger = structlog.get_logger(__name__)
 
@@ -69,8 +69,9 @@ class BucketManager:
     # ── Frame (temporal) bucketing ───────────────────────────────────────
 
     @staticmethod
-    def _parse_frame_step(rule: str | None) -> int | None:
-        """Parse an ``Nn+1`` rule → its step ``N`` (e.g. "4n+1" → 4).
+    def _parse_frame_step(rule: str | None) -> tuple[int, int] | None:
+        """Parse an ``Nn+M`` rule → its ``(step, offset)`` (e.g. "4n+1" →
+        ``(4, 1)``, "17n+5" → ``(17, 5)``).
 
         Returns ``None`` for ``None`` / unrecognized rules (→ image mode).
         Canonical for both temporal bucketing and the video contract.
@@ -81,33 +82,43 @@ class BucketManager:
         if not m:
             return None
         step = int(m.group(1))
-        return step if step >= 1 else None
+        offset = int(m.group(2))
+        return (step, offset) if step >= 1 else None
 
     @staticmethod
     def _default_max_frames(rule: str | None) -> int:
         """Default ladder ceiling per rule (documented in ``frame_ladder``)."""
         # 4n+1 ladder tops out at 81 frames (n=20); finer (>=8) rules at 121.
-        step = BucketManager._parse_frame_step(rule)
+        parsed = BucketManager._parse_frame_step(rule)
+        step = parsed[0] if parsed is not None else None
         return 121 if (step is not None and step >= 8) else 81
 
     @staticmethod
     def frame_ladder(max_frames: int, rule: str | None) -> list[int]:
-        """Generate the temporal bucket ladder for an ``Nn+1`` frame rule.
+        """Generate the temporal bucket ladder for an ``Nn+M`` frame rule.
 
-        Rules are anchored at the single-frame still bucket so a video manager
-        still accepts images:
+        Rules are anchored at ``M``, the rule's own floor. For ``Nn+1``
+        rules that floor is the single-frame still bucket, so a video
+        manager built from a ``4n+1``/``8n+1`` family still accepts images:
 
         - ``"4n+1"`` → ``[1, 5, 9, 13, ..., <= max]`` (WAN-style; ``4·k+1``).
         - ``"8n+1"`` → ``[1, 9, 17, 25, ..., <= max]`` (LTX-style; ``8·k+1``).
-        - any other ``"Nn+1"`` → ``[1, 1+N, 1+2N, ..., <= max]`` (future families).
+        - ``"17n+5"`` → ``[5, 22, 39, ..., <= max]`` (MiniMax H3; the floor
+          is 5, not 1 — a bare still does NOT satisfy this rule).
+        - any other ``"Nn+M"`` → ``[M, M+N, M+2N, ..., <= max]`` (future
+          families).
 
-        ``None`` / unrecognized rule yields ``[1]`` (single frame only).
+        ``None`` / unrecognized rule, or a floor above ``max_frames``, yields
+        ``[1]`` (single frame only).
         """
-        step = BucketManager._parse_frame_step(rule)
-        if max_frames < 1 or step is None:
+        parsed = BucketManager._parse_frame_step(rule)
+        if max_frames < 1 or parsed is None:
             return [1]
-        ladder = [1]
-        f = 1 + step
+        step, offset = parsed
+        if offset > max_frames:
+            return [1]
+        ladder = [offset]
+        f = offset + step
         while f <= max_frames:
             ladder.append(f)
             f += step

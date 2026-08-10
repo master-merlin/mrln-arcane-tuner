@@ -30,33 +30,42 @@ _FPS_TOL = 0.5
 
 
 def frame_predicate(rule: str | None) -> Callable[[int], bool]:
-    """Return a predicate ``(n: int) -> bool`` for an ``Nn+1`` frame rule.
+    """Return a predicate ``(n: int) -> bool`` for an ``Nn+M`` frame rule.
 
-    ``"4n+1"`` → ``n%4==1``, ``"8n+1"`` → ``n%8==1``, etc.  ``None`` / an
-    unrecognized rule → always ``True`` (no constraint).  A single still
-    (``n==1``) satisfies every ``Nn+1`` rule.  The ``Nn+1`` parsing lives once in
-    :meth:`BucketManager._parse_frame_step` so bucketing and validation agree.
+    ``"4n+1"`` → ``n%4==1``, ``"8n+1"`` → ``n%8==1``, ``"17n+5"`` → ``n%17==5``
+    (MiniMax H3), etc.  ``None`` / an unrecognized rule → always ``True`` (no
+    constraint).  A single still (``n==1``) satisfies every ``Nn+1`` rule, but
+    NOT an ``Nn+M`` rule whose floor ``M`` isn't 1 (H3's floor is 5).  The
+    ``Nn+M`` parsing lives once in :meth:`BucketManager._parse_frame_step` so
+    bucketing and validation agree.
     """
-    step = BucketManager._parse_frame_step(rule)
-    if not step:
+    parsed = BucketManager._parse_frame_step(rule)
+    if parsed is None:
         return lambda n: True
-    return lambda n: int(n) >= 1 and (int(n) - 1) % step == 0
+    step, offset = parsed
+    return lambda n: int(n) >= offset and (int(n) - offset) % step == 0
 
 
 def snap_frames(num_frames: int, rule: str | None) -> int:
-    """Snap an arbitrary frame count DOWN to the nearest valid ``Nn+1`` value.
+    """Snap an arbitrary frame count DOWN to the nearest valid ``Nn+M`` value.
 
     A per-prompt preview frame count (``SamplePromptConfig.num_frames``) is NOT
     run through the video-contract validator, so it may violate the family's
     frame rule; snapping keeps the sampled latent grid legal. ``F=1`` satisfies
-    every rule (still image). ``"8n+1"``: 30 → 25; ``"4n+1"``: 30 → 29. A
-    ``None``/unrecognized rule imposes no constraint (returned unchanged, min 1).
+    every ``Nn+1`` rule (still image). ``"8n+1"``: 30 → 25; ``"4n+1"``: 30 → 29;
+    ``"17n+5"``: 120 → 107. A raw count at or below the rule's floor ``M``
+    snaps UP to ``M`` (there is no valid value below it — e.g. H3's floor is 5,
+    not 1). A ``None``/unrecognized rule imposes no constraint (returned
+    unchanged, min 1).
     """
     n = max(int(num_frames), 1)
-    step = BucketManager._parse_frame_step(rule)
-    if not step:
+    parsed = BucketManager._parse_frame_step(rule)
+    if parsed is None:
         return n
-    return ((n - 1) // step) * step + 1
+    step, offset = parsed
+    if n <= offset:
+        return offset
+    return ((n - offset) // step) * step + offset
 
 
 @dataclass(frozen=True)
@@ -65,7 +74,7 @@ class VideoProfile:
 
     is_video: bool
     mode: str | None  # "t2v" | "i2v" | "both" | None
-    frame_rule: str | None  # "4n+1" | "8n+1" | None
+    frame_rule: str | None  # e.g. "4n+1" | "8n+1" | "17n+5" | None
     native_fps: float | None
     vae_spatial: int | None
     vae_temporal: int | None

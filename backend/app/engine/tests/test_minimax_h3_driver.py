@@ -27,7 +27,7 @@ def test_capability_flags_declare_video_and_audio():
     # supports_train_te is intentionally NOT asserted here: only sdxl may put
     # that key in capability_overrides (test_only_sdxl_overrides_train_te);
     # minimax_h3 relies on the latent_diffusion archetype's False default.
-    # The 48 GB Qwen3-VL TE must be cacheable.
+    # The ~66.7 GB Qwen3-VL TE must be cacheable.
     assert caps["te_cache"] is True
 
 
@@ -36,13 +36,15 @@ def test_capability_flags_declare_video_and_audio():
 # ---------------------------------------------------------------------------
 
 def _driver(def_id: str = "minimax-h3-t2va"):
+    import torch
+
     from app.engine.models.families.minimax_h3.driver import MiniMaxH3Driver
     from app.engine.models.registry import ModelRegistry
 
     ModelRegistry._definitions_loaded = False
     ModelRegistry._definitions = {}
     ModelRegistry.initialize()
-    return MiniMaxH3Driver(ModelRegistry._definitions[def_id], {})
+    return MiniMaxH3Driver(ModelRegistry._definitions[def_id], torch.device("cpu"))
 
 
 def test_definition_ships_curated_target_list_matching_driver():

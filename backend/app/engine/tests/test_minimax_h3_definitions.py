@@ -212,3 +212,22 @@ def test_ref2va_uses_the_separate_ref_checkpoint():
     assert _load("minimax-h3-ref2va")["architecture_params"]["transformer.subfolder"] == "transformer_ref"
     for def_id in ("minimax-h3-t2va", "minimax-h3-fl2va"):
         assert _load(def_id)["architecture_params"]["transformer.subfolder"] == "transformer"
+
+
+def test_t2va_and_fl2va_declare_different_modes():
+    """t2va and fl2va must stay distinguishable by ``mode``, the ONE lever
+    that currently separates them (final-review fix — before this, both
+    declared ``mode: both``, so the two definitions were functionally
+    identical and the text-to-video guard in
+    ``video_contract.validate_video_config`` (``video_mode == "i2v" and not
+    profile.supports_i2v()``) never fired for the text-only t2va definition).
+
+    t2va is text-to-video+audio only, so ``mode`` must be ``t2v``
+    (``VideoProfile.supports_i2v()`` False). fl2va conditions on first/last
+    frames, so ``mode`` must stay ``both`` (``supports_i2v()`` True) even
+    though PR0 does not yet wire up the actual conditioning parameters (see
+    the YAML's PR1 marker comment). If these two ever silently re-converge
+    to the same mode, this test must fail.
+    """
+    assert _load("minimax-h3-t2va")["architecture_params"]["mode"] == "t2v"
+    assert _load("minimax-h3-fl2va")["architecture_params"]["mode"] == "both"

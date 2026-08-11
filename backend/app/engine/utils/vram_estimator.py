@@ -317,6 +317,47 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder_condition": 0.608,  # AceStepConditionEncoder
         "vae": 0.156,  # AutoencoderOobleck
     },
+    "minimax_h3": {
+        # All THREE shipped definitions now carry concrete on-disk
+        # ``model_size_mb`` (fetched from the HF repo's per-component
+        # safetensors index ``metadata.total_size`` via the raw endpoints, no
+        # download needed — MiniMaxAI/MiniMax-H3, 2026-08-10), so this table
+        # is the fallback-only path; kept in sync so it never contradicts the
+        # live path by an order of magnitude if a future definition ships an
+        # empty model_size_mb (the ltx2/wan21/wan22 precedent). Before this
+        # entry AND the definitions' model_size_mb existed, BOTH preferred
+        # paths missed and the estimator fell through to the generic 2.0B /
+        # 0.35B / 0.08B defaults for a model whose real footprint is ~66 GB
+        # (a ~25x under-report).
+        #
+        # transformer: 66,280,430,080 bytes bf16 on disk
+        # (transformer/diffusion_pytorch_model.safetensors.index.json). The
+        # param count here (33.12) is the PR0 report's checkpoint-index-
+        # derived total (33,122,992,896), not a naive bytes/2 (which would
+        # read 33.14) — the two differ slightly because some tensors
+        # (norms/biases) are not stored at 2 bytes/param.
+        # text_encoder: Qwen3-VL-32B,
+        # text_encoder/model.safetensors.index.json total_size
+        # 66,714,780,128 bytes bf16 -> 33.36 B. The real on-disk total is
+        # ~66.7 GB, not the "32B"-branding-implied ~64 GB (32B x 2 bytes) —
+        # the vision tower + lm_head + embeddings push it slightly above the
+        # headline param count. See driver.py / the definitions' text-encoder
+        # comment for the corrected "48 GB" -> "~66.7 GB" fix.
+        # vae: VIDEO VAE only (vae/diffusion_pytorch_model.safetensors.
+        # index.json total_size 10,415,475,936 bytes, fp16 on disk / 2 =
+        # 5.21 B) — same convention as ltx2's "vae" entry, which likewise
+        # excludes its sibling audio VAE. The separate audio_vae
+        # (audio_vae/diffusion_pytorch_model.safetensors, 605,429,340 bytes
+        # fp32 on disk, ~0.151 B) is NOT modeled by this estimator — there is
+        # no audio_vae lookup in _get_component_disk_mb/_FAMILY_PARAMS at
+        # all (a pre-existing gap shared with ltx2, not introduced here); at
+        # well under 1% of the transformer term, folding it in would not
+        # change the order-of-magnitude fix and a dedicated audio_vae lookup
+        # for BOTH families is a separate, out-of-scope change.
+        "transformer": 33.12,
+        "text_encoder": 33.36,
+        "vae": 5.21,
+    },
 }
 
 # Bytes-per-param for common dtypes

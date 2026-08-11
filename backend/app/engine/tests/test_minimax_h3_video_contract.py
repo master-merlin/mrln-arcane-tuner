@@ -38,15 +38,23 @@ def _frame_rule(def_id: str = "minimax-h3-t2va") -> str:
 
 
 def _tokens(frames: int, height: int, width: int, def_id: str = "minimax-h3-t2va") -> int:
-    """Effective sequence length, DERIVED FROM THE DEFINITION — not hardcoded.
+    """Effective sequence length — the SPATIAL half is derived from the
+    definition, not hardcoded.
 
-    Reading the spatial factors out of architecture_params is the whole
-    point: this test must fail if someone edits the YAML's vae_spatial or
-    patch_size, which a hardcoded 32 would sail straight past. (The raw
-    ``video.vae_temporal`` factor is pinned separately, by
-    ``test_profile_declares_raw_vae_factor_not_post_patchify`` — it is not
-    read here, because H3's latent-frame count comes from the ``17n+5``
-    frame rule, not the raw temporal-downsample factor.)
+    Reading the spatial factors (vae_spatial, patch_size) out of
+    architecture_params is the whole point: this test must fail if someone
+    edits the YAML's vae_spatial or patch_size, which a hardcoded 32 would
+    sail straight past. (The raw ``video.vae_temporal`` factor is pinned
+    separately, by ``test_profile_declares_raw_vae_factor_not_post_patchify``
+    — it is not read here, because H3's latent-frame count comes from the
+    ``17n+5`` frame rule, not the raw temporal-downsample factor.)
+
+    The FRAME-RULE half (``step, offset = 17, 5`` below) is NOT re-derived
+    from the definition in this function — it is a hardcoded mirror of the
+    "17n+5" rule. The actual derivation guard lives in the separate test
+    ``test_declared_frame_rule_is_17n_plus_5``, which reads
+    ``architecture_params["video.frame_rule"]`` and would fail first if the
+    YAML's rule ever changed out from under this hardcoded pair.
     """
     ModelRegistry._definitions_loaded = False
     ModelRegistry._definitions = {}

@@ -458,6 +458,58 @@ def test_still_resolutions_raise_spatial_activation_peak():
     assert still_d["peak_mb"] >= base_d["peak_mb"]
 
 
+# ── Regression guard: minimax_h3's ~25x VRAM under-report (final review) ───
+#
+# minimax_h3 shipped with NEITHER preferred estimation path wired up: it was
+# absent from _FAMILY_PARAMS AND its three definitions shipped no
+# model_size_mb. Both paths missing meant the estimator silently fell
+# through to the generic 2.0B/0.35B/0.08B defaults for a model whose real
+# transformer alone is ~63 GB on disk (66,280,430,080 bytes bf16) — the
+# estimate read roughly 4.4 GB instead of the real ~66 GB, a class of bug
+# nothing in this suite previously caught for ANY family.
+
+
+def test_every_registered_family_has_a_vram_table_entry():
+    """A family missing from _FAMILY_PARAMS silently falls through to the
+    generic fallback defaults for any of its definitions that ship no (or
+    empty/zero) model_size_mb — this is the exact minimax_h3 gap.
+
+    This is a real regression guard, not a hypothetical: verified (2026-08)
+    that every OTHER currently-registered family already has an entry, so
+    adding this sweep does not require carve-outs for pre-existing families
+    — it only fails for a genuinely new, unregistered family, the same
+    failure mode as the established registry-wide coverage tests elsewhere
+    (test_family_archetypes.py, test_hook_wiring_meta.py).
+    """
+    for family in registry._families:
+        assert family in _FAMILY_PARAMS, f"{family} missing from _FAMILY_PARAMS"
+
+
+def test_minimax_h3_estimate_is_sane_order_of_magnitude():
+    """Coverage in _FAMILY_PARAMS alone doesn't prove the NUMBER is right —
+    an entry could exist and still be wildly wrong. Pin minimax_h3's actual
+    VRAMEstimator.estimate() output to the real order of magnitude (tens of
+    GB) rather than just checking table presence, so a future edit that
+    corrupts the value (not just deletes it) is also caught.
+    """
+    for def_id in ("minimax-h3-t2va", "minimax-h3-fl2va", "minimax-h3-ref2va"):
+        defn = registry.get_definition(def_id)
+        assert defn is not None, f"definition {def_id} not found"
+        d = VRAMEstimator.estimate(defn, {"quantization": "none"}).to_dict()
+
+        # Transformer alone is ~63.2 GB (63209.94 MiB) bf16 on disk; the old
+        # generic 2.0B fallback read ~3.8 GB — over an order of magnitude off.
+        assert d["model_weights_mb"] > 50_000, (def_id, d["model_weights_mb"])
+        assert d["model_weights_mb"] < 90_000, (def_id, d["model_weights_mb"])
+
+        # caching_peak = te_mb + vae_mb + overhead_mb; the TE alone is
+        # ~63.6 GB, so this must also land in the tens-of-GB range, not the
+        # old ~350M-default's ~0.7 GB.
+        assert d["caching_peak_mb"] > 50_000, (def_id, d["caching_peak_mb"])
+
+        assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
+
+
 def test_still_resolutions_ignored_for_image_family():
     """The field is is_video-gated: a stale still_resolutions on an image job
     must not change its estimate (resolve_still_resolutions inherits base)."""

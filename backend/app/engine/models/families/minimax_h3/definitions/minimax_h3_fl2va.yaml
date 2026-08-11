@@ -38,6 +38,17 @@ detected_precision:
   vae: torch.bfloat16
   unet: torch.bfloat16
 architecture_params:
+  # mode: both correctly marks this definition as i2v-capable
+  # (VideoProfile.supports_i2v() must be True here — the counterpart fix to
+  # t2va's mode: t2v). PR1 MARKER: as of PR0, "both" is the ONLY thing that
+  # differentiates fl2va from t2va — same transformer subfolder, same
+  # control_inputs: 0, otherwise byte-identical architecture_params. There is
+  # NO first/last-frame conditioning mechanism wired up anywhere yet (no
+  # conditioning-frame injection into the packed sequence, no dedicated
+  # parameters here). PR1 owns: (1) adding the real first/last-frame
+  # conditioning parameters, and (2) a test that pins them so this
+  # definition cannot silently drift back to being plain-t2v-with-a-
+  # different-name.
   mode: both
   has_audio: true
   # The ONLY lever separating the modalities: H3 is single-stream, so audio
@@ -122,7 +133,13 @@ architecture_params:
   - 5
   - 5
   audio_vae.sampling_rate: 32000
-  # -- Text encoder (text_encoder/config.json) — Qwen3-VL-32B, 48 GB bf16.
+  # -- Text encoder (text_encoder/config.json) — Qwen3-VL-32B, ~66.7 GB bf16
+  #    on disk (66,714,780,128 bytes,
+  #    text_encoder/model.safetensors.index.json metadata.total_size,
+  #    fetched 2026-08-10) — corrected from an earlier "48 GB" here that was
+  #    simply wrong: 32B params at bf16 alone is already ~64 GB, and no
+  #    truncated/repackaged 48 GB variant of this repo was found on HF; the
+  #    old figure was an uncredited approximation, not a measurement.
   #    Cached then UNLOADED before the DiT loads; never coexists with it.
   te.type: qwen3_vl
   te.hidden_size: 5120
@@ -134,6 +151,16 @@ architecture_params:
   in_channels: 24
   context_dim: 5120
   num_heads: 56
+# On-disk component sizes (MiB — bytes / 1024^2), fetched from the HF repo's
+# per-component safetensors index `metadata.total_size` via the raw
+# endpoints (no download needed), MiniMaxAI/MiniMax-H3, 2026-08-10. The
+# estimator prefers these over the `_FAMILY_PARAMS["minimax_h3"]` fallback
+# table (kept in sync — see its comment for the exact byte sources and the
+# video-VAE-only convention shared with ltx2).
+model_size_mb:
+  transformer: 63209.94
+  text_encoder: 63624.17
+  vae: 9932.97
 # CONTROLLER-PINNED scope: attention + FFN nn.Linear modules across the 50 main
 # blocks and 2 refiner blocks. The AdaLN / time-embedding branch (~13B params)
 # is deliberately EXCLUDED — it is timestep-conditioned rather than

@@ -152,7 +152,9 @@ class MiniMaxH3Driver(IModelDriver):
         This is a definitive architectural answer, not a PR1 placeholder:
         ``family.py`` deliberately does NOT override ``supports_train_te``,
         so it inherits the ``latent_diffusion`` archetype's ``False``
-        default — the 48 GB TE must never train.
+        default — the ~66.7 GB TE (66,714,780,128 bytes bf16 on disk, not
+        the ~48 GB previously stated here — see the definitions'
+        text-encoder comment) must never train.
         """
         return []
 

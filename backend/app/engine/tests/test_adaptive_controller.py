@@ -668,6 +668,32 @@ def test_unreadable_history_file_warns_and_still_restores(
     assert any("adaptive_targeting.json" in w for w in warnings)
 
 
+def test_a_cold_projection_type_keeps_a_representative(
+    make_adaptive_controller, train_step, lora_params
+):
+    """End-to-end guard for the grouping fix, on real requires_grad flags.
+
+    The fixture's universe is 4 blocks x (to_q, to_v). Training EVERY to_q and
+    no to_v is the shape of the real defect: one projection carries all the
+    measured movement, so a single global ranking fills the whole keep-set —
+    floor included — from that projection and retires the other pathway
+    entirely. Per-group selection gives to_v its own floor.
+    """
+    model, ctl, _writer = make_adaptive_controller(energy_threshold=0.90)
+    hot = [f"blocks.{i}.to_q" for i in range(4)]
+    for step in range(1, 21):
+        train_step(model, hot)
+        ctl.on_optimizer_step(step)
+
+    assert ctl.active_count < 8  # it did narrow
+    every = [f"blocks.{i}.{p}" for i in range(4) for p in ("to_q", "to_v")]
+    live = [
+        n for n in every if all(p.requires_grad for p in lora_params(model, n))
+    ]
+    assert any("to_v" in n for n in live), "the whole to_v pathway was frozen"
+    assert any("to_q" in n for n in live)
+
+
 @pytest.mark.parametrize("document", ["[]", "null", "3", '"events"'])
 def test_history_that_is_not_an_object_degrades_instead_of_disabling(
     tmp_path, make_adaptive_controller, document

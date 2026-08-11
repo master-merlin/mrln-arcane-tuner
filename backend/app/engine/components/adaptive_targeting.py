@@ -26,7 +26,12 @@ from typing import Any
 import structlog
 import torch
 
-from app.engine.core.optimization.adaptive_heat import delta_frobenius_sq, select_active
+from app.engine.core.optimization.adaptive_heat import (
+    GLOBAL_GROUP,
+    delta_frobenius_sq,
+    group_universe,
+    select_active,
+)
 from app.engine.core.optimization.targeted_training import normalize_module_name
 from app.engine.models.adaptive import AdaptiveTargetingConfig
 
@@ -221,6 +226,42 @@ class AdaptiveTargetingController:
         self._active = list(self._universe)
         self._params_at_last_rebuild = self._active_param_count()
         self._snapshot = self._take_snapshot()
+        self._report_projection_groups()
+
+    def _report_projection_groups(self) -> None:
+        """State how selection will be partitioned, once, at setup.
+
+        Ranking runs per projection group so a metric that is not comparable
+        across matrix shapes cannot retire a whole pathway. If this model's
+        names carry no block index the partition collapses to one group and the
+        old global ranking applies — which is a real limitation for that family
+        and must not be discovered later from a lopsided keep-set.
+        """
+        groups = group_universe(self._universe)
+        # Keyed on the fallback marker, not on a count: a model with a single
+        # genuine projection type also yields one group, and there is nothing
+        # wrong with that — every matrix in it is the same shape.
+        if GLOBAL_GROUP in groups:
+            self.log_writer.warning(
+                "adaptive_targeting: this model's module names carry no block "
+                f"index, so all {len(self._universe)} modules rank in one pool. "
+                "Projections with physically smaller weight matrices may be "
+                "frozen first for that reason alone"
+            )
+            logger.warning(
+                "adaptive_groups_degenerate", modules=len(self._universe)
+            )
+            return
+        self.log_writer.log(
+            f"adaptive_targeting: {len(self._universe)} modules in "
+            f"{len(groups)} projection groups; each group is ranked and "
+            "floored on its own"
+        )
+        logger.info(
+            "adaptive_groups_resolved",
+            modules=len(self._universe),
+            groups=len(groups),
+        )
 
     # ── public counters (per-step metrics, Task 5) ────────────────────────
     @property

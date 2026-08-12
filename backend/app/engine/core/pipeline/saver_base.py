@@ -16,6 +16,7 @@ from typing import Any
 import structlog
 import torch
 from peft import get_peft_model_state_dict
+from app.engine.utils.lora_metadata import trigger_metadata
 from app.engine.utils.safe_save import safe_save_file
 
 from app.engine.core.interfaces import ModelSaver
@@ -134,7 +135,6 @@ class GenericLoRASaver(ModelSaver):
                 "lora_name": "ss_output_name",
                 "definition_id": "ss_sd_model_name",
                 "model_family": "ss_base_model_version",
-                "global_triggerword": "ss_training_comment",
                 "timestep_sampling": "ss_timestep_sampling",
             }
             _MAP_NUM = {
@@ -157,6 +157,8 @@ class GenericLoRASaver(ModelSaver):
                 val = config.get(cfg_key)
                 if val is not None:
                     save_metadata[ss_key] = str(val)
+
+            save_metadata.update(trigger_metadata(config))
 
             # Resolution — store as "(W,H)" like Kohya
             resolutions = config.get("resolutions")

@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 
 from app.engine.core.interfaces import IModelSaver
+from app.engine.utils.lora_metadata import trigger_metadata
 from app.engine.utils.safe_save import safe_save_file
 
 from .lora_wrapper import HiDreamO1LoRALinear
@@ -230,7 +231,6 @@ class HiDreamO1Saver(IModelSaver):
                 "lora_name": "ss_output_name",
                 "definition_id": "ss_sd_model_name",
                 "model_family": "ss_base_model_version",
-                "global_triggerword": "ss_training_comment",
                 "timestep_sampling": "ss_timestep_sampling",
             }
             _MAP_NUM = {
@@ -252,6 +252,7 @@ class HiDreamO1Saver(IModelSaver):
                 val = config.get(cfg_key)
                 if val is not None:
                     header[ss_key] = str(val)
+            header.update(trigger_metadata(config))
 
             resolutions = config.get("resolutions")
             if resolutions and isinstance(resolutions, list):

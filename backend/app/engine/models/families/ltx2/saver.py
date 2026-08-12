@@ -21,6 +21,7 @@ import torch
 from peft import get_peft_model_state_dict
 
 from app.engine.core.interfaces import ModelSaver
+from app.engine.utils.lora_metadata import trigger_metadata
 from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)
@@ -149,4 +150,5 @@ class Ltx2Saver(ModelSaver):
             val = config.get(cfg_key)
             if val is not None and str(val).strip():
                 out[ss_key] = str(val)
+        out.update(trigger_metadata(config))
         return out

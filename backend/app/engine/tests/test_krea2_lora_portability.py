@@ -311,3 +311,74 @@ def test_krea2_saver_architecture_metadata():
             f"modelspec.architecture is {metadata['modelspec.architecture']!r}, "
             f"expected 'krea2'"
         )
+
+
+def test_krea2_saver_writes_the_trigger_word_to_both_metadata_keys():
+    """On the BYTES, not the mapping: the trigger word has to survive into the
+    file's safetensors header under both the Kohya comment (what CivitAI reads)
+    and ``modelspec.trigger_phrase`` (what the ModelSpec defines for it)."""
+    import pathlib
+    import tempfile
+    from unittest.mock import MagicMock
+
+    from safetensors import safe_open
+
+    from app.engine.models.families.krea2.driver import Krea2Driver
+
+    definition = MagicMock()
+    definition.family = "krea2"
+    definition.id = "krea2-test"
+    definition.lora_targetable_modules = _LORA_TARGETS
+    definition.architecture_params = {}
+
+    with tempfile.TemporaryDirectory() as td:
+        saved_path = pathlib.Path(td) / "trigger.safetensors"
+        saver = Krea2Driver(definition, torch.device("cpu")).get_saver()
+        saver.save(
+            components={
+                "unet": _build_peft_model(),
+                "config": {"lora_name": "senna", "global_triggerword": "SennaGTR"},
+            },
+            path=saved_path,
+        )
+        with safe_open(str(saved_path), framework="pt") as f:
+            metadata = f.metadata()
+
+    assert metadata["ss_output_name"] == "senna"  # not vacuous
+    assert metadata["ss_training_comment"] == "SennaGTR"
+    assert metadata["modelspec.trigger_phrase"] == "SennaGTR"
+
+
+def test_krea2_saver_omits_the_trigger_keys_when_there_is_no_trigger_word():
+    """Prove the negative: an empty trigger word must leave BOTH keys out, not
+    write "" — a reader cannot tell an empty phrase from a deliberate blank."""
+    import pathlib
+    import tempfile
+    from unittest.mock import MagicMock
+
+    from safetensors import safe_open
+
+    from app.engine.models.families.krea2.driver import Krea2Driver
+
+    definition = MagicMock()
+    definition.family = "krea2"
+    definition.id = "krea2-test"
+    definition.lora_targetable_modules = _LORA_TARGETS
+    definition.architecture_params = {}
+
+    with tempfile.TemporaryDirectory() as td:
+        saved_path = pathlib.Path(td) / "no_trigger.safetensors"
+        saver = Krea2Driver(definition, torch.device("cpu")).get_saver()
+        saver.save(
+            components={
+                "unet": _build_peft_model(),
+                "config": {"lora_name": "senna", "global_triggerword": "  "},
+            },
+            path=saved_path,
+        )
+        with safe_open(str(saved_path), framework="pt") as f:
+            metadata = f.metadata()
+
+    assert metadata["ss_output_name"] == "senna"  # the save really happened
+    assert "ss_training_comment" not in metadata
+    assert "modelspec.trigger_phrase" not in metadata

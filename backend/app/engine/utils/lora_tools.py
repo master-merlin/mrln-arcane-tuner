@@ -16,6 +16,10 @@ import torch
 from safetensors.torch import load_file
 from typing import Any
 
+from app.engine.utils.lora_metadata import (
+    TRIGGER_COMMENT_KEY,
+    TRIGGER_PHRASE_KEY,
+)
 from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)
@@ -670,6 +674,15 @@ def _parse_training_params(metadata: dict) -> dict[str, Any]:
         val = metadata.get(meta_key)
         if val is not None:
             params[param_name] = val
+
+    # Trigger phrase: the ModelSpec field first, falling back to the Kohya
+    # comment. Older files (ours included, before this key was written) carry
+    # the trigger word only in the comment, and third-party LoRAs may use the
+    # comment for a genuine free-text note — so the spec field wins when both
+    # are present and neither is invented when absent.
+    trigger = metadata.get(TRIGGER_PHRASE_KEY) or metadata.get(TRIGGER_COMMENT_KEY)
+    if trigger is not None and str(trigger).strip():
+        params["trigger_phrase"] = str(trigger).strip()
 
     # Network args (LoCon, etc.)
     net_args = metadata.get("ss_network_args")

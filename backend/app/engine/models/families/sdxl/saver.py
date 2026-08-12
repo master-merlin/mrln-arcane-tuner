@@ -10,6 +10,7 @@ import torch
 import structlog
 from pathlib import Path
 from peft import get_peft_model_state_dict
+from app.engine.utils.lora_metadata import trigger_metadata
 from app.engine.utils.safe_save import safe_save_file
 
 from app.engine.core.interfaces import ModelSaver
@@ -108,7 +109,6 @@ class SDXLSaver(ModelSaver):
                     "mixed_precision": "ss_mixed_precision",
                     "lora_name": "ss_output_name",
                     "definition_id": "ss_sd_model_name",
-                    "global_triggerword": "ss_training_comment",
                     "learning_rate": "ss_learning_rate",
                     "max_train_steps": "ss_steps",
                     "train_batch_size": "ss_batch_size_per_device",
@@ -123,6 +123,7 @@ class SDXLSaver(ModelSaver):
                     val = config.get(cfg_key)
                     if val is not None and str(val).strip():
                         save_metadata[ss_key] = str(val)
+                save_metadata.update(trigger_metadata(config))
 
                 resolutions = config.get("resolutions")
                 if resolutions and isinstance(resolutions, list):

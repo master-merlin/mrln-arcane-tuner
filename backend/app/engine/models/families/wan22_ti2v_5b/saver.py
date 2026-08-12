@@ -27,6 +27,7 @@ from app.engine.core.interfaces import ModelSaver
 from app.engine.models.families.wan_shared.saver_base import (
     _convert_diffusers_to_comfy,
 )
+from app.engine.utils.lora_metadata import trigger_metadata
 from app.engine.utils.safe_save import safe_save_file
 
 logger = structlog.get_logger(__name__)
@@ -97,7 +98,6 @@ class Wan22Ti2v5bSaver(ModelSaver):
                 "lora_name": "ss_output_name",
                 "definition_id": "ss_sd_model_name",
                 "model_family": "ss_base_model_version",
-                "global_triggerword": "ss_training_comment",
                 "learning_rate": "ss_learning_rate",
                 "max_train_steps": "ss_steps",
                 "timestep_sampling": "ss_timestep_sampling",
@@ -107,6 +107,7 @@ class Wan22Ti2v5bSaver(ModelSaver):
                 val = config.get(cfg_key)
                 if val is not None and str(val).strip():
                     save_metadata[ss_key] = str(val)
+            save_metadata.update(trigger_metadata(config))
 
         if metadata:
             save_metadata.update({k: str(v) for k, v in metadata.items()})

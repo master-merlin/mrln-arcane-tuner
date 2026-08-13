@@ -70,8 +70,13 @@ def test_bundled_siglip2_fast_imports_under_transformers_5():
 
 
 def test_bundled_siglip2_fast_is_constructible():
-    """youtu_vl.py constructs it with max_num_patches=256 to cap vision tokens."""
+    """youtu_vl.py injects this processor with max_num_patches=256 to cap vision
+    tokens. Assert a NON-default value too: 256 is the class attribute default,
+    so asserting only 256 would pass even if the kwarg never reached the
+    instance."""
     from app.core.captioning.processors.siglip2_fast import Siglip2ImageProcessorFast
 
-    proc = Siglip2ImageProcessorFast(max_num_patches=256)
-    assert proc.max_num_patches == 256
+    # Non-default proves the constructor kwarg actually plumbs through.
+    assert Siglip2ImageProcessorFast(max_num_patches=128).max_num_patches == 128
+    # Production value used by youtu_vl.py.
+    assert Siglip2ImageProcessorFast(max_num_patches=256).max_num_patches == 256

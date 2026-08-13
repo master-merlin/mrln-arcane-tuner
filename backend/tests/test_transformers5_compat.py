@@ -59,3 +59,19 @@ def test_shim_does_not_redefine_the_bc_alias():
     import transformers.image_processing_backends as backends
 
     assert backends.BaseImageProcessorFast is backends.TorchvisionBackend
+
+
+def test_bundled_siglip2_fast_imports_under_transformers_5():
+    """The app's own copy of Youtu-VL's fast processor must import cleanly,
+    independent of the shim - it is our code, so it targets 5.x directly."""
+    from app.core.captioning.processors.siglip2_fast import Siglip2ImageProcessorFast
+
+    assert Siglip2ImageProcessorFast is not None
+
+
+def test_bundled_siglip2_fast_is_constructible():
+    """youtu_vl.py constructs it with max_num_patches=256 to cap vision tokens."""
+    from app.core.captioning.processors.siglip2_fast import Siglip2ImageProcessorFast
+
+    proc = Siglip2ImageProcessorFast(max_num_patches=256)
+    assert proc.max_num_patches == 256

@@ -11,11 +11,15 @@ import math
 import torch
 
 from transformers.image_processing_utils import BatchFeature
-from transformers.image_processing_utils_fast import (
-    BaseImageProcessorFast,
-    DefaultFastImageProcessorKwargs,
-    SizeDict,
-)
+
+# transformers 5.x: `image_processing_utils_fast` is now an alias module with an
+# empty import structure. BaseImageProcessorFast survives as a BC alias for
+# TorchvisionBackend, SizeDict moved to image_utils, and
+# DefaultFastImageProcessorKwargs was deleted - we carry our own copy.
+from transformers.image_processing_backends import BaseImageProcessorFast
+from transformers.image_utils import SizeDict
+
+from app.core.captioning.compat.transformers5 import DefaultFastImageProcessorKwargs
 from transformers.image_utils import (
     ImageInput,
     PILImageResampling,

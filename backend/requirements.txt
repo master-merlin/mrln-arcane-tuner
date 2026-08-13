@@ -120,7 +120,7 @@ torchao==0.17.0
 torchaudio==2.11.0  # maintenance mode — no 2.12 wheel; installed --no-deps (declares torch==2.11.0)
 torchvision==0.27.1
 tqdm==4.67.1
-transformers==4.57.0
+transformers==5.14.1
 triton-windows==3.7.1.post27; sys_platform == 'win32'
 triton==3.7.1; sys_platform == 'linux'
 typer-slim==0.21.1

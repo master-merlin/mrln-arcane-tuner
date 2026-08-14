@@ -550,7 +550,10 @@ def _roundtrip_missing_unexpected(true_model, declared_cls):
     with tempfile.TemporaryDirectory() as td:
         true_model.save_pretrained(td)
         _loaded, info = declared_cls.from_pretrained(td, output_loading_info=True)
-    return info["missing_keys"], info["unexpected_keys"]
+    # transformers 5.x returns these as `set`; 4.57 returned `list`. Normalise to
+    # sorted lists so the assertions stay order-stable and remain sliceable --
+    # `set() == []` is False, so an unnormalised empty result fails a passing case.
+    return sorted(info["missing_keys"]), sorted(info["unexpected_keys"])
 
 
 # ---------------------------------------------------------------------------

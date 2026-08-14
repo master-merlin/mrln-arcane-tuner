@@ -337,13 +337,17 @@ def test_text_encoder_hf_class_consumes_real_checkpoint_key_layout():
         checkpoint_model.save_pretrained(td)
         _loaded, info = te_cls.from_pretrained(td, output_loading_info=True)
 
-    assert info["missing_keys"] == [], (
+    # transformers 5.x returns sets here; sorted() keeps `== []` meaningful.
+    missing_keys = sorted(info["missing_keys"])
+    unexpected_keys = sorted(info["unexpected_keys"])
+
+    assert missing_keys == [], (
         f"text_encoder hf_class {declared_hf_class!r} failed to consume "
-        f"checkpoint tensors (prefix mismatch): {info['missing_keys']}"
+        f"checkpoint tensors (prefix mismatch): {missing_keys}"
     )
-    assert info["unexpected_keys"] == [], (
+    assert unexpected_keys == [], (
         f"text_encoder hf_class {declared_hf_class!r} left checkpoint "
-        f"tensors unmatched (prefix mismatch): {info['unexpected_keys']}"
+        f"tensors unmatched (prefix mismatch): {unexpected_keys}"
     )
 
 

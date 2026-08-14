@@ -1,8 +1,10 @@
-import types
-from functools import wraps
-
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import (
+    AutoImageProcessor,
+    AutoTokenizer,
+    Florence2ForConditionalGeneration,
+    Florence2Processor,
+)
 import structlog
 from PIL import Image
 from typing import Any
@@ -10,43 +12,19 @@ from app.core.captioning.models.base import CaptionModel
 
 logger = structlog.get_logger(__name__)
 
+# The native Florence2Processor reads tokenizer.image_token / .image_token_id.
+# microsoft/Florence-2-large predates native support and ships a RobertaTokenizer
+# with neither, so we register the token ourselves.
+_IMAGE_TOKEN = "<image>"
 
-def _patch_florence2_kv_cache(model) -> None:
-    """Monkey-patch Florence-2's prepare_inputs_for_generation to handle
-    the EncoderDecoderCache null-check issue introduced in transformers 4.50+.
-
-    The cached modeling_florence2.py accesses ``past_key_values[0][0].shape``
-    without guarding against None entries inside the cache object.  This
-    patch wraps the original method and adds the required null-checks so
-    that ``use_cache=True`` works safely.
-
-    We patch at runtime so we never touch HuggingFace cached files.
-    """
-    # Find the sub-model that owns prepare_inputs_for_generation.
-    # Florence-2 is an encoder-decoder — the decoder (language_model) has it.
-    target = getattr(model, "language_model", model)
-    original_fn = target.prepare_inputs_for_generation
-
-    @wraps(original_fn)
-    def _safe_prepare(self_inner, *args, **kwargs):
-        # The original code crashes on: past_key_values[0][0].shape[2]
-        # when past_key_values entries are None (empty EncoderDecoderCache).
-        # We intercept, call the original, and if it crashes, fall back.
-        try:
-            return original_fn(*args, **kwargs)
-        except (AttributeError, TypeError, IndexError):
-            # Disable cache for this call and retry
-            if "past_key_values" in kwargs:
-                kwargs["past_key_values"] = None
-            return original_fn(*args, **kwargs)
-
-    target.prepare_inputs_for_generation = types.MethodType(_safe_prepare, target)
-    logger.debug("florence2_kv_cache_patched")
+# CLIP ViT-L/14 @ 768: 576 patches + 1 CLS. Only used if the cached image
+# processor config omits image_seq_length.
+_FALLBACK_IMAGE_SEQ_LEN = 577
 
 
 class Florence2Model(CaptionModel):
     MODEL_PATH = "microsoft/Florence-2-large"
-    
+
     def __init__(self, service):
         self.service = service
         self.model = None
@@ -55,6 +33,25 @@ class Florence2Model(CaptionModel):
     @property
     def model_id(self) -> str:
         return "florence-2"
+
+    def _build_native_processor(self) -> Florence2Processor:
+        """Assemble the native processor, registering the image token.
+
+        Built by hand rather than via AutoProcessor because the cached repo's
+        tokenizer lacks image_token, which Florence2Processor.__init__ reads.
+        """
+        tokenizer = AutoTokenizer.from_pretrained(self.MODEL_PATH)
+        if not hasattr(tokenizer, "image_token"):
+            tokenizer.add_special_tokens({"additional_special_tokens": [_IMAGE_TOKEN]})
+            tokenizer.image_token = _IMAGE_TOKEN
+            # Derived, never hardcoded - the id depends on the vocab.
+            tokenizer.image_token_id = tokenizer.convert_tokens_to_ids(_IMAGE_TOKEN)
+
+        image_processor = AutoImageProcessor.from_pretrained(self.MODEL_PATH)
+        if not hasattr(image_processor, "image_seq_length"):
+            image_processor.image_seq_length = _FALLBACK_IMAGE_SEQ_LEN
+
+        return Florence2Processor(image_processor=image_processor, tokenizer=tokenizer)
 
     def load(self, variant: str = None) -> tuple[Any, Any]:
         if self.model is not None and self.processor is not None:
@@ -74,21 +71,17 @@ class Florence2Model(CaptionModel):
         dtype = torch.float16 if device == "cuda" else torch.float32
 
         with with_progress(model_id=self.MODEL_PATH, category="caption", repo_id=self.MODEL_PATH):
-            self.model = AutoModelForCausalLM.from_pretrained(
+            # Native implementation (transformers >= 5.x) — no remote code, and
+            # no KV-cache monkey-patch: the EncoderDecoderCache bug lived in the
+            # hub's modeling_florence2.py, which we no longer execute.
+            self.model = Florence2ForConditionalGeneration.from_pretrained(
                 self.MODEL_PATH,
-                trust_remote_code=True,
                 dtype=dtype,
                 attn_implementation="eager",
             ).to(device)
 
-            # Patch KV-cache null-check bug so we can use use_cache=True
-            _patch_florence2_kv_cache(self.model)
+            self.processor = self._build_native_processor()
 
-            self.processor = AutoProcessor.from_pretrained(
-                self.MODEL_PATH,
-                trust_remote_code=True,
-            )
-        
         logger.info("florence2_loaded")
         return self.model, self.processor
 

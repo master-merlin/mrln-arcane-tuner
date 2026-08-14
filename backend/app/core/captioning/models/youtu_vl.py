@@ -64,7 +64,7 @@ class YoutuVLModel(CaptionModel):
         with with_progress(model_id=model_id, category="caption", repo_id=model_id):
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
-                torch_dtype=dtype,
+                dtype=dtype,
                 device_map="auto" if self.device == "cuda" else None,
                 trust_remote_code=True,
                 attn_implementation=attn_impl,
@@ -73,7 +73,7 @@ class YoutuVLModel(CaptionModel):
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
                 trust_remote_code=True,
-                use_fast=True,
+                backend="torchvision",
             )
 
         # Inject our bundled fast image processor if the loaded one is slow.

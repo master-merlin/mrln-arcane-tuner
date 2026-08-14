@@ -1,5 +1,6 @@
 """Contract tests for the transformers 5.x upgrade."""
 
+import pytest
 import transformers
 
 
@@ -80,3 +81,72 @@ def test_bundled_siglip2_fast_is_constructible():
     assert Siglip2ImageProcessorFast(max_num_patches=128).max_num_patches == 128
     # Production value used by youtu_vl.py.
     assert Siglip2ImageProcessorFast(max_num_patches=256).max_num_patches == 256
+
+
+def test_caption_service_installs_the_shim_on_construction():
+    """The shim must be in place before any plugin can call load(), because a
+    trust_remote_code import that wins the race raises ImportError."""
+    import app.core.captioning.compat.transformers5 as compat
+
+    compat._INSTALLED = False  # force a fresh install for this assertion
+    from app.core.captioning.caption_service import CaptionService
+
+    CaptionService.reset_instance()
+    CaptionService()
+    assert compat._INSTALLED is True
+
+
+def test_youtu_vl_shim_is_still_required():
+    """PROVE THE NEGATIVE — and give the shim a real retirement trigger.
+
+    `compat/transformers5.py` documents that it should be deleted once tencent's
+    remote code targets transformers 5.x. Without a test, that day passes
+    unnoticed and the shim rots. This asserts the shim is still NECESSARY: in a
+    clean interpreter the three symbols must be missing from the alias module.
+    When upstream (or tencent) catches up, this test fails and that failure is
+    the signal to delete the shim.
+
+    Runs in a subprocess so it is unaffected by whatever this session already
+    imported or patched.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import transformers.image_processing_backends as b;"
+        "missing=[n for n in ('DefaultFastImageProcessorKwargs','SizeDict')"
+        " if not hasattr(b,n)];"
+        "print(','.join(missing))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    assert out, (
+        "transformers now exposes DefaultFastImageProcessorKwargs and SizeDict "
+        "on image_processing_backends without our shim -- the compat shim in "
+        "app/core/captioning/compat/transformers5.py is obsolete. DELETE IT "
+        "and remove this test."
+    )
+
+
+@pytest.mark.skipif(
+    not __import__("pathlib").Path(
+        r"D:\AI\huggingface\hub\hub\models--tencent--Youtu-VL-4B-Instruct"
+    ).exists(),
+    reason="Youtu-VL checkpoint not in the local HF cache",
+)
+def test_youtu_vl_processor_loads_with_the_shim():
+    """Observable output: AutoProcessor returns a real YoutuVLProcessor.
+    Without the shim this raises ImportError inside tencent's remote code."""
+    from transformers import AutoProcessor
+
+    from app.core.captioning.compat.transformers5 import install_transformers5_compat
+
+    install_transformers5_compat()
+    proc = AutoProcessor.from_pretrained(
+        "tencent/Youtu-VL-4B-Instruct",
+        trust_remote_code=True,
+        local_files_only=True,
+    )
+    assert type(proc).__name__ == "YoutuVLProcessor"

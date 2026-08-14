@@ -43,16 +43,37 @@ def test_qwen3_vl_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
     _assert_no_tqdm_class(mock_proc_cls.from_pretrained, "qwen3_vl AutoProcessor")
 
 
-@patch("app.core.captioning.models.florence2.AutoProcessor")
-@patch("app.core.captioning.models.florence2.AutoModelForCausalLM")
-def test_florence2_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
+@patch("app.core.captioning.models.florence2.Florence2Processor")
+@patch("app.core.captioning.models.florence2.AutoImageProcessor")
+@patch("app.core.captioning.models.florence2.AutoTokenizer")
+@patch("app.core.captioning.models.florence2.Florence2ForConditionalGeneration")
+def test_florence2_load_omits_tqdm_class(
+    mock_model_cls, mock_tokenizer_cls, mock_image_proc_cls, mock_processor_cls
+):
+    """florence2 migrated to the native transformers impl (task 6): load() now
+    calls Florence2ForConditionalGeneration.from_pretrained directly, and
+    _build_native_processor() calls AutoTokenizer.from_pretrained /
+    AutoImageProcessor.from_pretrained instead of the old AutoModelForCausalLM /
+    AutoProcessor (remote-code) pair. Florence2Processor is also patched so the
+    processor construction doesn't need real tokenizer/image-processor objects.
+
+    The mocked tokenizer satisfies hasattr(tok, "image_token") for any name
+    (MagicMock auto-vivifies attributes), so this exercises the "tokenizer
+    already has image_token" branch of _build_native_processor - the
+    add_special_tokens/image_token registration shim is skipped here. That
+    shim is instead covered live against the real cached tokenizer by
+    test_florence2_native.py::test_image_token_id_is_derived_not_hardcoded.
+    """
     from app.core.captioning.models.florence2 import Florence2Model
     mock_model_cls.from_pretrained.return_value = MagicMock()
-    mock_proc_cls.from_pretrained.return_value = MagicMock()
+    mock_tokenizer_cls.from_pretrained.return_value = MagicMock()
+    mock_image_proc_cls.from_pretrained.return_value = MagicMock()
+    mock_processor_cls.return_value = MagicMock()
     plugin = Florence2Model(service=MagicMock())
     plugin.load()
-    _assert_no_tqdm_class(mock_model_cls.from_pretrained, "florence2 AutoModelForCausalLM")
-    _assert_no_tqdm_class(mock_proc_cls.from_pretrained, "florence2 AutoProcessor")
+    _assert_no_tqdm_class(mock_model_cls.from_pretrained, "florence2 Florence2ForConditionalGeneration")
+    _assert_no_tqdm_class(mock_tokenizer_cls.from_pretrained, "florence2 AutoTokenizer")
+    _assert_no_tqdm_class(mock_image_proc_cls.from_pretrained, "florence2 AutoImageProcessor")
 
 
 @patch("app.core.captioning.models.joycaption.AutoProcessor")

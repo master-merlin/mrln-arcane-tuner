@@ -51,7 +51,7 @@ pip install torchaudio==2.11.0 --no-deps \
     --index-url https://download.pytorch.org/whl/cu130
 
 # ── Remaining dependencies ───────────────────────────────────────────────
-# torch/torchvision/torchaudio (installed above) and scenedetect (needs
+# torch/torchvision/torchaudio (installed above) and scenedetect/sam3 (need
 # --no-deps below) are excluded from this bulk install — see install-deps.sh
 # for the full rationale (this mirrors its filter minus triton/triton-windows
 # — local venvs need those from requirements; only the container filters them
@@ -60,7 +60,7 @@ pip install torchaudio==2.11.0 --no-deps \
 echo ""
 echo "📦 Installing remaining dependencies ..."
 TMP_REQ="$(mktemp)"
-grep -ivE '^[[:space:]]*(scenedetect|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' requirements.txt > "$TMP_REQ"
+grep -ivE '^[[:space:]]*(scenedetect|sam3|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' requirements.txt > "$TMP_REQ"
 pip install -r "$TMP_REQ"
 rm -f "$TMP_REQ"
 
@@ -71,6 +71,17 @@ SD="$(grep -iE '^[[:space:]]*scenedetect[[:space:]]*==' requirements.txt | sed -
 if [ -n "$SD" ]; then
     echo "📦 Installing $SD (--no-deps) ..."
     pip install --no-deps "$SD"
+fi
+
+# sam3 declares `huggingface-hub<1.0,>=0.30.0`, but this repo pins
+# huggingface-hub==1.27.0 (transformers 5.x requires it). The import works
+# fine under hub 1.x - its declared ceiling is just stale (see
+# test_sam3_imports_cleanly_despite_declared_hub_pin) - so install it
+# separately, without its deps, rather than letting it block the resolve.
+S3="$(grep -iE '^[[:space:]]*sam3[[:space:]]*==' requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]' || true)"
+if [ -n "$S3" ]; then
+    echo "📦 Installing $S3 (--no-deps) ..."
+    pip install --no-deps "$S3"
 fi
 
 echo ""

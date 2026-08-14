@@ -146,10 +146,14 @@ WORKDIR /app/backend
 # filters the torch/torchvision/torchaudio/triton/triton-windows lines out of
 # requirements.txt before installing, so this step never touches (or clobbers)
 # the trio already baked into the cached layer above.
-# It also installs requirements.txt EXCEPT scenedetect, then scenedetect
-# with --no-deps — its declared GUI `opencv-python` dep would otherwise clobber
-# the pinned `opencv-python-headless`. The runtime self-update reuses the same
-# script, so the build and self-update installs never diverge.
+# It also installs requirements.txt EXCEPT scenedetect and sam3, then
+# installs each of those with --no-deps: scenedetect's declared GUI
+# `opencv-python` dep would otherwise clobber the pinned
+# `opencv-python-headless`, and sam3's declared `huggingface-hub<1.0` ceiling
+# is stale (see test_sam3_imports_cleanly_despite_declared_hub_pin) and would
+# otherwise abort the resolve against the pinned hub 1.27.0. The runtime
+# self-update reuses the same script, so the build and self-update installs
+# never diverge.
 RUN bash install-deps.sh
 
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).

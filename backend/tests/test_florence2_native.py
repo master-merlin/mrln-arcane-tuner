@@ -4,10 +4,13 @@ import pathlib
 
 import pytest
 import transformers
+from huggingface_hub.constants import HF_HUB_CACHE
 
-_CACHED = pathlib.Path(
-    r"D:\AI\huggingface\hub\hub\models--microsoft--Florence-2-large"
-).exists()
+# Resolve the cache dir the way huggingface_hub itself does (respects
+# HF_HOME/HF_HUB_CACHE) instead of a hardcoded machine-specific path -- a
+# literal path here would silently skip these tests, the only real-code
+# evidence for the native Florence-2 processor, on any other machine or CI.
+_CACHED = (pathlib.Path(HF_HUB_CACHE) / "models--microsoft--Florence-2-large").exists()
 needs_cache = pytest.mark.skipif(_CACHED is False, reason="Florence-2 not in local HF cache")
 
 
@@ -55,6 +58,14 @@ def test_image_token_id_is_derived_not_hardcoded():
 def test_no_remote_code_in_florence2_module():
     """Negative test: the whole point of going native is that we stop executing
     code downloaded from the hub. If trust_remote_code comes back, this fails."""
-    source = pathlib.Path("app/core/captioning/models/florence2.py").read_text(encoding="utf-8")
+    # Anchored on this test file's location, not the pytest rootdir/CWD: a
+    # CWD-relative path here would raise FileNotFoundError if pytest ever runs
+    # from a different directory, rather than silently skipping (see the
+    # sibling kwarg-scan test in test_transformers5_compat.py for the more
+    # dangerous, vacuously-passing version of this mistake).
+    backend_root = pathlib.Path(__file__).resolve().parents[1]
+    source = (backend_root / "app/core/captioning/models/florence2.py").read_text(
+        encoding="utf-8"
+    )
     assert "trust_remote_code" not in source
     assert "_patch_florence2_kv_cache" not in source

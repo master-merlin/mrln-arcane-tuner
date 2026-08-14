@@ -29,7 +29,7 @@ frozenlist==1.8.0
 fsspec==2025.10.0
 ftfy==6.1.1
 h11==0.16.0
-hf-xet==1.2.0
+hf-xet==1.6.0
 hpsv2==1.2.0
 httpcore==1.0.9
 httpx==0.28.1
@@ -102,7 +102,7 @@ ruamel.yaml==0.18.16
 rpds-py==0.30.0
 ruff==0.16.0
 safetensors==0.8.0
-sam3==0.1.2
+sam3==0.1.2  # installed with --no-deps (see install-deps.sh): its declared `huggingface-hub<1.0` ceiling is stale — the import is verified by test_sam3_imports_cleanly_despite_declared_hub_pin — and would otherwise block the bulk resolve against the pinned hub 1.27.0
 scenedetect==0.7  # installed with --no-deps to keep opencv-python-headless (not GUI opencv-python)
 scikit-image==0.26.0
 scipy==1.17.0

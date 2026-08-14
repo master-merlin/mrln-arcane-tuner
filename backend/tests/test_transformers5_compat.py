@@ -1,7 +1,10 @@
 """Contract tests for the transformers 5.x upgrade."""
 
+import pathlib
+
 import pytest
 import transformers
+from huggingface_hub.constants import HF_HUB_CACHE
 
 
 def test_transformers_is_5_14_1():
@@ -141,9 +144,11 @@ def test_youtu_vl_shim_is_still_required():
 
 
 @pytest.mark.skipif(
-    not __import__("pathlib").Path(
-        r"D:\AI\huggingface\hub\hub\models--tencent--Youtu-VL-4B-Instruct"
-    ).exists(),
+    # Resolve the cache dir the way huggingface_hub itself does (respects
+    # HF_HOME/HF_HUB_CACHE) instead of a hardcoded machine-specific path -- a
+    # literal path here would silently skip this test, the only real-code
+    # evidence for the Youtu-VL shim, on any other machine or CI.
+    not (pathlib.Path(HF_HUB_CACHE) / "models--tencent--Youtu-VL-4B-Instruct").exists(),
     reason="Youtu-VL checkpoint not in the local HF cache",
 )
 def test_youtu_vl_processor_loads_with_the_shim():
@@ -223,11 +228,26 @@ def test_hub_apis_the_app_depends_on_still_exist():
 
 def test_no_deprecated_transformers_kwargs_remain():
     """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
-    so nothing else would catch their eventual removal."""
-    import pathlib
+    so nothing else would catch their eventual removal.
+
+    Scope is DELIBERATELY limited to app/core/captioning: torch_dtype= also
+    appears in app/engine/core/pipeline/pipeline_loading.py and the
+    boogu_image/krea2/omnigen2 family loaders' ModelMixin.from_pretrained()
+    calls, where it is a diffusers kwarg (diffusers still uses torch_dtype=,
+    unrelated to this transformers deprecation) and is still correct.
+    Widening this scan would pressure someone into "fixing" those diffusers
+    call sites and breaking three families.
+    """
+    # Anchored on this test file's location, not the pytest rootdir/CWD: a
+    # CWD-relative Path("app/core/captioning") yields nothing if pytest ever
+    # runs from a different directory, and rglob() over an empty/missing dir
+    # just returns no results -- offenders == [] then passes VACUOUSLY,
+    # silently turning this guard off instead of failing loudly.
+    backend_root = pathlib.Path(__file__).resolve().parents[1]
+    captioning_root = backend_root / "app/core/captioning"
 
     offenders = []
-    for path in pathlib.Path("app/core/captioning").rglob("*.py"):
+    for path in captioning_root.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         for bad in ("torch_dtype=", "use_fast="):
             if bad in source:

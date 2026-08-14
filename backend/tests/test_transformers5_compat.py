@@ -174,6 +174,18 @@ def test_only_one_typer_distribution_is_installed():
     )
 
 
+def test_sam3_imports_cleanly_despite_declared_hub_pin():
+    """sam3 declares huggingface-hub<1.0 but works with 1.x. app/core/masking/
+    models/sam3.py swallows ImportError into SAM3_AVAILABLE=False, so without
+    this test a real break would silently disable masking."""
+    from app.core.masking.models import sam3
+
+    assert sam3.SAM3_AVAILABLE is True, (
+        "sam3 failed to import - masking is silently disabled; check the "
+        "huggingface_hub compatibility rather than ignoring this flag"
+    )
+
+
 def test_no_deprecated_transformers_kwargs_remain():
     """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
     so nothing else would catch their eventual removal."""

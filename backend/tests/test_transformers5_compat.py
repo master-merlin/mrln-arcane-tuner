@@ -161,3 +161,17 @@ def test_youtu_vl_processor_loads_with_the_shim():
         local_files_only=True,
     )
     assert type(proc).__name__ == "YoutuVLProcessor"
+
+
+def test_no_deprecated_transformers_kwargs_remain():
+    """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
+    so nothing else would catch their eventual removal."""
+    import pathlib
+
+    offenders = []
+    for path in pathlib.Path("app/core/captioning").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for bad in ("torch_dtype=", "use_fast="):
+            if bad in source:
+                offenders.append(f"{path}: {bad}")
+    assert offenders == []

@@ -174,7 +174,7 @@ class JoyCaptionModel(CaptionModel):
         with with_progress(model_id=self.MODEL_PATH, category="caption", repo_id=self.MODEL_PATH):
             self.model = LlavaForConditionalGeneration.from_pretrained(
                 self.MODEL_PATH,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 device_map="auto",
                 trust_remote_code=True,
             )
@@ -182,7 +182,7 @@ class JoyCaptionModel(CaptionModel):
             self.processor = AutoProcessor.from_pretrained(
                 self.MODEL_PATH,
                 trust_remote_code=True,
-                use_fast=False,
+                backend="pil",
             )
 
 

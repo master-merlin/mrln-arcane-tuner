@@ -45,10 +45,24 @@ from huggingface_hub import hf_hub_download, snapshot_download  # noqa: E402
 def run_download(payload: dict) -> str:
     """Perform the HF Hub call described by *payload*. Raises on failure —
     ``main()`` turns any exception into a stderr line + exit 1, which the
-    parent guard treats as a retryable attempt failure."""
+    parent guard treats as a retryable attempt failure.
+
+    ``repo_id`` is validated here, before it reaches ``hf_hub_download``/
+    ``snapshot_download``: under huggingface_hub 1.x a missing/blank repo_id
+    is no longer rejected with a message that names the field — it falls
+    through to internal path/URL building and dies with a bare
+    ``AttributeError: 'NoneType' object has no attribute 'split'``, which
+    names nothing. That violates this repo's [FAILURE IS NEVER SILENT]
+    invariant (the caller — the trainer subprocess or the API's best-effort
+    preflight — needs to know WHICH key was bad), so we validate and raise a
+    message naming the key ourselves rather than letting the hub's internals
+    speak first.
+    """
     repo_id = payload["repo_id"]
     filename = payload.get("filename")
     revision = payload.get("revision")
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        raise ValueError(f"invalid repo_id in download payload: {repo_id!r}")
     # Passed conditionally so a revision-less call keeps the legacy kwargs
     # shape (mirrors ModelPathResolver._resolve_hf).
     rev_kwargs = {"revision": revision} if revision else {}

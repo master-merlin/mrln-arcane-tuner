@@ -87,13 +87,18 @@ def test_caption_service_installs_the_shim_on_construction():
     """The shim must be in place before any plugin can call load(), because a
     trust_remote_code import that wins the race raises ImportError."""
     import app.core.captioning.compat.transformers5 as compat
-
-    compat._INSTALLED = False  # force a fresh install for this assertion
     from app.core.captioning.caption_service import CaptionService
 
-    CaptionService.reset_instance()
-    CaptionService()
-    assert compat._INSTALLED is True
+    compat._INSTALLED = False  # force a fresh install for this assertion
+    try:
+        CaptionService.reset_instance()
+        CaptionService()
+        assert compat._INSTALLED is True
+    finally:
+        # Restore regardless of outcome: an assertion failure here must not
+        # leave _INSTALLED False for every other test in the session that
+        # relies on the shim already being installed.
+        compat._INSTALLED = True
 
 
 def test_youtu_vl_shim_is_still_required():
@@ -102,9 +107,14 @@ def test_youtu_vl_shim_is_still_required():
     `compat/transformers5.py` documents that it should be deleted once tencent's
     remote code targets transformers 5.x. Without a test, that day passes
     unnoticed and the shim rots. This asserts the shim is still NECESSARY: in a
-    clean interpreter the three symbols must be missing from the alias module.
-    When upstream (or tencent) catches up, this test fails and that failure is
-    the signal to delete the shim.
+    clean interpreter, two of the three symbols the shim restores
+    (`DefaultFastImageProcessorKwargs`, `SizeDict`) must be missing from the
+    alias module. The third, `BaseImageProcessorFast`, is deliberately excluded
+    from the probe: it already survives upstream as a BC alias and the shim
+    never re-shims it (see `install_transformers5_compat`'s comment), so it is
+    always present and would never signal retirement either way. When upstream
+    (or tencent) catches up on the other two, this test fails and that failure
+    is the signal to delete the shim.
 
     Runs in a subprocess so it is unaffected by whatever this session already
     imported or patched.
@@ -147,6 +157,7 @@ def test_youtu_vl_processor_loads_with_the_shim():
     proc = AutoProcessor.from_pretrained(
         "tencent/Youtu-VL-4B-Instruct",
         trust_remote_code=True,
+        backend="torchvision",  # the exact kwarg youtu_vl.py:76 now passes
         local_files_only=True,
     )
     assert type(proc).__name__ == "YoutuVLProcessor"

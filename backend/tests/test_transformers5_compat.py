@@ -186,6 +186,41 @@ def test_sam3_imports_cleanly_despite_declared_hub_pin():
     )
 
 
+def test_hub_apis_the_app_depends_on_still_exist():
+    """huggingface_hub 0.36 -> 1.27 is a major bump. These are the hub APIs this
+    repo calls directly; a 1.x removal must fail here, not at download time in
+    front of a user.
+
+    Grepped backend/app for huggingface_hub/HfApi/hf_hub_download/
+    snapshot_download/list_repo_files/model_info/GatedRepoError/
+    RepositoryNotFoundError first. Two real call sites weren't in that seed
+    list and were added: ``HfApi().repo_info`` (app/api/events/
+    download_progress.py, for the top-bar download-size preflight) and
+    ``try_to_load_from_cache`` (download_progress.py + app/engine/utils/
+    model_utils.py, for offline cache-hit checks). ``model_info`` itself has
+    no direct call site today but stays in the assertion list per the
+    original template - it's part of the public HfApi surface this repo
+    could reasonably reach for next.
+    """
+    from huggingface_hub import (
+        HfApi,
+        hf_hub_download,
+        snapshot_download,
+        try_to_load_from_cache,
+    )
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    api = HfApi()
+    assert callable(api.list_repo_files)
+    assert callable(api.model_info)
+    assert callable(api.repo_info)
+    assert callable(hf_hub_download)
+    assert callable(snapshot_download)
+    assert callable(try_to_load_from_cache)
+    assert issubclass(GatedRepoError, Exception)
+    assert issubclass(RepositoryNotFoundError, Exception)
+
+
 def test_no_deprecated_transformers_kwargs_remain():
     """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
     so nothing else would catch their eventual removal."""

@@ -163,6 +163,17 @@ def test_youtu_vl_processor_loads_with_the_shim():
     assert type(proc).__name__ == "YoutuVLProcessor"
 
 
+def test_only_one_typer_distribution_is_installed():
+    """typer and typer-slim both provide an importable `typer` module; having
+    both makes which one wins install-order dependent."""
+    from importlib.metadata import distributions
+
+    names = {d.metadata["Name"].lower() for d in distributions()}
+    assert not ({"typer", "typer-slim"} <= names), (
+        "both typer and typer-slim are installed - pick one in requirements.txt"
+    )
+
+
 def test_no_deprecated_transformers_kwargs_remain():
     """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
     so nothing else would catch their eventual removal."""

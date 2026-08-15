@@ -117,7 +117,19 @@ def pad_along_first_dim(
     return tensor, mask
 
 
-class Siglip2FastImageProcessorKwargs(DefaultFastImageProcessorKwargs):
+class Siglip2FastImageProcessorKwargs(DefaultFastImageProcessorKwargs, total=False):
+    """`total=False` is required here, not cosmetic: per PEP 589, fields a
+    TypedDict subclass declares itself default to required (`total=True`)
+    regardless of the parent's totality — only fields inherited unchanged
+    stay optional. Without it, `patch_size`/`max_num_patches` become
+    *required* keys, and huggingface_hub 1.x's `validate_typed_dict` (called
+    from `BaseImageProcessorFast.preprocess`) then rejects the internal
+    "not supplied, fall back to the class attribute default" sentinel that
+    transformers passes through `kwargs` when the caller omits them —
+    raising `StrictDataclassFieldValidationError` instead of falling back to
+    `Siglip2ImageProcessorFast.patch_size = 16` / `.max_num_patches`.
+    """
+
     patch_size: Optional[int]
     max_num_patches: Optional[int]
 

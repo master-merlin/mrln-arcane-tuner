@@ -1,9 +1,7 @@
 import torch
 from transformers import (
-    AutoImageProcessor,
-    AutoTokenizer,
+    AutoProcessor,
     Florence2ForConditionalGeneration,
-    Florence2Processor,
 )
 import structlog
 from PIL import Image
@@ -12,18 +10,21 @@ from app.core.captioning.models.base import CaptionModel
 
 logger = structlog.get_logger(__name__)
 
-# The native Florence2Processor reads tokenizer.image_token / .image_token_id.
-# microsoft/Florence-2-large predates native support and ships a RobertaTokenizer
-# with neither, so we register the token ourselves.
-_IMAGE_TOKEN = "<image>"
-
-# CLIP ViT-L/14 @ 768: 576 patches + 1 CLS. Only used if the cached image
-# processor config omits image_seq_length.
-_FALLBACK_IMAGE_SEQ_LEN = 577
-
 
 class Florence2Model(CaptionModel):
-    MODEL_PATH = "microsoft/Florence-2-large"
+    # florence-community/Florence-2-large is the natively-converted repo (no
+    # auto_map, no remote code). microsoft/Florence-2-large still ships the
+    # legacy remote-code weight layout, which the native
+    # Florence2ForConditionalGeneration class cannot load — from_pretrained
+    # raises "You set 'ignore_mismatched_sizes' to False" on it.
+    #
+    # The converted repo's own tokenizer already carries image_token /
+    # image_token_id (verified: AutoProcessor.from_pretrained(MODEL_PATH)
+    # returns a working Florence2Processor with image_token="<image>",
+    # image_token_id=51289, image_processor.image_seq_length=577 -- no
+    # hand-assembly required), so the shim that used to register the token
+    # by hand for microsoft/Florence-2-large's pre-native tokenizer is gone.
+    MODEL_PATH = "florence-community/Florence-2-large"
 
     def __init__(self, service):
         self.service = service
@@ -33,25 +34,6 @@ class Florence2Model(CaptionModel):
     @property
     def model_id(self) -> str:
         return "florence-2"
-
-    def _build_native_processor(self) -> Florence2Processor:
-        """Assemble the native processor, registering the image token.
-
-        Built by hand rather than via AutoProcessor because the cached repo's
-        tokenizer lacks image_token, which Florence2Processor.__init__ reads.
-        """
-        tokenizer = AutoTokenizer.from_pretrained(self.MODEL_PATH)
-        if not hasattr(tokenizer, "image_token"):
-            tokenizer.add_special_tokens({"additional_special_tokens": [_IMAGE_TOKEN]})
-            tokenizer.image_token = _IMAGE_TOKEN
-            # Derived, never hardcoded - the id depends on the vocab.
-            tokenizer.image_token_id = tokenizer.convert_tokens_to_ids(_IMAGE_TOKEN)
-
-        image_processor = AutoImageProcessor.from_pretrained(self.MODEL_PATH)
-        if not hasattr(image_processor, "image_seq_length"):
-            image_processor.image_seq_length = _FALLBACK_IMAGE_SEQ_LEN
-
-        return Florence2Processor(image_processor=image_processor, tokenizer=tokenizer)
 
     def load(self, variant: str = None) -> tuple[Any, Any]:
         if self.model is not None and self.processor is not None:
@@ -80,7 +62,7 @@ class Florence2Model(CaptionModel):
                 attn_implementation="eager",
             ).to(device)
 
-            self.processor = self._build_native_processor()
+            self.processor = AutoProcessor.from_pretrained(self.MODEL_PATH)
 
         logger.info("florence2_loaded")
         return self.model, self.processor

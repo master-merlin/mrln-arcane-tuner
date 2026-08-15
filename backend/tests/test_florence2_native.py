@@ -10,7 +10,13 @@ from huggingface_hub.constants import HF_HUB_CACHE
 # HF_HOME/HF_HUB_CACHE) instead of a hardcoded machine-specific path -- a
 # literal path here would silently skip these tests, the only real-code
 # evidence for the native Florence-2 processor, on any other machine or CI.
-_CACHED = (pathlib.Path(HF_HUB_CACHE) / "models--microsoft--Florence-2-large").exists()
+#
+# florence-community/Florence-2-large, not microsoft/Florence-2-large: the
+# microsoft repo still ships the legacy remote-code weight layout, which the
+# native Florence2ForConditionalGeneration class cannot load
+# (ignore_mismatched_sizes errors at from_pretrained). florence-community is
+# the natively-converted repo -- no auto_map, no remote code.
+_CACHED = (pathlib.Path(HF_HUB_CACHE) / "models--florence-community--Florence-2-large").exists()
 needs_cache = pytest.mark.skipif(_CACHED is False, reason="Florence-2 not in local HF cache")
 
 
@@ -25,14 +31,18 @@ def test_native_florence2_classes_exist():
 
 @needs_cache
 def test_processor_produces_correct_tensors():
-    """Observable output, not kwargs: the cached repo's RobertaTokenizer predates
-    native support and lacks image_token, so the loader must add it. 577 image
-    tokens + 14 text tokens = 591 input ids."""
+    """Observable output, not kwargs. Unlike microsoft/Florence-2-large (whose
+    RobertaTokenizer predated native support and needed image_token registered
+    by hand), florence-community/Florence-2-large's tokenizer already carries
+    image_token / image_token_id, so plain AutoProcessor.from_pretrained is
+    enough -- no _build_native_processor shim. Shapes are unchanged from the
+    old repo: 577 image tokens + 14 text tokens = 591 input ids, verified live
+    against this repo."""
+    from transformers import AutoProcessor
     from app.core.captioning.models.florence2 import Florence2Model
     from PIL import Image
 
-    model = Florence2Model(service=None)
-    processor = model._build_native_processor()
+    processor = AutoProcessor.from_pretrained(Florence2Model.MODEL_PATH)
 
     out = processor(
         text="<MORE_DETAILED_CAPTION>",
@@ -45,14 +55,18 @@ def test_processor_produces_correct_tensors():
 
 @needs_cache
 def test_image_token_id_is_derived_not_hardcoded():
-    """The id depends on the tokenizer's vocab; hardcoding 50265 breaks on any
-    repo revision that adds tokens."""
+    """The id depends on the tokenizer's vocab. florence-community's vocab
+    assigns <image> a different id (51289) than the old hand-registered
+    microsoft/Florence-2-large shim did (50265) -- proof this must stay
+    derived, never hardcoded, or it silently breaks on exactly this kind of
+    repo swap."""
+    from transformers import AutoProcessor
     from app.core.captioning.models.florence2 import Florence2Model
 
-    model = Florence2Model(service=None)
-    processor = model._build_native_processor()
+    processor = AutoProcessor.from_pretrained(Florence2Model.MODEL_PATH)
     assert processor.image_token == "<image>"
     assert processor.image_token_id == processor.tokenizer.convert_tokens_to_ids("<image>")
+    assert processor.image_token_id == 51289
 
 
 def test_no_remote_code_in_florence2_module():

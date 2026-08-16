@@ -319,16 +319,34 @@ class _FakeDefaultRope(torch.nn.Module):
 
 
 class _FakeUnknownContractRope(torch.nn.Module):
-    """Mimics `modeling_siglip2.py`'s bundled `VisionRope`: a non-persistent
-    `inv_freq` buffer with NEITHER a `.config` NOR a `.rope_type` attribute,
-    because its `__init__` takes bare `dim`/`theta` ints. This is the second,
-    structurally different rotary module the real Youtu-VL model tree
-    contains (discovered while wiring the repair against the live model:
-    `siglip2.vision_model.encoder.rotary_pos_emb`)."""
+    """A THIRD, hypothetical rotary module shape: non-persistent `inv_freq`
+    with NEITHER a `.config`/`.rope_type` (the LM contract) NOR the class
+    name `VisionRope` (the vision contract, now also repaired -- see
+    `VisionRope` below and `test_repair_recomputes_the_vision_rope_module`).
+    Stands in for "a future remote-code revision adds yet another RoPE shape
+    this repair doesn't recognize yet" -- must still WARN, not crash."""
 
     def __init__(self, dim: int):
         super().__init__()
         self.register_buffer("inv_freq", torch.zeros(dim), persistent=False)
+
+
+class VisionRope(torch.nn.Module):
+    """Reproduces the REAL remote class's constructor contract byte-for-byte
+    (`modeling_siglip2.py:611-615`, verified against the cached checkpoint
+    revision `8d30a0e4...`): a bare `dim` int, stored NEITHER as `.config`
+    NOR `.rope_type` on the instance. Named literally `VisionRope` (not
+    `_FakeVisionRope`) because production identifies this module by
+    `type(module).__name__ == "VisionRope"` -- the class name IS the
+    contract under test here, the same way `_FakeDefaultRope` above mimics
+    `YoutuRotaryEmbedding`'s attribute contract. The buffer is seeded with
+    zeros, standing in for transformers 5.x's meta-materialization leaving a
+    `persistent=False` buffer uninitialized -- the exact defect this branch
+    of the repair exists to fix."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.register_buffer("inv_freq", torch.zeros(dim // 2), persistent=False)
 
 
 def _plugin() -> "object":
@@ -367,13 +385,15 @@ def test_repair_recomputes_a_default_contract_rope_module():
 
 
 def test_repair_warns_and_leaves_unknown_contract_modules_untouched(caplog):
-    """The real model tree's second rotary module (`VisionRope`, bundled in
-    Youtu-VL's `modeling_siglip2.py`) has no `.config`/`.rope_type`, so the
-    repair cannot safely recompute it without guessing constructor
-    parameters. It must WARN (failure is never silent) and leave the buffer
-    alone rather than crash the whole load() or misapply the LM formula --
-    this reproduces the exact shape-mismatch crash hit during development
-    (dim 18 vision buffer vs dim 32 LM formula) that motivated this guard."""
+    """A rotary module matching NEITHER the LM contract (`.config` +
+    `.rope_type == "default"`) NOR the vision contract (class name
+    `VisionRope`) has no way to safely recompute it without guessing
+    constructor parameters. It must WARN (failure is never silent) and leave
+    the buffer alone rather than crash the whole load() or misapply either
+    known formula -- this reproduces the exact shape-mismatch crash hit
+    during development (dim 18 vision buffer vs dim 32 LM formula) that
+    motivated this guard in the first place, before the vision buffer had
+    its own dedicated repair path."""
     import logging
 
     unknown = _FakeUnknownContractRope(dim=18)
@@ -386,6 +406,79 @@ def test_repair_warns_and_leaves_unknown_contract_modules_untouched(caplog):
         _plugin()._repair_nonpersistent_rope_buffers(top)
 
     assert torch.all(unknown.inv_freq == 0), "left untouched, not guessed at"
+    assert "youtu_vl_rope_buffer_unrepaired_unknown_contract" in caplog.text
+
+
+def test_repair_recomputes_the_vision_rope_module():
+    """The vision tower's non-persistent `inv_freq` (real class `VisionRope`,
+    `modeling_siglip2.py`) must be recomputed from the model's OWN
+    `config.vision_config` -- exactly matching `VisionRope.__init__`'s own
+    formula (`modeling_siglip2.py:611-615`) with `dim = hidden_size //
+    num_attention_heads // 2` and the call site's implicit `theta=10000.0`
+    (`modeling_siglip2.py:642` never overrides it). This is the exact
+    scenario youtu-numerics-report.md and uat-fix-3-report.md documented as
+    unfixed: the vision tower degrading captions ('five-pointed stars'
+    instead of the real triangle/circle) even after the text tower's RoPE
+    was repaired."""
+    from types import SimpleNamespace
+
+    vision_config = SimpleNamespace(hidden_size=1152, num_attention_heads=16)
+    dim = vision_config.hidden_size // vision_config.num_attention_heads // 2  # 36
+    rope = VisionRope(dim)
+    top = torch.nn.Module()
+    top.vision_rope = rope
+    top.config = SimpleNamespace(vision_config=vision_config)
+
+    assert torch.all(rope.inv_freq == 0), "precondition: buffer starts as uninitialized zeros"
+
+    _plugin()._repair_nonpersistent_rope_buffers(top)
+
+    expected = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
+    assert not torch.all(rope.inv_freq == 0)
+    assert torch.allclose(rope.inv_freq, expected)
+
+
+def test_repair_raises_when_vision_config_dim_does_not_match_buffer_shape():
+    """If the config-derived `dim` no longer matches the materialized
+    buffer's own shape (e.g. an upstream config edit lands out of sync with
+    the checkpoint), the repair must raise rather than silently overwrite
+    with a mismatched-shape tensor. Deriving `dim` from config rather than
+    from the buffer's own length is deliberate (see the function's
+    docstring) precisely because the buffer's length alone could never catch
+    this drift -- it would just self-confirm whatever shape is already
+    there."""
+    from types import SimpleNamespace
+
+    # Buffer built as if dim=18 (9 elements) but vision_config implies dim=36
+    # (1152 // 16 // 2), i.e. an 18-element buffer -- a real, deliberate
+    # mismatch.
+    vision_config = SimpleNamespace(hidden_size=1152, num_attention_heads=16)
+    rope = VisionRope(dim=18)
+    top = torch.nn.Module()
+    top.vision_rope = rope
+    top.config = SimpleNamespace(vision_config=vision_config)
+
+    with pytest.raises(RuntimeError, match="recomputed vision RoPE inv_freq"):
+        _plugin()._repair_nonpersistent_rope_buffers(top)
+
+
+def test_repair_warns_when_vision_rope_found_but_vision_config_unreachable(caplog):
+    """If a future config refactor removes `vision_config` from the model's
+    root `.config` (or the root config is missing entirely), the
+    `VisionRope`-named module must fall through to the generic
+    unknown-contract WARNING rather than crash `load()` outright -- same
+    'never guess constructor parameters' rule that governs branch 3."""
+    import logging
+
+    rope = VisionRope(dim=36)
+    top = torch.nn.Module()
+    top.vision_rope = rope
+    top.config = object()  # no .vision_config attribute at all
+
+    with caplog.at_level(logging.WARNING, logger="app.core.captioning.models.youtu_vl"):
+        _plugin()._repair_nonpersistent_rope_buffers(top)
+
+    assert torch.all(rope.inv_freq == 0), "left untouched, not guessed at"
     assert "youtu_vl_rope_buffer_unrepaired_unknown_contract" in caplog.text
 
 

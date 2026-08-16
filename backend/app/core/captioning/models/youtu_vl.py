@@ -196,6 +196,22 @@ class YoutuVLModel(CaptionModel):
         # `compat/transformers5.py` installs for the remote code itself to
         # dict-dispatch to — so there is exactly one copy of this formula in
         # the codebase, not two that could drift apart.
+        #
+        # A second, structurally different buffer exists on the vision tower:
+        # `modeling_siglip2.py::VisionRope` (bundled remote code) also
+        # registers a non-persistent `inv_freq`, but its `__init__` takes
+        # bare `dim`/`theta` ints, not a config object, and stores neither on
+        # the instance -- so nothing on the materialized module itself can
+        # drive a safe recompute the way the LM tower's `.config`+`.rope_type`
+        # can. Its constructor arguments ARE recoverable a different way,
+        # though: the one call site that builds it, `Siglip2Encoder.__init__`
+        # (modeling_siglip2.py:642, verified against the cached remote code),
+        # always passes `config.hidden_size // config.num_attention_heads //
+        # 2` for `dim` and never overrides `theta` (default 10000.0) — both
+        # taken from the model's own `config.vision_config`, not guessed. That
+        # makes `dim` derivable exactly from config, in contrast to inferring
+        # it from the (currently-garbage) buffer's own length, which would
+        # only ever prove self-consistency, not correctness.
         """
         from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
@@ -235,60 +251,97 @@ class YoutuVLModel(CaptionModel):
             return
 
         for name, module in targets:
-            # Only modules that actually follow the `ROPE_INIT_FUNCTIONS`
+            # Branch 1: modules that follow the `ROPE_INIT_FUNCTIONS`
             # contract -- an own `.config` PLUS a `.rope_type` string picking
             # the dict entry, exactly like `YoutuRotaryEmbedding.__init__`
             # (`self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]`) --
             # can be safely recomputed generically. `hasattr`/`getattr` WITHOUT
             # a masking default: a module missing either attribute entirely is
             # a different contract, not an implicit "default" vote.
-            #
-            # This model tree has a second, structurally different offender:
-            # the vision tower's bundled `modeling_siglip2.py::VisionRope`
-            # also registers a non-persistent `inv_freq`, but its __init__
-            # takes bare `dim`/`theta` ints (not a config object) and stores
-            # neither on the instance, so there is no way to recover its
-            # original construction parameters from the materialized module
-            # -- guessing them (e.g. hardcoding theta=10000.0 from reading the
-            # class's default today) would silently ship a DIFFERENT wrong
-            # number dressed up as a fix. WARN and move on rather than raise:
-            # this defect is documented as a known, unfixed residual risk
-            # (see Task 4 in uat-fix-3-report.md) rather than silently masked,
-            # but treating "cannot classify this module's contract" as fatal
-            # would make load() always fail because of it, which is worse than
-            # leaving the LM-side RoPE (the diagnosed, confirmed root cause of
-            # the caption failure) fixed.
-            if not hasattr(module, "config") or getattr(module, "rope_type", None) != "default":
-                logger.warning(
-                    "youtu_vl_rope_buffer_unrepaired_unknown_contract",
-                    module=name,
-                    has_config=hasattr(module, "config"),
-                    rope_type=getattr(module, "rope_type", None),
-                    reason=(
-                        "non-persistent inv_freq buffer does not follow the "
-                        "config+rope_type ROPE_INIT_FUNCTIONS contract; "
-                        "cannot safely recompute without guessing "
-                        "constructor parameters -- left as-is"
-                    ),
+            if hasattr(module, "config") and getattr(module, "rope_type", None) == "default":
+                device = module.inv_freq.device
+                try:
+                    inv_freq, attention_scaling = ROPE_INIT_FUNCTIONS["default"](module.config, device)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"youtu_vl.load(): recomputing inv_freq for module "
+                        f"'{name}' raised {e!r}. Refusing to leave a "
+                        "non-persistent RoPE buffer uninitialized -- that ships "
+                        "the exact degenerate-caption failure this repair "
+                        "exists to prevent."
+                    ) from e
+
+                with torch.no_grad():
+                    module.inv_freq.copy_(inv_freq.to(device=device, dtype=module.inv_freq.dtype))
+                module.attention_scaling = attention_scaling
+                logger.info(
+                    "repaired_nonpersistent_rope_buffer", module=name, device=str(device), tower="text"
                 )
                 continue
 
-            device = module.inv_freq.device
-            try:
-                inv_freq, attention_scaling = ROPE_INIT_FUNCTIONS["default"](module.config, device)
-            except Exception as e:
-                raise RuntimeError(
-                    f"youtu_vl.load(): recomputing inv_freq for module "
-                    f"'{name}' raised {e!r}. Refusing to leave a "
-                    "non-persistent RoPE buffer uninitialized -- that ships "
-                    "the exact degenerate-caption failure this repair "
-                    "exists to prevent."
-                ) from e
+            # Branch 2: the vision tower's `VisionRope` (see the class-level
+            # docstring above for why its constructor args are recoverable
+            # from config rather than the module itself). Matched by exact
+            # class name rather than an attribute path: `named_modules()`
+            # already did the tree walk, so this only asks "is this the one
+            # class we have proven the formula for", and a future rename
+            # falls through to the unknown-contract WARNING below instead of
+            # silently applying vision maths to some other class.
+            if type(module).__name__ == "VisionRope":
+                vision_config = getattr(getattr(model, "config", None), "vision_config", None)
+                hidden_size = getattr(vision_config, "hidden_size", None)
+                num_attention_heads = getattr(vision_config, "num_attention_heads", None)
+                if vision_config is not None and hidden_size and num_attention_heads:
+                    dim = hidden_size // num_attention_heads // 2
+                    theta = 10000.0  # VisionRope's own default; the one call
+                    # site (modeling_siglip2.py:642) never overrides it.
+                    device = module.inv_freq.device
+                    # Byte-for-byte port of VisionRope.__init__'s own formula
+                    # (modeling_siglip2.py:611-615) -- NOT
+                    # ROPE_INIT_FUNCTIONS["default"]: that function's `dim` is
+                    # the full (rotary) head_dim, while VisionRope is called
+                    # with head_dim // 2 already halved, then halved again by
+                    # its own `arange(0, dim, 2)` -- a different frequency
+                    # count, not just a different `theta` constant.
+                    inv_freq = 1.0 / (
+                        theta ** (torch.arange(0, dim, 2, dtype=torch.float, device=device) / dim)
+                    )
+                    if inv_freq.shape != module.inv_freq.shape:
+                        raise RuntimeError(
+                            f"youtu_vl.load(): recomputed vision RoPE inv_freq "
+                            f"for module '{name}' has shape {tuple(inv_freq.shape)} "
+                            f"but the materialized buffer has shape "
+                            f"{tuple(module.inv_freq.shape)}. The config-derived "
+                            "dim no longer matches this checkpoint's VisionRope "
+                            "-- refusing to overwrite with a mismatched shape "
+                            "rather than risk corrupting neighboring memory."
+                        )
+                    with torch.no_grad():
+                        module.inv_freq.copy_(inv_freq.to(dtype=module.inv_freq.dtype))
+                    logger.info(
+                        "repaired_nonpersistent_rope_buffer", module=name, device=str(device), tower="vision"
+                    )
+                    continue
+                # vision_config unreachable off the model root -- fall through
+                # to the unknown-contract WARNING rather than guess.
 
-            with torch.no_grad():
-                module.inv_freq.copy_(inv_freq.to(device=device, dtype=module.inv_freq.dtype))
-            module.attention_scaling = attention_scaling
-            logger.info("repaired_nonpersistent_rope_buffer", module=name, device=str(device))
+            # Branch 3: neither known contract. WARN and move on rather than
+            # raise: leaving one unrecognised buffer unrepaired must not make
+            # load() fail outright when the other tower(s) — the diagnosed,
+            # confirmed root cause(s) of the caption failure — were fixed.
+            logger.warning(
+                "youtu_vl_rope_buffer_unrepaired_unknown_contract",
+                module=name,
+                has_config=hasattr(module, "config"),
+                rope_type=getattr(module, "rope_type", None),
+                module_class=type(module).__name__,
+                reason=(
+                    "non-persistent inv_freq buffer does not follow the "
+                    "config+rope_type ROPE_INIT_FUNCTIONS contract nor the "
+                    "known VisionRope contract; cannot safely recompute "
+                    "without guessing constructor parameters -- left as-is"
+                ),
+            )
 
     def unload(self):
         self.model = None

@@ -147,6 +147,8 @@ class YoutuVLModel(CaptionModel):
                 attn_implementation=attn_impl,
             ).eval()
 
+            self._repair_nonpersistent_rope_buffers(self.model)
+
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
                 trust_remote_code=True,
@@ -168,6 +170,125 @@ class YoutuVLModel(CaptionModel):
         
         logger.info("youtu_vl_loaded", attention_implementation=attn_impl)
         return self.model, self.processor
+
+    def _repair_nonpersistent_rope_buffers(self, model: torch.nn.Module) -> None:
+        """INVARIANT: a buffer registered with `persistent=False` is never part
+        of a checkpoint's state dict. transformers 5.x's `from_pretrained`
+        unconditionally builds the module tree under a meta-device context and
+        then materializes it via `to_empty()` + `load_state_dict()`, which only
+        restores tensors present in that state dict. A non-persistent buffer
+        therefore comes out of `to_empty()` backed by whatever memory the
+        allocator handed back — uninitialized, not the value its `__init__`
+        computed. tencent's (unmodified, remote) `YoutuRotaryEmbedding`
+        registers its `inv_freq` exactly this way. With `inv_freq` ~ 0, RoPE
+        degenerates to position-invariant (cos=1, sin=0 for every position),
+        which is the confirmed root cause of the 'skyskysky...' single-token
+        repetition failure — see youtu-numerics-report.md. This is not specific
+        to Youtu-VL's maths; it is a general hazard of any `persistent=False`
+        buffer computed in `__init__` under transformers 5.x's meta-device
+        loading path.
+        #
+        # We walk the live module tree (rather than hardcoding
+        # `model.model.rotary_emb`) so a future remote-code revision that
+        # moves, renames, or adds a second RoPE module does not silently slip
+        # past this repair. `ROPE_INIT_FUNCTIONS["default"]` is the single
+        # definition of the recompute maths — the same byte-for-byte port
+        # `compat/transformers5.py` installs for the remote code itself to
+        # dict-dispatch to — so there is exactly one copy of this formula in
+        # the codebase, not two that could drift apart.
+        """
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+        # Step 1: find every module carrying a real (non-meta) `inv_freq`
+        # tensor at all, persistent or not. An empty result means the remote
+        # code's RoPE module structure changed in a way this walk no longer
+        # reaches -- we cannot verify RoPE is sane, so fail loudly rather than
+        # silently shipping a model that may be producing degenerate captions.
+        rope_modules = [
+            (name, module)
+            for name, module in model.named_modules()
+            if isinstance(getattr(module, "inv_freq", None), torch.Tensor)
+        ]
+        if not rope_modules:
+            raise RuntimeError(
+                "youtu_vl.load(): no submodule with an 'inv_freq' buffer was "
+                "found anywhere in the loaded model tree. The remote code's "
+                "RoPE module structure has changed since this repair was "
+                "written; update _repair_nonpersistent_rope_buffers before "
+                "shipping captions from this model, or every caption risks "
+                "the degenerate 'skyskysky...' failure with no signal that "
+                "it happened."
+            )
+
+        # Step 2: of those, only non-persistent buffers are actually at risk
+        # (that is the exact condition transformers 5.x's materialization
+        # skips). If none are non-persistent, either this checkpoint doesn't
+        # need the repair or a future transformers/remote-code fix already
+        # closed the gap -- nothing to do, and no need to raise.
+        targets = [
+            (name, module)
+            for name, module in rope_modules
+            if "inv_freq" in getattr(module, "_non_persistent_buffers_set", ())
+        ]
+        if not targets:
+            logger.debug("youtu_vl_rope_buffers_already_persistent")
+            return
+
+        for name, module in targets:
+            # Only modules that actually follow the `ROPE_INIT_FUNCTIONS`
+            # contract -- an own `.config` PLUS a `.rope_type` string picking
+            # the dict entry, exactly like `YoutuRotaryEmbedding.__init__`
+            # (`self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]`) --
+            # can be safely recomputed generically. `hasattr`/`getattr` WITHOUT
+            # a masking default: a module missing either attribute entirely is
+            # a different contract, not an implicit "default" vote.
+            #
+            # This model tree has a second, structurally different offender:
+            # the vision tower's bundled `modeling_siglip2.py::VisionRope`
+            # also registers a non-persistent `inv_freq`, but its __init__
+            # takes bare `dim`/`theta` ints (not a config object) and stores
+            # neither on the instance, so there is no way to recover its
+            # original construction parameters from the materialized module
+            # -- guessing them (e.g. hardcoding theta=10000.0 from reading the
+            # class's default today) would silently ship a DIFFERENT wrong
+            # number dressed up as a fix. WARN and move on rather than raise:
+            # this defect is documented as a known, unfixed residual risk
+            # (see Task 4 in uat-fix-3-report.md) rather than silently masked,
+            # but treating "cannot classify this module's contract" as fatal
+            # would make load() always fail because of it, which is worse than
+            # leaving the LM-side RoPE (the diagnosed, confirmed root cause of
+            # the caption failure) fixed.
+            if not hasattr(module, "config") or getattr(module, "rope_type", None) != "default":
+                logger.warning(
+                    "youtu_vl_rope_buffer_unrepaired_unknown_contract",
+                    module=name,
+                    has_config=hasattr(module, "config"),
+                    rope_type=getattr(module, "rope_type", None),
+                    reason=(
+                        "non-persistent inv_freq buffer does not follow the "
+                        "config+rope_type ROPE_INIT_FUNCTIONS contract; "
+                        "cannot safely recompute without guessing "
+                        "constructor parameters -- left as-is"
+                    ),
+                )
+                continue
+
+            device = module.inv_freq.device
+            try:
+                inv_freq, attention_scaling = ROPE_INIT_FUNCTIONS["default"](module.config, device)
+            except Exception as e:
+                raise RuntimeError(
+                    f"youtu_vl.load(): recomputing inv_freq for module "
+                    f"'{name}' raised {e!r}. Refusing to leave a "
+                    "non-persistent RoPE buffer uninitialized -- that ships "
+                    "the exact degenerate-caption failure this repair "
+                    "exists to prevent."
+                ) from e
+
+            with torch.no_grad():
+                module.inv_freq.copy_(inv_freq.to(device=device, dtype=module.inv_freq.dtype))
+            module.attention_scaling = attention_scaling
+            logger.info("repaired_nonpersistent_rope_buffer", module=name, device=str(device))
 
     def unload(self):
         self.model = None

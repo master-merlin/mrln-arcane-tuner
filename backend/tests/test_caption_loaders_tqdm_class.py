@@ -80,8 +80,22 @@ def test_joycaption_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
 @patch("app.core.captioning.models.youtu_vl.AutoProcessor")
 @patch("app.core.captioning.models.youtu_vl.AutoModelForCausalLM")
 def test_youtu_vl_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
+    import torch
+
     from app.core.captioning.models.youtu_vl import YoutuVLModel
-    mock_model_cls.from_pretrained.return_value = MagicMock()
+
+    # load() also runs _repair_nonpersistent_rope_buffers (see
+    # test_transformers5_compat.py for that behaviour in isolation), which
+    # raises if the model tree has NO module with an inv_freq buffer at all
+    # -- correct for a real model, but a bare MagicMock has no real module
+    # tree either way, which would trip that "structure changed" guard for
+    # reasons that have nothing to do with tqdm_class. Use a minimal real
+    # nn.Module with an already-persistent inv_freq (nothing to repair) so
+    # this test stays focused on its actual contract.
+    fake_model = torch.nn.Module()
+    fake_model.rotary_emb = torch.nn.Module()
+    fake_model.rotary_emb.register_buffer("inv_freq", torch.ones(4))
+    mock_model_cls.from_pretrained.return_value = fake_model
     mock_proc_cls.from_pretrained.return_value = MagicMock()
     plugin = YoutuVLModel(service=MagicMock())
     plugin.load()

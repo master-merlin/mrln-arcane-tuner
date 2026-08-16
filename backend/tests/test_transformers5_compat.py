@@ -302,6 +302,122 @@ def test_hub_apis_the_app_depends_on_still_exist():
     assert issubclass(RepositoryNotFoundError, Exception)
 
 
+class _FakeDefaultRope(torch.nn.Module):
+    """Mimics `YoutuRotaryEmbedding`'s exact contract: a `.config`, a
+    `.rope_type` string used to dict-dispatch into `ROPE_INIT_FUNCTIONS`, and
+    an `inv_freq` buffer registered with `persistent=False`. The buffer is
+    seeded with zeros to stand in for transformers 5.x's meta-materialization
+    leaving it uninitialized -- exactly the defect under test."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.rope_type = "default"
+        head_dim = config.hidden_size // config.num_attention_heads
+        self.register_buffer("inv_freq", torch.zeros(head_dim // 2), persistent=False)
+        self.attention_scaling = None
+
+
+class _FakeUnknownContractRope(torch.nn.Module):
+    """Mimics `modeling_siglip2.py`'s bundled `VisionRope`: a non-persistent
+    `inv_freq` buffer with NEITHER a `.config` NOR a `.rope_type` attribute,
+    because its `__init__` takes bare `dim`/`theta` ints. This is the second,
+    structurally different rotary module the real Youtu-VL model tree
+    contains (discovered while wiring the repair against the live model:
+    `siglip2.vision_model.encoder.rotary_pos_emb`)."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.register_buffer("inv_freq", torch.zeros(dim), persistent=False)
+
+
+def _plugin() -> "object":
+    from app.core.captioning.models.youtu_vl import YoutuVLModel
+
+    return YoutuVLModel(service=None)
+
+
+def test_repair_recomputes_a_default_contract_rope_module():
+    """The exact bug from youtu-numerics-report.md, reproduced hermetically:
+    a `persistent=False` inv_freq buffer left at zero by meta materialization
+    must come back as the real `ROPE_INIT_FUNCTIONS["default"]` values -
+    the same function `compat/transformers5.py` installs - after the repair
+    runs, with `attention_scaling` refreshed too."""
+    from types import SimpleNamespace
+
+    from app.core.captioning.compat.transformers5 import install_transformers5_compat
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    install_transformers5_compat()
+
+    config = SimpleNamespace(rope_theta=500000.0, hidden_size=256, num_attention_heads=4)
+    rope = _FakeDefaultRope(config)
+    top = torch.nn.Module()
+    top.rotary_emb = rope
+    top.config = config
+
+    assert torch.all(rope.inv_freq == 0), "precondition: buffer starts as uninitialized zeros"
+
+    _plugin()._repair_nonpersistent_rope_buffers(top)
+
+    expected_inv_freq, expected_scaling = ROPE_INIT_FUNCTIONS["default"](config, rope.inv_freq.device)
+    assert not torch.all(rope.inv_freq == 0)
+    assert torch.allclose(rope.inv_freq, expected_inv_freq)
+    assert rope.attention_scaling == expected_scaling
+
+
+def test_repair_warns_and_leaves_unknown_contract_modules_untouched(caplog):
+    """The real model tree's second rotary module (`VisionRope`, bundled in
+    Youtu-VL's `modeling_siglip2.py`) has no `.config`/`.rope_type`, so the
+    repair cannot safely recompute it without guessing constructor
+    parameters. It must WARN (failure is never silent) and leave the buffer
+    alone rather than crash the whole load() or misapply the LM formula --
+    this reproduces the exact shape-mismatch crash hit during development
+    (dim 18 vision buffer vs dim 32 LM formula) that motivated this guard."""
+    import logging
+
+    unknown = _FakeUnknownContractRope(dim=18)
+    top = torch.nn.Module()
+    top.encoder = torch.nn.Module()
+    top.encoder.rotary_pos_emb = unknown
+    top.config = object()
+
+    with caplog.at_level(logging.WARNING, logger="app.core.captioning.models.youtu_vl"):
+        _plugin()._repair_nonpersistent_rope_buffers(top)
+
+    assert torch.all(unknown.inv_freq == 0), "left untouched, not guessed at"
+    assert "youtu_vl_rope_buffer_unrepaired_unknown_contract" in caplog.text
+
+
+def test_repair_raises_when_no_rope_module_is_found_at_all():
+    """If the module walk finds NO `inv_freq` buffer anywhere, the remote
+    code's RoPE structure has changed in a way this repair no longer reaches.
+    Silently returning would ship exactly the degenerate-caption failure this
+    function exists to prevent -- it must raise instead."""
+    top = torch.nn.Module()
+    top.some_child = torch.nn.Linear(4, 4)
+
+    with pytest.raises(RuntimeError, match="no submodule with an 'inv_freq' buffer"):
+        _plugin()._repair_nonpersistent_rope_buffers(top)
+
+
+def test_repair_is_a_noop_when_buffers_are_already_persistent():
+    """If a future transformers/remote-code revision makes `inv_freq`
+    persistent (checkpoint-restored, no longer at risk), the repair must not
+    raise or touch it -- there is nothing to repair."""
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(rope_theta=500000.0, hidden_size=256, num_attention_heads=4)
+    rope = _FakeDefaultRope(config)
+    rope._non_persistent_buffers_set.discard("inv_freq")  # simulate persistent=True
+    top = torch.nn.Module()
+    top.rotary_emb = rope
+
+    _plugin()._repair_nonpersistent_rope_buffers(top)  # must not raise
+
+    assert torch.all(rope.inv_freq == 0), "not touched -- persistent buffers are the checkpoint's job"
+
+
 def test_no_deprecated_transformers_kwargs_remain():
     """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
     so nothing else would catch their eventual removal.

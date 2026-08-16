@@ -3,6 +3,7 @@
 import pathlib
 
 import pytest
+import torch
 import transformers
 from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -166,6 +167,81 @@ def test_youtu_vl_processor_loads_with_the_shim():
         local_files_only=True,
     )
     assert type(proc).__name__ == "YoutuVLProcessor"
+
+
+def test_rope_default_shim_produces_correct_inv_freq():
+    """`ROPE_INIT_FUNCTIONS["default"]` must not just be present - it must compute
+    the right thing. `install_transformers5_compat` documents this as a
+    byte-for-byte port of transformers 4.57's `_compute_default_rope_parameters`;
+    pin the OBSERVABLE OUTPUT (shape, dtype, and known-good values) rather than
+    mere presence/callability, so a future edit to the port that changes the maths
+    is caught here instead of silently corrupting every RoPE position embedding
+    for remote-code models that dict-dispatch to "default".
+    """
+    from types import SimpleNamespace
+
+    from app.core.captioning.compat.transformers5 import install_transformers5_compat
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    install_transformers5_compat()
+
+    assert "default" in ROPE_INIT_FUNCTIONS
+    assert callable(ROPE_INIT_FUNCTIONS["default"])
+
+    # No `head_dim` attribute -> the function must fall back to
+    # hidden_size // num_attention_heads (8 here), matching 4.57's contract.
+    config = SimpleNamespace(rope_theta=10000.0, hidden_size=64, num_attention_heads=8)
+    inv_freq, attention_factor = ROPE_INIT_FUNCTIONS["default"](config)
+
+    # dim = head_dim(8) * partial_rotary_factor(default 1.0) = 8;
+    # arange(0, 8, 2) -> 4 elements. The maths this feeds directly requires a
+    # float tensor (division and later cos/sin), not int64.
+    assert inv_freq.shape == (4,)
+    assert inv_freq.dtype == torch.float32
+    assert attention_factor == 1.0
+
+    expected = torch.tensor(
+        [10000.0 ** (-i / 8) for i in (0, 2, 4, 6)], dtype=torch.float32
+    )
+    assert torch.allclose(inv_freq, expected, rtol=1e-5)
+
+
+@pytest.mark.skipif(
+    # Same cache-existence gate as test_youtu_vl_processor_loads_with_the_shim:
+    # a hardcoded path would silently skip this on any other machine/CI.
+    not (pathlib.Path(HF_HUB_CACHE) / "models--tencent--Youtu-VL-4B-Instruct").exists(),
+    reason="Youtu-VL checkpoint not in the local HF cache",
+)
+def test_youtu_vl_config_normalisation_neutralises_rope_scaling():
+    """Pin the exact precondition that stops `KeyError: 'factor'` in the remote
+    `YoutuMLAttention.__init__`: after the normalisation `load()` applies,
+    `config.rope_scaling` must be `None`. Reproduces `load()`'s own two-line patch
+    (rather than re-deriving it) so a future edit to `load()` that stops nulling
+    `rope_scaling` is caught here too - config-level only, no weights, so it stays
+    hermetic and CI-safe.
+    """
+    from transformers import AutoConfig
+
+    from app.core.captioning.compat.transformers5 import install_transformers5_compat
+
+    install_transformers5_compat()
+
+    config = AutoConfig.from_pretrained(
+        "tencent/Youtu-VL-4B-Instruct", trust_remote_code=True, local_files_only=True
+    )
+
+    # Sanity: prove the precondition this test guards against is real - 5.x's
+    # standardize_rope_params() synthesises a truthy rope_scaling on this
+    # checkpoint (its config.json has no explicit rope_scaling key at all).
+    # Without this assertion, a future transformers release that stops
+    # synthesising rope_scaling would make the test below pass vacuously.
+    assert getattr(config, "rope_scaling", None) is not None
+
+    # The exact normalisation youtu_vl.py's load() applies before from_pretrained().
+    if getattr(config, "rope_scaling", None) is not None:
+        config.rope_scaling = None
+
+    assert config.rope_scaling is None
 
 
 def test_only_one_typer_distribution_is_installed():

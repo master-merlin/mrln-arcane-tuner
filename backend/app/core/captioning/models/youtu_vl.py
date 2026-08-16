@@ -362,11 +362,18 @@ class YoutuVLModel(CaptionModel):
         if not image_path:
             raise ValueError("Youtu-VL model requires the original image_path for generation.")
 
-        # Resize image if long side exceeds the configured max
+        # Resize image if long side exceeds the configured max. Feed the
+        # RESULT into `messages` below (not `image_path`) -- passing the
+        # path made this resize dead code: apply_chat_template re-reads the
+        # raw file from disk regardless of what `image` holds, so a
+        # user-configured max_long_side had zero effect (silent no-op knob).
         max_long_side = int(params.get("max_long_side", DEFAULT_MAX_LONG_SIDE))
-        image = self._resize_for_inference(image, max_long_side)
+        resized_image = self._resize_for_inference(image, max_long_side)
 
-        # Apply max_num_patches to the fast processor if available
+        # Apply max_num_patches to the fast processor instance too, for any
+        # code path that calls self.processor.image_processor(...) directly
+        # (bypassing apply_chat_template). Necessary but NOT sufficient on
+        # its own -- see the processor_kwargs comment below.
         max_num_patches = int(params.get("max_num_patches", 256))
         try:
             from app.core.captioning.processors.siglip2_fast import Siglip2ImageProcessorFast
@@ -376,26 +383,64 @@ class YoutuVLModel(CaptionModel):
             pass
 
         prompt = self.resolve_prompt(params)
-        
+
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image_path},
+                    {"type": "image", "image": resized_image},
                     {"type": "text", "text": prompt},
                 ],
             }
         ]
-        
-        # Prepare inputs
+
+        # Prepare inputs.
+        #
+        # `processor_kwargs={"max_image_patches": ...}` is the actual fix for
+        # the vision-token blow-up (4000x3000 -> 36520 patches -> 79.5 GB
+        # single allocation -> CUDA OOM). tencent's remote
+        # `YoutuVLProcessor.__call__` (processing_youtu_vl.py, verified in
+        # the cached remote code under
+        # transformers_modules/tencent/Youtu_hyphen_VL_hyphen_4B_hyphen_Instruct)
+        # declares its OWN `max_image_patches: int = 36864` parameter and
+        # ALWAYS forwards it explicitly to
+        # `self.image_processor(images=images, max_num_patches=max_image_patches, ...)`.
+        # That means the `self.processor.image_processor.max_num_patches =
+        # 256` set above is invisible on this route: `__call__`'s own
+        # 36864-patch default wins on every call that does not thread a
+        # `max_image_patches` value through. transformers'
+        # `ProcessorMixin.apply_chat_template` (processing_utils.py) calls
+        # `self(text=.., images=.., **processor_kwargs)` in its tokenize
+        # branch -- `processor_kwargs=` is the one channel that reaches
+        # `__call__` unmolested; a stray kwarg on `apply_chat_template`
+        # itself gets treated as a Jinja template variable candidate first
+        # and only demoted to a processor kwarg (with a warning) if the
+        # template doesn't consume it, which is fragile. Passing it via
+        # `processor_kwargs=` here is the same cap used above, so both
+        # routes (direct image_processor calls and apply_chat_template) now
+        # agree.
+        #
+        # `model.generate(img_input=...)` does NOT need the same treatment:
+        # `YoutuVLForConditionalGeneration.generate()` pops `img_input`
+        # before delegating to `super().generate()`, so it never reaches the
+        # vision tower during the forward pass. It is only read afterwards,
+        # inside `YoutuDensePrediction.__call__`, and only when the
+        # generated tokens contain grounding/segmentation markers
+        # (coordinate tokens, `<ref>`, `<depth>`) -- plain captions never
+        # trigger it. When it does fire, it needs the image's TRUE raw
+        # pixel dimensions (`img.size`) to scale generated coordinates back
+        # to the original image space, so `img_input=image_path` below is
+        # deliberately left pointing at the ORIGINAL file, not
+        # `resized_image`.
         inputs = self.processor.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
             return_dict=True,
-            return_tensors="pt"
+            return_tensors="pt",
+            processor_kwargs={"max_image_patches": max_num_patches},
         ).to(self.device)
-        
+
         # Generate
         with torch.no_grad():
             generated_ids = self.model.generate(
@@ -405,7 +450,7 @@ class YoutuVLModel(CaptionModel):
                 repetition_penalty=repetition_penalty,
                 do_sample=temperature > 0,
                 max_new_tokens=max_tokens,
-                img_input=image_path, # Specific to Youtu-VL
+                img_input=image_path, # Specific to Youtu-VL; original path -- see comment above.
             )
         
         # Decode only new tokens

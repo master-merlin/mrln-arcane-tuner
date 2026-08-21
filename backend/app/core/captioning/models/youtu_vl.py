@@ -41,6 +41,17 @@ class YoutuVLModel(CaptionModel):
             logger.debug("youtu_vl_already_loaded")
             return self.model, self.processor
 
+        # Structural, not conventional: CaptionService.__init__ also installs
+        # this shim (every caption path funnels through it), but a
+        # directly-constructed YoutuVLModel bypasses that entirely and hits
+        # `KeyError: 'default'` in ROPE_INIT_FUNCTIONS below. Idempotent
+        # module-level guard, so the extra call here is free.
+        from app.core.captioning.compat.transformers5 import (
+            install_transformers5_compat,
+        )
+
+        install_transformers5_compat()
+
         model_id = "tencent/Youtu-VL-4B-Instruct"
         logger.info("loading_youtu_vl", path=model_id)
         

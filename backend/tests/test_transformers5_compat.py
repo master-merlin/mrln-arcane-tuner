@@ -68,10 +68,23 @@ def test_shim_does_not_redefine_the_bc_alias():
 
 def test_bundled_siglip2_fast_imports_under_transformers_5():
     """The app's own copy of Youtu-VL's fast processor must import cleanly,
-    independent of the shim - it is our code, so it targets 5.x directly."""
+    independent of the shim - it is our code, so it targets 5.x directly.
+
+    A bare "import succeeded" assert is a tautology (a failed import raises
+    before the assert runs, and a successful one is never None), so this
+    proves the class is actually usable instead: it must be a real,
+    instantiable subclass of the base fast image processor, not just a name
+    that happens to resolve.
+    """
+    # Same real (non-aliased) location siglip2_fast.py itself imports from -
+    # not the `image_processing_utils_fast` alias module, which only carries
+    # the moved symbols once the compat shim has installed them.
+    from transformers.image_processing_backends import BaseImageProcessorFast
+
     from app.core.captioning.processors.siglip2_fast import Siglip2ImageProcessorFast
 
-    assert Siglip2ImageProcessorFast is not None
+    assert issubclass(Siglip2ImageProcessorFast, BaseImageProcessorFast)
+    assert isinstance(Siglip2ImageProcessorFast(), Siglip2ImageProcessorFast)
 
 
 def test_bundled_siglip2_fast_is_constructible():
@@ -102,6 +115,45 @@ def test_caption_service_installs_the_shim_on_construction():
         # Restore regardless of outcome: an assertion failure here must not
         # leave _INSTALLED False for every other test in the session that
         # relies on the shim already being installed.
+        compat._INSTALLED = True
+
+
+def test_youtu_vl_load_installs_the_shim_without_caption_service(monkeypatch):
+    """Item 1 regression test: a directly-constructed `YoutuVLModel` (never
+    routed through `CaptionService.__init__`) must install the compat shim
+    on its own. Before this fix, constructing YoutuVLModel directly and
+    calling `.load()` raised `KeyError: 'default'` in ROPE_INIT_FUNCTIONS
+    because the shim was only ever installed at a distance, from
+    CaptionService's constructor.
+
+    Hermetic: no 4B weights or network access. `with_progress` (the first
+    thing load() does after installing the shim) is stubbed to abort
+    immediately, so the test only proves the shim installs before that
+    point - it does not exercise the rest of load().
+    """
+    import app.api.events.download_progress as download_progress
+    import app.core.captioning.compat.transformers5 as compat
+    from app.core.captioning.models.youtu_vl import YoutuVLModel
+
+    compat._INSTALLED = False
+    try:
+        model = YoutuVLModel(service=None)
+
+        def _abort_early(**kwargs):
+            raise RuntimeError("stop-early probe: reached with_progress")
+
+        monkeypatch.setattr(download_progress, "with_progress", _abort_early)
+
+        with pytest.raises(RuntimeError, match="stop-early probe"):
+            model.load()
+
+        assert compat._INSTALLED is True, (
+            "YoutuVLModel.load() did not install the transformers5 compat "
+            "shim itself; a directly-constructed instance (bypassing "
+            "CaptionService) would hit KeyError: 'default' in "
+            "ROPE_INIT_FUNCTIONS"
+        )
+    finally:
         compat._INSTALLED = True
 
 
@@ -289,6 +341,12 @@ def test_hub_apis_the_app_depends_on_still_exist():
         snapshot_download,
         try_to_load_from_cache,
     )
+
+    # GatedRepoError and RepositoryNotFoundError have no call site in app/
+    # today - this is deliberate forward-looking coverage, not dead weight.
+    # The next piece of work targets Lightricks/LTX-2.5-Diffusers, a GATED
+    # repo, so the gated-access error path becomes live imminently. Do not
+    # "clean up" this assertion.
     from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
 
     api = HfApi()

@@ -48,7 +48,7 @@ echo Installing torchaudio 2.11.0 (--no-deps; declares torch==2.11.0) ...
 pip install torchaudio==2.11.0 --no-deps --index-url https://download.pytorch.org/whl/cu130
 
 REM ── Remaining dependencies ─────────────────────────────────────────────
-REM torch/torchvision/torchaudio (installed above) and scenedetect (needs
+REM torch/torchvision/torchaudio (installed above) and scenedetect/sam3 (need
 REM --no-deps below) are excluded from this bulk install — see
 REM install-deps.sh for the full rationale (this mirrors its filter minus
 REM triton/triton-windows — local venvs need those from requirements; only
@@ -56,7 +56,7 @@ REM the container filters them to protect its baked 2.11-matched copy).
 
 echo.
 echo Installing remaining dependencies ...
-findstr /V /R /I "^scenedetect== ^torch== ^torchvision== ^torchaudio==" requirements.txt > "%TEMP%\mrln_requirements_filtered.txt"
+findstr /V /R /I "^scenedetect== ^sam3== ^torch== ^torchvision== ^torchaudio==" requirements.txt > "%TEMP%\mrln_requirements_filtered.txt"
 pip install -r "%TEMP%\mrln_requirements_filtered.txt"
 del "%TEMP%\mrln_requirements_filtered.txt"
 
@@ -70,6 +70,20 @@ for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^scenedetect==" req
 if defined SD (
     echo Installing %SD% ^(--no-deps^) ...
     pip install --no-deps %SD%
+)
+
+REM sam3 declares `huggingface-hub<1.0,>=0.30.0`, but this repo pins
+REM huggingface-hub==1.27.0 (transformers 5.x requires it). The import works
+REM fine under hub 1.x — its declared ceiling is just stale (see
+REM test_sam3_imports_cleanly_despite_declared_hub_pin) — so install it
+REM separately, without its deps, rather than letting it block the resolve.
+set "S3="
+for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^sam3==" requirements.txt`) do (
+    if not defined S3 set "S3=%%A"
+)
+if defined S3 (
+    echo Installing %S3% ^(--no-deps^) ...
+    pip install --no-deps %S3%
 )
 
 echo.

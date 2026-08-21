@@ -44,14 +44,24 @@ def test_qwen3_vl_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
 
 
 @patch("app.core.captioning.models.florence2.AutoProcessor")
-@patch("app.core.captioning.models.florence2.AutoModelForCausalLM")
+@patch("app.core.captioning.models.florence2.Florence2ForConditionalGeneration")
 def test_florence2_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
+    """florence2 runs on the native transformers impl, from the
+    florence-community/Florence-2-large converted repo (the microsoft repo's
+    legacy remote-code weight layout doesn't load under the native class).
+    load() calls Florence2ForConditionalGeneration.from_pretrained and plain
+    AutoProcessor.from_pretrained directly - the converted repo's tokenizer
+    already carries image_token/image_token_id, so no hand-assembly shim
+    (_build_native_processor) is needed anymore. That is covered live against
+    the real cached processor by
+    test_florence2_native.py::test_image_token_id_is_derived_not_hardcoded.
+    """
     from app.core.captioning.models.florence2 import Florence2Model
     mock_model_cls.from_pretrained.return_value = MagicMock()
     mock_proc_cls.from_pretrained.return_value = MagicMock()
     plugin = Florence2Model(service=MagicMock())
     plugin.load()
-    _assert_no_tqdm_class(mock_model_cls.from_pretrained, "florence2 AutoModelForCausalLM")
+    _assert_no_tqdm_class(mock_model_cls.from_pretrained, "florence2 Florence2ForConditionalGeneration")
     _assert_no_tqdm_class(mock_proc_cls.from_pretrained, "florence2 AutoProcessor")
 
 
@@ -70,8 +80,22 @@ def test_joycaption_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
 @patch("app.core.captioning.models.youtu_vl.AutoProcessor")
 @patch("app.core.captioning.models.youtu_vl.AutoModelForCausalLM")
 def test_youtu_vl_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
+    import torch
+
     from app.core.captioning.models.youtu_vl import YoutuVLModel
-    mock_model_cls.from_pretrained.return_value = MagicMock()
+
+    # load() also runs _repair_nonpersistent_rope_buffers (see
+    # test_transformers5_compat.py for that behaviour in isolation), which
+    # raises if the model tree has NO module with an inv_freq buffer at all
+    # -- correct for a real model, but a bare MagicMock has no real module
+    # tree either way, which would trip that "structure changed" guard for
+    # reasons that have nothing to do with tqdm_class. Use a minimal real
+    # nn.Module with an already-persistent inv_freq (nothing to repair) so
+    # this test stays focused on its actual contract.
+    fake_model = torch.nn.Module()
+    fake_model.rotary_emb = torch.nn.Module()
+    fake_model.rotary_emb.register_buffer("inv_freq", torch.ones(4))
+    mock_model_cls.from_pretrained.return_value = fake_model
     mock_proc_cls.from_pretrained.return_value = MagicMock()
     plugin = YoutuVLModel(service=MagicMock())
     plugin.load()

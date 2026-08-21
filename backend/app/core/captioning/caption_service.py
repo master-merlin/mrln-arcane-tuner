@@ -44,6 +44,15 @@ class CaptionService:
     _unload_lock = threading.Lock()
 
     def __init__(self):
+        # Must run before ANY plugin can load: Youtu-VL's remote processor code
+        # imports symbols transformers 5.x moved, and a trust_remote_code import
+        # that gets there first raises ImportError.
+        from app.core.captioning.compat.transformers5 import (
+            install_transformers5_compat,
+        )
+
+        install_transformers5_compat()
+
         # Register available models
         self.plugins: dict[str, CaptionModel] = {
             "florence-2": Florence2Model(self),

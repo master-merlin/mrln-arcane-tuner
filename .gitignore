@@ -14,6 +14,10 @@ backend/datasets/
 backend/outputs/
 /outputs/
 backend/venv/
+# Throwaway venv clones used to test dependency upgrades without mutating the
+# working environment (e.g. the transformers 5.x upgrade). Multi-GB — an
+# unignored clone turns any `git add -A` into a catastrophic commit.
+backend/venv-*/
 backend/models/
 backend/.*
 backend/settings.json

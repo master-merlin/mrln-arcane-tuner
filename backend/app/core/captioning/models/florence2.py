@@ -1,8 +1,8 @@
-import types
-from functools import wraps
-
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import (
+    AutoProcessor,
+    Florence2ForConditionalGeneration,
+)
 import structlog
 from PIL import Image
 from typing import Any
@@ -11,42 +11,21 @@ from app.core.captioning.models.base import CaptionModel
 logger = structlog.get_logger(__name__)
 
 
-def _patch_florence2_kv_cache(model) -> None:
-    """Monkey-patch Florence-2's prepare_inputs_for_generation to handle
-    the EncoderDecoderCache null-check issue introduced in transformers 4.50+.
-
-    The cached modeling_florence2.py accesses ``past_key_values[0][0].shape``
-    without guarding against None entries inside the cache object.  This
-    patch wraps the original method and adds the required null-checks so
-    that ``use_cache=True`` works safely.
-
-    We patch at runtime so we never touch HuggingFace cached files.
-    """
-    # Find the sub-model that owns prepare_inputs_for_generation.
-    # Florence-2 is an encoder-decoder — the decoder (language_model) has it.
-    target = getattr(model, "language_model", model)
-    original_fn = target.prepare_inputs_for_generation
-
-    @wraps(original_fn)
-    def _safe_prepare(self_inner, *args, **kwargs):
-        # The original code crashes on: past_key_values[0][0].shape[2]
-        # when past_key_values entries are None (empty EncoderDecoderCache).
-        # We intercept, call the original, and if it crashes, fall back.
-        try:
-            return original_fn(*args, **kwargs)
-        except (AttributeError, TypeError, IndexError):
-            # Disable cache for this call and retry
-            if "past_key_values" in kwargs:
-                kwargs["past_key_values"] = None
-            return original_fn(*args, **kwargs)
-
-    target.prepare_inputs_for_generation = types.MethodType(_safe_prepare, target)
-    logger.debug("florence2_kv_cache_patched")
-
-
 class Florence2Model(CaptionModel):
-    MODEL_PATH = "microsoft/Florence-2-large"
-    
+    # florence-community/Florence-2-large is the natively-converted repo (no
+    # auto_map, no remote code). microsoft/Florence-2-large still ships the
+    # legacy remote-code weight layout, which the native
+    # Florence2ForConditionalGeneration class cannot load — from_pretrained
+    # raises "You set 'ignore_mismatched_sizes' to False" on it.
+    #
+    # The converted repo's own tokenizer already carries image_token /
+    # image_token_id (verified: AutoProcessor.from_pretrained(MODEL_PATH)
+    # returns a working Florence2Processor with image_token="<image>",
+    # image_token_id=51289, image_processor.image_seq_length=577 -- no
+    # hand-assembly required), so the shim that used to register the token
+    # by hand for microsoft/Florence-2-large's pre-native tokenizer is gone.
+    MODEL_PATH = "florence-community/Florence-2-large"
+
     def __init__(self, service):
         self.service = service
         self.model = None
@@ -74,21 +53,17 @@ class Florence2Model(CaptionModel):
         dtype = torch.float16 if device == "cuda" else torch.float32
 
         with with_progress(model_id=self.MODEL_PATH, category="caption", repo_id=self.MODEL_PATH):
-            self.model = AutoModelForCausalLM.from_pretrained(
+            # Native implementation (transformers >= 5.x) — no remote code, and
+            # no KV-cache monkey-patch: the EncoderDecoderCache bug lived in the
+            # hub's modeling_florence2.py, which we no longer execute.
+            self.model = Florence2ForConditionalGeneration.from_pretrained(
                 self.MODEL_PATH,
-                trust_remote_code=True,
                 dtype=dtype,
                 attn_implementation="eager",
             ).to(device)
 
-            # Patch KV-cache null-check bug so we can use use_cache=True
-            _patch_florence2_kv_cache(self.model)
+            self.processor = AutoProcessor.from_pretrained(self.MODEL_PATH)
 
-            self.processor = AutoProcessor.from_pretrained(
-                self.MODEL_PATH,
-                trust_remote_code=True,
-            )
-        
         logger.info("florence2_loaded")
         return self.model, self.processor
 

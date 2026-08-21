@@ -11,11 +11,15 @@ import math
 import torch
 
 from transformers.image_processing_utils import BatchFeature
-from transformers.image_processing_utils_fast import (
-    BaseImageProcessorFast,
-    DefaultFastImageProcessorKwargs,
-    SizeDict,
-)
+
+# transformers 5.x: `image_processing_utils_fast` is now an alias module with an
+# empty import structure. BaseImageProcessorFast survives as a BC alias for
+# TorchvisionBackend, SizeDict moved to image_utils, and
+# DefaultFastImageProcessorKwargs was deleted - we carry our own copy.
+from transformers.image_processing_backends import BaseImageProcessorFast
+from transformers.image_utils import SizeDict
+
+from app.core.captioning.compat.transformers5 import DefaultFastImageProcessorKwargs
 from transformers.image_utils import (
     ImageInput,
     PILImageResampling,
@@ -113,7 +117,19 @@ def pad_along_first_dim(
     return tensor, mask
 
 
-class Siglip2FastImageProcessorKwargs(DefaultFastImageProcessorKwargs):
+class Siglip2FastImageProcessorKwargs(DefaultFastImageProcessorKwargs, total=False):
+    """`total=False` is required here, not cosmetic: per PEP 589, fields a
+    TypedDict subclass declares itself default to required (`total=True`)
+    regardless of the parent's totality — only fields inherited unchanged
+    stay optional. Without it, `patch_size`/`max_num_patches` become
+    *required* keys, and huggingface_hub 1.x's `validate_typed_dict` (called
+    from `BaseImageProcessorFast.preprocess`) then rejects the internal
+    "not supplied, fall back to the class attribute default" sentinel that
+    transformers passes through `kwargs` when the caller omits them —
+    raising `StrictDataclassFieldValidationError` instead of falling back to
+    `Siglip2ImageProcessorFast.patch_size = 16` / `.max_num_patches`.
+    """
+
     patch_size: Optional[int]
     max_num_patches: Optional[int]
 
@@ -160,13 +176,32 @@ class Siglip2ImageProcessorFast(BaseImageProcessorFast):
         do_resize: bool,
         patch_size: int,
         max_num_patches: int,
-        interpolation: Optional["F.InterpolationMode"],
+        # 4.57 -> 5.x contract change: `_preprocess_image_like_inputs`
+        # (transformers/image_processing_utils.py) forwards `**kwargs` to
+        # `_preprocess` untouched - it no longer pre-resolves a PIL/int
+        # `resample` value into a torchvision `interpolation` for us (that
+        # resolution now happens inside `TorchvisionBackend.resize`, which
+        # we inherit unmodified and delegate to below, exactly like
+        # upstream's own `Siglip2ImageProcessor._preprocess` in
+        # transformers/models/siglip2/image_processing_siglip2.py). Keeping
+        # a param literally named `interpolation` here made the caller's
+        # `resample` kwarg land nowhere, leaving this required positional
+        # unfilled -> `TypeError: missing 1 required positional argument:
+        # 'interpolation'`.
+        resample: Union[PILImageResampling, "F.InterpolationMode", int, None],
         do_rescale: bool,
         rescale_factor: float,
         do_normalize: bool,
         image_mean: Optional[Union[float, List[float]]],
         image_std: Optional[Union[float, List[float]]],
         return_tensors: Optional[Union[str, TensorType]],
+        # Absorbs 5.x TorchvisionBackend._preprocess params this processor
+        # doesn't use: `size` (we compute per-image size dynamically from
+        # patch_size/max_num_patches, not a fixed target), `do_center_crop`
+        # / `crop_size` (no cropping - Siglip2 patches the resized image
+        # whole), `do_pad` / `pad_size` (padding here is patch-count padding
+        # via `pad_along_first_dim`, not spatial padding), `disable_grouping`
+        # (we resize per-image in the loop below, not batched-by-shape).
         **kwargs,
     ) -> BatchFeature:
         pixel_masks = []
@@ -183,7 +218,7 @@ class Siglip2ImageProcessorFast(BaseImageProcessorFast):
 
             side_dict = SizeDict(height=height, width=width)
             image = self.resize(
-                image=image, size=side_dict, interpolation=interpolation
+                image=image, size=side_dict, resample=resample
             )
             image = self.rescale_and_normalize(
                 image, do_rescale, rescale_factor, do_normalize, image_mean, image_std

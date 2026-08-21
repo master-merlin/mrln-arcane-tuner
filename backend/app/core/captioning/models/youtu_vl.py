@@ -378,6 +378,12 @@ class YoutuVLModel(CaptionModel):
         # path made this resize dead code: apply_chat_template re-reads the
         # raw file from disk regardless of what `image` holds, so a
         # user-configured max_long_side had zero effect (silent no-op knob).
+        # INTERACTION (behaviour change vs the dead-resize era): max_long_side
+        # and max_num_patches now BOTH bound the vision sequence, and whichever
+        # is tighter wins. At the defaults (768 / 256) the patch cap dominates,
+        # so this is invisible. But raising max_num_patches alone to pull more
+        # detail out of a large image will NOT do so -- the image is downscaled
+        # to max_long_side first. Raise both, or neither.
         max_long_side = int(params.get("max_long_side", DEFAULT_MAX_LONG_SIDE))
         resized_image = self._resize_for_inference(image, max_long_side)
 
@@ -390,8 +396,18 @@ class YoutuVLModel(CaptionModel):
             from app.core.captioning.processors.siglip2_fast import Siglip2ImageProcessorFast
             if isinstance(self.processor.image_processor, Siglip2ImageProcessorFast):
                 self.processor.image_processor.max_num_patches = max_num_patches
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - never let this abort captioning
+            # Was `except Exception: pass`. A silent failure here is exactly the
+            # bug this cap exists to prevent: an unapplied cap let a 4000x3000
+            # image reach 36520 patches and allocate 79.5 GB in one go. The
+            # apply_chat_template route (below) has its own cap and is what
+            # actually bounds the sequence, so this is not fatal -- but it must
+            # never fail invisibly again.
+            logger.warning(
+                "youtu_vl_max_num_patches_not_applied",
+                error=str(e),
+                max_num_patches=max_num_patches,
+            )
 
         prompt = self.resolve_prompt(params)
 
@@ -423,10 +439,11 @@ class YoutuVLModel(CaptionModel):
         # `ProcessorMixin.apply_chat_template` (processing_utils.py) calls
         # `self(text=.., images=.., **processor_kwargs)` in its tokenize
         # branch -- `processor_kwargs=` is the one channel that reaches
-        # `__call__` unmolested; a stray kwarg on `apply_chat_template`
-        # itself gets treated as a Jinja template variable candidate first
-        # and only demoted to a processor kwarg (with a warning) if the
-        # template doesn't consume it, which is fragile. Passing it via
+        # `__call__` unmolested. Do NOT pass it as a stray top-level kwarg to
+        # `apply_chat_template` instead: an unrecognised top-level kwarg does
+        # not get "demoted" into processor kwargs, it REPLACES the
+        # `processor_kwargs` dict outright (processing_utils.py:2033-2041),
+        # silently discarding the cap. Passing it via
         # `processor_kwargs=` here is the same cap used above, so both
         # routes (direct image_processor calls and apply_chat_template) now
         # agree.

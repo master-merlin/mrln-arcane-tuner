@@ -69,3 +69,10 @@ Desktop.ini
 # ========================
 *.env
 .env.*
+
+# MRLN-Harness (imported by _harness/tools/import_harness.py)
+_harness/
+.agent/workdir/
+.agent/output/
+.claude/settings.local.json
+.claude/worktrees/

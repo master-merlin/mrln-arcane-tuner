@@ -1,7 +1,21 @@
-# Vendored from boogu-project/Boogu-Image @ ac9e40c1350fd60c502137a678ad1001d51e2ae7 (2026-07-10)
-# Source: boogu/cache_functions/__init__.py
-# vendored for boogu_image family — local diffusers 0.39.0
+"""Feature-cache scheduling for the ``boogu_image`` transformer.
 
-from .cache_init import cache_init
-from .cal_type import cal_type
-from .force_scheduler import force_scheduler
+The import path is the public surface — ``transformer_boogu.py`` does
+``from ...cache_functions import cal_type`` — so it is kept exactly. The
+implementation lives in :mod:`..taylor_cache`, one module for both this package
+and :mod:`..taylorseer_utils`, because the single- and double-stream paths
+differ only in whether a cached feature is one tensor or a tuple of them.
+
+This is a CLEAN-ROOM replacement for a GPL-3.0-derived implementation, written
+from the ICCV 2025 TaylorSeer paper, from
+``_harness/research/taylorseer-cache-behavioural-spec.md``, and from
+``models/transformers/transformer_boogu.py`` (Boogu's own Apache-2.0 caller,
+which is not TaylorSeer-derived). It is not derived from the code it replaces.
+See :mod:`..taylor_cache` for the full provenance note.
+"""
+
+from __future__ import annotations
+
+from ..taylor_cache import cache_init, cal_type, force_scheduler
+
+__all__ = ["cache_init", "cal_type", "force_scheduler"]

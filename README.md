@@ -500,4 +500,17 @@ Repository: **[github.com/master-merlin/mrln-arcane-tuner](https://github.com/ma
 
 ## License
 
-*License information to be added.*
+MRLN Arcane Tuner is licensed under the **Apache License 2.0**. The full text is in [`LICENSE`](LICENSE).
+
+Third-party code vendored into this repository keeps its own licence. Those attributions — Apache-2.0 and MIT — are listed in [`NOTICE`](NOTICE), along with the upstream each component came from.
+
+### Model weights are licensed separately
+
+This project ships no model weights. It downloads the checkpoints you point it at, and **their terms are not ours to grant**. Two things vary per model, and they are independent, so neither answers the other:
+
+- **Access.** Some repositories are gated: you must accept the terms on Hugging Face and set `HF_TOKEN` before a download will succeed.
+- **Permitted use.** Some weights are non-commercial. `black-forest-labs/FLUX.1-dev` (FLUX.1 [dev] Non-Commercial License), `black-forest-labs/FLUX.2-dev` (FLUX Non-Commercial License) and `ideogram-ai/ideogram-4-fp8` (Ideogram 4 Non-Commercial) all are.
+
+`black-forest-labs/FLUX.1-schnell` shows why the two are separate: it is Apache-2.0 and still gated.
+
+A LoRA inherits the terms of the base model it was trained on. Nothing in this application checks or enforces those terms — if you intend to sell or deploy what you train, read the model card, which is the authority here rather than this page.

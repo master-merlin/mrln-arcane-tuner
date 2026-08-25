@@ -8,7 +8,7 @@ This module was written from, and only from:
   (ICCV 2025) — the published method;
 * ``_harness/research/taylorseer-cache-behavioural-spec.md`` — the behavioural
   specification derived from that paper and from the caller below;
-* ``models/transformers/transformer_boogu.py`` — Boogu-Image's own
+* ``vendor/models/transformers/transformer_boogu.py`` — Boogu-Image's own
   **Apache-2.0** code. It is the caller, it is not TaylorSeer-derived, and it
   fixes the names, signatures and dictionary keys reproduced here.
 
@@ -16,6 +16,13 @@ It is **not** derived from the GPL-3.0 TaylorSeer implementation it replaces,
 and was written without reading it. The interfaces and data formats are
 reproduced deliberately, because the caller depends on them; the implementation
 is new expression.
+
+This module lives **outside** ``vendor/`` on purpose. ``vendor/`` means
+"upstream code we do not own" and ``ruff.toml`` excludes it from linting on that
+basis — so first-party code placed there would silently sit outside the gate.
+The two package paths the caller imports, ``vendor/cache_functions`` and
+``vendor/taylorseer_utils``, remain where they are and re-export from here;
+those paths are frozen public surface.
 
 WHAT IT DOES
 ------------
@@ -131,6 +138,17 @@ def cache_init(
         _reject("first_enhance", first_enhance, "an int >= 0")
     if not isinstance(fresh_threshold, int) or fresh_threshold < 1:
         _reject("fresh_threshold", fresh_threshold, "an int >= 1")
+    if not taylor_cache:
+        # Rejected here rather than at the first cached step so the run fails
+        # before the GPU spins up: this configuration cannot produce a result
+        # either way, and the later failure costs the whole warm-up first.
+        # cal_type keeps the same guard as a backstop for a flag flipped after
+        # init.
+        raise NotImplementedError(
+            "cache_init: taylor_cache=False selects a feature-cache mode that "
+            "is not implemented; pass taylor_cache=True (the shipped "
+            "configuration) or leave the feature cache disabled entirely"
+        )
 
     cache: dict[int, dict[Any, Any]] = {_ROOT: {}}
     cache_index: dict[int, dict[Any, Any]] = {_ROOT: {}}

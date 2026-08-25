@@ -17,12 +17,13 @@ in the UAT pack.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
 
-from app.engine.models.families.boogu_image.vendor.taylor_cache import (
+from app.engine.models.families.boogu_image.taylor_cache import (
     cache_init,
     cal_type,
     derivative_approximation,
@@ -317,11 +318,26 @@ class TestStepClassification:
         _run(cache_dic, current, 1)
         assert cache_dic["cache_counter"] == 0  # step 7 was full again
 
-    def test_non_taylor_modes_fail_loudly_rather_than_guessing(self):
-        # "ToCa"/"Delta-Cache" are unreachable in every shipped configuration
-        # and were never exercised; mislabelling a cached step would silently
-        # reuse a stale feature.
-        cache_dic, current = _init(taylor_cache=False, first_enhance=1)
+    def test_non_taylor_mode_is_rejected_at_init(self):
+        """The unimplemented modes fail before a run starts, not mid-sampling.
+
+        "ToCa"/"Delta-Cache" are unreachable in every shipped configuration and
+        were never exercised upstream, so no behaviour is invented for them.
+        Rejecting at init means the failure lands before the GPU spins up
+        rather than after the whole warm-up has been computed.
+        """
+        with pytest.raises(NotImplementedError, match="not implemented"):
+            cache_init(None, 16, taylor_cache=False)
+
+    def test_flag_flipped_after_init_still_fails_loudly(self):
+        """Backstop for the init guard: a stale feature must never be reused.
+
+        Mislabelling a cached step would make the caller silently reuse the
+        last computed feature -- a subtly wrong image, not an exception, which
+        is the failure mode this guard exists to prevent.
+        """
+        cache_dic, current = _init(first_enhance=1, fresh_threshold=2)
+        cache_dic["taylor_cache"] = False
         _run(cache_dic, current, 1)  # step 0 is warm-up, still full
         with pytest.raises(NotImplementedError, match="only the Taylor path"):
             cal_type(cache_dic, current)
@@ -491,13 +507,24 @@ class TestEndToEndSchedule:
         assert max(errors) == 0.0
 
     def test_quadratic_feature_is_predicted_with_the_expected_lag(self):
-        # The ladder estimates derivatives by BACKWARD differences, so the
-        # order-1 term at a full step approximates the slope half a spacing
-        # earlier. The series is therefore exact for degree <= 1 (the test
-        # above) and only first-order accurate beyond it. That approximation is
-        # the acceleration, not a defect -- so what is worth pinning is its
-        # exact arithmetic, which a silent change to the ladder or to the
-        # factorial weighting would move.
+        """The series is NOT exact to its retained order -- and that is correct.
+
+        "A Taylor series of retained order n reproduces any polynomial of
+        degree <= n" is the intuitive reading, and it is wrong here. The ladder
+        estimates derivatives by **backward** differences, so the order-1 term
+        stored at a full step approximates the slope half a spacing *earlier*,
+        not at that step. The series is therefore exact only for degree <= 1
+        (see the linear test above) and merely first-order accurate beyond it.
+
+        That approximation IS the acceleration, not a defect. So the thing
+        worth pinning is the method's own exact arithmetic -- which a silent
+        change to the ladder, to the spacing, or to the factorial weighting
+        would move -- rather than an exactness the method never claimed.
+
+        This test was originally written asserting exactness, and failed. The
+        test was wrong, not the implementation; it is kept in this corrected
+        form so the next reader does not re-derive the same wrong intuition.
+        """
         base = torch.tensor([1.0, 2.0])
         cache_dic, current = _init(first_enhance=1, fresh_threshold=2)
 
@@ -544,7 +571,7 @@ class TestExportSurface:
     }
 
     def test_all_public_names_are_exported(self):
-        from app.engine.models.families.boogu_image.vendor import taylor_cache
+        from app.engine.models.families.boogu_image import taylor_cache
 
         expected = self.SCHEDULING | self.SERIES
         assert set(taylor_cache.__all__) == expected
@@ -572,10 +599,12 @@ class TestExportSurface:
                 assert callable(getattr(module, name))
 
     def test_the_packages_re_export_the_same_objects(self):
-        # Not copies: one implementation, two documented import paths.
+        # Not copies: one implementation, two documented import paths. The
+        # implementation is first-party and lives outside vendor/; only the
+        # frozen caller-facing package paths remain inside it.
+        from app.engine.models.families.boogu_image import taylor_cache
         from app.engine.models.families.boogu_image.vendor import (
             cache_functions,
-            taylor_cache,
             taylorseer_utils,
         )
 
@@ -585,6 +614,37 @@ class TestExportSurface:
         ):
             for name in names:
                 assert getattr(module, name) is getattr(taylor_cache, name)
+
+    def test_the_implementation_is_not_under_vendor(self):
+        """Structural guard: first-party code must stay where the gate lints it.
+
+        ``ruff.toml`` sets ``extend-exclude = ["**/vendor"]``, because
+        ``vendor/`` holds upstream code the project neither owns nor restyles.
+        This implementation is ours and was written clean-room, so putting it
+        there would drop it out of lint coverage silently -- and a one-off
+        explicit lint run does not survive the lane that ran it. Hence a test.
+        """
+        from app.engine.models.families.boogu_image import taylor_cache
+
+        parts = Path(taylor_cache.__file__).resolve().parts
+        assert "vendor" not in parts, (
+            f"{taylor_cache.__name__} sits under vendor/ and would no longer be "
+            "linted by the gate; keep first-party code outside vendor/"
+        )
+
+    def test_the_shims_stay_on_the_frozen_caller_facing_paths(self):
+        """The converse: the two package paths the caller imports must not move.
+
+        ``transformer_boogu.py`` imports them by relative path from inside
+        ``vendor/``; moving them breaks the shipped sampler at import time.
+        """
+        from app.engine.models.families.boogu_image.vendor import (
+            cache_functions,
+            taylorseer_utils,
+        )
+
+        for module in (cache_functions, taylorseer_utils):
+            assert "vendor" in Path(module.__file__).resolve().parts
 
     def test_factorial_weighting_is_present_in_the_series(self):
         # Guards the one place a plain polynomial and a Taylor series differ.

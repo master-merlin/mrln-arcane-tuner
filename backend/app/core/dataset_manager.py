@@ -29,6 +29,8 @@ from app.core.dataset.media_types import (
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 
+from fastapi import HTTPException
+
 from app.api._path_guard import validate_path_within
 from app.core.events import event_manager
 from app.core.db import DatabaseEngine
@@ -1586,6 +1588,43 @@ class DatasetManager:
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
 
+    @staticmethod
+    def _write_sidecar(path: Path, content: str) -> None:
+        """Write a caption/lyrics sidecar, creating its directory if needed.
+
+        Two client-triggerable failures used to escape as unhandled OS errors
+        and surface as HTTP 500, which reads as "the server is broken" for
+        inputs that are simply nested or invalid:
+
+        1. **A sidecar for an image in a sub-directory.** Captions live beside
+           their image, so a dataset holding ``sub/shot.png`` writes
+           ``sub/shot.txt``. Nothing created ``sub/`` on the write path, so an
+           ordinary dataset layout raised ``FileNotFoundError``. The directory
+           is inside the dataset root -- containment is already established by
+           the caller -- so creating it is safe.
+        2. **A filename the filesystem refuses.** Windows forbids ``< > : " |
+           ? *`` in a name, so a legitimately-encoded ``query?x=1.png`` arrives
+           intact (correctly -- the client must not truncate it) and then
+           cannot be stored. That is a bad request, not a server fault.
+
+        The path MUST already have been resolved through ``validate_path_within``
+        by the caller: this helper creates directories, so handing it an
+        unchecked path would let a traversal create directories outside the
+        dataset root.
+        """
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as e:
+            # Not ValueError: the route maps ValueError to 404 ("no such
+            # dataset"), which would be a lie here -- the dataset exists and
+            # the name is the problem.
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot write '{path.name}': {e.strerror or e}.",
+            ) from e
+
     def save_caption(self, name: str, filename: str, content: str) -> str:
         if name not in self.datasets:
             raise ValueError(f"Dataset '{name}' not found.")
@@ -1596,8 +1635,7 @@ class DatasetManager:
         # which let a sibling directory like "foobar" pass for dataset "foo").
         path = validate_path_within(Path(dataset.path) / filename, dataset.path)
 
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        self._write_sidecar(path, content)
 
         # Update has_caption flag for the parent media item, then
         # reconcile ``dataset.caption_count`` by counting media entries
@@ -1744,8 +1782,7 @@ class DatasetManager:
         # which let a sibling directory like "foobar" pass for dataset "foo").
         path = validate_path_within(Path(dataset.path) / filename, dataset.path)
 
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        self._write_sidecar(path, content)
 
         # "song.lyrics.txt" -> stem "song" (strip the fixed ".lyrics.txt"
         # suffix, not a single splitext — splitext once would yield

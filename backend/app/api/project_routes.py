@@ -23,6 +23,7 @@ from app.api.training.template_routes import (
     ImportSkippedEntry,
     TemplatePlanEntry,
 )
+from app.api._upload_guard import spooled_upload
 from app.core.db.repositories.project_repo import ProjectRepository
 from app.core.db.repositories.preference_repo import PreferenceRepository
 from app.core.events import emit_entity_change, event_manager
@@ -475,16 +476,14 @@ async def plan_project_import(file: UploadFile = File(...)) -> dict[str, Any]:
     from app.core.template import portable as tportable
 
     # Stream the upload to a temp file — never buffer a whole project archive
-    # in RAM (it can embed multi-GB video datasets).
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    try:
-        while chunk := await file.read(1024 * 1024):
-            tmp.write(chunk)
-        tmp.close()
+    # in RAM (it can embed multi-GB video datasets) — bounded, because reading
+    # to EOF is not a bound, and with cleanup owned by the context manager so a
+    # client disconnecting mid-upload cannot leave a partial file behind.
+    async with spooled_upload(file, suffix=".zip") as tmp_path:
 
         def _plan() -> dict[str, Any]:
             try:
-                with zipfile.ZipFile(tmp.name) as zf:
+                with zipfile.ZipFile(tmp_path) as zf:
                     manifest = pportable.read_project_manifest(zf)
                     proj = manifest["project"]
 
@@ -518,8 +517,6 @@ async def plan_project_import(file: UploadFile = File(...)) -> dict[str, Any]:
             }
 
         return await asyncio.to_thread(_plan)
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
 
 
 # ── Import: apply + rollback ─────────────────────────────────────────────
@@ -586,12 +583,7 @@ async def apply_project_import(
     # in RAM (it can embed multi-GB video datasets). `outer` is opened
     # directly from this path (zipfile reads lazily from disk) and the temp
     # file is cleaned up once `_apply` (run in a thread, below) returns.
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    try:
-        while chunk := await file.read(1024 * 1024):
-            tmp.write(chunk)
-        tmp.close()
-        archive_path = tmp.name
+    async with spooled_upload(file, suffix=".zip") as archive_path:
 
         def _apply() -> dict[str, Any]:
             try:
@@ -708,8 +700,6 @@ async def apply_project_import(
                         500, f"Project import failed and was rolled back: {exc}") from exc
 
         return await asyncio.to_thread(_apply)
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
 
 
 def _rollback(

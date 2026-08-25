@@ -1,0 +1,133 @@
+MRLN Arcane Tuner
+Copyright 2026 master-merlin
+
+This product includes software developed by third parties, as set out below.
+It is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+MRLN Arcane Tuner distributes no model weights. Where a model's weights carry
+their own terms (for example non-commercial research licences), those terms bind
+whoever obtains and uses the weights; they are documented in README.md and are
+not part of this NOTICE, which covers source code only.
+
+================================================================================
+Apache License 2.0 — inherited attributions
+================================================================================
+
+Portions of this software are derived from, or vendored from, the projects
+below. Each is licensed under the Apache License, Version 2.0, and the original
+copyright notices are retained in the file headers where the upstream provided
+them.
+
+  The HuggingFace Team
+      diffusers / transformers derivatives throughout
+      backend/app/engine/models/families/*/vendor/
+
+  Stability AI and Katherine Crowson
+      flow-matching Euler scheduler derivatives
+
+  Alibaba Wan Team
+      Wan 2.1 / 2.2 model family code
+
+  Qwen Team
+      Qwen-Image model family code
+
+  BAAI and The OmniGen2 Team — https://github.com/VectorSpaceLab/OmniGen2
+      OmniGen2 model family code, and code derived from it — including the
+      Boogu-Image transformer vendored in the boogu_image model family, and its
+      step-caching implementation (see "Method attribution" below)
+
+  Alpha-VLLM
+      Lumina/OmniGen2 lineage components
+
+  Krea AI
+      Krea 2 model family code
+
+  Bytedance Ltd. and/or its affiliates
+      components vendored in the bernini_r model family
+
+  Boogu Team — https://github.com/boogu-project/Boogu-Image
+      Boogu-Image model family code, vendored at commit ac9e40c1
+
+  Ideogram 4 — https://github.com/ideogram-oss/ideogram4
+      Ideogram 4 DiT and autoencoder modeling code, ported into the
+      ideogram4 model family
+
+================================================================================
+MIT License — retained notices
+================================================================================
+
+This software also incorporates material under the MIT License. The MIT terms
+continue to apply to that material.
+
+  microsoft/Lens — https://github.com/microsoft/Lens
+      backend/app/engine/models/families/microsoft_lens/vendor/README.md
+
+  Saganaki22/HiDream_O1-ComfyUI — https://github.com/Saganaki22/HiDream_O1-ComfyUI
+      backend/app/engine/models/families/hidream_o1/vendor/README.md
+
+  ostris/ai-toolkit — https://github.com/ostris/ai-toolkit
+
+      Copyright (c) 2024 Ostris, LLC
+
+      Permission is hereby granted, free of charge, to any person obtaining a
+      copy of this software and associated documentation files (the
+      "Software"), to deal in the Software without restriction, including
+      without limitation the rights to use, copy, modify, merge, publish,
+      distribute, sublicense, and/or sell copies of the Software, and to permit
+      persons to whom the Software is furnished to do so, subject to the
+      following conditions:
+
+      The above copyright notice and this permission notice shall be included
+      in all copies or substantial portions of the Software.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+      OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+      MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+      IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+      CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+      TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+      SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+      Derived in:
+        backend/app/engine/models/families/ideogram4/driver.py
+            _run_qwen3vl_layers is a port of
+            extensions_built_in/diffusion_models/ideogram4/src/pipeline.py
+            :: get_qwen3_vl_features, including the selected-layer index set
+            (upstream QWEN3_VL_ACTIVATION_LAYERS).
+        backend/app/core/captioning/formats/schema/ideogram4.py
+            structured-caption schema contract, from
+            toolkit/ideogram_caption.py.
+
+================================================================================
+Method attribution — not a code dependency
+================================================================================
+
+  TeaCache — https://github.com/ali-vilab/TeaCache
+
+      The step-caching method used by the boogu_image transformer originates in
+      the TeaCache work, and the vendored code refers to it by name. No code was
+      taken from the TeaCache repository. The implementation, its TeaCacheParams
+      container and its fitted rescale coefficients come from
+      VectorSpaceLab/OmniGen2 (Apache-2.0, attributed above), from which
+      Boogu-Image derives its transformer. TeaCache fits those coefficients per
+      model architecture; this particular fit is OmniGen2's.
+
+      Recorded so that the provenance of that polynomial does not have to be
+      re-measured by the next reader.
+
+================================================================================
+First-party notice — Taylor-expansion feature cache
+================================================================================
+
+backend/app/engine/models/families/boogu_image/taylor_cache.py, together with
+the re-export modules boogu_image/vendor/cache_functions and
+boogu_image/vendor/taylorseer_utils, is first-party code licensed under the
+Apache License, Version 2.0.
+
+It was written clean-room from the published method in "From Reusing to
+Forecasting: Accelerating Diffusion Models with TaylorSeers" (ICCV 2025) and
+from Boogu-Image's own Apache-2.0 caller, by an author who had not read the
+GPL-3.0-derived implementation it replaces. That implementation has been removed
+from this repository in its entirety. It is therefore deliberately NOT
+attributed here: nothing derived from it remains, and attributing absent code
+would misstate what this software contains.

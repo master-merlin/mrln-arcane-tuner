@@ -1106,7 +1106,7 @@ export class ProjectDetail implements OnInit {
 
     /** Body-less GET export of a single template (opens the streaming zip). */
     protected exportTemplate(domain: TemplateDomain, t: Template): void {
-        window.open(this.templates.getTemplateExportUrl(domain, t.id), '_blank');
+        window.open(this.templates.getTemplateExportUrl(domain, t.id), '_blank', 'noopener,noreferrer');
     }
 
     /** Bundle-export every template in a domain section. */

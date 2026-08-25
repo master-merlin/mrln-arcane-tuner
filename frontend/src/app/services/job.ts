@@ -168,7 +168,7 @@ export class JobService {
 
   /** Edit a pending or terminal job's stored config (running/paused rejected). */
   updateJobConfig(jobId: string, config: TrainingConfig): Observable<Job> {
-    return this.http.put<Job>(`${this.apiUrl}/${jobId}/config`, { config });
+    return this.http.put<Job>(`${this.apiUrl}/${encodeURIComponent(jobId)}/config`, { config });
   }
 
   /** Full data-calibrated training estimate (wall time, output, throughput, disk, VRAM). */
@@ -217,7 +217,7 @@ export class JobService {
       source: 'disk' | 'db' | 'none';
       output_dir: string | null;
       loss: Array<{ step: number; loss: number; lr?: number; grad_norm?: number; epoch?: number }>;
-    }>(`${this.apiUrl}/history/${jobId}/replay`);
+    }>(`${this.apiUrl}/history/${encodeURIComponent(jobId)}/replay`);
   }
 
   /**
@@ -237,13 +237,13 @@ export class JobService {
       events: AdaptEvent[];
       modules: string[];
       heat: Record<string, number | null>;
-    }>(`${this.apiUrl}/history/${jobId}/adaptive`);
+    }>(`${this.apiUrl}/history/${encodeURIComponent(jobId)}/adaptive`);
   }
 
   /** Per-step metrics curve for one run (stats-modal Adaptive drill-down chart, Task 12). */
   getJobMetrics(jobId: string): Observable<{ curve: JobMetricsCurveRow[]; summary: Record<string, unknown> }> {
     return this.http.get<{ curve: JobMetricsCurveRow[]; summary: Record<string, unknown> }>(
-      `${this.apiUrl}/history/${jobId}/metrics`,
+      `${this.apiUrl}/history/${encodeURIComponent(jobId)}/metrics`,
     );
   }
 
@@ -254,7 +254,7 @@ export class JobService {
    * has a tail to show.
    */
   getJobLogs(jobId: string): Observable<string[]> {
-    return this.http.get<string[]>(`${this.apiUrl}/${jobId}/logs`);
+    return this.http.get<string[]>(`${this.apiUrl}/${encodeURIComponent(jobId)}/logs`);
   }
 
   listJobs(): Observable<Job[]> {
@@ -262,89 +262,89 @@ export class JobService {
   }
 
   startJob(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/start`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/start`, {});
   }
 
   stopJob(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/stop`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/stop`, {});
   }
 
   pauseJob(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/pause`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/pause`, {});
   }
 
   resumeJob(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/resume`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/resume`, {});
   }
 
   softStopJob(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/soft-stop`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/soft-stop`, {});
   }
 
   restartJob(jobId: string, fresh = false): Observable<JobActionResponse & { fresh: boolean }> {
     const q = fresh ? '?fresh=true' : '';
-    return this.http.post<JobActionResponse & { fresh: boolean }>(`${this.apiUrl}/${jobId}/restart${q}`, {});
+    return this.http.post<JobActionResponse & { fresh: boolean }>(`${this.apiUrl}/${encodeURIComponent(jobId)}/restart${q}`, {});
   }
 
   /** Continue a stopped/terminal job from a resumable checkpoint (reuses the
    *  same job record — no new queue item). */
   resumeFromCheckpoint(jobId: string, checkpointDir: string): Observable<Job> {
     return this.http.post<Job>(
-      `${this.apiUrl}/${jobId}/resume-from-checkpoint`,
+      `${this.apiUrl}/${encodeURIComponent(jobId)}/resume-from-checkpoint`,
       { checkpoint_dir: checkpointDir },
     );
   }
 
   /** Move a pending job up/down in the run queue (priority reorder). */
   reorderJob(jobId: string, direction: 'up' | 'down'): Observable<JobActionResponse & { direction: string }> {
-    return this.http.post<JobActionResponse & { direction: string }>(`${this.apiUrl}/${jobId}/reorder?direction=${direction}`, {});
+    return this.http.post<JobActionResponse & { direction: string }>(`${this.apiUrl}/${encodeURIComponent(jobId)}/reorder?direction=${direction}`, {});
   }
 
   /** Remove a job. A RUNNING/PAUSED job's trainer subprocess must be killed
    *  explicitly — pass `force = true` (the queue's confirm-gated delete does
    *  this for active jobs) or the backend 409s instead of orphaning it. */
   deleteJob(jobId: string, force = false): Observable<JobActionResponse> {
-    return this.http.delete<JobActionResponse>(`${this.apiUrl}/${jobId}?force=${force}`);
+    return this.http.delete<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}?force=${force}`);
   }
 
   getJobSamples(jobId: string): Observable<JobSample[]> {
-    return this.http.get<JobSample[]>(`${this.apiUrl}/${jobId}/samples`);
+    return this.http.get<JobSample[]>(`${this.apiUrl}/${encodeURIComponent(jobId)}/samples`);
   }
 
   /** LoRA `.safetensors` artifacts saved by a job (one per checkpoint). */
   getJobCheckpoints(jobId: string): Observable<JobCheckpointMeta[]> {
-    return this.http.get<JobCheckpointMeta[]>(`${this.apiUrl}/${jobId}/checkpoints`);
+    return this.http.get<JobCheckpointMeta[]>(`${this.apiUrl}/${encodeURIComponent(jobId)}/checkpoints`);
   }
 
   /** Absolute download URL for a job's LoRA checkpoint file. */
   checkpointDownloadUrl(jobId: string, filename: string): string {
-    return `${this.apiUrl}/${jobId}/checkpoints/${encodeURIComponent(filename)}`;
+    return `${this.apiUrl}/${encodeURIComponent(jobId)}/checkpoints/${encodeURIComponent(filename)}`;
   }
 
   /** Absolute URL for a resumable training-state checkpoint as a `.zip`
    *  (full state — move to another pod to resume). */
   checkpointZipDownloadUrl(jobId: string, folder: string): string {
-    return `${this.apiUrl}/${jobId}/checkpoints/${encodeURIComponent(folder)}/zip`;
+    return `${this.apiUrl}/${encodeURIComponent(jobId)}/checkpoints/${encodeURIComponent(folder)}/zip`;
   }
 
   pauseSampling(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/pause-sampling`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/pause-sampling`, {});
   }
 
   resumeSampling(jobId: string): Observable<JobActionResponse> {
-    return this.http.post<JobActionResponse>(`${this.apiUrl}/${jobId}/resume-sampling`, {});
+    return this.http.post<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}/resume-sampling`, {});
   }
 
   getSamplingStatus(jobId: string): Observable<{ job_id: string; sampling_paused: boolean }> {
-    return this.http.get<{ job_id: string; sampling_paused: boolean }>(`${this.apiUrl}/${jobId}/sampling-status`);
+    return this.http.get<{ job_id: string; sampling_paused: boolean }>(`${this.apiUrl}/${encodeURIComponent(jobId)}/sampling-status`);
   }
 
   setSamplingCadence(jobId: string, interval: number): Observable<JobActionResponse & { interval: number }> {
-    return this.http.post<JobActionResponse & { interval: number }>(`${this.apiUrl}/${jobId}/sampling-cadence`, { interval });
+    return this.http.post<JobActionResponse & { interval: number }>(`${this.apiUrl}/${encodeURIComponent(jobId)}/sampling-cadence`, { interval });
   }
 
   getSamplingCadence(jobId: string): Observable<{ job_id: string; interval: number; default_interval: number }> {
-    return this.http.get<{ job_id: string; interval: number; default_interval: number }>(`${this.apiUrl}/${jobId}/sampling-cadence`);
+    return this.http.get<{ job_id: string; interval: number; default_interval: number }>(`${this.apiUrl}/${encodeURIComponent(jobId)}/sampling-cadence`);
   }
 
   /** Read the server-side auto-queue preference (backend drains the queue unattended). */
@@ -375,6 +375,6 @@ export class JobService {
    */
   getPluginSchema(pluginId: string, projectId?: string | null): Observable<SchemaNode> {
     const scopeParam = projectId ? `&project_id=${encodeURIComponent(projectId)}` : '';
-    return this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${pluginId}/schema?t=${Date.now()}${scopeParam}`);
+    return this.http.get<SchemaNode>(`${this.rtc.apiUrl}/plugins/${encodeURIComponent(pluginId)}/schema?t=${Date.now()}${scopeParam}`);
   }
 }

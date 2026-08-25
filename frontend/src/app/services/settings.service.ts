@@ -19,7 +19,7 @@ export class SettingsService {
     private apiUrl = `${inject(RuntimeConfigService).apiUrl}/settings`;
 
     getModule(module: string): Observable<Record<string, unknown>> {
-        return this.http.get<Record<string, unknown>>(`${this.apiUrl}/${module}`);
+        return this.http.get<Record<string, unknown>>(`${this.apiUrl}/${encodeURIComponent(module)}`);
     }
 
     updateModule(
@@ -27,7 +27,7 @@ export class SettingsService {
         settings: Record<string, unknown>,
     ): Observable<Record<string, unknown>> {
         return this.http.put<Record<string, unknown>>(
-            `${this.apiUrl}/${module}`,
+            `${this.apiUrl}/${encodeURIComponent(module)}`,
             settings,
         );
     }

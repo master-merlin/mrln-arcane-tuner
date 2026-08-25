@@ -791,7 +791,7 @@ export class JobsScreen {
 
     protected sampleImageUrl(jobId: string, filename: string): string {
         const bust = this.sampleCacheBuster();
-        return `${this.rtc.apiUrl}/jobs/${jobId}/samples/${filename}${bust ? `?t=${bust}` : ''}`;
+        return `${this.rtc.apiUrl}/jobs/${encodeURIComponent(jobId)}/samples/${encodeURIComponent(filename)}${bust ? `?t=${bust}` : ''}`;
     }
 
     // ── Sample lightbox ─────────────────────────────────────────────────

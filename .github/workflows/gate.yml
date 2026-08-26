@@ -1,0 +1,325 @@
+# The verification gate, run on a public clone.
+#
+# Until this file existed there was no `.github/` in the repository at all, so
+# nothing has ever verified a contributor's clone -- only the maintainer's
+# machine, which has a GPU, a populated venv and the private dev harness. This
+# workflow is deliberately the SAME gate the project documents locally (ruff,
+# the backend pytest suite, the frontend unit tests) plus the checks a public
+# repository needs and a local run cannot give: a history secret scan, a
+# dependency audit of both dependency graphs, and a licence inventory.
+#
+# Jobs are independent so one red check does not mask another. The audit and
+# licence jobs are advisory (`continue-on-error`) on purpose -- see their
+# comments; a transitively vulnerable *pinned* torch stack must not be able to
+# wedge every contributor's pull request on day one.
+name: gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+# A new push to the same ref supersedes the previous run. `main` is excluded
+# from cancellation so the record of what passed on the default branch is not
+# torn down mid-run.
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Node 24 LTS, matching the Angular 22 toolchain the project pins.
+  NODE_VERSION: "24"
+
+jobs:
+  backend:
+    name: backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # ruff is the project's ONLY Python lint/formatter. Installed alone and
+      # run first: it needs none of the ML stack, so a formatting error reports
+      # in seconds instead of after a ten-minute dependency install.
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+
+      - name: ruff check
+        run: python -m ruff check .
+
+      # The torch trio is a SPLIT STACK (backend/requirements.txt): the Docker
+      # image bakes its own build, the maintainer's venv installs another, and
+      # `install-deps.sh` refuses to touch either. CI is a third environment and
+      # must therefore supply its own -- the CPU wheels, because no runner has a
+      # GPU. The CPU index also keeps the download to a few hundred MB instead
+      # of the multi-GB CUDA-bundled wheels on PyPI, which matters on a runner's
+      # disk budget.
+      #
+      # torchaudio is pinned at 2.11.0 and declares torch==2.11.0; it is in
+      # maintenance mode with no 2.12 wheel, so it installs --no-deps exactly as
+      # the local install does, or pip would downgrade torch underneath it.
+      - name: Install torch (CPU wheels)
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.12.1 torchvision==0.27.1
+          python -m pip install --no-deps torchaudio==2.11.0
+
+      # Reuse the canonical installer rather than inventing a third install
+      # path. It is already shared by the Docker build and the runtime
+      # self-update precisely so those two cannot diverge; CI joining them is
+      # the point. It excludes the torch/triton stack (installed above) and
+      # handles the scenedetect and sam3 --no-deps cases that a plain
+      # `pip install -r requirements.txt` gets wrong.
+      - name: Install backend dependencies
+        working-directory: backend
+        run: bash install-deps.sh
+
+      # The whole suite, not a subset. The GPU-dependent tests guard themselves
+      # with `@pytest.mark.skipif(not torch.cuda.is_available())` and the rest
+      # monkeypatch `torch.cuda`, so the suite is CPU-capable by construction --
+      # a CPU runner simply reports more skips than a GPU machine does.
+      #
+      # `pytest backend` from the repo root and a bare `pytest` from backend/
+      # collect identically (verified: 5350 each). Naming the path here keeps
+      # the command identical to the one the project documents locally.
+      - name: pytest
+        run: python -m pytest backend -q
+
+      # Runs HERE, not in the licence job, because the dependency graph is
+      # already installed at this point. pip-licenses can only report on
+      # installed distributions, so hosting it in its own job would mean
+      # installing the whole ML stack a second time for a report.
+      # Advisory: it states what the licences ARE -- the input to a human
+      # compatibility decision, not a machine verdict on one.
+      - name: Python licence inventory (advisory)
+        continue-on-error: true
+        run: |
+          python -m pip install pip-licenses
+          python -m pip-licenses --format=markdown --order=license \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  frontend:
+    name: frontend (unit tests + production build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci`, never `npm install`: it installs the lockfile exactly and
+      # fails if package.json and the lockfile disagree, which is itself a
+      # check worth having on a contributor's branch.
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm run test -- --watch=false
+
+      # The production configuration, not the development one: budget overruns
+      # and prod-only build errors are exactly what a dev build hides.
+      - name: Production build
+        working-directory: frontend
+        run: npm run build
+
+      # The CSP applies to the file FastAPI SERVES, which is this build output —
+      # not frontend/src/index.html. That distinction is not academic: the
+      # production build once injected `onload="this.media='all'"` (Angular's
+      # inlineCritical), which a strict script-src blocks, leaving the whole app
+      # unstyled — while every source-level check passed.
+      #
+      # dist/ is gitignored, so the coherence tests fall back to source when no
+      # build is present. Running them HERE, in the only job that has the real
+      # artifact, is what stops that fallback from becoming the blind spot again.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: CSP coherence against the BUILT bundle
+        run: |
+          set -euo pipefail
+          test -s frontend/dist/frontend/browser/index.html || {
+            echo "::error::no built index.html — the CSP coherence check would" \
+                 "silently fall back to source, which is what it exists to avoid."
+            exit 1
+          }
+          python -m pip install --quiet fastapi 'starlette' httpx pytest
+          python -m pytest backend/tests/api/test_csp_policy.py -q \
+            -k "ExternalOrigins or InlineEventHandlers or InlineScriptHash"
+
+  e2e:
+    name: frontend (Playwright smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      # Chromium only. The specs drive a mocked backend (e2e/fixtures/
+      # mock-backend.ts and ws-stub.ts), so this smoke needs no Python, no
+      # database and no running server -- which is what makes it cheap enough
+      # to run on every pull request.
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright smoke
+        working-directory: frontend
+        run: npm run e2e
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+  secrets:
+    name: secret scan (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # fetch-depth: 0 is the whole point. A working-tree scan is nearly
+      # worthless here: a credential that was committed and later deleted is
+      # still public forever, and that is precisely the case a scan must catch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # This is a BLOCKING check. A secret reaching the public history cannot be
+      # undone by a follow-up commit, so unlike the audit jobs below there is no
+      # version of this finding that is safe to merge past.
+      - name: TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --results=verified,unknown
+
+  audit:
+    name: dependency audit (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # ADVISORY, and deliberately so on day one. The torch stack is pinned to
+    # exact versions for reproducibility, so a transitive advisory in it cannot
+    # be fixed by a contributor and must not block their pull request. Read the
+    # output; do not let a red X here gate a merge. Promote to blocking once the
+    # baseline is known and triaged -- that promotion is a decision, not a
+    # default.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      # BOTH Python dependency graphs, because they are genuinely different and
+      # a vulnerability in one says nothing about the other:
+      #   - requirements.txt        -> the local/dev graph (torch 2.12.1 trio)
+      #   - the container graph     -> the same file MINUS the torch/triton
+      #                                lines, which the image bakes itself
+      # Auditing only the first would silently exempt what actually ships.
+      - name: Audit local dependency graph
+        run: pip-audit -r backend/requirements.txt --progress-spinner off || true
+
+      - name: Audit container dependency graph
+        run: |
+          grep -ivE '^[[:space:]]*(torch|torchvision|torchaudio|triton|triton-windows)([[:space:]=<>!~#]|$)' \
+            backend/requirements.txt > /tmp/container-requirements.txt
+          pip-audit -r /tmp/container-requirements.txt --progress-spinner off || true
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Production dependencies are what ships to a user's browser; dev
+      # dependencies are build-time only. Reported separately so a critical in a
+      # build tool is never mistaken for a critical in the shipped bundle.
+      - name: Audit npm production graph
+        working-directory: frontend
+        run: npm audit --omit=dev || true
+
+      - name: Audit npm dev graph
+        working-directory: frontend
+        run: npm audit || true
+
+  licences:
+    name: npm licence inventory (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Advisory: this reports what the dependency licences ARE. It is the input
+    # to a human decision about compatibility, not a machine verdict on one.
+    # The Python half runs inside the `backend` job, where the graph is already
+    # installed. See the note there.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # --production: what actually ships to a user's browser. A copyleft
+      # licence in a build tool is a different question from one in the bundle,
+      # and conflating them is how a licence review produces noise instead of an
+      # answer.
+      - name: npm licence inventory
+        working-directory: frontend
+        run: |
+          npx --yes license-checker --production --summary \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+      # NOTE -- what this job cannot see: the vendored code under
+      # backend/app/engine/models/families/*/vendor/ is copied source, listed by
+      # no manifest, so no package manager reports it. Two of those directories
+      # currently carry no upstream licence text at all. Their attribution is
+      # pinned by a dedicated test that fails when a new vendor directory
+      # appears without an attribution row -- a package-manager licence report
+      # is not a substitute for it and must not be read as covering it.
+      - name: Vendored code is out of scope for this job
+        run: |
+          echo "Vendored families/*/vendor/ code is NOT covered here;" \
+               "it is pinned by the vendor attribution test." \
+            >> "$GITHUB_STEP_SUMMARY"

@@ -30,7 +30,12 @@ backend/tests/tests.log
 # ========================
 # Workspace-level directories
 # ========================
-/docs/
+# `/docs/*`, not `/docs/`: excluding the DIRECTORY makes git skip it entirely,
+# and a re-include below can never resurface a file whose parent is excluded.
+# Excluding its CONTENTS instead keeps `docs/audits/` and `docs/superpowers/`
+# pruned (they are directories, so git still does not descend) while letting
+# the three named developer references be re-included at the end of this file.
+/docs/*
 /adapters/
 /scripts/
 graphify-out/
@@ -76,3 +81,28 @@ _harness/
 .agent/output/
 .claude/settings.local.json
 .claude/worktrees/
+
+# ========================
+# Public surface allowlist (MUST STAY LAST — last match wins)
+# ========================
+# `origin` is public, so "tracked" means "published". Three blanket rules above
+# hold the private surface back: `.*/` (line 4), `*.md` (line 5) and `/docs/*`.
+# They stay. The public surface is re-included here, explicitly and by name.
+#
+# RULE: re-include a DOCUMENT BY NAME, never a DIRECTORY.
+# Measured evidence: a `!docs/` re-include publishes 169 files, including
+# `docs/audits/` (documents enumerating weaknesses in this codebase, some
+# unfixed) and `docs/superpowers/` internal plans. A directory re-include
+# publishes whatever is added to that directory later, by anyone, with no
+# review step and no diff that reads as a disclosure. A name cannot.
+# `LICENSE` needs no entry here: it has no extension, so no rule matches it.
+!.github/
+!.github/**
+!SECURITY.md
+!CONTRIBUTING.md
+!CHANGELOG.md
+# Contributors need these three to submit work that passes the gate. They
+# describe conventions, not weaknesses.
+!docs/API_CONVENTIONS.md
+!docs/LOGGING.md
+!docs/TESTING.md

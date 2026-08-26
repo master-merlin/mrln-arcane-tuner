@@ -170,17 +170,49 @@ drivers (no Blackwell support).
 **Building your own** (only needed if you've modified the code). The CUDA target
 is parameterized via build args (default cu128):
 
+`GIT_SHA` is **required** — the image is built from a specific commit rather
+than from whatever the branch points at, so two builds of the same tag contain
+the same code and the image records which. A build without it fails immediately
+rather than quietly tracking a moving branch.
+
 ```bash
+SHA=$(git rev-parse HEAD)   # the full 40-char commit; a short sha is refused
+
 # Primary (cu128 — Blackwell + modern fleet). Tag with version and latest.
-docker build -t mastermerlin/mrln-arcane-tuner:0.7.9-beta -t mastermerlin/mrln-arcane-tuner:latest .
+docker build --build-arg GIT_SHA="$SHA" \
+    -t mastermerlin/mrln-arcane-tuner:0.7.9-beta -t mastermerlin/mrln-arcane-tuner:latest .
 docker push mastermerlin/mrln-arcane-tuner:0.7.9-beta
 docker push mastermerlin/mrln-arcane-tuner:latest
 
 # Fallback (cu126 — legacy R560–R565 drivers).
-docker build --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
+docker build --build-arg GIT_SHA="$SHA" \
+    --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
     -t mastermerlin/mrln-arcane-tuner:0.7.9-beta-cu126 .
 docker push mastermerlin/mrln-arcane-tuner:0.7.9-beta-cu126
 ```
+
+The commit must already be **pushed to the remote** — the build clones it, so a
+local-only commit fails the build rather than baking in code nobody else can
+retrieve.
+
+**Ollama** (the optional caption-refinement sidecar) is installed by piping
+`ollama.com/install.sh` into a root shell, which is an **unpinned third-party
+script executing at build time**. For a build you intend to publish, pin it:
+
+```bash
+# Get the digest once, then pass both — one without the other is refused.
+curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tgz | sha256sum
+docker build --build-arg GIT_SHA="$SHA" \
+    --build-arg OLLAMA_VERSION=<tag> --build-arg OLLAMA_SHA256=<digest> ...
+```
+
+`--build-arg INSTALL_OLLAMA=0` skips it entirely; the app starts fine without
+it and simply reports the sidecar as disabled.
+
+**The container runs as UID 10001, not root.** The entrypoint starts as root
+only long enough to take ownership of the mounted data volume, then drops. If
+you mount a volume whose contents are owned by a different UID, files created by
+an earlier root-run container may need `chown -R 10001:10001` once.
 
 ### 2. Create the pod on RunPod
 
@@ -203,7 +235,8 @@ docker push mastermerlin/mrln-arcane-tuner:0.7.9-beta-cu126
 
   | Variable | Purpose | Default |
   |---|---|---|
-  | `MRLN_AUTH_TOKEN` | Require this token to access the app (recommended — the proxy URL is public). | _unset = open_ |
+  | `MRLN_AUTH_TOKEN` | Require this token to access the app. **Required in the container** — see the breaking-change note below. | _unset — the container will not start_ |
+  | `MRLN_BIND_HOST` | Address to serve on. The container needs `0.0.0.0` to be reachable at all; local installs default to loopback. | `0.0.0.0` (container) |
   | `PORT` | Internal port (match the exposed HTTP port). | `8000` |
   | `MRLN_DATA_DIR` | Persistence root (DB, datasets, models, outputs, HF cache). | `/workspace` |
   | `HF_TOKEN` | Hugging Face token — set it if you train/pull **gated** models (e.g. some FLUX weights). | _unset_ |
@@ -218,8 +251,28 @@ RunPod exposes the port at:
 https://[POD_ID]-8000.proxy.runpod.net
 ```
 
-Open it; if `MRLN_AUTH_TOKEN` is set you'll get a sign-in page — enter the
-token once and a cookie keeps you signed in.
+Open it; you'll get a sign-in page — enter the token once and a cookie keeps
+you signed in.
+
+> ### ⚠ Breaking change in this release: the container needs `MRLN_AUTH_TOKEN`
+>
+> Earlier versions started an **unauthenticated** server on `0.0.0.0` when
+> `MRLN_AUTH_TOKEN` was unset. On a RunPod pod that proxy URL is public, so
+> anyone who guessed it had full control of your datasets, models and GPU — and
+> nothing said so.
+>
+> The app now **refuses to start** when it is bound to an address other machines
+> can reach and no token is set. If a pod that used to work stops with a message
+> naming `MRLN_AUTH_TOKEN`, that is this change, and the fix is in the message:
+>
+> * set `MRLN_AUTH_TOKEN` to a long random string (what you want on RunPod), **or**
+> * set `MRLN_BIND_HOST=127.0.0.1` for a private, machine-local run.
+>
+> **Local installs are unaffected in normal use:** `start_backend` now binds
+> loopback by default instead of `0.0.0.0`, so it starts with no token as
+> before. It used to publish an open server onto every network you joined,
+> including untrusted wifi. To reach a local install from another machine, set
+> both `MRLN_AUTH_TOKEN` and `MRLN_BIND_HOST=0.0.0.0`.
 
 ### Notes & caveats
 
@@ -500,4 +553,92 @@ Repository: **[github.com/master-merlin/mrln-arcane-tuner](https://github.com/ma
 
 ## License
 
-*License information to be added.*
+*The project licence is not yet finalised — see "Unresolved" below. Until a
+`LICENSE` file is committed, no open-source grant is implied.*
+
+### Model weights are licensed separately — check before you train
+
+MRLN Arcane Tuner ships **no model weights**. It downloads them, on your
+instruction, from the upstream repository named in each model definition. Those
+weights carry **their own licences, which are not this project's licence**, and
+some of them restrict what you may do with a LoRA you train on them.
+
+The application does not check, gate, or enforce any of this — it cannot know
+your intended use, and the agreement is between you and the model's publisher.
+The table below is **information, not enforcement**. Verified against the
+HuggingFace model API on 2026-08-25; upstream terms can change, so treat the
+model page as authoritative.
+
+**Restricted — read the terms before you train something you intend to sell:**
+
+| Family | Upstream weights | Licence | Access |
+|---|---|---|---|
+| `ideogram4` | [`ideogram-ai/ideogram-4-fp8`](https://huggingface.co/ideogram-ai/ideogram-4-fp8) | `ideogram-4-non-commercial` — **non-commercial** | open |
+| `flux1` | [`black-forest-labs/FLUX.1-dev`](https://huggingface.co/black-forest-labs/FLUX.1-dev) | `flux-1-dev-non-commercial-license` — **non-commercial** | **gated** — you must accept the agreement on HuggingFace first |
+| `flux2` | [`black-forest-labs/FLUX.2-dev`](https://huggingface.co/black-forest-labs/FLUX.2-dev) | `flux-non-commercial-license` — **non-commercial** | **gated** |
+
+`FLUX.1-schnell` is Apache-2.0 and is the permissive option in that family.
+
+**Permissive (verified):** `hidream_o1`
+([`HiDream-ai/HiDream-O1-Image`](https://huggingface.co/HiDream-ai/HiDream-O1-Image),
+MIT) · `sdxl`
+([`stabilityai/stable-diffusion-xl-base-1.0`](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0),
+OpenRAIL++) · `boogu_image`
+([`Boogu/Boogu-Image-0.1-Base`](https://huggingface.co/Boogu/Boogu-Image-0.1-Base),
+Apache-2.0 as tagged upstream).
+
+**Everything else — check the model page.** The families here draw on roughly
+fifty upstream repositories (Wan, Qwen, Kandinsky, LTX-2, ACE-Step, OmniGen2,
+Lumina, Chroma, ERNIE, Z-Image, Krea, LongCat, Nucleus, Ovis, PRX, DreamLite,
+HunyuanVideo, Bernini-R, Lens and others), each with its own terms, and some
+are **gated** or **regionally restricted**. The upstream repository for every
+model is named in its definition under
+`backend/app/engine/models/families/<family>/definitions/`.
+
+Two things worth being explicit about:
+
+- **A licence on this application grants you nothing regarding a model's
+  weights.** They are separate works under separate terms.
+- **The terms usually follow through to what you train.** A LoRA trained on
+  non-commercial weights is generally still bound by those terms, so if you
+  plan to sell or commercially deploy an adapter, check the base model's
+  licence *before* you spend the GPU hours, not after.
+
+### Vendored third-party code
+
+Some model families vendor a small amount of upstream Python (a transformer
+forward, a scheduler, a cache helper) under
+`backend/app/engine/models/families/<family>/vendor/`, because the released
+`diffusers` does not carry that architecture. Each file names its upstream and
+revision in its header.
+
+Attributions carried, per those headers: the HuggingFace `diffusers` and
+`transformers` teams, Stability AI and Katherine Crowson, the Alibaba Wan Team,
+the Qwen Team, BAAI and the OmniGen2 Team, Alpha-VLLM, Krea AI, and Bytedance
+Ltd. (all Apache-2.0); [`microsoft/Lens`](https://github.com/microsoft/Lens)
+and [`Saganaki22/HiDream_O1-ComfyUI`](https://github.com/Saganaki22/HiDream_O1-ComfyUI)
+(MIT); [`ideogram-oss/ideogram4`](https://github.com/ideogram-oss/ideogram4)
+(Apache-2.0 — note this is the *code* repository; the *weights* above are
+licensed separately and non-commercially).
+
+### Unresolved
+
+One vendored component has a licence conflict that is being worked through
+rather than papered over:
+
+- **`boogu_image/vendor/cache_functions/`** (and the related
+  `taylorseer_utils/`) derives from
+  [`Shenyi-Z/TaylorSeer`](https://github.com/Shenyi-Z/TaylorSeer), which is
+  **GPL-3.0**. The files name that upstream in their headers. GPL-3.0 is
+  copyleft and cannot be redistributed under a permissive licence, so this code
+  cannot simply be absorbed into a permissively licensed project, regardless of
+  how the intermediate fork is tagged.
+
+Until that is resolved — by removing the component, reimplementing it, or
+licensing the project compatibly — no `LICENSE` file is committed, because
+publishing one that the tree does not actually satisfy would be worse than
+publishing none. If you are packaging or redistributing this project, that
+constraint applies to you too.
+
+Third-party dependencies installed from PyPI and npm keep their own licences;
+the CI gate publishes an inventory of both on every run.

@@ -16,6 +16,7 @@ from collections.abc import Callable
 import httpx
 
 from app.core.logger import get_logger
+from app.core.url_guard import validate_base_url
 
 logger = get_logger(__name__)
 
@@ -40,26 +41,23 @@ RETRY_DELAYS = [1.0, 2.0, 4.0, 8.0, 16.0]
 #: once the budget is gone and surface the last error.
 TOTAL_BUDGET_S = 300.0
 
-#: Schemes a provider base URL may use. "custom" lets the user point at a local
-#: server (Ollama, LM Studio, vLLM), so the host is deliberately unrestricted —
-#: but a non-HTTP scheme is always a misconfiguration, and rejecting it early
-#: gives a clear message instead of an httpx UnsupportedProtocol deep in a
-#: batch worker.
-_ALLOWED_SCHEMES = ("http", "https")
-
-
 def _validate_base_url(base_url: str) -> str:
-    from urllib.parse import urlparse
+    """Validate a provider base URL through the layer L0 outbound guard.
 
-    parsed = urlparse(base_url)
-    if parsed.scheme not in _ALLOWED_SCHEMES:
-        raise ValueError(
-            f"Provider base URL must start with http:// or https:// (got "
-            f"{base_url!r})."
-        )
-    if not parsed.netloc:
-        raise ValueError(f"Provider base URL has no host: {base_url!r}")
-    return base_url.rstrip("/")
+    "custom" lets the user point at a local server (Ollama, LM Studio, vLLM),
+    so on a local install the host stays deliberately unrestricted — that is
+    the documented, correct use and the guard leaves it alone. Running hosted,
+    the same field is an SSRF path to the cloud metadata endpoint, so the guard
+    contains it there. See ``app/core/url_guard.py`` for why the answer differs
+    by column, and for what it does NOT protect against.
+
+    The check lives in layer L0 rather than here so the engine and the API
+    share one producer instead of growing a second URL validator
+    (ECOSYSTEM §5 row 3). ``OutboundUrlRejected`` subclasses ``ValueError``, so
+    every existing caller that already treats a bad URL as a configuration
+    error keeps working unchanged.
+    """
+    return validate_base_url(base_url)
 
 # Test seam — monkeypatched so retry tests don't actually sleep.
 _sleep = time.sleep

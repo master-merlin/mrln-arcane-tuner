@@ -53,6 +53,21 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown hook."""
+    # FIRST, before anything else starts: refuse to run an unauthenticated
+    # server on an address other machines can reach. This is in lifespan, not at
+    # import, because nothing imported at startup may raise (ARCHITECTURE D1) —
+    # and it is at the TOP of lifespan so the refusal happens before any
+    # background task, DB load or socket is set up.
+    #
+    # BREAKING CHANGE (DECISION-3 (a)): earlier releases documented
+    # MRLN_AUTH_TOKEN as "unset = open" and started on 0.0.0.0 regardless. A
+    # token-less container that relied on that will now stop with the message
+    # below, which names both fixes.
+    _refusal = container_config.bind_is_exposed_without_auth()
+    if _refusal:
+        logger.error("refusing_exposed_bind_without_auth")
+        raise RuntimeError(_refusal)
+
     loop = asyncio.get_running_loop()
 
     # Inject event-loop into managers that schedule work from threads
@@ -330,6 +345,19 @@ app.add_middleware(
 # ── Auth Gate (no-op when no token configured) ───────────────────────────
 
 app.add_middleware(TokenAuthMiddleware, token=container_config.auth_token())
+
+
+# ── Security headers (CSP) ───────────────────────────────────────────────
+# Added LAST on purpose. Starlette's ``add_middleware`` prepends, so the last
+# one added is the OUTERMOST — which is what puts the policy on every response,
+# including the 401 the auth gate short-circuits with. An error page is still a
+# page, and a response that skips the policy is exactly the one an injection
+# wants to land in. Registering this before the auth gate would have left that
+# 401 uncovered; ``test_csp_is_on_the_auth_gate_401`` pins the ordering rather
+# than trusting the reasoning.
+from app.api._security_headers import SecurityHeadersMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402

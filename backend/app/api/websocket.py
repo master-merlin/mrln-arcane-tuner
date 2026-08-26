@@ -39,8 +39,41 @@ async def _stream_metrics(websocket: WebSocket, interval_s: float = 2.0):
             with ws_send_scope():
                 await websocket.send_text(msg)
             await asyncio.sleep(interval_s)
-    except Exception:
-        pass  # client disconnected — task will be cleaned up
+    except asyncio.CancelledError:
+        # `unsubscribe_metrics` and shutdown cancel this task. That is the
+        # normal exit, and it must PROPAGATE — swallowing a cancellation leaves
+        # the canceller waiting on a task that reports itself still running.
+        raise
+    except (WebSocketDisconnect, ConnectionError, RuntimeError) as exc:
+        # Expected: the client vanished mid-push, or Starlette refused a send on
+        # an already-closed socket. Not a fault, so debug — but no longer
+        # silent, because "the metrics stopped" and "the client left" were
+        # previously indistinguishable from the outside.
+        with ws_send_scope():
+            logger.debug(
+                "ws_metrics_stream_closed",
+                client=str(websocket.client),
+                error=type(exc).__name__,
+            )
+    except Exception as exc:
+        # A real fault — a broken snapshot, a serialization error. Logged ONCE,
+        # at WARNING, with the connection and the exception, then the loop
+        # exits. Bounded by construction rather than by a rate limiter: there
+        # is exactly one record per stream because there is no retry.
+        #
+        # The ws_send_scope wrapper is LOAD-BEARING and is not decoration.
+        # Without it this record is mirrored to every WebSocket client, each
+        # mirror emits a frame trace on `uvicorn.error`, and each trace is
+        # itself mirrored — the log->WS->log loop that once wrote 114 MB /
+        # 1.19M lines with a single client connected. Un-silencing this handler
+        # is precisely the change that can reopen it.
+        with ws_send_scope():
+            logger.warning(
+                "ws_metrics_stream_failed",
+                client=str(websocket.client),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
 
 
 @router.websocket("/ws")

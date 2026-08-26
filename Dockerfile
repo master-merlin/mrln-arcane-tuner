@@ -118,29 +118,93 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # so an install hiccup never blocks the app. zstd is REQUIRED: Ollama's installer
 # now ships zstd-compressed tarballs and aborts extraction with "requires zstd"
 # (which the best-effort `|| echo` then silently swallows, shipping no binary).
-# Placed BEFORE the git clone (it's independent of app code) so a CACHEBUST'd
-# re-clone never re-downloads Ollama's large tarball.
-RUN apt-get update && apt-get install -y --no-install-recommends zstd \
-    && rm -rf /var/lib/apt/lists/* \
-    && ( curl -fsSL https://ollama.com/install.sh | sh \
-         || echo "WARN: ollama install failed; sidecar will be skipped at runtime" )
+# Placed BEFORE the git clone (it's independent of app code) so a re-clone for a
+# new GIT_SHA never re-downloads Ollama's large tarball.
+#
+# SUPPLY CHAIN — read before changing:
+#   * Set OLLAMA_VERSION *and* OLLAMA_SHA256 and the build fetches that exact
+#     release tarball and REFUSES to proceed if the digest does not match. This
+#     is the path release builds should use.
+#   * Leave them empty (the default) and the build falls back to piping
+#     ollama.com/install.sh into a root shell. That is an UNPINNED third party
+#     executing arbitrary code at build time. It is deliberately still the
+#     default so a plain `docker build` keeps working, and it is deliberately
+#     loud about it — but it is a real exposure, not a formality.
+#   * INSTALL_OLLAMA=0 skips the layer entirely; the app degrades cleanly
+#     because the entrypoint already probes for the binary.
+# Getting the digest: `curl -fsSL https://github.com/ollama/ollama/releases/\
+# download/<tag>/ollama-linux-amd64.tgz | sha256sum`. No digest is hardcoded
+# here on purpose — a checksum nobody verified is worse than none, because it
+# reads as proof.
+ARG INSTALL_OLLAMA=1
+ARG OLLAMA_VERSION=
+ARG OLLAMA_SHA256=
+RUN if [ "$INSTALL_OLLAMA" != "1" ]; then \
+        echo "[build] INSTALL_OLLAMA=$INSTALL_OLLAMA — skipping Ollama layer"; \
+    else \
+      apt-get update && apt-get install -y --no-install-recommends zstd \
+      && rm -rf /var/lib/apt/lists/* \
+      && if [ -n "$OLLAMA_VERSION" ] && [ -n "$OLLAMA_SHA256" ]; then \
+             echo "[build] Ollama ${OLLAMA_VERSION} — pinned, verifying sha256"; \
+             curl -fsSL -o /tmp/ollama.tgz \
+               "https://github.com/ollama/ollama/releases/download/${OLLAMA_VERSION}/ollama-linux-amd64.tgz" \
+             && echo "${OLLAMA_SHA256}  /tmp/ollama.tgz" | sha256sum -c - \
+             && tar -C /usr/local -xzf /tmp/ollama.tgz \
+             && rm -f /tmp/ollama.tgz; \
+         elif [ -n "$OLLAMA_VERSION" ] || [ -n "$OLLAMA_SHA256" ]; then \
+             echo "ERROR: OLLAMA_VERSION and OLLAMA_SHA256 must be set together." >&2; \
+             echo "       One without the other is an unverified download wearing a pin." >&2; \
+             exit 1; \
+         else \
+             echo "WARN: Ollama is being installed UNPINNED from ollama.com/install.sh."; \
+             echo "WARN: set OLLAMA_VERSION + OLLAMA_SHA256 for a verified build."; \
+             ( curl -fsSL https://ollama.com/install.sh | sh \
+               || echo "WARN: ollama install failed; sidecar will be skipped at runtime" ); \
+         fi; \
+    fi
 
 # /app is a real git checkout so the app can self-update at runtime. Private
 # repo → pass the PAT as a build secret (id=git_token); falls back to an
 # unauthenticated clone for public repos. The remote is reset to the clean
 # REPO_URL afterward so no token is baked into the image's git config.
-# CACHEBUST: this clone (and the pip install below) is the ONLY part that depends
-# on the app code. Pass --build-arg CACHEBUST=<origin-sha-or-timestamp> to force a
-# fresh clone of the latest origin/main on rebuild; the torch, Ollama, and apt
-# layers above stay cached. Default 0 reuses the cached clone.
-ARG CACHEBUST=0
+# GIT_SHA is REQUIRED and is what the image is built from. Building from a bare
+# branch name meant two builds of the "same" image could contain different code
+# with nothing in the image recording which — not reproducible, and not
+# auditable after the fact. The build now fails closed rather than silently
+# tracking a moving branch.
+#
+# It also subsumes the old CACHEBUST arg: this clone (and the pip install below)
+# is the only part that depends on app code, and a different GIT_SHA changes
+# this RUN's command string, so Docker invalidates the layer on its own. The
+# torch, Ollama and apt layers above stay cached. Passing a timestamp to force a
+# rebuild is no longer possible, which is the point — the input is the commit.
+#
+# The branch is still cloned and HEAD stays ON it (reset --hard, not
+# `checkout --detach`): the self-update service reports
+# `git rev-parse --abbrev-ref HEAD`, which answers the literal string "HEAD" on a
+# detached checkout, so detaching would have shown the branch as "HEAD" in the
+# UI. Content is pinned; branch identity is preserved; `fetch origin <branch> +
+# reset --hard` in SelfUpdateService still works unchanged.
+ARG GIT_SHA
 RUN --mount=type=secret,id=git_token \
-    sh -c 'echo "cachebust=$CACHEBUST"; \
-            if [ -f /run/secrets/git_token ]; then \
-              AUTH="https://$(cat /run/secrets/git_token)@$(echo "$REPO_URL" | sed -E "s#https?://##")"; \
-            else AUTH="$REPO_URL"; fi; \
-            git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
-            cd /app && git remote set-url origin "$REPO_URL"'
+    sh -c 'case "$GIT_SHA" in \
+             *[!0-9a-fA-F]*|"") \
+               echo "ERROR: --build-arg GIT_SHA=<full 40-hex commit> is required." >&2; \
+               echo "       Build from a commit, not a moving branch." >&2; \
+               exit 1;; \
+           esac; \
+           [ ${#GIT_SHA} -eq 40 ] || { \
+             echo "ERROR: GIT_SHA must be the FULL 40-character commit sha (got ${#GIT_SHA} chars)." >&2; \
+             echo "       A short sha is ambiguous and cannot be verified below." >&2; \
+             exit 1; }; \
+           if [ -f /run/secrets/git_token ]; then \
+             AUTH="https://$(cat /run/secrets/git_token)@$(echo "$REPO_URL" | sed -E "s#https?://##")"; \
+           else AUTH="$REPO_URL"; fi; \
+           git clone --branch "$GIT_BRANCH" "$AUTH" /app && \
+           cd /app && git remote set-url origin "$REPO_URL" && \
+           git reset --hard "$GIT_SHA" && \
+           [ "$(git rev-parse HEAD)" = "$GIT_SHA" ] || { \
+             echo "ERROR: /app is not at $GIT_SHA after reset." >&2; exit 1; }'
 WORKDIR /app/backend
 # Install the app's Python deps from the cloned checkout. install-deps.sh
 # filters the torch/torchvision/torchaudio/triton/triton-windows lines out of
@@ -159,9 +223,44 @@ RUN bash install-deps.sh
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
 
-# Entrypoint.
+# ── Non-root runtime user ────────────────────────────────────────────────
+# The app ran as root, and this image is not a sandbox: /app is a live git
+# checkout that the running container can pull into and rebuild (SelfUpdateService),
+# so "root" and "can rewrite the code it is about to execute" were the same
+# principal. Dropping to a dedicated UID does not make self-update safe on its
+# own, but it stops a compromise there from owning the whole container.
+#
+# UID 10001 is deliberately outside the range distributions hand out: Ubuntu
+# 24.04 already ships a user at 1000, and a collision would silently share an
+# identity with it. Fixed rather than auto-assigned so ownership on a mounted
+# volume stays stable across image rebuilds — an auto-assigned UID that shifts
+# makes yesterday's data unreadable.
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid "$APP_GID" mrln \
+    && useradd --uid "$APP_UID" --gid "$APP_GID" --create-home --shell /bin/bash mrln \
+    && chown -R "$APP_UID:$APP_GID" /app
+
+# Entrypoint. Stays root-owned and NOT writable by the app user: it runs as root
+# (see below) to fix volume ownership before dropping privileges, so an app-user
+# write to it would be a direct path back to root.
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod 0755 /entrypoint.sh && chown root:root /entrypoint.sh
+
+# NOTE: no `USER mrln` here, on purpose. The entrypoint starts as root ONLY to
+# chown the freshly-mounted data volume (which arrives root-owned and would
+# otherwise be unwritable), then drops to APP_UID via setpriv before exec'ing
+# uvicorn — so nothing the app runs holds root. Setting `USER` here instead
+# would make that first-boot chown impossible and leave the volume unusable.
+# The app user's identity is passed through the environment so the entrypoint
+# does not have to hardcode it in two places.
+ENV MRLN_APP_UID=${APP_UID} \
+    MRLN_APP_GID=${APP_GID}
+
+# STILL DEFERRED, named so the deferral stays a decision rather than an
+# oversight: base-image digest pinning (`FROM nvidia/cuda@sha256:...`), SBOM
+# generation, build provenance attestation, and image signing. Each is a real
+# gap; none is closed here.
 
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]

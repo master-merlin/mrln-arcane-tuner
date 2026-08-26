@@ -235,7 +235,8 @@ an earlier root-run container may need `chown -R 10001:10001` once.
 
   | Variable | Purpose | Default |
   |---|---|---|
-  | `MRLN_AUTH_TOKEN` | Require this token to access the app (recommended — the proxy URL is public). | _unset = open_ |
+  | `MRLN_AUTH_TOKEN` | Require this token to access the app. **Required in the container** — see the breaking-change note below. | _unset — the container will not start_ |
+  | `MRLN_BIND_HOST` | Address to serve on. The container needs `0.0.0.0` to be reachable at all; local installs default to loopback. | `0.0.0.0` (container) |
   | `PORT` | Internal port (match the exposed HTTP port). | `8000` |
   | `MRLN_DATA_DIR` | Persistence root (DB, datasets, models, outputs, HF cache). | `/workspace` |
   | `HF_TOKEN` | Hugging Face token — set it if you train/pull **gated** models (e.g. some FLUX weights). | _unset_ |
@@ -250,8 +251,28 @@ RunPod exposes the port at:
 https://[POD_ID]-8000.proxy.runpod.net
 ```
 
-Open it; if `MRLN_AUTH_TOKEN` is set you'll get a sign-in page — enter the
-token once and a cookie keeps you signed in.
+Open it; you'll get a sign-in page — enter the token once and a cookie keeps
+you signed in.
+
+> ### ⚠ Breaking change in this release: the container needs `MRLN_AUTH_TOKEN`
+>
+> Earlier versions started an **unauthenticated** server on `0.0.0.0` when
+> `MRLN_AUTH_TOKEN` was unset. On a RunPod pod that proxy URL is public, so
+> anyone who guessed it had full control of your datasets, models and GPU — and
+> nothing said so.
+>
+> The app now **refuses to start** when it is bound to an address other machines
+> can reach and no token is set. If a pod that used to work stops with a message
+> naming `MRLN_AUTH_TOKEN`, that is this change, and the fix is in the message:
+>
+> * set `MRLN_AUTH_TOKEN` to a long random string (what you want on RunPod), **or**
+> * set `MRLN_BIND_HOST=127.0.0.1` for a private, machine-local run.
+>
+> **Local installs are unaffected in normal use:** `start_backend` now binds
+> loopback by default instead of `0.0.0.0`, so it starts with no token as
+> before. It used to publish an open server onto every network you joined,
+> including untrusted wifi. To reach a local install from another machine, set
+> both `MRLN_AUTH_TOKEN` and `MRLN_BIND_HOST=0.0.0.0`.
 
 ### Notes & caveats
 

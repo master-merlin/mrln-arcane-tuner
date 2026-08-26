@@ -153,7 +153,19 @@ class TestTheHeaderActuallyReachesResponses:
     """
 
     def test_api_responses_carry_the_policy(self, client):
-        resp = client.get("/api/health")
+        resp = client.get("/openapi.json")
+        assert resp.status_code == 200, "probe endpoint must actually exist"
+        assert resp.headers.get("Content-Security-Policy") == CSP_HEADER_VALUE
+
+    def test_the_policy_is_on_a_404_too(self, client):
+        """Every response, not just the ones that worked.
+
+        Caught while fixing this file: the original probe hit a path that does
+        not exist and passed anyway, which was true but was not the assertion
+        it looked like.
+        """
+        resp = client.get("/definitely-not-a-route")
+        assert resp.status_code == 404
         assert resp.headers.get("Content-Security-Policy") == CSP_HEADER_VALUE
 
     def test_csp_is_on_the_auth_gate_401(self):

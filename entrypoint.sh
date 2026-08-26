@@ -134,4 +134,21 @@ else
 fi
 
 cd "$BACKEND_DIR"
-exec python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
+
+# A container binds 0.0.0.0 by necessity, not by preference: bind loopback here
+# and the port publishing that makes the container reachable at all stops
+# working, because the mapped interface is outside the namespace. So the
+# safe-by-default trick the local launchers use is not available here.
+#
+# That is exactly why the app refuses to start when this is reachable and
+# MRLN_AUTH_TOKEN is empty (DECISION-3 (a)). BREAKING: a token-less
+# 0.7.8-beta container that upgraded into this release will stop with a message
+# naming the fix, instead of quietly continuing to serve your datasets, models
+# and GPU to anyone who can reach the port. Set MRLN_AUTH_TOKEN.
+export MRLN_BIND_HOST="${MRLN_BIND_HOST:-0.0.0.0}"
+if [ -z "${MRLN_AUTH_TOKEN:-}" ]; then
+    echo "[entrypoint] MRLN_AUTH_TOKEN is empty and the bind is $MRLN_BIND_HOST —"
+    echo "[entrypoint] the app will refuse to start. Set MRLN_AUTH_TOKEN in the pod"
+    echo "[entrypoint] template, or set MRLN_BIND_HOST=127.0.0.1 for a private run."
+fi
+exec python -m uvicorn app.main:app --host "$MRLN_BIND_HOST" --port "$PORT"

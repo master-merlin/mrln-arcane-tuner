@@ -53,6 +53,21 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown hook."""
+    # FIRST, before anything else starts: refuse to run an unauthenticated
+    # server on an address other machines can reach. This is in lifespan, not at
+    # import, because nothing imported at startup may raise (ARCHITECTURE D1) —
+    # and it is at the TOP of lifespan so the refusal happens before any
+    # background task, DB load or socket is set up.
+    #
+    # BREAKING CHANGE (DECISION-3 (a)): earlier releases documented
+    # MRLN_AUTH_TOKEN as "unset = open" and started on 0.0.0.0 regardless. A
+    # token-less container that relied on that will now stop with the message
+    # below, which names both fixes.
+    _refusal = container_config.bind_is_exposed_without_auth()
+    if _refusal:
+        logger.error("refusing_exposed_bind_without_auth")
+        raise RuntimeError(_refusal)
+
     loop = asyncio.get_running_loop()
 
     # Inject event-loop into managers that schedule work from threads

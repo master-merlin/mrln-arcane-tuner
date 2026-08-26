@@ -2,13 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Frontend</title>
+  <title>MRLN Arcane Tuner</title>
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Dataset-first LoRA training studio — curate datasets and train LoRAs across image, video and audio model families on your own GPU.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0e0f13">
+  <meta name="robots" content="noindex, nofollow">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <!-- Fonts are self-hosted; see public/fonts/OFL.txt. Do not replace with a
+       hosted stylesheet: a test enforces that this app stays same-origin. -->
+  <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/fonts/fonts.css">
   <script>
     // Apply the persisted theme before first paint so a returning light-mode
     // user never sees a flash of the dark theme. Mirrors ThemeStore's key.
@@ -21,16 +27,36 @@
     })();
   </script>
   <style>
-    /* Keep the pre-bootstrap loading splash in sync with a saved light theme
-       (its inline style hardcodes a black background). */
+    /* Pre-bootstrap splash. Kept as a <style> block rather than `style=`
+       attributes: a CSP can hash a block, but not an attribute. */
+    #app-loading {
+      background: #000;
+      color: #fff;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: monospace;
+    }
+    #app-error {
+      color: red;
+      white-space: pre-wrap;
+      margin-top: 20px;
+      padding: 20px;
+      border: 1px solid red;
+      display: none;
+      max-width: 80%;
+    }
+    /* Keep the splash in sync with a saved light theme. */
     html[data-theme="light"] #app-loading { background: #ffffff !important; color: #0e0f13 !important; }
   </style>
 </head>
 <body>
   <app-root>
-    <div id="app-loading" style="background: #000; color: #fff; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: monospace;">
+    <div id="app-loading">
         <h1>MRLN Arcane Tuner Loading...</h1>
-        <div id="app-error" style="color: red; white-space: pre-wrap; margin-top: 20px; padding: 20px; border: 1px solid red; display: none; max-width: 80%;"></div>
+        <div id="app-error"></div>
     </div>
   </app-root>
 </body>

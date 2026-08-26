@@ -29,12 +29,12 @@ export class ApiCaptionService {
         provider: string,
         updates: { api_key?: string; base_url?: string },
     ): Observable<ApiProviderStatus> {
-        return this.http.put<ApiProviderStatus>(`${this.apiUrl}/${provider}`, updates);
+        return this.http.put<ApiProviderStatus>(`${this.apiUrl}/${encodeURIComponent(provider)}`, updates);
     }
 
     listModels(provider: string): Observable<string[]> {
         return this.http
-            .get<{ models: string[] }>(`${this.apiUrl}/${provider}/models`)
+            .get<{ models: string[] }>(`${this.apiUrl}/${encodeURIComponent(provider)}/models`)
             .pipe(map(r => r.models));
     }
 }

@@ -534,7 +534,7 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   getSampleImageUrl(jobId: string, filename: string): string {
-    return `${this.rtc.apiUrl}/jobs/${jobId}/samples/${filename}?t=${this.sampleCacheBuster()}`;
+    return `${this.rtc.apiUrl}/jobs/${encodeURIComponent(jobId)}/samples/${encodeURIComponent(filename)}?t=${this.sampleCacheBuster()}`;
   }
 
   openSampleModal(jobId: string, sample: JobSample) {

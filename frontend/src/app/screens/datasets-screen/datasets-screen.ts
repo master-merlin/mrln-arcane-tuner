@@ -1253,13 +1253,13 @@ export class DatasetsScreen {
     protected downloadDataset(d: Dataset, event: Event): void {
         event.stopPropagation();
         const url = this.datasetsApi.getDownloadUrl(d.name);
-        window.open(url, '_blank');
+        window.open(url, '_blank', 'noopener,noreferrer');
     }
 
     /** Triggers a browser download of the portable export zip (+ metadata). */
     protected exportDataset(d: Dataset, event: Event): void {
         event.stopPropagation();
-        window.open(this.datasetsApi.getExportUrl(d.name), '_blank');
+        window.open(this.datasetsApi.getExportUrl(d.name), '_blank', 'noopener,noreferrer');
     }
 
     /** Opens the import-dataset modal to upload a portable export zip. */

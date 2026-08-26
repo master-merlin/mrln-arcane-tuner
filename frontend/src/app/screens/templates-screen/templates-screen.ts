@@ -418,7 +418,7 @@ export class TemplatesScreen implements OnInit {
     }
 
     exportRow(r: TemplateRow): void {
-        window.open(this.templates.getTemplateExportUrl(r.domain, r.tpl.id), '_blank');
+        window.open(this.templates.getTemplateExportUrl(r.domain, r.tpl.id), '_blank', 'noopener,noreferrer');
     }
 
     exportFiltered(): void {

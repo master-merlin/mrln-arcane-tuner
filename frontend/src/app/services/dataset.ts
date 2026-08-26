@@ -504,21 +504,21 @@ export class DatasetService {
   }
 
   getCaption(name: string, filename: string): Observable<{ content: string }> {
-    return this.http.get<{ content: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${filename}`);
+    return this.http.get<{ content: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${encodeURIComponent(filename)}`);
   }
 
   saveCaption(name: string, filename: string, content: string): Observable<CaptionSavedResponse> {
-    return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${filename}`, { content });
+    return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/captions/${encodeURIComponent(filename)}`, { content });
   }
 
   /** Sibling to getCaption/saveCaption for the audio lyrics sidecar
    *  (`<stem>.lyrics.txt`) — see backend `crud_routes.py` "Lyrics" section. */
   getLyrics(name: string, filename: string): Observable<{ content: string }> {
-    return this.http.get<{ content: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/lyrics/${filename}`);
+    return this.http.get<{ content: string }>(`${this.apiUrl}/${encodeURIComponent(name)}/lyrics/${encodeURIComponent(filename)}`);
   }
 
   saveLyrics(name: string, filename: string, content: string): Observable<CaptionSavedResponse> {
-    return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/lyrics/${filename}`, { content });
+    return this.http.put<CaptionSavedResponse>(`${this.apiUrl}/${encodeURIComponent(name)}/lyrics/${encodeURIComponent(filename)}`, { content });
   }
 
   deletePair(name: string, mediaFile: string): Observable<MediaPairDeletedResponse> {

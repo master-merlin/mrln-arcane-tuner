@@ -65,18 +65,18 @@ export class ModelService {
     private apiUrl = `${inject(RuntimeConfigService).apiUrl}/models`;
 
     getCapabilities(definitionId: string): Observable<ModelCapabilities> {
-        return this.http.get<ModelCapabilities>(`${this.apiUrl}/capabilities/${definitionId}`);
+        return this.http.get<ModelCapabilities>(`${this.apiUrl}/capabilities/${encodeURIComponent(definitionId)}`);
     }
 
     enrichDefinition(definitionId: string): Observable<EnrichmentResult> {
-        return this.http.post<EnrichmentResult>(`${this.apiUrl}/definitions/${definitionId}/enrich`, {});
+        return this.http.post<EnrichmentResult>(`${this.apiUrl}/definitions/${encodeURIComponent(definitionId)}/enrich`, {});
     }
 
     // ── Source Override CRUD ────────────────────────────────────────────
 
     getModelSource(definitionId: string): Observable<ModelSourceOverride> {
         return this.http.get<ModelSourceOverride>(
-            `${this.apiUrl}/definitions/${definitionId}/source`,
+            `${this.apiUrl}/definitions/${encodeURIComponent(definitionId)}/source`,
         );
     }
 
@@ -85,14 +85,14 @@ export class ModelService {
         override: ModelSourceOverride,
     ): Observable<ModelSourceOverride> {
         return this.http.put<ModelSourceOverride>(
-            `${this.apiUrl}/definitions/${definitionId}/source`,
+            `${this.apiUrl}/definitions/${encodeURIComponent(definitionId)}/source`,
             override,
         );
     }
 
     deleteModelSource(definitionId: string): Observable<{ status: string }> {
         return this.http.delete<{ status: string }>(
-            `${this.apiUrl}/definitions/${definitionId}/source`,
+            `${this.apiUrl}/definitions/${encodeURIComponent(definitionId)}/source`,
         );
     }
 
@@ -101,7 +101,7 @@ export class ModelService {
         path: string,
     ): Observable<PathValidationResult> {
         return this.http.post<PathValidationResult>(
-            `${this.apiUrl}/definitions/${definitionId}/validate-path`,
+            `${this.apiUrl}/definitions/${encodeURIComponent(definitionId)}/validate-path`,
             { path },
         );
     }

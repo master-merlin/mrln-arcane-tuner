@@ -535,7 +535,7 @@ export class TrainingTemplateSelectorComponent implements OnInit {
       this.toast.warning('Save the template before exporting.');
       return;
     }
-    window.open(this.templateService.getTemplateExportUrl('training', id), '_blank');
+    window.open(this.templateService.getTemplateExportUrl('training', id), '_blank', 'noopener,noreferrer');
   }
 
   /** Open the generic import wizard (routes by the dropped archive's kind). */

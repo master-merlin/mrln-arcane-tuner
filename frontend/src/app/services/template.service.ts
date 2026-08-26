@@ -165,23 +165,23 @@ export class TemplateService {
 
   // Shared CRUD operations
   getTemplate(domain: TemplateDomain, templateId: string): Observable<Template> {
-    return this.http.get<Template>(`${this.apiUrl}/${domain}/${templateId}`);
+    return this.http.get<Template>(`${this.apiUrl}/${encodeURIComponent(domain)}/${encodeURIComponent(templateId)}`);
   }
 
   updateTemplate(domain: TemplateDomain, templateId: string, updates: Partial<Template>): Observable<Template> {
-    return this.http.put<Template>(`${this.apiUrl}/${domain}/${templateId}`, updates);
+    return this.http.put<Template>(`${this.apiUrl}/${encodeURIComponent(domain)}/${encodeURIComponent(templateId)}`, updates);
   }
 
   deleteTemplate(domain: TemplateDomain, templateId: string): Observable<{ status: string }> {
-    return this.http.delete<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}`);
+    return this.http.delete<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(domain)}/${encodeURIComponent(templateId)}`);
   }
 
   branchTemplate(domain: TemplateDomain, templateId: string, targetProjectId: string, newName?: string): Observable<Template> {
-    return this.http.post<Template>(`${this.apiUrl}/${domain}/${templateId}/branch`, { target_project_id: targetProjectId, new_name: newName });
+    return this.http.post<Template>(`${this.apiUrl}/${encodeURIComponent(domain)}/${encodeURIComponent(templateId)}/branch`, { target_project_id: targetProjectId, new_name: newName });
   }
 
   useTemplate(domain: TemplateDomain, templateId: string): Observable<{ status: string }> {
-    return this.http.post<{ status: string }>(`${this.apiUrl}/${domain}/${templateId}/use`, {});
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(domain)}/${encodeURIComponent(templateId)}/use`, {});
   }
 
   /**
@@ -205,7 +205,7 @@ export class TemplateService {
 
   // Export / Import
   getTemplateExportUrl(domain: TemplateDomain, templateId: string): string {
-    return `${this.apiUrl}/${domain}/${templateId}/export`;
+    return `${this.apiUrl}/${encodeURIComponent(domain)}/${encodeURIComponent(templateId)}/export`;
   }
 
   exportTemplatesBundle(

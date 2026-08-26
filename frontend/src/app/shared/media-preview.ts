@@ -45,5 +45,10 @@ export function datasetPreviewUrl(
             `?image_rel_path=${encodeURIComponent(previewImage)}`
         );
     }
-    return `${mediaBaseUrl}/${name}/${previewImage}`;
+    // `previewImage` is a dataset-relative path and may contain sub-directories.
+    // Encoding is transparent to those — the server decodes before routing — but
+    // it is what keeps a `#` or `?` in a filename from truncating the URL. The
+    // query-parameter branch above has always encoded this same value; the path
+    // branch did not, which is the inconsistency this closes.
+    return `${mediaBaseUrl}/${name}/${encodeURIComponent(previewImage)}`;
 }

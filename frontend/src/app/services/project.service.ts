@@ -216,41 +216,41 @@ export class ProjectService {
   }
 
   getProject(projectId: string): Observable<Project> {
-    return this.http.get<Project>(`${this.apiUrl}/${projectId}`);
+    return this.http.get<Project>(`${this.apiUrl}/${encodeURIComponent(projectId)}`);
   }
 
   updateProject(projectId: string, updates: Partial<Project>): Observable<Project> {
-    return this.http.patch<Project>(`${this.apiUrl}/${projectId}`, updates);
+    return this.http.patch<Project>(`${this.apiUrl}/${encodeURIComponent(projectId)}`, updates);
   }
 
   deleteProject(projectId: string): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/${projectId}`);
+    return this.http.delete<void>(`${this.apiUrl}/${encodeURIComponent(projectId)}`);
   }
 
   // Dataset Associations
   
   getProjectDatasets(projectId: string): Observable<Dataset[]> {
-    return this.http.get<Dataset[]>(`${this.apiUrl}/${projectId}/datasets`);
+    return this.http.get<Dataset[]>(`${this.apiUrl}/${encodeURIComponent(projectId)}/datasets`);
   }
 
   addProjectDataset(projectId: string, datasetId: string): Observable<{ status: string }> {
-    return this.http.post<{ status: string }>(`${this.apiUrl}/${projectId}/datasets`, { dataset_id: datasetId });
+    return this.http.post<{ status: string }>(`${this.apiUrl}/${encodeURIComponent(projectId)}/datasets`, { dataset_id: datasetId });
   }
 
   removeProjectDataset(projectId: string, datasetId: string): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/${projectId}/datasets/${datasetId}`);
+    return this.http.delete<void>(`${this.apiUrl}/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`);
   }
 
   // Preferences
 
   getPreferences(projectId: string | null): Observable<ProjectPreferences> {
     const pid = projectId ? projectId : 'general';
-    return this.http.get<ProjectPreferences>(`${this.apiUrl}/${pid}/preferences`);
+    return this.http.get<ProjectPreferences>(`${this.apiUrl}/${encodeURIComponent(pid)}/preferences`);
   }
 
   updatePreferences(projectId: string | null, updates: Partial<ProjectPreferences>): Observable<ProjectPreferences> {
     const pid = projectId ? projectId : 'general';
-    return this.http.put<ProjectPreferences>(`${this.apiUrl}/${pid}/preferences`, updates);
+    return this.http.put<ProjectPreferences>(`${this.apiUrl}/${encodeURIComponent(pid)}/preferences`, updates);
   }
 
   // Export / Import
@@ -262,7 +262,7 @@ export class ProjectService {
       datasets: { name: string; mode: string }[];
     },
   ): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/${projectId}/export`, selection, {
+    return this.http.post(`${this.apiUrl}/${encodeURIComponent(projectId)}/export`, selection, {
       responseType: 'blob',
     });
   }

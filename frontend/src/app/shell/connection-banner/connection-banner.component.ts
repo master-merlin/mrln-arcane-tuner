@@ -2,11 +2,13 @@ import {
     ChangeDetectionStrategy,
     Component,
     OnDestroy,
+    computed,
     effect,
     inject,
     signal,
 } from '@angular/core';
 import { WebSocketService } from '../../services/websocket.service';
+import { SessionService } from '../../services/session.service';
 import { IcoComponent } from '../../icons/ico.component';
 
 /**
@@ -28,10 +30,16 @@ const SHOW_DELAY_MS = 1500;
     imports: [IcoComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
-        @if (visible()) {
-            <div class="conn-banner" role="alert" aria-live="assertive">
+        @if (expired()) {
+            <div class="conn-banner" role="alert" aria-live="assertive" data-testid="conn-banner-expired">
                 <app-ico name="WifiOff" [size]="16" />
-                <span class="conn-banner-text">Lost connection to the backend — reconnecting…</span>
+                <span class="conn-banner-text">Your session expired — sign in to continue.</span>
+                <a class="conn-banner-retry" [href]="loginPath">Sign in</a>
+            </div>
+        } @else if (visible()) {
+            <div class="conn-banner" role="alert" aria-live="assertive" data-testid="conn-banner">
+                <app-ico name="WifiOff" [size]="16" />
+                <span class="conn-banner-text">{{ message() }}</span>
                 <button class="conn-banner-retry" type="button" (click)="retry()">Retry</button>
             </div>
         }
@@ -65,7 +73,23 @@ const SHOW_DELAY_MS = 1500;
 })
 export class ConnectionBannerComponent implements OnDestroy {
     private ws = inject(WebSocketService);
+    private session = inject(SessionService);
     protected visible = signal(false);
+    protected expired = this.session.expired;
+    protected readonly loginPath = SessionService.LOGIN_PATH;
+
+    /**
+     * Once the ladder is in its degraded band the retry interval is measured
+     * in tens of seconds, so "reconnecting…" stops being true in any useful
+     * sense. Say what is actually happening and let the Retry button be the
+     * user's lever.
+     */
+    protected message = computed(() =>
+        this.ws.degraded()
+            ? 'Cannot reach the backend. Still trying — check that the server is running.'
+            : 'Lost connection to the backend — reconnecting…'
+    );
+
     private showTimer?: ReturnType<typeof setTimeout>;
 
     constructor() {

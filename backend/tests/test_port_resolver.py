@@ -251,6 +251,140 @@ class TestPrecedence:
         assert "junk" in capsys.readouterr().err
 
 
+class TestTheContainerIsNotSettingsDriven:
+    """A saved port must never move the bind inside a container.
+
+    THE LOCKOUT THIS PREVENTS, which this lane briefly created: RunPod sets
+    ``PORT``, but a plain ``docker run -p 8000:8000`` does not. Once the
+    launcher started honouring the saved setting, an operator who changed the
+    port in Server Control and restarted would bind 9000 inside a namespace
+    whose published mapping is still 8000 — set in the daemon, where nothing
+    inside can reach it. The old ``PORT="${PORT:-8000}"`` made that impossible;
+    the fix made it possible, and this makes it impossible again.
+
+    Enforced here rather than by a note in the UI. A note explains; it does not
+    prevent, and an unread note is exactly the class of control that keeps
+    turning up as ineffective.
+    """
+
+    def test_a_saved_port_does_not_move_the_bind_in_a_container(
+        self, tmp_path, monkeypatch
+    ):
+        _write_settings(tmp_path, {"application": {"backend_port": 9000}}, monkeypatch)
+        monkeypatch.setenv("MRLN_CONTAINER", "1")
+        assert port_resolver.resolve_port([]) == 8000
+
+    def test_the_operator_is_told_which_port_was_ignored_and_why(
+        self, tmp_path, monkeypatch
+    ):
+        """Silently ignoring it would be its own defect (invariant #4).
+
+        Someone who set 9000 needs to learn that the container serves 8000 and
+        that the fix is on the host side of ``-p`` — not merely that something
+        was overridden.
+        """
+        _write_settings(tmp_path, {"application": {"backend_port": 9000}}, monkeypatch)
+        monkeypatch.setenv("MRLN_CONTAINER", "1")
+        seen: list[dict] = []
+        port_resolver.resolve_port([], warn=lambda **kw: seen.append(kw))
+        assert seen, "the saved port was discarded with no explanation"
+        assert seen[0]["saved"] == 9000 and seen[0]["using"] == 8000
+        assert "-p" in seen[0]["why"], "the message must name the actual remedy"
+
+    def test_it_stays_quiet_when_there_is_nothing_to_correct(
+        self, tmp_path, monkeypatch
+    ):
+        """A warning on every boot trains operators to ignore warnings."""
+        _write_settings(tmp_path, {"application": {"backend_port": 8000}}, monkeypatch)
+        monkeypatch.setenv("MRLN_CONTAINER", "1")
+        seen: list[dict] = []
+        port_resolver.resolve_port([], warn=lambda **kw: seen.append(kw))
+        assert not seen
+
+    def test_the_platform_port_still_wins(self, tmp_path, monkeypatch):
+        """Prove the negative, first direction: DECISION-11 is unchanged.
+
+        This must not become "containers are always 8000" — RunPod and every
+        platform that publishes a chosen port set ``PORT``, and that is
+        authoritative.
+        """
+        _write_settings(tmp_path, {"application": {"backend_port": 9000}}, monkeypatch)
+        monkeypatch.setenv("MRLN_CONTAINER", "1")
+        monkeypatch.setenv("PORT", "9001")
+        assert port_resolver.resolve_port([]) == 9001
+
+    def test_an_explicit_command_line_still_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MRLN_CONTAINER", "1")
+        assert port_resolver.resolve_port(["--port", "9002"]) == 9002
+
+    def test_the_desktop_feature_is_untouched(self, tmp_path, monkeypatch):
+        """Prove the negative, second direction, and it is the whole lane.
+
+        Without this, "ignore the setting in a container" would be satisfied by
+        ignoring the setting everywhere — which is the bug LANE-9 exists to fix.
+        """
+        _write_settings(tmp_path, {"application": {"backend_port": 9000}}, monkeypatch)
+        monkeypatch.delenv("MRLN_CONTAINER", raising=False)
+        assert port_resolver.resolve_port([]) == 9000
+
+    def test_only_the_exact_flag_counts(self, tmp_path, monkeypatch):
+        """``MRLN_CONTAINER`` is set to exactly "1" by the entrypoint.
+
+        Matching loosely would let a stray ``MRLN_CONTAINER=0`` disable a
+        desktop user's saved port, which is the same defect pointing the other
+        way. This mirrors ``container_config.is_container()`` deliberately.
+        """
+        _write_settings(tmp_path, {"application": {"backend_port": 9000}}, monkeypatch)
+        monkeypatch.setenv("MRLN_CONTAINER", "0")
+        assert port_resolver.resolve_port([]) == 9000
+
+    def test_a_broken_settings_file_does_not_stop_a_container_booting(
+        self, tmp_path, monkeypatch
+    ):
+        """The refusal policy is deliberately NOT applied here.
+
+        On a desktop an unreadable settings file refuses, because the port it
+        would have produced actually matters. In a container the value is
+        discarded either way, so refusing would convert a file the operator
+        cannot see into a container that will not start.
+        """
+        _write_settings(tmp_path, "{ not json", monkeypatch)
+        monkeypatch.setenv("MRLN_CONTAINER", "1")
+        assert port_resolver.resolve_port([]) == 8000
+
+
+class TestTheEntrypointOrderingThisDependsOn:
+    """``MRLN_CONTAINER`` must be exported BEFORE the resolver is called.
+
+    This is load-bearing and invisible: if the export moved below the port
+    block, the guard above would silently stop applying in the only place it
+    matters, and every test in this file would still pass because they set the
+    variable themselves.
+    """
+
+    def test_the_flag_is_exported_before_the_resolver_runs(self):
+        path = Path(__file__).resolve().parents[2] / "entrypoint.sh"
+        if not path.exists():
+            pytest.skip("entrypoint.sh not in this checkout")
+        text = path.read_text(encoding="utf-8")
+        flag = text.index("export MRLN_CONTAINER=1")
+        call = text.index("port_resolver.py")
+        assert flag < call, (
+            "entrypoint.sh calls the port resolver before exporting "
+            "MRLN_CONTAINER=1, so the resolver cannot tell it is in a container "
+            "and a saved port would strand the operator behind the published "
+            "mapping"
+        )
+
+    def test_the_settings_path_is_exported_first_too(self):
+        """Same ordering dependency, for the file the notice reads."""
+        path = Path(__file__).resolve().parents[2] / "entrypoint.sh"
+        if not path.exists():
+            pytest.skip("entrypoint.sh not in this checkout")
+        text = path.read_text(encoding="utf-8")
+        assert text.index("export MRLN_SETTINGS_PATH") < text.index("port_resolver.py")
+
+
 class TestArgvParsing:
     def test_port_without_a_value_does_not_crash(self):
         """Malformed argv is uvicorn's error to report, not ours to die on."""
@@ -394,6 +528,35 @@ class TestTheCliContract:
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "8123"
         assert proc.stdout.count("\n") == 1, "exactly one line, or the shell breaks"
+
+    def test_container_mode_prints_8000_and_explains_on_stderr(self, tmp_path):
+        """The exact call ``entrypoint.sh`` makes, in the case that strands.
+
+        The in-process tests set ``MRLN_CONTAINER`` themselves; this drives the
+        real subprocess with a real settings file, so it also proves the notice
+        goes to stderr and does NOT contaminate the single stdout line the
+        shell captures as the port.
+        """
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"application": {"backend_port": 9000}}), encoding="utf-8"
+        )
+        env = {
+            **os.environ,
+            "MRLN_SETTINGS_PATH": str(path),
+            "MRLN_CONTAINER": "1",
+        }
+        env.pop("PORT", None)
+        proc = subprocess.run(
+            [sys.executable, str(RESOLVER_SRC)],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "8000", (
+            "a container would have bound the saved port while the published "
+            "mapping stayed on 8000 — the operator strands themself"
+        )
+        assert "9000" in proc.stderr, "the ignored port must be named"
 
     def test_failure_exits_non_zero_and_explains_on_stderr(self, tmp_path):
         """The launcher's refusal depends entirely on this exit code.

@@ -159,6 +159,67 @@ def _port_from_settings(path: str) -> int | None:
     return port
 
 
+def _settings_port_quietly(path: str) -> int | None:
+    """The saved port, or None — never raising, for the container case only.
+
+    A PRINCIPLED DIVERGENCE FROM ``_port_from_settings``, not an exception, and
+    the distinction is what stops someone harmonising the two later:
+
+    The desktop refusal exists *because the file is the port's source there* —
+    an unreadable file means the port is unknown, and starting on a guess while
+    the app believes something else is the defect this module removes. Inside a
+    container the file is **not** the source; its value is discarded whatever it
+    says. So refusing there would refuse for a reason unrelated to the
+    malformation's actual consequence — a non sequitur that converts a file the
+    operator cannot see into a container that will not start.
+
+    This exists ONLY to say a more useful sentence than "your setting was
+    ignored" — which port was set, and why it did not take. If it cannot find
+    out, it says the generic thing instead.
+    """
+    try:
+        return _port_from_settings(path)
+    except PortResolutionError:
+        return None
+    except Exception:  # noqa: BLE001 - a diagnostic must never be the failure
+        return None
+
+
+def _container_port_notice(env, complain) -> None:
+    """Explain why the saved port does not apply here, if it would have.
+
+    KNOWN LIMIT of the detection this rides on, stated rather than asserted
+    away: ``MRLN_CONTAINER`` is set by **this project's** ``entrypoint.sh``. A
+    derived image with its own entrypoint, or the backend started inside a
+    container some other way, will not have it and will get **desktop**
+    behaviour — settings-driven port and all, including the stranding this
+    guards against.
+
+    That is the same declared-vs-observed shape as ``bind_host()``, which reads
+    the ``--host`` uvicorn was *told* rather than the socket it *bound*. It is
+    accepted for the same reason: every alternative container-detection
+    heuristic (``/.dockerenv``, cgroup inspection, ``/proc/1/comm``) is more
+    fragile and fails differently across runtimes. Meet this as a documented
+    boundary, not as a surprise.
+    """
+    saved = _settings_port_quietly(settings_path(env))
+    if saved is None or saved == DEFAULT_PORT:
+        # Nothing to correct — stay quiet rather than logging on every boot.
+        return
+    complain(
+        event="settings_port_ignored_in_container",
+        saved=saved,
+        using=DEFAULT_PORT,
+        why=(
+            "this is a container: the published port mapping (docker -p / the "
+            "platform's pod template) lives outside this namespace, so a port "
+            "chosen in Server Control cannot move it and would only make the "
+            "container unreachable. Set the port on the host side of -p, or "
+            "set PORT to match what the platform publishes."
+        ),
+    )
+
+
 def _warn_to_stderr(**fields) -> None:
     """Default complaint channel: a launcher has no structured logger.
 
@@ -211,6 +272,24 @@ def resolve_port(
             return int(raw_env)
         except ValueError:
             complain(event="invalid_port_env", value=raw_env)
+
+    # THE SETTINGS FILE IS NOT A PORT SOURCE INSIDE A CONTAINER, and this is the
+    # step that makes DECISION-11 true rather than merely stated.
+    #
+    # Without it: RunPod sets PORT, but a plain `docker run -p 8000:8000` does
+    # NOT, so the saved setting would drive the bind while the published mapping
+    # stays 8000 in the daemon — where nothing inside the namespace can reach
+    # it. An operator who changes the port in Server Control and restarts would
+    # strand themselves, and `PORT="${PORT:-8000}"` used to make that
+    # unreachable. Restoring the property, rather than relying on a UI note
+    # nobody may read.
+    #
+    # 8000 and not a refusal: someone who set a port before upgrading would get
+    # a container that stops booting, which turns a stranding into an outage.
+    # The setting is ignored loudly instead — see _container_port_notice.
+    if env.get("MRLN_CONTAINER") == "1":
+        _container_port_notice(env, complain)
+        return DEFAULT_PORT
 
     if settings_fallback is not None:
         return settings_fallback

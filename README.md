@@ -170,17 +170,49 @@ drivers (no Blackwell support).
 **Building your own** (only needed if you've modified the code). The CUDA target
 is parameterized via build args (default cu128):
 
+`GIT_SHA` is **required** — the image is built from a specific commit rather
+than from whatever the branch points at, so two builds of the same tag contain
+the same code and the image records which. A build without it fails immediately
+rather than quietly tracking a moving branch.
+
 ```bash
+SHA=$(git rev-parse HEAD)   # the full 40-char commit; a short sha is refused
+
 # Primary (cu128 — Blackwell + modern fleet). Tag with version and latest.
-docker build -t mastermerlin/mrln-arcane-tuner:0.7.9-beta -t mastermerlin/mrln-arcane-tuner:latest .
+docker build --build-arg GIT_SHA="$SHA" \
+    -t mastermerlin/mrln-arcane-tuner:0.7.9-beta -t mastermerlin/mrln-arcane-tuner:latest .
 docker push mastermerlin/mrln-arcane-tuner:0.7.9-beta
 docker push mastermerlin/mrln-arcane-tuner:latest
 
 # Fallback (cu126 — legacy R560–R565 drivers).
-docker build --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
+docker build --build-arg GIT_SHA="$SHA" \
+    --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
     -t mastermerlin/mrln-arcane-tuner:0.7.9-beta-cu126 .
 docker push mastermerlin/mrln-arcane-tuner:0.7.9-beta-cu126
 ```
+
+The commit must already be **pushed to the remote** — the build clones it, so a
+local-only commit fails the build rather than baking in code nobody else can
+retrieve.
+
+**Ollama** (the optional caption-refinement sidecar) is installed by piping
+`ollama.com/install.sh` into a root shell, which is an **unpinned third-party
+script executing at build time**. For a build you intend to publish, pin it:
+
+```bash
+# Get the digest once, then pass both — one without the other is refused.
+curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tgz | sha256sum
+docker build --build-arg GIT_SHA="$SHA" \
+    --build-arg OLLAMA_VERSION=<tag> --build-arg OLLAMA_SHA256=<digest> ...
+```
+
+`--build-arg INSTALL_OLLAMA=0` skips it entirely; the app starts fine without
+it and simply reports the sidecar as disabled.
+
+**The container runs as UID 10001, not root.** The entrypoint starts as root
+only long enough to take ownership of the mounted data volume, then drops. If
+you mount a volume whose contents are owned by a different UID, files created by
+an earlier root-run container may need `chown -R 10001:10001` once.
 
 ### 2. Create the pod on RunPod
 

@@ -16,6 +16,56 @@ fi
 mkdir -p "$DATA_DIR/datasets" "$DATA_DIR/models/upscale" "$DATA_DIR/outputs" \
          "$DATA_DIR/hf-cache"
 
+# ── Drop privileges (first-boot chown, then run as the app user) ──────────
+# The app must NOT run as root: /app is a live git checkout the running
+# container can pull into and rebuild, so root would mean "can rewrite the code
+# it is about to execute" with nothing between.
+#
+# But a freshly-mounted volume arrives root-owned, and a non-root process cannot
+# chown it — so this script deliberately starts as root, fixes ownership once,
+# and only then drops. That ordering is the whole reason the image has no
+# `USER` line.
+#
+# Three cases, all real:
+#   1. running as root, app user exists  -> chown, then re-exec as the app user
+#   2. already non-root (`docker run --user`) -> cannot chown and must not try;
+#      the operator owns the volume's permissions. Proceed as whoever we are.
+#   3. root but no app user (an image built before this change, or a derived
+#      image that removed it) -> proceed as root rather than fail, but say so
+#      loudly. Refusing to boot would turn a hardening regression into an
+#      outage, which is the wrong trade for an app that is already running.
+APP_UID="${MRLN_APP_UID:-10001}"
+APP_GID="${MRLN_APP_GID:-10001}"
+
+if [ "$(id -u)" = "0" ]; then
+    if getent passwd "$APP_UID" >/dev/null 2>&1; then
+        # Only the directories the app actually writes. Not a blanket -R on the
+        # volume: a populated dataset/model tree can be hundreds of GB, and
+        # chown -R over it on every boot would add minutes to startup for
+        # ownership that is already correct after the first run.
+        for d in "$DATA_DIR" "$DATA_DIR/datasets" "$DATA_DIR/models" \
+                 "$DATA_DIR/models/upscale" "$DATA_DIR/outputs" "$DATA_DIR/hf-cache"; do
+            [ -d "$d" ] && chown "$APP_UID:$APP_GID" "$d" 2>/dev/null || true
+        done
+        # The DB file itself, when it already exists from a previous boot.
+        [ -f "$DATA_DIR/arcane_tuner.db" ] && \
+            chown "$APP_UID:$APP_GID" "$DATA_DIR/arcane_tuner.db" 2>/dev/null || true
+
+        if command -v setpriv >/dev/null 2>&1; then
+            echo "[entrypoint] dropping root -> uid=$APP_UID gid=$APP_GID"
+            # Re-exec THIS script as the app user; it then takes the non-root
+            # branch below and never returns here. --init-groups so the app
+            # picks up its supplementary groups rather than root's.
+            exec setpriv --reuid="$APP_UID" --regid="$APP_GID" --init-groups "$0" "$@"
+        fi
+        echo "[entrypoint] WARNING: setpriv not found — CONTINUING AS ROOT."
+        echo "[entrypoint] WARNING: install util-linux to restore the privilege drop."
+    else
+        echo "[entrypoint] WARNING: uid $APP_UID does not exist — CONTINUING AS ROOT."
+        echo "[entrypoint] WARNING: this image predates the non-root change, or the user was removed."
+    fi
+fi
+
 BACKEND_DIR="/app/backend"
 
 # ── Symlink the app's working dirs onto the persistent volume ────────────
@@ -50,8 +100,11 @@ export HF_HOME="${HF_HOME:-$DATA_DIR/hf-cache}"
 # at it explicitly — avoids a "venv python not found" fallback warning.
 export MRLN_TRAINER_PYTHON="${MRLN_TRAINER_PYTHON:-$(command -v python)}"
 
-# Self-update: trust the /app checkout (root-owned) and default git coords so
-# the SelfUpdateService can run git against it without "dubious ownership".
+# Self-update: trust the /app checkout and default git coords so the
+# SelfUpdateService can run git against it without "dubious ownership".
+# This now runs as the app user (the image chowns /app to it at build time), so
+# the config lands in that user's HOME rather than root's — which is what the
+# server process will actually read.
 git config --global --add safe.directory /app 2>/dev/null || true
 export MRLN_APP_DIR="${MRLN_APP_DIR:-/app}"
 export MRLN_GIT_BRANCH="${MRLN_GIT_BRANCH:-main}"

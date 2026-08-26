@@ -42,6 +42,46 @@ def _internal_api_headers() -> dict[str, str]:
     return {"X-Auth-Token": token} if token else {}
 
 
+def _resolve_api_port(default: int | None = None) -> int:
+    """The port THIS server is listening on, for the trainer's loopback calls.
+
+    Delegates to ``container_config.resolve_port`` — the same producer
+    ``main.py`` uses (RULE-21). It previously resolved the port here from the
+    ``backend_port`` setting alone, which is a second, private answer to a
+    question the app already had a resolver for, and the two disagree exactly
+    where it hurts: the container binds ``PORT``, so a pod on ``PORT=9000``
+    made every request here go to the wrong place.
+
+    That failure is quiet rather than loud. A refused connection is caught by
+    the ``httpx.HTTPError`` handler around the fetch, which logs
+    ``dataset_api_error`` and ``continue``s — so the dataset is SKIPPED and the
+    run completes, having trained on less data than the user selected. A worse
+    LoRA and no error.
+
+    Precedence, deliberately: ``PORT`` (what the container actually binds)
+    outranks the saved ``backend_port`` setting, which outranks 8000. Passing
+    the setting as ``resolve_port``'s default is what produces that ordering —
+    the setting still drives a manually launched server on a custom port, which
+    is the one configuration where that field genuinely works.
+    """
+    from app.core.container_config import resolve_port
+
+    if default is None:
+        default = 8000
+        try:
+            from app.core.settings_manager import get_settings_manager
+
+            app_settings = get_settings_manager().get_module_settings("application")
+            if app_settings:
+                default = int(app_settings.get("backend_port", 8000))
+        except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+            # A missing or malformed setting must not take a training run down;
+            # 8000 is the documented default and resolve_port still lets PORT win.
+            pass
+
+    return resolve_port(default=default)
+
+
 def video_trim_extra_key(item: dict) -> str:
     """Cache-filename discriminator for a clip's trim window ("" for images).
 
@@ -472,19 +512,7 @@ class PipelineDataMixin:
             v_flip=self._aug_v_flip,
         )
 
-        # Resolve backend port
-        port = 8000
-        try:
-            from app.core.settings_manager import get_settings_manager
-
-            sm = get_settings_manager()
-            app_settings = sm.get_module_settings("application")
-            if app_settings:
-                port = app_settings.get("backend_port", 8000)
-        except (ImportError, AttributeError, KeyError):
-            pass
-
-        api_url = f"http://localhost:{port}/api"
+        api_url = f"http://localhost:{_resolve_api_port()}/api"
         model_name = self.definition.id.split("/")[-1]
 
         async with httpx.AsyncClient(

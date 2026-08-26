@@ -17,6 +17,17 @@ _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backen
 _BACKEND_DIR = os.path.dirname(_APP_DIR)                                 # backend
 _PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)                            # project root
 
+# ``port_resolver`` sits at backend/ rather than inside ``app`` on purpose — the
+# launchers must read the port without paying for the application package. That
+# placement means it is NOT reachable as ``app.something``, so the path is
+# anchored on this file (invariant #9) instead of assuming a working directory.
+# Appended, not prepended: backend/ is already first on sys.path in every normal
+# launch, and this must never quietly shadow a real dependency.
+if _BACKEND_DIR not in sys.path:
+    sys.path.append(_BACKEND_DIR)
+
+import port_resolver  # noqa: E402 - requires the sys.path line above
+
 logger = get_logger(__name__)
 
 
@@ -30,15 +41,27 @@ def is_container() -> bool:
     return os.environ.get("MRLN_CONTAINER") == "1"
 
 
-def resolve_port(default: int = 8000) -> int:
-    """Single exposed port. ``PORT`` env wins, else the provided default."""
-    raw = os.environ.get("PORT")
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            logger.warning("invalid_port_env", value=raw, fallback=default)
-    return default
+def resolve_port(default: int = 8000, argv: list[str] | None = None) -> int:
+    """Single exposed port. ONE producer, and it is not this function.
+
+    The rules live in ``port_resolver`` — a module outside the ``app`` package
+    so the launchers can ask for the port without importing the application
+    (measured: ~246 ms through ``app``, ~14 ms through stdlib). This is the
+    in-app entry point to the SAME resolver, not a second answer.
+
+    ``default`` is the caller's already-loaded ``backend_port`` setting, which
+    is why it outranks a disk read here but not ``--port``/``PORT``.
+    ``--port`` was added when the launchers started carrying the resolved port
+    on the command line: the app must believe the port it was actually started
+    on, not the one it would have computed.
+    """
+    return port_resolver.resolve_port(
+        (sys.argv[1:] if argv is None else argv),
+        settings_fallback=default,
+        warn=lambda **fields: logger.warning(
+            fields.pop("event", "invalid_port_env"), fallback=default, **fields
+        ),
+    )
 
 
 def auth_token() -> str:
